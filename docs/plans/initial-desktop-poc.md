@@ -1,11 +1,14 @@
 # Initial desktop proof-of-concept plan
 
-Status: ready for implementation
+Status: portable core tests and repository checks pass; Apple Silicon macOS CI,
+Linux native CI and Xvfb smoke, and manual visual/input validation are pending
+on the current implementation
 
 ## Outcome
 
 Build a native HUTerm development application for the
-`aarch64-apple-darwin` target. Running the application opens one GPUI window
+`aarch64-apple-darwin` target, with `x86_64-unknown-linux-gnu` as an additional
+development target. Running the application opens one GPUI window
 with one interactive local shell. HUTerm owns the shell's PTY and canonical
 Alacritty terminal state. GPUI renders a HUTerm-defined snapshot and sends
 structured input, resize commands, and snapshot requests to the runtime.
@@ -20,15 +23,15 @@ The first build provides:
 
 - One native window titled `HUTerm`.
 - One session, one tab, one pane, and one terminal runtime.
-- The user's `$SHELL`, falling back to `/bin/zsh`, launched in HUTerm's working
-  directory with the inherited environment.
+- The user's `$SHELL`, falling back to `/bin/zsh` on macOS or `/bin/sh` on
+  Linux, launched in HUTerm's working directory with the inherited environment.
 - Printable text and the common control and navigation keys needed to use a
   shell and basic full-screen terminal programs.
 - Foreground and background colors, basic text decorations, a visible cursor,
   UTF-8 text, and wide terminal cells.
 - Scrollback and mouse-wheel scrolling.
 - PTY and terminal-grid resize when the window changes size.
-- Native macOS fullscreen through GPUI.
+- Native platform fullscreen through GPUI.
 - A visible exited state when the shell terminates.
 - Clean shutdown of the child process when HUTerm closes the terminal.
 
@@ -137,8 +140,8 @@ management yet.
 - Client disconnection and child exit are separate events. Closing the GPUI
   window requests terminal shutdown; losing a future attachment will not.
 - No public HUTerm type contains a GPUI, Alacritty, or `portable-pty` type.
-- Core and protocol code contains no macOS-specific API. Only the first desktop
-  build is platform-scoped; this milestone does not claim Linux or Windows
+- Core and protocol code contains no platform-specific API. The first desktop
+  build supports macOS and Linux; this milestone does not claim Windows
   support.
 
 ## Initial client contract
@@ -230,6 +233,8 @@ output stress test must not create one queued GPUI task per PTY read.
 - Confirm that the published GPUI crate builds a focused window, receives text
   and key input, and toggles native fullscreen on Apple Silicon macOS before
   building the full renderer.
+- Keep Linux's XKB link dependencies and Vulkan runtime prerequisites explicit;
+  a type check alone does not prove the GPUI binary links or starts.
 - Compile the pinned `alacritty_terminal` API behind HUTerm's adapter before
   designing around undocumented internals.
 - Prove that shutdown can unblock every PTY reader, writer, and child-wait path;
@@ -308,6 +313,8 @@ The milestone is complete when:
 
 - A fresh checkout can build and run the application on Apple Silicon macOS
   using documented Mise tasks.
+- A Linux checkout with the documented system packages can build the actual
+  GPUI client and keep its event loop live through the Xvfb smoke window.
 - The manual shell, alternate-screen, resize, scrollback, fullscreen, and
   shutdown checks pass.
 - Automated terminal, PTY, runtime, and mux tests pass and are confirmed to run.
@@ -320,7 +327,7 @@ The milestone is complete when:
 
 ## Explicitly deferred
 
-- Linux and Windows build validation.
+- Windows build validation.
 - A background server, daemon lifecycle, Unix sockets, Windows named pipes, and
   protocol serialization.
 - Detach, reattach, multiple clients, terminal-size arbitration, and remote

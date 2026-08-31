@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify macOS arm64
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          cache: true
+
+      - name: Confirm Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Verify
+        run: mise run verify
+
+  verify-linux:
+    name: Verify Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            mesa-vulkan-drivers xvfb
+
+      - name: Install Mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          cache: true
+
+      - name: Verify
+        run: mise run verify
+
+      - name: Smoke GPUI window under Xvfb
+        run: mise run smoke:linux

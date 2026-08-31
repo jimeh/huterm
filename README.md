@@ -6,8 +6,11 @@ runtime will not belong to the desktop UI. HUTerm will own its pseudoterminals,
 terminal state, sessions, tabs, and pane layouts so other clients can attach to
 the same runtime later.
 
-The project is in its design and proof-of-concept stage. There is no runnable
-application yet.
+The first proof-of-concept implementation is under active validation. It has a
+working PTY runtime, Alacritty-backed snapshots, and macOS/Linux GPUI clients.
+Portable core tests and repository checks pass. Apple Silicon macOS CI, Linux
+native CI and Xvfb smoke, and manual visual/input evidence remain pending on the
+current implementation before the milestone is complete.
 
 ## Direction
 
@@ -32,10 +35,10 @@ changing PTY ownership, sessions, client messages, or renderers.
 
 ## Initial build target
 
-The first milestone is a development build for macOS on Apple Silicon. It will
-open one GPUI window containing one tab, one pane, and one interactive local
-shell. HUTerm will own the PTY and Alacritty terminal state, then render a
-HUTerm-defined snapshot in GPUI.
+The first milestone targets macOS on Apple Silicon, with Linux x86_64 as an
+additional development platform. It opens one GPUI window containing one tab,
+one pane, and one interactive local shell. HUTerm owns the PTY and Alacritty
+terminal state, then renders a HUTerm-defined snapshot in GPUI.
 
 The milestone includes keyboard input, colored text, cursor rendering,
 scrollback, terminal resize, native fullscreen, alternate-screen applications,
@@ -44,6 +47,26 @@ local IPC, multiple tabs, split panes, or a TUI client.
 
 See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
 for the implementation sequence and acceptance criteria.
+
+## Development
+
+Install the pinned tools and local hook:
+
+```sh
+mise run setup
+```
+
+On macOS or Linux, launch the app with:
+
+```sh
+mise run dev
+```
+
+Use `mise tasks` to discover all commands. `mise run check` is the fast local
+gate, while `mise run verify` also runs tests, the dependency-license policy,
+and GitHub Actions checks. See the
+[development guide](docs/agents/development.md) for Linux system packages,
+platform limits, and the validation ladder.
 
 ## Planned features
 
@@ -114,5 +137,6 @@ initial dependencies include MIT and Apache-2.0 software. Distributed builds
 will retain the required third-party license notices and use an automated
 license allowlist to prevent accidental GPL or AGPL dependencies.
 
-The repository does not contain a license grant yet. A `LICENSE` file will be
-added before code is distributed.
+HUTerm-owned source is available under the [MIT license](LICENSE). The committed
+dependency policy audits the full resolved graph and rejects GPL, AGPL, unknown
+registries, Git dependencies, and wildcard Cargo requirements.

@@ -1,0 +1,112 @@
+[settings]
+lockfile = true
+minimum_release_age = "7d"
+
+[tools]
+actionlint = "1.7.12"
+"cargo:cargo-deny" = "0.20.2"
+lefthook = "2.1.12"
+markdownlint-cli2 = "0.23.2"
+pinact = "4.1.1"
+rust = "1.98.0"
+zizmor = "1.29.0"
+
+[tasks.setup]
+description = "Install project tools and local Git hooks"
+run = ["mise install", "mise run doctor", "lefthook install"]
+
+[tasks.doctor]
+description = "Check platform development prerequisites"
+run = '''
+if [ "$(uname -s)" = Linux ]; then
+  missing=""
+  for library in xkbcommon xkbcommon-x11; do
+    if ! pkg-config --exists "$library"; then
+      missing="$missing $library"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo "missing Linux GPUI libraries:$missing" >&2
+    echo "see docs/agents/development.md for package installation" >&2
+    exit 1
+  fi
+fi
+'''
+
+[tasks.dev]
+description = "Run the native HUTerm app"
+run = "cargo run --locked -p huterm"
+
+[tasks.build]
+description = "Build the workspace"
+run = "cargo build --workspace --locked"
+
+[tasks.format]
+description = "Format Rust and repository configuration"
+run = ["cargo fmt --all", "pinact run"]
+
+[tasks."format:check"]
+description = "Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.lint]
+description = "Run Clippy with warnings denied"
+run = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+
+[tasks."lint:docs"]
+description = "Lint Markdown documentation"
+run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"
+
+[tasks.typecheck]
+description = "Type-check all workspace targets"
+run = "cargo check --workspace --all-targets --all-features --locked"
+
+[tasks.architecture]
+description = "Check dependency-neutral protocol boundary"
+run = '''
+dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
+if [ -n "$dependencies" ]; then
+  echo "huterm-protocol must not have normal or build dependencies:" >&2
+  echo "$dependencies" >&2
+  exit 1
+fi
+'''
+
+[tasks.check]
+description = "Run fast deterministic local checks"
+depends = ["format:check", "lint", "lint:docs", "typecheck", "architecture"]
+
+[tasks.test]
+description = "Run workspace tests"
+run = "cargo test --workspace --all-targets --all-features --locked"
+
+[tasks."smoke:linux"]
+description = "Launch the Linux GPUI client under Xvfb"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux smoke skipped on $(uname -s)"
+  exit 0
+fi
+cargo build --workspace --locked
+set +e
+SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+  -s '-screen 0 1280x800x24' target/debug/huterm
+status=$?
+set -e
+if [ "$status" -ne 124 ]; then
+  echo "HUTerm exited before the 8-second smoke window (status $status)" >&2
+  exit 1
+fi
+'''
+
+[tasks.license]
+description = "Audit dependency licenses, bans, and sources"
+run = "cargo deny --locked check licenses bans sources"
+
+[tasks."ci:workflows"]
+description = "Validate and secure GitHub Actions workflows"
+run = ["actionlint", "zizmor --offline .", "pinact run --check"]
+
+[tasks.verify]
+description = "Run the broad CI-equivalent validation"
+depends = ["check", "test", "license", "ci:workflows"]
