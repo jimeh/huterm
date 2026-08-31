@@ -66,8 +66,8 @@ mise run dev
 Use `mise tasks` to discover all commands. `mise run check` is the fast local
 gate, while `mise run verify` also runs tests, the dependency-license policy,
 and GitHub Actions checks. See the
-[development guide](docs/agents/development.md) for Linux system packages,
-platform limits, and the validation ladder.
+[development guide](docs/agents/development.md) for platform prerequisites,
+limits, and the validation ladder.
 
 ## Planned features
 

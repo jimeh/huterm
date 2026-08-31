@@ -62,6 +62,8 @@ The repository uses a seven-day Mise release-age policy and commits
 `Cargo.lock` and `mise.lock`. Pin direct runtime dependencies deliberately.
 The published GPUI dependency graph needs Rust 1.88 or newer; project tooling
 pins Rust 1.98.
+On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
+`mise run doctor` checks it and reports the installation command.
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.

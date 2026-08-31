@@ -18,7 +18,20 @@ run = ["mise install", "mise run doctor", "lefthook install"]
 [tasks.doctor]
 description = "Check platform development prerequisites"
 run = '''
-if [ "$(uname -s)" = Linux ]; then
+if [ "$(uname -s)" = Darwin ]; then
+  if ! xcodebuild -version >/dev/null 2>&1; then
+    echo "Xcode is not installed or selected for HUTerm's macOS build" >&2
+    echo "install Xcode and select it with xcode-select" >&2
+    echo "see docs/agents/development.md for macOS setup" >&2
+    exit 1
+  fi
+  if ! xcrun --find metal >/dev/null 2>&1; then
+    echo "missing Xcode Metal Toolchain required for GPUI shaders" >&2
+    echo "install it with: xcodebuild -downloadComponent MetalToolchain" >&2
+    echo "see docs/agents/development.md for macOS setup" >&2
+    exit 1
+  fi
+elif [ "$(uname -s)" = Linux ]; then
   missing=""
   for library in xkbcommon xkbcommon-x11; do
     if ! pkg-config --exists "$library"; then

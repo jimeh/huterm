@@ -1,7 +1,27 @@
 # Development and validation
 
-On Ubuntu 24.04, first install GPUI's X11 link libraries and the software Vulkan
-driver used by the headless smoke test:
+## macOS prerequisites
+
+GPUI compiles Metal shaders as part of the macOS build. Install Xcode and make
+sure the selected Xcode has Apple's optional Metal Toolchain. Recent Xcode
+installations may not include it initially:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain
+```
+
+If multiple Xcode versions are installed, select the intended version with
+`xcode-select` before downloading the component. `mise run doctor` checks that
+Xcode is selected and that `xcrun` can locate the Metal compiler. Apple
+documents both the Xcode settings and command-line installation paths in
+[Downloading and installing additional Xcode components][apple-components].
+
+[apple-components]: https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components
+
+## Ubuntu 24.04 prerequisites
+
+Install GPUI's X11 link libraries and the software Vulkan driver used by the
+headless smoke test:
 
 ```sh
 sudo apt-get install --no-install-recommends \
