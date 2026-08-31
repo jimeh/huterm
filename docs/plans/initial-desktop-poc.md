@@ -1,8 +1,8 @@
 # Initial desktop proof-of-concept plan
 
-Status: portable core tests and repository checks pass; Apple Silicon macOS CI,
-Linux native CI and Xvfb smoke, and manual visual/input validation are pending
-on the current implementation
+Status: portable core tests, repository checks, Linux native tests, and the
+Linux Xvfb smoke pass; Apple Silicon macOS CI, Linux CI, and manual visual/input
+validation are pending on the current implementation
 
 ## Outcome
 
@@ -140,7 +140,8 @@ management yet.
 - Client disconnection and child exit are separate events. Closing the GPUI
   window requests terminal shutdown; losing a future attachment will not.
 - No public HUTerm type contains a GPUI, Alacritty, or `portable-pty` type.
-- Core and protocol code contains no platform-specific API. The first desktop
+- Public core and protocol APIs contain no platform-specific types. Private PTY
+  plumbing may use narrowly scoped `cfg` implementations. The first desktop
   build supports macOS and Linux; this milestone does not claim Windows
   support.
 
@@ -202,6 +203,8 @@ build, support printable text, Enter, Tab, Backspace, Escape, arrow keys,
 Home, End, Page Up, Page Down, Delete, and common Control-modified characters.
 Function keys, the Kitty keyboard protocol, IME composition, and mouse reporting
 can follow once the basic path works.
+Xterm-style modifier encodings for Control- or Shift-modified navigation keys
+are also deferred; this milestone only applies mode-sensitive cursor encoding.
 
 On resize, GPUI calculates both cell dimensions and pixel dimensions. The
 runtime clamps invalid sizes, resizes the PTY, updates the Alacritty grid, and

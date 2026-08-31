@@ -2504,6 +2504,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "huterm-protocol",
+ "nix 0.28.0",
  "portable-pty",
  "thiserror 2.0.20",
 ]

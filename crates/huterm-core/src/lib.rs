@@ -9,4 +9,6 @@ mod pty;
 mod terminal;
 
 pub use mux::{Mux, MuxError, TerminalOwner};
-pub use terminal::{RuntimeClient, RuntimeError, TerminalRuntime};
+pub use terminal::{
+    RuntimeClient, RuntimeError, SnapshotRequest, TerminalRuntime,
+};

@@ -1,7 +1,9 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
-    self, Receiver, RecvTimeoutError, SyncSender, TryRecvError,
+    self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
+    TrySendError,
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -11,7 +13,6 @@ use huterm_protocol::{
     CellSize, ExitStatus, GridSize, TerminalCommand, TerminalEvent, TerminalId,
     TerminalInput, TerminalSnapshot, Viewport,
 };
-use portable_pty::Child;
 use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
@@ -20,13 +21,18 @@ use crate::pty::{self, PtyProcess};
 
 const MESSAGE_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
+const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// In-process client handle for one terminal runtime.
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
     terminal_id: TerminalId,
     messages: SyncSender<RuntimeMessage>,
+    controls: Sender<RuntimeControl>,
+    closing: Arc<AtomicBool>,
+    queued_input_bytes: Arc<AtomicUsize>,
     events: Arc<Mutex<Receiver<TerminalEvent>>>,
     invalidation_pending: Arc<AtomicBool>,
 }
@@ -44,9 +50,35 @@ impl RuntimeClient {
     ///
     /// Returns an error when the terminal has stopped.
     pub fn send_input(&self, input: TerminalInput) -> Result<(), RuntimeError> {
-        self.messages
-            .send(RuntimeMessage::Input(input))
-            .map_err(|_| RuntimeError::Stopped)
+        let reserved_bytes = input_bytes(&input).max(1);
+        if reserved_bytes > INPUT_BYTE_CAPACITY
+            || self
+                .queued_input_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                    queued
+                        .checked_add(reserved_bytes)
+                        .filter(|total| *total <= INPUT_BYTE_CAPACITY)
+                })
+                .is_err()
+        {
+            return Err(RuntimeError::Busy);
+        }
+        match self.messages.try_send(RuntimeMessage::Input {
+            input,
+            reserved_bytes,
+        }) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                self.queued_input_bytes
+                    .fetch_sub(reserved_bytes, Ordering::AcqRel);
+                Err(RuntimeError::Busy)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.queued_input_bytes
+                    .fetch_sub(reserved_bytes, Ordering::AcqRel);
+                Err(RuntimeError::Stopped)
+            }
+        }
     }
 
     /// Resizes both the PTY and canonical emulator grid.
@@ -59,15 +91,36 @@ impl RuntimeClient {
         grid: GridSize,
         cell: CellSize,
     ) -> Result<(), RuntimeError> {
-        self.messages
-            .send(RuntimeMessage::Resize {
-                grid: GridSize::clamped(grid.columns, grid.rows),
-                cell,
-            })
-            .map_err(|_| RuntimeError::Stopped)
+        match self.messages.try_send(RuntimeMessage::Resize {
+            grid: GridSize::clamped(grid.columns, grid.rows),
+            cell,
+        }) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
+            Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
+        }
+    }
+
+    /// Requests an immutable snapshot without waiting for the runtime owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal has stopped.
+    pub fn request_snapshot(
+        &self,
+        viewport: Viewport,
+    ) -> Result<SnapshotRequest, RuntimeError> {
+        let (reply, receiver) = mpsc::channel();
+        self.controls
+            .send(RuntimeControl::Snapshot { viewport, reply })
+            .map_err(|_| RuntimeError::Stopped)?;
+        Ok(SnapshotRequest { receiver })
     }
 
     /// Reads an immutable snapshot for a client-owned viewport.
+    ///
+    /// This blocking convenience is intended for worker threads and tests.
+    /// Interactive clients should poll [`Self::request_snapshot`] instead.
     ///
     /// # Errors
     ///
@@ -76,14 +129,8 @@ impl RuntimeClient {
         &self,
         viewport: Viewport,
     ) -> Result<TerminalSnapshot, RuntimeError> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.messages
-            .send(RuntimeMessage::Snapshot {
-                viewport,
-                reply: sender,
-            })
-            .map_err(|_| RuntimeError::Stopped)?;
-        receiver
+        self.request_snapshot(viewport)?
+            .receiver
             .recv_timeout(REQUEST_TIMEOUT)
             .map_err(|error| match error {
                 RecvTimeoutError::Timeout => RuntimeError::TimedOut,
@@ -123,9 +170,31 @@ impl RuntimeClient {
     ///
     /// Returns an error when the terminal has already stopped.
     pub fn close(&self) -> Result<(), RuntimeError> {
-        self.messages
-            .send(RuntimeMessage::Close)
+        self.closing.store(true, Ordering::Release);
+        self.controls
+            .send(RuntimeControl::Wake)
             .map_err(|_| RuntimeError::Stopped)
+    }
+}
+
+/// Pending asynchronous snapshot response.
+#[derive(Debug)]
+pub struct SnapshotRequest {
+    receiver: Receiver<TerminalSnapshot>,
+}
+
+impl SnapshotRequest {
+    /// Polls the response without blocking the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime stops before replying.
+    pub fn try_recv(&self) -> Result<Option<TerminalSnapshot>, RuntimeError> {
+        match self.receiver.try_recv() {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(RuntimeError::Stopped),
+        }
     }
 }
 
@@ -149,11 +218,17 @@ impl TerminalRuntime {
         let process = pty::spawn(command)?;
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
+        let (control_sender, control_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
         let invalidation_pending = Arc::new(AtomicBool::new(false));
         let runtime_pending = Arc::clone(&invalidation_pending);
+        let closing = Arc::new(AtomicBool::new(false));
+        let queued_input_bytes = Arc::new(AtomicUsize::new(0));
         let initial_size = command.grid_size;
         let runtime_sender = message_sender.clone();
+        let runtime_controls = control_sender.clone();
+        let runtime_closing = Arc::clone(&closing);
+        let runtime_input_bytes = Arc::clone(&queued_input_bytes);
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
@@ -163,8 +238,12 @@ impl TerminalRuntime {
                     process,
                     message_receiver,
                     runtime_sender,
+                    control_receiver,
+                    runtime_controls,
                     event_sender,
                     runtime_pending,
+                    runtime_closing,
+                    runtime_input_bytes,
                 );
             })
             .map_err(|error| RuntimeError::Thread(error.to_string()))?;
@@ -172,6 +251,9 @@ impl TerminalRuntime {
         let client = RuntimeClient {
             terminal_id,
             messages: message_sender,
+            controls: control_sender,
+            closing,
+            queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
             invalidation_pending,
         };
@@ -233,6 +315,9 @@ pub enum RuntimeError {
     /// The terminal runtime stopped before the request completed.
     #[error("terminal runtime has stopped")]
     Stopped,
+    /// The bounded runtime ingress queue cannot accept more work yet.
+    #[error("terminal runtime is busy")]
+    Busy,
     /// A synchronous request exceeded the bounded response timeout.
     #[error("terminal runtime request timed out")]
     TimedOut,
@@ -244,30 +329,34 @@ pub enum RuntimeError {
 #[derive(Debug)]
 enum RuntimeMessage {
     PtyOutput(Vec<u8>),
-    PtyReadFailed(String),
-    PtyWriteFailed(String),
-    ChildExited(portable_pty::ExitStatus),
-    ChildWaitFailed(String),
-    Input(TerminalInput),
+    Input {
+        input: TerminalInput,
+        reserved_bytes: usize,
+    },
     Resize {
         grid: GridSize,
         cell: CellSize,
     },
+}
+
+#[derive(Debug)]
+enum RuntimeControl {
     Snapshot {
         viewport: Viewport,
-        reply: SyncSender<TerminalSnapshot>,
+        reply: Sender<TerminalSnapshot>,
     },
-    Close,
+    WorkerFailed(String),
+    Wake,
 }
 
 #[derive(Debug)]
 enum WriterMessage {
     Write(Vec<u8>),
-    Close,
 }
 
 #[expect(
     clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "the runtime owner keeps startup, event handling, and shutdown in one auditable path"
 )]
@@ -277,8 +366,12 @@ fn run_terminal(
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
     message_sender: SyncSender<RuntimeMessage>,
+    controls: Receiver<RuntimeControl>,
+    control_sender: Sender<RuntimeControl>,
     events: mpsc::Sender<TerminalEvent>,
     invalidation_pending: Arc<AtomicBool>,
+    closing: Arc<AtomicBool>,
+    queued_input_bytes: Arc<AtomicUsize>,
 ) {
     let parts = match process.into_parts() {
         Ok(parts) => parts,
@@ -297,58 +390,52 @@ fn run_terminal(
         mut child,
         mut killer,
     } = parts;
-    let reader_join =
-        match spawn_reader(terminal_id, reader, message_sender.clone()) {
-            Ok(join) => join,
-            Err(error) => {
-                let _ = events.send(TerminalEvent::Failed {
-                    terminal_id,
-                    message: error.to_string(),
-                });
-                let _ = killer.kill();
-                drop(master);
-                let _ = child.wait();
-                return;
-            }
-        };
+    let mut process_groups = pty::process_groups(child.process_id());
+    pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    let reader_join = match spawn_reader(
+        terminal_id,
+        reader,
+        message_sender.clone(),
+        control_sender.clone(),
+        Arc::clone(&closing),
+    ) {
+        Ok(join) => join,
+        Err(error) => {
+            report_failure(&events, terminal_id, error.to_string());
+            pty::record_foreground_group(master.as_ref(), &mut process_groups);
+            pty::terminate_child(
+                child.as_mut(),
+                killer.as_mut(),
+                &process_groups,
+            );
+            return;
+        }
+    };
     let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
     let writer_join = match spawn_writer(
         terminal_id,
         writer,
         writer_receiver,
-        message_sender.clone(),
+        control_sender,
+        Arc::clone(&closing),
     ) {
         Ok(join) => join,
         Err(error) => {
-            let _ = events.send(TerminalEvent::Failed {
-                terminal_id,
-                message: error.to_string(),
-            });
-            let _ = killer.kill();
+            report_failure(&events, terminal_id, error.to_string());
+            closing.store(true, Ordering::Release);
+            pty::record_foreground_group(master.as_ref(), &mut process_groups);
+            pty::terminate_child(
+                child.as_mut(),
+                killer.as_mut(),
+                &process_groups,
+            );
             drop(master);
             drop(messages);
             join_worker(reader_join);
-            let _ = child.wait();
             return;
         }
     };
-    let child_join =
-        match spawn_child_waiter(terminal_id, child, message_sender) {
-            Ok(join) => join,
-            Err(error) => {
-                let _ = events.send(TerminalEvent::Failed {
-                    terminal_id,
-                    message: error.to_string(),
-                });
-                let _ = killer.kill();
-                drop(master);
-                drop(messages);
-                drop(writer_sender);
-                join_worker(reader_join);
-                join_worker(writer_join);
-                return;
-            }
-        };
+    drop(message_sender);
     let mut engine = TerminalEngine::new(terminal_id, initial_size);
     let _ = events.send(TerminalEvent::Ready(terminal_id));
     publish_invalidation(
@@ -359,11 +446,87 @@ fn run_terminal(
     );
 
     let mut child_exited = false;
-    while let Ok(message) = messages.recv() {
+    let mut pending_writes = VecDeque::new();
+    while !closing.load(Ordering::Acquire) {
+        pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        if !child_exited {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    child_exited = true;
+                    let _ = events.send(TerminalEvent::Exited {
+                        terminal_id,
+                        status: ExitStatus {
+                            code: Some(status.exit_code()),
+                            success: status.success(),
+                        },
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    report_failure(&events, terminal_id, error.to_string());
+                    closing.store(true, Ordering::Release);
+                }
+            }
+        }
+        while let Ok(control) = controls.try_recv() {
+            if closing.load(Ordering::Acquire) {
+                break;
+            }
+            match control {
+                RuntimeControl::Snapshot { viewport, reply } => {
+                    let _ = reply.send(engine.snapshot(viewport));
+                }
+                RuntimeControl::WorkerFailed(message) => {
+                    report_failure(&events, terminal_id, message);
+                    closing.store(true, Ordering::Release);
+                }
+                RuntimeControl::Wake => {}
+            }
+        }
+        if closing.load(Ordering::Acquire) {
+            break;
+        }
+        match flush_pending_write(&writer_sender, &mut pending_writes) {
+            WriterQueueState::Drained => {}
+            WriterQueueState::Full => {
+                thread::sleep(RUNTIME_POLL_INTERVAL);
+                continue;
+            }
+            WriterQueueState::Disconnected => {
+                report_failure(
+                    &events,
+                    terminal_id,
+                    "PTY writer stopped before queued input was written".into(),
+                );
+                closing.store(true, Ordering::Release);
+                continue;
+            }
+        }
+        let message = match messages.recv_timeout(RUNTIME_POLL_INTERVAL) {
+            Ok(message) => message,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match message {
             RuntimeMessage::PtyOutput(bytes) => {
                 for effect in engine.process(&bytes) {
-                    handle_effect(effect, terminal_id, &writer_sender, &events);
+                    if handle_effect(
+                        effect,
+                        terminal_id,
+                        &writer_sender,
+                        &mut pending_writes,
+                        &events,
+                    ) == WriterQueueState::Disconnected
+                    {
+                        report_failure(
+                            &events,
+                            terminal_id,
+                            "PTY writer stopped before a terminal reply was written"
+                                .into(),
+                        );
+                        closing.store(true, Ordering::Release);
+                        break;
+                    }
                 }
                 publish_invalidation(
                     &events,
@@ -372,33 +535,22 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::PtyReadFailed(message)
-            | RuntimeMessage::PtyWriteFailed(message)
-            | RuntimeMessage::ChildWaitFailed(message) => {
-                let _ = events.send(TerminalEvent::Failed {
-                    terminal_id,
-                    message,
-                });
-                if !child_exited {
-                    let _ = killer.kill();
-                }
-            }
-            RuntimeMessage::ChildExited(status) => {
-                child_exited = true;
-                let _ = events.send(TerminalEvent::Exited {
-                    terminal_id,
-                    status: ExitStatus {
-                        code: Some(status.exit_code()),
-                        success: status.success(),
-                    },
-                });
-            }
-            RuntimeMessage::Input(input) => {
+            RuntimeMessage::Input {
+                input,
+                reserved_bytes,
+            } => {
+                queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
                 let bytes = encode_input(&input, engine.modes());
                 if !bytes.is_empty()
-                    && writer_sender.send(WriterMessage::Write(bytes)).is_err()
+                    && queue_write(bytes, &writer_sender, &mut pending_writes)
+                        == WriterQueueState::Disconnected
                 {
-                    break;
+                    report_failure(
+                        &events,
+                        terminal_id,
+                        "PTY writer stopped before input was written".into(),
+                    );
+                    closing.store(true, Ordering::Release);
                 }
             }
             RuntimeMessage::Resize { grid, cell } => {
@@ -416,50 +568,61 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::Snapshot { viewport, reply } => {
-                let _ = reply.send(engine.snapshot(viewport));
-            }
-            RuntimeMessage::Close => break,
         }
     }
 
-    if !child_exited {
-        let _ = killer.kill();
-    }
-    let _ = writer_sender.try_send(WriterMessage::Close);
+    closing.store(true, Ordering::Release);
+    pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
     drop(writer_sender);
     drop(master);
     drop(messages);
     join_worker(reader_join);
     join_worker(writer_join);
-    join_worker(child_join);
 }
 
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
     messages: SyncSender<RuntimeMessage>,
+    controls: Sender<RuntimeControl>,
+    closing: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-reader-{}", terminal_id.get()))
         .spawn(move || {
             let mut buffer = [0_u8; 8192];
-            loop {
+            let mut pending = None;
+            while !closing.load(Ordering::Acquire) {
+                if let Some(bytes) = pending.take() {
+                    match messages.try_send(RuntimeMessage::PtyOutput(bytes)) {
+                        Ok(()) => continue,
+                        Err(TrySendError::Full(RuntimeMessage::PtyOutput(
+                            bytes,
+                        ))) => {
+                            pending = Some(bytes);
+                            thread::sleep(RUNTIME_POLL_INTERVAL);
+                            continue;
+                        }
+                        Err(TrySendError::Disconnected(_)) => break,
+                        Err(TrySendError::Full(_)) => unreachable!(
+                            "reader only sends PTY output messages"
+                        ),
+                    }
+                }
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(count) => {
-                        if messages
-                            .send(RuntimeMessage::PtyOutput(
-                                buffer[..count].to_vec(),
-                            ))
-                            .is_err()
-                        {
-                            break;
-                        }
+                        pending = Some(buffer[..count].to_vec());
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        thread::sleep(RUNTIME_POLL_INTERVAL);
                     }
                     Err(error) => {
-                        let _ = messages.send(RuntimeMessage::PtyReadFailed(
-                            error.to_string(),
+                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                            format!("PTY read failed: {error}"),
                         ));
                         break;
                     }
@@ -473,48 +636,64 @@ fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
     messages: Receiver<WriterMessage>,
-    runtime_messages: SyncSender<RuntimeMessage>,
+    controls: Sender<RuntimeControl>,
+    closing: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-writer-{}", terminal_id.get()))
         .spawn(move || {
-            while let Ok(message) = messages.recv() {
-                match message {
-                    WriterMessage::Write(bytes) => {
-                        if let Err(error) = writer
-                            .write_all(&bytes)
-                            .and_then(|()| writer.flush())
+            let mut current: Option<(Vec<u8>, usize)> = None;
+            while !closing.load(Ordering::Acquire) {
+                if current.is_none() {
+                    current = match messages.recv_timeout(RUNTIME_POLL_INTERVAL)
+                    {
+                        Ok(WriterMessage::Write(bytes)) => Some((bytes, 0)),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
+                }
+                let Some((bytes, offset)) = current.as_mut() else {
+                    continue;
+                };
+                if *offset == bytes.len() {
+                    match writer.flush() {
+                        Ok(()) => current = None,
+                        Err(error)
+                            if error.kind()
+                                == std::io::ErrorKind::WouldBlock =>
                         {
-                            let _ = runtime_messages.try_send(
-                                RuntimeMessage::PtyWriteFailed(
-                                    error.to_string(),
-                                ),
-                            );
+                            thread::sleep(RUNTIME_POLL_INTERVAL);
+                        }
+                        Err(error) => {
+                            let _ =
+                                controls.send(RuntimeControl::WorkerFailed(
+                                    format!("PTY flush failed: {error}"),
+                                ));
                             break;
                         }
                     }
-                    WriterMessage::Close => break,
+                    continue;
                 }
-            }
-        })
-        .map_err(|error| RuntimeError::Thread(error.to_string()))
-}
-
-fn spawn_child_waiter(
-    terminal_id: TerminalId,
-    mut child: Box<dyn Child + Send + Sync>,
-    messages: SyncSender<RuntimeMessage>,
-) -> Result<JoinHandle<()>, RuntimeError> {
-    thread::Builder::new()
-        .name(format!("huterm-child-{}", terminal_id.get()))
-        .spawn(move || match child.wait() {
-            Ok(status) => {
-                let _ = messages.send(RuntimeMessage::ChildExited(status));
-            }
-            Err(error) => {
-                let _ = messages.try_send(RuntimeMessage::ChildWaitFailed(
-                    error.to_string(),
-                ));
+                match writer.write(&bytes[*offset..]) {
+                    Ok(0) => {
+                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                            "PTY write returned zero bytes".into(),
+                        ));
+                        break;
+                    }
+                    Ok(count) => *offset += count,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        thread::sleep(RUNTIME_POLL_INTERVAL);
+                    }
+                    Err(error) => {
+                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                            format!("PTY write failed: {error}"),
+                        ));
+                        break;
+                    }
+                }
             }
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
@@ -524,19 +703,88 @@ fn handle_effect(
     effect: EngineEffect,
     terminal_id: TerminalId,
     writer: &SyncSender<WriterMessage>,
+    pending_writes: &mut VecDeque<Vec<u8>>,
     events: &mpsc::Sender<TerminalEvent>,
-) {
+) -> WriterQueueState {
     match effect {
         EngineEffect::PtyWrite(bytes) => {
-            let _ = writer.send(WriterMessage::Write(bytes));
+            queue_write(bytes, writer, pending_writes)
         }
         EngineEffect::Title(title) => {
             let _ =
                 events.send(TerminalEvent::TitleChanged { terminal_id, title });
+            WriterQueueState::Drained
         }
         EngineEffect::Bell => {
             let _ = events.send(TerminalEvent::Bell(terminal_id));
+            WriterQueueState::Drained
         }
+    }
+}
+
+fn queue_write(
+    bytes: Vec<u8>,
+    writer: &SyncSender<WriterMessage>,
+    pending: &mut VecDeque<Vec<u8>>,
+) -> WriterQueueState {
+    if !pending.is_empty() {
+        pending.push_back(bytes);
+        return WriterQueueState::Full;
+    }
+    match writer.try_send(WriterMessage::Write(bytes)) {
+        Ok(()) => WriterQueueState::Drained,
+        Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+            pending.push_back(bytes);
+            WriterQueueState::Full
+        }
+        Err(TrySendError::Disconnected(_)) => WriterQueueState::Disconnected,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriterQueueState {
+    Drained,
+    Full,
+    Disconnected,
+}
+
+fn flush_pending_write(
+    writer: &SyncSender<WriterMessage>,
+    pending: &mut VecDeque<Vec<u8>>,
+) -> WriterQueueState {
+    while let Some(bytes) = pending.pop_front() {
+        match writer.try_send(WriterMessage::Write(bytes)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+                pending.push_front(bytes);
+                return WriterQueueState::Full;
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return WriterQueueState::Disconnected;
+            }
+        }
+    }
+    WriterQueueState::Drained
+}
+
+fn report_failure(
+    events: &mpsc::Sender<TerminalEvent>,
+    terminal_id: TerminalId,
+    message: String,
+) {
+    let _ = events.send(TerminalEvent::Failed {
+        terminal_id,
+        message,
+    });
+}
+
+fn input_bytes(input: &TerminalInput) -> usize {
+    match input {
+        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Key { .. } | TerminalInput::Focus(_) => {
+            std::mem::size_of::<TerminalInput>()
+        }
+        _ => std::mem::size_of::<TerminalInput>(),
     }
 }
 
@@ -563,6 +811,7 @@ fn join_worker(worker: JoinHandle<()>) {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::path::PathBuf;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -731,10 +980,12 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_should_terminate_a_live_child_promptly() {
+    fn shutdown_should_escalate_for_a_hup_resistant_child() {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(15),
-            &command("printf READY; sleep 30"),
+            &command(
+                "trap '' HUP TERM; printf READY; while :; do sleep 30; done",
+            ),
         )
         .expect("runtime should start");
         wait_for_text(&runtime.client(), "READY");
@@ -746,5 +997,188 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "shutdown should not wait for the live child"
         );
+    }
+
+    #[test]
+    fn saturated_input_should_not_block_client_or_priority_close() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(16),
+            &command(
+                "trap '' HUP TERM; printf READY; while :; do sleep 30; done",
+            ),
+        )
+        .expect("runtime should start");
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+
+        assert!(matches!(
+            client.send_input(TerminalInput::Text(
+                "x".repeat(INPUT_BYTE_CAPACITY + 1)
+            )),
+            Err(RuntimeError::Busy)
+        ));
+
+        let enqueue_started = Instant::now();
+        let mut accepted = 0;
+        for _ in 0..2_048 {
+            match client.send_input(TerminalInput::Text("x".repeat(1_024))) {
+                Ok(()) => accepted += 1,
+                Err(RuntimeError::Busy) => break,
+                Err(error) => {
+                    panic!("runtime stopped while filling queue: {error}")
+                }
+            }
+        }
+        assert!(accepted > 0, "runtime should accept initial input");
+        assert!(accepted < 2_048, "bounded ingress should report saturation");
+        assert!(
+            enqueue_started.elapsed() < Duration::from_secs(1),
+            "client enqueue should not inherit bounded queue backpressure"
+        );
+
+        let shutdown_started = Instant::now();
+        runtime.shutdown().expect("runtime should stop cleanly");
+        assert!(
+            shutdown_started.elapsed() < Duration::from_secs(3),
+            "priority close should bypass saturated data traffic"
+        );
+    }
+
+    #[test]
+    fn pending_writer_spill_should_drain_fifo_until_full() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mut pending = VecDeque::from([
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+        ]);
+
+        assert_eq!(
+            flush_pending_write(&sender, &mut pending),
+            WriterQueueState::Full
+        );
+        assert_eq!(pending, VecDeque::from([b"three".to_vec()]));
+        let receive = || match receiver.try_recv().expect("write should exist")
+        {
+            WriterMessage::Write(bytes) => bytes,
+        };
+        assert_eq!((receive(), receive()), (b"one".to_vec(), b"two".to_vec()));
+
+        assert_eq!(
+            flush_pending_write(&sender, &mut pending),
+            WriterQueueState::Drained
+        );
+        assert_eq!(receive(), b"three".to_vec());
+    }
+
+    #[derive(Debug)]
+    struct PartialWouldBlockWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        block_next: bool,
+    }
+
+    impl Write for PartialWouldBlockWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.block_next {
+                self.block_next = false;
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            self.block_next = true;
+            let count = bytes.len().min(2);
+            self.bytes
+                .lock()
+                .expect("captured bytes should not be poisoned")
+                .extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writer_should_resume_after_partial_would_block_without_repeating_bytes()
+    {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let writer = PartialWouldBlockWriter {
+            bytes: Arc::clone(&bytes),
+            block_next: false,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (controls, _control_receiver) = mpsc::channel();
+        let closing = Arc::new(AtomicBool::new(false));
+        let join = spawn_writer(
+            TerminalId::new(18),
+            Box::new(writer),
+            receiver,
+            controls,
+            Arc::clone(&closing),
+        )
+        .expect("writer worker should start");
+        sender
+            .send(WriterMessage::Write(b"abcdef".to_vec()))
+            .expect("write should queue");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if bytes
+                .lock()
+                .expect("captured bytes should not be poisoned")
+                .len()
+                == 6
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "write did not complete");
+            thread::sleep(Duration::from_millis(2));
+        }
+        closing.store(true, Ordering::Release);
+        drop(sender);
+        join.join().expect("writer worker should stop");
+
+        assert_eq!(
+            *bytes.lock().expect("captured bytes should not be poisoned"),
+            b"abcdef"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_should_terminate_a_distinct_foreground_process_group() {
+        use nix::errno::Errno;
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        let pid_path = std::env::temp_dir()
+            .join(format!("huterm-foreground-job-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_path);
+        let script = format!(
+            "trap '' HUP TERM; set -m; sleep 30 & child=$!; printf %s \"$child\" > {}; printf READY; fg",
+            pid_path.display()
+        );
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(17), &command(&script))
+                .expect("runtime should start");
+        wait_for_text(&runtime.client(), "READY");
+        let foreground_pid: i32 = std::fs::read_to_string(&pid_path)
+            .expect("foreground PID should be written")
+            .parse()
+            .expect("foreground PID should be numeric");
+
+        runtime.shutdown().expect("runtime should stop cleanly");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match kill(Pid::from_raw(foreground_pid), None) {
+                Err(Errno::ESRCH) => break,
+                Ok(()) | Err(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => panic!(
+                    "foreground process {foreground_pid} survived shutdown: {result:?}"
+                ),
+            }
+        }
+        std::fs::remove_file(pid_path).expect("PID file should be removable");
     }
 }

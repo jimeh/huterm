@@ -193,7 +193,7 @@ fn snapshot_cell(
         style: CellStyle {
             bold: cell.flags.contains(Flags::BOLD),
             dim: cell.flags.contains(Flags::DIM),
-            italic: cell.flags.intersects(Flags::ITALIC | Flags::BOLD_ITALIC),
+            italic: cell.flags.contains(Flags::ITALIC),
             underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
             strikeout: cell.flags.contains(Flags::STRIKEOUT),
             hidden: cell.flags.contains(Flags::HIDDEN),
@@ -414,6 +414,7 @@ mod tests {
             (
                 first.text.as_str(),
                 first.style.bold,
+                first.style.italic,
                 first.style.underline,
                 first.foreground,
                 wide.text.as_str(),
@@ -423,6 +424,7 @@ mod tests {
             (
                 "A",
                 true,
+                false,
                 true,
                 Rgb {
                     red: 0xcc,

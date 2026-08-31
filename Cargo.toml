@@ -17,6 +17,7 @@ huterm-core = { path = "crates/huterm-core", version = "=0.1.0" }
 huterm-gpui = { path = "crates/huterm-gpui", version = "=0.1.0" }
 huterm-protocol = { path = "crates/huterm-protocol", version = "=0.1.0" }
 portable-pty = "=0.9.0"
+nix = { version = "=0.28.0", features = ["fs", "process", "signal"] }
 thiserror = "2.0.16"
 
 [workspace.lints.rust]

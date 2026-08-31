@@ -25,6 +25,8 @@ architecture and acceptance criteria.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
+- On Unix, configure the PTY master as nonblocking before cloning reader and
+  writer handles; the clones share its open-file-description flags.
 
 ## Commands
 
@@ -36,6 +38,9 @@ Run `mise tasks` to discover the full task set.
 - `mise run test` runs unit and PTY integration tests.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run format` writes Rust formatting and refreshes action pins.
+
+Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
+or require changes to `~/.rustfmt.toml`.
 
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 use huterm_protocol::{PaneId, SessionId, TabId, TerminalId};
 use thiserror::Error;
@@ -31,8 +31,13 @@ impl Mux {
         terminal_id: TerminalId,
         owner: TerminalOwner,
     ) -> Result<(), MuxError> {
-        if self.terminals.insert(terminal_id, owner).is_some() {
-            return Err(MuxError::DuplicateTerminal(terminal_id));
+        match self.terminals.entry(terminal_id) {
+            Entry::Vacant(entry) => {
+                entry.insert(owner);
+            }
+            Entry::Occupied(_) => {
+                return Err(MuxError::DuplicateTerminal(terminal_id));
+            }
         }
         Ok(())
     }
@@ -106,10 +111,16 @@ mod tests {
         mux.insert(terminal_id, owner())
             .expect("insert should succeed");
 
+        let replacement = TerminalOwner {
+            session_id: SessionId::new(9),
+            tab_id: TabId::new(8),
+            pane_id: PaneId::new(7),
+        };
         let error = mux
-            .insert(terminal_id, owner())
+            .insert(terminal_id, replacement)
             .expect_err("duplicate should fail");
 
         assert_eq!(error, MuxError::DuplicateTerminal(terminal_id));
+        assert_eq!(mux.owner(terminal_id), Some(owner()));
     }
 }

@@ -43,6 +43,8 @@ fn encode_key(
         TerminalKey::Down if modes.application_cursor => b"\x1bOB".as_slice(),
         TerminalKey::Right if modes.application_cursor => b"\x1bOC".as_slice(),
         TerminalKey::Left if modes.application_cursor => b"\x1bOD".as_slice(),
+        TerminalKey::Home if modes.application_cursor => b"\x1bOH".as_slice(),
+        TerminalKey::End if modes.application_cursor => b"\x1bOF".as_slice(),
         TerminalKey::Up => b"\x1b[A".as_slice(),
         TerminalKey::Down => b"\x1b[B".as_slice(),
         TerminalKey::Right => b"\x1b[C".as_slice(),
@@ -70,29 +72,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arrow_keys_should_follow_application_cursor_mode() {
-        let normal = encode_input(
-            &TerminalInput::Key {
-                key: TerminalKey::Up,
-                modifiers: Modifiers::default(),
-            },
-            TerminalModes::default(),
-        );
-        let application = encode_input(
-            &TerminalInput::Key {
-                key: TerminalKey::Up,
-                modifiers: Modifiers::default(),
-            },
-            TerminalModes {
-                application_cursor: true,
-                ..TerminalModes::default()
-            },
-        );
+    fn cursor_keys_should_follow_application_cursor_mode() {
+        let encode = |key, application_cursor| {
+            encode_input(
+                &TerminalInput::Key {
+                    key,
+                    modifiers: Modifiers::default(),
+                },
+                TerminalModes {
+                    application_cursor,
+                    ..TerminalModes::default()
+                },
+            )
+        };
 
-        assert_eq!(
-            (normal, application),
-            (b"\x1b[A".to_vec(), b"\x1bOA".to_vec())
-        );
+        assert_eq!(encode(TerminalKey::Up, false), b"\x1b[A");
+        assert_eq!(encode(TerminalKey::Up, true), b"\x1bOA");
+        assert_eq!(encode(TerminalKey::Home, false), b"\x1b[H");
+        assert_eq!(encode(TerminalKey::Home, true), b"\x1bOH");
+        assert_eq!(encode(TerminalKey::End, false), b"\x1b[F");
+        assert_eq!(encode(TerminalKey::End, true), b"\x1bOF");
     }
 
     #[test]
@@ -109,6 +108,31 @@ mod tests {
         );
 
         assert_eq!(encoded, b"\r");
+    }
+
+    #[test]
+    fn focus_should_only_encode_when_reporting_is_enabled() {
+        let disabled =
+            encode_input(&TerminalInput::Focus(true), TerminalModes::default());
+        let focused = encode_input(
+            &TerminalInput::Focus(true),
+            TerminalModes {
+                focus_reporting: true,
+                ..TerminalModes::default()
+            },
+        );
+        let blurred = encode_input(
+            &TerminalInput::Focus(false),
+            TerminalModes {
+                focus_reporting: true,
+                ..TerminalModes::default()
+            },
+        );
+
+        assert_eq!(
+            (disabled, focused, blurred),
+            (vec![], b"\x1b[I".to_vec(), b"\x1b[O".to_vec())
+        );
     }
 
     #[test]

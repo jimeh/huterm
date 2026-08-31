@@ -1,16 +1,20 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
     App, Application, Bounds, Context, FocusHandle, Focusable, FontStyle,
     FontWeight, Hsla, KeyBinding, Keystroke, Modifiers as GpuiModifiers,
     MouseButton, Pixels, Point, Render, ScrollWheelEvent, StrikethroughStyle,
-    TextRun, TitlebarOptions, UnderlineStyle, Window, WindowBounds,
-    WindowOptions, actions, canvas, div, fill, font, point, prelude::*, px,
-    rgba, size,
+    Subscription, TextRun, TitlebarOptions, UnderlineStyle, Window,
+    WindowBounds, WindowOptions, actions, canvas, div, fill, font, point,
+    prelude::*, px, rgba, size,
 };
-use huterm_core::{Mux, RuntimeClient, TerminalOwner, TerminalRuntime};
+use huterm_core::{
+    Mux, RuntimeClient, RuntimeError, SnapshotRequest, TerminalOwner,
+    TerminalRuntime,
+};
 use huterm_protocol::{
     CellSize, GridSize, Modifiers, PaneId, Rgb, SessionId, TabId,
     TerminalCommand, TerminalEvent, TerminalId, TerminalInput, TerminalKey,
@@ -22,9 +26,15 @@ const CELL_WIDTH: Pixels = px(8.4);
 const CELL_HEIGHT: Pixels = px(18.0);
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
+const PENDING_INPUT_CAPACITY: usize = 256;
+const PENDING_INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 
 actions!(huterm, [ToggleFullscreen, Quit]);
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "desktop startup keeps the one-window ownership chain together"
+)]
 pub(crate) fn run() -> anyhow::Result<()> {
     let terminal_id = TerminalId::new(1);
     let mut mux = Mux::default();
@@ -39,8 +49,18 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let command = shell_command()?;
     let runtime = TerminalRuntime::spawn(terminal_id, &command)?;
     let client = runtime.client();
+    let app_client = client.clone();
+    let runtime_owner = Arc::new(Mutex::new(Some(runtime)));
+    let app_runtime_owner = Arc::clone(&runtime_owner);
 
     Application::new().run(move |cx: &mut App| {
+        cx.on_app_quit(move |_| {
+            if let Err(error) = shutdown_runtime(&app_runtime_owner) {
+                eprintln!("failed to stop the terminal runtime: {error}");
+            }
+            async {}
+        })
+        .detach();
         cx.bind_keys([
             KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
             KeyBinding::new("f11", ToggleFullscreen, None),
@@ -74,18 +94,41 @@ pub(crate) fn run() -> anyhow::Result<()> {
             },
             move |window, cx| {
                 let focus = cx.focus_handle();
-                focus.focus(window);
-                let initial_snapshot = client
-                    .read_snapshot(Viewport::default())
-                    .ok()
-                    .map(Arc::new);
-                cx.new(|cx| {
+                let initial_request =
+                    app_client.request_snapshot(Viewport::default()).ok();
+                let view = cx.new(|cx| {
+                    let focus_subscription = cx.on_focus(
+                        &focus,
+                        window,
+                        |view: &mut TerminalView, _, cx| {
+                            if view.enqueue_input(TerminalInput::Focus(true)) {
+                                cx.notify();
+                            }
+                        },
+                    );
+                    let blur_subscription = cx.on_blur(
+                        &focus,
+                        window,
+                        |view: &mut TerminalView, _, cx| {
+                            if view.enqueue_input(TerminalInput::Focus(false)) {
+                                cx.notify();
+                            }
+                        },
+                    );
                     let view = TerminalView {
-                        runtime,
                         mux,
-                        client,
-                        snapshot: initial_snapshot,
+                        client: app_client,
+                        pending_inputs: VecDeque::new(),
+                        pending_input_bytes: 0,
+                        pending_resize: None,
+                        snapshot: None,
+                        snapshot_request: initial_request,
+                        snapshot_dirty: false,
                         focus,
+                        _focus_subscriptions: vec![
+                            focus_subscription,
+                            blur_subscription,
+                        ],
                         viewport: Viewport::default(),
                         last_grid_size: GridSize::clamped(
                             INITIAL_COLUMNS,
@@ -95,7 +138,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     };
                     TerminalView::start_event_pump(cx);
                     view
-                })
+                });
+                view.read(cx).focus.focus(window);
+                view
             },
         ) {
             Ok(window) => window,
@@ -124,15 +169,31 @@ pub(crate) fn run() -> anyhow::Result<()> {
         .detach();
         cx.activate(true);
     });
-    Ok(())
+    let _ = client.close();
+    shutdown_runtime(&runtime_owner).map_err(Into::into)
+}
+
+fn shutdown_runtime(
+    runtime_owner: &Mutex<Option<TerminalRuntime>>,
+) -> Result<(), RuntimeError> {
+    let runtime = runtime_owner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    runtime.map_or(Ok(()), TerminalRuntime::shutdown)
 }
 
 struct TerminalView {
-    runtime: TerminalRuntime,
     mux: Mux,
     client: RuntimeClient,
+    pending_inputs: VecDeque<TerminalInput>,
+    pending_input_bytes: usize,
+    pending_resize: Option<(GridSize, CellSize)>,
     snapshot: Option<Arc<TerminalSnapshot>>,
+    snapshot_request: Option<SnapshotRequest>,
+    snapshot_dirty: bool,
     focus: FocusHandle,
+    _focus_subscriptions: Vec<Subscription>,
     viewport: Viewport,
     last_grid_size: GridSize,
     status: Option<String>,
@@ -141,7 +202,7 @@ struct TerminalView {
 impl Drop for TerminalView {
     fn drop(&mut self) {
         let _ = self.mux.close(self.client.terminal_id());
-        let _ = self.runtime.client().close();
+        let _ = self.client.close();
     }
 }
 
@@ -166,14 +227,32 @@ impl TerminalView {
     }
 
     fn refresh(&mut self) -> bool {
-        let mut invalidated = false;
-        let mut changed = false;
+        let mut changed = self.retry_client_messages();
+        if let Some(request) = &self.snapshot_request {
+            match request.try_recv() {
+                Ok(Some(snapshot)) => {
+                    self.snapshot_request = None;
+                    let is_newer =
+                        self.snapshot.as_ref().is_none_or(|current| {
+                            snapshot.generation >= current.generation
+                        });
+                    if is_newer {
+                        self.snapshot = Some(Arc::new(snapshot));
+                        changed = true;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.snapshot_request = None;
+                }
+            }
+        }
         loop {
             match self.client.try_recv_event() {
                 Ok(Some(
                     TerminalEvent::Invalidated { .. } | TerminalEvent::Ready(_),
                 )) => {
-                    invalidated = true;
+                    self.snapshot_dirty = true;
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
                     let status = match status.code {
@@ -186,28 +265,28 @@ impl TerminalView {
                         self.status = Some(status);
                         changed = true;
                     }
-                    invalidated = true;
+                    self.snapshot_dirty = true;
                 }
                 Ok(Some(TerminalEvent::Failed { message, .. })) => {
                     if self.status.as_ref() != Some(&message) {
                         self.status = Some(message);
                         changed = true;
                     }
+                    self.snapshot_dirty = true;
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
             }
         }
-        if invalidated
-            && let Ok(snapshot) = self.client.read_snapshot(self.viewport)
-        {
-            let is_newer = self
-                .snapshot
-                .as_ref()
-                .is_none_or(|current| snapshot.generation > current.generation);
-            if is_newer {
-                self.snapshot = Some(Arc::new(snapshot));
-                changed = true;
+        if self.snapshot_dirty && self.snapshot_request.is_none() {
+            match self.client.request_snapshot(self.viewport) {
+                Ok(request) => {
+                    self.snapshot_request = Some(request);
+                    self.snapshot_dirty = false;
+                }
+                Err(_) => {
+                    self.snapshot_dirty = false;
+                }
             }
         }
         changed
@@ -246,16 +325,15 @@ impl TerminalView {
         } else {
             return false;
         };
-        let _ = self.client.send_input(input);
+        let mut changed = self.enqueue_input(input);
         if self.viewport.bottom_offset == 0 {
-            return false;
+            return changed;
         }
         self.viewport.bottom_offset = 0;
-        if let Ok(snapshot) = self.client.read_snapshot(self.viewport) {
-            self.snapshot = Some(Arc::new(snapshot));
-            return true;
-        }
-        false
+        self.snapshot_request = None;
+        self.snapshot_dirty = true;
+        changed = true;
+        changed
     }
 
     fn scroll(
@@ -284,10 +362,9 @@ impl TerminalView {
         if self.viewport.bottom_offset == previous_offset {
             return;
         }
-        if let Ok(snapshot) = self.client.read_snapshot(self.viewport) {
-            self.snapshot = Some(Arc::new(snapshot));
-            cx.notify();
-        }
+        self.snapshot_request = None;
+        self.snapshot_dirty = true;
+        cx.notify();
     }
 
     #[expect(
@@ -310,14 +387,83 @@ impl TerminalView {
         let size = GridSize::clamped(columns, rows);
         if size != self.last_grid_size {
             self.last_grid_size = size;
-            let _ = self.client.resize(
-                size,
-                CellSize {
-                    width: 8,
-                    height: 18,
-                },
-            );
+            let cell = CellSize {
+                width: 8,
+                height: 18,
+            };
+            match self.client.resize(size, cell) {
+                Ok(()) => self.pending_resize = None,
+                Err(RuntimeError::Busy) => {
+                    self.pending_resize = Some((size, cell));
+                }
+                Err(error) => {
+                    self.status = Some(error.to_string());
+                }
+            }
         }
+    }
+
+    fn enqueue_input(&mut self, input: TerminalInput) -> bool {
+        if self.pending_inputs.is_empty() {
+            match self.client.send_input(input.clone()) {
+                Ok(()) => return false,
+                Err(RuntimeError::Busy) => {}
+                Err(error) => {
+                    return self.set_status(error.to_string());
+                }
+            }
+        }
+        let input_bytes = buffered_input_bytes(&input);
+        if self.pending_inputs.len() == PENDING_INPUT_CAPACITY
+            || self.pending_input_bytes.saturating_add(input_bytes)
+                > PENDING_INPUT_BYTE_CAPACITY
+        {
+            return self.set_status(format!(
+                "Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"
+            ));
+        }
+        self.pending_inputs.push_back(input);
+        self.pending_input_bytes += input_bytes;
+        false
+    }
+
+    fn retry_client_messages(&mut self) -> bool {
+        while let Some(input) = self.pending_inputs.front().cloned() {
+            match self.client.send_input(input) {
+                Ok(()) => {
+                    if let Some(sent) = self.pending_inputs.pop_front() {
+                        self.pending_input_bytes = self
+                            .pending_input_bytes
+                            .saturating_sub(buffered_input_bytes(&sent));
+                    }
+                }
+                Err(RuntimeError::Busy) => break,
+                Err(error) => {
+                    self.pending_inputs.clear();
+                    self.pending_input_bytes = 0;
+                    return self.set_status(error.to_string());
+                }
+            }
+        }
+        if let Some((grid, cell)) = self.pending_resize {
+            match self.client.resize(grid, cell) {
+                Ok(()) => self.pending_resize = None,
+                Err(RuntimeError::Busy) => {}
+                Err(error) => {
+                    self.pending_resize = None;
+                    return self.set_status(error.to_string());
+                }
+            }
+        }
+        false
+    }
+
+    fn set_status(&mut self, status: String) -> bool {
+        if self.status.as_ref() == Some(&status) {
+            return false;
+        }
+        self.status = Some(status);
+        true
     }
 }
 
@@ -438,16 +584,25 @@ fn prepare_frame(
             let runs = [TextRun {
                 len: rendered.len(),
                 font: cell_font,
-                color: color(cell.foreground),
+                color: color(display_foreground(
+                    cell.foreground,
+                    cell.style.dim,
+                )),
                 background_color: None,
                 underline: cell.style.underline.then_some(UnderlineStyle {
-                    color: Some(color(cell.foreground)),
+                    color: Some(color(display_foreground(
+                        cell.foreground,
+                        cell.style.dim,
+                    ))),
                     thickness: px(1.0),
                     wavy: false,
                 }),
                 strikethrough: cell.style.strikeout.then_some(
                     StrikethroughStyle {
-                        color: Some(color(cell.foreground)),
+                        color: Some(color(display_foreground(
+                            cell.foreground,
+                            cell.style.dim,
+                        ))),
                         thickness: px(1.0),
                     },
                 ),
@@ -604,8 +759,38 @@ fn default_shell() -> PathBuf {
 }
 
 fn control_byte(key: &str) -> Option<u8> {
-    let byte = key.as_bytes().first()?.to_ascii_uppercase();
+    if key.eq_ignore_ascii_case("space") {
+        return Some(0);
+    }
+    let [byte] = key.as_bytes() else {
+        return None;
+    };
+    let byte = byte.to_ascii_uppercase();
     matches!(byte, b'@'..=b'_').then_some(byte & 0x1f)
+}
+
+fn display_foreground(foreground: Rgb, dim: bool) -> Rgb {
+    if !dim {
+        return foreground;
+    }
+    let dim = |channel: u8| {
+        u8::try_from(u16::from(channel) * 2 / 3).unwrap_or(u8::MAX)
+    };
+    Rgb {
+        red: dim(foreground.red),
+        green: dim(foreground.green),
+        blue: dim(foreground.blue),
+    }
+}
+
+fn buffered_input_bytes(input: &TerminalInput) -> usize {
+    match input {
+        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Key { .. } | TerminalInput::Focus(_) => {
+            std::mem::size_of::<TerminalInput>()
+        }
+        _ => std::mem::size_of::<TerminalInput>(),
+    }
 }
 
 fn color(rgb: Rgb) -> Hsla {
@@ -615,4 +800,46 @@ fn color(rgb: Rgb) -> Hsla {
             | u32::from(rgb.blue),
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_byte_should_only_accept_ascii_control_keys_and_named_space() {
+        assert_eq!(control_byte("a"), Some(1));
+        assert_eq!(control_byte("["), Some(27));
+        assert_eq!(control_byte("space"), Some(0));
+        assert_eq!(control_byte("enter"), None);
+        assert_eq!(control_byte("é"), None);
+    }
+
+    #[test]
+    fn dim_foreground_should_be_visibly_darker() {
+        let foreground = Rgb {
+            red: 240,
+            green: 120,
+            blue: 60,
+        };
+
+        assert_eq!(display_foreground(foreground, false), foreground);
+        assert_eq!(
+            display_foreground(foreground, true),
+            Rgb {
+                red: 160,
+                green: 80,
+                blue: 40,
+            }
+        );
+    }
+
+    #[test]
+    fn buffered_input_bytes_should_include_owned_text() {
+        assert_eq!(buffered_input_bytes(&TerminalInput::Text("abc".into())), 3);
+        assert!(
+            buffered_input_bytes(&TerminalInput::Focus(true))
+                >= std::mem::size_of::<bool>()
+        );
+    }
 }

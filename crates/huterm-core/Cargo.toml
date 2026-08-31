@@ -13,5 +13,8 @@ huterm-protocol.workspace = true
 portable-pty.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [lints]
 workspace = true

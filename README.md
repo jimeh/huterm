@@ -8,9 +8,9 @@ the same runtime later.
 
 The first proof-of-concept implementation is under active validation. It has a
 working PTY runtime, Alacritty-backed snapshots, and macOS/Linux GPUI clients.
-Portable core tests and repository checks pass. Apple Silicon macOS CI, Linux
-native CI and Xvfb smoke, and manual visual/input evidence remain pending on the
-current implementation before the milestone is complete.
+Portable core tests, repository checks, Linux native tests, and the Linux Xvfb
+smoke pass. Apple Silicon macOS CI, Linux CI, and manual visual/input evidence
+remain pending on the current implementation before the milestone is complete.
 
 ## Direction
 
