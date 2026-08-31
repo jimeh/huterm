@@ -42,6 +42,10 @@ Run `mise tasks` to discover the full task set.
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
 or require changes to `~/.rustfmt.toml`.
 
+Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
+CI cache can restore its Rust install symlink without the corresponding rustup
+toolchain, and parallel Cargo invocations then race while materializing it.
+
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and
 runs the same checks plus an Xvfb smoke on Linux x86_64. Linux development

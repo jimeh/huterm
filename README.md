@@ -9,8 +9,9 @@ the same runtime later.
 The first proof-of-concept implementation is under active validation. It has a
 working PTY runtime, Alacritty-backed snapshots, and macOS/Linux GPUI clients.
 Portable core tests, repository checks, Linux native tests, and the Linux Xvfb
-smoke pass. Apple Silicon macOS CI, Linux CI, and manual visual/input evidence
-remain pending on the current implementation before the milestone is complete.
+smoke pass locally. CI enforces the same suite on Apple Silicon macOS and Linux
+x86_64; green current-head CI is required for PR readiness, while manual
+visual/input evidence remains before the milestone is complete.
 
 ## Direction
 

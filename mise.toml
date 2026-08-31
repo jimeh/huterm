@@ -107,6 +107,15 @@ run = "cargo deny --locked check licenses bans sources"
 description = "Validate and secure GitHub Actions workflows"
 run = ["actionlint", "zizmor --offline .", "pinact run --check"]
 
+[tasks."verify:toolchain"]
+description = "Materialize the pinned Rust toolchain before parallel checks"
+run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
+
+[tasks."verify:parallel"]
+hide = true
+depends = ["check", "test", "license", "ci:workflows"]
+
 [tasks.verify]
 description = "Run the broad CI-equivalent validation"
-depends = ["check", "test", "license", "ci:workflows"]
+depends = ["verify:toolchain"]
+run = "mise run verify:parallel"

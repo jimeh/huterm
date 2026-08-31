@@ -1,8 +1,9 @@
 # Initial desktop proof-of-concept plan
 
 Status: portable core tests, repository checks, Linux native tests, and the
-Linux Xvfb smoke pass; Apple Silicon macOS CI, Linux CI, and manual visual/input
-validation are pending on the current implementation
+Linux Xvfb smoke pass locally. CI enforces the same suite on Apple Silicon
+macOS and Linux x86_64 as the revision-bound PR gate; manual visual/input
+validation remains pending.
 
 ## Outcome
 
