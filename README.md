@@ -1,1 +1,118 @@
-# huterm
+# HUTerm
+
+HUTerm is an experimental terminal emulator and multiplexer written in Rust.
+It will start as a native desktop application built with GPUI, but the terminal
+runtime will not belong to the desktop UI. HUTerm will own its pseudoterminals,
+terminal state, sessions, tabs, and pane layouts so other clients can attach to
+the same runtime later.
+
+The project is in its design and proof-of-concept stage. There is no runnable
+application yet.
+
+## Direction
+
+HUTerm is based on four decisions:
+
+- HUTerm owns PTY spawning, I/O, resize, process lifetime, and attachment
+  behavior. It will initially use `portable-pty` for the operating-system
+  implementation.
+- The runtime owns canonical terminal state. It will initially use upstream
+  `alacritty_terminal` for escape-sequence parsing, the terminal grid,
+  scrollback, modes, and cursor state.
+- Clients render HUTerm-owned terminal snapshots. The first client uses GPUI;
+  a text-based terminal client can use the same model later.
+- HUTerm application code targets the MIT license. Dependencies may use other
+  compatible permissive licenses. GPL-covered Zed application code is outside
+  the project boundary.
+
+The terminal engine is replaceable in principle, but HUTerm will not build a
+generic backend framework before a second engine exists. A future
+`libghostty-vt` experiment should replace the private emulator module without
+changing PTY ownership, sessions, client messages, or renderers.
+
+## Initial build target
+
+The first milestone is a development build for macOS on Apple Silicon. It will
+open one GPUI window containing one tab, one pane, and one interactive local
+shell. HUTerm will own the PTY and Alacritty terminal state, then render a
+HUTerm-defined snapshot in GPUI.
+
+The milestone includes keyboard input, colored text, cursor rendering,
+scrollback, terminal resize, native fullscreen, alternate-screen applications,
+and clean child-process shutdown. It does not include a background server,
+local IPC, multiple tabs, split panes, or a TUI client.
+
+See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
+for the implementation sequence and acceptance criteria.
+
+## Planned features
+
+The following list describes the intended product direction. Items outside the
+initial milestone are not yet scheduled.
+
+### Terminal
+
+- Local shells and arbitrary commands with configurable working directory and
+  environment.
+- Unicode text, grapheme clusters, wide characters, font fallback, and IME.
+- True color, text decorations, cursor styles, hyperlinks, clipboard support,
+  search, selection, and configurable scrollback.
+- Keyboard, mouse, focus, paste, and modern terminal protocol support.
+- Themes, fonts, font size, keybindings, and shell integration.
+- An Alacritty-based terminal engine initially, with the option to evaluate
+  `libghostty-vt` after its public API matures.
+
+### Desktop clients
+
+- Native macOS, Linux, and Windows applications built with GPUI.
+- Horizontal or vertical tab bars.
+- Tabs containing arbitrary horizontal and vertical pane splits.
+- Native fullscreen on supported platforms.
+- Borderless non-native fullscreen on macOS without creating a separate
+  Mission Control space.
+- Multiple windows, drag-and-drop tab management, notifications, and restored
+  window layouts.
+- Accessibility and platform-native input behavior.
+
+### Multiplexer
+
+- A local server that owns terminal processes independently of client windows.
+- Named sessions containing tabs and split-pane layouts.
+- Detach and reattach without terminating terminal processes while the server
+  remains alive.
+- Multiple simultaneous clients with explicit terminal-size policy.
+- A text-based client that can run inside another terminal.
+- A command-line client for session and pane automation.
+- Versioned local IPC, followed by optional authenticated remote attachment if
+  the local design proves useful.
+
+### State and recovery
+
+- Persisted configuration, session metadata, tab order, and pane layouts.
+- Scrollback and presentation-state recovery where it can be made reliable.
+- Clear distinction between restoring saved presentation and preserving a live
+  child process. A server crash is allowed to terminate its PTYs.
+
+## Terminology
+
+- **Session**: a named, server-owned collection of tabs.
+- **Tab**: an ordered container with one pane layout.
+- **Pane**: a leaf in a tab's split tree.
+- **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
+- **Client**: a desktop, TUI, or command-line connection to the runtime.
+- **Client view**: client-local focus, active tab, viewport, and scroll
+  position.
+
+Tab order and pane layout belong to the session. Focus, the selected tab, and
+viewport position belong to each client. Tab-bar orientation is a client
+preference, not session state.
+
+## Licensing
+
+HUTerm intends to license its own source under the MIT license. The planned
+initial dependencies include MIT and Apache-2.0 software. Distributed builds
+will retain the required third-party license notices and use an automated
+license allowlist to prevent accidental GPL or AGPL dependencies.
+
+The repository does not contain a license grant yet. A `LICENSE` file will be
+added before code is distributed.
