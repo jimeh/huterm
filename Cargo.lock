@@ -2503,6 +2503,7 @@ name = "huterm-core"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "filedescriptor",
  "huterm-protocol",
  "nix 0.28.0",
  "portable-pty",
