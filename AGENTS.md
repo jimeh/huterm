@@ -1,6 +1,6 @@
-# HUTerm agent guide
+# Huterm agent guide
 
-HUTerm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
+Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
 sessions, tabs, and panes. GPUI is one client. The runtime boundary must remain
 usable by a future local server and text client.
 
@@ -44,6 +44,9 @@ Run `mise tasks` to discover the full task set.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
+- `mise run bench:scroll` drives production scroll inputs against 10,000 rows
+  and enforces queue, reuse, CPU, and input-to-paint latency budgets.
+- `mise run package:macos` builds and verifies the Apple Silicon `Huterm.app`.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on

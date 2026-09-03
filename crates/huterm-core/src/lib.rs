@@ -10,5 +10,6 @@ mod terminal;
 
 pub use mux::{Mux, MuxError, TerminalOwner};
 pub use terminal::{
-    RuntimeClient, RuntimeError, SnapshotRequest, TerminalRuntime,
+    RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
+    SnapshotRequest, TerminalRuntime,
 };

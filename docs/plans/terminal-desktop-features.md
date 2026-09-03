@@ -298,17 +298,17 @@ The macOS menu bar contains:
 - Edit: Copy and Paste.
 - View: Scroll Page Up, Scroll Page Down, Scroll to Bottom, and Toggle Full
   Screen.
-- Window: only commands GPUI can implement correctly in this milestone.
+- Window: Minimize and Zoom, which GPUI implements directly.
 
 Do not add disabled commands for windows, tabs, or splits the app cannot create.
 
 ### Naming and macOS packaging
 
-Change human-facing `HUTerm` to `Huterm` in source and maintained documentation.
-Update `TERM_PROGRAM`, but do not rename crates, the binary, uppercase variables,
-or the repository.
+Use human-facing `Huterm` consistently in source and maintained documentation.
+Update `TERM_PROGRAM`, but do not rename crates, the binary, uppercase
+variables, or the repository.
 
-Pin `cargo-packager` through Mise after the seven-day release-age policy permits
+Pin `cargo-packager` through Mise after the three-day release-age policy permits
 the selected version. Add `package:macos` to produce Apple Silicon `Huterm.app`
 with:
 

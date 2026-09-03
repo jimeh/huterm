@@ -7,28 +7,64 @@ use gpui::{
     StrikethroughStyle, TextRun, UnderlineStyle, Window, fill, font, point, px,
     rgba, size,
 };
-use huterm_protocol::{Cell, Cursor, CursorShape, Rgb, TerminalSnapshot};
+use huterm_protocol::{
+    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
+};
 
-pub(super) const FONT_SIZE: Pixels = px(14.0);
-pub(super) const CELL_WIDTH: Pixels = px(8.4);
-pub(super) const CELL_HEIGHT: Pixels = px(18.0);
+use crate::config::Theme;
 
-#[cfg(target_os = "macos")]
-pub(super) const FONT_FAMILY: &str = "Menlo";
-#[cfg(target_os = "linux")]
-pub(super) const FONT_FAMILY: &str = "monospace";
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct GridMetrics {
+    pub(super) cell_width: Pixels,
+    pub(super) cell_height: Pixels,
+    pub(super) font_size: Pixels,
+    baseline: Pixels,
+    underline: Pixels,
+    strikeout: Pixels,
+}
+
+impl GridMetrics {
+    pub(super) fn from_measurements(
+        font_size: Pixels,
+        cell_width: Pixels,
+        ascent: Pixels,
+        descent: Pixels,
+    ) -> Self {
+        let cell_height = (ascent + descent).ceil().max(px(1.0));
+        let cell_width = cell_width.ceil().max(px(1.0));
+        let baseline = ascent;
+        Self {
+            cell_width,
+            cell_height,
+            font_size,
+            baseline,
+            underline: baseline + descent * 0.618,
+            strikeout: ascent * 0.5,
+        }
+    }
+}
 
 pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
-    metrics: Option<GridMetrics>,
+    metrics: GridMetrics,
+    font_family: String,
+    theme: Theme,
+    selection: Option<BufferRange>,
     stats: Option<RendererStats>,
+    scroll_benchmark: Option<ScrollBenchmarkStats>,
 }
 
 impl TerminalRenderer {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(
+        font_family: String,
+        theme: Theme,
+        metrics: GridMetrics,
+    ) -> Self {
         let stats = renderer_stats_enabled().then(RendererStats::new);
+        let scroll_benchmark =
+            scroll_benchmark_enabled().then(ScrollBenchmarkStats::default);
         if stats.is_some() {
             eprintln!("huterm-render stats=enabled");
         }
@@ -36,13 +72,47 @@ impl TerminalRenderer {
             snapshot: None,
             rows: Vec::new(),
             layouts: GlyphLayoutCache::default(),
-            metrics: None,
+            metrics,
+            font_family,
+            theme,
+            selection: None,
             stats,
+            scroll_benchmark,
         }
     }
 
     pub(super) fn records_stats(&self) -> bool {
-        self.stats.is_some()
+        self.stats.is_some() || self.scroll_benchmark.is_some()
+    }
+
+    pub(super) fn begin_scroll_sample(
+        &mut self,
+        sequence: u64,
+        requested_offset: usize,
+        injected_at: Instant,
+    ) {
+        if let Some(benchmark) = &mut self.scroll_benchmark {
+            benchmark.begin(sequence, requested_offset, injected_at);
+        }
+    }
+
+    pub(super) fn complete_scroll_snapshot(
+        &mut self,
+        duration: Duration,
+        returned_offset: usize,
+        wakeup_delay: Duration,
+    ) {
+        if let Some(benchmark) = &mut self.scroll_benchmark {
+            benchmark.complete_snapshot(
+                duration,
+                returned_offset,
+                wakeup_delay,
+            );
+        }
+    }
+
+    pub(super) fn set_selection(&mut self, selection: Option<BufferRange>) {
+        self.selection = selection;
     }
 
     pub(super) fn prepare(
@@ -67,7 +137,7 @@ impl TerminalRenderer {
             return;
         }
 
-        self.ensure_metrics(window);
+        self.align_rows(snapshot);
         let rebuilds = rows_to_rebuild(self.snapshot.as_deref(), snapshot);
         let rebuilt_rows = rebuilds.iter().filter(|rebuild| **rebuild).count();
         let rows = usize::from(snapshot.size.rows);
@@ -90,6 +160,9 @@ impl TerminalRenderer {
                         &mut self.layouts,
                         window,
                         &mut cache_activity,
+                        &self.font_family,
+                        self.metrics.font_size,
+                        &self.theme,
                     );
                 }
             }
@@ -118,18 +191,30 @@ impl TerminalRenderer {
                         background.start,
                         row_index,
                         background.columns,
+                        self.metrics,
                     ),
                     background.color,
                 ));
             }
         }
 
-        let metrics = self.metrics.unwrap_or_default();
-        let grid_width = CELL_WIDTH * f32::from(snapshot.size.columns);
+        if let Some(selection) = self.selection {
+            paint_selection(
+                snapshot,
+                selection,
+                bounds.origin,
+                self.metrics,
+                &self.theme,
+                window,
+            );
+        }
+
+        let metrics = self.metrics;
+        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
         for (row_index, row) in self.rows.iter().enumerate() {
             let row_bounds = Bounds::new(
-                cell_origin(bounds.origin, 0, row_index),
-                size(grid_width, CELL_HEIGHT),
+                cell_origin(bounds.origin, 0, row_index, metrics),
+                size(grid_width, metrics.cell_height),
             );
             window.paint_layer(row_bounds, |window| {
                 paint_row(row, row_index, bounds.origin, metrics, window);
@@ -141,22 +226,47 @@ impl TerminalRenderer {
             .filter(|cursor| cursor.shape != CursorShape::Hidden)
         {
             window.paint_quad(fill(
-                cursor_bounds(bounds.origin, cursor),
-                rgba(0xffff_ff66),
+                cursor_bounds(bounds.origin, cursor, metrics),
+                rgb_color(snapshot.cursor_color.unwrap_or(self.theme.cursor)),
             ));
         }
         self.record_paint(started);
     }
 
-    fn ensure_metrics(&mut self, window: &mut Window) {
-        if self.metrics.is_some() {
+    fn align_rows(&mut self, current: &TerminalSnapshot) {
+        let Some(previous) = self.snapshot.as_deref() else {
+            return;
+        };
+        if previous.size != current.size
+            || self.rows.len() != usize::from(current.size.rows)
+        {
             return;
         }
-        let runs = [text_run("M", FontVariant::default())];
-        let layout = window
-            .text_system()
-            .layout_line("M", FONT_SIZE, &runs, None);
-        self.metrics = Some(GridMetrics::from_layout(&layout));
+        let offset_delta = current.viewport.bottom_offset as i128
+            - previous.viewport.bottom_offset as i128;
+        let history_delta =
+            current.history_size as i128 - previous.history_size as i128;
+        let shift = offset_delta - history_delta;
+        let rows = i128::from(current.size.rows);
+        if shift == 0 || shift.unsigned_abs() >= rows.unsigned_abs() {
+            return;
+        }
+        let mut old: Vec<Option<PreparedRow>> = std::mem::take(&mut self.rows)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.rows = (0..usize::from(current.size.rows))
+            .map(|new_row| {
+                let old_row = new_row as i128 - shift;
+                if (0..rows).contains(&old_row) {
+                    old[usize::try_from(old_row).unwrap_or_default()]
+                        .take()
+                        .unwrap_or_default()
+                } else {
+                    PreparedRow::default()
+                }
+            })
+            .collect();
     }
 
     fn record_prepare(
@@ -165,14 +275,26 @@ impl TerminalRenderer {
         rebuilt_rows: usize,
         cache: CacheActivity,
     ) {
-        if let (Some(stats), Some(started)) = (&mut self.stats, started) {
-            stats.record_prepare(started.elapsed(), rebuilt_rows, cache);
+        let duration = started.map(|started| started.elapsed());
+        if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
+            stats.record_prepare(duration, rebuilt_rows, cache);
+        }
+        if let (Some(benchmark), Some(duration)) =
+            (&mut self.scroll_benchmark, duration)
+        {
+            benchmark.complete_prepare(duration, rebuilt_rows, self.rows.len());
         }
     }
 
     fn record_paint(&mut self, started: Option<Instant>) {
-        if let (Some(stats), Some(started)) = (&mut self.stats, started) {
-            stats.record_paint(started.elapsed());
+        let duration = started.map(|started| started.elapsed());
+        if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
+            stats.record_paint(duration);
+        }
+        if let (Some(benchmark), Some(duration)) =
+            (&mut self.scroll_benchmark, duration)
+        {
+            benchmark.complete_paint(duration);
         }
     }
 }
@@ -208,11 +330,18 @@ fn prepare_row(
     layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
+    font_family: &str,
+    font_size: Pixels,
+    theme: &Theme,
 ) -> PreparedRow {
     let mut row = PreparedRow {
-        backgrounds: prepare_backgrounds(cells),
-        underlines: prepare_decorations(cells, |cell| cell.style.underline),
-        strikeouts: prepare_decorations(cells, |cell| cell.style.strikeout),
+        backgrounds: prepare_backgrounds(cells, theme),
+        underlines: prepare_decorations(cells, theme, |cell| {
+            cell.style.underline
+        }),
+        strikeouts: prepare_decorations(cells, theme, |cell| {
+            cell.style.strikeout
+        }),
         ..PreparedRow::default()
     };
 
@@ -230,17 +359,17 @@ fn prepare_row(
         };
         let (layout, hit) =
             layouts.get_or_insert_with(&cell.text, variant, || {
-                let runs = [text_run(&cell.text, variant)];
+                let runs = [text_run(&cell.text, variant, font_family)];
                 window
                     .text_system()
-                    .layout_line(&cell.text, FONT_SIZE, &runs, None)
+                    .layout_line(&cell.text, font_size, &runs, None)
             });
         cache_activity.record(hit);
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
             layout,
             color: rgb_color(display_foreground(
-                cell.foreground,
+                resolve_color(cell.foreground, theme),
                 cell.style.dim,
             )),
         });
@@ -248,13 +377,18 @@ fn prepare_row(
     row
 }
 
-fn prepare_backgrounds(cells: &[Cell]) -> Vec<PreparedBackground> {
+fn prepare_backgrounds(
+    cells: &[Cell],
+    theme: &Theme,
+) -> Vec<PreparedBackground> {
     let mut backgrounds = Vec::new();
     let mut start = 0;
     while start < cells.len() {
-        let background = cells[start].background;
+        let background = resolve_color(cells[start].background, theme);
         let mut end = start + 1;
-        while end < cells.len() && cells[end].background == background {
+        while end < cells.len()
+            && resolve_color(cells[end].background, theme) == background
+        {
             end += 1;
         }
         backgrounds.push(PreparedBackground {
@@ -269,6 +403,7 @@ fn prepare_backgrounds(cells: &[Cell]) -> Vec<PreparedBackground> {
 
 fn prepare_decorations(
     cells: &[Cell],
+    theme: &Theme,
     decorated: impl Fn(&Cell) -> bool,
 ) -> Vec<PreparedDecoration> {
     let mut decorations: Vec<PreparedDecoration> = Vec::new();
@@ -284,8 +419,10 @@ fn prepare_decorations(
             1
         };
         let columns = u16::try_from(columns).unwrap_or(1);
-        let color =
-            rgb_color(display_foreground(cell.foreground, cell.style.dim));
+        let color = rgb_color(display_foreground(
+            resolve_color(cell.foreground, theme),
+            cell.style.dim,
+        ));
         if let Some(previous) = decorations.last_mut()
             && previous.start.saturating_add(previous.columns) == start
             && previous.color == color
@@ -310,8 +447,12 @@ fn paint_row(
     window: &mut Window,
 ) {
     for glyph in &row.glyphs {
-        let origin =
-            cell_origin(grid_origin, usize::from(glyph.column), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(glyph.column),
+            row_index,
+            metrics,
+        );
         for run in &glyph.layout.runs {
             for shaped in &run.glyphs {
                 let glyph_origin = point(
@@ -340,11 +481,15 @@ fn paint_row(
     }
 
     for decoration in &row.underlines {
-        let origin =
-            cell_origin(grid_origin, usize::from(decoration.start), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(decoration.start),
+            row_index,
+            metrics,
+        );
         window.paint_underline(
             point(origin.x, origin.y + metrics.underline),
-            CELL_WIDTH * f32::from(decoration.columns),
+            metrics.cell_width * f32::from(decoration.columns),
             &UnderlineStyle {
                 color: Some(decoration.color),
                 thickness: px(1.0),
@@ -353,11 +498,15 @@ fn paint_row(
         );
     }
     for decoration in &row.strikeouts {
-        let origin =
-            cell_origin(grid_origin, usize::from(decoration.start), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(decoration.start),
+            row_index,
+            metrics,
+        );
         window.paint_strikethrough(
             point(origin.x, origin.y + metrics.strikeout),
-            CELL_WIDTH * f32::from(decoration.columns),
+            metrics.cell_width * f32::from(decoration.columns),
             &StrikethroughStyle {
                 color: Some(decoration.color),
                 thickness: px(1.0),
@@ -381,11 +530,24 @@ fn rows_to_rebuild(
         return vec![true; rows];
     };
 
-    previous
+    let offset_delta = current.viewport.bottom_offset as i128
+        - previous.viewport.bottom_offset as i128;
+    let history_delta =
+        current.history_size as i128 - previous.history_size as i128;
+    let shift = offset_delta - history_delta;
+    let previous_rows: Vec<&[Cell]> =
+        previous.cells.chunks_exact(columns).collect();
+    current
         .cells
         .chunks_exact(columns)
-        .zip(current.cells.chunks_exact(columns))
-        .map(|(before, after)| before != after)
+        .enumerate()
+        .map(|(new_row, after)| {
+            let old_row = new_row as i128 - shift;
+            old_row < 0
+                || old_row >= rows as i128
+                || previous_rows[usize::try_from(old_row).unwrap_or_default()]
+                    != after
+        })
         .collect()
 }
 
@@ -480,8 +642,8 @@ fn single_scalar(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
-fn text_run(text: &str, variant: FontVariant) -> TextRun {
-    let mut cell_font = font(FONT_FAMILY);
+fn text_run(text: &str, variant: FontVariant, font_family: &str) -> TextRun {
+    let mut cell_font = font(font_family.to_owned());
     cell_font.weight = if variant.bold {
         FontWeight::BOLD
     } else {
@@ -502,35 +664,17 @@ fn text_run(text: &str, variant: FontVariant) -> TextRun {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct GridMetrics {
-    baseline: Pixels,
-    underline: Pixels,
-    strikeout: Pixels,
-}
-
-impl GridMetrics {
-    fn from_layout(layout: &LineLayout) -> Self {
-        let padding_top = (CELL_HEIGHT - layout.ascent - layout.descent) / 2.0;
-        let baseline = padding_top + layout.ascent;
-        Self {
-            baseline,
-            underline: baseline + layout.descent * 0.618,
-            strikeout: (layout.ascent * 0.5 + baseline) * 0.5,
-        }
-    }
-}
-
 fn cell_origin(
     grid_origin: Point<Pixels>,
     column: usize,
     row: usize,
+    metrics: GridMetrics,
 ) -> Point<Pixels> {
     let column = u16::try_from(column).unwrap_or(u16::MAX);
     let row = u16::try_from(row).unwrap_or(u16::MAX);
     point(
-        grid_origin.x + CELL_WIDTH * f32::from(column),
-        grid_origin.y + CELL_HEIGHT * f32::from(row),
+        grid_origin.x + metrics.cell_width * f32::from(column),
+        grid_origin.y + metrics.cell_height * f32::from(row),
     )
 }
 
@@ -539,29 +683,102 @@ fn cell_bounds(
     column: u16,
     row: usize,
     columns: u16,
+    metrics: GridMetrics,
 ) -> Bounds<Pixels> {
     Bounds::new(
-        cell_origin(grid_origin, usize::from(column), row),
-        size(CELL_WIDTH * f32::from(columns), CELL_HEIGHT),
+        cell_origin(grid_origin, usize::from(column), row, metrics),
+        size(metrics.cell_width * f32::from(columns), metrics.cell_height),
     )
 }
 
-fn cursor_bounds(grid_origin: Point<Pixels>, cursor: Cursor) -> Bounds<Pixels> {
+fn cursor_bounds(
+    grid_origin: Point<Pixels>,
+    cursor: Cursor,
+    metrics: GridMetrics,
+) -> Bounds<Pixels> {
     let origin = point(
-        grid_origin.x + CELL_WIDTH * f32::from(cursor.column),
-        grid_origin.y + CELL_HEIGHT * f32::from(cursor.row),
+        grid_origin.x + metrics.cell_width * f32::from(cursor.column),
+        grid_origin.y + metrics.cell_height * f32::from(cursor.row),
     );
     match cursor.shape {
         CursorShape::Block => {
-            Bounds::new(origin, size(CELL_WIDTH, CELL_HEIGHT))
+            Bounds::new(origin, size(metrics.cell_width, metrics.cell_height))
         }
         CursorShape::Underline => Bounds::new(
-            point(origin.x, origin.y + CELL_HEIGHT - px(2.0)),
-            size(CELL_WIDTH, px(2.0)),
+            point(origin.x, origin.y + metrics.cell_height - px(2.0)),
+            size(metrics.cell_width, px(2.0)),
         ),
-        CursorShape::Beam => Bounds::new(origin, size(px(2.0), CELL_HEIGHT)),
+        CursorShape::Beam => {
+            Bounds::new(origin, size(px(2.0), metrics.cell_height))
+        }
         CursorShape::Hidden => Bounds::new(origin, size(px(0.0), px(0.0))),
     }
+}
+
+fn resolve_color(color: CellColor, theme: &Theme) -> Rgb {
+    match color {
+        CellColor::DefaultForeground => theme.foreground,
+        CellColor::DefaultBackground => theme.background,
+        CellColor::Cursor => theme.cursor,
+        CellColor::Indexed(index) => theme.indexed(index),
+        CellColor::Rgb(color) => color,
+    }
+}
+
+fn paint_selection(
+    snapshot: &TerminalSnapshot,
+    selection: BufferRange,
+    origin: Point<Pixels>,
+    metrics: GridMetrics,
+    theme: &Theme,
+    window: &mut Window,
+) {
+    let rows = usize::from(snapshot.size.rows);
+    for row in 0..rows {
+        let rows_from_live_bottom = snapshot
+            .viewport
+            .bottom_offset
+            .saturating_add(rows.saturating_sub(1).saturating_sub(row));
+        let mut start = None;
+        let mut end = 0_u16;
+        for column in 0..snapshot.size.columns {
+            let point = huterm_protocol::BufferPoint {
+                rows_from_live_bottom,
+                column,
+            };
+            if range_contains(selection, point) {
+                start.get_or_insert(column);
+                end = column.saturating_add(1);
+            }
+        }
+        if let Some(start) = start {
+            window.paint_quad(fill(
+                cell_bounds(
+                    origin,
+                    start,
+                    row,
+                    end.saturating_sub(start),
+                    metrics,
+                ),
+                rgb_color(theme.selection),
+            ));
+        }
+    }
+}
+
+fn range_contains(
+    range: BufferRange,
+    point: huterm_protocol::BufferPoint,
+) -> bool {
+    let after_start = point.rows_from_live_bottom
+        < range.start.rows_from_live_bottom
+        || (point.rows_from_live_bottom == range.start.rows_from_live_bottom
+            && point.column >= range.start.column);
+    let before_end = point.rows_from_live_bottom
+        > range.end.rows_from_live_bottom
+        || (point.rows_from_live_bottom == range.end.rows_from_live_bottom
+            && point.column <= range.end.column);
+    after_start && before_end
 }
 
 pub(super) fn display_foreground(foreground: Rgb, dim: bool) -> Rgb {
@@ -692,9 +909,137 @@ fn renderer_stats_enabled() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
+fn scroll_benchmark_enabled() -> bool {
+    std::env::var("HUTERM_SCROLL_BENCH")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+#[derive(Default)]
+struct ScrollBenchmarkStats {
+    pending: Option<ScrollBenchmarkSample>,
+    dropped_before_paint: usize,
+}
+
+impl ScrollBenchmarkStats {
+    fn begin(
+        &mut self,
+        sequence: u64,
+        requested_offset: usize,
+        injected_at: Instant,
+    ) {
+        if self
+            .pending
+            .replace(ScrollBenchmarkSample {
+                sequence,
+                requested_offset,
+                injected_at,
+                ..ScrollBenchmarkSample::default()
+            })
+            .is_some()
+        {
+            self.dropped_before_paint += 1;
+        }
+    }
+
+    fn complete_snapshot(
+        &mut self,
+        duration: Duration,
+        returned_offset: usize,
+        wakeup_delay: Duration,
+    ) {
+        if let Some(sample) = &mut self.pending {
+            sample.snapshot = duration;
+            sample.returned_offset = returned_offset;
+            sample.wakeup_delay = wakeup_delay;
+            sample.snapshot_complete = true;
+        }
+    }
+
+    fn complete_prepare(
+        &mut self,
+        duration: Duration,
+        rebuilt_rows: usize,
+        total_rows: usize,
+    ) {
+        if let Some(sample) = &mut self.pending {
+            if !sample.snapshot_complete {
+                return;
+            }
+            sample.prepare = duration;
+            sample.rebuilt_rows = rebuilt_rows;
+            sample.total_rows = total_rows;
+            sample.prepared = true;
+        }
+    }
+
+    fn complete_paint(&mut self, duration: Duration) {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|sample| sample.snapshot_complete && sample.prepared)
+        {
+            return;
+        }
+        let Some(mut sample) = self.pending.take() else {
+            return;
+        };
+        sample.paint = duration;
+        eprintln!(
+            "huterm-scroll sample sequence={} requested={} returned={} snapshot_us={} prepare_us={} paint_us={} latency_us={} timer_wait_us={} rebuilt_rows={} reused_rows={} dropped={}",
+            sample.sequence,
+            sample.requested_offset,
+            sample.returned_offset,
+            sample.snapshot.as_micros(),
+            sample.prepare.as_micros(),
+            sample.paint.as_micros(),
+            sample.injected_at.elapsed().as_micros(),
+            sample.wakeup_delay.as_micros(),
+            sample.rebuilt_rows,
+            sample.total_rows.saturating_sub(sample.rebuilt_rows),
+            self.dropped_before_paint,
+        );
+    }
+}
+
+struct ScrollBenchmarkSample {
+    sequence: u64,
+    requested_offset: usize,
+    returned_offset: usize,
+    injected_at: Instant,
+    snapshot: Duration,
+    prepare: Duration,
+    paint: Duration,
+    wakeup_delay: Duration,
+    rebuilt_rows: usize,
+    total_rows: usize,
+    snapshot_complete: bool,
+    prepared: bool,
+}
+
+impl Default for ScrollBenchmarkSample {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            requested_offset: 0,
+            returned_offset: 0,
+            injected_at: Instant::now(),
+            snapshot: Duration::ZERO,
+            prepare: Duration::ZERO,
+            paint: Duration::ZERO,
+            wakeup_delay: Duration::ZERO,
+            rebuilt_rows: 0,
+            total_rows: 0,
+            snapshot_complete: false,
+            prepared: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use huterm_protocol::{CellStyle, GridSize, TerminalId, TerminalModes};
+    use huterm_protocol::{
+        CellStyle, GridSize, TerminalId, TerminalModes, Viewport,
+    };
 
     use super::*;
 
@@ -784,6 +1129,36 @@ mod tests {
     }
 
     #[test]
+    fn row_diff_reuses_shifted_rows_during_static_scrolling() {
+        let mut previous = snapshot(1, 3, &["B", "C", "D"]);
+        previous.history_size = 10;
+        let mut current = snapshot(1, 3, &["A", "B", "C"]);
+        current.history_size = 10;
+        current.viewport.bottom_offset = 1;
+
+        assert_eq!(
+            rows_to_rebuild(Some(&previous), &current),
+            vec![true, false, false]
+        );
+    }
+
+    #[test]
+    fn row_diff_reuses_every_row_when_pinned_history_grows() {
+        let mut previous = snapshot(1, 3, &["A", "B", "C"]);
+        previous.history_size = 100;
+        previous.viewport.bottom_offset = 10;
+        let mut current = previous.clone();
+        current.history_size = 101;
+        current.viewport.bottom_offset = 11;
+        current.generation += 1;
+
+        assert_eq!(
+            rows_to_rebuild(Some(&previous), &current),
+            vec![false, false, false]
+        );
+    }
+
+    #[test]
     fn decorations_merge_across_a_wide_cell_and_its_spacer() {
         let mut cells = snapshot(3, 1, &["界", " ", "A"]).cells;
         cells[0].style.wide = true;
@@ -792,11 +1167,72 @@ mod tests {
         cells[2].style.underline = true;
 
         let decorations =
-            prepare_decorations(&cells, |cell| cell.style.underline);
+            prepare_decorations(&cells, &Theme::default(), |cell| {
+                cell.style.underline
+            });
 
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].start, 0);
         assert_eq!(decorations[0].columns, 3);
+    }
+
+    #[test]
+    fn semantic_colors_and_dim_are_resolved_only_for_paint() {
+        let theme = Theme::default();
+        assert_eq!(
+            resolve_color(CellColor::DefaultForeground, &theme),
+            theme.foreground
+        );
+        assert_eq!(
+            resolve_color(CellColor::DefaultBackground, &theme),
+            theme.background
+        );
+        assert_eq!(resolve_color(CellColor::Cursor, &theme), theme.cursor);
+        assert_eq!(resolve_color(CellColor::Indexed(9), &theme), theme.ansi[9]);
+        let explicit = Rgb {
+            red: 30,
+            green: 60,
+            blue: 90,
+        };
+        assert_eq!(resolve_color(CellColor::Rgb(explicit), &theme), explicit);
+        assert_eq!(
+            display_foreground(explicit, true),
+            Rgb {
+                red: 20,
+                green: 40,
+                blue: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn selection_range_includes_ordered_multiline_endpoints() {
+        let range = BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 4,
+                column: 3,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 1,
+            },
+        );
+        assert!(range_contains(range, range.start));
+        assert!(range_contains(
+            range,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 3,
+                column: 0,
+            }
+        ));
+        assert!(range_contains(range, range.end));
+        assert!(!range_contains(
+            range,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 4,
+                column: 2,
+            }
+        ));
     }
 
     fn snapshot(
@@ -812,22 +1248,24 @@ mod tests {
                 .iter()
                 .map(|text| Cell {
                     text: (*text).to_owned(),
-                    foreground: Rgb {
+                    foreground: CellColor::Rgb(Rgb {
                         red: 255,
                         green: 255,
                         blue: 255,
-                    },
-                    background: Rgb {
+                    }),
+                    background: CellColor::Rgb(Rgb {
                         red: 0,
                         green: 0,
                         blue: 0,
-                    },
+                    }),
                     style: CellStyle::default(),
                 })
                 .collect(),
             cursor: None,
             modes: TerminalModes::default(),
+            viewport: Viewport::default(),
             history_size: 0,
+            cursor_color: None,
         }
     }
 }

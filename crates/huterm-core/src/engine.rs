@@ -10,8 +10,8 @@ use alacritty_terminal::vte::ansi::{
 };
 use alacritty_terminal::vte::ansi::{Processor, Rgb as AlacrittyRgb};
 use huterm_protocol::{
-    Cell, CellStyle, Cursor, CursorShape, GridSize, Rgb, TerminalId,
-    TerminalModes, TerminalSnapshot, Viewport,
+    BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
+    GridSize, Rgb, TerminalId, TerminalModes, TerminalSnapshot, Viewport,
 };
 
 #[derive(Clone, Debug)]
@@ -121,8 +121,45 @@ impl TerminalEngine {
             cells,
             cursor,
             modes: modes(renderable.mode),
+            viewport: Viewport { bottom_offset },
             history_size,
+            cursor_color: renderable.colors[NamedColor::Cursor].map(rgb),
         }
+    }
+
+    pub(crate) fn extract_text(
+        &self,
+        generation: u64,
+        range: BufferRange,
+    ) -> Option<String> {
+        if generation != self.generation {
+            return None;
+        }
+        let start = self.buffer_point(range.start)?;
+        let end = self.buffer_point(range.end)?;
+        (start <= end).then(|| self.term.bounds_to_string(start, end))
+    }
+
+    fn buffer_point(
+        &self,
+        point: BufferPoint,
+    ) -> Option<alacritty_terminal::index::Point> {
+        let rows = self.term.screen_lines();
+        let max_row = self
+            .term
+            .history_size()
+            .saturating_add(rows.saturating_sub(1));
+        if point.rows_from_live_bottom > max_row
+            || usize::from(point.column) >= self.term.columns()
+        {
+            return None;
+        }
+        let bottom = i32::try_from(rows.saturating_sub(1)).ok()?;
+        let distance = i32::try_from(point.rows_from_live_bottom).ok()?;
+        Some(alacritty_terminal::index::Point::new(
+            Line(bottom.saturating_sub(distance)),
+            Column(usize::from(point.column)),
+        ))
     }
 
     fn drain_effects(&self) -> Vec<EngineEffect> {
@@ -133,7 +170,7 @@ impl TerminalEngine {
                     Some(EngineEffect::PtyWrite(text.into_bytes()))
                 }
                 Event::Title(title) => Some(EngineEffect::Title(title)),
-                Event::ResetTitle => Some(EngineEffect::Title("HUTerm".into())),
+                Event::ResetTitle => Some(EngineEffect::Title("Huterm".into())),
                 Event::Bell => Some(EngineEffect::Bell),
                 _ => None,
             })
@@ -180,8 +217,8 @@ fn snapshot_cell(
         text.extend(combining);
     }
 
-    let mut foreground = resolve_color(cell.fg, colors, true);
-    let mut background = resolve_color(cell.bg, colors, false);
+    let mut foreground = resolve_color(cell.fg, colors);
+    let mut background = resolve_color(cell.bg, colors);
     if cell.flags.contains(Flags::INVERSE) {
         std::mem::swap(&mut foreground, &mut background);
     }
@@ -206,169 +243,49 @@ fn snapshot_cell(
 fn resolve_color(
     color: Color,
     colors: &alacritty_terminal::term::color::Colors,
-    foreground: bool,
-) -> Rgb {
-    let rgb = match color {
-        Color::Spec(rgb) => rgb,
-        Color::Indexed(index) => indexed_color(index),
-        Color::Named(named) => {
-            colors[named].unwrap_or_else(|| named_color(named, foreground))
-        }
-    };
+) -> CellColor {
+    match color {
+        Color::Spec(value) => CellColor::Rgb(rgb(value)),
+        Color::Indexed(index) => colors[usize::from(index)]
+            .map(rgb)
+            .map_or(CellColor::Indexed(index), CellColor::Rgb),
+        Color::Named(named) => colors[named]
+            .map(rgb)
+            .map_or_else(|| named_color(named), CellColor::Rgb),
+    }
+}
+
+fn rgb(value: AlacrittyRgb) -> Rgb {
     Rgb {
-        red: rgb.r,
-        green: rgb.g,
-        blue: rgb.b,
+        red: value.r,
+        green: value.g,
+        blue: value.b,
     }
 }
 
-fn named_color(named: NamedColor, foreground: bool) -> AlacrittyRgb {
-    const ANSI: [AlacrittyRgb; 16] = [
-        AlacrittyRgb {
-            r: 0x1d,
-            g: 0x1f,
-            b: 0x21,
-        },
-        AlacrittyRgb {
-            r: 0xcc,
-            g: 0x66,
-            b: 0x66,
-        },
-        AlacrittyRgb {
-            r: 0xb5,
-            g: 0xbd,
-            b: 0x68,
-        },
-        AlacrittyRgb {
-            r: 0xf0,
-            g: 0xc6,
-            b: 0x74,
-        },
-        AlacrittyRgb {
-            r: 0x81,
-            g: 0xa2,
-            b: 0xbe,
-        },
-        AlacrittyRgb {
-            r: 0xb2,
-            g: 0x94,
-            b: 0xbb,
-        },
-        AlacrittyRgb {
-            r: 0x8a,
-            g: 0xbe,
-            b: 0xb7,
-        },
-        AlacrittyRgb {
-            r: 0xc5,
-            g: 0xc8,
-            b: 0xc6,
-        },
-        AlacrittyRgb {
-            r: 0x66,
-            g: 0x66,
-            b: 0x66,
-        },
-        AlacrittyRgb {
-            r: 0xd5,
-            g: 0x4e,
-            b: 0x53,
-        },
-        AlacrittyRgb {
-            r: 0xb9,
-            g: 0xca,
-            b: 0x4a,
-        },
-        AlacrittyRgb {
-            r: 0xe7,
-            g: 0xc5,
-            b: 0x47,
-        },
-        AlacrittyRgb {
-            r: 0x7a,
-            g: 0xa6,
-            b: 0xda,
-        },
-        AlacrittyRgb {
-            r: 0xc3,
-            g: 0x97,
-            b: 0xd8,
-        },
-        AlacrittyRgb {
-            r: 0x70,
-            g: 0xc0,
-            b: 0xb1,
-        },
-        AlacrittyRgb {
-            r: 0xea,
-            g: 0xea,
-            b: 0xea,
-        },
-    ];
-
-    let index = named as usize;
-    if index < ANSI.len() {
-        ANSI[index]
-    } else if foreground {
-        AlacrittyRgb {
-            r: 0xc5,
-            g: 0xc8,
-            b: 0xc6,
-        }
-    } else {
-        AlacrittyRgb {
-            r: 0x1d,
-            g: 0x1f,
-            b: 0x21,
-        }
-    }
-}
-
-fn indexed_color(index: u8) -> AlacrittyRgb {
-    if index < 16 {
-        return named_color(
-            match index {
-                0 => NamedColor::Black,
-                1 => NamedColor::Red,
-                2 => NamedColor::Green,
-                3 => NamedColor::Yellow,
-                4 => NamedColor::Blue,
-                5 => NamedColor::Magenta,
-                6 => NamedColor::Cyan,
-                7 => NamedColor::White,
-                8 => NamedColor::BrightBlack,
-                9 => NamedColor::BrightRed,
-                10 => NamedColor::BrightGreen,
-                11 => NamedColor::BrightYellow,
-                12 => NamedColor::BrightBlue,
-                13 => NamedColor::BrightMagenta,
-                14 => NamedColor::BrightCyan,
-                _ => NamedColor::BrightWhite,
-            },
-            true,
-        );
-    }
-    if index >= 232 {
-        let level =
-            8_u8.saturating_add(index.saturating_sub(232).saturating_mul(10));
-        return AlacrittyRgb {
-            r: level,
-            g: level,
-            b: level,
-        };
-    }
-    let value = index - 16;
-    let channel = |component: u8| {
-        if component == 0 {
-            0
-        } else {
-            55 + component * 40
-        }
-    };
-    AlacrittyRgb {
-        r: channel(value / 36),
-        g: channel((value / 6) % 6),
-        b: channel(value % 6),
+fn named_color(named: NamedColor) -> CellColor {
+    match named {
+        NamedColor::Black | NamedColor::DimBlack => CellColor::Indexed(0),
+        NamedColor::Red | NamedColor::DimRed => CellColor::Indexed(1),
+        NamedColor::Green | NamedColor::DimGreen => CellColor::Indexed(2),
+        NamedColor::Yellow | NamedColor::DimYellow => CellColor::Indexed(3),
+        NamedColor::Blue | NamedColor::DimBlue => CellColor::Indexed(4),
+        NamedColor::Magenta | NamedColor::DimMagenta => CellColor::Indexed(5),
+        NamedColor::Cyan | NamedColor::DimCyan => CellColor::Indexed(6),
+        NamedColor::White | NamedColor::DimWhite => CellColor::Indexed(7),
+        NamedColor::BrightBlack => CellColor::Indexed(8),
+        NamedColor::BrightRed => CellColor::Indexed(9),
+        NamedColor::BrightGreen => CellColor::Indexed(10),
+        NamedColor::BrightYellow => CellColor::Indexed(11),
+        NamedColor::BrightBlue => CellColor::Indexed(12),
+        NamedColor::BrightMagenta => CellColor::Indexed(13),
+        NamedColor::BrightCyan => CellColor::Indexed(14),
+        NamedColor::BrightWhite => CellColor::Indexed(15),
+        NamedColor::Foreground
+        | NamedColor::BrightForeground
+        | NamedColor::DimForeground => CellColor::DefaultForeground,
+        NamedColor::Background => CellColor::DefaultBackground,
+        NamedColor::Cursor => CellColor::Cursor,
     }
 }
 
@@ -426,11 +343,7 @@ mod tests {
                 true,
                 false,
                 true,
-                Rgb {
-                    red: 0xcc,
-                    green: 0x66,
-                    blue: 0x66
-                },
+                CellColor::Indexed(1),
                 "界",
                 true,
                 true,
@@ -470,6 +383,11 @@ mod tests {
         assert_eq!(live_again, live);
         assert!(live.cursor.is_some());
         assert!(scrolled.cursor.is_none());
+
+        let clamped = engine.snapshot(Viewport {
+            bottom_offset: usize::MAX,
+        });
+        assert_eq!(clamped.viewport.bottom_offset, live.history_size);
     }
 
     #[test]
@@ -484,6 +402,118 @@ mod tests {
         assert_eq!(
             (snapshot.generation, snapshot.size),
             (before + 1, GridSize::clamped(12, 4))
+        );
+    }
+
+    #[test]
+    fn dynamic_default_color_overrides_remain_explicit() {
+        let mut engine = engine();
+        engine.process(b"\x1b]10;#112233\x07A");
+
+        let snapshot = engine.snapshot(Viewport::default());
+        assert_eq!(
+            snapshot.cells[0].foreground,
+            CellColor::Rgb(Rgb {
+                red: 0x11,
+                green: 0x22,
+                blue: 0x33,
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_preserves_defaults_true_color_indexed_and_reverse_video() {
+        let mut engine = engine();
+        engine.process(b"D\x1b[38;2;1;2;3;48;5;4;7mR");
+
+        let snapshot = engine.snapshot(Viewport::default());
+        assert_eq!(snapshot.cells[0].foreground, CellColor::DefaultForeground);
+        assert_eq!(snapshot.cells[0].background, CellColor::DefaultBackground);
+        assert_eq!(snapshot.cells[1].foreground, CellColor::Indexed(4));
+        assert_eq!(
+            snapshot.cells[1].background,
+            CellColor::Rgb(Rgb {
+                red: 1,
+                green: 2,
+                blue: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn selection_extracts_hard_broken_lines_and_rejects_stale_ranges() {
+        let mut engine = engine();
+        engine.process(b"alpha\r\nbeta");
+        let generation = engine.generation();
+        let range = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 1,
+                column: 3,
+            },
+        );
+
+        assert_eq!(
+            engine.extract_text(generation, range).as_deref(),
+            Some("alpha\nbeta")
+        );
+        assert_eq!(engine.extract_text(generation + 1, range), None);
+        assert_eq!(
+            engine.extract_text(
+                generation,
+                BufferRange::ordered(
+                    BufferPoint {
+                        rows_from_live_bottom: usize::MAX,
+                        column: 0,
+                    },
+                    range.end,
+                ),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn selection_preserves_soft_wraps_combining_marks_and_wide_cells() {
+        let mut wrapped = engine();
+        wrapped.process("abcdefghij".as_bytes());
+        let wrapped_range = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 1,
+                column: 1,
+            },
+        );
+        assert_eq!(
+            wrapped
+                .extract_text(wrapped.generation(), wrapped_range)
+                .as_deref(),
+            Some("abcdefghij")
+        );
+
+        let mut unicode = engine();
+        unicode.process("e\u{301}界".as_bytes());
+        let unicode_range = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 2,
+            },
+        );
+        assert_eq!(
+            unicode
+                .extract_text(unicode.generation(), unicode_range)
+                .as_deref(),
+            Some("e\u{301}界")
         );
     }
 }

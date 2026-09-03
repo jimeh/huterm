@@ -7,11 +7,11 @@ use std::sync::mpsc::{
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    CellSize, ExitStatus, GridSize, TerminalCommand, TerminalEvent, TerminalId,
-    TerminalInput, TerminalSnapshot, Viewport,
+    BufferRange, CellSize, ExitStatus, GridSize, TerminalCommand,
+    TerminalEvent, TerminalId, TerminalInput, TerminalSnapshot, Viewport,
 };
 use thiserror::Error;
 
@@ -22,7 +22,6 @@ use crate::pty::{self, PtyProcess};
 const MESSAGE_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// In-process client handle for one terminal runtime.
@@ -110,17 +109,38 @@ impl RuntimeClient {
         &self,
         viewport: Viewport,
     ) -> Result<SnapshotRequest, RuntimeError> {
-        let (reply, receiver) = mpsc::channel();
+        let (reply, receiver) = async_channel::bounded(1);
         self.controls
             .send(RuntimeControl::Snapshot { viewport, reply })
             .map_err(|_| RuntimeError::Stopped)?;
         Ok(SnapshotRequest { receiver })
     }
 
+    /// Requests text extraction from canonical scrollback without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal has stopped.
+    pub fn request_selection(
+        &self,
+        generation: u64,
+        range: BufferRange,
+    ) -> Result<SelectionRequest, RuntimeError> {
+        let (reply, receiver) = async_channel::bounded(1);
+        self.controls
+            .send(RuntimeControl::Selection {
+                generation,
+                range,
+                reply,
+            })
+            .map_err(|_| RuntimeError::Stopped)?;
+        Ok(SelectionRequest { receiver })
+    }
+
     /// Reads an immutable snapshot for a client-owned viewport.
     ///
     /// This blocking convenience is intended for worker threads and tests.
-    /// Interactive clients should poll [`Self::request_snapshot`] instead.
+    /// Interactive clients should await [`Self::request_snapshot`] instead.
     ///
     /// # Errors
     ///
@@ -130,12 +150,8 @@ impl RuntimeClient {
         viewport: Viewport,
     ) -> Result<TerminalSnapshot, RuntimeError> {
         self.request_snapshot(viewport)?
-            .receiver
-            .recv_timeout(REQUEST_TIMEOUT)
-            .map_err(|error| match error {
-                RecvTimeoutError::Timeout => RuntimeError::TimedOut,
-                RecvTimeoutError::Disconnected => RuntimeError::Stopped,
-            })
+            .recv_blocking()
+            .map(|reply| reply.snapshot)
     }
 
     /// Receives the next queued runtime event without blocking.
@@ -180,7 +196,21 @@ impl RuntimeClient {
 /// Pending asynchronous snapshot response.
 #[derive(Debug)]
 pub struct SnapshotRequest {
-    receiver: Receiver<TerminalSnapshot>,
+    receiver: async_channel::Receiver<SnapshotReply>,
+}
+
+/// A runtime snapshot and the CPU time spent producing it.
+///
+/// Timing stays in the in-process client boundary so performance diagnostics do
+/// not leak into the dependency-neutral wire protocol.
+#[derive(Debug)]
+pub struct SnapshotReply {
+    /// Immutable terminal snapshot.
+    pub snapshot: TerminalSnapshot,
+    /// Runtime CPU duration spent constructing the snapshot.
+    pub snapshot_duration: Duration,
+    /// Monotonic instant when snapshot construction completed.
+    pub completed_at: Instant,
 }
 
 impl SnapshotRequest {
@@ -189,12 +219,54 @@ impl SnapshotRequest {
     /// # Errors
     ///
     /// Returns an error if the runtime stops before replying.
-    pub fn try_recv(&self) -> Result<Option<TerminalSnapshot>, RuntimeError> {
+    pub fn try_recv(&self) -> Result<Option<SnapshotReply>, RuntimeError> {
         match self.receiver.try_recv() {
             Ok(snapshot) => Ok(Some(snapshot)),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => Err(RuntimeError::Stopped),
+            Err(async_channel::TryRecvError::Empty) => Ok(None),
+            Err(async_channel::TryRecvError::Closed) => {
+                Err(RuntimeError::Stopped)
+            }
         }
+    }
+
+    /// Waits asynchronously for the runtime response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime stops before replying.
+    pub async fn recv(self) -> Result<SnapshotReply, RuntimeError> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| RuntimeError::Stopped)
+    }
+
+    fn recv_blocking(self) -> Result<SnapshotReply, RuntimeError> {
+        self.receiver
+            .recv_blocking()
+            .map_err(|_| RuntimeError::Stopped)
+    }
+}
+
+/// Pending asynchronous selection extraction response.
+#[derive(Debug)]
+pub struct SelectionRequest {
+    receiver: async_channel::Receiver<Option<String>>,
+}
+
+impl SelectionRequest {
+    /// Waits asynchronously for extracted text.
+    ///
+    /// A successful `None` means the terminal generation or range was stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime stops before replying.
+    pub async fn recv(self) -> Result<Option<String>, RuntimeError> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| RuntimeError::Stopped)
     }
 }
 
@@ -343,7 +415,12 @@ enum RuntimeMessage {
 enum RuntimeControl {
     Snapshot {
         viewport: Viewport,
-        reply: Sender<TerminalSnapshot>,
+        reply: async_channel::Sender<SnapshotReply>,
+    },
+    Selection {
+        generation: u64,
+        range: BufferRange,
+        reply: async_channel::Sender<Option<String>>,
     },
     WorkerFailed(String),
     Wake,
@@ -476,7 +553,22 @@ fn run_terminal(
             }
             match control {
                 RuntimeControl::Snapshot { viewport, reply } => {
-                    let _ = reply.send(engine.snapshot(viewport));
+                    let started = Instant::now();
+                    let snapshot = engine.snapshot(viewport);
+                    let snapshot_duration = started.elapsed();
+                    let _ = reply.try_send(SnapshotReply {
+                        snapshot,
+                        snapshot_duration,
+                        completed_at: Instant::now(),
+                    });
+                }
+                RuntimeControl::Selection {
+                    generation,
+                    range,
+                    reply,
+                } => {
+                    let _ =
+                        reply.try_send(engine.extract_text(generation, range));
                 }
                 RuntimeControl::WorkerFailed(message) => {
                     report_failure(&events, terminal_id, message);

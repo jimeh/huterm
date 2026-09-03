@@ -1,8 +1,8 @@
-# HUTerm
+# Huterm
 
-HUTerm is an experimental terminal emulator and multiplexer written in Rust.
+Huterm is an experimental terminal emulator and multiplexer written in Rust.
 It will start as a native desktop application built with GPUI, but the terminal
-runtime will not belong to the desktop UI. HUTerm will own its pseudoterminals,
+runtime will not belong to the desktop UI. Huterm will own its pseudoterminals,
 terminal state, sessions, tabs, and pane layouts so other clients can attach to
 the same runtime later.
 
@@ -15,21 +15,21 @@ visual/input evidence remains before the milestone is complete.
 
 ## Direction
 
-HUTerm is based on four decisions:
+Huterm is based on four decisions:
 
-- HUTerm owns PTY spawning, I/O, resize, process lifetime, and attachment
+- Huterm owns PTY spawning, I/O, resize, process lifetime, and attachment
   behavior. It will initially use `portable-pty` for the operating-system
   implementation.
 - The runtime owns canonical terminal state. It will initially use upstream
   `alacritty_terminal` for escape-sequence parsing, the terminal grid,
   scrollback, modes, and cursor state.
-- Clients render HUTerm-owned terminal snapshots. The first client uses GPUI;
+- Clients render Huterm-owned terminal snapshots. The first client uses GPUI;
   a text-based terminal client can use the same model later.
-- HUTerm application code targets the MIT license. Dependencies may use other
+- Huterm application code targets the MIT license. Dependencies may use other
   compatible permissive licenses. GPL-covered Zed application code is outside
   the project boundary.
 
-The terminal engine is replaceable in principle, but HUTerm will not build a
+The terminal engine is replaceable in principle, but Huterm will not build a
 generic backend framework before a second engine exists. A future
 `libghostty-vt` experiment should replace the private emulator module without
 changing PTY ownership, sessions, client messages, or renderers.
@@ -38,13 +38,15 @@ changing PTY ownership, sessions, client messages, or renderers.
 
 The first milestone targets macOS on Apple Silicon, with Linux x86_64 as an
 additional development platform. It opens one GPUI window containing one tab,
-one pane, and one interactive local shell. HUTerm owns the PTY and Alacritty
-terminal state, then renders a HUTerm-defined snapshot in GPUI.
+one pane, and one interactive local shell. Huterm owns the PTY and Alacritty
+terminal state, then renders a Huterm-defined snapshot in GPUI.
 
-The milestone includes keyboard input, colored text, cursor rendering,
-scrollback, terminal resize, native fullscreen, alternate-screen applications,
-and clean child-process shutdown. It does not include a background server,
-local IPC, multiple tabs, split panes, or a TUI client.
+The milestone includes keyboard input, paste, selection and copy, fast
+client-owned scrollback with a position indicator, configurable font and theme,
+terminal resize, native fullscreen, alternate-screen applications, a macOS menu
+bar and Apple Silicon application bundle, and clean child-process shutdown. It
+does not include a background server, local IPC, multiple tabs, split panes, or
+a TUI client.
 
 See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
 for the implementation sequence and acceptance criteria.
@@ -63,6 +65,17 @@ On macOS or Linux, launch the app with:
 mise run dev
 ```
 
+Huterm reads `$HUTERM_CONFIG_FILE` when set, otherwise
+`$XDG_CONFIG_HOME/huterm/config.toml` or `~/.config/huterm/config.toml`. The
+Settings command creates a documented default file without replacing an
+existing one, then opens it in the system editor.
+
+On Apple Silicon macOS, build the application bundle with:
+
+```sh
+mise run package:macos
+```
+
 Use `mise tasks` to discover all commands. `mise run check` is the fast local
 gate, while `mise run verify` also runs tests, the dependency-license policy,
 and GitHub Actions checks. See the
@@ -72,17 +85,17 @@ limits, and the validation ladder.
 ## Planned features
 
 The following list describes the intended product direction. Items outside the
-initial milestone are not yet scheduled.
+current milestone are not yet scheduled.
 
 ### Terminal
 
 - Local shells and arbitrary commands with configurable working directory and
   environment.
-- Unicode text, grapheme clusters, wide characters, font fallback, and IME.
+- More complete grapheme handling, font fallback, and IME.
 - True color, text decorations, cursor styles, hyperlinks, clipboard support,
   search, selection, and configurable scrollback.
-- Keyboard, mouse, focus, paste, and modern terminal protocol support.
-- Themes, fonts, font size, keybindings, and shell integration.
+- More terminal mouse protocols, configurable keybindings, and shell
+  integration.
 - An Alacritty-based terminal engine initially, with the option to evaluate
   `libghostty-vt` after its public API matures.
 
@@ -133,11 +146,11 @@ preference, not session state.
 
 ## Licensing
 
-HUTerm intends to license its own source under the MIT license. The planned
+Huterm intends to license its own source under the MIT license. The planned
 initial dependencies include MIT and Apache-2.0 software. Distributed builds
 will retain the required third-party license notices and use an automated
 license allowlist to prevent accidental GPL or AGPL dependencies.
 
-HUTerm-owned source is available under the [MIT license](LICENSE). The committed
+Huterm-owned source is available under the [MIT license](LICENSE). The committed
 dependency policy audits the full resolved graph and rejects GPL, AGPL, unknown
 registries, Git dependencies, and wildcard Cargo requirements.

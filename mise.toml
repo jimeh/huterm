@@ -5,6 +5,7 @@ minimum_release_age = "3d"
 [tools]
 actionlint = "1.7.12"
 "cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-packager" = "0.11.8"
 lefthook = "2.1.12"
 markdownlint-cli2 = "0.23.2"
 pinact = "4.1.1"
@@ -20,7 +21,7 @@ description = "Check platform development prerequisites"
 run = '''
 if [ "$(uname -s)" = Darwin ]; then
   if ! xcodebuild -version >/dev/null 2>&1; then
-    echo "Xcode is not installed or selected for HUTerm's macOS build" >&2
+    echo "Xcode is not installed or selected for Huterm's macOS build" >&2
     echo "install Xcode and select it with xcode-select" >&2
     echo "see docs/agents/development.md for macOS setup" >&2
     exit 1
@@ -47,7 +48,7 @@ fi
 '''
 
 [tasks.dev]
-description = "Run the native HUTerm app"
+description = "Run the native Huterm app"
 run = "cargo run --locked -p huterm"
 
 [tasks.build]
@@ -127,7 +128,7 @@ SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
 status=$?
 set -e
 if [ "$status" -ne 124 ]; then
-  echo "HUTerm exited before the 8-second smoke window (status $status)" >&2
+  echo "Huterm exited before the 8-second smoke window (status $status)" >&2
   exit 1
 fi
 '''
@@ -160,9 +161,77 @@ xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
 status=$?
 set -e
 if [ "$status" -ne 124 ]; then
-  echo "HUTerm renderer benchmark ended early (status $status)" >&2
+  echo "Huterm renderer benchmark ended early (status $status)" >&2
   exit 1
 fi
+'''
+
+[tasks."bench:scroll"]
+description = "Measure release-mode scroll coordination and rendering under Xvfb"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Scroll benchmark currently requires Linux and Xvfb" >&2
+  exit 1
+fi
+if ! command -v twm >/dev/null 2>&1; then
+  echo "Scroll benchmark requires twm so Xvfb exposes the GPUI window" >&2
+  exit 1
+fi
+cargo build --release --locked -p huterm
+cargo build --release --locked -p huterm-gpui --example scroll_workload
+workload="$(pwd)/target/release/examples/scroll_workload"
+report="$(mktemp)"
+revision="$(git rev-parse HEAD)"
+hardware="$(uname -m)"
+trap 'rm -f "$report"' EXIT
+set +e
+xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
+  twm >/dev/null 2>&1 &
+  wm_pid=$!
+  SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
+    HUTERM_SCROLL_HARDWARE="$5" HUTERM_SCROLL_DISPLAY_SCALE=1 \
+    timeout --signal=TERM 10s "$2" >"$3" 2>&1
+  result=$?
+  cat "$3"
+  kill "$wm_pid" >/dev/null 2>&1 || true
+  wait "$wm_pid" >/dev/null 2>&1 || true
+  exit "$result"
+' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
+status=$?
+set -e
+if [ "$status" -ne 124 ]; then
+  echo "Huterm scroll benchmark ended early (status $status)" >&2
+  exit 1
+fi
+python3 scripts/check-scroll-benchmark.py "$report"
+'''
+
+[tasks."package:macos"]
+description = "Build and verify the Apple Silicon Huterm.app bundle"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "macOS packaging requires an Apple Silicon macOS host" >&2
+  exit 1
+fi
+if [ "$(uname -m)" != arm64 ]; then
+  echo "Huterm.app packaging currently supports Apple Silicon only" >&2
+  exit 1
+fi
+cargo packager --release --formats app
+bundle="target/release/bundle/Huterm.app"
+plist="$bundle/Contents/Info.plist"
+executable="$bundle/Contents/MacOS/huterm"
+identifier="$(sed -n 's/^identifier = "\([^"]*\)"/\1/p' Packager.toml)"
+version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"huterm","version":"\([^"]*\)".*/\1/p')"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = "$identifier"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$version"
+test "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" = "public.app-category.developer-tools"
+icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")"
+test -f "$bundle/Contents/Resources/$icon"
+cmp -s assets/Huterm.icns "$bundle/Contents/Resources/$icon"
+test -x "$executable"
+file "$executable" | rg -q arm64
+echo "verified $bundle ($identifier, version $version, arm64)"
 '''
 
 [tasks.license]

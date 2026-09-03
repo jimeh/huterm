@@ -1,6 +1,6 @@
 [package]
 name = "huterm-protocol"
-description = "Dependency-neutral client contract for HUTerm"
+description = "Dependency-neutral client contract for Huterm"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

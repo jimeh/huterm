@@ -116,7 +116,7 @@ do not yet invert the covered glyph.
 ## Measurement harness
 
 An example workload emits a continuously changing 100 by 32 colored grid. The
-`bench:renderer` Mise task builds it and HUTerm in release mode, runs both under
+`bench:renderer` Mise task builds it and Huterm in release mode, runs both under
 Xvfb, and enables `HUTERM_RENDER_STATS`.
 
 Statistics report wall-clock frame count and CPU time spent preparing retained

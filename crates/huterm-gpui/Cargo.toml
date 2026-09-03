@@ -1,6 +1,6 @@
 [package]
 name = "huterm-gpui"
-description = "Native GPUI client for HUTerm"
+description = "Native GPUI client for Huterm"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,6 +11,8 @@ version.workspace = true
 anyhow.workspace = true
 huterm-core.workspace = true
 huterm-protocol.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 gpui.workspace = true

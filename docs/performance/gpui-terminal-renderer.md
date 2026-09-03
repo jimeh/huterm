@@ -2,7 +2,7 @@
 
 Measured on 2026-09-03 using Linux 6.8.0 x86_64, an AMD Ryzen 5 5600GT with
 six available cores, Rust 1.98.0, GPUI 0.2.2, and Mesa's Lavapipe Vulkan driver
-under Xvfb and `twm`. All HUTerm builds used Cargo's release profile.
+under Xvfb and `twm`. All Huterm builds used Cargo's release profile.
 
 ## Result
 
@@ -31,7 +31,7 @@ encoding paint primitives.
 
 For a separate check with `const-void/DOOM-fire-zig` at commit
 `eb0631b141b5778eefc6f5767bb45f8974c1be71`, patched only to skip its intro and
-size-check screens, HUTerm's first 100 by 32 frame measured 2,652 microseconds
+size-check screens, Huterm's first 100 by 32 frame measured 2,652 microseconds
 preparing and 3,094 microseconds encoding paint primitives, with 3,123 layout
 hits and 27 misses. The same workload emitted about 2,434 frames per second
 directly into a PTY.
@@ -54,7 +54,7 @@ sustained visible FPS.
 
 Measured on 2026-09-03 using a MacBook Pro `Mac15,8`, an Apple M3 Max with 16
 CPU cores and 40 GPU cores, 64 GB RAM, macOS 27.0 build `26A5425a`, and Xcode
-27.0 build `27A5228h`. HUTerm and DOOM-fire-zig used release builds. The
+27.0 build `27A5228h`. Huterm and DOOM-fire-zig used release builds. The
 terminal started at exactly 120 by 40 cells, and DOOM-fire-zig was at commit
 `eb0631b141b5778eefc6f5767bb45f8974c1be71`.
 
@@ -62,7 +62,7 @@ At branch commit `2c5989e5b56fcb0312bdeefeecfd47daa9d45f5c`, DOOM-fire-zig repor
 5.05 to 5.22 producer frames per second with renderer statistics disabled and
 5.38 with `HUTERM_RENDER_STATS=1`. A Metal System Trace nevertheless measured
 59.91 displayed frames per second. The on-screen DOOM counter therefore
-measured how quickly its PTY writes completed, not how often HUTerm reached the
+measured how quickly its PTY writes completed, not how often Huterm reached the
 display.
 
 Time Profiler and reversible retry-delay experiments isolated the throttle to
@@ -83,7 +83,7 @@ separate 8.3-second Metal System Trace measured 60.12 presented callbacks per
 second.
 
 At 742.91 producer frames per second, a `ps` sample showed about 130.5% CPU for
-HUTerm and 80.8% for DOOM-fire-zig. A 10-second Time Profiler trace attributed
+Huterm and 80.8% for DOOM-fire-zig. A 10-second Time Profiler trace attributed
 57.11% of sampled CPU to the runtime thread, 24.20% to the PTY reader, and
 17.04% to the GPUI main thread. The largest leaf costs were `tcgetpgrp`'s
 `ioctl` path at 28.20%, Alacritty processing at 14.39%, the readiness wait's
@@ -110,7 +110,7 @@ Install the Linux desktop dependencies from the development guide, including
 mise run bench:renderer
 ```
 
-The task builds HUTerm and its workload in release mode, launches a 100 by 32
+The task builds Huterm and its workload in release mode, launches a 100 by 32
 animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
-`HUTERM_RENDER_STATS=1` while running HUTerm enables rolling renderer counters
+`HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.

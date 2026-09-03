@@ -187,7 +187,7 @@ pub(crate) fn spawn(
     }
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
-    builder.env("TERM_PROGRAM", "HUTerm");
+    builder.env("TERM_PROGRAM", "Huterm");
 
     let child = pair
         .slave
