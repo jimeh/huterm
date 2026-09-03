@@ -91,18 +91,18 @@ impl TerminalEngine {
         let bottom_offset = viewport.bottom_offset.min(history_size);
         let top_line = -i32::try_from(bottom_offset).unwrap_or(i32::MAX);
         let mut cells = Vec::with_capacity(rows.saturating_mul(columns));
+        let renderable = self.term.renderable_content();
 
         for row in 0..rows {
             let line = Line(top_line + i32::try_from(row).unwrap_or(i32::MAX));
             for column in 0..columns {
                 cells.push(snapshot_cell(
                     &self.term.grid()[line][Column(column)],
-                    self.term.renderable_content().colors,
+                    renderable.colors,
                 ));
             }
         }
 
-        let renderable = self.term.renderable_content();
         let cursor = (bottom_offset == 0).then(|| Cursor {
             row: u16::try_from(renderable.cursor.point.line.0)
                 .unwrap_or_default(),

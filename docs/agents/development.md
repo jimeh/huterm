@@ -70,3 +70,11 @@ Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
 correctness or native input behavior. Use Apple Silicon CI and the manual
 checklist in the initial plan for macOS evidence.
+
+The opt-in renderer benchmark additionally needs `twm`, which ensures GPUI's
+window is exposed and painted under Xvfb:
+
+```sh
+sudo apt-get install --no-install-recommends twm
+mise run bench:renderer
+```

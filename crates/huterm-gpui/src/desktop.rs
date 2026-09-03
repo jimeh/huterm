@@ -1,15 +1,15 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, FontStyle,
-    FontWeight, Hsla, KeyBinding, Keystroke, Modifiers as GpuiModifiers,
-    MouseButton, Pixels, Point, Render, ScrollWheelEvent, StrikethroughStyle,
-    Subscription, TextRun, TitlebarOptions, UnderlineStyle, Window,
-    WindowBounds, WindowOptions, actions, canvas, div, fill, font, point,
-    prelude::*, px, rgba, size,
+    App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding,
+    Keystroke, Modifiers as GpuiModifiers, MouseButton, Pixels, Render,
+    ScrollWheelEvent, Subscription, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, actions, canvas, div, prelude::*, rgba, size,
 };
 use huterm_core::{
     Mux, RuntimeClient, RuntimeError, SnapshotRequest, TerminalOwner,
@@ -21,9 +21,11 @@ use huterm_protocol::{
     TerminalSnapshot, Viewport,
 };
 
-const FONT_SIZE: Pixels = px(14.0);
-const CELL_WIDTH: Pixels = px(8.4);
-const CELL_HEIGHT: Pixels = px(18.0);
+use crate::renderer::{
+    CELL_HEIGHT, CELL_WIDTH, FONT_FAMILY, FONT_SIZE, TerminalRenderer,
+    rgb_color as color,
+};
+
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
 const PENDING_INPUT_CAPACITY: usize = 256;
@@ -49,6 +51,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let command = shell_command()?;
     let runtime = TerminalRuntime::spawn(terminal_id, &command)?;
     let client = runtime.client();
+    if renderer_benchmark_enabled() {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let app_client = client.clone();
     let runtime_owner = Arc::new(Mutex::new(Some(runtime)));
     let app_runtime_owner = Arc::clone(&runtime_owner);
@@ -94,8 +99,23 @@ pub(crate) fn run() -> anyhow::Result<()> {
             },
             move |window, cx| {
                 let focus = cx.focus_handle();
-                let initial_request =
-                    app_client.request_snapshot(Viewport::default()).ok();
+                let (initial_snapshot, initial_request) =
+                    if renderer_benchmark_enabled() {
+                        (
+                            app_client
+                                .read_snapshot(Viewport::default())
+                                .ok()
+                                .map(Arc::new),
+                            None,
+                        )
+                    } else {
+                        (
+                            None,
+                            app_client
+                                .request_snapshot(Viewport::default())
+                                .ok(),
+                        )
+                    };
                 let view = cx.new(|cx| {
                     let focus_subscription = cx.on_focus(
                         &focus,
@@ -121,9 +141,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         pending_inputs: VecDeque::new(),
                         pending_input_bytes: 0,
                         pending_resize: None,
-                        snapshot: None,
+                        snapshot: initial_snapshot,
                         snapshot_request: initial_request,
                         snapshot_dirty: false,
+                        renderer: Rc::new(
+                            RefCell::new(TerminalRenderer::new()),
+                        ),
                         focus,
                         _focus_subscriptions: vec![
                             focus_subscription,
@@ -192,6 +215,7 @@ struct TerminalView {
     snapshot: Option<Arc<TerminalSnapshot>>,
     snapshot_request: Option<SnapshotRequest>,
     snapshot_dirty: bool,
+    renderer: Rc<RefCell<TerminalRenderer>>,
     focus: FocusHandle,
     _focus_subscriptions: Vec<Subscription>,
     viewport: Viewport,
@@ -480,8 +504,13 @@ impl Render for TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.resize_if_needed(window);
+        if self.renderer.borrow().records_stats() {
+            window.request_animation_frame();
+        }
         let snapshot = self.snapshot.clone();
         let status = self.status.clone();
+        let prepare_renderer = Rc::clone(&self.renderer);
+        let paint_renderer = Rc::clone(&self.renderer);
         div()
             .key_context("HUTerm")
             .track_focus(&self.focus)
@@ -500,13 +529,15 @@ impl Render for TerminalView {
                 blue: 0x21,
             }))
             .text_size(FONT_SIZE)
-            .font_family("Menlo")
+            .font_family(FONT_FAMILY)
             .child(canvas(
-                move |bounds, window, _| {
-                    prepare_frame(snapshot.as_deref(), bounds, window)
+                move |_, window, _| {
+                    prepare_renderer
+                        .borrow_mut()
+                        .prepare(snapshot.as_ref(), window);
                 },
-                move |_, frame, window, cx| {
-                    paint_frame(frame, window, cx);
+                move |bounds, (), window, _| {
+                    paint_renderer.borrow_mut().paint(bounds, window);
                 },
             ))
             .when_some(status, |view, status| {
@@ -523,188 +554,6 @@ impl Render for TerminalView {
                         .child(status),
                 )
             })
-    }
-}
-
-struct PreparedFrame {
-    text_cells: Vec<PreparedTextCell>,
-    backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    cursor: Option<Bounds<Pixels>>,
-}
-
-struct PreparedTextCell {
-    line: gpui::ShapedLine,
-    origin: Point<Pixels>,
-}
-
-fn prepare_frame(
-    snapshot: Option<&TerminalSnapshot>,
-    bounds: Bounds<Pixels>,
-    window: &mut Window,
-) -> PreparedFrame {
-    let Some(snapshot) = snapshot else {
-        return PreparedFrame {
-            text_cells: Vec::new(),
-            backgrounds: Vec::new(),
-            cursor: None,
-        };
-    };
-    let columns = usize::from(snapshot.size.columns);
-    let rows = usize::from(snapshot.size.rows);
-    let mut text_cells = Vec::with_capacity(snapshot.cells.len());
-    let mut backgrounds = Vec::with_capacity(rows);
-
-    for row in 0..rows {
-        let row_cells = &snapshot.cells[row * columns..(row + 1) * columns];
-        prepare_backgrounds(row_cells, row, bounds, &mut backgrounds);
-        for (column, cell) in row_cells.iter().enumerate() {
-            if cell.style.wide_spacer {
-                continue;
-            }
-            let rendered = if cell.style.hidden {
-                " ".to_owned()
-            } else {
-                cell.text.clone()
-            };
-            if rendered == " " && !cell.style.underline && !cell.style.strikeout
-            {
-                continue;
-            }
-            let mut cell_font = font("Menlo");
-            cell_font.weight = if cell.style.bold {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            };
-            cell_font.style = if cell.style.italic {
-                FontStyle::Italic
-            } else {
-                FontStyle::Normal
-            };
-            let runs = [TextRun {
-                len: rendered.len(),
-                font: cell_font,
-                color: color(display_foreground(
-                    cell.foreground,
-                    cell.style.dim,
-                )),
-                background_color: None,
-                underline: cell.style.underline.then_some(UnderlineStyle {
-                    color: Some(color(display_foreground(
-                        cell.foreground,
-                        cell.style.dim,
-                    ))),
-                    thickness: px(1.0),
-                    wavy: false,
-                }),
-                strikethrough: cell.style.strikeout.then_some(
-                    StrikethroughStyle {
-                        color: Some(color(display_foreground(
-                            cell.foreground,
-                            cell.style.dim,
-                        ))),
-                        thickness: px(1.0),
-                    },
-                ),
-            }];
-            let line = window.text_system().shape_line(
-                rendered.into(),
-                FONT_SIZE,
-                &runs,
-                None,
-            );
-            text_cells.push(PreparedTextCell {
-                line,
-                origin: cell_origin(bounds, column, row),
-            });
-        }
-    }
-
-    let cursor = snapshot
-        .cursor
-        .filter(|cursor| cursor.shape != huterm_protocol::CursorShape::Hidden)
-        .map(|cursor| cursor_bounds(bounds, cursor));
-    PreparedFrame {
-        text_cells,
-        backgrounds,
-        cursor,
-    }
-}
-
-fn prepare_backgrounds(
-    cells: &[huterm_protocol::Cell],
-    row: usize,
-    bounds: Bounds<Pixels>,
-    backgrounds: &mut Vec<(Bounds<Pixels>, Hsla)>,
-) {
-    let mut start = 0;
-    while start < cells.len() {
-        let background = cells[start].background;
-        let mut end = start + 1;
-        while end < cells.len() && cells[end].background == background {
-            end += 1;
-        }
-        let columns = u16::try_from(end - start).unwrap_or(u16::MAX);
-        backgrounds.push((
-            Bounds::new(
-                cell_origin(bounds, start, row),
-                size(CELL_WIDTH * f32::from(columns), CELL_HEIGHT),
-            ),
-            color(background),
-        ));
-        start = end;
-    }
-}
-
-fn cell_origin(
-    bounds: Bounds<Pixels>,
-    column: usize,
-    row: usize,
-) -> Point<Pixels> {
-    let column = u16::try_from(column).unwrap_or(u16::MAX);
-    let row = u16::try_from(row).unwrap_or(u16::MAX);
-    point(
-        bounds.left() + CELL_WIDTH * f32::from(column),
-        bounds.top() + CELL_HEIGHT * f32::from(row),
-    )
-}
-
-fn cursor_bounds(
-    bounds: Bounds<Pixels>,
-    cursor: huterm_protocol::Cursor,
-) -> Bounds<Pixels> {
-    let origin = point(
-        bounds.left() + CELL_WIDTH * f32::from(cursor.column),
-        bounds.top() + CELL_HEIGHT * f32::from(cursor.row),
-    );
-    match cursor.shape {
-        huterm_protocol::CursorShape::Block => {
-            Bounds::new(origin, size(CELL_WIDTH, CELL_HEIGHT))
-        }
-        huterm_protocol::CursorShape::Underline => Bounds::new(
-            point(origin.x, origin.y + CELL_HEIGHT - px(2.0)),
-            size(CELL_WIDTH, px(2.0)),
-        ),
-        huterm_protocol::CursorShape::Beam => {
-            Bounds::new(origin, size(px(2.0), CELL_HEIGHT))
-        }
-        huterm_protocol::CursorShape::Hidden => {
-            Bounds::new(origin, size(px(0.0), px(0.0)))
-        }
-    }
-}
-
-fn paint_frame(frame: PreparedFrame, window: &mut Window, cx: &mut App) {
-    for (bounds, color) in frame.backgrounds {
-        window.paint_quad(fill(bounds, color));
-    }
-    for text_cell in frame.text_cells {
-        let _ = text_cell
-            .line
-            .paint(text_cell.origin, CELL_HEIGHT, window, cx);
-    }
-    if let Some(cursor) = frame.cursor {
-        window.paint_quad(fill(cursor, rgba(0xffff_ff66)));
     }
 }
 
@@ -758,6 +607,11 @@ fn default_shell() -> PathBuf {
     }
 }
 
+fn renderer_benchmark_enabled() -> bool {
+    std::env::var("HUTERM_RENDER_BENCH")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 fn control_byte(key: &str) -> Option<u8> {
     if key.eq_ignore_ascii_case("space") {
         return Some(0);
@@ -769,20 +623,6 @@ fn control_byte(key: &str) -> Option<u8> {
     matches!(byte, b'@'..=b'_').then_some(byte & 0x1f)
 }
 
-fn display_foreground(foreground: Rgb, dim: bool) -> Rgb {
-    if !dim {
-        return foreground;
-    }
-    let dim = |channel: u8| {
-        u8::try_from(u16::from(channel) * 2 / 3).unwrap_or(u8::MAX)
-    };
-    Rgb {
-        red: dim(foreground.red),
-        green: dim(foreground.green),
-        blue: dim(foreground.blue),
-    }
-}
-
 fn buffered_input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
@@ -791,15 +631,6 @@ fn buffered_input_bytes(input: &TerminalInput) -> usize {
         }
         _ => std::mem::size_of::<TerminalInput>(),
     }
-}
-
-fn color(rgb: Rgb) -> Hsla {
-    gpui::rgb(
-        (u32::from(rgb.red) << 16)
-            | (u32::from(rgb.green) << 8)
-            | u32::from(rgb.blue),
-    )
-    .into()
 }
 
 #[cfg(test)]
@@ -823,9 +654,12 @@ mod tests {
             blue: 60,
         };
 
-        assert_eq!(display_foreground(foreground, false), foreground);
         assert_eq!(
-            display_foreground(foreground, true),
+            crate::renderer::display_foreground(foreground, false),
+            foreground
+        );
+        assert_eq!(
+            crate::renderer::display_foreground(foreground, true),
             Rgb {
                 red: 160,
                 green: 80,

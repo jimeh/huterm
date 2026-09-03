@@ -37,6 +37,8 @@ Run `mise tasks` to discover the full task set.
 - `mise run check` runs the fast format, lint, type, and architecture gate.
 - `mise run test` runs unit and PTY integration tests.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
+- `mise run bench:renderer` drives the release renderer under Xvfb and reports
+  opt-in CPU preparation and paint-encoding timings.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
@@ -67,6 +69,11 @@ On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
+GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
+rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
+and apply colors and decorations during paint. Use the generic `monospace` font
+family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
+missing-font fallback path.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.

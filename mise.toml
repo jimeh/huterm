@@ -112,6 +112,39 @@ if [ "$status" -ne 124 ]; then
 fi
 '''
 
+[tasks."bench:renderer"]
+description = "Measure release-mode GPUI renderer CPU work under Xvfb"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Renderer benchmark currently requires Linux and Xvfb" >&2
+  exit 1
+fi
+if ! command -v twm >/dev/null 2>&1; then
+  echo "Renderer benchmark requires twm so Xvfb exposes the GPUI window" >&2
+  exit 1
+fi
+cargo build --release --locked -p huterm
+cargo build --release --locked -p huterm-gpui --example render_workload
+workload="$(pwd)/target/release/examples/render_workload"
+set +e
+xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
+  twm >/dev/null 2>&1 &
+  wm_pid=$!
+  SHELL="$1" HUTERM_RENDER_STATS=1 HUTERM_RENDER_BENCH=1 \
+    timeout --signal=TERM 8s "$2"
+  result=$?
+  kill "$wm_pid" >/dev/null 2>&1 || true
+  wait "$wm_pid" >/dev/null 2>&1 || true
+  exit "$result"
+' sh "$workload" target/release/huterm
+status=$?
+set -e
+if [ "$status" -ne 124 ]; then
+  echo "HUTerm renderer benchmark ended early (status $status)" >&2
+  exit 1
+fi
+'''
+
 [tasks.license]
 description = "Audit dependency licenses, bans, and sources"
 run = "cargo deny --locked check licenses bans sources"
