@@ -1,0 +1,19 @@
+[package]
+name = "huterm-gpui"
+description = "Native GPUI client for HUTerm"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+huterm-core.workspace = true
+huterm-protocol.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+gpui.workspace = true
+
+[lints]
+workspace = true
