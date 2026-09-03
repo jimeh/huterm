@@ -55,16 +55,21 @@ process.
 | Trigger | Command | Scope | Evidence owner |
 | --- | --- | --- | --- |
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
-| Pre-commit | `mise run check` | Format, Clippy, types, crate boundary | Local hook |
+| Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
-| Pull request | `mise run verify` on `macos-14` and Ubuntu 24.04 | Apple Silicon and Linux builds/tests | CI |
+| Pull request | `mise run verify:platform` on `macos-14` and Ubuntu 24.04 | Apple Silicon and Linux builds/tests | CI |
+| Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
+| Pull request | `mise run license` on Ubuntu 24.04 | Dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 
-The pre-commit decision is `add`: the canonical warm `check` task took 1.45
-seconds on the Linux development host, within the project's 10-second hook
-budget, and does not modify files. Reconsider the hook if the measured warm
-time crosses that budget. Do not move license or workflow audits into the hook;
-they belong to handoff and CI.
+The pre-commit hook runs independent jobs in parallel. Markdown and Rust
+formatting receive only matching staged paths. Clippy compilation and the
+protocol boundary remain whole-workspace checks, but run only when staged Rust
+or Cargo inputs can affect them. Workflow policy runs only for staged Actions
+or policy configuration, and harness configuration validates its own task and
+hook definitions. Keep the representative warm path below the project's
+10-second hook budget. Dependency audits remain in handoff and CI because they
+are broader and may refresh advisory data.
 
 Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual

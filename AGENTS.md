@@ -38,7 +38,8 @@ Run `mise tasks` to discover the full task set.
 
 - `mise run doctor` checks host prerequisites; `mise run dev` starts the native
   macOS or Linux client.
-- `mise run check` runs the fast format, lint, type, and architecture gate.
+- `mise run check` runs the fast format, Clippy compilation, docs, and
+  architecture gate; `mise run typecheck` remains available independently.
 - `mise run test` runs unit and PTY integration tests.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
@@ -47,6 +48,9 @@ Run `mise tasks` to discover the full task set.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
 or require changes to `~/.rustfmt.toml`.
+Keep the Rust version, minimal profile, and `clippy`/`rustfmt` components in
+`mise.toml` aligned with `rust-toolchain.toml`; CI installs only the named Mise
+tools for each job.
 
 Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
 CI cache can restore its Rust install symlink without the corresponding rustup
@@ -58,16 +62,33 @@ runs the same checks plus an Xvfb smoke on Linux x86_64. Linux development
 requires the XKB packages documented in
 [the development guide](docs/agents/development.md).
 
-The pre-commit hook runs `mise run check`. Install it with `mise run setup`.
-Keep it only while its warm runtime stays below 10 seconds; CI remains
-authoritative because hooks can be bypassed.
+The pre-commit hook runs staged-path formatting and Markdown checks, then
+triggers whole-workspace Clippy or workflow checks only for relevant staged
+inputs. Install it with `mise run setup`. Keep its representative warm path
+below 10 seconds; CI remains authoritative because hooks can be bypassed.
 
 ## Dependency changes
 
-The repository uses a seven-day Mise release-age policy and commits
-`Cargo.lock` and `mise.lock`. Pin direct runtime dependencies deliberately.
+The repository uses a three-day release-age policy for Mise tools, Cargo
+updates, and GitHub Actions, and commits `Cargo.lock` and `mise.lock`. Pin
+direct runtime dependencies deliberately. Use `mise run actions:update` to
+refresh action pins and `mise run tools:update` to refresh project tools
+without accepting releases inside the cooldown window.
+Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
+`.github/dependabot.yml`, `.github/workflows/ci.yml`, and `zizmor.yml` aligned
+when changing the policy.
 The published GPUI dependency graph needs Rust 1.88 or newer; project tooling
 pins Rust 1.98.
+GPUI 0.2.2 depends on `stacksafe` 0.1.x, whose `proc-macro-error2` dependency
+emits a Rust future-incompatibility warning. The published `stacksafe` 1.x fix
+is outside GPUI's semver requirement, so resolve this through a future GPUI
+release rather than a Git or local patch.
+Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
+`MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for
+`fcntl`; upgrading earlier would require an unsafe borrowed-descriptor
+conversion in `huterm-core`, which denies unsafe code. Remove the matching
+Dependabot ignore when a `portable-pty` release exposes a safe borrowed
+descriptor.
 On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 `mise run doctor` checks it and reports the installation command.
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
