@@ -13,20 +13,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  policy:
+    name: Policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install policy tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          install_args: actionlint markdownlint-cli2 pinact zizmor
+
+      - name: Verify repository policy
+        run: mise run verify:policy
+
   verify:
     name: Verify macOS arm64
     runs-on: macos-14
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install Mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - name: Install Rust with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
+          install_args: rust
+
+      - name: Cache Cargo build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -34,8 +57,8 @@ jobs:
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = arm64
 
-      - name: Verify
-        run: mise run verify
+      - name: Verify Rust
+        run: mise run verify:platform
 
   verify-linux:
     name: Verify Linux x86_64
@@ -43,7 +66,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -54,16 +77,23 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             mesa-vulkan-drivers xvfb
 
-      - name: Install Mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - name: Install Rust with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
+          install_args: rust cargo:cargo-deny
+
+      - name: Cache Cargo build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify
-        run: mise run verify
+      - name: Verify Rust
+        run: mise run verify:platform
+
+      - name: Audit dependencies
+        run: mise run license
 
       - name: Smoke GPUI window under Xvfb
         run: mise run smoke:linux

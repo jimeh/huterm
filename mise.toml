@@ -1,6 +1,6 @@
 [settings]
 lockfile = true
-minimum_release_age = "7d"
+minimum_release_age = "3d"
 
 [tools]
 actionlint = "1.7.12"
@@ -9,7 +9,7 @@ lefthook = "2.1.12"
 markdownlint-cli2 = "0.23.2"
 pinact = "4.1.1"
 rust = "1.98.0"
-zizmor = "1.29.0"
+zizmor = "1.30.0"
 
 [tasks.setup]
 description = "Install project tools and local Git hooks"
@@ -58,6 +58,14 @@ run = "cargo build --workspace --locked"
 description = "Format Rust and repository configuration"
 run = ["cargo fmt --all", "pinact run"]
 
+[tasks."actions:update"]
+description = "Update GitHub Actions pins after the three-day cooldown"
+run = "pinact run --update"
+
+[tasks."tools:update"]
+description = "Update project Mise tools after the three-day cooldown"
+run = "mise up --bump --local"
+
 [tasks."format:check"]
 description = "Check Rust formatting"
 run = "cargo fmt --all -- --check"
@@ -69,6 +77,10 @@ run = "cargo clippy --workspace --all-targets --all-features --locked -- -D warn
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
 run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"
+
+[tasks."lint:docs:files"]
+description = "Lint selected Markdown files"
+run = "markdownlint-cli2 --no-globs --"
 
 [tasks.typecheck]
 description = "Type-check all workspace targets"
@@ -87,7 +99,15 @@ fi
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "typecheck", "architecture"]
+depends = ["format:check", "lint", "lint:docs", "architecture"]
+
+[tasks."check:rust"]
+description = "Run Rust formatting, Clippy compilation, and architecture checks"
+depends = ["format:check", "lint", "architecture"]
+
+[tasks."check:rust:analysis"]
+hide = true
+depends = ["lint", "architecture"]
 
 [tasks.test]
 description = "Run workspace tests"
@@ -146,12 +166,12 @@ fi
 '''
 
 [tasks.license]
-description = "Audit dependency licenses, bans, and sources"
-run = "cargo deny --locked check licenses bans sources"
+description = "Audit dependency advisories, licenses, bans, and sources"
+run = "cargo deny --locked check"
 
 [tasks."ci:workflows"]
 description = "Validate and secure GitHub Actions workflows"
-run = ["actionlint", "zizmor --offline .", "pinact run --check"]
+run = ["actionlint", "zizmor --offline .", "pinact run --check --verify-comment"]
 
 [tasks."verify:toolchain"]
 description = "Materialize the pinned Rust toolchain before parallel checks"
@@ -160,6 +180,19 @@ run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
 [tasks."verify:parallel"]
 hide = true
 depends = ["check", "test", "license", "ci:workflows"]
+
+[tasks."verify:platform:parallel"]
+hide = true
+depends = ["check:rust", "test"]
+
+[tasks."verify:platform"]
+description = "Run platform-specific Rust validation"
+depends = ["verify:toolchain"]
+run = "mise run verify:platform:parallel"
+
+[tasks."verify:policy"]
+description = "Run platform-independent repository policy checks"
+depends = ["lint:docs", "ci:workflows"]
 
 [tasks.verify]
 description = "Run the broad CI-equivalent validation"

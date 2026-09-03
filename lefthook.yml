@@ -1,4 +1,22 @@
 pre-commit:
+  parallel: true
   jobs:
-    - name: check
-      run: mise run check
+    - name: rustfmt
+      glob: "*.rs"
+      run: rustfmt --edition 2024 --check {staged_files}
+
+    - name: rust-analysis
+      glob: "{*.rs,**/Cargo.toml,Cargo.lock}"
+      run: mise run check:rust:analysis
+
+    - name: markdown
+      glob: "**/*.md"
+      run: mise run lint:docs:files {staged_files}
+
+    - name: workflows
+      glob: "{.github/workflows/*.{yml,yaml},.github/dependabot.yml,.pinact.yaml,zizmor.yml}"
+      run: mise run ci:workflows
+
+    - name: harness-config
+      glob: "{mise.toml,mise.lock,lefthook.yml,rustfmt.toml,deny.toml}"
+      run: mise tasks >/dev/null && lefthook validate
