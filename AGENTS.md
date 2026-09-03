@@ -48,6 +48,9 @@ Run `mise tasks` to discover the full task set.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
 or require changes to `~/.rustfmt.toml`.
+Keep the Rust version, minimal profile, and `clippy`/`rustfmt` components in
+`mise.toml` aligned with `rust-toolchain.toml`; CI installs only the named Mise
+tools for each job.
 
 Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
 CI cache can restore its Rust install symlink without the corresponding rustup
