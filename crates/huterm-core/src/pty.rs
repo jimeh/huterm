@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use filedescriptor::{AsRawFileDescriptor, FileDescriptor, RawFileDescriptor};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::thread;
@@ -41,6 +43,9 @@ impl PtyProcess {
                 "PTY process is missing an owned component",
             ));
         }
+        let reader_waiter = ReaderWaiter::new(self.master.as_deref().ok_or(
+            RuntimeError::Invariant("PTY process has no master handle"),
+        )?)?;
         match (
             self.master.take(),
             self.reader.take(),
@@ -57,6 +62,7 @@ impl PtyProcess {
             ) => Ok(PtyParts {
                 master,
                 reader,
+                reader_waiter,
                 writer,
                 child,
                 killer,
@@ -90,9 +96,79 @@ impl Drop for PtyProcess {
 pub(crate) struct PtyParts {
     pub(crate) master: Box<dyn MasterPty + Send>,
     pub(crate) reader: Box<dyn Read + Send>,
+    pub(crate) reader_waiter: ReaderWaiter,
     pub(crate) writer: Box<dyn Write + Send>,
     pub(crate) child: Box<dyn Child + Send + Sync>,
     pub(crate) killer: Box<dyn ChildKiller + Send + Sync>,
+}
+
+pub(crate) struct ReaderWaiter {
+    #[cfg(unix)]
+    fd: FileDescriptor,
+}
+
+#[cfg(unix)]
+struct MasterDescriptor(RawFileDescriptor);
+
+#[cfg(unix)]
+impl AsRawFileDescriptor for MasterDescriptor {
+    fn as_raw_file_descriptor(&self) -> RawFileDescriptor {
+        self.0
+    }
+}
+
+impl ReaderWaiter {
+    fn new(master: &dyn MasterPty) -> Result<Self, RuntimeError> {
+        #[cfg(unix)]
+        {
+            let master_fd =
+                master.as_raw_fd().ok_or(RuntimeError::Invariant(
+                    "Unix PTY master has no raw file descriptor",
+                ))?;
+            let fd = FileDescriptor::dup(&MasterDescriptor(master_fd))
+                .map_err(|error| RuntimeError::Pty(error.to_string()))?;
+            Ok(Self { fd })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = master;
+            Ok(Self {})
+        }
+    }
+
+    pub(crate) fn wait(&self, timeout: Duration) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            // filedescriptor uses select(2) on macOS, where poll(2) is not
+            // reliable for PTY descriptors.
+            let mut descriptors = [filedescriptor::pollfd {
+                fd: self.fd.as_raw_file_descriptor(),
+                events: filedescriptor::POLLIN,
+                revents: 0,
+            }];
+            match filedescriptor::poll(&mut descriptors, Some(timeout)) {
+                Ok(_) => Ok(()),
+                Err(error) if poll_was_interrupted(&error) => Ok(()),
+                Err(error) => Err(std::io::Error::other(error)),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            thread::sleep(timeout);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn poll_was_interrupted(error: &filedescriptor::Error) -> bool {
+    match error {
+        filedescriptor::Error::Poll(source)
+        | filedescriptor::Error::Io(source) => {
+            source.kind() == std::io::ErrorKind::Interrupted
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn spawn(

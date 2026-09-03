@@ -27,6 +27,10 @@ architecture and acceptance criteria.
   blocked I/O workers terminate.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
+- After a nonblocking PTY read returns `WouldBlock`, wait for readability
+  instead of sleeping before every retry. Use `filedescriptor` for this wait:
+  its macOS implementation avoids the platform's unreliable PTY `poll(2)` by
+  using `select(2)`.
 
 ## Commands
 

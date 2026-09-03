@@ -386,6 +386,7 @@ fn run_terminal(
     let crate::pty::PtyParts {
         master,
         reader,
+        reader_waiter,
         writer,
         mut child,
         mut killer,
@@ -395,6 +396,7 @@ fn run_terminal(
     let reader_join = match spawn_reader(
         terminal_id,
         reader,
+        reader_waiter,
         message_sender.clone(),
         control_sender.clone(),
         Arc::clone(&closing),
@@ -584,6 +586,7 @@ fn run_terminal(
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
+    reader_waiter: pty::ReaderWaiter,
     messages: SyncSender<RuntimeMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
@@ -618,7 +621,16 @@ fn spawn_reader(
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        thread::sleep(RUNTIME_POLL_INTERVAL);
+                        if let Err(error) =
+                            reader_waiter.wait(RUNTIME_POLL_INTERVAL)
+                        {
+                            let _ = controls.send(
+                                RuntimeControl::WorkerFailed(format!(
+                                    "PTY readiness wait failed: {error}"
+                                )),
+                            );
+                            break;
+                        }
                     }
                     Err(error) => {
                         let _ = controls.send(RuntimeControl::WorkerFailed(
@@ -911,6 +923,27 @@ mod tests {
             );
         }
         runtime.shutdown().expect("runtime should stop cleanly");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pty_runtime_should_process_bursty_output_without_poll_delay() {
+        let started = Instant::now();
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(17),
+            &command(
+                "dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE",
+            ),
+        )
+        .expect("runtime should start");
+        wait_for_text(&runtime.client(), "DONE");
+        let elapsed = started.elapsed();
+        runtime.shutdown().expect("runtime should stop cleanly");
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "bursty PTY output took {elapsed:?} to process"
+        );
     }
 
     #[test]
