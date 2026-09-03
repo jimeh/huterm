@@ -75,7 +75,8 @@ direct runtime dependencies deliberately. Use `mise run actions:update` to
 refresh action pins and `mise run tools:update` to refresh project tools
 without accepting releases inside the cooldown window.
 Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
-`.github/dependabot.yml`, and `zizmor.yml` aligned when changing the policy.
+`.github/dependabot.yml`, `.github/workflows/ci.yml`, and `zizmor.yml` aligned
+when changing the policy.
 The published GPUI dependency graph needs Rust 1.88 or newer; project tooling
 pins Rust 1.98.
 GPUI 0.2.2 depends on `stacksafe` 0.1.x, whose `proc-macro-error2` dependency

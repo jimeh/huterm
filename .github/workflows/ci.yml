@@ -28,6 +28,7 @@ jobs:
         with:
           cache: true
           install_args: actionlint markdownlint-cli2 pinact zizmor
+          minimum_release_age: 3d
 
       - name: Verify repository policy
         run: mise run verify:policy
@@ -47,6 +48,7 @@ jobs:
         with:
           cache: true
           install_args: rust
+          minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -82,6 +84,7 @@ jobs:
         with:
           cache: true
           install_args: rust cargo:cargo-deny
+          minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

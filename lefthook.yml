@@ -6,7 +6,7 @@ pre-commit:
       run: rustfmt --edition 2024 --check {staged_files}
 
     - name: rust-analysis
-      glob: "{*.rs,**/Cargo.toml,Cargo.lock}"
+      glob: "{*.rs,Cargo.toml,**/Cargo.toml,Cargo.lock}"
       run: mise run check:rust:analysis
 
     - name: markdown
