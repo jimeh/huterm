@@ -11,6 +11,7 @@ from pathlib import Path
 
 WARM_SAMPLES = 5
 MIN_SAMPLES = 20
+MIN_INPUT_SAMPLES = 10
 MEDIAN_CPU_BUDGET_US = 8_000
 P95_CPU_BUDGET_US = 16_700
 P95_LATENCY_BUDGET_US = 33_400
@@ -54,11 +55,18 @@ def main() -> None:
         fail("missing request queue diagnostics")
 
     samples = samples[WARM_SAMPLES:]
+    input_samples = [sample for sample in samples if sample.get("input") == 1]
+    if len(input_samples) < MIN_INPUT_SAMPLES:
+        fail(
+            "needed at least "
+            f"{MIN_INPUT_SAMPLES} matched input samples after warmup, "
+            f"got {len(input_samples)}"
+        )
     combined = [
         sample["snapshot_us"] + sample["prepare_us"] + sample["paint_us"]
         for sample in samples
     ]
-    latency = [sample["latency_us"] for sample in samples]
+    latency = [sample["latency_us"] for sample in input_samples]
     wakeup_delay = [sample["timer_wait_us"] for sample in samples]
     median_cpu = int(statistics.median(combined))
     p95_cpu = percentile(combined, 0.95)
@@ -92,7 +100,8 @@ def main() -> None:
 
     print(
         "huterm-scroll summary "
-        f"samples={len(samples)} median_cpu_us={median_cpu} "
+        f"samples={len(samples)} input_samples={len(input_samples)} "
+        f"median_cpu_us={median_cpu} "
         f"p95_cpu_us={p95_cpu} p95_latency_us={p95_latency} "
         f"median_wakeup_us={median_wakeup} "
         f"requests_started={latest['requests_started']} "

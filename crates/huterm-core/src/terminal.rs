@@ -23,6 +23,7 @@ const MESSAGE_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// In-process client handle for one terminal runtime.
 #[derive(Clone, Debug)]
@@ -242,9 +243,33 @@ impl SnapshotRequest {
     }
 
     fn recv_blocking(self) -> Result<SnapshotReply, RuntimeError> {
-        self.receiver
-            .recv_blocking()
-            .map_err(|_| RuntimeError::Stopped)
+        self.recv_blocking_with_timeout(SNAPSHOT_RESPONSE_TIMEOUT)
+    }
+
+    fn recv_blocking_with_timeout(
+        self,
+        timeout: Duration,
+    ) -> Result<SnapshotReply, RuntimeError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.receiver.try_recv() {
+                Ok(reply) => return Ok(reply),
+                Err(async_channel::TryRecvError::Closed) => {
+                    return Err(RuntimeError::Stopped);
+                }
+                Err(async_channel::TryRecvError::Empty) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(RuntimeError::TimedOut);
+                    }
+                    thread::park_timeout(
+                        deadline
+                            .saturating_duration_since(now)
+                            .min(Duration::from_millis(1)),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -921,6 +946,24 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn blocking_snapshot_receive_times_out_and_reports_disconnect() {
+        let (_sender, receiver) = async_channel::bounded(1);
+        let request = SnapshotRequest { receiver };
+        assert!(matches!(
+            request.recv_blocking_with_timeout(Duration::from_millis(1)),
+            Err(RuntimeError::TimedOut)
+        ));
+
+        let (sender, receiver) = async_channel::bounded(1);
+        drop(sender);
+        let request = SnapshotRequest { receiver };
+        assert!(matches!(
+            request.recv_blocking_with_timeout(Duration::from_secs(1)),
+            Err(RuntimeError::Stopped)
+        ));
+    }
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {

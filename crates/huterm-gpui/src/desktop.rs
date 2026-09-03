@@ -299,6 +299,8 @@ fn install_bindings(cx: &mut App) {
             KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-m", Minimize, None),
+            KeyBinding::new("cmd-h", Hide, None),
+            KeyBinding::new("cmd-alt-h", HideOthers, None),
         ]);
     } else {
         bindings.extend([
@@ -483,13 +485,10 @@ impl TerminalView {
             .as_ref()
             .is_some_and(ScrollBenchmark::is_started)
         {
-            let injected_at = self
-                .scroll_benchmark
-                .as_mut()
-                .and_then(|benchmark| {
+            let injected_at =
+                self.scroll_benchmark.as_mut().and_then(|benchmark| {
                     benchmark.take_injection(viewport.bottom_offset)
-                })
-                .unwrap_or_else(Instant::now);
+                });
             self.renderer.borrow_mut().begin_scroll_sample(
                 self.snapshot_sequence,
                 viewport.bottom_offset,
@@ -796,10 +795,9 @@ impl TerminalView {
             && self.scroll.history() > 0
         {
             let geometry = self.scrollbar_geometry(window);
-            if geometry.is_some_and(|geometry| {
+            if let Some(geometry) = geometry.filter(|geometry| {
                 geometry.contains(f32::from(event.position.y))
             }) {
-                let geometry = geometry.expect("checked above");
                 self.scrollbar_dragging = true;
                 self.scrollbar_drag_offset =
                     event.position.y - px(geometry.thumb_start);
@@ -900,16 +898,17 @@ impl TerminalView {
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
+                let current = selection_request_is_current(
+                    view.selection,
+                    selection,
+                    range,
+                );
                 match result {
-                    Ok(Some(text))
-                        if view.selection.is_some_and(|current| {
-                            current.generation == selection.generation
-                                && current.range() == range
-                        }) =>
-                    {
+                    Ok(Some(text)) if current => {
                         view.selected_text = Some(text);
                     }
-                    Ok(_) => view.clear_selection(),
+                    Ok(None) if current => view.clear_selection(),
+                    Ok(_) => {}
                     Err(error) => {
                         view.set_status(error.to_string());
                     }
@@ -1212,10 +1211,7 @@ impl Render for TerminalView {
                     paint_renderer.borrow_mut().paint(bounds, window);
                 },
             ));
-        if self.scroll.history() > 0 {
-            let geometry = self
-                .scrollbar_geometry(window)
-                .expect("history should produce scrollbar geometry");
+        if let Some(geometry) = self.scrollbar_geometry(window) {
             root = root
                 .child(
                     div()
@@ -1244,12 +1240,15 @@ impl Render for TerminalView {
                         .child(
                             if self.scroll.desired() == self.scroll.displayed()
                             {
-                                format!("{} lines up", self.scroll.displayed())
+                                format!(
+                                    "{} lines up",
+                                    format_line_count(self.scroll.displayed())
+                                )
                             } else {
                                 format!(
                                     "{} requested, {} shown",
-                                    self.scroll.desired(),
-                                    self.scroll.displayed()
+                                    format_line_count(self.scroll.desired()),
+                                    format_line_count(self.scroll.displayed())
                                 )
                             },
                         ),
@@ -1352,15 +1351,78 @@ fn reserved_keystroke(keystroke: &Keystroke) -> bool {
     reserved_chord(keystroke.modifiers, &keystroke.key)
 }
 fn reserved_chord(modifiers: GpuiModifiers, key: &str) -> bool {
-    (cfg!(target_os = "macos")
-        && modifiers.platform
-        && (matches!(key, "c" | "v" | "," | "q" | "m")
-            || (modifiers.control && key == "f")))
-        || (!cfg!(target_os = "macos")
-            && modifiers.control
-            && modifiers.shift
-            && matches!(key, "c" | "v"))
-        || (modifiers.shift && matches!(key, "pageup" | "pagedown" | "end"))
+    reserved_chord_for_platform(cfg!(target_os = "macos"), modifiers, key)
+}
+fn reserved_chord_for_platform(
+    is_macos: bool,
+    modifiers: GpuiModifiers,
+    key: &str,
+) -> bool {
+    if exact_modifiers(modifiers, ModifierChord::Shift) {
+        return matches!(key, "pageup" | "pagedown" | "end");
+    }
+    if is_macos {
+        (exact_modifiers(modifiers, ModifierChord::Command)
+            && matches!(key, "c" | "v" | "," | "q" | "m" | "h"))
+            || (exact_modifiers(modifiers, ModifierChord::CommandAlt)
+                && key == "h")
+            || (exact_modifiers(modifiers, ModifierChord::CommandControl)
+                && key == "f")
+    } else {
+        exact_modifiers(modifiers, ModifierChord::ControlShift)
+            && matches!(key, "c" | "v")
+    }
+}
+#[derive(Clone, Copy)]
+enum ModifierChord {
+    Shift,
+    Command,
+    CommandAlt,
+    CommandControl,
+    ControlShift,
+}
+fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
+    let matches = match chord {
+        ModifierChord::Shift => modifiers.shift,
+        ModifierChord::Command => modifiers.platform,
+        ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
+        ModifierChord::CommandControl => {
+            modifiers.platform && modifiers.control
+        }
+        ModifierChord::ControlShift => modifiers.control && modifiers.shift,
+    };
+    let count = usize::from(modifiers.control)
+        + usize::from(modifiers.alt)
+        + usize::from(modifiers.shift)
+        + usize::from(modifiers.platform)
+        + usize::from(modifiers.function);
+    let expected_count = match chord {
+        ModifierChord::Shift | ModifierChord::Command => 1,
+        ModifierChord::CommandAlt
+        | ModifierChord::CommandControl
+        | ModifierChord::ControlShift => 2,
+    };
+    matches && count == expected_count
+}
+fn selection_request_is_current(
+    current: Option<Selection>,
+    requested: Selection,
+    range: BufferRange,
+) -> bool {
+    current.is_some_and(|current| {
+        current.generation == requested.generation && current.range() == range
+    })
+}
+fn format_line_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.char_indices() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(character);
+    }
+    formatted
 }
 fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
     if position < 0.0 {
@@ -1449,32 +1511,108 @@ mod tests {
     }
     #[test]
     fn application_shortcuts_are_reserved_but_plain_control_c_is_not() {
-        let plain_control = GpuiModifiers {
-            control: true,
-            ..GpuiModifiers::default()
-        };
-        assert!(!reserved_chord(plain_control, "c"));
-
-        let scroll = GpuiModifiers {
-            shift: true,
-            ..GpuiModifiers::default()
-        };
-        assert!(reserved_chord(scroll, "pageup"));
+        assert!(!reserved_chord(modifiers(&[TestModifier::Control]), "c"));
+        assert!(reserved_chord(modifiers(&[TestModifier::Shift]), "pageup"));
 
         let clipboard = if cfg!(target_os = "macos") {
-            GpuiModifiers {
-                platform: true,
-                ..GpuiModifiers::default()
-            }
+            modifiers(&[TestModifier::Platform])
         } else {
-            GpuiModifiers {
-                control: true,
-                shift: true,
-                ..GpuiModifiers::default()
-            }
+            modifiers(&[TestModifier::Control, TestModifier::Shift])
         };
         assert!(reserved_chord(clipboard, "c"));
         assert!(reserved_chord(clipboard, "v"));
+    }
+    #[test]
+    fn macos_shortcuts_require_exact_modifiers() {
+        let command = modifiers(&[TestModifier::Platform]);
+        assert!(reserved_chord_for_platform(true, command, "h"));
+        assert!(reserved_chord_for_platform(
+            true,
+            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
+            "h"
+        ));
+        assert!(reserved_chord_for_platform(
+            true,
+            modifiers(&[TestModifier::Control, TestModifier::Platform]),
+            "f"
+        ));
+        assert!(!reserved_chord_for_platform(
+            true,
+            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
+            "c"
+        ));
+        let mut with_function = command;
+        with_function.function = true;
+        assert!(!reserved_chord_for_platform(true, with_function, "c"));
+    }
+    #[test]
+    fn linux_shortcuts_require_exact_modifiers() {
+        let clipboard =
+            modifiers(&[TestModifier::Control, TestModifier::Shift]);
+        assert!(reserved_chord_for_platform(false, clipboard, "c"));
+        assert!(reserved_chord_for_platform(false, clipboard, "v"));
+        assert!(!reserved_chord_for_platform(
+            false,
+            modifiers(&[
+                TestModifier::Control,
+                TestModifier::Alt,
+                TestModifier::Shift,
+            ]),
+            "c"
+        ));
+        assert!(!reserved_chord_for_platform(
+            false,
+            modifiers(&[
+                TestModifier::Control,
+                TestModifier::Shift,
+                TestModifier::Platform,
+            ]),
+            "c"
+        ));
+        let mut with_function = clipboard;
+        with_function.function = true;
+        assert!(!reserved_chord_for_platform(false, with_function, "c"));
+    }
+    #[test]
+    fn stale_selection_replies_do_not_match_newer_selection() {
+        let requested = selection(1, 2, 4);
+        assert!(selection_request_is_current(
+            Some(requested),
+            requested,
+            requested.range()
+        ));
+        assert!(!selection_request_is_current(
+            Some(selection(2, 2, 4)),
+            requested,
+            requested.range()
+        ));
+        assert!(!selection_request_is_current(
+            Some(selection(1, 3, 4)),
+            requested,
+            requested.range()
+        ));
+    }
+    #[test]
+    fn line_counts_use_thousands_separators() {
+        assert_eq!(format_line_count(0), "0");
+        assert_eq!(format_line_count(999), "999");
+        assert_eq!(format_line_count(1_284), "1,284");
+        assert_eq!(format_line_count(10_000), "10,000");
+        assert_eq!(format_line_count(1_000_000), "1,000,000");
+    }
+    #[test]
+    fn unmatched_benchmark_request_preserves_the_pending_input() {
+        let mut benchmark = ScrollBenchmark {
+            step: 0,
+            started: true,
+            queue_next: false,
+            pending_injection: Some((7, Instant::now())),
+            last_report: Instant::now(),
+        };
+
+        assert!(benchmark.take_injection(8).is_none());
+        assert!(benchmark.take_injection(7).is_some());
+        assert!(benchmark.take_injection(7).is_none());
     }
     #[test]
     fn macos_shell_is_login_and_only_packaged_launches_fill_missing_locale() {
@@ -1486,5 +1624,40 @@ mod tests {
         );
         assert!(locale_environment(true, true).is_empty());
         assert!(locale_environment(false, false).is_empty());
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestModifier {
+        Control,
+        Alt,
+        Shift,
+        Platform,
+    }
+
+    fn modifiers(active: &[TestModifier]) -> GpuiModifiers {
+        let mut modifiers = GpuiModifiers::default();
+        for modifier in active {
+            match modifier {
+                TestModifier::Control => modifiers.control = true,
+                TestModifier::Alt => modifiers.alt = true,
+                TestModifier::Shift => modifiers.shift = true,
+                TestModifier::Platform => modifiers.platform = true,
+            }
+        }
+        modifiers
+    }
+
+    fn selection(generation: u64, anchor: u16, head: u16) -> Selection {
+        Selection {
+            generation,
+            anchor: BufferPoint {
+                rows_from_live_bottom: 0,
+                column: anchor,
+            },
+            head: BufferPoint {
+                rows_from_live_bottom: 0,
+                column: head,
+            },
+        }
     }
 }

@@ -82,14 +82,14 @@ impl TerminalRenderer {
     }
 
     pub(super) fn records_stats(&self) -> bool {
-        self.stats.is_some() || self.scroll_benchmark.is_some()
+        timing_enabled(self.stats.is_some(), self.scroll_benchmark.is_some())
     }
 
     pub(super) fn begin_scroll_sample(
         &mut self,
         sequence: u64,
         requested_offset: usize,
-        injected_at: Instant,
+        injected_at: Option<Instant>,
     ) {
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.begin(sequence, requested_offset, injected_at);
@@ -120,7 +120,7 @@ impl TerminalRenderer {
         snapshot: Option<&Arc<TerminalSnapshot>>,
         window: &mut Window,
     ) {
-        let started = self.stats.as_ref().map(|_| Instant::now());
+        let started = self.records_stats().then(Instant::now);
         let Some(snapshot) = snapshot else {
             let changed = usize::from(!self.rows.is_empty());
             self.snapshot = None;
@@ -177,7 +177,7 @@ impl TerminalRenderer {
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) {
-        let started = self.stats.as_ref().map(|_| Instant::now());
+        let started = self.records_stats().then(Instant::now);
         let Some(snapshot) = &self.snapshot else {
             self.record_paint(started);
             return;
@@ -734,6 +734,7 @@ fn paint_selection(
     window: &mut Window,
 ) {
     let rows = usize::from(snapshot.size.rows);
+    let columns = usize::from(snapshot.size.columns);
     for row in 0..rows {
         let rows_from_live_bottom = snapshot
             .viewport
@@ -741,12 +742,18 @@ fn paint_selection(
             .saturating_add(rows.saturating_sub(1).saturating_sub(row));
         let mut start = None;
         let mut end = 0_u16;
+        let row_start = row.saturating_mul(columns);
+        let row_cells = snapshot
+            .cells
+            .get(row_start..row_start.saturating_add(columns))
+            .unwrap_or_default();
         for column in 0..snapshot.size.columns {
-            let point = huterm_protocol::BufferPoint {
+            if selection_covers_column(
+                selection,
                 rows_from_live_bottom,
                 column,
-            };
-            if range_contains(selection, point) {
+                row_cells,
+            ) {
                 start.get_or_insert(column);
                 end = column.saturating_add(1);
             }
@@ -764,6 +771,32 @@ fn paint_selection(
             ));
         }
     }
+}
+
+fn selection_covers_column(
+    selection: BufferRange,
+    rows_from_live_bottom: usize,
+    column: u16,
+    row: &[Cell],
+) -> bool {
+    let contains = |column| {
+        range_contains(
+            selection,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom,
+                column,
+            },
+        )
+    };
+    if contains(column) {
+        return true;
+    }
+    let index = usize::from(column);
+    if row.get(index).is_some_and(|cell| cell.style.wide) {
+        return column.checked_add(1).is_some_and(contains);
+    }
+    row.get(index).is_some_and(|cell| cell.style.wide_spacer)
+        && column.checked_sub(1).is_some_and(contains)
 }
 
 fn range_contains(
@@ -909,6 +942,10 @@ fn renderer_stats_enabled() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
+fn timing_enabled(renderer_stats: bool, scroll_benchmark: bool) -> bool {
+    renderer_stats || scroll_benchmark
+}
+
 fn scroll_benchmark_enabled() -> bool {
     std::env::var("HUTERM_SCROLL_BENCH")
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -925,7 +962,7 @@ impl ScrollBenchmarkStats {
         &mut self,
         sequence: u64,
         requested_offset: usize,
-        injected_at: Instant,
+        injected_at: Option<Instant>,
     ) {
         if self
             .pending
@@ -984,15 +1021,20 @@ impl ScrollBenchmarkStats {
             return;
         };
         sample.paint = duration;
+        let matched_input = usize::from(sample.injected_at.is_some());
+        let latency = sample
+            .injected_at
+            .map_or(Duration::ZERO, |injected_at| injected_at.elapsed());
         eprintln!(
-            "huterm-scroll sample sequence={} requested={} returned={} snapshot_us={} prepare_us={} paint_us={} latency_us={} timer_wait_us={} rebuilt_rows={} reused_rows={} dropped={}",
+            "huterm-scroll sample sequence={} requested={} returned={} snapshot_us={} prepare_us={} paint_us={} input={} latency_us={} timer_wait_us={} rebuilt_rows={} reused_rows={} dropped={}",
             sample.sequence,
             sample.requested_offset,
             sample.returned_offset,
             sample.snapshot.as_micros(),
             sample.prepare.as_micros(),
             sample.paint.as_micros(),
-            sample.injected_at.elapsed().as_micros(),
+            matched_input,
+            latency.as_micros(),
             sample.wakeup_delay.as_micros(),
             sample.rebuilt_rows,
             sample.total_rows.saturating_sub(sample.rebuilt_rows),
@@ -1005,7 +1047,7 @@ struct ScrollBenchmarkSample {
     sequence: u64,
     requested_offset: usize,
     returned_offset: usize,
-    injected_at: Instant,
+    injected_at: Option<Instant>,
     snapshot: Duration,
     prepare: Duration,
     paint: Duration,
@@ -1022,7 +1064,7 @@ impl Default for ScrollBenchmarkSample {
             sequence: 0,
             requested_offset: 0,
             returned_offset: 0,
-            injected_at: Instant::now(),
+            injected_at: None,
             snapshot: Duration::ZERO,
             prepare: Duration::ZERO,
             paint: Duration::ZERO,
@@ -1174,6 +1216,31 @@ mod tests {
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].start, 0);
         assert_eq!(decorations[0].columns, 3);
+    }
+
+    #[test]
+    fn selection_expands_over_both_halves_of_a_wide_character() {
+        let mut cells = snapshot(2, 1, &["界", " "]).cells;
+        cells[0].style.wide = true;
+        cells[1].style.wide_spacer = true;
+
+        for selected_column in 0..=1 {
+            let point = huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: selected_column,
+            };
+            let selection = BufferRange::ordered(point, point);
+
+            assert!(selection_covers_column(selection, 0, 0, &cells));
+            assert!(selection_covers_column(selection, 0, 1, &cells));
+        }
+    }
+
+    #[test]
+    fn scroll_benchmark_alone_enables_renderer_timing() {
+        assert!(!timing_enabled(false, false));
+        assert!(timing_enabled(true, false));
+        assert!(timing_enabled(false, true));
     }
 
     #[test]

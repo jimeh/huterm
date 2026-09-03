@@ -48,5 +48,20 @@ version.workspace = true
 anyhow.workspace = true
 huterm-gpui.workspace = true
 
+[package.metadata.packager]
+productName = "Huterm"
+identifier = "app.huterm.dev"
+category = "Developer Tool"
+formats = ["app"]
+outDir = "target/release/bundle"
+binariesDir = "target/aarch64-apple-darwin/release"
+targetTriple = "aarch64-apple-darwin"
+beforePackagingCommand = "cargo build --release --locked --target aarch64-apple-darwin -p huterm"
+icons = ["assets/Huterm.icns"]
+
+[[package.metadata.packager.binaries]]
+path = "huterm"
+main = true
+
 [lints]
 workspace = true

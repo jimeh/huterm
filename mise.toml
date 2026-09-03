@@ -221,16 +221,40 @@ cargo packager --release --formats app
 bundle="target/release/bundle/Huterm.app"
 plist="$bundle/Contents/Info.plist"
 executable="$bundle/Contents/MacOS/huterm"
-identifier="$(sed -n 's/^identifier = "\([^"]*\)"/\1/p' Packager.toml)"
-version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"huterm","version":"\([^"]*\)".*/\1/p')"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = "$identifier"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$version"
-test "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" = "public.app-category.developer-tools"
+metadata="$(cargo metadata --no-deps --format-version 1)"
+identifier="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["metadata"]["packager"]["identifier"])')"
+version="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["version"])')"
+assert_equal() {
+  if [ "$1" != "$2" ]; then
+    echo "package verification failed for $3: expected '$2', got '$1'" >&2
+    exit 1
+  fi
+}
+assert_file() {
+  if [ ! -f "$1" ]; then
+    echo "package verification failed: missing $2 at $1" >&2
+    exit 1
+  fi
+}
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" "$identifier" "CFBundleIdentifier"
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" "$version" "CFBundleShortVersionString"
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" "public.app-category.developer-tools" "LSApplicationCategoryType"
 icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")"
-test -f "$bundle/Contents/Resources/$icon"
-cmp -s assets/Huterm.icns "$bundle/Contents/Resources/$icon"
-test -x "$executable"
-file "$executable" | rg -q arm64
+packaged_icon="$bundle/Contents/Resources/$icon"
+assert_file "$packaged_icon" "bundle icon"
+if ! cmp -s assets/Huterm.icns "$packaged_icon"; then
+  echo "package verification failed: $packaged_icon differs from assets/Huterm.icns" >&2
+  exit 1
+fi
+if [ ! -x "$executable" ]; then
+  echo "package verification failed: executable is missing or not executable at $executable" >&2
+  exit 1
+fi
+architecture="$(file "$executable")"
+if ! printf '%s' "$architecture" | rg -q arm64; then
+  echo "package verification failed: expected arm64 executable, got: $architecture" >&2
+  exit 1
+fi
 echo "verified $bundle ($identifier, version $version, arm64)"
 '''
 
