@@ -172,13 +172,14 @@ fi
 '''
 
 [tasks."bench:scroll"]
-description = "Measure release-mode scroll coordination under Xvfb"
+description = "Measure release-mode scroll coordination and rendering"
 run = '''
-if [ "$(uname -s)" != Linux ]; then
-  echo "Scroll benchmark currently requires Linux and Xvfb" >&2
+platform="$(uname -s)"
+if [ "$platform" != Linux ] && [ "$platform" != Darwin ]; then
+  echo "Scroll benchmark requires Linux or macOS" >&2
   exit 1
 fi
-if ! command -v twm >/dev/null 2>&1; then
+if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
   echo "Scroll benchmark requires twm so Xvfb exposes the GPUI window" >&2
   exit 1
 fi
@@ -187,26 +188,62 @@ cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
 report="$(mktemp)"
 revision="$(git rev-parse HEAD)"
-hardware="$(uname -m)"
-trap 'rm -f "$report"' EXIT
-set +e
-xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
-  twm >/dev/null 2>&1 &
-  wm_pid=$!
-  SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
-    HUTERM_SCROLL_HARDWARE="$5" HUTERM_SCROLL_DISPLAY_SCALE=1 \
-    timeout --signal=TERM 10s "$2" >"$3" 2>&1
-  result=$?
-  cat "$3"
-  kill "$wm_pid" >/dev/null 2>&1 || true
-  wait "$wm_pid" >/dev/null 2>&1 || true
-  exit "$result"
-' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
-status=$?
-set -e
-if [ "$status" -ne 124 ]; then
-  echo "Huterm scroll benchmark ended early (status $status)" >&2
-  exit 1
+if [ "$platform" = Darwin ]; then
+  hardware="$(sysctl -n hw.model)"
+else
+  hardware="$(lscpu | awk -F: '$1 == "Model name" { sub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+fi
+app_pid=""
+cleanup() {
+  if [ -n "$app_pid" ]; then
+    kill "$app_pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$report"
+}
+trap cleanup EXIT
+if [ "$platform" = Linux ]; then
+  set +e
+  xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
+    twm >/dev/null 2>&1 &
+    wm_pid=$!
+    SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
+      HUTERM_SCROLL_HARDWARE="$5" \
+      timeout --signal=TERM 10s "$2" >"$3" 2>&1
+    result=$?
+    cat "$3"
+    kill "$wm_pid" >/dev/null 2>&1 || true
+    wait "$wm_pid" >/dev/null 2>&1 || true
+    exit "$result"
+  ' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
+  status=$?
+  set -e
+  if [ "$status" -ne 124 ]; then
+    echo "Huterm scroll benchmark ended early (status $status)" >&2
+    exit 1
+  fi
+else
+  SHELL="$workload" HUTERM_SCROLL_BENCH=1 \
+    HUTERM_SCROLL_REVISION="$revision" \
+    HUTERM_SCROLL_HARDWARE="$hardware" \
+    target/release/huterm >"$report" 2>&1 &
+  app_pid=$!
+  sleep 10
+  if ! kill -0 "$app_pid" >/dev/null 2>&1; then
+    set +e
+    wait "$app_pid"
+    status=$?
+    set -e
+    app_pid=""
+    cat "$report"
+    echo "Huterm scroll benchmark ended early (status $status)" >&2
+    exit 1
+  fi
+  kill -TERM "$app_pid" >/dev/null 2>&1 || true
+  set +e
+  wait "$app_pid"
+  set -e
+  app_pid=""
+  cat "$report"
 fi
 python3 scripts/check-scroll-benchmark.py "$report"
 '''

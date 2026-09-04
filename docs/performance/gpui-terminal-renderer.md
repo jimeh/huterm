@@ -119,4 +119,4 @@ on platforms that deliver continuous animation frames.
 wakeup delay, returned offsets, and queue bounds from completion-time records.
 It also checks renderer CPU, row reuse, and input-to-paint latency when a host
 produces at least 25 paint samples. Linux Xvfb does not satisfy that condition;
-use a frame-delivering macOS session for those measurements.
+run the same task from a frame-delivering macOS session for those measurements.

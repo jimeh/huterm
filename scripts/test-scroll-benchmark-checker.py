@@ -34,8 +34,7 @@ def benchmark_log(
     lines.append(
         "huterm-scroll queue "
         "requests_started=25 requests_completed=25 requests_coalesced=1 "
-        "queued_updates=1 maximum_concurrent=1 maximum_queued=1 "
-        "dropped_before_paint=0"
+        "queued_updates=1 maximum_concurrent=1 maximum_queued=1"
     )
     return "\n".join(lines) + "\n"
 

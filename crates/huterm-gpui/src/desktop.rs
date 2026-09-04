@@ -1048,6 +1048,7 @@ struct ScrollBenchmark {
     queue_next: bool,
     pending_injection: Option<(usize, Instant)>,
     last_report: Instant,
+    display_scale: Option<f32>,
 }
 
 impl ScrollBenchmark {
@@ -1062,6 +1063,7 @@ impl ScrollBenchmark {
                 queue_next: false,
                 pending_injection: None,
                 last_report: Instant::now(),
+                display_scale: None,
             })
     }
 
@@ -1075,6 +1077,9 @@ impl ScrollBenchmark {
         visible_rows: u16,
         row_height: f32,
     ) -> bool {
+        let Some(display_scale) = self.display_scale else {
+            return false;
+        };
         if scroll.history() < 10_000 {
             return false;
         }
@@ -1086,7 +1091,7 @@ impl ScrollBenchmark {
                 std::env::consts::OS,
                 std::env::consts::ARCH,
                 benchmark_environment("HUTERM_SCROLL_HARDWARE"),
-                benchmark_environment("HUTERM_SCROLL_DISPLAY_SCALE"),
+                display_scale,
                 INITIAL_COLUMNS,
                 visible_rows,
                 scroll.history(),
@@ -1164,6 +1169,9 @@ impl Render for TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.resize_if_needed(window);
+        if let Some(benchmark) = &mut self.scroll_benchmark {
+            benchmark.display_scale = Some(window.scale_factor());
+        }
         if self.renderer.borrow().records_stats() {
             window.request_animation_frame();
         }
@@ -1608,6 +1616,7 @@ mod tests {
             queue_next: false,
             pending_injection: Some((7, Instant::now())),
             last_report: Instant::now(),
+            display_scale: Some(1.0),
         };
 
         assert!(benchmark.take_injection(8).is_none());

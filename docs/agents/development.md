@@ -91,8 +91,8 @@ Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
 correctness or native input behavior. Use Apple Silicon CI and the manual
 checklist in the initial plan for macOS evidence.
 
-The opt-in renderer benchmark additionally needs `twm`, which ensures GPUI's
-window is exposed and painted under Xvfb:
+On Linux, the opt-in renderer and scroll benchmarks need `twm`, which ensures
+GPUI's window is exposed and painted under Xvfb:
 
 ```sh
 sudo apt-get install --no-install-recommends twm
@@ -105,7 +105,10 @@ thumb jumps through the production scroll controller over 10,000 unique rows.
 Under Xvfb, it enforces snapshot CPU, input-to-snapshot latency, wakeup delay,
 returned offsets, and queue bounds. If the host produces at least 25 paint
 samples, it also enforces combined paint CPU, input-to-paint latency, and row
-reuse. CPU preparation and paint encoding do not prove GPU presentation.
+reuse. The same task runs in a native window on macOS to collect those
+frame-bound measurements. Benchmark metadata records the hardware model and
+GPUI window scale. CPU preparation and paint encoding do not prove GPU
+presentation.
 
 On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
