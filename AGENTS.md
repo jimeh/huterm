@@ -102,6 +102,9 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
 family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
 missing-font fallback path.
+Scroll benchmark timing crosses asynchronous snapshot completion, GPUI prepare,
+and GPUI paint. Keep separate bounded state for each stage so a fast snapshot
+completion cannot overwrite a prepared sample before paint records it.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.
