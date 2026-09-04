@@ -178,6 +178,17 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 ..WindowOptions::default()
             },
             move |window, cx| {
+                let scaled_metrics = metrics.at_scale(window.scale_factor());
+                if scaled_metrics != metrics {
+                    window.resize(size(
+                        scaled_metrics.cell_width * f32::from(INITIAL_COLUMNS)
+                            + px(config.window.padding_x * 2.0),
+                        scaled_metrics.cell_height * f32::from(INITIAL_ROWS)
+                            + px(config.window.padding_y * 2.0)
+                            + titlebar_inset(cfg!(target_os = "macos"), false),
+                    ));
+                }
+                let metrics = scaled_metrics;
                 let focus = cx.focus_handle();
                 let view = cx.new(|cx| {
                     let focus_subscription = cx.on_focus(
@@ -792,6 +803,8 @@ impl TerminalView {
                 });
                 match result {
                     Ok((config, family, metrics)) => {
+                        let metrics =
+                            metrics.at_scale(view.metrics.scale_factor);
                         view.renderer.borrow_mut().reconfigure(
                             family.clone(),
                             config.theme.clone(),
@@ -1089,6 +1102,15 @@ impl TerminalView {
     }
 
     fn resize_if_needed(&mut self, window: &Window) {
+        let metrics = self.metrics.at_scale(window.scale_factor());
+        if metrics != self.metrics {
+            self.metrics = metrics;
+            self.renderer.borrow_mut().reconfigure(
+                self.font_family.clone(),
+                self.theme.clone(),
+                metrics,
+            );
+        }
         let viewport = terminal_viewport(window);
         if self
             .last_viewport
@@ -1099,8 +1121,12 @@ impl TerminalView {
         }
         let size = self.terminal_layout(window).grid;
         let cell = CellSize {
-            width: pixel_count(self.metrics.cell_width),
-            height: pixel_count(self.metrics.cell_height),
+            width: pixel_count(
+                self.metrics.cell_width * self.metrics.scale_factor,
+            ),
+            height: pixel_count(
+                self.metrics.cell_height * self.metrics.scale_factor,
+            ),
         };
         if size == self.last_grid_size && self.last_cell_size == Some(cell) {
             return;
@@ -1589,8 +1615,8 @@ fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
         environment,
         grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
         cell_size: CellSize {
-            width: pixel_count(metrics.cell_width),
-            height: pixel_count(metrics.cell_height),
+            width: pixel_count(metrics.cell_width * metrics.scale_factor),
+            height: pixel_count(metrics.cell_height * metrics.scale_factor),
         },
     })
 }

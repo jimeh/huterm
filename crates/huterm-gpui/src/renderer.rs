@@ -21,6 +21,11 @@ pub(super) struct GridMetrics {
     baseline: Pixels,
     underline: Pixels,
     strikeout: Pixels,
+    glyph_offset_x: Pixels,
+    advance: Pixels,
+    ascent: Pixels,
+    descent: Pixels,
+    pub(super) scale_factor: f32,
 }
 
 impl GridMetrics {
@@ -34,7 +39,7 @@ impl GridMetrics {
         let ascent = text_system.ascent(font_id, font_size);
         let descent = text_system.descent(font_id, font_size);
         Ok(Self::from_measurements(
-            font_size, cell_width, ascent, descent,
+            font_size, cell_width, ascent, descent, 1.0,
         ))
     }
 
@@ -43,14 +48,20 @@ impl GridMetrics {
         cell_width: Pixels,
         ascent: Pixels,
         descent: Pixels,
+        scale_factor: f32,
     ) -> Self {
         // GPUI metric sources use different descent signs. Grid geometry stores
         // the distance below the baseline, independent of that convention.
         let descent = descent.abs();
-        let cell_height = (ascent + descent).ceil().max(px(1.0));
-        let cell_width = cell_width.ceil().max(px(1.0));
-        let padding_top = (cell_height - ascent - descent) / 2.0;
-        let baseline = padding_top + ascent;
+        let advance = cell_width;
+        // Round in device pixels, not logical points: a whole-point ceiling
+        // adds almost two pixels of spacing per cell on Retina displays.
+        let align =
+            |value: Pixels| (value * scale_factor).round() / scale_factor;
+        let minimum = px(1.0 / scale_factor);
+        let cell_height = align(ascent + descent).max(minimum);
+        let cell_width = align(advance).max(minimum);
+        let baseline = align((cell_height - ascent - descent) / 2.0 + ascent);
         Self {
             cell_width,
             cell_height,
@@ -58,7 +69,22 @@ impl GridMetrics {
             baseline,
             underline: baseline + descent * 0.618,
             strikeout: ((ascent * 0.5) + baseline) * 0.5,
+            glyph_offset_x: (cell_width - advance) / 2.0,
+            advance,
+            ascent,
+            descent,
+            scale_factor,
         }
+    }
+
+    pub(super) fn at_scale(self, scale_factor: f32) -> Self {
+        Self::from_measurements(
+            self.font_size,
+            self.advance,
+            self.ascent,
+            self.descent,
+            scale_factor,
+        )
     }
 }
 
@@ -513,7 +539,7 @@ fn paint_row(
         for run in &glyph.layout.runs {
             for shaped in &run.glyphs {
                 let glyph_origin = point(
-                    origin.x + shaped.position.x,
+                    origin.x + metrics.glyph_offset_x + shaped.position.x,
                     origin.y + metrics.baseline,
                 );
                 let result = if shaped.is_emoji {
@@ -1186,6 +1212,7 @@ mod tests {
             px(8.0),
             px(12.0),
             px(-3.0),
+            1.0,
         );
         let original = Arc::new(snapshot(1, 1, &["A"]));
         let mut renderer =
@@ -1207,6 +1234,7 @@ mod tests {
             px(10.0),
             px(15.0),
             px(-4.0),
+            1.0,
         );
         renderer.reconfigure("Menlo".into(), theme, larger);
         assert!(renderer.snapshot.is_none());
@@ -1256,6 +1284,7 @@ mod tests {
             px(8.0),
             px(12.0),
             px(-3.0),
+            1.0,
         );
         let mut renderer =
             TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
@@ -1286,15 +1315,100 @@ mod tests {
     }
 
     #[test]
-    fn grid_metrics_should_enclose_a_font_with_signed_descent() {
+    fn menlo_12_matches_reference_terminal_grid_width() {
+        // Measured with CoreText for Menlo Nerd Font Mono Regular at 12pt.
+        let metrics = GridMetrics::from_measurements(
+            px(12.0),
+            px(7.224_609_4),
+            px(11.138_672),
+            px(-2.830_078_1),
+            2.0,
+        );
+        assert_eq!(metrics.cell_width * 120.0, px(840.0));
+        assert_eq!(metrics.cell_height * 40.0, px(560.0));
+    }
+
+    #[test]
+    fn display_scale_round_trips_preserve_unrounded_font_measurements() {
+        let original = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+            1.0,
+        );
+        let retina = original.at_scale(2.0);
+        assert_eq!(
+            size(original.cell_width, original.cell_height),
+            size(px(8.0), px(16.0))
+        );
+        assert_eq!(
+            size(retina.cell_width, retina.cell_height),
+            size(px(8.5), px(16.5))
+        );
+        assert_eq!(retina.baseline * 2.0, (retina.baseline * 2.0).round());
+        assert_eq!(retina.at_scale(1.0), original);
+        assert_eq!(retina.at_scale(1.5).at_scale(2.0), retina);
+    }
+
+    #[test]
+    fn rounded_grid_shares_cell_edges_and_centers_glyph_advance() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(3.302),
+            2.0,
+        );
+        let origin = point(px(4.0), px(36.0));
+        let next = cell_origin(origin, 120, 40, metrics);
+        assert_eq!(next, origin + point(px(1020.0), px(660.0)));
+        assert!(
+            (f32::from(
+                metrics.glyph_offset_x * 2.0 + metrics.advance
+                    - metrics.cell_width
+            ))
+            .abs()
+                < 0.0001
+        );
+        assert_eq!(
+            metrics,
+            GridMetrics::from_measurements(
+                px(14.0),
+                px(8.429),
+                px(12.995),
+                px(-3.302),
+                2.0,
+            )
+        );
+    }
+
+    #[test]
+    fn tiny_font_metrics_keep_at_least_one_device_pixel() {
+        let metrics = GridMetrics::from_measurements(
+            px(0.1),
+            px(0.01),
+            px(0.02),
+            px(-0.01),
+            2.0,
+        );
+        assert_eq!(
+            size(metrics.cell_width, metrics.cell_height),
+            size(px(0.5), px(0.5))
+        );
+    }
+
+    #[test]
+    fn grid_metrics_round_height_with_signed_descent() {
         let metrics = GridMetrics::from_measurements(
             px(14.0),
             px(8.429),
             px(12.995),
             px(-3.302),
+            1.0,
         );
 
-        assert_eq!(metrics.cell_height, px(17.0));
+        assert_eq!(metrics.cell_height, px(16.0));
     }
 
     #[test]
@@ -1304,6 +1418,7 @@ mod tests {
             px(8.429),
             px(12.995),
             px(-3.302),
+            1.0,
         );
 
         assert!(
