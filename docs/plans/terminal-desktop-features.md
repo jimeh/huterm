@@ -220,9 +220,9 @@ minimum usable size. Position it from displayed offset and history limit. Keep
 it faint above live bottom and raise contrast during input, hover, or drag.
 
 Support dragging, page-sized track clicks, Scroll Page Up, Scroll Page Down, and
-Scroll to Bottom. Show a short label such as `1,284 lines up`. The thumb may
-follow a desired drag while content catches up, but the label distinguishes
-requested and displayed positions when they differ.
+Scroll to Bottom. Show a short label such as `1,284 lines up`. Derive both the
+thumb and label from the displayed snapshot offset, render the label on an
+opaque surface, and hide the whole indicator at live bottom.
 
 Reserve local scroll shortcuts before terminal key translation. Hide local
 scroll affordances when alternate-screen content has no scrollback. Terminal

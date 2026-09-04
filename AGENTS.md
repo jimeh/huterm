@@ -104,6 +104,12 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
 family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
 missing-font fallback path.
+Derive the terminal's grid geometry once through `GridMetrics`. GPUI 0.2.2
+reports raw font descent as negative on macOS and Linux, so normalize it to a
+positive distance before calculating cell height, baseline, or decorations.
+Derive scrollbar paint state from the displayed snapshot offset. Hide the
+indicator at offset zero, and keep its label background opaque so changing
+terminal rows cannot bleed through it during rapid scrolling.
 Headless Xvfb does not deliver continuous GPUI frames after the initial
 presentation. Keep Linux scroll gates based on completion-time snapshot and
 queue evidence; require frame-bound paint and input-latency evidence only on a

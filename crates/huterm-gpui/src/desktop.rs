@@ -11,7 +11,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
     SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    actions, canvas, div, font, prelude::*, px, rgba, size,
+    actions, canvas, div, prelude::*, px, rgba, size,
 };
 use huterm_core::{
     Mux, RuntimeClient, RuntimeError, TerminalOwner, TerminalRuntime,
@@ -378,14 +378,8 @@ fn resolve_metrics(
         family = fallback.into();
     }
     let font_size = px(config.font.size);
-    let font_id = text_system.resolve_font(&font(family.clone()));
-    let cell_width = text_system.advance(font_id, font_size, 'M')?.width;
-    let ascent = text_system.ascent(font_id, font_size);
-    let descent = text_system.descent(font_id, font_size);
-    Ok((
-        family,
-        GridMetrics::from_measurements(font_size, cell_width, ascent, descent),
-    ))
+    let metrics = GridMetrics::resolve(text_system, &family, font_size)?;
+    Ok((family, metrics))
 }
 
 fn shutdown_runtime(
@@ -1219,7 +1213,15 @@ impl Render for TerminalView {
                     paint_renderer.borrow_mut().paint(bounds, window);
                 },
             ));
-        if let Some(geometry) = self.scrollbar_geometry(window) {
+        let displayed_offset = self.scroll.displayed();
+        if let Some(label) = scroll_position_label(displayed_offset)
+            && let Some(geometry) = ScrollbarGeometry::new(
+                f32::from(window.viewport_size().height),
+                self.last_grid_size.rows,
+                self.scroll.history(),
+                displayed_offset,
+            )
+        {
             root = root
                 .child(
                     div()
@@ -1243,23 +1245,9 @@ impl Render for TerminalView {
                         .px_2()
                         .py_1()
                         .rounded(px(3.0))
-                        .bg(rgba(0x0000_0099))
-                        .text_color(rgba(0xffff_ffcc))
-                        .child(
-                            if self.scroll.desired() == self.scroll.displayed()
-                            {
-                                format!(
-                                    "{} lines up",
-                                    format_line_count(self.scroll.displayed())
-                                )
-                            } else {
-                                format!(
-                                    "{} requested, {} shown",
-                                    format_line_count(self.scroll.desired()),
-                                    format_line_count(self.scroll.displayed())
-                                )
-                            },
-                        ),
+                        .bg(color(self.theme.background))
+                        .text_color(color(self.theme.foreground))
+                        .child(label),
                 );
         }
         root.when_some(status, |view, status| {
@@ -1431,6 +1419,10 @@ fn format_line_count(value: usize) -> String {
         formatted.push(character);
     }
     formatted
+}
+fn scroll_position_label(displayed_offset: usize) -> Option<String> {
+    (displayed_offset > 0)
+        .then(|| format!("{} lines up", format_line_count(displayed_offset)))
 }
 fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
     if position < 0.0 {
@@ -1607,6 +1599,14 @@ mod tests {
         assert_eq!(format_line_count(1_284), "1,284");
         assert_eq!(format_line_count(10_000), "10,000");
         assert_eq!(format_line_count(1_000_000), "1,000,000");
+    }
+    #[test]
+    fn live_bottom_has_no_scroll_position_label() {
+        assert_eq!(scroll_position_label(0), None);
+    }
+    #[test]
+    fn scroll_position_label_uses_the_displayed_snapshot_offset() {
+        assert_eq!(scroll_position_label(1_284), Some("1,284 lines up".into()));
     }
     #[test]
     fn unmatched_benchmark_request_preserves_the_pending_input() {

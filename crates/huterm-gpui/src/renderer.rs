@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Bounds, FontStyle, FontWeight, Hsla, LineLayout, Pixels, Point,
-    StrikethroughStyle, TextRun, UnderlineStyle, Window, fill, font, point, px,
-    rgba, size,
+    StrikethroughStyle, TextRun, TextSystem, UnderlineStyle, Window, fill,
+    font, point, px, rgba, size,
 };
 use huterm_protocol::{
     BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
@@ -13,7 +13,7 @@ use huterm_protocol::{
 
 use crate::config::Theme;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct GridMetrics {
     pub(super) cell_width: Pixels,
     pub(super) cell_height: Pixels,
@@ -24,22 +24,40 @@ pub(super) struct GridMetrics {
 }
 
 impl GridMetrics {
-    pub(super) fn from_measurements(
+    pub(super) fn resolve(
+        text_system: &TextSystem,
+        font_family: &str,
+        font_size: Pixels,
+    ) -> anyhow::Result<Self> {
+        let font_id = text_system.resolve_font(&font(font_family.to_owned()));
+        let cell_width = text_system.advance(font_id, font_size, 'M')?.width;
+        let ascent = text_system.ascent(font_id, font_size);
+        let descent = text_system.descent(font_id, font_size);
+        Ok(Self::from_measurements(
+            font_size, cell_width, ascent, descent,
+        ))
+    }
+
+    fn from_measurements(
         font_size: Pixels,
         cell_width: Pixels,
         ascent: Pixels,
         descent: Pixels,
     ) -> Self {
+        // GPUI metric sources use different descent signs. Grid geometry stores
+        // the distance below the baseline, independent of that convention.
+        let descent = descent.abs();
         let cell_height = (ascent + descent).ceil().max(px(1.0));
         let cell_width = cell_width.ceil().max(px(1.0));
-        let baseline = ascent;
+        let padding_top = (cell_height - ascent - descent) / 2.0;
+        let baseline = padding_top + ascent;
         Self {
             cell_width,
             cell_height,
             font_size,
             baseline,
             underline: baseline + descent * 0.618,
-            strikeout: ascent * 0.5,
+            strikeout: ((ascent * 0.5) + baseline) * 0.5,
         }
     }
 }
@@ -1097,6 +1115,34 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn grid_metrics_should_enclose_a_font_with_signed_descent() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+        );
+
+        assert_eq!(metrics.cell_height, px(17.0));
+    }
+
+    #[test]
+    fn grid_metrics_should_order_vertical_positions_with_signed_descent() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+        );
+
+        assert!(
+            metrics.strikeout < metrics.baseline
+                && metrics.baseline < metrics.underline
+                && metrics.underline < metrics.cell_height
+        );
+    }
 
     #[test]
     fn cache_reuses_layouts_without_calling_factory() {
