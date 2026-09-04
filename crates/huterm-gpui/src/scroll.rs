@@ -337,8 +337,13 @@ impl ScrollController {
 
     pub(super) fn complete(&mut self, viewport: Viewport, history: usize) {
         let pinned = self.desired > 0;
-        if pinned && history > self.history {
-            self.desired = self.desired.saturating_add(history - self.history);
+        if pinned {
+            // Height changes move rows both into and out of history. Track
+            // both directions to keep the top visible buffer row anchored.
+            self.desired = self
+                .desired
+                .saturating_add(history.saturating_sub(self.history))
+                .saturating_sub(self.history.saturating_sub(history));
         }
         self.history = history;
         self.desired = self.desired.min(history);
@@ -356,6 +361,106 @@ impl ScrollController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
+        use huterm_core::TerminalRuntime;
+        use huterm_protocol::{
+            CellSize, GridSize, TerminalCommand, TerminalId,
+        };
+
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(1),
+            &TerminalCommand {
+                program: "/bin/sh".into(),
+                arguments: vec!["-c".into(),
+                    "i=0; while [ $i -lt 100 ]; do printf 'ROW-%03d\\n' $i; i=$((i+1)); done; printf READY; read line".into()],
+                working_directory: std::env::current_dir().unwrap(),
+                environment: Vec::new(),
+                grid_size: GridSize::clamped(20, 10),
+                cell_size: cell,
+            },
+        ).unwrap();
+        let client = runtime.client();
+        let resize = |rows| {
+            client.resize(GridSize::clamped(20, rows), cell).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while client.read_snapshot(Viewport::default()).unwrap().size.rows
+                != rows
+            {
+                assert!(Instant::now() < deadline, "resize was not applied");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let initial = loop {
+            let snapshot = client.read_snapshot(Viewport::default()).unwrap();
+            let text: String = snapshot
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            if text.contains("READY") {
+                break snapshot;
+            }
+            assert!(Instant::now() < deadline, "fixture did not become ready");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut controller = ScrollController::default();
+        controller.complete(initial.viewport, initial.history_size);
+        controller.set_desired(40);
+        let settle = |controller: &mut ScrollController| {
+            let mut result = None;
+            for _ in 0..4 {
+                let Some(viewport) = controller.begin_request() else {
+                    return result.unwrap();
+                };
+                let snapshot = client.read_snapshot(viewport).unwrap();
+                controller.complete(snapshot.viewport, snapshot.history_size);
+                result = Some(snapshot);
+            }
+            panic!("viewport did not settle");
+        };
+        let top = |snapshot: &huterm_protocol::TerminalSnapshot| -> String {
+            snapshot.cells[..usize::from(snapshot.size.columns)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect()
+        };
+        let first = settle(&mut controller);
+        let expected = top(&first);
+        for rows in [6, 14, 10, 6, 14, 10] {
+            resize(rows);
+            controller.invalidate();
+            let snapshot = settle(&mut controller);
+            assert_eq!(
+                top(&snapshot),
+                expected,
+                "top row moved at height {rows}"
+            );
+        }
+        controller.bottom();
+        settle(&mut controller);
+        for rows in [6, 14, 10] {
+            resize(rows);
+            controller.invalidate();
+            let snapshot = settle(&mut controller);
+            assert_eq!(snapshot.viewport.bottom_offset, 0);
+            assert!(
+                snapshot
+                    .cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .contains("READY")
+            );
+        }
+        runtime.shutdown().unwrap();
+    }
 
     #[test]
     fn expansion_animates_then_collapses_after_four_seconds_without_hover() {
@@ -522,6 +627,23 @@ mod tests {
             controller.begin_request(),
             Some(Viewport { bottom_offset: 15 })
         );
+    }
+
+    #[test]
+    fn shrinking_history_clamps_the_anchor_and_respects_return_to_bottom() {
+        let mut controller = controller_with_history(100);
+        controller.set_desired(3);
+        controller.complete(Viewport { bottom_offset: 3 }, 95);
+        assert_eq!(controller.desired(), 0);
+        assert_eq!(controller.begin_request(), Some(Viewport::default()));
+
+        let mut controller = controller_with_history(100);
+        controller.set_desired(40);
+        let _ = controller.begin_request();
+        controller.bottom();
+        controller.complete(Viewport { bottom_offset: 40 }, 95);
+        assert_eq!(controller.desired(), 0);
+        assert_eq!(controller.begin_request(), Some(Viewport::default()));
     }
 
     #[test]

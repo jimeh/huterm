@@ -108,6 +108,9 @@ Derive the terminal's grid geometry once through `GridMetrics`. GPUI 0.2.2
 reports raw font descent as negative on macOS and Linux, so normalize it to a
 positive distance before calculating cell height, baseline, or decorations.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
+Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
+adjust its offset for both history growth and shrinkage to avoid resize drift;
+offset zero remains pinned to live output.
 Use the same inset track for painting and drag mapping. Indicator visibility
 depends on recent interaction, including at offset zero; advance its fade in
 the UI refresh loop so idle terminals redraw it. Keep the label background
