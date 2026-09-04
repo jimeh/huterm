@@ -953,7 +953,8 @@ fn scroll_benchmark_enabled() -> bool {
 
 #[derive(Default)]
 struct ScrollBenchmarkStats {
-    pending: Option<ScrollBenchmarkSample>,
+    in_flight: Option<ScrollBenchmarkSample>,
+    ready_to_paint: Option<ScrollBenchmarkSample>,
     dropped_before_paint: usize,
 }
 
@@ -965,7 +966,7 @@ impl ScrollBenchmarkStats {
         injected_at: Option<Instant>,
     ) {
         if self
-            .pending
+            .in_flight
             .replace(ScrollBenchmarkSample {
                 sequence,
                 requested_offset,
@@ -984,11 +985,15 @@ impl ScrollBenchmarkStats {
         returned_offset: usize,
         wakeup_delay: Duration,
     ) {
-        if let Some(sample) = &mut self.pending {
-            sample.snapshot = duration;
-            sample.returned_offset = returned_offset;
-            sample.wakeup_delay = wakeup_delay;
-            sample.snapshot_complete = true;
+        let Some(mut sample) = self.in_flight.take() else {
+            return;
+        };
+        sample.snapshot = duration;
+        sample.returned_offset = returned_offset;
+        sample.wakeup_delay = wakeup_delay;
+        sample.snapshot_complete = true;
+        if self.ready_to_paint.replace(sample).is_some() {
+            self.dropped_before_paint += 1;
         }
     }
 
@@ -998,7 +1003,7 @@ impl ScrollBenchmarkStats {
         rebuilt_rows: usize,
         total_rows: usize,
     ) {
-        if let Some(sample) = &mut self.pending {
+        if let Some(sample) = &mut self.ready_to_paint {
             if !sample.snapshot_complete {
                 return;
             }
@@ -1011,13 +1016,13 @@ impl ScrollBenchmarkStats {
 
     fn complete_paint(&mut self, duration: Duration) {
         if !self
-            .pending
+            .ready_to_paint
             .as_ref()
             .is_some_and(|sample| sample.snapshot_complete && sample.prepared)
         {
             return;
         }
-        let Some(mut sample) = self.pending.take() else {
+        let Some(mut sample) = self.ready_to_paint.take() else {
             return;
         };
         sample.paint = duration;
@@ -1241,6 +1246,39 @@ mod tests {
         assert!(!timing_enabled(false, false));
         assert!(timing_enabled(true, false));
         assert!(timing_enabled(false, true));
+    }
+
+    #[test]
+    fn next_scroll_request_does_not_replace_the_snapshot_awaiting_paint() {
+        let mut benchmark = ScrollBenchmarkStats::default();
+        benchmark.begin(1, 10, Some(Instant::now()));
+        benchmark.complete_snapshot(
+            Duration::from_micros(10),
+            10,
+            Duration::from_micros(2),
+        );
+
+        benchmark.begin(2, 11, Some(Instant::now()));
+        benchmark.complete_prepare(Duration::from_micros(20), 1, 32);
+
+        assert_eq!(
+            benchmark.in_flight.as_ref().map(|sample| sample.sequence),
+            Some(2)
+        );
+        assert!(
+            benchmark
+                .ready_to_paint
+                .as_ref()
+                .is_some_and(|sample| sample.sequence == 1 && sample.prepared)
+        );
+
+        benchmark.complete_paint(Duration::from_micros(30));
+
+        assert!(benchmark.ready_to_paint.is_none());
+        assert_eq!(
+            benchmark.in_flight.as_ref().map(|sample| sample.sequence),
+            Some(2)
+        );
     }
 
     #[test]
