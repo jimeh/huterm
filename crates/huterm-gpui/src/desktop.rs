@@ -419,8 +419,11 @@ struct Selection {
     head: BufferPoint,
 }
 impl Selection {
-    fn range(self) -> BufferRange {
-        BufferRange::ordered(self.anchor, self.head)
+    fn range(self) -> Option<BufferRange> {
+        // Buffer ranges include both endpoints, so equal cells would select
+        // one character even though the pointer has not dragged across a cell.
+        (self.anchor != self.head)
+            .then(|| BufferRange::ordered(self.anchor, self.head))
     }
 }
 
@@ -942,6 +945,11 @@ impl TerminalView {
                 point_for_position(position, snapshot, self.metrics);
             self.selected_text = None;
             self.update_renderer_selection();
+            if self.selection.and_then(Selection::range).is_none() {
+                self.selection_edge_direction = 0;
+                cx.notify();
+                return;
+            }
             let direction = edge_scroll_direction(
                 f32::from(position.y),
                 f32::from(layout.bounds.size.height),
@@ -974,7 +982,11 @@ impl TerminalView {
         let Some(selection) = self.selection else {
             return;
         };
-        let range = selection.range();
+        let Some(range) = selection.range() else {
+            self.clear_selection();
+            cx.notify();
+            return;
+        };
         let request =
             match self.client.request_selection(selection.generation, range) {
                 Ok(request) => request,
@@ -1065,7 +1077,7 @@ impl TerminalView {
     fn update_renderer_selection(&self) {
         self.renderer
             .borrow_mut()
-            .set_selection(self.selection.map(Selection::range));
+            .set_selection(self.selection.and_then(Selection::range));
     }
 
     fn terminal_layout(&self, window: &Window) -> TerminalLayout {
@@ -1698,7 +1710,8 @@ fn selection_request_is_current(
     range: BufferRange,
 ) -> bool {
     current.is_some_and(|current| {
-        current.generation == requested.generation && current.range() == range
+        current.generation == requested.generation
+            && current.range() == Some(range)
     })
 }
 fn format_line_count(value: usize) -> String {
@@ -1995,20 +2008,25 @@ mod tests {
     #[test]
     fn stale_selection_replies_do_not_match_newer_selection() {
         let requested = selection(1, 2, 4);
+        assert!(!selection_request_is_current(
+            Some(selection(1, 2, 2)),
+            requested,
+            requested.range().unwrap()
+        ));
         assert!(selection_request_is_current(
             Some(requested),
             requested,
-            requested.range()
+            requested.range().unwrap()
         ));
         assert!(!selection_request_is_current(
             Some(selection(2, 2, 4)),
             requested,
-            requested.range()
+            requested.range().unwrap()
         ));
         assert!(!selection_request_is_current(
             Some(selection(1, 3, 4)),
             requested,
-            requested.range()
+            requested.range().unwrap()
         ));
     }
     #[test]
@@ -2018,6 +2036,26 @@ mod tests {
         assert_eq!(format_line_count(1_284), "1,284");
         assert_eq!(format_line_count(10_000), "10,000");
         assert_eq!(format_line_count(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn selection_requires_dragging_out_of_the_initial_cell() {
+        let mut candidate = selection(1, 2, 2);
+        assert_eq!(candidate.range(), None, "a click must not select a cell");
+        candidate.head.column = 3;
+        assert_eq!(
+            candidate.range(),
+            Some(BufferRange::ordered(candidate.anchor, candidate.head))
+        );
+        candidate.head.column = 1;
+        assert_eq!(
+            candidate.range(),
+            Some(BufferRange::ordered(candidate.head, candidate.anchor))
+        );
+        candidate.head = candidate.anchor;
+        assert_eq!(candidate.range(), None);
+        candidate.head.rows_from_live_bottom = 1;
+        assert!(candidate.range().is_some(), "vertical dragging must select");
     }
     #[test]
     fn live_bottom_hides_its_label_while_the_indicator_fades() {

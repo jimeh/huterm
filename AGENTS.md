@@ -111,6 +111,9 @@ Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
 adjust its offset for both history growth and shrinkage to avoid resize drift;
 offset zero remains pinned to live output.
+Protocol selection ranges include both endpoints. Keep a mouse-down anchor
+without exposing a range until dragging reaches another cell; use that same
+optional range for highlighting and text extraction.
 Use the same inset track for painting and drag mapping. Indicator visibility
 depends on recent interaction, including at offset zero; advance its fade in
 the UI refresh loop so idle terminals redraw it. Keep the label background
