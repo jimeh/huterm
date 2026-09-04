@@ -10,6 +10,7 @@ mod desktop;
 mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
+mod themes;
 
 /// Stable application identifier used by runtime diagnostics and packaging.
 pub const APP_ID: &str = "app.huterm.dev";

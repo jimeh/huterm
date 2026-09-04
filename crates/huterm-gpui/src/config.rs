@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::themes::{self, ThemeDefinition};
 use huterm_protocol::Rgb;
 use serde::Deserialize;
 
@@ -17,16 +19,11 @@ padding_y = 4.0
 padding_balance = false
 
 [theme]
-foreground = "#c5c8c6"
-background = "#1d1f21"
-cursor = "#ffffff"
-selection = "#264f78"
-ansi = [
-  "#1d1f21", "#cc6666", "#b5bd68", "#f0c674",
-  "#81a2be", "#b294bb", "#8abeb7", "#c5c8c6",
-  "#666666", "#d54e53", "#b9ca4a", "#e7c547",
-  "#7aa6da", "#c397d8", "#70c0b1", "#eaeaea",
-]
+name = "huterm-dark"
+# Override individual colors without replacing the whole palette:
+# background = "#1d1f21"
+# ansi_red = "#cc6666"
+# ansi_bright_red = "#d54e53"
 "##;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +67,7 @@ pub(super) struct Theme {
     pub(super) background: Rgb,
     pub(super) cursor: Rgb,
     pub(super) selection: Rgb,
+    pub(super) selection_foreground: Option<Rgb>,
     pub(super) ansi: [Rgb; 16],
 }
 
@@ -105,6 +103,7 @@ impl Default for Theme {
             background: rgb(0x001d_1f21),
             cursor: rgb(0x00ff_ffff),
             selection: rgb(0x0026_4f78),
+            selection_foreground: None,
             ansi: [
                 rgb(0x001d_1f21),
                 rgb(0x00cc_6666),
@@ -163,7 +162,7 @@ pub(super) fn load() -> LoadedConfig {
 
 fn load_path(path: PathBuf) -> LoadedConfig {
     match fs::read_to_string(&path) {
-        Ok(source) => match parse(&source) {
+        Ok(source) => match parse_at(&source, &path) {
             Ok(config) => LoadedConfig {
                 config,
                 path,
@@ -245,16 +244,25 @@ pub(super) fn home_directory() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+pub(super) fn reload(path: &Path) -> Result<Config, String> {
+    let source = fs::read_to_string(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    parse_at(&source, path)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
 fn parse(source: &str) -> Result<Config, ConfigError> {
+    parse_at(source, Path::new("config.toml"))
+}
+
+fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
     if raw.font.family.trim().is_empty() {
         return Err(ConfigError::Invalid("font.family must not be empty"));
     }
     if !raw.font.size.is_finite() || !(6.0..=96.0).contains(&raw.font.size) {
         return Err(ConfigError::Invalid("font.size must be between 6 and 96"));
-    }
-    if raw.theme.ansi.len() != 16 {
-        return Err(ConfigError::Invalid("theme.ansi must contain 16 colors"));
     }
     for padding in [raw.window.padding_x, raw.window.padding_y] {
         if !padding.is_finite() || !(0.0..=256.0).contains(&padding) {
@@ -263,32 +271,22 @@ fn parse(source: &str) -> Result<Config, ConfigError> {
             ));
         }
     }
-    let ansi: Vec<Rgb> = raw
-        .theme
-        .ansi
-        .iter()
-        .map(|value| parse_color(value))
-        .collect::<Result<_, _>>()?;
-    let ansi: [Rgb; 16] = ansi.try_into().map_err(|_| {
-        ConfigError::Invalid("theme.ansi must contain 16 colors")
-    })?;
+    let directory = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("themes");
+    let theme = themes::resolve(&raw.theme, &raw.themes, &directory)?;
     Ok(Config {
         window: raw.window,
         font: FontConfig {
             family: raw.font.family,
             size: raw.font.size,
         },
-        theme: Theme {
-            foreground: parse_color(&raw.theme.foreground)?,
-            background: parse_color(&raw.theme.background)?,
-            cursor: parse_color(&raw.theme.cursor)?,
-            selection: parse_color(&raw.theme.selection)?,
-            ansi,
-        },
+        theme,
     })
 }
 
-fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
+pub(super) fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
     let Some(hex) = value.strip_prefix('#') else {
         return Err(ConfigError::Color(value.into()));
     };
@@ -311,34 +309,39 @@ const fn rgb(value: u32) -> Rgb {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    #[serde(default)]
     font: RawFont,
     #[serde(default)]
     window: WindowConfig,
-    theme: RawTheme,
+    #[serde(default)]
+    theme: ThemeDefinition,
+    #[serde(default)]
+    themes: BTreeMap<String, ThemeDefinition>,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 struct RawFont {
     family: String,
     size: f32,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTheme {
-    foreground: String,
-    background: String,
-    cursor: String,
-    selection: String,
-    ansi: Vec<String>,
+impl Default for RawFont {
+    fn default() -> Self {
+        let font = Config::default().font;
+        Self {
+            family: font.family,
+            size: font.size,
+        }
+    }
 }
 
 #[derive(Debug)]
-enum ConfigError {
+pub(super) enum ConfigError {
     Toml(toml::de::Error),
     Color(String),
     Invalid(&'static str),
+    Theme(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -350,6 +353,7 @@ impl fmt::Display for ConfigError {
                 "invalid RGB color {value:?}; expected #rrggbb"
             ),
             Self::Invalid(message) => formatter.write_str(message),
+            Self::Theme(message) => formatter.write_str(message),
         }
     }
 }
@@ -374,6 +378,176 @@ mod tests {
     use super::*;
 
     static TEST_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn named_themes_layer_individual_colors_and_legacy_ansi() {
+        let theme = parse(
+            r##"
+[theme]
+name = "mine"
+ansi_red = "#010203"
+[themes.mine]
+extends = "catppuccin-mocha"
+background = "#040506"
+"##,
+        )
+        .unwrap()
+        .theme;
+        assert_eq!(theme.background, rgb(0x0004_0506));
+        assert_eq!(theme.ansi[1], rgb(0x0001_0203));
+        assert_eq!(theme.ansi[2], rgb(0x00a6_e3a1));
+        assert_eq!(theme.selection_foreground, Some(rgb(0x001e_1e2e)));
+        let legacy = format!(
+            "[theme]\nansi = [{}]\nansi_red = '#abcdef'",
+            ["'#123456'"; 16].join(",")
+        );
+        let theme = parse(&legacy).unwrap().theme;
+        assert_eq!(theme.ansi[0], rgb(0x0012_3456));
+        assert_eq!(theme.ansi[1], rgb(0x00ab_cdef));
+        assert!(parse("[theme]\nansi = ['#123456']").is_err());
+    }
+
+    #[test]
+    fn every_builtin_resolves_and_default_stays_unchanged() {
+        assert_eq!(parse("").unwrap(), Config::default());
+        assert_eq!(
+            parse("[theme]\nname = 'huterm-dark'").unwrap().theme,
+            Theme::default()
+        );
+        for name in [
+            "tokyo-night",
+            "tokyo-night-storm",
+            "tokyo-night-moon",
+            "tokyo-night-day",
+            "catppuccin-latte",
+            "catppuccin-frappe",
+            "catppuccin-macchiato",
+            "catppuccin-mocha",
+            "one-dark-pro",
+            "tomorrow-night",
+            "dracula",
+            "nord",
+            "tango-with-monokai",
+        ] {
+            let config = parse(&format!("[theme]\nname = '{name}'")).unwrap();
+            assert_ne!(
+                config.theme.background, config.theme.foreground,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            parse("[theme]\nname = 'tango-with-monokai'")
+                .unwrap()
+                .theme
+                .ansi[1],
+            rgb(0x00cf_5041)
+        );
+    }
+
+    #[test]
+    fn one_dark_pro_uses_its_terminal_palette_and_opaque_selection() {
+        let theme = parse("[theme]\nname = 'one-dark-pro'").unwrap().theme;
+        assert_eq!(theme.background, rgb(0x0028_2c34));
+        assert_eq!(theme.foreground, rgb(0x00ab_b2bf));
+        assert_eq!(theme.cursor, rgb(0x0052_8bff));
+        assert_eq!(theme.selection, rgb(0x0041_454e));
+        assert_eq!(theme.ansi[1], rgb(0x00e0_5561));
+        assert_eq!(theme.ansi[9], rgb(0x00ff_616e));
+        assert_eq!(theme.selection_foreground, None);
+    }
+
+    #[test]
+    fn tomorrow_night_matches_upstream_iterm_without_changing_huterm_dark() {
+        let theme = parse("[theme]\nname = 'tomorrow-night'").unwrap().theme;
+        assert_eq!(theme.background, rgb(0x001d_1f21));
+        assert_eq!(theme.foreground, rgb(0x00c5_c8c6));
+        assert_eq!(theme.cursor, theme.foreground);
+        assert_eq!(theme.selection, rgb(0x0037_3b41));
+        assert_eq!(theme.selection_foreground, Some(theme.foreground));
+        let ansi = [
+            0x0000_0000,
+            0x00cc_6666,
+            0x00b5_bd68,
+            0x00f0_c674,
+            0x0081_a2be,
+            0x00b2_94bb,
+            0x008a_beb7,
+            0x00ff_ffff,
+        ]
+        .map(rgb);
+        assert_eq!(theme.ansi[..8], ansi);
+        assert_eq!(theme.ansi[8..], ansi);
+        let default = parse("[theme]\nname = 'huterm-dark'").unwrap().theme;
+        assert_eq!(default, Theme::default());
+        assert_ne!(theme, default);
+    }
+
+    #[test]
+    fn themes_reject_cycles_unknown_keys_colors_and_path_names() {
+        for source in [
+            "[theme]\nname = '../escape'",
+            "[theme]\nname = 'absent'",
+            "[theme]\nansi_pink = '#123456'",
+            "[theme]\nansi_red = '#12345z'",
+            "[theme]\nextends = 'nord'",
+            "[theme]\nname = 'a'\n[themes.a]\nextends = 'b'\n[themes.b]\nextends = 'a'",
+            "[themes.unused]\nansi_red = 'invalid'",
+            "[themes.unused]\nname = 'nord'",
+        ] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn theme_lookup_prefers_inline_then_adjacent_file_then_builtin() {
+        let directory = test_directory();
+        fs::create_dir_all(directory.join("themes")).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(
+            directory.join("themes/nord.toml"),
+            "[theme]\nbackground = '#010203'",
+        )
+        .unwrap();
+        let source = "[theme]\nname = 'nord'";
+        assert_eq!(
+            parse_at(source, &path).unwrap().theme.background,
+            rgb(0x0001_0203)
+        );
+        let inline = format!("{source}\n[themes.nord]\nforeground = '#040506'");
+        let theme = parse_at(&inline, &path).unwrap().theme;
+        assert_eq!(theme.foreground, rgb(0x0004_0506));
+        assert_eq!(theme.background, Theme::default().background);
+        fs::write(
+            directory.join("themes/nord.toml"),
+            "[theme]\nansi_red = 'bad'",
+        )
+        .unwrap();
+        assert!(parse_at(source, &path).is_err());
+        fs::remove_file(directory.join("themes/nord.toml")).unwrap();
+        assert_eq!(
+            parse_at(source, &path).unwrap().theme.background,
+            rgb(0x002e_3440)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reload_rereads_theme_files_and_never_falls_back_on_errors() {
+        let directory = test_directory();
+        fs::create_dir_all(directory.join("themes")).unwrap();
+        let path = directory.join("config.toml");
+        let theme_path = directory.join("themes/custom.toml");
+        fs::write(&path, "[theme]\nname = 'custom'").unwrap();
+        fs::write(&theme_path, "[theme]\nextends = 'nord'").unwrap();
+        let first = reload(&path).unwrap();
+        fs::write(&theme_path, "[theme]\nextends = 'dracula'").unwrap();
+        assert_ne!(reload(&path).unwrap().theme, first.theme);
+        fs::write(&theme_path, "[theme]\nforeground = 'bad'").unwrap();
+        assert!(reload(&path).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(reload(&path).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn default_document_should_parse() {
@@ -434,7 +608,7 @@ mod tests {
             parse(&DEFAULT_CONFIG.replace("[font]", "[font]\nextra = true"))
                 .is_err()
         );
-        assert!(parse(&DEFAULT_CONFIG.replacen("#c5c8c6", "red", 1)).is_err());
+        assert!(parse("[theme]\nforeground = 'red'").is_err());
     }
 
     #[test]

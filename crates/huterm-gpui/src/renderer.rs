@@ -13,7 +13,7 @@ use huterm_protocol::{
 
 use crate::config::Theme;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct GridMetrics {
     pub(super) cell_width: Pixels,
     pub(super) cell_height: Pixels,
@@ -75,6 +75,28 @@ pub(super) struct TerminalRenderer {
 }
 
 impl TerminalRenderer {
+    pub(super) fn reconfigure(
+        &mut self,
+        font_family: String,
+        theme: Theme,
+        metrics: GridMetrics,
+    ) {
+        if self.font_family == font_family
+            && self.theme == theme
+            && self.metrics == metrics
+        {
+            return;
+        }
+        if self.font_family != font_family || self.metrics != metrics {
+            self.layouts = GlyphLayoutCache::default();
+        }
+        self.snapshot = None;
+        self.rows.clear();
+        self.font_family = font_family;
+        self.theme = theme;
+        self.metrics = metrics;
+    }
+
     pub(super) fn new(
         font_family: String,
         theme: Theme,
@@ -235,7 +257,23 @@ impl TerminalRenderer {
                 size(grid_width, metrics.cell_height),
             );
             window.paint_layer(row_bounds, |window| {
-                paint_row(row, row_index, bounds.origin, metrics, window);
+                paint_row(
+                    row,
+                    row_index,
+                    bounds.origin,
+                    metrics,
+                    window,
+                    |column, original| {
+                        selected_foreground(
+                            snapshot,
+                            self.selection,
+                            &self.theme,
+                            row_index,
+                            column,
+                        )
+                        .map_or(original, rgb_color)
+                    },
+                );
             });
         }
 
@@ -463,6 +501,7 @@ fn paint_row(
     grid_origin: Point<Pixels>,
     metrics: GridMetrics,
     window: &mut Window,
+    foreground: impl Fn(u16, Hsla) -> Hsla,
 ) {
     for glyph in &row.glyphs {
         let origin = cell_origin(
@@ -490,7 +529,7 @@ fn paint_row(
                         run.font_id,
                         shaped.id,
                         glyph.layout.font_size,
-                        glyph.color,
+                        foreground(glyph.column, glyph.color),
                     )
                 };
                 let _ = result;
@@ -741,6 +780,30 @@ fn resolve_color(color: CellColor, theme: &Theme) -> Rgb {
         CellColor::Indexed(index) => theme.indexed(index),
         CellColor::Rgb(color) => color,
     }
+}
+
+fn selected_foreground(
+    snapshot: &TerminalSnapshot,
+    selection: Option<BufferRange>,
+    theme: &Theme,
+    row: usize,
+    column: u16,
+) -> Option<Rgb> {
+    let foreground = theme.selection_foreground?;
+    let selection = selection?;
+    let columns = usize::from(snapshot.size.columns);
+    let rows = usize::from(snapshot.size.rows);
+    let offset = snapshot
+        .viewport
+        .bottom_offset
+        .saturating_add(rows.saturating_sub(1).saturating_sub(row));
+    let start = row.saturating_mul(columns);
+    let cells = snapshot
+        .cells
+        .get(start..start.saturating_add(columns))
+        .unwrap_or_default();
+    selection_covers_column(selection, offset, column, cells)
+        .then_some(foreground)
 }
 
 fn paint_selection(
@@ -1115,6 +1178,112 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn reconfigure_invalidates_rows_but_preserves_snapshot_data() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.0),
+            px(12.0),
+            px(-3.0),
+        );
+        let original = Arc::new(snapshot(1, 1, &["A"]));
+        let mut renderer =
+            TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
+        renderer.snapshot = Some(Arc::clone(&original));
+        renderer.rows.push(PreparedRow::default());
+        renderer.reconfigure("Menlo".into(), Theme::default(), metrics);
+        assert!(renderer.snapshot.is_some());
+        assert_eq!(renderer.rows.len(), 1);
+        let mut theme = Theme::default();
+        theme.background = theme.foreground;
+        renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
+        assert!(renderer.snapshot.is_none());
+        assert!(renderer.rows.is_empty());
+        assert_eq!(original.cells[0].text, "A");
+        renderer.snapshot = Some(Arc::clone(&original));
+        let larger = GridMetrics::from_measurements(
+            px(18.0),
+            px(10.0),
+            px(15.0),
+            px(-4.0),
+        );
+        renderer.reconfigure("Menlo".into(), theme, larger);
+        assert!(renderer.snapshot.is_none());
+        assert_eq!(renderer.metrics.cell_height, px(19.0));
+    }
+
+    #[test]
+    fn selection_foreground_only_affects_selected_visible_cells() {
+        let mut snapshot = snapshot(2, 1, &["A", "B"]);
+        snapshot.viewport.bottom_offset = 10;
+        let range = BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 10,
+                column: 0,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 10,
+                column: 0,
+            },
+        );
+        let mut theme = Theme::default();
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            None
+        );
+        theme.selection_foreground = Some(theme.background);
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            Some(theme.background)
+        );
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 1),
+            None
+        );
+        assert_eq!(selected_foreground(&snapshot, None, &theme, 0, 0), None);
+        snapshot.viewport.bottom_offset = 11;
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn font_changes_evict_layouts_while_palette_changes_reuse_them() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.0),
+            px(12.0),
+            px(-3.0),
+        );
+        let mut renderer =
+            TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
+        let variant = FontVariant::default();
+        renderer.layouts.get_or_insert_with("A", variant, || {
+            Arc::new(LineLayout::default())
+        });
+        let mut theme = Theme::default();
+        theme.background = theme.foreground;
+        renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
+        assert!(
+            renderer
+                .layouts
+                .get_or_insert_with("A", variant, || panic!(
+                    "palette change must reuse glyph layout"
+                ))
+                .1
+        );
+        renderer.reconfigure("Monaco".into(), theme, metrics);
+        assert!(
+            !renderer
+                .layouts
+                .get_or_insert_with("A", variant, || Arc::new(
+                    LineLayout::default()
+                ))
+                .1
+        );
+    }
 
     #[test]
     fn grid_metrics_should_enclose_a_font_with_signed_descent() {

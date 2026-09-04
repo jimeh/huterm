@@ -112,6 +112,10 @@ Use the same inset track for painting and drag mapping. Indicator visibility
 depends on recent interaction, including at offset zero; advance its fade in
 the UI refresh loop so idle terminals redraw it. Keep the label background
 opaque before applying the indicator's fade opacity.
+Theme reload must invalidate prepared row colors even when the terminal snapshot
+is unchanged. Font changes must also invalidate glyph layouts and update PTY cell
+pixel dimensions even if the row/column count stays the same. Keep bundled theme
+licenses in the packaged resources.
 GPUI element `on_mouse_move` filters by hover. Register drag tracking through
 `Window::on_mouse_event` during canvas paint to receive movement outside the
 window. Transparent macOS titlebars extend the content area; use the shared

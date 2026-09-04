@@ -58,6 +58,7 @@ binariesDir = "target/aarch64-apple-darwin/release"
 targetTriple = "aarch64-apple-darwin"
 beforePackagingCommand = "cargo build --release --locked --target aarch64-apple-darwin -p huterm"
 icons = ["assets/Huterm.icns"]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }]
 
 [[package.metadata.packager.binaries]]
 path = "huterm"

@@ -284,6 +284,9 @@ assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$
 icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")"
 packaged_icon="$bundle/Contents/Resources/$icon"
 assert_file "$packaged_icon" "bundle icon"
+for notice in catppuccin folke dracula nordtheme binaryify chriskempson; do
+  assert_file "$bundle/Contents/Resources/themes/licenses/$notice.txt" "theme license"
+done
 if ! cmp -s assets/Huterm.icns "$packaged_icon"; then
   echo "package verification failed: $packaged_icon differs from assets/Huterm.icns" >&2
   exit 1

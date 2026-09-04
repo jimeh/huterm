@@ -1,0 +1,25 @@
+# Adapted from https://github.com/catppuccin/alacritty/blob/f6cb5a5c2b404cdaceaff193b9c52317f62c62f7/catppuccin-macchiato.toml
+# See licenses/catppuccin.txt for the upstream license.
+[theme]
+background = "#24273a"
+foreground = "#cad3f5"
+cursor = "#f4dbd6"
+selection = "#f4dbd6"
+selection_foreground = "#24273a"
+ansi_black = "#494d64"
+ansi_red = "#ed8796"
+ansi_green = "#a6da95"
+ansi_yellow = "#eed49f"
+ansi_blue = "#8aadf4"
+ansi_magenta = "#f5bde6"
+ansi_cyan = "#8bd5ca"
+ansi_white = "#b8c0e0"
+ansi_bright_black = "#5b6078"
+ansi_bright_red = "#ed8796"
+ansi_bright_green = "#a6da95"
+ansi_bright_yellow = "#eed49f"
+ansi_bright_blue = "#8aadf4"
+ansi_bright_magenta = "#f5bde6"
+ansi_bright_cyan = "#8bd5ca"
+ansi_bright_white = "#a5adcb"
+

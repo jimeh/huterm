@@ -83,8 +83,71 @@ padding_balance = false
 Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
-bottom. Padding accepts values from 0 to 256 points. Restart Huterm to apply
-configuration changes.
+bottom. Padding accepts values from 0 to 256 points.
+
+### Themes and config reload
+
+Select a built-in theme and optionally override individual colors:
+
+```toml
+[theme]
+name = "catppuccin-mocha"
+background = "#181825"
+ansi_red = "#f38ba8"
+ansi_bright_red = "#eba0ac"
+```
+
+Built-ins are `huterm-dark` (the unchanged default), `tokyo-night`,
+`tokyo-night-storm`, `tokyo-night-moon`, `tokyo-night-day`,
+`catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
+`catppuccin-mocha`, `dracula`, `nord`, `one-dark-pro`, `tomorrow-night`,
+and `tango-with-monokai`.
+They are embedded in the application; no downloads are needed.
+
+Define a named theme directly in your config:
+
+```toml
+[theme]
+name = "my-mocha"
+
+[themes.my-mocha]
+extends = "catppuccin-mocha"
+background = "#181825"
+```
+
+Or place it in `themes/my-mocha.toml` next to your config file:
+
+```toml
+[theme]
+extends = "catppuccin-mocha"
+background = "#181825"
+```
+
+Names use letters, digits, hyphens, and underscores, without a file extension.
+Lookup prefers inline definitions, then adjacent theme files, then built-ins.
+The first match wins; same-name definitions do not merge. Use a distinct custom
+name when extending a built-in. Without `extends`, a definition starts from
+Huterm Dark. Overrides in the config's `[theme]` table apply last.
+
+All color keys are flat: `foreground`, `background`, `cursor`, `selection`
+(selection background), optional `selection_foreground`, and `ansi_black`,
+`ansi_red`, `ansi_green`, `ansi_yellow`, `ansi_blue`, `ansi_magenta`,
+`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys.
+Colors use `#rrggbb`. The legacy 16-color `ansi = [...]` array still works;
+individual ANSI keys override its entries. Unspecified fields inherit.
+Without `selection_foreground`, selected text retains its original colors.
+Labels and scroll controls derive their colors from the theme.
+
+Use **Reload Configuration** in the Huterm menu, or press Cmd+Shift+, on
+macOS / Ctrl+Shift+, on Linux. It rereads the config and selected theme chain
+and applies font, padding, and colors without restarting the shell or losing
+scrollback. The window stays the same size; its grid is recalculated.
+Invalid configuration leaves the running settings intact and displays an error.
+Explicit colors set by terminal applications remain intact. Reload is manual;
+there is no file watcher or remote CLI command.
+
+See [theme sources and licenses](crates/huterm-gpui/themes/README.md) for
+attribution and palette import details.
 
 On Apple Silicon macOS, build the application bundle with:
 

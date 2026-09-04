@@ -12,7 +12,7 @@ use gpui::{
     MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::*,
-    px, rgba, size,
+    px, size,
 };
 use huterm_core::{
     Mux, RuntimeClient, RuntimeError, TerminalOwner, TerminalRuntime,
@@ -53,6 +53,7 @@ actions!(
         ScrollPageUp,
         ScrollToBottom,
         Settings,
+        ReloadConfiguration,
         ShowAll,
         ToggleFullscreen,
         Zoom
@@ -221,6 +222,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         ),
                         metrics,
                         font_family,
+                        last_cell_size: None,
+                        reload_task: None,
                         font_size: metrics.font_size,
                         window_config: config.window,
                         theme,
@@ -310,6 +313,7 @@ fn install_bindings(cx: &mut App) {
             KeyBinding::new("cmd-c", Copy, None),
             KeyBinding::new("cmd-v", Paste, None),
             KeyBinding::new("cmd-,", Settings, None),
+            KeyBinding::new("cmd-shift-,", ReloadConfiguration, None),
             KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-m", Minimize, None),
@@ -320,6 +324,7 @@ fn install_bindings(cx: &mut App) {
         bindings.extend([
             KeyBinding::new("ctrl-shift-c", Copy, None),
             KeyBinding::new("ctrl-shift-v", Paste, None),
+            KeyBinding::new("ctrl-shift-,", ReloadConfiguration, None),
         ]);
     }
     cx.bind_keys(bindings);
@@ -335,6 +340,7 @@ fn install_menus(cx: &mut App) {
             items: vec![
                 MenuItem::action("About Huterm", About),
                 MenuItem::action("Settings...", Settings),
+                MenuItem::action("Reload Configuration", ReloadConfiguration),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
                 MenuItem::action("Hide Huterm", Hide),
@@ -430,6 +436,8 @@ struct TerminalView {
     _focus_subscriptions: Vec<Subscription>,
     scroll: ScrollController,
     last_grid_size: GridSize,
+    last_cell_size: Option<CellSize>,
+    reload_task: Option<gpui::Task<()>>,
     metrics: GridMetrics,
     font_family: String,
     font_size: Pixels,
@@ -756,6 +764,53 @@ impl TerminalView {
             }
         }
     }
+    fn reload_configuration(
+        &mut self,
+        _: &ReloadConfiguration,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.stop_propagation();
+        if self.reload_task.is_some() {
+            return;
+        }
+        let config_path = self.config_path.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { config::reload(&config_path) });
+        self.reload_task = Some(cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view.update(cx, |view, cx| {
+                view.reload_task = None;
+                let result = result.and_then(|config| {
+                    resolve_metrics(&config, cx)
+                        .map(|(family, metrics)| (config, family, metrics))
+                        .map_err(|error| error.to_string())
+                });
+                match result {
+                    Ok((config, family, metrics)) => {
+                        view.renderer.borrow_mut().reconfigure(
+                            family.clone(),
+                            config.theme.clone(),
+                            metrics,
+                        );
+                        view.font_family = family;
+                        view.font_size = metrics.font_size;
+                        view.metrics = metrics;
+                        view.window_config = config.window;
+                        view.theme = config.theme;
+                        view.status = None;
+                    }
+                    Err(error) => {
+                        view.set_status(format!(
+                            "Config reload failed: {error}"
+                        ));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
     #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
     fn about(
         &mut self,
@@ -1031,14 +1086,15 @@ impl TerminalView {
             self.resize_visibility.activate(Instant::now());
         }
         let size = self.terminal_layout(window).grid;
-        if size == self.last_grid_size {
-            return;
-        }
-        self.last_grid_size = size;
         let cell = CellSize {
             width: pixel_count(self.metrics.cell_width),
             height: pixel_count(self.metrics.cell_height),
         };
+        if size == self.last_grid_size && self.last_cell_size == Some(cell) {
+            return;
+        }
+        self.last_grid_size = size;
+        self.last_cell_size = Some(cell);
         match self.client.resize(size, cell) {
             Ok(()) => self.pending_resize = None,
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
@@ -1260,6 +1316,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::settings))
+            .on_action(cx.listener(Self::reload_configuration))
             .on_action(cx.listener(Self::toggle_fullscreen))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
@@ -1324,7 +1381,7 @@ impl Render for TerminalView {
                         .w(px(8.0 + 6.0 * expansion))
                         .h(px(geometry.track_size()))
                         .rounded(px(4.0 + 3.0 * expansion))
-                        .bg(rgba(0xffff_ff14))
+                        .bg(color(self.theme.foreground).opacity(20.0 / 255.0))
                         .opacity(self.scrollbar_visibility.opacity * expansion),
                 );
             }
@@ -1336,7 +1393,7 @@ impl Render for TerminalView {
                     .w(px(6.0 + 4.0 * expansion))
                     .h(px(geometry.thumb_size))
                     .rounded(px(3.0 + 2.0 * expansion))
-                    .bg(rgba(0xffff_ffbb))
+                    .bg(color(self.theme.foreground).opacity(187.0 / 255.0))
                     .opacity(self.scrollbar_visibility.opacity),
             );
             if let Some(label) = scroll_position_label(displayed_offset) {
@@ -1392,8 +1449,8 @@ impl Render for TerminalView {
                     .right_0()
                     .px_2()
                     .py_1()
-                    .bg(rgba(0x0000_00cc))
-                    .text_color(rgba(0xffff_ffcc))
+                    .bg(color(self.theme.background))
+                    .text_color(color(self.theme.foreground))
                     .child(status),
             )
         });
@@ -1594,9 +1651,11 @@ fn reserved_chord_for_platform(
                 && key == "h")
             || (exact_modifiers(modifiers, ModifierChord::CommandControl)
                 && key == "f")
+            || (exact_modifiers(modifiers, ModifierChord::CommandShift)
+                && key == ",")
     } else {
         exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "c" | "v")
+            && matches!(key, "c" | "v" | ",")
     }
 }
 #[derive(Clone, Copy)]
@@ -1605,12 +1664,14 @@ enum ModifierChord {
     Command,
     CommandAlt,
     CommandControl,
+    CommandShift,
     ControlShift,
 }
 fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
     let matches = match chord {
         ModifierChord::Shift => modifiers.shift,
         ModifierChord::Command => modifiers.platform,
+        ModifierChord::CommandShift => modifiers.platform && modifiers.shift,
         ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
         ModifierChord::CommandControl => {
             modifiers.platform && modifiers.control
@@ -1625,6 +1686,7 @@ fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
     let expected_count = match chord {
         ModifierChord::Shift | ModifierChord::Command => 1,
         ModifierChord::CommandAlt
+        | ModifierChord::CommandShift
         | ModifierChord::CommandControl
         | ModifierChord::ControlShift => 2,
     };
@@ -1871,6 +1933,11 @@ mod tests {
     }
     #[test]
     fn macos_shortcuts_require_exact_modifiers() {
+        assert!(reserved_chord_for_platform(
+            true,
+            modifiers(&[TestModifier::Platform, TestModifier::Shift]),
+            ",",
+        ));
         let command = modifiers(&[TestModifier::Platform]);
         assert!(reserved_chord_for_platform(true, command, "h"));
         assert!(reserved_chord_for_platform(
@@ -1894,6 +1961,11 @@ mod tests {
     }
     #[test]
     fn linux_shortcuts_require_exact_modifiers() {
+        assert!(reserved_chord_for_platform(
+            false,
+            modifiers(&[TestModifier::Control, TestModifier::Shift]),
+            ",",
+        ));
         let clipboard =
             modifiers(&[TestModifier::Control, TestModifier::Shift]);
         assert!(reserved_chord_for_platform(false, clipboard, "c"));
