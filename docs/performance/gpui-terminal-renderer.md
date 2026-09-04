@@ -114,3 +114,9 @@ The task builds Huterm and its workload in release mode, launches a 100 by 32
 animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
 `HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.
+
+`mise run bench:scroll` accounts for this limitation by gating snapshot CPU,
+wakeup delay, returned offsets, and queue bounds from completion-time records.
+It also checks renderer CPU, row reuse, and input-to-paint latency when a host
+produces at least 25 paint samples. Linux Xvfb does not satisfy that condition;
+use a frame-delivering macOS session for those measurements.

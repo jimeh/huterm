@@ -426,8 +426,10 @@ Record revision, profile, OS, hardware, display scale, and GPUI version.
 
 On macOS, use Instruments or equivalent counters during sustained trackpad and
 scrollbar use. Confirm 60 Hz presentation without request accumulation. If
-headless Linux lacks presentation callbacks, use it only for deterministic CPU
-and queue evidence.
+headless Linux lacks presentation callbacks, gate completion-time snapshot CPU,
+input-to-snapshot latency, wakeup delay, returned offsets, and queue behavior
+there. Keep row reuse under deterministic unit tests. Apply the combined paint
+CPU and input-to-paint budgets only when a host produces enough paint samples.
 
 ### Repository and manual validation
 

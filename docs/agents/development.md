@@ -74,7 +74,7 @@ native Minimize and Zoom commands.
 | Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
 | Pull request | `mise run license` on Ubuntu 24.04 | Dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
-| Scroll benchmark | `mise run bench:scroll` | Snapshot queue, row reuse, CPU encoding, and input-to-paint latency | Implementer |
+| Scroll benchmark | `mise run bench:scroll` | Snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | Implementer |
 | macOS package | `mise run package:macos` | Apple Silicon app metadata, icon, executable, and architecture | CI or implementer |
 
 The pre-commit hook runs independent jobs in parallel. Markdown and Rust
@@ -102,9 +102,10 @@ mise run bench:scroll
 
 `bench:scroll` drives wheel-equivalent fractional movement, rows, pages, and
 thumb jumps through the production scroll controller over 10,000 unique rows.
-It enforces the queue, row-reuse, CPU, and latency budgets from the desktop
-features plan. These headless measurements cover CPU preparation and paint
-encoding, not GPU presentation.
+Under Xvfb, it enforces snapshot CPU, input-to-snapshot latency, wakeup delay,
+returned offsets, and queue bounds. If the host produces at least 25 paint
+samples, it also enforces combined paint CPU, input-to-paint latency, and row
+reuse. CPU preparation and paint encoding do not prove GPU presentation.
 
 On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived

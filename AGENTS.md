@@ -45,7 +45,9 @@ Run `mise tasks` to discover the full task set.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
-  and enforces queue, reuse, CPU, and input-to-paint latency budgets.
+  and enforces snapshot CPU, wakeup, offset, and bounded-queue budgets under
+  Xvfb. It also enforces paint CPU, reuse, and input latency when the host
+  delivers enough frames.
 - `mise run package:macos` builds and verifies the Apple Silicon `Huterm.app`.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
@@ -102,9 +104,10 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
 family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
 missing-font fallback path.
-Scroll benchmark timing crosses asynchronous snapshot completion, GPUI prepare,
-and GPUI paint. Keep separate bounded state for each stage so a fast snapshot
-completion cannot overwrite a prepared sample before paint records it.
+Headless Xvfb does not deliver continuous GPUI frames after the initial
+presentation. Keep Linux scroll gates based on completion-time snapshot and
+queue evidence; require frame-bound paint and input-latency evidence only on a
+host that actually delivers enough frames.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.

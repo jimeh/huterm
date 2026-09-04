@@ -112,7 +112,12 @@ depends = ["lint", "architecture"]
 
 [tasks.test]
 description = "Run workspace tests"
+depends = ["test:scroll-checker"]
 run = "cargo test --workspace --all-targets --all-features --locked"
+
+[tasks."test:scroll-checker"]
+description = "Test scroll benchmark log validation"
+run = "python3 scripts/test-scroll-benchmark-checker.py"
 
 [tasks."smoke:linux"]
 description = "Launch the Linux GPUI client under Xvfb"
@@ -167,7 +172,7 @@ fi
 '''
 
 [tasks."bench:scroll"]
-description = "Measure release-mode scroll coordination and rendering under Xvfb"
+description = "Measure release-mode scroll coordination under Xvfb"
 run = '''
 if [ "$(uname -s)" != Linux ]; then
   echo "Scroll benchmark currently requires Linux and Xvfb" >&2
