@@ -9,6 +9,13 @@ pub(super) const DEFAULT_CONFIG: &str = r##"[font]
 family = "Menlo"
 size = 14.0
 
+[window]
+# Padding in logical points on each side of the terminal.
+padding_x = 4.0
+padding_y = 4.0
+# Split unused column space between left and right instead of only the right.
+padding_balance = false
+
 [theme]
 foreground = "#c5c8c6"
 background = "#1d1f21"
@@ -25,7 +32,30 @@ ansi = [
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Config {
     pub(super) font: FontConfig,
+    pub(super) window: WindowConfig,
     pub(super) theme: Theme,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "fields match the public window configuration keys"
+)]
+pub(super) struct WindowConfig {
+    pub(super) padding_x: f32,
+    pub(super) padding_y: f32,
+    pub(super) padding_balance: bool,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            padding_x: 4.0,
+            padding_y: 4.0,
+            padding_balance: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +93,7 @@ impl Default for Config {
                 size: 14.0,
             },
             theme: Theme::default(),
+            window: WindowConfig::default(),
         }
     }
 }
@@ -225,6 +256,13 @@ fn parse(source: &str) -> Result<Config, ConfigError> {
     if raw.theme.ansi.len() != 16 {
         return Err(ConfigError::Invalid("theme.ansi must contain 16 colors"));
     }
+    for padding in [raw.window.padding_x, raw.window.padding_y] {
+        if !padding.is_finite() || !(0.0..=256.0).contains(&padding) {
+            return Err(ConfigError::Invalid(
+                "window padding must be between 0 and 256 points",
+            ));
+        }
+    }
     let ansi: Vec<Rgb> = raw
         .theme
         .ansi
@@ -235,6 +273,7 @@ fn parse(source: &str) -> Result<Config, ConfigError> {
         ConfigError::Invalid("theme.ansi must contain 16 colors")
     })?;
     Ok(Config {
+        window: raw.window,
         font: FontConfig {
             family: raw.font.family,
             size: raw.font.size,
@@ -273,6 +312,8 @@ const fn rgb(value: u32) -> Rgb {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     font: RawFont,
+    #[serde(default)]
+    window: WindowConfig,
     theme: RawTheme,
 }
 
@@ -338,6 +379,49 @@ mod tests {
     fn default_document_should_parse() {
         let parsed = parse(&default_document()).expect("default should parse");
         assert_eq!(parsed.font.family, Config::default().font.family);
+        assert_eq!(parsed.window, WindowConfig::default());
+    }
+
+    #[test]
+    fn window_settings_are_optional_and_individually_defaulted() {
+        let legacy =
+            DEFAULT_CONFIG.split("[window]").next().unwrap().to_owned()
+                + "[theme]"
+                + DEFAULT_CONFIG.split("[theme]").nth(1).unwrap();
+        assert_eq!(parse(&legacy).unwrap().window, WindowConfig::default());
+        let balanced =
+            parse(&(legacy + "\n[window]\npadding_balance = true\n"))
+                .unwrap()
+                .window;
+        assert_eq!(
+            balanced,
+            WindowConfig {
+                padding_balance: true,
+                ..WindowConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    fn window_padding_rejects_invalid_values_and_accepts_zero() {
+        for key in ["padding_x", "padding_y"] {
+            for value in ["-1.0", "257.0", "nan", "inf"] {
+                let source = DEFAULT_CONFIG.replace(
+                    &format!("{key} = 4.0"),
+                    &format!("{key} = {value}"),
+                );
+                assert!(parse(&source).is_err(), "accepted {key} = {value}");
+            }
+        }
+        let config = parse(&DEFAULT_CONFIG.replace("= 4.0", "= 0.0")).unwrap();
+        assert_eq!(
+            config.window,
+            WindowConfig {
+                padding_x: 0.0,
+                padding_y: 0.0,
+                padding_balance: false,
+            }
+        );
     }
 
     #[test]

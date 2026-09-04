@@ -70,6 +70,22 @@ Huterm reads `$HUTERM_CONFIG_FILE` when set, otherwise
 Settings command creates a documented default file without replacing an
 existing one, then opens it in the system editor.
 
+Terminal padding defaults to 4 logical points on each side. Add or adjust the
+`[window]` section to change it:
+
+```toml
+[window]
+padding_x = 4.0
+padding_y = 4.0
+padding_balance = false
+```
+
+Set `padding_balance = true` to split leftover horizontal space evenly between
+left and right when the window width does not fit whole columns. With it off,
+the remainder stays on the right. Vertical remainder always stays at the
+bottom. Padding accepts values from 0 to 256 points. Restart Huterm to apply
+configuration changes.
+
 On Apple Silicon macOS, build the application bundle with:
 
 ```sh

@@ -107,9 +107,19 @@ missing-font fallback path.
 Derive the terminal's grid geometry once through `GridMetrics`. GPUI 0.2.2
 reports raw font descent as negative on macOS and Linux, so normalize it to a
 positive distance before calculating cell height, baseline, or decorations.
-Derive scrollbar paint state from the displayed snapshot offset. Hide the
-indicator at offset zero, and keep its label background opaque so changing
-terminal rows cannot bleed through it during rapid scrolling.
+Derive scrollbar geometry and label text from the displayed snapshot offset.
+Use the same inset track for painting and drag mapping. Indicator visibility
+depends on recent interaction, including at offset zero; advance its fade in
+the UI refresh loop so idle terminals redraw it. Keep the label background
+opaque before applying the indicator's fade opacity.
+GPUI element `on_mouse_move` filters by hover. Register drag tracking through
+`Window::on_mouse_event` during canvas paint to receive movement outside the
+window. Transparent macOS titlebars extend the content area; use the shared
+terminal viewport inset for PTY sizing, scrollbar geometry, and mouse input.
+Within that viewport, `TerminalLayout` owns padded grid bounds and dimensions
+for painting, PTY sizing, and selection coordinates. Keep scrollbar geometry
+relative to the outer viewport. Clip grid painting to its bounds because a
+snapshot from before a resize may arrive after the viewport has shrunk.
 Headless Xvfb does not deliver continuous GPUI frames after the initial
 presentation. Keep Linux scroll gates based on completion-time snapshot and
 queue evidence; require frame-bound paint and input-latency evidence only on a

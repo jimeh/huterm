@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable,
-    KeyBinding, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
-    SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    actions, canvas, div, prelude::*, px, rgba, size,
+    App, Application, Bounds, ClipboardItem, Context, DispatchPhase,
+    FocusHandle, Focusable, KeyBinding, Keystroke, Menu, MenuItem,
+    Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
+    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
+    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::*,
+    px, rgba, size,
 };
 use huterm_core::{
     Mux, RuntimeClient, RuntimeError, TerminalOwner, TerminalRuntime,
@@ -23,15 +24,20 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
-use crate::config::{self, Config, Theme};
+use crate::config::{self, Config, Theme, WindowConfig};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
-use crate::scroll::{ScrollController, ScrollbarGeometry};
+use crate::scroll::{
+    IndicatorVisibility, ScrollController, ScrollbarExpansion,
+    ScrollbarGeometry,
+};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
 const PENDING_INPUT_CAPACITY: usize = 256;
 const PENDING_INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SCROLLBAR_WIDTH: Pixels = px(12.0);
+const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
+const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
 actions!(
     huterm,
@@ -150,8 +156,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
         let bounds = Bounds::centered(
             None,
             size(
-                metrics.cell_width * f32::from(INITIAL_COLUMNS),
-                metrics.cell_height * f32::from(INITIAL_ROWS),
+                metrics.cell_width * f32::from(INITIAL_COLUMNS)
+                    + px(config.window.padding_x * 2.0),
+                metrics.cell_height * f32::from(INITIAL_ROWS)
+                    + px(config.window.padding_y * 2.0)
+                    + titlebar_inset(cfg!(target_os = "macos"), false),
             ),
             cx,
         );
@@ -161,6 +170,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Huterm".into()),
+                    appears_transparent: cfg!(target_os = "macos"),
                     ..TitlebarOptions::default()
                 }),
                 app_id: Some(APP_ID.into()),
@@ -212,6 +222,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         metrics,
                         font_family,
                         font_size: metrics.font_size,
+                        window_config: config.window,
                         theme,
                         config_path,
                         status: config_error,
@@ -221,7 +232,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         scrollbar_dragging: false,
                         scrollbar_drag_offset: px(0.0),
                         scrollbar_hovering: false,
-                        scrollbar_active_until: None,
+                        scrollbar_visibility: IndicatorVisibility::default(),
+                        scrollbar_expansion: ScrollbarExpansion::default(),
+                        resize_visibility: IndicatorVisibility::default(),
+                        last_viewport: None,
                         selection_edge_direction: 0,
                         scroll_benchmark: ScrollBenchmark::from_environment(),
                         snapshot_sequence: 0,
@@ -419,6 +433,7 @@ struct TerminalView {
     metrics: GridMetrics,
     font_family: String,
     font_size: Pixels,
+    window_config: WindowConfig,
     theme: Theme,
     config_path: PathBuf,
     status: Option<String>,
@@ -428,7 +443,10 @@ struct TerminalView {
     scrollbar_dragging: bool,
     scrollbar_drag_offset: Pixels,
     scrollbar_hovering: bool,
-    scrollbar_active_until: Option<Instant>,
+    scrollbar_visibility: IndicatorVisibility,
+    scrollbar_expansion: ScrollbarExpansion,
+    resize_visibility: IndicatorVisibility,
+    last_viewport: Option<gpui::Size<Pixels>>,
     selection_edge_direction: i64,
     scroll_benchmark: Option<ScrollBenchmark>,
     snapshot_sequence: u64,
@@ -554,6 +572,16 @@ impl TerminalView {
 
     fn refresh(&mut self, cx: &mut Context<'_, Self>) {
         let mut changed = self.retry_client_messages();
+        changed |= self.scrollbar_visibility.update(
+            Instant::now(),
+            self.scrollbar_dragging || self.scrollbar_hovering,
+        );
+        changed |= self.resize_visibility.update(Instant::now(), false);
+        changed |= self.scrollbar_expansion.update(
+            Instant::now(),
+            self.scrollbar_visibility.opacity > 0.0,
+            self.scrollbar_hovering || self.scrollbar_dragging,
+        );
         loop {
             match self.client.try_recv_event() {
                 Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
@@ -647,10 +675,12 @@ impl TerminalView {
             ),
             ScrollDelta::Lines(delta) => self.scroll.scroll_lines(delta.y),
         };
-        if changed {
+        if self.scroll.history() > 0 {
             self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
             cx.notify();
+        }
+        if changed {
+            self.start_snapshot_if_needed(cx);
         }
     }
 
@@ -785,19 +815,17 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         self.focus.focus(window);
-        if event.position.x >= window.viewport_size().width - SCROLLBAR_WIDTH
-            && self.scroll.history() > 0
-        {
-            let geometry = self.scrollbar_geometry(window);
-            if let Some(geometry) = geometry.filter(|geometry| {
-                geometry.contains(f32::from(event.position.y))
-            }) {
+        let position = event.position - point(px(0.0), terminal_top(window));
+        if let Some(geometry) = self.scrollbar_at(position, window) {
+            if geometry.contains(f32::from(position.y)) {
                 self.scrollbar_dragging = true;
+                self.scrollbar_expansion.activate(Instant::now());
                 self.scrollbar_drag_offset =
-                    event.position.y - px(geometry.thumb_start);
+                    position.y - px(geometry.thumb_start);
                 self.activate_scrollbar();
-            } else if let Some(geometry) = geometry {
-                let upward = f32::from(event.position.y) < geometry.thumb_start;
+                cx.notify();
+            } else {
+                let upward = f32::from(position.y) < geometry.thumb_start;
                 if self.scroll.page(self.last_grid_size.rows, upward) {
                     self.activate_scrollbar();
                     self.start_snapshot_if_needed(cx);
@@ -809,7 +837,8 @@ impl TerminalView {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let point = point_for_position(event.position, snapshot, self.metrics);
+        let position = position - self.terminal_layout(window).bounds.origin;
+        let point = point_for_position(position, snapshot, self.metrics);
         self.selection = Some(Selection {
             generation: snapshot.generation,
             anchor: point,
@@ -827,15 +856,19 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let position = event.position - point(px(0.0), terminal_top(window));
         let was_hovering = self.scrollbar_hovering;
-        self.scrollbar_hovering =
-            event.position.x >= window.viewport_size().width - SCROLLBAR_WIDTH;
+        self.scrollbar_hovering = self.scrollbar_at(position, window).is_some();
+        if self.scrollbar_hovering {
+            self.scrollbar_expansion.activate(Instant::now());
+        }
         if self.scrollbar_hovering != was_hovering {
+            self.activate_scrollbar();
             cx.notify();
         }
         if self.scrollbar_dragging {
             self.scrollbar_seek(
-                event.position.y - self.scrollbar_drag_offset,
+                position.y - self.scrollbar_drag_offset,
                 window,
                 cx,
             );
@@ -844,17 +877,19 @@ impl TerminalView {
         if !self.selecting {
             return;
         }
+        let layout = self.terminal_layout(window);
+        let position = position - layout.bounds.origin;
         let Some(snapshot) = &self.snapshot else {
             return;
         };
         if let Some(selection) = &mut self.selection {
             selection.head =
-                point_for_position(event.position, snapshot, self.metrics);
+                point_for_position(position, snapshot, self.metrics);
             self.selected_text = None;
             self.update_renderer_selection();
             let direction = edge_scroll_direction(
-                f32::from(event.position.y),
-                f32::from(window.viewport_size().height),
+                f32::from(position.y),
+                f32::from(layout.bounds.size.height),
             );
             self.selection_edge_direction = direction;
             if direction != 0 && self.scroll.scroll_rows(direction) {
@@ -871,7 +906,11 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.scrollbar_dragging = false;
+        if self.scrollbar_dragging {
+            self.scrollbar_dragging = false;
+            self.activate_scrollbar();
+            cx.notify();
+        }
         self.selection_edge_direction = 0;
         if !self.selecting {
             return;
@@ -932,11 +971,31 @@ impl TerminalView {
 
     fn scrollbar_geometry(&self, window: &Window) -> Option<ScrollbarGeometry> {
         ScrollbarGeometry::new(
-            f32::from(window.viewport_size().height),
+            f32::from(terminal_viewport(window).height),
             self.last_grid_size.rows,
             self.scroll.history(),
             self.scroll.displayed(),
         )
+    }
+
+    fn scrollbar_expanded(&self) -> bool {
+        self.scrollbar_expansion.active()
+    }
+
+    fn scrollbar_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> Option<ScrollbarGeometry> {
+        let geometry = self.scrollbar_geometry(window)?;
+        scrollbar_hit_test(
+            position,
+            terminal_viewport(window).width,
+            geometry,
+            self.scrollbar_visibility.opacity,
+            self.scrollbar_expanded(),
+        )
+        .then_some(geometry)
     }
     fn clear_selection(&mut self) {
         self.selection = None;
@@ -946,8 +1005,7 @@ impl TerminalView {
         self.update_renderer_selection();
     }
     fn activate_scrollbar(&mut self) {
-        self.scrollbar_active_until =
-            Some(Instant::now() + Duration::from_millis(750));
+        self.scrollbar_visibility.activate(Instant::now());
     }
     fn update_renderer_selection(&self) {
         self.renderer
@@ -955,12 +1013,24 @@ impl TerminalView {
             .set_selection(self.selection.map(Selection::range));
     }
 
+    fn terminal_layout(&self, window: &Window) -> TerminalLayout {
+        TerminalLayout::new(
+            terminal_viewport(window),
+            size(self.metrics.cell_width, self.metrics.cell_height),
+            self.window_config,
+        )
+    }
+
     fn resize_if_needed(&mut self, window: &Window) {
-        let viewport = window.viewport_size();
-        let size = GridSize::clamped(
-            cell_count(viewport.width, self.metrics.cell_width),
-            cell_count(viewport.height, self.metrics.cell_height),
-        );
+        let viewport = terminal_viewport(window);
+        if self
+            .last_viewport
+            .replace(viewport)
+            .is_some_and(|previous| previous != viewport)
+        {
+            self.resize_visibility.activate(Instant::now());
+        }
+        let size = self.terminal_layout(window).grid;
         if size == self.last_grid_size {
             return;
         }
@@ -1155,7 +1225,7 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     #[expect(
         clippy::too_many_lines,
-        reason = "the terminal canvas and its overlays share one render tree"
+        reason = "terminal content and window chrome share one render tree"
     )]
     fn render(
         &mut self,
@@ -1169,19 +1239,21 @@ impl Render for TerminalView {
         if self.renderer.borrow().records_stats() {
             window.request_animation_frame();
         }
-        let scrollbar_active = self.scrollbar_dragging
-            || self.scrollbar_hovering
-            || self
-                .scrollbar_active_until
-                .is_some_and(|deadline| deadline > Instant::now());
-        if scrollbar_active {
-            window.request_animation_frame();
-        }
         let snapshot = self.snapshot.clone();
         let status = self.status.clone();
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
+        let mouse_view = cx.entity().downgrade();
+        let layout = self.terminal_layout(window);
         let mut root = div()
+            .id("terminal")
+            .on_hover(cx.listener(|view, hovering, _, cx| {
+                if !hovering && view.scrollbar_hovering {
+                    view.scrollbar_hovering = false;
+                    view.activate_scrollbar();
+                    cx.notify();
+                }
+            }))
             .key_context("Huterm")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::about))
@@ -1196,61 +1268,122 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::scroll_to_bottom))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-            .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
-            .size_full()
+            .relative()
+            .w_full()
+            .h(terminal_viewport(window).height)
             .bg(color(self.theme.background))
             .text_size(self.font_size)
             .font_family(self.font_family.clone())
-            .child(canvas(
-                move |_, window, _| {
-                    prepare_renderer
-                        .borrow_mut()
-                        .prepare(snapshot.as_ref(), window);
-                },
-                move |bounds, (), window, _| {
-                    paint_renderer.borrow_mut().paint(bounds, window);
-                },
-            ));
+            .child(
+                canvas(
+                    move |_, window, _| {
+                        prepare_renderer
+                            .borrow_mut()
+                            .prepare(snapshot.as_ref(), window);
+                    },
+                    move |bounds, (), window, _| {
+                        let bounds = Bounds::new(
+                            bounds.origin + layout.bounds.origin,
+                            layout.bounds.size,
+                        );
+                        window.with_content_mask(
+                            Some(gpui::ContentMask { bounds }),
+                            |window| {
+                                paint_renderer
+                                    .borrow_mut()
+                                    .paint(bounds, window);
+                            },
+                        );
+                        window.on_mouse_event(
+                            move |event: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    let _ =
+                                        mouse_view.update(cx, |view, cx| {
+                                            view.mouse_move(event, window, cx);
+                                        });
+                                }
+                            },
+                        );
+                    },
+                )
+                .size_full(),
+            );
         let displayed_offset = self.scroll.displayed();
-        if let Some(label) = scroll_position_label(displayed_offset)
-            && let Some(geometry) = ScrollbarGeometry::new(
-                f32::from(window.viewport_size().height),
-                self.last_grid_size.rows,
-                self.scroll.history(),
-                displayed_offset,
-            )
+        if self.scrollbar_visibility.opacity > 0.0
+            && let Some(geometry) = self.scrollbar_geometry(window)
         {
-            root = root
-                .child(
+            let expansion = self.scrollbar_expansion.progress;
+            if expansion > 0.0 {
+                root = root.child(
                     div()
                         .absolute()
                         .right(px(2.0))
-                        .top(px(geometry.thumb_start))
-                        .w(px(6.0))
-                        .h(px(geometry.thumb_size))
-                        .rounded(px(3.0))
-                        .bg(rgba(if scrollbar_active {
-                            0xffff_ffbb
-                        } else {
-                            0xffff_ff66
-                        })),
-                )
-                .child(
+                        .top(px(geometry.track_start))
+                        .w(px(8.0 + 6.0 * expansion))
+                        .h(px(geometry.track_size()))
+                        .rounded(px(4.0 + 3.0 * expansion))
+                        .bg(rgba(0xffff_ff14))
+                        .opacity(self.scrollbar_visibility.opacity * expansion),
+                );
+            }
+            root = root.child(
+                div()
+                    .absolute()
+                    .right(px(2.0 + 2.0 * expansion))
+                    .top(px(geometry.thumb_start))
+                    .w(px(6.0 + 4.0 * expansion))
+                    .h(px(geometry.thumb_size))
+                    .rounded(px(3.0 + 2.0 * expansion))
+                    .bg(rgba(0xffff_ffbb))
+                    .opacity(self.scrollbar_visibility.opacity),
+            );
+            if let Some(label) = scroll_position_label(displayed_offset) {
+                root = root.child(
                     div()
                         .absolute()
-                        .right(px(12.0))
-                        .bottom(px(4.0))
+                        .right(
+                            SCROLLBAR_WIDTH
+                                + (SCROLLBAR_EXPANDED_WIDTH - SCROLLBAR_WIDTH)
+                                    * expansion,
+                        )
+                        .bottom(px(12.0))
                         .px_2()
                         .py_1()
                         .rounded(px(3.0))
                         .bg(color(self.theme.background))
                         .text_color(color(self.theme.foreground))
+                        .opacity(self.scrollbar_visibility.opacity)
                         .child(label),
                 );
+            }
         }
-        root.when_some(status, |view, status| {
+        if self.resize_visibility.opacity > 0.0 {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(3.0))
+                            .bg(color(self.theme.background))
+                            .text_color(color(self.theme.foreground))
+                            .opacity(self.resize_visibility.opacity)
+                            .child(format!(
+                                "{} x {}",
+                                self.last_grid_size.columns,
+                                self.last_grid_size.rows
+                            )),
+                    ),
+            );
+        }
+        let root = root.when_some(status, |view, status| {
             view.child(
                 div()
                     .absolute()
@@ -1263,8 +1396,105 @@ impl Render for TerminalView {
                     .text_color(rgba(0xffff_ffcc))
                     .child(status),
             )
-        })
+        });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(color(self.theme.background))
+            .when(terminal_top(window) > px(0.0), |view| {
+                view.child(
+                    div()
+                        .h(terminal_top(window))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .pl(px(84.0))
+                        .text_size(px(13.0))
+                        .text_color(color(self.theme.foreground))
+                        .window_control_area(WindowControlArea::Drag)
+                        .child("Huterm"),
+                )
+            })
+            .child(root)
     }
+}
+
+fn scrollbar_hit_test(
+    position: gpui::Point<Pixels>,
+    viewport_width: Pixels,
+    geometry: ScrollbarGeometry,
+    opacity: f32,
+    expanded: bool,
+) -> bool {
+    let width = if expanded {
+        SCROLLBAR_EXPANDED_WIDTH
+    } else {
+        SCROLLBAR_WIDTH
+    };
+    opacity > 0.0
+        && position.x >= (viewport_width - width).max(px(0.0))
+        && position.x < viewport_width
+        && geometry.track_contains(f32::from(position.y))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalLayout {
+    bounds: Bounds<Pixels>,
+    grid: GridSize,
+}
+
+impl TerminalLayout {
+    fn new(
+        viewport: gpui::Size<Pixels>,
+        cell: gpui::Size<Pixels>,
+        config: WindowConfig,
+    ) -> Self {
+        let padding_x = px(config.padding_x).min(viewport.width / 2.0);
+        let padding_y = px(config.padding_y).min(viewport.height / 2.0);
+        let available = size(
+            (viewport.width - padding_x * 2.0).max(px(0.0)),
+            (viewport.height - padding_y * 2.0).max(px(0.0)),
+        );
+        let grid = GridSize::clamped(
+            cell_count(available.width, cell.width),
+            cell_count(available.height, cell.height),
+        );
+        let width = (cell.width * f32::from(grid.columns)).min(available.width);
+        let height = (cell.height * f32::from(grid.rows)).min(available.height);
+        let extra_left = if config.padding_balance {
+            (available.width - width) / 2.0
+        } else {
+            px(0.0)
+        };
+        Self {
+            bounds: Bounds::new(
+                point(padding_x + extra_left, padding_y),
+                size(width, height),
+            ),
+            grid,
+        }
+    }
+}
+
+fn titlebar_inset(macos: bool, fullscreen: bool) -> Pixels {
+    if macos && !fullscreen {
+        TITLEBAR_HEIGHT
+    } else {
+        px(0.0)
+    }
+}
+
+fn terminal_top(window: &Window) -> Pixels {
+    titlebar_inset(cfg!(target_os = "macos"), window.is_fullscreen())
+}
+
+fn terminal_viewport(window: &Window) -> gpui::Size<Pixels> {
+    let viewport = window.viewport_size();
+    size(
+        viewport.width,
+        (viewport.height - terminal_top(window)).max(px(0.0)),
+    )
 }
 
 fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
@@ -1424,6 +1654,7 @@ fn scroll_position_label(displayed_offset: usize) -> Option<String> {
     (displayed_offset > 0)
         .then(|| format!("{} lines up", format_line_count(displayed_offset)))
 }
+
 fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
     if position < 0.0 {
         1
@@ -1487,6 +1718,122 @@ fn buffered_input_bytes(input: &TerminalInput) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollbar_hover_target_expands_only_while_visible() {
+        let geometry = ScrollbarGeometry::new(400.0, 32, 100, 0).unwrap();
+        let position = point(px(85.0), px(200.0));
+        assert!(!scrollbar_hit_test(
+            position,
+            px(100.0),
+            geometry,
+            1.0,
+            false
+        ));
+        assert!(scrollbar_hit_test(position, px(100.0), geometry, 1.0, true));
+        assert!(!scrollbar_hit_test(
+            position,
+            px(100.0),
+            geometry,
+            0.0,
+            true
+        ));
+        assert!(scrollbar_hit_test(
+            point(px(95.0), px(200.0)),
+            px(100.0),
+            geometry,
+            0.5,
+            false
+        ));
+    }
+
+    #[test]
+    fn scrollbar_hit_testing_excludes_insets_and_outside_window() {
+        let geometry = ScrollbarGeometry::new(400.0, 32, 100, 0).unwrap();
+        for position in [
+            point(px(99.0), px(1.0)),
+            point(px(99.0), px(393.0)),
+            point(px(100.0), px(200.0)),
+            point(px(-1.0), px(200.0)),
+        ] {
+            assert!(!scrollbar_hit_test(
+                position,
+                px(100.0),
+                geometry,
+                1.0,
+                true
+            ));
+        }
+        assert!(scrollbar_hit_test(
+            point(px(99.0), px(392.0)),
+            px(100.0),
+            geometry,
+            1.0,
+            true
+        ));
+    }
+
+    #[test]
+    fn terminal_padding_keeps_remainder_on_right_and_bottom_by_default() {
+        let layout = TerminalLayout::new(
+            size(px(105.0), px(59.0)),
+            size(px(8.0), px(16.0)),
+            WindowConfig::default(),
+        );
+        assert_eq!(layout.grid, GridSize::clamped(12, 3));
+        assert_eq!(
+            layout.bounds,
+            Bounds::new(point(px(4.0), px(4.0)), size(px(96.0), px(48.0)))
+        );
+    }
+
+    #[test]
+    fn balanced_padding_centers_columns_without_changing_rows_or_grid_size() {
+        let layout = TerminalLayout::new(
+            size(px(111.0), px(59.0)),
+            size(px(8.0), px(16.0)),
+            WindowConfig {
+                padding_balance: true,
+                ..WindowConfig::default()
+            },
+        );
+        assert_eq!(layout.grid, GridSize::clamped(12, 3));
+        assert_eq!(layout.bounds.origin, point(px(7.5), px(4.0)));
+        assert_eq!(px(111.0) - layout.bounds.right(), layout.bounds.origin.x);
+        let grid_position = point(px(15.5), px(20.0)) - layout.bounds.origin;
+        assert_eq!(grid_position, point(px(8.0), px(16.0)));
+    }
+
+    #[test]
+    fn balanced_padding_leaves_exact_cell_fit_unchanged() {
+        let layout = TerminalLayout::new(
+            size(px(104.0), px(56.0)),
+            size(px(8.0), px(16.0)),
+            WindowConfig {
+                padding_balance: true,
+                ..WindowConfig::default()
+            },
+        );
+        assert_eq!(layout.bounds.origin, point(px(4.0), px(4.0)));
+        assert_eq!(layout.grid, GridSize::clamped(12, 3));
+    }
+
+    #[test]
+    fn excessive_padding_clips_tiny_viewports_without_negative_dimensions() {
+        let layout = TerminalLayout::new(
+            size(px(3.0), px(2.0)),
+            size(px(8.0), px(16.0)),
+            WindowConfig {
+                padding_balance: true,
+                ..WindowConfig::default()
+            },
+        );
+        assert_eq!(layout.grid, GridSize::clamped(1, 1));
+        assert_eq!(
+            layout.bounds,
+            Bounds::new(point(px(1.5), px(1.0)), size(px(0.0), px(0.0)))
+        );
+    }
     #[test]
     fn control_byte_should_only_accept_ascii_control_keys_and_named_space() {
         assert_eq!(control_byte("a"), Some(1));
@@ -1601,12 +1948,16 @@ mod tests {
         assert_eq!(format_line_count(1_000_000), "1,000,000");
     }
     #[test]
-    fn live_bottom_has_no_scroll_position_label() {
+    fn live_bottom_hides_its_label_while_the_indicator_fades() {
         assert_eq!(scroll_position_label(0), None);
     }
+
     #[test]
     fn scroll_position_label_uses_the_displayed_snapshot_offset() {
-        assert_eq!(scroll_position_label(1_284), Some("1,284 lines up".into()));
+        assert_eq!(
+            scroll_position_label(1_284).as_deref(),
+            Some("1,284 lines up")
+        );
     }
     #[test]
     fn unmatched_benchmark_request_preserves_the_pending_input() {

@@ -216,13 +216,26 @@ Paint a narrow right-edge overlay without reserving width or changing PTY
 columns. Hide it when there is no history.
 
 Derive thumb length from visible rows divided by total buffered rows, with a
-minimum usable size. Position it from displayed offset and history limit. Keep
-it faint above live bottom and raise contrast during input, hover, or drag.
+minimum usable size. Position it from displayed offset and history limit,
+with a 2 px top inset and an 8 px bottom inset. Add 2 px of internal track
+padding above and below the thumb. Use the padded travel range for drag
+mapping too, and reduce the insets proportionally in very short windows.
 
 Support dragging, page-sized track clicks, Scroll Page Up, Scroll Page Down, and
-Scroll to Bottom. Show a short label such as `1,284 lines up`. Derive both the
+Scroll to Bottom. Show a short label such as `1,284 lines up` at the bottom-right
+of the viewport, with clearance for the expanding track. Hide the
+label at zero while allowing the thumb to fade normally. Derive both the
 thumb and label from the displayed snapshot offset, render the label on an
-opaque surface, and hide the whole indicator at live bottom.
+opaque surface, and fade the whole indicator after two seconds without input.
+The fade lasts 400 ms and also applies at live bottom. Hovering or dragging
+keeps the indicator visible and restarts the delay when interaction ends.
+While visible, hovering expands the thumb and reveals a faint track over 180 ms
+with an ease-out animation. Expand the click target immediately. After four
+seconds without hovering or dragging, animate back to the narrow indicator.
+Dragging holds the expanded state even outside the window. The overall idle
+fade may hide it sooner. A fully faded indicator does not capture clicks or
+reveal on hover.
+Continue drag tracking outside the window and clamp at either history endpoint.
 
 Reserve local scroll shortcuts before terminal key translation. Hide local
 scroll affordances when alternate-screen content has no scrollback. Terminal
