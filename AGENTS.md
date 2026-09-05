@@ -226,3 +226,6 @@ sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
 retained views on resize and before activation. Resolve window-size caps
 without overwriting the preferred width. Commit canonical Mux order on a
 worker and reorder retained views without selecting or recreating them.
+Keep the sidebar resize handle entirely inside sidebar bounds. A grab zone
+straddling the terminal can start terminal selection or application mouse input
+before resize capture consumes release, leaving that terminal gesture stuck.

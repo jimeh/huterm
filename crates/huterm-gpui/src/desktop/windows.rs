@@ -1210,6 +1210,20 @@ impl ChromeLayout {
     ) -> Self {
         Self::with_sidebar(viewport, titlebar, position, SIDEBAR_WIDTH)
     }
+    fn sidebar_resize_handle(&self, position: TabPosition) -> Bounds<Pixels> {
+        let width = px(6.0).min(self.tabs.size.width);
+        let x = self.tabs.origin.x
+            + if position == TabPosition::Left {
+                self.tabs.size.width - width
+            } else {
+                px(0.0)
+            };
+        Bounds::new(
+            point(x, self.tabs.origin.y),
+            size(width, self.tabs.size.height),
+        )
+    }
+
     pub(super) fn with_sidebar(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
@@ -1603,18 +1617,15 @@ impl Render for WorkspaceView {
                 .child("+"),
         );
         if vertical {
+            let handle = layout.sidebar_resize_handle(position);
             root = root.child(
                 div()
                     .id("sidebar-resize")
                     .absolute()
-                    .left(if position == TabPosition::Left {
-                        layout.tabs.size.width - px(3.0)
-                    } else {
-                        layout.tabs.origin.x - px(3.0)
-                    })
-                    .top(layout.tabs.origin.y)
-                    .w(px(6.0))
-                    .h(layout.tabs.size.height)
+                    .left(handle.origin.x)
+                    .top(handle.origin.y)
+                    .w(handle.size.width)
+                    .h(handle.size.height)
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1800,6 +1811,41 @@ mod tests {
                             <= strip.bounds.origin.y + strip.bounds.size.height
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn sidebar_resize_handle_never_overlaps_terminal_input() {
+        for position in [TabPosition::Left, TabPosition::Right] {
+            for (width, preferred) in
+                [(1000.0, 180.0), (300.0, 400.0), (3.0, 140.0)]
+            {
+                let layout = ChromeLayout::with_sidebar(
+                    size(px(width), px(600.0)),
+                    px(32.0),
+                    position,
+                    px(preferred),
+                );
+                let handle = layout.sidebar_resize_handle(position);
+                let handle_end = handle.origin.x + handle.size.width;
+                let terminal_end =
+                    layout.terminal.origin.x + layout.terminal.size.width;
+                assert!(
+                    handle_end <= layout.terminal.origin.x
+                        || handle.origin.x >= terminal_end,
+                    "resize handle overlaps terminal: {position:?}, width {width}",
+                );
+                assert!(handle.origin.x >= layout.tabs.origin.x);
+                assert!(
+                    handle_end <= layout.tabs.origin.x + layout.tabs.size.width
+                );
+                assert_eq!(handle.origin.y, layout.tabs.origin.y);
+                assert_eq!(handle.size.height, layout.tabs.size.height);
+                assert_eq!(
+                    handle.size.width,
+                    px(6.0).min(layout.tabs.size.width)
+                );
             }
         }
     }
