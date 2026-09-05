@@ -300,3 +300,19 @@ exit checks and benchmark budgets strict. Clear any satisfied pending scroll
 intent after authoritative completion, including absolute/live intents, so
 later invalidation cannot replay a stale target. Cargo must force the verified
 native source path and benchmark optimization over inherited environment values.
+
+Ghostty commands use `scripts/ghostty-exec.sh` to select Xcode 26 when the default
+macOS SDK is 27 or newer. Zig 0.15.2 otherwise fails linking its own build runner
+with undefined system symbols before compiling Ghostty. Preserve explicit
+`DEVELOPER_DIR` overrides; route new native build tasks through this wrapper or
+`mise run ghostty:exec -- <command>`. Preparation cannot export this environment
+to a later Cargo task, so each native build invocation needs the wrapper.
+
+Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
+SDK wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
+keep bunfig.toml's minimum release age aligned with the three-day policy.
+Run `mise run check:scripts` for tooling edits. Native source preparation uses
+Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
+exit and the existing top-down source-tree hash order. Test changes to extraction
+and locking on macOS and Linux. The Linux FFI library is glibc, matching
+Ubuntu CI.

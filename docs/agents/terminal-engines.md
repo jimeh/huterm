@@ -32,17 +32,31 @@ feature build, first prepare the reviewed inputs:
 
 ```sh
 mise run ghostty:prepare
-mise exec zig@0.15.2 -- cargo build --locked --features ghostty
+mise run ghostty:exec -- cargo build --locked --features ghostty
 ```
 
 `mise run package:macos:ghostty` builds and verifies an Apple Silicon app with both
 engines and the native license notices. `package:macos` retains the default build.
 
+Ghostty tasks use `ghostty:exec`'s shared Bash SDK wrapper.
+Mise pins Bun and Zig; the wrapper only selects the SDK and executes its
+command. On macOS, if the
+selected SDK is 27 or newer, it selects Xcode 26 at
+`/Applications/Xcode.app/Contents/Developer`. Zig 0.15.2 fails to link its build
+runner against the Xcode 27 beta SDK, reporting undefined system symbols before
+Ghostty compiles. If Xcode 26 is elsewhere, set `DEVELOPER_DIR` to its developer
+directory. An explicit `DEVELOPER_DIR` is always preserved. This selection applies
+only to the invoked command; it does not change `xcode-select` or other projects.
+Direct Cargo builds must supply the compatible environment themselves or run
+through `mise run ghostty:exec -- <command>`.
+
 ## Native inputs and policy
 
 The published Rust bindings and sys crate are pinned to 0.2.1. Native Ghostty is
 pinned to `a887df42c56f6de86c0fe6da9c4eeca37931e083`, built with Zig 0.15.2 and
-static linking. `scripts/ghostty-source.json` records the archive checksum and
+static linking. Source preparation runs on Bun and retains the OS-owned
+preparation lock and reviewed source-tree hash format.
+`scripts/ghostty-source.json` records the archive checksum and
 full source-tree checksum. Preparation checks the Rust revision constant and
 license provenance against that manifest, then verifies existing source contents;
 a changed generated tree fails rather than silently building different source.

@@ -20,3 +20,7 @@ pre-commit:
     - name: harness-config
       glob: "{mise.toml,mise.lock,lefthook.yml,rustfmt.toml,deny.toml}"
       run: mise tasks >/dev/null && lefthook validate
+
+    - name: scripts
+      glob: "{scripts/*.ts,scripts/*.sh,package.json,bun.lock,bunfig.toml,tsconfig.json}"
+      run: mise run check:scripts

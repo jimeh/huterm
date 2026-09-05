@@ -43,11 +43,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust with Mise
+      - name: Install build tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust cargo:cargo-packager
+          install_args: rust bun zig cargo:cargo-packager
           minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
@@ -85,11 +85,11 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             mesa-vulkan-drivers twm xvfb
 
-      - name: Install Rust with Mise
+      - name: Install build tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust cargo:cargo-deny
+          install_args: rust bun zig cargo:cargo-deny
           minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
@@ -105,7 +105,9 @@ jobs:
         run: mise run check:alacritty
 
       - name: Audit dependencies
-        run: mise run license
+        run: |
+          mise run license
+          mise run audit:scripts
 
       - name: Smoke GPUI window under Xvfb
         run: mise run smoke:linux

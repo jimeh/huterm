@@ -4,17 +4,19 @@ minimum_release_age = "3d"
 
 [tools]
 actionlint = "1.7.12"
+bun = "1.4.0"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-packager" = "0.11.8"
 lefthook = "2.1.12"
 markdownlint-cli2 = "0.23.2"
 pinact = "4.1.1"
 rust = { version = "1.98.0", components = ["clippy", "rustfmt"], profile = "minimal" }
+zig = "0.15.2"
 zizmor = "1.30.0"
 
 [tasks.setup]
 description = "Install project tools and local Git hooks"
-run = ["mise install", "mise run doctor", "lefthook install"]
+run = ["mise install", "mise run scripts:install", "mise run doctor", "lefthook install"]
 
 [tasks.doctor]
 description = "Check platform development prerequisites"
@@ -74,7 +76,7 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 depends = ["ghostty:prepare"]
 description = "Run Clippy with warnings denied"
-run = "mise exec zig@0.15.2 -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+run = "bash scripts/ghostty-exec.sh cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
 
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
@@ -87,7 +89,7 @@ run = "markdownlint-cli2 --no-globs --"
 [tasks.typecheck]
 depends = ["ghostty:prepare"]
 description = "Type-check all workspace targets"
-run = "mise exec zig@0.15.2 -- cargo check --workspace --all-targets --all-features --locked"
+run = "bash scripts/ghostty-exec.sh cargo check --workspace --all-targets --all-features --locked"
 
 [tasks.architecture]
 description = "Check dependency-neutral protocol boundary"
@@ -102,7 +104,7 @@ fi
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "architecture"]
+depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, and architecture checks"
@@ -114,12 +116,12 @@ depends = ["lint", "architecture"]
 
 [tasks.test]
 description = "Run workspace tests"
-depends = ["test:scroll-checker", "ghostty:prepare"]
-run = "mise exec zig@0.15.2 -- cargo test --workspace --all-targets --all-features --locked"
+depends = ["test:scripts", "ghostty:prepare"]
+run = "bash scripts/ghostty-exec.sh cargo test --workspace --all-targets --all-features --locked"
 
 [tasks."test:scroll-checker"]
 description = "Test scroll benchmark log validation"
-run = "python3 scripts/test-scroll-benchmark-checker.py"
+run = "bun test ./scripts/check-scroll-benchmark.test.ts"
 
 [tasks."smoke:linux"]
 description = "Launch the Linux GPUI client under Xvfb"
@@ -153,7 +155,7 @@ if ! command -v twm >/dev/null 2>&1; then
 fi
 if [ "${HUTERM_BENCH_ENGINE:-alacritty}" = ghostty ]; then
   mise run ghostty:prepare
-  mise exec zig@0.15.2 -- cargo build --release --locked -p huterm --features ghostty
+  bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm --features ghostty
 else
   cargo build --release --locked -p huterm
 fi
@@ -196,7 +198,7 @@ if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
 fi
 if [ "${HUTERM_BENCH_ENGINE:-alacritty}" = ghostty ]; then
   mise run ghostty:prepare
-  mise exec zig@0.15.2 -- cargo build --release --locked -p huterm --features ghostty
+  bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm --features ghostty
 else
   cargo build --release --locked -p huterm
 fi
@@ -264,7 +266,7 @@ else
   app_pid=""
   cat "$report"
 fi
-python3 scripts/check-scroll-benchmark.py "$report"
+bun scripts/check-scroll-benchmark.ts "$report"
 '''
 
 [tasks."package:macos"]
@@ -283,8 +285,8 @@ bundle="target/release/bundle/Huterm.app"
 plist="$bundle/Contents/Info.plist"
 executable="$bundle/Contents/MacOS/huterm"
 metadata="$(cargo metadata --no-deps --format-version 1)"
-identifier="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["metadata"]["packager"]["identifier"])')"
-version="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["version"])')"
+identifier="$(printf '%s' "$metadata" | bun scripts/package-metadata.ts identifier)"
+version="$(printf '%s' "$metadata" | bun scripts/package-metadata.ts version)"
 assert_equal() {
   if [ "$1" != "$2" ]; then
     echo "package verification failed for $3: expected '$2', got '$1'" >&2
@@ -346,11 +348,11 @@ run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
 
 [tasks."verify:parallel"]
 hide = true
-depends = ["check", "test", "license", "ci:workflows"]
+depends = ["check", "test", "license", "audit:scripts", "ci:workflows"]
 
 [tasks."verify:platform:parallel"]
 hide = true
-depends = ["check:rust", "test"]
+depends = ["check:rust", "check:scripts", "test"]
 
 [tasks."verify:platform"]
 description = "Run platform-specific Rust validation"
@@ -371,22 +373,22 @@ description = "Measure release engine processing and snapshot elapsed times"
 run = "cargo test --release --locked -p huterm-core engine_benchmark -- --ignored --nocapture --test-threads=1"
 
 [tasks."ghostty:prepare"]
-description = "Verify pinned source and install Zig for the optional Ghostty engine"
-run = "mise exec zig@0.15.2 -- python3 scripts/prepare-ghostty.py"
+description = "Verify pinned source and Zig for the optional Ghostty engine"
+run = "bash scripts/ghostty-exec.sh bun scripts/prepare-ghostty.ts"
 
 [tasks."ghostty:check"]
 description = "Verify prepared Ghostty sources against the reviewed tree hash"
-run = "python3 scripts/prepare-ghostty.py --check"
+run = "bun scripts/prepare-ghostty.ts --check"
 
 [tasks."dev:ghostty"]
 description = "Run an experimental build with both engines available"
 depends = ["ghostty:prepare"]
-run = "mise exec zig@0.15.2 -- cargo run --locked -p huterm --features ghostty"
+run = "bash scripts/ghostty-exec.sh cargo run --locked -p huterm --features ghostty"
 
 [tasks."bench:engine:ghostty"]
 description = "Measure the release Ghostty engine with matching fixtures"
 depends = ["ghostty:prepare"]
-run = "HUTERM_BENCH_ENGINE=ghostty mise exec zig@0.15.2 -- cargo test --release --locked -p huterm-core --features ghostty engine_benchmark -- --ignored --nocapture --test-threads=1"
+run = "HUTERM_BENCH_ENGINE=ghostty bash scripts/ghostty-exec.sh cargo test --release --locked -p huterm-core --features ghostty engine_benchmark -- --ignored --nocapture --test-threads=1"
 
 [tasks."check:alacritty"]
 description = "Check the default build without the native Ghostty dependency"
@@ -405,7 +407,7 @@ hide = true
 run = '''
 if [ "${HUTERM_PACKAGE_GHOSTTY:-0}" = 1 ]; then
   mise run ghostty:prepare
-  mise exec zig@0.15.2 -- cargo build --release --locked --target aarch64-apple-darwin -p huterm --features ghostty
+  bash scripts/ghostty-exec.sh cargo build --release --locked --target aarch64-apple-darwin -p huterm --features ghostty
 else
   cargo build --release --locked --target aarch64-apple-darwin -p huterm
 fi
@@ -414,3 +416,37 @@ fi
 [tasks."package:macos:ghostty"]
 description = "Build and verify an Apple Silicon app containing both engines"
 run = "HUTERM_PACKAGE_GHOSTTY=1 mise run package:macos"
+
+[tasks."ghostty:exec"]
+description = "Run a command with a compatible macOS SDK"
+run = "bash scripts/ghostty-exec.sh"
+
+[tasks."test:ghostty-toolchain"]
+description = "Test Ghostty SDK selection"
+run = "bun test ./scripts/ghostty-exec.test.ts"
+
+[tasks."scripts:install"]
+description = "Install locked TypeScript tooling dependencies"
+run = "bun install --frozen-lockfile"
+
+[tasks."typecheck:scripts"]
+description = "Type-check repository scripts with TypeScript 7"
+depends = ["scripts:install"]
+run = "bun node_modules/typescript/bin/tsc --noEmit"
+
+[tasks."test:scripts"]
+description = "Test repository tooling with Bun"
+run = "bun test scripts"
+
+[tasks."check:shell"]
+description = "Check shell script syntax"
+run = "bash -n scripts/ghostty-exec.sh"
+
+[tasks."check:scripts"]
+description = "Check TypeScript tooling and shell scripts"
+depends = ["typecheck:scripts", "test:scripts", "check:shell"]
+
+[tasks."audit:scripts"]
+description = "Audit locked scripting dependencies"
+depends = ["scripts:install"]
+run = "bun audit"

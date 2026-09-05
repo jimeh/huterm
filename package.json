@@ -1,0 +1,9 @@
+{
+  "name": "huterm-tooling",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}
