@@ -1,12 +1,18 @@
 # Huterm agent guide
 
 Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
-sessions, tabs, and panes. GPUI is one client. The runtime boundary must remain
+workspaces, tabs, and panes. GPUI is one client. The runtime boundary must remain
 usable by a future local server and text client.
 
 Read [README.md](README.md) for product scope and
 [the initial desktop plan](docs/plans/initial-desktop-poc.md) for the current
 architecture and acceptance criteria.
+
+Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
+[the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
+direction and proposed next milestone. Workspace replaces session in the new
+model; existing code still uses session names. Windows attach independently to
+workspaces. Keep view destruction and detachment separate from explicit close.
 
 ## Boundaries that must hold
 

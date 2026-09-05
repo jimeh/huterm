@@ -3,7 +3,7 @@
 Huterm is an experimental terminal emulator and multiplexer written in Rust.
 It will start as a native desktop application built with GPUI, but the terminal
 runtime will not belong to the desktop UI. Huterm will own its pseudoterminals,
-terminal state, sessions, tabs, and pane layouts so other clients can attach to
+terminal state, workspaces, tabs, and pane layouts so other clients can attach to
 the same runtime later.
 
 The first proof-of-concept implementation is under active validation. It has a
@@ -170,6 +170,10 @@ limits, and the validation ladder.
 The following list describes the intended product direction. Items outside the
 current milestone are not yet scheduled.
 
+The [workspace, window, and tab plan](docs/plans/workspaces-windows-tabs.md)
+records the next proposed PR and the path toward workspace switching,
+restoration, and shared GUI/TUI access.
+
 ### Terminal
 
 - Local shells and arbitrary commands with configurable working directory and
@@ -197,7 +201,7 @@ current milestone are not yet scheduled.
 ### Multiplexer
 
 - A local server that owns terminal processes independently of client windows.
-- Named sessions containing tabs and split-pane layouts.
+- Named workspaces containing tabs and split-pane layouts.
 - Detach and reattach without terminating terminal processes while the server
   remains alive.
 - Multiple simultaneous clients with explicit terminal-size policy.
@@ -208,14 +212,15 @@ current milestone are not yet scheduled.
 
 ### State and recovery
 
-- Persisted configuration, session metadata, tab order, and pane layouts.
+- Persisted configuration, workspace metadata, tab order, and pane layouts.
 - Scrollback and presentation-state recovery where it can be made reliable.
 - Clear distinction between restoring saved presentation and preserving a live
   child process. A server crash is allowed to terminate its PTYs.
 
 ## Terminology
 
-- **Session**: a named, server-owned collection of tabs.
+- **Workspace**: a named, runtime-owned collection of ordered tabs, independent
+  of its views. Earlier code and plans call this a session.
 - **Tab**: an ordered container with one pane layout.
 - **Pane**: a leaf in a tab's split tree.
 - **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
@@ -223,9 +228,10 @@ current milestone are not yet scheduled.
 - **Client view**: client-local focus, active tab, viewport, and scroll
   position.
 
-Tab order and pane layout belong to the session. Focus, the selected tab, and
-viewport position belong to each client. Tab-bar orientation is a client
-preference, not session state.
+Tab order and pane layout belong to the workspace. Each window or TUI view
+selects its workspace independently and owns focus, the selected tab, and
+viewport position. Tab-bar orientation is a client preference, not workspace
+state. See [CONTEXT.md](CONTEXT.md) for the full glossary.
 
 ## Licensing
 
