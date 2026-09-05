@@ -77,6 +77,26 @@ class ScrollBenchmarkCheckerTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_rejects_warmup_snapshot_offset_mismatch(self) -> None:
+        result = run_checker(benchmark_log(mismatch_at=0))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "a snapshot did not match its requested offset", result.stderr
+        )
+
+    def test_rejects_warmup_paint_offset_mismatch(self) -> None:
+        log = benchmark_log(include_paint=True).replace(
+            "huterm-scroll sample sequence=0 requested=0 returned=0",
+            "huterm-scroll sample sequence=0 requested=0 returned=1",
+        )
+        result = run_checker(log)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "a painted snapshot did not match its requested offset", result.stderr
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

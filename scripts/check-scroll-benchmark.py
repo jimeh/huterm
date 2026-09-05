@@ -66,6 +66,15 @@ def main() -> None:
     if not queue:
         fail("missing request queue diagnostics")
 
+    if any(
+        sample["requested"] != sample["returned"] for sample in snapshots
+    ):
+        fail("a snapshot did not match its requested offset")
+    if any(
+        sample["requested"] != sample["returned"] for sample in paint_samples
+    ):
+        fail("a painted snapshot did not match its requested offset")
+
     snapshots = snapshots[WARM_SAMPLES:]
     input_snapshots = [
         sample for sample in snapshots if sample.get("input") == 1
@@ -112,11 +121,6 @@ def main() -> None:
         fail("snapshot request backlog exceeded the single in-flight request")
     if latest["requests_coalesced"] == 0 or latest["queued_updates"] == 0:
         fail("benchmark did not exercise queued request coalescing")
-    if any(
-        sample["requested"] != sample["returned"] for sample in snapshots
-    ):
-        fail("a snapshot did not match its requested offset")
-
     presentation = "not_measured"
     input_paint_samples = 0
     median_paint_elapsed = 0
@@ -158,11 +162,6 @@ def main() -> None:
                 f"p95 input-to-matching-paint {p95_paint_latency}us exceeds "
                 f"{P95_LATENCY_BUDGET_US}us"
             )
-        if any(
-            sample["requested"] != sample["returned"]
-            for sample in paint_samples
-        ):
-            fail("a painted snapshot did not match its requested offset")
         one_row_reuse = any(
             abs(current["requested"] - previous["returned"]) == 1
             and current["rebuilt_rows"] <= 1

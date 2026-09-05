@@ -428,8 +428,8 @@ After warm-up on the recorded environment, require:
 
 - At most one snapshot in flight and no unbounded queue.
 - A static one-row move rebuilds at most the exposed row.
-- Median combined snapshot, preparation, and paint CPU below 8 ms and p95 below
-  the 16.7 ms 60 Hz frame budget.
+- Median combined snapshot, preparation, and paint elapsed time below 8 ms and
+  p95 below the 16.7 ms 60 Hz frame budget.
 - P95 desired-offset-to-matching-paint below 33.4 ms under continuous input.
 - In same-host before/after runs with five warm samples, at most 15% increase in
   median combined `bench:renderer` preparation and paint time, and no component
@@ -490,7 +490,7 @@ The milestone is complete when:
 - Every snapshot reply wakes GPUI directly; scroll progress never depends on the
   16 ms event poll, including while output arrives.
 - The indicator represents returned viewport and can return to live bottom.
-- The benchmark meets queue, reuse, CPU, latency, and regression budgets.
+- The benchmark meets queue, reuse, elapsed-time, latency, and regression budgets.
 - Paste works in normal and bracketed modes.
 - Selection and copy preserve terminal semantics and reject stale ranges.
 - Reloaded font and theme config controls all geometry and colors, with useful
