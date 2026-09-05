@@ -253,12 +253,21 @@ Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
-assessed background process groups into teardown. After shell exit, match only
-its still-owned PTY, never its reusable PID/foreground group. macOS ps can
-abbreviate ttys000 as s000, so normalize both forms before matching. An exited
-shell is safely idle after reader EOF only on Linux. macOS revokes the PTY on
-session-leader exit even when HUP-ignoring descendants survive; after root exit,
-report Unknown when no running process can be attributed, regardless of EOF.
+assessed background process groups into teardown. For live-shell PTY matching,
+normalize macOS ps ttys000/s000 abbreviations before comparing tty names.
+Observe root exit with safe
+rustix waitid NOWAIT, retaining portable-pty's child owner and unreaped PID until
+a complete empty session scan seals Idle. portable-pty creates a session leader
+with setsid before exec. Each post-exit evidence guard serializes its own fresh
+process scan against sealing and retirement; never reuse a pre-exit ps snapshot
+for that scan. Only workers lock the guard; parser exit/reap signals are atomic.
+Retire the guard and join its cancellable watcher before shutdown reaps anything.
+Use nix getsid for session scans: SID 0 is valid for kernel processes, whereas
+rustix's Pid requires nonzero. Skip the PID 0 kernel row because getsid(0) means
+the caller. Exclude only the exact owned ps child from its result; it is already
+reaped before later lookups. Other lookup failures, including ESRCH, leave the
+scan incomplete. Validate matching rows with getpgid and a second getsid before
+using their group for cleanup. A sealed Idle guard never looks up its old SID.
 Use explicit FIFO release in the exited-holder test, never a timed sleep.
 Quit captures every session plus window navigation and geometry before cleanup;
 retain the first capture through repeated shutdown. The native AppKit bridge
@@ -286,3 +295,7 @@ close their input queue and reset mouse ownership without emitting releases.
 Core drops queued input and terminal replies after root exit, stops the writer,
 and keeps final-output parsing, snapshot/selection requests, and emulator resize.
 A late writer failure after observed exit must not destroy retained history.
+
+Give confirmation dialogs an explicit viewport-clamped width before measuring
+wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
+let buttons escape the panel; keep text and button containers nonshrinking.

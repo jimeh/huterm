@@ -2508,6 +2508,7 @@ dependencies = [
  "huterm-protocol",
  "nix 0.29.0",
  "portable-pty",
+ "rustix 1.1.4",
  "thiserror 2.0.20",
 ]
 

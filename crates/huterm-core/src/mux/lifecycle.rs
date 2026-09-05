@@ -597,12 +597,7 @@ mod tests {
             .prepare_close(CloseRequest::Application)
             .unwrap()
             .check_jobs();
-        assert_eq!(
-            assessment.needs_confirmation(),
-            cfg!(target_os = "macos"),
-            "{:?}",
-            assessment.jobs()
-        );
+        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
         exited.client.close().unwrap();
         while exited.client.job_context().is_some() {
             assert!(Instant::now() < deadline);
@@ -629,6 +624,8 @@ mod tests {
         let workspace = mux.create_workspace(session, None).unwrap();
         let opened = mux.open_tab(workspace, &fixture.command()).unwrap();
         let helper = fixture.wait_ready();
+        let root = opened.client.job_context().unwrap().shell.unwrap();
+        let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);
         while !opened.client.job_context().unwrap().exited {
             assert!(
@@ -637,6 +634,25 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        let mut exit_events = 0;
+        while let Some(event) = opened.client.try_recv_event().unwrap() {
+            if let huterm_protocol::TerminalEvent::Exited { status, .. } = event
+            {
+                exit_events += 1;
+                assert_eq!(
+                    status,
+                    huterm_protocol::ExitStatus {
+                        code: Some(1),
+                        success: false
+                    }
+                );
+            }
+        }
+        assert_eq!(exit_events, 1, "signaled root exit must be reported once");
+        assert!(
+            nix::sys::signal::kill(root, None).is_ok(),
+            "root PID must stay pinned while helper lives"
+        );
         assert!(!fixture.directory.join("done").exists());
         assert!(nix::sys::signal::kill(helper, None).is_ok());
         let assessment = mux
@@ -661,19 +677,28 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        while nix::sys::signal::kill(root, None).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "idle root not automatically reaped"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let current = assessment.recheck();
-        assert_eq!(
-            current.needs_confirmation(),
-            cfg!(target_os = "macos"),
+        assert!(
+            !current.needs_confirmation(),
             "released helper, jobs={:?}",
             current.jobs()
         );
-        mux.commit_close(
-            &current,
-            &current.recheck(),
-            cfg!(target_os = "macos"),
-        )
-        .unwrap();
+        while let Some(event) = opened.client.try_recv_event().unwrap() {
+            assert!(
+                !matches!(event, huterm_protocol::TerminalEvent::Exited { .. }),
+                "reaping emitted a second exit event"
+            );
+        }
+        assert!(opened.client.read_snapshot(Viewport::default()).is_ok());
+        mux.commit_close(&current, &current.recheck(), false)
+            .unwrap();
     }
 
     #[test]

@@ -595,13 +595,18 @@ fn run_terminal(
         engine.generation(),
     );
 
+    let root_pid = child.process_id();
+    let evidence = Arc::new(crate::jobs::ExitEvidence::new(root_pid));
+    let mut exit_watcher: Option<crate::jobs::ExitWatcher> = None;
     let mut child_exited = false;
+    #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
         pty::record_foreground_group(master.as_ref(), &mut process_groups);
         if let Err(error) = observe_child_exit(
-            child.as_mut(),
+            root_pid,
+            &evidence,
             terminal_id,
             &events,
             &mut child_exited,
@@ -610,6 +615,32 @@ fn run_terminal(
         ) {
             report_failure(&events, terminal_id, error);
             closing.store(true, Ordering::Release);
+        }
+        if child_exited
+            && exit_watcher.is_none()
+            && !closing.load(Ordering::Acquire)
+        {
+            match crate::jobs::ExitWatcher::start(Arc::clone(&evidence)) {
+                Ok(watcher) => exit_watcher = Some(watcher),
+                Err(error) => {
+                    report_failure(
+                        &events,
+                        terminal_id,
+                        format!("Cannot start exit watcher: {error}"),
+                    );
+                    closing.store(true, Ordering::Release);
+                }
+            }
+        }
+        if evidence.reap_ready() {
+            match child.try_wait() {
+                Ok(Some(_)) => evidence.reaped(),
+                Ok(None) => {}
+                Err(error) => {
+                    report_failure(&events, terminal_id, error.to_string());
+                    closing.store(true, Ordering::Release);
+                }
+            }
         }
         while let Ok(control) = controls.try_recv() {
             if closing.load(Ordering::Acquire) {
@@ -637,7 +668,8 @@ fn run_terminal(
                 RuntimeControl::WriterFailed(message) => {
                     // Exit may have happened since the loop's initial poll.
                     if let Err(error) = observe_child_exit(
-                        child.as_mut(),
+                        root_pid,
+                        &evidence,
                         terminal_id,
                         &events,
                         &mut child_exited,
@@ -655,12 +687,20 @@ fn run_terminal(
                     report_failure(&events, terminal_id, message);
                     closing.store(true, Ordering::Release);
                 }
-                RuntimeControl::PtyEof => pty_eof = true,
+                RuntimeControl::PtyEof => {
+                    #[cfg(test)]
+                    {
+                        pty_eof = true;
+                    }
+                }
                 RuntimeControl::JobContext(reply) => {
                     let _ = reply.send(crate::jobs::JobContext {
+                        evidence: Arc::clone(&evidence),
                         shell: child.process_id(),
                         foreground: master.process_group_leader(),
+                        #[cfg(test)]
                         exited: child_exited,
+                        #[cfg(test)]
                         pty_eof,
                         tty: master.tty_name().map(|name| {
                             name.to_string_lossy()
@@ -782,13 +822,27 @@ fn run_terminal(
     }
 
     closing.store(true, Ordering::Release);
-    pty::record_foreground_group(master.as_ref(), &mut process_groups);
-    process_groups.assessed = shutdown_groups
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .copied()
-        .collect();
+    let session_idle = if let Some(watcher) = exit_watcher {
+        watcher.stop(&evidence)
+    } else {
+        evidence.retire()
+    };
+    if session_idle {
+        // Historical group numbers may have been reused after automatic reap.
+        process_groups = pty::process_groups(None);
+    } else {
+        if child_exited {
+            process_groups = pty::process_groups(root_pid);
+        } else {
+            pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        }
+        process_groups.assessed = shutdown_groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect();
+    }
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
     drop(writer_sender);
     drop(master);
@@ -872,25 +926,46 @@ fn spawn_reader(
 }
 
 fn observe_child_exit(
-    child: &mut dyn portable_pty::Child,
+    root: Option<u32>,
+    evidence: &crate::jobs::ExitEvidence,
     terminal_id: TerminalId,
     events: &Sender<TerminalEvent>,
     exited: &mut bool,
     input_closed: &AtomicBool,
     pending_writes: &mut VecDeque<Vec<u8>>,
 ) -> Result<(), String> {
-    if !*exited
-        && let Some(status) =
-            child.try_wait().map_err(|error| error.to_string())?
-    {
+    if *exited {
+        return Ok(());
+    }
+    let pid = root
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(rustix::process::Pid::from_raw)
+        .ok_or("PTY root has no valid process ID")?;
+    let status = match rustix::process::waitid(
+        rustix::process::WaitId::Pid(pid),
+        rustix::process::WaitIdOptions::EXITED
+            | rustix::process::WaitIdOptions::NOHANG
+            | rustix::process::WaitIdOptions::NOWAIT,
+    ) {
+        Ok(status) => status,
+        Err(rustix::io::Errno::INTR) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Some(status) = status {
         *exited = true;
+        evidence.observe_exit();
         input_closed.store(true, Ordering::Release);
         pending_writes.clear();
+        // Match portable-pty: signaled exits have code 1 and success false.
+        let code = status
+            .exit_status()
+            .and_then(|code| u32::try_from(code).ok())
+            .unwrap_or(1);
         let _ = events.send(TerminalEvent::Exited {
             terminal_id,
             status: ExitStatus {
-                code: Some(status.exit_code()),
-                success: status.success(),
+                code: Some(code),
+                success: status.exited() && code == 0,
             },
         });
     }
@@ -1088,6 +1163,49 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn clean_exit_reaps_automatically_while_retained_history_stays_available() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(93),
+            &command("printf FINAL; read line; exit 7"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "FINAL");
+        let root = client.job_context().unwrap().shell.unwrap();
+        let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
+        client.send_input(TerminalInput::Text("\n".into())).unwrap();
+        assert_eq!(
+            wait_for_exit(&client),
+            ExitStatus {
+                code: Some(7),
+                success: false
+            }
+        );
+        // No assessment/close triggers reaping: the exit watcher owns this work.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(root, None).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "idle history retained a zombie root"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let context = client.job_context().unwrap();
+        assert_eq!(
+            context
+                .evidence
+                .assess(|| panic!("sealed history inspected live PID")),
+            crate::jobs::JobState::Idle
+        );
+        wait_for_text(&client, "FINAL");
+        runtime.shutdown().unwrap();
+        assert_eq!(
+            context.evidence.assess(|| panic!()),
+            crate::jobs::JobState::Unknown
+        );
+    }
 
     #[test]
     fn writer_failure_with_live_root_remains_observable_and_stops_runtime() {

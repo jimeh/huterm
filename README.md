@@ -101,14 +101,14 @@ lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
 Process inspection uses a bounded system `ps` snapshot off the UI and terminal
 parser threads. It follows shell descendants and the owned PTY, including
 background process groups. Scan failures require confirmation. After a shell
-exits, a remaining PTY holder with no attributable process is reported as
-unknown until PTY EOF on Linux. On macOS, session-leader exit revokes the PTY
-even if descendants survive, so EOF cannot establish that jobs have ended.
-Exited macOS shells therefore require confirmation, including clean shell exits,
-unless attributed running jobs already explain the warning. Processes that lose
-their controlling terminal and
-ancestry cannot always be attributed or terminated, including detached daemons.
-Process creation after the final OS snapshot is also inherently racy.
+exits, Huterm keeps its root PID unreaped while checking live session members,
+including jobs whose controlling terminal was revoked on macOS. A complete
+empty scan seals the session as idle before reaping the root. The exited shell
+is reaped automatically even when its tab is retained for history. Incomplete
+process evidence stays unknown and requires confirmation.
+Processes that leave the original OS session, including detached daemons, cannot
+always be attributed or terminated. Process creation or identity changes after
+the final OS snapshot are also inherently racy.
 
 ## Mouse interaction
 

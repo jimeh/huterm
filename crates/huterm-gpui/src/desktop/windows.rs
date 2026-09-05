@@ -2071,9 +2071,9 @@ impl Render for WorkspaceView {
                     })
                     .child(
                         div()
-                            .w_full()
-                            .max_w(px(460.0))
-                            .mx_4()
+                            .w((window.viewport_size().width - px(32.0))
+                                .clamp(px(0.0), px(460.0)))
+                            .flex_none()
                             .p_4()
                             .bg(background)
                             .border_1()
@@ -2081,10 +2081,13 @@ impl Render for WorkspaceView {
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .child(message)
+                            .child(div().w_full().flex_none().child(message))
                             .child(
                                 div()
                                     .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_end()
                                     .gap_3()
                                     .child(
                                         div()
