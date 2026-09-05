@@ -1,5 +1,4 @@
 mod alacritty;
-#[cfg(feature = "ghostty")]
 mod ghostty;
 
 use crate::terminal::RuntimeError;
@@ -18,7 +17,6 @@ pub(crate) enum EngineEffect {
 #[derive(Debug)]
 pub(crate) enum TerminalEngine {
     Alacritty(Box<alacritty::TerminalEngine>),
-    #[cfg(feature = "ghostty")]
     Ghostty(Box<ghostty::TerminalEngine>),
 }
 
@@ -34,19 +32,9 @@ impl TerminalEngine {
                 alacritty::TerminalEngine::new(id, size),
             ))),
             TerminalEngineKind::Ghostty => {
-                #[cfg(feature = "ghostty")]
-                {
-                    ghostty::TerminalEngine::new(id, size, cell)
-                        .map(Box::new)
-                        .map(Self::Ghostty)
-                }
-                #[cfg(not(feature = "ghostty"))]
-                {
-                    let _ = cell;
-                    Err(RuntimeError::Engine(
-                        "Ghostty engine is unavailable in this build".into(),
-                    ))
-                }
+                ghostty::TerminalEngine::new(id, size, cell)
+                    .map(Box::new)
+                    .map(Self::Ghostty)
             }
         }
     }
@@ -56,7 +44,6 @@ impl TerminalEngine {
     ) -> Result<huterm_protocol::Viewport, RuntimeError> {
         let (current, history) = match self {
             Self::Alacritty(engine) => engine.viewport_state(),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.viewport_state()?,
         };
         let offset = match scroll {
@@ -80,7 +67,6 @@ impl TerminalEngine {
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         match self {
             Self::Alacritty(engine) => Ok(engine.process(bytes)),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.process(bytes),
         }
     }
@@ -95,28 +81,24 @@ impl TerminalEngine {
                 engine.resize(size);
                 Ok(engine.drain_effects())
             }
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.resize(size, cell),
         }
     }
     pub(crate) fn size(&self) -> GridSize {
         match self {
             Self::Alacritty(engine) => engine.size(),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.size(),
         }
     }
     pub(crate) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
         match self {
             Self::Alacritty(engine) => Ok(engine.modes()),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.modes(),
         }
     }
     pub(crate) fn generation(&self) -> u64 {
         match self {
             Self::Alacritty(engine) => engine.generation(),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.generation(),
         }
     }
@@ -129,7 +111,6 @@ impl TerminalEngine {
                 engine.scroll(scroll);
                 Ok(())
             }
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.scroll(scroll),
         }
     }
@@ -138,7 +119,6 @@ impl TerminalEngine {
     ) -> Result<TerminalSnapshot, RuntimeError> {
         match self {
             Self::Alacritty(engine) => Ok(engine.snapshot()),
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.snapshot(),
         }
     }
@@ -151,7 +131,6 @@ impl TerminalEngine {
             Self::Alacritty(engine) => {
                 Ok(engine.extract_text(generation, range))
             }
-            #[cfg(feature = "ghostty")]
             Self::Ghostty(engine) => engine.extract_text(generation, range),
         }
     }
@@ -367,11 +346,8 @@ mod contract_tests {
     use std::sync::Arc;
 
     fn each_engine(mut test: impl FnMut(&mut TerminalEngine)) {
-        let mut kinds = vec![TerminalEngineKind::Alacritty];
-        if cfg!(feature = "ghostty") {
-            kinds.push(TerminalEngineKind::Ghostty);
-        }
-        for kind in kinds {
+        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
+        {
             let mut engine = TerminalEngine::new(
                 TerminalId::new(1),
                 GridSize::clamped(8, 3),

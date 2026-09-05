@@ -1141,7 +1141,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "ghostty")]
     #[test]
     fn ghostty_runtime_round_trips_and_closes_a_live_child() {
         let mut command = command(
@@ -1168,8 +1167,7 @@ mod tests {
         let mut command =
             command(&format!("touch {}; sleep 30", marker.display()));
         command.engine = huterm_protocol::TerminalEngineKind::Ghostty;
-        // Zero dimensions fail native initialization; without the feature the
-        // engine choice itself fails before the child can be started.
+        // Zero dimensions fail native initialization before the child starts.
         command.grid_size = GridSize {
             columns: 0,
             rows: 0,
@@ -1212,7 +1210,6 @@ mod tests {
         mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Alacritty);
     }
 
-    #[cfg(feature = "ghostty")]
     #[test]
     fn ghostty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
         mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Ghostty);

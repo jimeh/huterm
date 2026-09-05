@@ -1,14 +1,15 @@
-# Terminal engine experiment
+# Terminal engines
 
-Huterm uses Alacritty 0.26.0 by default. An optional build adds libghostty-vt
-0.2.1 without changing the GPUI renderer or PTY ownership. Each terminal has one
-runtime-owned viewport and publishes complete immutable snapshots. Unchanged
-rows share storage, so clients may skip intermediate snapshots safely.
+Every Huterm build includes Alacritty 0.26.0 and libghostty-vt 0.2.1.
+Alacritty is selected by default. Both engines operate without changing the
+GPUI renderer or PTY ownership. Each terminal has one runtime-owned viewport
+and publishes complete immutable snapshots. Unchanged rows share storage, so
+clients may skip intermediate snapshots safely.
 
 ## Build and select an engine
 
 ```sh
-mise run dev:ghostty
+mise run dev
 ```
 
 Set the engine in the configuration file:
@@ -20,25 +21,26 @@ engine = "ghostty"
 
 Reload configuration and open a tab or window. Configuration is captured before
 a spawn starts; reload does not change existing or pending terminals. Use
-`"alacritty"` to switch the default back. An explicit unknown or unavailable
+`"alacritty"` to switch the default back. An explicit unknown
 engine fails configuration validation. Malformed TOML also stops startup because
-the engine choice cannot be recovered safely. With valid TOML and an available
+the engine choice cannot be recovered safely. With valid TOML and a valid
 engine, unrelated settings errors print a diagnostic and use default settings
 while preserving that engine. Reload errors retain the previous configuration.
 
-The ordinary `mise run dev` and `mise run check:alacritty` paths need no native
-Ghostty build. `check`, `test`, and `verify` cover both engines. For a direct Cargo
-feature build, first prepare the reviewed inputs:
+Normal build, development, test, packaging, and benchmark tasks prepare the
+reviewed native inputs and build both engines. No Cargo feature flag is needed.
+For direct Cargo commands, prepare the inputs first and use the SDK wrapper:
 
 ```sh
 mise run ghostty:prepare
-mise run ghostty:exec -- cargo build --locked --features ghostty
+mise run ghostty:exec -- cargo build --locked
 ```
 
-`mise run package:macos:ghostty` builds and verifies an Apple Silicon app with both
-engines and the native license notices. `package:macos` retains the default build.
+`mise run package:macos` builds and verifies an Apple Silicon app with both
+engines and the native license notices. Benchmark engine selectors change only
+configuration; both engines run from the same compiled binary.
 
-Ghostty tasks use `ghostty:exec`'s shared Bash SDK wrapper.
+Build tasks use `ghostty:exec`'s shared Bash SDK wrapper.
 Mise pins Bun and Zig; the wrapper only selects the SDK and executes its
 command. On macOS, if the
 selected SDK is 27 or newer, it selects Xcode 26 at
@@ -100,7 +102,7 @@ boundaries, including fragmented input. This preserves explicit application
 colors even when they equal the engine's default palette. Effective color changes
 also invalidate rows independently of native row damage.
 
-Image rendering and Kitty keyboard input remain outside this experiment. The
+Image rendering and Kitty keyboard input are not yet supported by Huterm. The
 adapter disables the glyph protocol and APC payload storage and suppresses
 extended device-attribute advertisements. Primary device attributes explicitly
 report VT220 with ANSI color. It continues answering ordinary cursor
@@ -116,7 +118,7 @@ that Ghostty resets to legacy format when disabling an inactive mouse encoding,
 while Alacritty preserves the active encoding. SGR-pixel mouse mode 1016 is not
 supported: the shared input protocol encodes cell coordinates for legacy, UTF-8,
 and SGR mouse reports. Applications requiring pixel coordinates cannot use that
-mode correctly in this experiment.
+mode correctly in Huterm.
 
 Terminal scrolling is shared. Selection gestures, window navigation, active tabs,
 and scrollbar animation remain client state. Multiple-attachment UI, terminal

@@ -8,7 +8,7 @@ use huterm_protocol::{Rgb, TerminalEngineKind};
 use serde::Deserialize;
 
 pub(super) const DEFAULT_CONFIG: &str = r##"[terminal]
-# Changes apply to newly created terminals. Ghostty requires an experimental build.
+# Changes apply to newly created terminals. Both engines are included in every build.
 engine = "alacritty"
 
 [font]
@@ -304,13 +304,7 @@ fn fallback_engine(source: &str) -> Result<TerminalEngineKind, ConfigError> {
 fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
     match name {
         "alacritty" => Ok(TerminalEngineKind::Alacritty),
-        "ghostty" if cfg!(feature = "ghostty") => {
-            Ok(TerminalEngineKind::Ghostty)
-        }
-        "ghostty" => Err(ConfigError::Engine(
-            "Ghostty is unavailable; use a build with the ghostty feature"
-                .into(),
-        )),
+        "ghostty" => Ok(TerminalEngineKind::Ghostty),
         name => Err(ConfigError::Engine(format!(
             "unknown terminal engine {name:?}"
         ))),
@@ -470,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_choice_is_explicit_and_unavailable_choices_are_fatal() {
+    fn both_engines_are_available_and_alacritty_is_default() {
         assert_eq!(
             parse("[terminal]\nengine = 'alacritty'").unwrap().engine,
             TerminalEngineKind::Alacritty
@@ -479,12 +473,11 @@ mod tests {
             parse("[terminal]\nengine = 'unknown'"),
             Err(ConfigError::Engine(_))
         ));
-        let ghostty = parse("[terminal]\nengine = 'ghostty'");
-        if cfg!(feature = "ghostty") {
-            assert_eq!(ghostty.unwrap().engine, TerminalEngineKind::Ghostty);
-        } else {
-            assert!(matches!(ghostty, Err(ConfigError::Engine(_))));
-        }
+        assert_eq!(parse("").unwrap().engine, TerminalEngineKind::Alacritty);
+        assert_eq!(
+            parse("[terminal]\nengine = 'ghostty'").unwrap().engine,
+            TerminalEngineKind::Ghostty
+        );
     }
 
     #[test]
@@ -513,7 +506,7 @@ mod tests {
             (
                 "[terminal]\nengine = 'ghostty'\n[font]\nsize = 'bad'",
                 TerminalEngineKind::Ghostty,
-                !cfg!(feature = "ghostty"),
+                false,
             ),
             ("[font]\nsize = 'bad'", TerminalEngineKind::Alacritty, false),
         ] {

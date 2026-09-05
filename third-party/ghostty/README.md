@@ -1,6 +1,6 @@
 # Ghostty VT notices
 
-These notices accompany the optional, statically linked Ghostty VT engine.
+These notices accompany the statically linked Ghostty VT engine.
 `provenance.json` records the origin and checksum of each notice.
 
 The Rust wrappers are libghostty-vt and libghostty-vt-sys 0.2.1. Their source

@@ -151,16 +151,17 @@ On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
 version, Developer Tools category, icon, executable, and arm64 architecture.
 
-## Optional terminal engine
+## Terminal engines
 
-`mise run dev:ghostty` builds both engines. Set `[terminal] engine = "ghostty"`
+Every build includes both engines; `mise run dev` starts the app. Set
+`[terminal] engine = "ghostty"`
 and reload to use Ghostty for new tabs and windows. Shared scrolling and immutable
 rows apply to both engines. See [the engine guide](terminal-engines.md) for
 pinned native inputs, license coverage, and matched benchmark commands.
 
 `check`, `test`, and `verify` exercise both engines and prepare the pinned native
-source through Mise. `mise run check:alacritty` verifies the default build without
-Zig compilation. Standard setup installs the pinned Bun and Zig tools alongside
+source through Mise. Normal build and packaging tasks do the same.
+Standard setup installs the pinned Bun and Zig tools alongside
 Rust. Repository scripts run on Bun and are type-checked with TypeScript 7;
 Python is not required. Run `mise run scripts:install` to install the locked
 TypeScript dependencies, `mise run check:scripts` for script tests and type

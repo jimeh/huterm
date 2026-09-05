@@ -59,14 +59,11 @@ jobs:
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = arm64
 
-      - name: Verify Rust
+      - name: Verify Rust and both terminal engines
         run: mise run verify:platform
 
-      - name: Check Alacritty-only build
-        run: mise run check:alacritty
-
       - name: Build and verify Huterm.app with both engines
-        run: mise run package:macos:ghostty
+        run: mise run package:macos
 
   verify-linux:
     name: Verify Linux x86_64
@@ -98,11 +95,8 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify Rust
+      - name: Verify Rust and both terminal engines
         run: mise run verify:platform
-
-      - name: Check Alacritty-only build
-        run: mise run check:alacritty
 
       - name: Audit dependencies
         run: |

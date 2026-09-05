@@ -1,7 +1,9 @@
 # Configurable terminal engines and incremental snapshots
 
-Status: implemented experiment; validation and measured results are recorded in
-[the experiment guide](../agents/terminal-engines.md).
+Status: implemented. The later decision to include both engines in every build
+supersedes this plan's optional-feature build controls; Alacritty remains the
+default. Current build instructions, validation, and measured results are in
+[the engine guide](../agents/terminal-engines.md).
 
 ## Outcome and scope
 

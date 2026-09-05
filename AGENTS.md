@@ -27,8 +27,9 @@ Keep view destruction and detachment separate from explicit close.
 - `huterm-gpui` owns macOS/Linux window state, rendering, key translation,
   focus, selection gestures, and scrollbar animation. The terminal runtime owns
   the shared viewport; clients send ordered scroll commands.
-- Alacritty is the default; optional `libghostty-vt` uses the same owned rows and
-  PTY/input runtime. Do not use either engine's application or PTY event loop.
+- Alacritty is the default; every build includes `libghostty-vt`, which shares
+  the same owned rows and PTY/input runtime. Do not use either engine's
+  application or PTY event loop.
   Do not copy or depend on GPL-covered Zed application or terminal-view code.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
@@ -250,11 +251,12 @@ spawn cleanup. Roll back newly created sessions on initial workspace/tab failure
 
 Ghostty builds use libghostty-vt/sys 0.2.1, native revision
 `a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig 0.15.2. Run
-`mise run ghostty:prepare` before optional-feature Cargo commands; it checks the
+`mise run ghostty:prepare` before direct Cargo build commands; it checks the
 full native source tree against `scripts/ghostty-source.json`. Keep that source,
-the binding versions, and bundled notices aligned. Plain Alacritty builds must
-remain independent of Zig. Native source dependencies use Zig's content hashes;
-they are outside Cargo's license audit and have notices in `third-party/ghostty`.
+the binding versions, and bundled notices aligned. All builds include both
+engines and require the pinned Zig toolchain. Native source dependencies use
+Zig's content hashes; their notices are in `third-party/ghostty` because they
+are outside Cargo's license audit.
 At this native pin `max_scrollback` is bytes despite the published binding/header
 claiming lines. The adapter uses 16 MiB and reports actual retained rows.
 Ghostty color-only OSC updates can leave render rows clean. Compare effective
@@ -280,8 +282,8 @@ viewport/history; retain the client prediction separately. Clamp pending relativ
 UI intents after an authoritative completion so a saturated history boundary
 does not leave scroll debt that affects later reversal.
 
-Treat malformed TOML and invalid/unavailable engine choices as fatal at startup.
-For valid TOML with a known available engine, fallback from unrelated settings
+Treat malformed TOML and invalid engine choices as fatal at startup.
+For valid TOML with a known engine, fallback from unrelated settings
 errors must preserve that engine. Fatal snapshot errors set the runtime closing
 gate; latch client snapshot failure so pending scroll or invalidation cannot
 create an immediate retry loop. Set Ghostty device attributes explicitly: the

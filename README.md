@@ -21,8 +21,8 @@ Huterm is based on four decisions:
   behavior. It will initially use `portable-pty` for the operating-system
   implementation.
 - The runtime owns canonical terminal state and the shared scroll position.
-  Upstream `alacritty_terminal` is the default engine; experimental builds also
-  provide `libghostty-vt` behind the same snapshot and input boundary.
+  Upstream `alacritty_terminal` is the default engine; every build also
+  provides `libghostty-vt` behind the same snapshot and input boundary.
 - Clients render Huterm-owned terminal snapshots. The first client uses GPUI;
   a text-based terminal client can use the same model later.
 - Huterm application code targets the MIT license. Dependencies may use other
@@ -234,8 +234,8 @@ restoration, and shared GUI/TUI access.
   search, selection, and configurable scrollback.
 - More terminal mouse protocols, configurable keybindings, and shell
   integration.
-- An Alacritty-based terminal engine initially, with the option to evaluate
-  `libghostty-vt` after its public API matures.
+- Configurable Alacritty and `libghostty-vt` terminal engines, with Alacritty
+  selected by default.
 
 ### Desktop clients
 
@@ -287,10 +287,10 @@ Terminal scroll position is shared across views for the engine experiment.
 Tab-bar orientation is a client preference, not workspace state. See
 [CONTEXT.md](CONTEXT.md) for the full glossary.
 
-## Terminal engine experiment
+## Terminal engines
 
-Alacritty remains the default. Run `mise run dev:ghostty` to build an app with
-both engines, then choose the default for new terminals in your configuration:
+Every build includes both engines, with Alacritty as the default. Run
+`mise run dev`, then choose the engine for new terminals in your configuration:
 
 ```toml
 [terminal]
@@ -300,12 +300,12 @@ engine = "ghostty" # Or "alacritty".
 Reloading configuration changes subsequently created tabs and windows. Existing
 terminals retain their captured engine, child process, and history. Pending
 terminal creation retains its captured engine choice across reloads.
-An unavailable engine is an explicit configuration error. The ordinary
-`mise run dev` build does not require Zig or Ghostty source.
+Unknown engine names are explicit configuration errors. Normal build tasks
+prepare verified Ghostty source and use the pinned Zig toolchain.
 
 Each terminal owns one shared viewport. Snapshots remain complete and immutable;
 unchanged rows share storage between generations. Both engines use the existing
-GPUI renderer. See [the experiment guide](docs/agents/terminal-engines.md) for
+GPUI renderer. See [the engine guide](docs/agents/terminal-engines.md) for
 native build inputs, benchmarks, and known engine differences.
 
 ## Licensing
