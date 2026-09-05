@@ -270,8 +270,10 @@ restoration, and shared GUI/TUI access.
 
 ## Terminology
 
-- **Workspace**: a named, runtime-owned collection of ordered tabs, independent
-  of its views. Earlier code and plans call this a session.
+- **Socket**: a named runtime scope containing sessions.
+- **Session**: a runtime-owned collection of ordered workspaces within a socket.
+- **Workspace**: a collection of ordered tabs within a session, independent of
+  its views.
 - **Tab**: an ordered container with one pane layout.
 - **Pane**: a leaf in a tab's split tree.
 - **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
