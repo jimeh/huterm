@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "holder_fixture.rs"]
+mod holder_fixture;
+
 use super::{
     AttachmentId, Mux, MuxError, RuntimeClient, RuntimeId, Session, SessionId,
     TabId, Workspace, WorkspaceId,
@@ -581,7 +585,11 @@ mod tests {
         let workspace = mux.create_workspace(session, None).unwrap();
         let exited = mux.open_tab(workspace, &command("printf DONE")).unwrap();
         ready(&exited.client, "DONE");
-        while !exited.client.job_context().unwrap().exited {
+        while !exited
+            .client
+            .job_context()
+            .is_some_and(|context| context.exited && context.pty_eof)
+        {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -589,7 +597,12 @@ mod tests {
             .prepare_close(CloseRequest::Application)
             .unwrap()
             .check_jobs();
-        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+        assert_eq!(
+            assessment.needs_confirmation(),
+            cfg!(target_os = "macos"),
+            "{:?}",
+            assessment.jobs()
+        );
         exited.client.close().unwrap();
         while exited.client.job_context().is_some() {
             assert!(Instant::now() < deadline);
@@ -609,43 +622,58 @@ mod tests {
     }
 
     #[test]
-    fn exited_shell_with_unattributed_slave_holder_requires_consent_until_eof()
-    {
+    fn exited_shell_with_live_slave_holder_requires_consent() {
+        let fixture = super::holder_fixture::HolderFixture::new();
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
         let workspace = mux.create_workspace(session, None).unwrap();
-        let opened = mux
-            .open_tab(
-                workspace,
-                &command("trap '' HUP; sleep 1 & printf READY"),
-            )
-            .unwrap();
-        ready(&opened.client, "READY");
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let opened = mux.open_tab(workspace, &fixture.command()).unwrap();
+        let helper = fixture.wait_ready();
+        let deadline = Instant::now() + Duration::from_secs(5);
         while !opened.client.job_context().unwrap().exited {
-            assert!(Instant::now() < deadline);
+            assert!(
+                Instant::now() < deadline,
+                "root did not exit; helper={helper}"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
+        assert!(!fixture.directory.join("done").exists());
+        assert!(nix::sys::signal::kill(helper, None).is_ok());
         let assessment = mux
             .prepare_close(CloseRequest::Application)
             .unwrap()
             .check_jobs();
+        assert!(nix::sys::signal::kill(helper, None).is_ok());
         assert!(
             assessment.needs_confirmation(),
-            "live slave holder incorrectly cleared: {:?}",
+            "live helper={helper}, context={:?}, jobs={:?}",
+            opened.client.job_context(),
             assessment.jobs()
         );
-        while !opened.client.job_context().unwrap().pty_eof {
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(10));
+        fixture.release().unwrap();
+        while !fixture.directory.join("done").exists()
+            || !opened.client.job_context().unwrap().pty_eof
+        {
+            assert!(
+                Instant::now() < deadline,
+                "release did not complete; helper={helper}, context={:?}",
+                opened.client.job_context()
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
-        let assessment = mux
-            .prepare_close(CloseRequest::Application)
-            .unwrap()
-            .check_jobs();
-        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
-        mux.commit_close(&assessment, &assessment.recheck(), false)
-            .unwrap();
+        let current = assessment.recheck();
+        assert_eq!(
+            current.needs_confirmation(),
+            cfg!(target_os = "macos"),
+            "released helper, jobs={:?}",
+            current.jobs()
+        );
+        mux.commit_close(
+            &current,
+            &current.recheck(),
+            cfg!(target_os = "macos"),
+        )
+        .unwrap();
     }
 
     #[test]

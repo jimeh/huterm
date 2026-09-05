@@ -11,6 +11,10 @@ pub(super) const DEFAULT_CONFIG: &str = r##"[font]
 family = "Menlo"
 size = 14.0
 
+[terminal]
+# Close exited tabs after any required job confirmation.
+close_on_exit = true
+
 [window]
 # Padding in logical points on each side of the terminal.
 padding_x = 4.0
@@ -32,7 +36,22 @@ name = "huterm-dark"
 pub(super) struct Config {
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
+    pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct TerminalConfig {
+    pub(super) close_on_exit: bool,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            close_on_exit: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -108,6 +127,7 @@ impl Default for Config {
             },
             theme: Theme::default(),
             window: WindowConfig::default(),
+            terminal: TerminalConfig::default(),
         }
     }
 }
@@ -289,6 +309,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let theme = themes::resolve(&raw.theme, &raw.themes, &directory)?;
     Ok(Config {
         window: raw.window,
+        terminal: raw.terminal,
         font: FontConfig {
             family: raw.font.family,
             size: raw.font.size,
@@ -324,6 +345,8 @@ struct RawConfig {
     font: RawFont,
     #[serde(default)]
     window: WindowConfig,
+    #[serde(default)]
+    terminal: TerminalConfig,
     #[serde(default)]
     theme: ThemeDefinition,
     #[serde(default)]
@@ -397,6 +420,25 @@ mod tests {
         let result = parse_at(source, &directory.join("config.toml"));
         fs::remove_dir(directory).expect("remove empty config directory");
         result
+    }
+
+    #[test]
+    fn terminal_close_on_exit_defaults_true_and_requires_a_boolean() {
+        assert!(Config::default().terminal.close_on_exit);
+        assert!(parse("").unwrap().terminal.close_on_exit);
+        assert!(parse(DEFAULT_CONFIG).unwrap().terminal.close_on_exit);
+        assert!(
+            !parse("[terminal]\nclose_on_exit = false")
+                .unwrap()
+                .terminal
+                .close_on_exit
+        );
+        for value in ["0", "\"false\"", "[]"] {
+            assert!(
+                parse(&format!("[terminal]\nclose_on_exit = {value}")).is_err()
+            );
+        }
+        assert!(parse("[terminal]\nclose_on_exiit = false").is_err());
     }
 
     #[test]

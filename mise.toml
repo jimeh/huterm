@@ -127,8 +127,11 @@ if [ "$(uname -s)" != Linux ]; then
   exit 0
 fi
 cargo build --workspace --locked
+smoke_config=$(mktemp)
+trap 'rm -f "$smoke_config"' EXIT
+printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
-SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
   -s '-screen 0 1280x800x24' target/debug/huterm
 status=$?
 set -e

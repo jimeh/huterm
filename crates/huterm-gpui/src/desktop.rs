@@ -461,7 +461,7 @@ impl TerminalView {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
-        let mut changed = self.retry_client_messages();
+        let mut changed = false;
         changed |= self.scrollbar_visibility.update(
             Instant::now(),
             self.scrollbar_dragging || self.scrollbar_hovering,
@@ -490,6 +490,8 @@ impl TerminalView {
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
                     self.exited = true;
+                    self.input_queue.close();
+                    self.mouse = MouseState::default();
                     changed |= self.set_status(status.code.map_or_else(
                         || "Process exited".into(),
                         |code| format!("Process exited with status {code}"),
@@ -504,6 +506,7 @@ impl TerminalView {
                 Ok(None) | Err(_) => break,
             }
         }
+        changed |= self.retry_client_messages();
         if let Some(benchmark) = &mut self.scroll_benchmark {
             changed |= benchmark.drive(
                 &mut self.scroll,
@@ -519,7 +522,10 @@ impl TerminalView {
     }
 
     fn handle_keystroke(&mut self, keystroke: &Keystroke) -> bool {
-        if keystroke.modifiers.platform || reserved_keystroke(keystroke) {
+        if self.exited
+            || keystroke.modifiers.platform
+            || reserved_keystroke(keystroke)
+        {
             return false;
         }
         let modifiers = protocol_modifiers(keystroke.modifiers);
@@ -662,6 +668,9 @@ impl TerminalView {
     }
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<'_, Self>) {
         cx.stop_propagation();
+        if self.exited {
+            return;
+        }
         if let Some(text) =
             cx.read_from_clipboard().and_then(|item| item.text())
         {
@@ -766,7 +775,7 @@ impl TerminalView {
                 in_grid,
                 self.scrollbar_at(position, window).is_some(),
                 modifiers.shift,
-                snapshot.modes.mouse_tracking,
+                (!self.exited).then_some(snapshot.modes.mouse_tracking),
                 self.scroll.displayed(),
                 self.scroll.desired(),
             )
@@ -1134,8 +1143,12 @@ impl TerminalView {
         release: bool,
         quiet: bool,
     ) -> (bool, bool) {
+        if self.exited {
+            return (false, false);
+        }
         match self.input_queue.enqueue(input, release, |input| self.client.send_input(input)) {
             Ok(Admission::Accepted) => (true, false),
+            Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
             Ok(Admission::Full) => (false, self.set_status(format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
             Err(error) => {
@@ -1168,6 +1181,9 @@ impl TerminalView {
     }
 
     fn retry_client_messages(&mut self) -> bool {
+        if self.exited {
+            self.input_queue.close();
+        }
         if let Err(error) = self
             .input_queue
             .retry(|input| self.client.send_input(input))

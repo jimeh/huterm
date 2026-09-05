@@ -68,7 +68,11 @@ path as the application menu.
 Quit includes all sessions, even those with no views. Before teardown it retains
 one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
 terminal-history serialization, and restart restoration remain unimplemented.
-An exited shell stays visible until its tab is closed.
+Tabs close automatically when their shell exits, using the same job checks and
+confirmation as manual close. Cancel keeps the exited tab without asking again.
+Set `[terminal] close_on_exit = false` to retain exited tabs for history. Retained
+tabs allow selection, copy, scrolling, and resizing, but send no terminal input.
+Reloading this setting affects future exit events only.
 
 Keyboard and application mouse input, paste, selection and copy, client-owned
 scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
@@ -98,7 +102,11 @@ Process inspection uses a bounded system `ps` snapshot off the UI and terminal
 parser threads. It follows shell descendants and the owned PTY, including
 background process groups. Scan failures require confirmation. After a shell
 exits, a remaining PTY holder with no attributable process is reported as
-unknown until PTY EOF. Processes that lose their controlling terminal and
+unknown until PTY EOF on Linux. On macOS, session-leader exit revokes the PTY
+even if descendants survive, so EOF cannot establish that jobs have ended.
+Exited macOS shells therefore require confirmation, including clean shell exits,
+unless attributed running jobs already explain the warning. Processes that lose
+their controlling terminal and
 ancestry cannot always be attributed or terminated, including detached daemons.
 Process creation after the final OS snapshot is also inherently racy.
 

@@ -256,8 +256,10 @@ Run process-table scans off both Mux and terminal-parser threads; carry fresh
 assessed background process groups into teardown. After shell exit, match only
 its still-owned PTY, never its reusable PID/foreground group. macOS ps can
 abbreviate ttys000 as s000, so normalize both forms before matching. An exited
-shell is safely idle only after reader EOF; an unattributed live PTY holder
-requires conservative unknown-state confirmation.
+shell is safely idle after reader EOF only on Linux. macOS revokes the PTY on
+session-leader exit even when HUP-ignoring descendants survive; after root exit,
+report Unknown when no running process can be attributed, regardless of EOF.
+Use explicit FIFO release in the exited-holder test, never a timed sleep.
 Quit captures every session plus window navigation and geometry before cleanup;
 retain the first capture through repeated shutdown. The native AppKit bridge
 adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
@@ -275,3 +277,12 @@ including exec and worker churn; leaderless groups need an original surviving
 member. New groups or unknown-state widening require reassessment. Use fresh
 members for cleanup. Native cancellation tests must send input and observe a
 unique shell ACK after cancel and retry; an exited terminal retains snapshots.
+
+The window refresh pump queues shell-exit transitions once for assessed tab close.
+Keep automatic exit requests separate from the merged manual close intent, so
+canceling one prompt does not lose inactive siblings. Config reload changes only
+future exit events. Exited tabs retain history and local selection/scrolling;
+close their input queue and reset mouse ownership without emitting releases.
+Core drops queued input and terminal replies after root exit, stops the writer,
+and keeps final-output parsing, snapshot/selection requests, and emulator resize.
+A late writer failure after observed exit must not destroy retained history.

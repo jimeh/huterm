@@ -15,7 +15,7 @@ pub(crate) struct JobContext {
 /// Observable process evidence for a terminal close assessment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobState {
-    /// The child has exited or only its idle shell remains.
+    /// Only an idle shell remains, or Linux has observed both child exit and PTY EOF.
     Idle,
     /// Non-shell processes, including descendants in background groups.
     Running(Vec<JobProcess>),
@@ -178,7 +178,9 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
     let Some(context) = context else {
         return JobState::Unknown;
     };
-    if context.exited && context.pty_eof {
+    // Darwin revokes the controlling terminal on session-leader exit, even
+    // while HUP-ignoring descendants survive. EOF is not liveness evidence.
+    if !cfg!(target_os = "macos") && context.exited && context.pty_eof {
         return JobState::Idle;
     }
     let Some(shell) = context.shell else {

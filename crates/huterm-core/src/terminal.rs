@@ -46,6 +46,7 @@ impl RuntimeClient {
     }
 
     /// Sends structured input using emulator modes owned by the runtime.
+    /// Input queued after observed child exit is discarded; history remains readable.
     ///
     /// # Errors
     ///
@@ -485,6 +486,7 @@ enum RuntimeControl {
         reply: async_channel::Sender<Option<String>>,
     },
     WorkerFailed(String),
+    WriterFailed(String),
     Wake,
 }
 
@@ -557,12 +559,14 @@ fn run_terminal(
         }
     };
     let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
+    let input_closed = Arc::new(AtomicBool::new(false));
     let writer_join = match spawn_writer(
         terminal_id,
         writer,
         writer_receiver,
         control_sender,
         Arc::clone(&closing),
+        Arc::clone(&input_closed),
     ) {
         Ok(join) => join,
         Err(error) => {
@@ -596,24 +600,16 @@ fn run_terminal(
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
         pty::record_foreground_group(master.as_ref(), &mut process_groups);
-        if !child_exited {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    child_exited = true;
-                    let _ = events.send(TerminalEvent::Exited {
-                        terminal_id,
-                        status: ExitStatus {
-                            code: Some(status.exit_code()),
-                            success: status.success(),
-                        },
-                    });
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    report_failure(&events, terminal_id, error.to_string());
-                    closing.store(true, Ordering::Release);
-                }
-            }
+        if let Err(error) = observe_child_exit(
+            child.as_mut(),
+            terminal_id,
+            &events,
+            &mut child_exited,
+            &input_closed,
+            &mut pending_writes,
+        ) {
+            report_failure(&events, terminal_id, error);
+            closing.store(true, Ordering::Release);
         }
         while let Ok(control) = controls.try_recv() {
             if closing.load(Ordering::Acquire) {
@@ -637,6 +633,23 @@ fn run_terminal(
                 } => {
                     let _ =
                         reply.try_send(engine.extract_text(generation, range));
+                }
+                RuntimeControl::WriterFailed(message) => {
+                    // Exit may have happened since the loop's initial poll.
+                    if let Err(error) = observe_child_exit(
+                        child.as_mut(),
+                        terminal_id,
+                        &events,
+                        &mut child_exited,
+                        &input_closed,
+                        &mut pending_writes,
+                    ) {
+                        report_failure(&events, terminal_id, error);
+                        closing.store(true, Ordering::Release);
+                    } else if !child_exited {
+                        report_failure(&events, terminal_id, message);
+                        closing.store(true, Ordering::Release);
+                    }
                 }
                 RuntimeControl::WorkerFailed(message) => {
                     report_failure(&events, terminal_id, message);
@@ -697,6 +710,11 @@ fn run_terminal(
         match message {
             RuntimeMessage::PtyOutput(bytes) => {
                 for effect in engine.process(&bytes) {
+                    if child_exited
+                        && matches!(effect, EngineEffect::PtyWrite(_))
+                    {
+                        continue;
+                    }
                     if handle_effect(
                         effect,
                         terminal_id,
@@ -727,6 +745,9 @@ fn run_terminal(
                 reserved_bytes,
             } => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
+                if child_exited {
+                    continue;
+                }
                 let bytes = encode_input(&input, engine.modes(), engine.size());
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
@@ -741,7 +762,9 @@ fn run_terminal(
                 }
             }
             RuntimeMessage::Resize { grid, cell } => {
-                if master.resize(pty::pty_size(grid, cell)).is_err() {
+                if !child_exited
+                    && master.resize(pty::pty_size(grid, cell)).is_err()
+                {
                     let _ = events.send(TerminalEvent::Failed {
                         terminal_id,
                         message: "failed to resize PTY".into(),
@@ -848,18 +871,47 @@ fn spawn_reader(
         .map_err(|error| RuntimeError::Thread(error.to_string()))
 }
 
+fn observe_child_exit(
+    child: &mut dyn portable_pty::Child,
+    terminal_id: TerminalId,
+    events: &Sender<TerminalEvent>,
+    exited: &mut bool,
+    input_closed: &AtomicBool,
+    pending_writes: &mut VecDeque<Vec<u8>>,
+) -> Result<(), String> {
+    if !*exited
+        && let Some(status) =
+            child.try_wait().map_err(|error| error.to_string())?
+    {
+        *exited = true;
+        input_closed.store(true, Ordering::Release);
+        pending_writes.clear();
+        let _ = events.send(TerminalEvent::Exited {
+            terminal_id,
+            status: ExitStatus {
+                code: Some(status.exit_code()),
+                success: status.success(),
+            },
+        });
+    }
+    Ok(())
+}
+
 fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
     messages: Receiver<WriterMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
+    input_closed: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-writer-{}", terminal_id.get()))
         .spawn(move || {
             let mut current: Option<(Vec<u8>, usize)> = None;
-            while !closing.load(Ordering::Acquire) {
+            while !closing.load(Ordering::Acquire)
+                && !input_closed.load(Ordering::Acquire)
+            {
                 if current.is_none() {
                     current = match messages.recv_timeout(RUNTIME_POLL_INTERVAL)
                     {
@@ -867,6 +919,9 @@ fn spawn_writer(
                         Err(RecvTimeoutError::Timeout) => continue,
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
+                }
+                if input_closed.load(Ordering::Acquire) {
+                    break;
                 }
                 let Some((bytes, offset)) = current.as_mut() else {
                     continue;
@@ -882,7 +937,7 @@ fn spawn_writer(
                         }
                         Err(error) => {
                             let _ =
-                                controls.send(RuntimeControl::WorkerFailed(
+                                controls.send(RuntimeControl::WriterFailed(
                                     format!("PTY flush failed: {error}"),
                                 ));
                             break;
@@ -892,7 +947,7 @@ fn spawn_writer(
                 }
                 match writer.write(&bytes[*offset..]) {
                     Ok(0) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                        let _ = controls.send(RuntimeControl::WriterFailed(
                             "PTY write returned zero bytes".into(),
                         ));
                         break;
@@ -904,7 +959,7 @@ fn spawn_writer(
                         thread::sleep(RUNTIME_POLL_INTERVAL);
                     }
                     Err(error) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                        let _ = controls.send(RuntimeControl::WriterFailed(
                             format!("PTY write failed: {error}"),
                         ));
                         break;
@@ -1033,6 +1088,128 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn writer_failure_with_live_root_remains_observable_and_stops_runtime() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(92),
+            &command("printf READY; read line"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        client
+            .controls
+            .send(RuntimeControl::WriterFailed("test write failure".into()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(TerminalEvent::Failed { message, .. }) =
+                client.try_recv_event().unwrap()
+            {
+                assert_eq!(message, "test write failure");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "live-root write failure disappeared"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn exited_runtime_discards_late_input_and_replies_but_keeps_history() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(91),
+            &command("i=0; while [ $i -lt 40 ]; do printf 'history\\n'; i=$((i + 1)); done; printf '\\033[?1004hFINAL'; exit 0"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_exit(&client);
+        wait_for_text(&client, "FINAL");
+        for input in [
+            TerminalInput::Text("LATE".into()),
+            TerminalInput::Paste("PASTE".into()),
+            TerminalInput::Focus(true),
+        ] {
+            client.send_input(input).unwrap();
+        }
+        // Deliver an already-in-flight writer failure and final output that
+        // asks for a terminal reply after the root has exited.
+        client
+            .controls
+            .send(RuntimeControl::WriterFailed(
+                "late revoked PTY write".into(),
+            ))
+            .unwrap();
+        client
+            .messages
+            .send(RuntimeMessage::PtyOutput(b"TAIL\x1b[6n".to_vec()))
+            .unwrap();
+        let snapshot = wait_for_text(&client, "FINALTAIL");
+        assert!(snapshot.history_size > 0);
+        let history = client
+            .read_snapshot(Viewport {
+                bottom_offset: snapshot.history_size,
+            })
+            .unwrap();
+        assert!(history.viewport.bottom_offset > 0);
+        assert!(
+            history
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("history")
+        );
+        let selection = client
+            .request_selection(
+                snapshot.generation,
+                BufferRange {
+                    start: huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 0,
+                        column: 0,
+                    },
+                    end: huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 0,
+                        column: 8,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            selection.receiver.recv_blocking().unwrap().as_deref(),
+            Some("FINALTAIL")
+        );
+        client
+            .resize(
+                GridSize::clamped(90, 30),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = client.read_snapshot(Viewport::default()).unwrap();
+            if snapshot.size == GridSize::clamped(90, 30) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        while let Some(event) = client.try_recv_event().unwrap() {
+            assert!(
+                !matches!(event, TerminalEvent::Failed { .. }),
+                "{event:?}"
+            );
+        }
+        assert_eq!(client.queued_input_bytes.load(Ordering::Acquire), 0);
+        runtime.shutdown().unwrap();
+    }
 
     #[test]
     fn pty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
@@ -1465,6 +1642,7 @@ mod tests {
             receiver,
             controls,
             Arc::clone(&closing),
+            Arc::new(AtomicBool::new(false)),
         )
         .expect("writer worker should start");
         sender

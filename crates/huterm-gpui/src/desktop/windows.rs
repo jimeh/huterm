@@ -515,6 +515,7 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
                 focus: cx.focus_handle(),
                 busy: false,
                 close: CloseState::default(),
+                exited_tabs: ExitQueue::default(),
                 status: cx.global::<Desktop>().config_error.clone(),
             });
             let weak = view.downgrade();
@@ -555,6 +556,12 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
                                             terminal.exited,
                                         );
                                         terminal.refresh(cx);
+                                        view.exited_tabs.observe(
+                                            tab.id,
+                                            previous.1,
+                                            terminal.exited,
+                                            view.config.terminal.close_on_exit,
+                                        );
                                         metadata_changed |= previous
                                             != (
                                                 terminal.title.clone(),
@@ -562,6 +569,7 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
                                             );
                                     });
                                 }
+                                view.resume_close(window, cx);
                                 if metadata_changed {
                                     cx.notify();
                                 }
@@ -619,7 +627,34 @@ struct WorkspaceView {
     focus: FocusHandle,
     busy: bool,
     close: CloseState,
+    exited_tabs: ExitQueue,
     status: Option<String>,
+}
+
+#[derive(Default)]
+struct ExitQueue(std::collections::VecDeque<TabId>);
+
+impl ExitQueue {
+    fn observe(
+        &mut self,
+        tab: TabId,
+        was_exited: bool,
+        exited: bool,
+        enabled: bool,
+    ) {
+        if enabled && !was_exited && exited {
+            self.0.push_back(tab);
+        }
+    }
+
+    fn take_next(&mut self, contains: impl Fn(TabId) -> bool) -> Option<TabId> {
+        while let Some(tab) = self.0.pop_front() {
+            if contains(tab) {
+                return Some(tab);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -677,6 +712,19 @@ enum CloseDecision {
 }
 
 impl CloseState {
+    fn next_request(
+        &mut self,
+        exits: &mut ExitQueue,
+        busy: bool,
+        contains: impl Fn(TabId) -> bool,
+    ) -> Option<CloseTarget> {
+        if busy || self.confirmation.is_some() {
+            return None;
+        }
+        self.take_pending(&contains)
+            .or_else(|| exits.take_next(contains).map(CloseTarget::Tab))
+    }
+
     fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
         self.generation += 1;
         self.assessment = None;
@@ -1306,10 +1354,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        if let Some(target) = self
-            .close
-            .take_pending(|id| self.tabs.iter().any(|tab| tab.id == id))
-        {
+        let target =
+            self.close
+                .next_request(&mut self.exited_tabs, self.busy, |id| {
+                    self.tabs.iter().any(|tab| tab.id == id)
+                });
+        if let Some(target) = target {
             self.request_close(target, window, cx);
             true
         } else {
@@ -1979,24 +2029,33 @@ impl Render for WorkspaceView {
                 self.close.assessment.as_ref().is_some_and(|assessment| {
                     assessment.jobs().contains(&huterm_core::JobState::Unknown)
                 });
+            let tab_title = match target {
+                CloseTarget::Tab(id) => self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.title(cx))
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
             let message = match (target, unknown) {
                 (CloseTarget::Application, true) => {
-                    "Some process state is unavailable. Quit Huterm and terminate all sessions?"
+                    "Some process state is unavailable. Quit Huterm and terminate all sessions?".to_owned()
                 }
                 (CloseTarget::Application, false) => {
-                    "Quit Huterm and terminate running jobs in all sessions?"
+                    "Quit Huterm and terminate running jobs in all sessions?".to_owned()
                 }
                 (CloseTarget::Window, true) => {
-                    "Some process state is unavailable. Close this final view and terminate its session?"
+                    "Some process state is unavailable. Close this final view and terminate its session?".to_owned()
                 }
                 (CloseTarget::Window, false) => {
-                    "Close this final view and terminate running jobs in its session?"
+                    "Close this final view and terminate running jobs in its session?".to_owned()
                 }
                 (CloseTarget::Tab(_), true) => {
-                    "Process state is unavailable. Close this tab and terminate its terminal?"
+                    format!("Process state is unavailable. Close tab \"{tab_title}\" and terminate its terminal?")
                 }
                 (CloseTarget::Tab(_), false) => {
-                    "Close this tab and terminate its running jobs?"
+                    format!("Close tab \"{tab_title}\" and terminate its running jobs?")
                 }
             };
             root = root.child(
@@ -2106,6 +2165,46 @@ pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_queue_retains_inactive_siblings_while_busy_and_cancel_consumes_only_current()
+     {
+        let first = TabId::new(1);
+        let second = TabId::new(2);
+        let mut queue = ExitQueue::default();
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Tab(TabId::new(3)));
+        queue.observe(first, false, true, true);
+        queue.observe(second, false, true, true);
+        // Busy structural work leaves both requests queued, independent of active tab.
+        assert_eq!(close.next_request(&mut queue, true, |_| true), None);
+        close.cancel();
+        let target = close.next_request(&mut queue, false, |_| true).unwrap();
+        assert_eq!(target, CloseTarget::Tab(first));
+        close.begin_check(target);
+        assert_eq!(close.checked(true), Some(CloseDecision::Confirm(target)));
+        assert_eq!(close.next_request(&mut queue, false, |_| true), None);
+        assert_eq!(close.cancel(), Some(target));
+        queue.observe(first, true, true, true);
+        queue.observe(second, true, true, true);
+        assert_eq!(queue.take_next(|_| true), Some(second));
+        assert_eq!(queue.take_next(|_| true), None);
+    }
+
+    #[test]
+    fn exit_queue_reload_affects_future_transitions_and_discards_removed_tabs()
+    {
+        let first = TabId::new(1);
+        let second = TabId::new(2);
+        let third = TabId::new(3);
+        let mut queue = ExitQueue::default();
+        queue.observe(first, false, true, false);
+        queue.observe(first, true, true, true);
+        queue.observe(second, false, true, true);
+        queue.observe(third, false, true, true);
+        assert_eq!(queue.take_next(|id| id != second), Some(third));
+        assert_eq!(queue.take_next(|_| true), None);
+    }
 
     #[test]
     fn reorder_projection_and_preview_stay_in_bar_for_all_four_placements() {
