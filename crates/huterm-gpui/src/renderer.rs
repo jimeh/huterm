@@ -309,7 +309,10 @@ impl TerminalRenderer {
         {
             window.paint_quad(fill(
                 cursor_bounds(bounds.origin, cursor, metrics),
-                rgb_color(snapshot.cursor_color.unwrap_or(self.theme.cursor)),
+                cursor_fill(
+                    snapshot.cursor_color.unwrap_or(self.theme.cursor),
+                    cursor.shape,
+                ),
             ));
         }
         self.record_paint(started);
@@ -772,6 +775,15 @@ fn cell_bounds(
         cell_origin(grid_origin, usize::from(column), row, metrics),
         size(metrics.cell_width * f32::from(columns), metrics.cell_height),
     )
+}
+
+fn cursor_fill(color: Rgb, shape: CursorShape) -> Hsla {
+    // The cursor is painted over text; keep block-covered glyphs visible.
+    rgb_color(color).opacity(if shape == CursorShape::Block {
+        0.4
+    } else {
+        1.0
+    })
 }
 
 fn cursor_bounds(
@@ -1312,6 +1324,22 @@ mod tests {
                 ))
                 .1
         );
+    }
+
+    #[test]
+    fn block_cursor_overlay_preserves_underlying_glyph_visibility() {
+        let color = Rgb {
+            red: 255,
+            green: 255,
+            blue: 255,
+        };
+        assert!(
+            (cursor_fill(color, CursorShape::Block).a - 0.4).abs()
+                < f32::EPSILON
+        );
+        for shape in [CursorShape::Beam, CursorShape::Underline] {
+            assert!((cursor_fill(color, shape).a - 1.0).abs() < f32::EPSILON);
+        }
     }
 
     #[test]

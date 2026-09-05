@@ -324,7 +324,7 @@ fn install_bindings(cx: &mut App) {
             KeyBinding::new("cmd-c", Copy, None),
             KeyBinding::new("cmd-v", Paste, None),
             KeyBinding::new("cmd-,", Settings, None),
-            KeyBinding::new("cmd-shift-,", ReloadConfiguration, None),
+            reload_binding(true),
             KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-m", Minimize, None),
@@ -335,10 +335,19 @@ fn install_bindings(cx: &mut App) {
         bindings.extend([
             KeyBinding::new("ctrl-shift-c", Copy, None),
             KeyBinding::new("ctrl-shift-v", Paste, None),
-            KeyBinding::new("ctrl-shift-,", ReloadConfiguration, None),
+            reload_binding(false),
         ]);
     }
     cx.bind_keys(bindings);
+}
+
+fn reload_binding(is_macos: bool) -> KeyBinding {
+    // GPUI folds Shift+comma into '<' and clears Shift on both backends.
+    KeyBinding::new(
+        if is_macos { "cmd-<" } else { "ctrl-<" },
+        ReloadConfiguration,
+        None,
+    )
 }
 
 fn install_menus(cx: &mut App) {
@@ -1684,16 +1693,16 @@ fn reserved_chord_for_platform(
     }
     if is_macos {
         (exact_modifiers(modifiers, ModifierChord::Command)
-            && matches!(key, "c" | "v" | "," | "q" | "m" | "h"))
+            && matches!(key, "c" | "v" | "," | "<" | "q" | "m" | "h"))
             || (exact_modifiers(modifiers, ModifierChord::CommandAlt)
                 && key == "h")
             || (exact_modifiers(modifiers, ModifierChord::CommandControl)
                 && key == "f")
-            || (exact_modifiers(modifiers, ModifierChord::CommandShift)
-                && key == ",")
     } else {
-        exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "c" | "v" | ",")
+        (exact_modifiers(modifiers, ModifierChord::ControlShift)
+            && matches!(key, "c" | "v"))
+            || (exact_modifiers(modifiers, ModifierChord::Control)
+                && key == "<")
     }
 }
 #[derive(Clone, Copy)]
@@ -1702,14 +1711,14 @@ enum ModifierChord {
     Command,
     CommandAlt,
     CommandControl,
-    CommandShift,
+    Control,
     ControlShift,
 }
 fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
     let matches = match chord {
         ModifierChord::Shift => modifiers.shift,
         ModifierChord::Command => modifiers.platform,
-        ModifierChord::CommandShift => modifiers.platform && modifiers.shift,
+        ModifierChord::Control => modifiers.control,
         ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
         ModifierChord::CommandControl => {
             modifiers.platform && modifiers.control
@@ -1722,9 +1731,10 @@ fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
         + usize::from(modifiers.platform)
         + usize::from(modifiers.function);
     let expected_count = match chord {
-        ModifierChord::Shift | ModifierChord::Command => 1,
+        ModifierChord::Shift
+        | ModifierChord::Command
+        | ModifierChord::Control => 1,
         ModifierChord::CommandAlt
-        | ModifierChord::CommandShift
         | ModifierChord::CommandControl
         | ModifierChord::ControlShift => 2,
     };
@@ -1971,11 +1981,36 @@ mod tests {
         assert!(reserved_chord(clipboard, "v"));
     }
     #[test]
+    fn reload_binding_matches_gpui_shifted_punctuation() {
+        // Both native backends fold Shift+comma into '<' without Shift.
+        for (is_macos, modifier) in [
+            (true, TestModifier::Platform),
+            (false, TestModifier::Control),
+        ] {
+            let event = Keystroke {
+                modifiers: modifiers(&[modifier]),
+                key: "<".into(),
+                key_char: None,
+            };
+            assert_eq!(
+                reload_binding(is_macos)
+                    .match_keystrokes(std::slice::from_ref(&event)),
+                Some(false) // Complete match, not a pending chord prefix.
+            );
+            assert!(reserved_chord_for_platform(
+                is_macos,
+                event.modifiers,
+                &event.key
+            ));
+        }
+    }
+
+    #[test]
     fn macos_shortcuts_require_exact_modifiers() {
         assert!(reserved_chord_for_platform(
             true,
-            modifiers(&[TestModifier::Platform, TestModifier::Shift]),
-            ",",
+            modifiers(&[TestModifier::Platform]),
+            "<",
         ));
         let command = modifiers(&[TestModifier::Platform]);
         assert!(reserved_chord_for_platform(true, command, "h"));
@@ -2002,8 +2037,8 @@ mod tests {
     fn linux_shortcuts_require_exact_modifiers() {
         assert!(reserved_chord_for_platform(
             false,
-            modifiers(&[TestModifier::Control, TestModifier::Shift]),
-            ",",
+            modifiers(&[TestModifier::Control]),
+            "<",
         ));
         let clipboard =
             modifiers(&[TestModifier::Control, TestModifier::Shift]);

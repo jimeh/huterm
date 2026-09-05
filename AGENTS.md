@@ -110,6 +110,9 @@ positive distance before calculating cell height, baseline, or decorations.
 Round grid dimensions in physical pixels using the window scale, then convert
 back to logical points. Keep unrounded font measurements for scale changes;
 rounding up to logical points makes Menlo 12's grid 14% too wide on Retina.
+GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.
+Bind reload as `cmd-<` / `ctrl-<`, not `cmd-shift-,` / `ctrl-shift-,`; test
+the real `KeyBinding` matcher as well as terminal-input reservation.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
 adjust its offset for both history growth and shrinkage to avoid resize drift;

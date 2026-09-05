@@ -139,10 +139,14 @@ Without `selection_foreground`, selected text retains its original colors.
 Labels and scroll controls derive their colors from the theme.
 
 Use **Reload Configuration** in the Huterm menu, or press Cmd+Shift+, on
-macOS / Ctrl+Shift+, on Linux. It rereads the config and selected theme chain
+macOS / Ctrl+Shift+, on Linux with a US keyboard layout. GPUI represents these
+as Cmd+< / Ctrl+<; on other layouts use the corresponding less-than chord.
+It rereads the config and selected theme chain
 and applies font, padding, and colors without restarting the shell or losing
 scrollback. The window stays the same size; its grid is recalculated.
 Invalid configuration leaves the running settings intact and displays an error.
+An unreadable or missing config file does the same. To reset to defaults,
+empty the config file and reload it.
 Explicit colors set by terminal applications remain intact. Reload is manual;
 there is no file watcher or remote CLI command.
 

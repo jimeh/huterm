@@ -25,8 +25,9 @@ window state.
 This milestone includes macOS and Linux behavior for scrolling, selection,
 clipboard actions, and configuration. It packages only the macOS application.
 
-Configuration loads once during startup. Opening the settings file does not
-imply live reload. The first package is an unsigned development `.app`; signing,
+Configuration loads during startup and supports explicit manual reload of fonts,
+padding, and named themes. Opening the settings file does not reload it or start
+a file watcher. The first package is an unsigned development `.app`; signing,
 notarization, a DMG, automatic updates, and release publication remain separate
 work.
 
@@ -491,7 +492,7 @@ The milestone is complete when:
 - The benchmark meets queue, reuse, CPU, latency, and regression budgets.
 - Paste works in normal and bracketed modes.
 - Selection and copy preserve terminal semantics and reject stale ranges.
-- Restarted font and theme config controls all geometry and colors, with useful
+- Reloaded font and theme config controls all geometry and colors, with useful
   invalid-file errors.
 - macOS menus expose working standard actions and reserved chords never leak.
 - Apple Silicon `Huterm.app` reports `app.huterm.dev`, starts a login shell in
@@ -503,6 +504,6 @@ The milestone is complete when:
 
 ## Open questions
 
-None. Signing, notarization, universal binaries, live config reload, stable row
-identity after scrollback eviction, and terminal mouse reporting are explicit
-follow-ups rather than blockers.
+None. Signing, notarization, universal binaries, automatic config watching,
+stable row identity after scrollback eviction, and terminal mouse reporting
+are explicit follow-ups rather than blockers.

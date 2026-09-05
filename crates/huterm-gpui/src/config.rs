@@ -251,11 +251,6 @@ pub(super) fn reload(path: &Path) -> Result<Config, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-#[cfg(test)]
-fn parse(source: &str) -> Result<Config, ConfigError> {
-    parse_at(source, Path::new("config.toml"))
-}
-
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
     if raw.font.family.trim().is_empty() {
@@ -378,6 +373,15 @@ mod tests {
     use super::*;
 
     static TEST_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    fn parse(source: &str) -> Result<Config, ConfigError> {
+        // Keep bundled-theme tests independent of the crate's themes directory.
+        let directory = test_directory();
+        fs::create_dir(&directory).expect("empty config directory");
+        let result = parse_at(source, &directory.join("config.toml"));
+        fs::remove_dir(directory).expect("remove empty config directory");
+        result
+    }
 
     #[test]
     fn named_themes_layer_individual_colors_and_legacy_ansi() {
