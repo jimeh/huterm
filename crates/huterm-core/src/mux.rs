@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
+mod lifecycle;
+pub use lifecycle::{
+    CloseAssessment, CloseEffect, CloseRequest, CloseTicket, HierarchySnapshot,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{RuntimeClient, RuntimeError, TerminalRuntime};
 use huterm_protocol::{
-    PaneId, RuntimeId, SessionId, TabId, TerminalCommand, TerminalId,
-    WorkspaceId,
+    AttachmentId, PaneId, RuntimeId, SessionId, TabId, TerminalCommand,
+    TerminalId, WorkspaceId,
 };
 use thiserror::Error;
 
@@ -114,6 +118,8 @@ pub struct OpenedTab {
 /// assign incarnation identity across processes and restarts as well.
 #[derive(Debug)]
 pub struct Mux {
+    revision: u64,
+    attachments: BTreeMap<AttachmentId, SessionId>,
     runtime_id: RuntimeId,
     socket_name: String,
     next_id: u64,
@@ -142,6 +148,8 @@ impl Mux {
             })
             .map_err(|_| MuxError::IdExhausted)?;
         Ok(Self {
+            revision: 0,
+            attachments: BTreeMap::new(),
             runtime_id: RuntimeId::new(runtime_id),
             socket_name: socket_name.into(),
             next_id: 0,
@@ -166,7 +174,14 @@ impl Mux {
     pub fn reserve_through(&mut self, id: u64) {
         self.next_id = self.next_id.max(id);
     }
+    fn changed(&mut self) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("structural revision exhausted");
+    }
     fn allocate(&mut self) -> Result<u64, MuxError> {
+        self.changed();
         self.next_id =
             self.next_id.checked_add(1).ok_or(MuxError::IdExhausted)?;
         Ok(self.next_id)
@@ -316,6 +331,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_session(id)?;
         validate_name(name)?;
+        self.changed();
         self.sessions
             .iter_mut()
             .find(|s| s.id == id)
@@ -333,6 +349,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_workspace(id)?;
         validate_name(name)?;
+        self.changed();
         self.workspaces
             .get_mut(&id)
             .ok_or(MuxError::UnknownWorkspace(id))?
@@ -349,6 +366,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_tab(id)?;
         validate_name(name)?;
+        self.changed();
         self.workspaces
             .values_mut()
             .flat_map(|w| &mut w.tabs)
@@ -435,6 +453,7 @@ impl Mux {
         if source == destination && source_index == target_index {
             return Ok(());
         }
+        self.changed();
         let record = self
             .workspaces
             .get_mut(&source)
@@ -495,6 +514,7 @@ impl Mux {
         if source == destination && source_index == target_index {
             return Ok(());
         }
+        self.changed();
         self.sessions[source_session]
             .workspaces
             .remove(source_index);
@@ -527,6 +547,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_workspace(workspace)?;
         self.validate_scope(tab.runtime())?;
+        self.changed();
         let record = self
             .workspaces
             .get_mut(&workspace)
@@ -550,6 +571,7 @@ impl Mux {
         workspace: WorkspaceId,
     ) -> Result<(), MuxError> {
         self.select_workspace(workspace)?;
+        self.changed();
         let record = self
             .workspaces
             .remove(&workspace)
@@ -574,6 +596,8 @@ impl Mux {
             .iter()
             .position(|s| s.id == session)
             .ok_or(MuxError::UnknownSession(session))?;
+        self.changed();
+        self.attachments.retain(|_, attached| *attached != session);
         let record = self.sessions.remove(index);
         let terminals = record
             .workspaces
@@ -607,6 +631,8 @@ impl Mux {
     /// # Errors
     /// Returns the last failed cleanup after attempting every terminal.
     pub fn shutdown(&mut self) -> Result<(), MuxError> {
+        self.changed();
+        self.attachments.clear();
         self.sessions.clear();
         self.workspaces.clear();
         self.close_terminals(self.terminals.keys().copied().collect())
@@ -627,6 +653,15 @@ fn validate_name(name: Option<&str>) -> Result<(), MuxError> {
 /// Structural runtime operation failure.
 #[derive(Debug, Error)]
 pub enum MuxError {
+    /// Attachment no longer exists.
+    #[error("attachment {0:?} does not exist")]
+    UnknownAttachment(AttachmentId),
+    /// Structure or job evidence changed since consent was requested.
+    #[error("close assessment changed; assess again before closing")]
+    StaleClose,
+    /// Current job evidence requires explicit user consent.
+    #[error("close requires confirmation")]
+    ConfirmationRequired,
     /// No more stable identities or creation ordinals can be allocated.
     #[error("runtime identity space exhausted")]
     IdExhausted,

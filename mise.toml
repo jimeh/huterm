@@ -339,3 +339,10 @@ depends = ["lint:docs", "ci:workflows"]
 description = "Run the broad CI-equivalent validation"
 depends = ["verify:toolchain"]
 run = "mise run verify:parallel"
+
+[tasks."smoke:macos-quit"]
+description = "Verify cancellable AppKit termination with a real PTY"
+run = [
+  "cargo build --locked -p huterm-gpui --example native_quit_smoke",
+  "python3 scripts/check-native-quit.py target/debug/examples/native_quit_smoke",
+]

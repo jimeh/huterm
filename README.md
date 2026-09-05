@@ -51,10 +51,20 @@ where more tabs remain. The new-tab button stays visible and follows the last
 tab in vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 
-Closing a tab stops its terminal. Closing a window deletes its private session
-and stops all its terminals; closing the last window quits. Foreground jobs
-require confirmation before closing. An exited shell remains visible until its
-tab is closed. Window and workspace restoration is not implemented yet.
+Closing a tab stops its terminal. Windows attach to sessions. Closing a window
+only detaches when another view remains; closing its final view terminates that
+session. Core detachment and attachment retargeting preserve zero-view sessions.
+Huterm stays alive without windows while any session survives, and macOS Dock
+reopen creates a window. Hiding a window keeps its attachment.
+
+Close and Quit warn about foreground/background jobs or unknown process state.
+Idle shells need no confirmation. Structure and job evidence are rechecked before
+teardown; changed evidence requires another assessment and, when needed, renewed
+consent. macOS Dock Quit uses the same cancellable path as the application menu.
+Quit includes all sessions, even those with no views. Before teardown it retains
+one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
+terminal-history serialization, and restart restoration remain unimplemented.
+An exited shell stays visible until its tab is closed.
 
 Keyboard and application mouse input, paste, selection and copy, client-owned
 scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
@@ -77,7 +87,16 @@ runtime incarnation so equal numeric IDs in different runtimes cannot alias.
 
 These are core APIs. The desktop still creates a private session per window;
 rename controls, cross-window transfers, session/workspace switching, shared
-views, persistence, and revised close policies remain follow-up work.
+views, and persistence remain follow-up work. The embedded attachment and close
+lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
+
+Process inspection uses a bounded system `ps` snapshot off the UI and terminal
+parser threads. It follows shell descendants and the owned PTY, including
+background process groups. Scan failures require confirmation. After a shell
+exits, a remaining PTY holder with no attributable process is reported as
+unknown until PTY EOF. Processes that lose their controlling terminal and
+ancestry cannot always be attributed or terminated, including detached daemons.
+Process creation after the final OS snapshot is also inherently racy.
 
 ## Mouse interaction
 

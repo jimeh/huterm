@@ -1,8 +1,12 @@
 use super::*;
 use crate::config::TabPosition;
+#[cfg(target_os = "macos")]
+use crate::native_quit;
 use gpui::{Entity, Global, WeakEntity};
-use huterm_core::{MuxError, OpenedTab};
-use huterm_protocol::{SessionId, WorkspaceId};
+use huterm_core::{
+    CloseAssessment, CloseRequest, HierarchySnapshot, MuxError, OpenedTab,
+};
+use huterm_protocol::{AttachmentId, SessionId, WorkspaceId};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -16,6 +20,7 @@ const TAB_DRAG_THRESHOLD: f64 = 4.0;
 struct DesktopRuntime {
     mux: Mutex<Mux>,
     terminating: AtomicBool,
+    restore: Mutex<Option<RestoreSnapshot>>,
 }
 
 impl DesktopRuntime {
@@ -23,7 +28,10 @@ impl DesktopRuntime {
         &self,
         workspace: Option<WorkspaceId>,
         command: &TerminalCommand,
-    ) -> Result<(SessionId, WorkspaceId, OpenedTab), MuxError> {
+    ) -> Result<
+        (SessionId, WorkspaceId, OpenedTab, Option<AttachmentId>),
+        MuxError,
+    > {
         let mut mux = self
             .mux
             .lock()
@@ -44,7 +52,21 @@ impl DesktopRuntime {
             }
         };
         match mux.open_tab(id, command) {
-            Ok(tab) => Ok((mux.select_workspace(id)?.session, id, tab)),
+            Ok(tab) => {
+                let session = mux.select_workspace(id)?.session;
+                let attachment = if workspace.is_none() {
+                    match mux.attach_session(session) {
+                        Ok(attachment) => Some(attachment),
+                        Err(error) => {
+                            let _ = mux.close_session(session);
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    None
+                };
+                Ok((session, id, tab, attachment))
+            }
             Err(error) => {
                 if workspace.is_none() {
                     let session = mux.select_workspace(id)?.session;
@@ -55,11 +77,80 @@ impl DesktopRuntime {
         }
     }
 
-    fn close_session(&self, session: SessionId) -> Result<(), MuxError> {
-        self.mux
+    fn cleanup_spawn(
+        &self,
+        original_session: SessionId,
+        workspace: WorkspaceId,
+        tab: TabId,
+        attachment: Option<AttachmentId>,
+    ) {
+        let mut mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Never tear down a resource another attachment has adopted, including
+        // a tab moved to another session while its UI publication was pending.
+        if let Some(attachment) = attachment {
+            let _ = mux.detach_session(attachment);
+            if mux.session(original_session).is_some() {
+                let session = original_session;
+                let snapshot = mux.capture_hierarchy();
+                if !snapshot.attachments.iter().any(|(_, id)| *id == session) {
+                    let _ = mux.close_session(session);
+                }
+            }
+        } else if let Ok(target) = mux.select_tab(tab) {
+            let snapshot = mux.capture_hierarchy();
+            if target.workspace == Some(workspace)
+                && !snapshot
+                    .attachments
+                    .iter()
+                    .any(|(_, id)| *id == target.session)
+            {
+                let _ = mux.close_tab(workspace, tab);
+            }
+        }
+    }
+
+    fn assess(
+        &self,
+        request: CloseRequest,
+    ) -> Result<CloseAssessment, MuxError> {
+        let ticket = self
+            .mux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .close_session(session)
+            .prepare_close(request)?;
+        Ok(ticket.check_jobs())
+    }
+
+    fn commit(
+        &self,
+        assessment: &CloseAssessment,
+        confirmed: bool,
+        windows: Option<Vec<WindowRestore>>,
+    ) -> Result<(), MuxError> {
+        let current = assessment.recheck();
+        let mut mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mux.validate_close(assessment, &current, confirmed)?;
+        if let Some(windows) = windows {
+            self.terminating.store(true, Ordering::Release);
+            self.capture(&mux, windows);
+        }
+        mux.commit_close(assessment, &current, confirmed)
+    }
+
+    fn capture(&self, mux: &Mux, windows: Vec<WindowRestore>) {
+        self.restore
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| RestoreSnapshot {
+                hierarchy: mux.capture_hierarchy(),
+                windows,
+            });
     }
 
     fn reorder_tab(
@@ -86,14 +177,53 @@ impl DesktopRuntime {
     }
 
     fn terminate(&self) -> Result<(), MuxError> {
+        self.terminate_with_windows(Vec::new())
+    }
+
+    fn terminate_with_windows(
+        &self,
+        windows: Vec<WindowRestore>,
+    ) -> Result<(), MuxError> {
         // A queued spawn must observe termination after it acquires the same
         // mutex, even when it had not started when the native quit hook ran.
         self.terminating.store(true, Ordering::Release);
-        self.mux
+        let assessment = self.assess(CloseRequest::Application)?;
+        assessment.record_cleanup_groups();
+        let mut mux = self
+            .mux
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .shutdown()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.capture(&mux, windows);
+        mux.shutdown()
     }
+}
+
+// In-memory input for a future restore writer. No serialization/version contract.
+#[derive(Clone, Debug)]
+#[expect(
+    dead_code,
+    reason = "retained restore aggregate awaits the persistence stage"
+)]
+struct WindowRestore {
+    attachment: AttachmentId,
+    workspace: Option<WorkspaceId>,
+    active: Option<TabId>,
+    bounds: WindowBounds,
+    tab_position: TabPosition,
+    sidebar_width: Pixels,
+    tab_scroll: Pixels,
+}
+#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retained restore aggregate awaits the persistence stage"
+    )
+)]
+struct RestoreSnapshot {
+    hierarchy: HierarchySnapshot,
+    windows: Vec<WindowRestore>,
 }
 
 struct Desktop {
@@ -116,7 +246,14 @@ pub(super) fn run() -> anyhow::Result<()> {
     }
     let runtime = Arc::new(DesktopRuntime::default());
     let app_runtime = Arc::clone(&runtime);
-    Application::new().run(move |cx| {
+    let application = Application::new();
+    application.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_window(cx);
+        }
+        cx.activate(true);
+    });
+    application.run(move |cx| {
         cx.set_global(Desktop {
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
@@ -128,11 +265,14 @@ pub(super) fn run() -> anyhow::Result<()> {
             pending_spawns: 0,
             quit_pending: false,
         });
-        cx.on_app_quit(move |_| {
+        install_native_quit(cx);
+        cx.on_app_quit(move |cx| {
             // AppKit terminate: does not return from Application::run. GPUI
             // allows only 100 ms for quit futures, so this terminal hook must
             // finish synchronous cleanup before returning its empty future.
-            if let Err(error) = app_runtime.terminate() {
+            if let Err(error) =
+                app_runtime.terminate_with_windows(capture_windows(cx))
+            {
                 eprintln!("Native quit cleanup failed: {error}");
             }
             async {}
@@ -152,9 +292,7 @@ pub(super) fn run() -> anyhow::Result<()> {
             cx.global_mut::<Desktop>()
                 .windows
                 .retain(|view| view.upgrade().is_some());
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
+            maybe_exit(cx);
         })
         .detach();
         cx.observe_keystrokes(|event, window, cx| {
@@ -208,7 +346,78 @@ fn request_quit(cx: &mut App) {
             }
         });
     } else {
-        cx.quit();
+        // Give unviewed sessions a confirmation host without creating a shell.
+        open_window_inner(cx, false);
+        if cx.windows().is_empty() {
+            #[cfg(target_os = "macos")]
+            native_quit::cancel_request();
+        } else {
+            cx.defer(request_quit);
+        }
+    }
+}
+
+fn capture_windows(cx: &App) -> Vec<WindowRestore> {
+    capture_other_windows(cx, None)
+}
+
+fn capture_other_windows(
+    cx: &App,
+    except: Option<gpui::EntityId>,
+) -> Vec<WindowRestore> {
+    cx.global::<Desktop>()
+        .windows
+        .iter()
+        .filter_map(WeakEntity::upgrade)
+        .filter(|view| Some(view.entity_id()) != except)
+        .filter_map(|view| view.read(cx).restore_window())
+        .collect()
+}
+
+fn maybe_exit(cx: &mut App) {
+    if !cx.windows().is_empty() || cx.global::<Desktop>().pending_spawns != 0 {
+        return;
+    }
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    let task = cx.background_executor().spawn(async move {
+        runtime
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions()
+            .is_empty()
+    });
+    cx.spawn(async move |cx| {
+        if task.await {
+            let _ = cx.update(|cx| {
+                if cx.windows().is_empty()
+                    && cx.global::<Desktop>().pending_spawns == 0
+                {
+                    approved_quit(cx);
+                }
+            });
+        }
+    })
+    .detach();
+}
+
+fn approved_quit(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    native_quit::allow_termination();
+    cx.quit();
+}
+
+fn install_native_quit(_cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    {
+        let requests = native_quit::install()
+            .expect("cannot install cancellable native termination hook");
+        _cx.spawn(async move |cx| {
+            while requests.recv().await.is_ok() {
+                let _ = cx.update(|cx| cx.defer(request_quit));
+            }
+        })
+        .detach();
     }
 }
 
@@ -235,11 +444,15 @@ fn initial_window_size(
     )
 }
 
+fn open_window(cx: &mut App) {
+    open_window_inner(cx, true);
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "native window creation installs its lifecycle and event pump"
+    reason = "native window creation installs lifecycle and event pump"
 )]
-fn open_window(cx: &mut App) {
+fn open_window_inner(cx: &mut App, launch_shell: bool) {
     if cx.global::<Desktop>().quitting || cx.global::<Desktop>().quit_pending {
         return;
     }
@@ -248,9 +461,7 @@ fn open_window(cx: &mut App) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("Cannot open window: {error}");
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
+            maybe_exit(cx);
             return;
         }
     };
@@ -274,7 +485,8 @@ fn open_window(cx: &mut App) {
                 window.resize(initial_window_size(&config, scaled_metrics));
             }
             let view = cx.new(|cx| WorkspaceView {
-                session: None,
+                attachment: None,
+                bounds: window.window_bounds(),
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -302,7 +514,9 @@ fn open_window(cx: &mut App) {
             cx.global_mut::<Desktop>().windows.push(view.downgrade());
             view.update(cx, |view, cx| {
                 view.focus.focus(window);
-                view.new_tab(window, cx);
+                if launch_shell {
+                    view.new_tab(window, cx);
+                }
             });
             let pump_view = view.downgrade();
             let pump_window = window.window_handle();
@@ -314,6 +528,7 @@ fn open_window(cx: &mut App) {
                     if pump_window
                         .update(cx, |_, window, cx| {
                             let _ = pump_view.update(cx, |view, cx| {
+                                view.bounds = window.window_bounds();
                                 if view
                                     .advance_tab_scroll(Instant::now(), window)
                                 {
@@ -351,9 +566,7 @@ fn open_window(cx: &mut App) {
     );
     if let Err(error) = result {
         eprintln!("Cannot open window: {error}");
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
+        maybe_exit(cx);
     }
 }
 
@@ -376,7 +589,8 @@ impl TabView {
 }
 
 struct WorkspaceView {
-    session: Option<SessionId>,
+    attachment: Option<AttachmentId>,
+    bounds: WindowBounds,
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
     active: Option<TabId>,
@@ -438,6 +652,8 @@ struct CloseState {
     current: Option<CloseTarget>,
     pending: Option<CloseTarget>,
     confirmation: Option<CloseTarget>,
+    assessment: Option<CloseAssessment>,
+    generation: u64,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -449,6 +665,8 @@ enum CloseDecision {
 
 impl CloseState {
     fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
+        self.generation += 1;
+        self.assessment = None;
         let target = merge_close(self.confirmation.take(), target);
         self.current = Some(target);
         target
@@ -478,9 +696,16 @@ impl CloseState {
         }
     }
     fn cancel(&mut self) -> Option<CloseTarget> {
-        self.pending = None;
-        self.current = None;
-        self.confirmation.take()
+        self.generation += 1;
+        self.assessment = None;
+        let mut target = self.confirmation.take();
+        for next in [self.current.take(), self.pending.take()]
+            .into_iter()
+            .flatten()
+        {
+            target = Some(merge_close(target, next));
+        }
+        target
     }
     fn take_pending(
         &mut self,
@@ -771,6 +996,10 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "publishes a spawned tab and cleans orphaned publication"
+    )]
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
@@ -801,7 +1030,7 @@ impl WorkspaceView {
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
             let result: Result<
-                (SessionId, WorkspaceId, OpenedTab),
+                (SessionId, WorkspaceId, OpenedTab, Option<AttachmentId>),
                 huterm_core::MuxError,
             > = task.await;
             let _ = app.update(|cx| {
@@ -818,8 +1047,10 @@ impl WorkspaceView {
                 view.busy = false;
                 if let Some(result) = result.take() {
                     match result {
-                        Ok((session, id, opened)) => {
-                            view.session = Some(session);
+                        Ok((_, id, opened, attachment)) => {
+                            if let Some(attachment) = attachment {
+                                view.attachment = Some(attachment);
+                            }
                             view.workspace = Some(id);
                             let config_path =
                                 cx.global::<Desktop>().config_path.clone();
@@ -855,11 +1086,17 @@ impl WorkspaceView {
                 cx.notify();
             });
             if update.is_err()
-                && let Some(Ok((session, _, _))) = result
+                && let Some(Ok((session, workspace, opened, attachment))) =
+                    result
             {
                 cx.background_executor()
                     .spawn(async move {
-                        let _ = cleanup_runtime.close_session(session);
+                        cleanup_runtime.cleanup_spawn(
+                            session,
+                            workspace,
+                            opened.tab.id,
+                            attachment,
+                        );
                     })
                     .await;
             }
@@ -943,6 +1180,18 @@ impl WorkspaceView {
         }
     }
 
+    fn restore_window(&self) -> Option<WindowRestore> {
+        Some(WindowRestore {
+            attachment: self.attachment?,
+            workspace: self.workspace,
+            active: self.active,
+            bounds: self.bounds,
+            tab_position: self.config.window.tab_position,
+            sidebar_width: self.sidebar_width,
+            tab_scroll: self.tab_scroll,
+        })
+    }
+
     fn request_close(
         &mut self,
         target: CloseTarget,
@@ -964,45 +1213,46 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
-        let clients: Vec<_> = if matches!(target, CloseTarget::Application) {
-            cx.global::<Desktop>()
-                .windows
-                .clone()
-                .into_iter()
-                .filter_map(|view| view.upgrade())
-                .filter(|view| view.entity_id() != cx.entity_id())
-                .flat_map(|view| {
-                    view.read(cx)
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.view.read(cx).client.clone())
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        } else {
-            self.tabs
-                .iter()
-                .filter(|tab| match target {
-                    CloseTarget::Tab(id) => tab.id == id,
-                    _ => true,
-                })
-                .map(|tab| tab.view.read(cx).client.clone())
-                .collect()
+        let request = match target {
+            CloseTarget::Application => CloseRequest::Application,
+            CloseTarget::Window => {
+                let Some(attachment) = self.attachment else {
+                    window.remove_window();
+                    return;
+                };
+                CloseRequest::Window(attachment)
+            }
+            CloseTarget::Tab(tab) => {
+                let Some(workspace) = self.workspace else {
+                    return;
+                };
+                CloseRequest::Tab { workspace, tab }
+            }
         };
-        let mut clients = clients;
-        if matches!(target, CloseTarget::Application) {
-            clients.extend(
-                self.tabs.iter().map(|tab| tab.view.read(cx).client.clone()),
-            );
-        }
+        let generation = self.close.generation;
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let task = cx
+            .background_executor()
+            .spawn(async move { runtime.assess(request) });
         self.busy = true;
         cx.spawn_in(window, async move |view, cx| {
-            let mut foreground = false;
-            for client in clients {
-                foreground |= client.has_foreground_job().await.unwrap_or(true);
-            }
+            let result = task.await;
             let _ = view.update_in(cx, |view, window, cx| {
+                if view.close.generation != generation {
+                    return;
+                }
                 view.busy = false;
+                let assessment = match result {
+                    Ok(assessment) => assessment,
+                    Err(error) => {
+                        view.status =
+                            Some(format!("Cannot assess close: {error}"));
+                        view.cancel_close(window, cx);
+                        return;
+                    }
+                };
+                let foreground = assessment.needs_confirmation();
+                view.close.assessment = Some(assessment);
                 match view.close.checked(foreground) {
                     Some(CloseDecision::Check(target)) => {
                         view.request_close(target, window, cx);
@@ -1026,7 +1276,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.busy = false;
         if matches!(self.close.cancel(), Some(CloseTarget::Application)) {
+            #[cfg(target_os = "macos")]
+            native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
         }
         if let Some(tab) = self.active_view() {
@@ -1057,40 +1310,47 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let confirmed = self.close.confirmation == Some(target);
+        let Some(assessment) = self.close.assessment.take() else {
+            self.request_close(target, window, cx);
+            return;
+        };
         self.close.confirmation = None;
         self.close.current = Some(target);
         self.busy = true;
-        if matches!(target, CloseTarget::Application) {
+        let generation = self.close.generation;
+        self.bounds = window.window_bounds();
+        let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
-        }
+            let mut records = capture_other_windows(cx, Some(cx.entity_id()));
+            // The dispatching view is borrowed; capture it directly below.
+            if let Some(record) = self.restore_window() {
+                records.retain(|saved| saved.attachment != record.attachment);
+                records.push(record);
+            }
+            Some(records)
+        } else {
+            None
+        };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let workspace = self.workspace;
-        let session = self.session;
         let task = cx.background_executor().spawn(async move {
-            if matches!(target, CloseTarget::Application) {
-                return runtime.terminate();
-            }
-            if matches!(target, CloseTarget::Window) {
-                return session
-                    .map_or(Ok(()), |session| runtime.close_session(session));
-            }
-            let mut mux = runtime
-                .mux
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match (target, workspace) {
-                (CloseTarget::Application, _) => mux.shutdown(),
-                (CloseTarget::Tab(id), Some(workspace)) => {
-                    mux.close_tab(workspace, id)
-                }
-                _ => Ok(()),
-            }
+            runtime.commit(&assessment, confirmed, windows)
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
             let _ = view.update_in(cx, |view, window, cx| {
+                if view.close.generation != generation {
+                    return;
+                }
                 view.busy = false;
                 view.close.current = None;
+                if matches!(
+                    result,
+                    Err(MuxError::StaleClose | MuxError::ConfirmationRequired)
+                ) {
+                    view.request_close(target, window, cx);
+                    return;
+                }
                 if let Err(error) = result {
                     view.status = Some(format!("Close failed: {error}"));
                     eprintln!(
@@ -1099,7 +1359,7 @@ impl WorkspaceView {
                     );
                 }
                 match target {
-                    CloseTarget::Application => cx.quit(),
+                    CloseTarget::Application => approved_quit(cx),
                     CloseTarget::Window => {
                         if matches!(
                             view.close.pending,
@@ -1123,7 +1383,7 @@ impl WorkspaceView {
                             return;
                         }
                         if view.tabs.is_empty() {
-                            view.finish_close(CloseTarget::Window, window, cx);
+                            view.request_close(CloseTarget::Window, window, cx);
                         }
                         cx.notify();
                     }
@@ -1702,12 +1962,100 @@ impl Render for WorkspaceView {
             );
         }
         if let Some(target) = self.close.confirmation {
-            root = root.child(div().absolute().inset_0().bg(background.opacity(0.9)).flex().items_center().justify_center().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(div().w_full().max_w(px(460.0)).mx_4().p_4().bg(background).border_1().border_color(foreground.opacity(0.3)).flex().flex_col().gap_3()
-                    .child("A foreground job is running. Close and terminate it?")
-                    .child(div().flex().gap_3()
-                        .child(div().id("cancel-close").px_3().py_1().cursor_pointer().on_click(cx.listener(|view, _, window, cx| view.cancel_close(window, cx))).child("Cancel"))
-                        .child(div().id("confirm-close").px_3().py_1().bg(foreground.opacity(0.15)).cursor_pointer().on_click(cx.listener(move |view, _, window, cx| view.finish_close(target, window, cx))).child("Close")))));
+            let unknown =
+                self.close.assessment.as_ref().is_some_and(|assessment| {
+                    assessment.jobs().contains(&huterm_core::JobState::Unknown)
+                });
+            let message = match (target, unknown) {
+                (CloseTarget::Application, true) => {
+                    "Some process state is unavailable. Quit Huterm and terminate all sessions?"
+                }
+                (CloseTarget::Application, false) => {
+                    "Quit Huterm and terminate running jobs in all sessions?"
+                }
+                (CloseTarget::Window, true) => {
+                    "Some process state is unavailable. Close this final view and terminate its session?"
+                }
+                (CloseTarget::Window, false) => {
+                    "Close this final view and terminate running jobs in its session?"
+                }
+                (CloseTarget::Tab(_), true) => {
+                    "Process state is unavailable. Close this tab and terminate its terminal?"
+                }
+                (CloseTarget::Tab(_), false) => {
+                    "Close this tab and terminate its running jobs?"
+                }
+            };
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(background.opacity(0.9))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(460.0))
+                            .mx_4()
+                            .p_4()
+                            .bg(background)
+                            .border_1()
+                            .border_color(foreground.opacity(0.3))
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(message)
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .id("cancel-close")
+                                            .px_3()
+                                            .py_1()
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(
+                                                |view, _, window, cx| {
+                                                    view.cancel_close(
+                                                        window, cx,
+                                                    );
+                                                },
+                                            ))
+                                            .child("Cancel"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("confirm-close")
+                                            .px_3()
+                                            .py_1()
+                                            .bg(foreground.opacity(0.15))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(
+                                                move |view, _, window, cx| {
+                                                    view.finish_close(
+                                                        target, window, cx,
+                                                    );
+                                                },
+                                            ))
+                                            .child(
+                                                if target
+                                                    == CloseTarget::Application
+                                                {
+                                                    "Quit"
+                                                } else {
+                                                    "Close"
+                                                },
+                                            ),
+                                    ),
+                            ),
+                    ),
+            );
         }
         root
     }
@@ -1989,6 +2337,154 @@ mod tests {
         }
     }
 
+    fn lifecycle_command() -> TerminalCommand {
+        TerminalCommand {
+            program: "/bin/sh".into(),
+            arguments: vec!["-c".into(), "printf READY; read value".into()],
+            working_directory: std::env::current_dir().unwrap(),
+            environment: Vec::new(),
+            grid_size: GridSize::clamped(40, 8),
+            cell_size: CellSize {
+                width: 8,
+                height: 16,
+            },
+        }
+    }
+
+    #[test]
+    fn attachment_allocation_failure_rolls_back_published_pty() {
+        let runtime = DesktopRuntime::default();
+        runtime.mux.lock().unwrap().reserve_through(u64::MAX - 5);
+        assert!(matches!(
+            runtime.open_tab(None, &lifecycle_command()),
+            Err(MuxError::IdExhausted)
+        ));
+        let mux = runtime.mux.lock().unwrap();
+        assert!(mux.sessions().is_empty());
+        assert_eq!(mux.terminal_count(), 0);
+    }
+
+    #[test]
+    fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
+        let runtime = DesktopRuntime::default();
+        let (session, workspace, opened, attachment) =
+            runtime.open_tab(None, &lifecycle_command()).unwrap();
+        let second =
+            runtime.mux.lock().unwrap().attach_session(session).unwrap();
+        runtime.cleanup_spawn(session, workspace, opened.tab.id, attachment);
+        assert_eq!(
+            runtime
+                .mux
+                .lock()
+                .unwrap()
+                .attachment_session(second)
+                .unwrap(),
+            session
+        );
+        assert!(runtime.mux.lock().unwrap().tab(opened.tab.id).is_some());
+        let (source, source_workspace, transferred, initial) =
+            runtime.open_tab(None, &lifecycle_command()).unwrap();
+        runtime
+            .mux
+            .lock()
+            .unwrap()
+            .move_tab(source_workspace, transferred.tab.id, workspace, None)
+            .unwrap();
+        runtime.cleanup_spawn(
+            source,
+            source_workspace,
+            transferred.tab.id,
+            initial,
+        );
+        let mux = runtime.mux.lock().unwrap();
+        assert!(mux.session(source).is_none());
+        assert_eq!(
+            mux.select_tab(transferred.tab.id).unwrap().session,
+            session
+        );
+        drop(mux);
+        runtime.terminate().unwrap();
+    }
+
+    #[test]
+    fn orphaned_publication_never_terminates_a_retargeted_destination() {
+        let runtime = DesktopRuntime::default();
+        let (source, workspace, opened, attachment) =
+            runtime.open_tab(None, &lifecycle_command()).unwrap();
+        let destination = runtime
+            .mux
+            .lock()
+            .unwrap()
+            .create_session(Some("survivor"))
+            .unwrap();
+        runtime
+            .mux
+            .lock()
+            .unwrap()
+            .retarget_attachment(attachment.unwrap(), destination)
+            .unwrap();
+        runtime.cleanup_spawn(source, workspace, opened.tab.id, attachment);
+        let mux = runtime.mux.lock().unwrap();
+        assert!(mux.session(source).is_none());
+        assert!(mux.session(destination).is_some());
+        assert!(mux.capture_hierarchy().attachments.is_empty());
+    }
+
+    #[test]
+    fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
+        let runtime = DesktopRuntime::default();
+        let mut mux = runtime.mux.lock().unwrap();
+        let visible = mux.create_session(Some("visible")).unwrap();
+        let workspace = mux.create_workspace(visible, None).unwrap();
+        let attachment = mux.attach_session(visible).unwrap();
+        let unviewed = mux.create_session(Some("unviewed")).unwrap();
+        mux.create_workspace(unviewed, Some("retained")).unwrap();
+        drop(mux);
+        let bounds = WindowBounds::Windowed(Bounds {
+            origin: point(px(5.0), px(10.0)),
+            size: size(px(800.0), px(600.0)),
+        });
+        let windows = vec![WindowRestore {
+            attachment,
+            workspace: Some(workspace),
+            active: None,
+            bounds,
+            tab_position: TabPosition::Left,
+            sidebar_width: px(220.0),
+            tab_scroll: px(24.0),
+        }];
+        let assessment = runtime.assess(CloseRequest::Application).unwrap();
+        runtime.commit(&assessment, false, Some(windows)).unwrap();
+        runtime.terminate().unwrap();
+        let restore = runtime.restore.lock().unwrap();
+        let restore = restore.as_ref().unwrap();
+        assert_eq!(
+            restore
+                .hierarchy
+                .sessions
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>(),
+            vec![visible, unviewed]
+        );
+        assert_eq!(restore.hierarchy.workspaces.len(), 2);
+        assert_eq!(restore.windows.len(), 1);
+        assert_eq!(restore.windows[0].workspace, Some(workspace));
+        assert_eq!(restore.windows[0].sidebar_width, px(220.0));
+        assert_eq!(restore.windows[0].tab_scroll, px(24.0));
+        assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    }
+
+    #[test]
+    fn cancellation_invalidates_assessment_generation_and_application_intent() {
+        let mut state = CloseState::default();
+        state.begin_check(CloseTarget::Application);
+        let generation = state.generation;
+        assert_eq!(state.cancel(), Some(CloseTarget::Application));
+        assert_ne!(state.generation, generation);
+        assert_eq!(state.checked(true), None);
+    }
+
     #[test]
     fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         let runtime = DesktopRuntime::default();
@@ -2007,9 +2503,9 @@ mod tests {
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         command.program = "/bin/sh".into();
-        let (session, workspace, first) =
+        let (session, workspace, first, _) =
             runtime.open_tab(None, &command).unwrap();
-        let (sibling, _, second) = runtime.open_tab(None, &command).unwrap();
+        let (sibling, _, second, _) = runtime.open_tab(None, &command).unwrap();
         assert_ne!(session, sibling);
         command.program = "/huterm-nonexistent-shell".into();
         assert!(runtime.open_tab(None, &command).is_err());
@@ -2025,7 +2521,7 @@ mod tests {
                 .tabs,
             [first.tab]
         );
-        runtime.close_session(session).unwrap();
+        runtime.mux.lock().unwrap().close_session(session).unwrap();
         assert!(runtime.mux.lock().unwrap().workspace(workspace).is_none());
         assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 1);
         assert!(matches!(
@@ -2040,7 +2536,7 @@ mod tests {
                 .read_snapshot(huterm_protocol::Viewport::default())
                 .is_ok()
         );
-        runtime.close_session(sibling).unwrap();
+        runtime.mux.lock().unwrap().close_session(sibling).unwrap();
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         runtime.mux.lock().unwrap().reserve_through(u64::MAX - 1);
@@ -2066,7 +2562,7 @@ mod tests {
                 height: 16,
             },
         };
-        let (_, _, opened) = runtime.open_tab(None, &command).unwrap();
+        let (_, _, opened, _) = runtime.open_tab(None, &command).unwrap();
         // Hold the structural lock as an already-running spawn would, then
         // queue another spawn and invoke the exact native-hook cleanup method.
         let guard = runtime.mux.lock().unwrap();

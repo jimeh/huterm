@@ -35,6 +35,7 @@ pub struct RuntimeClient {
     queued_input_bytes: Arc<AtomicUsize>,
     events: Arc<Mutex<Receiver<TerminalEvent>>>,
     invalidation_pending: Arc<AtomicBool>,
+    shutdown_groups: Arc<Mutex<Vec<i32>>>,
 }
 
 impl RuntimeClient {
@@ -193,6 +194,19 @@ impl RuntimeClient {
         receiver.recv().await.map_err(|_| RuntimeError::Stopped)
     }
 
+    pub(crate) fn record_shutdown_groups(&self, groups: Vec<i32>) {
+        *self
+            .shutdown_groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = groups;
+    }
+
+    pub(crate) fn job_context(&self) -> Option<crate::jobs::JobContext> {
+        let (reply, receiver) = mpsc::channel();
+        self.controls.send(RuntimeControl::JobContext(reply)).ok()?;
+        receiver.recv_timeout(Duration::from_secs(1)).ok()
+    }
+
     /// Requests orderly terminal shutdown.
     ///
     /// # Errors
@@ -339,6 +353,8 @@ impl TerminalRuntime {
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
         let runtime_input_bytes = Arc::clone(&queued_input_bytes);
+        let shutdown_groups = Arc::new(Mutex::new(Vec::new()));
+        let runtime_groups = Arc::clone(&shutdown_groups);
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
@@ -354,6 +370,7 @@ impl TerminalRuntime {
                     runtime_pending,
                     runtime_closing,
                     runtime_input_bytes,
+                    runtime_groups,
                 )
             })
             .map_err(|error| RuntimeError::Thread(error.to_string()))?;
@@ -366,6 +383,7 @@ impl TerminalRuntime {
             queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
             invalidation_pending,
+            shutdown_groups,
         };
         Ok(Self {
             client,
@@ -455,6 +473,8 @@ enum RuntimeMessage {
 #[derive(Debug)]
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
+    JobContext(Sender<crate::jobs::JobContext>),
+    PtyEof,
     Snapshot {
         viewport: Viewport,
         reply: async_channel::Sender<SnapshotReply>,
@@ -491,6 +511,7 @@ fn run_terminal(
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
+    shutdown_groups: Arc<Mutex<Vec<i32>>>,
 ) -> Result<(), RuntimeError> {
     let parts = match process.into_parts() {
         Ok(parts) => parts,
@@ -571,6 +592,7 @@ fn run_terminal(
     );
 
     let mut child_exited = false;
+    let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
         pty::record_foreground_group(master.as_ref(), &mut process_groups);
@@ -619,6 +641,20 @@ fn run_terminal(
                 RuntimeControl::WorkerFailed(message) => {
                     report_failure(&events, terminal_id, message);
                     closing.store(true, Ordering::Release);
+                }
+                RuntimeControl::PtyEof => pty_eof = true,
+                RuntimeControl::JobContext(reply) => {
+                    let _ = reply.send(crate::jobs::JobContext {
+                        shell: child.process_id(),
+                        foreground: master.process_group_leader(),
+                        exited: child_exited,
+                        pty_eof,
+                        tty: master.tty_name().map(|name| {
+                            name.to_string_lossy()
+                                .trim_start_matches("/dev/")
+                                .to_owned()
+                        }),
+                    });
                 }
                 RuntimeControl::ForegroundJob(reply) => {
                     let shell = child
@@ -724,6 +760,12 @@ fn run_terminal(
 
     closing.store(true, Ordering::Release);
     pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    process_groups.assessed = shutdown_groups
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .copied()
+        .collect();
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
     drop(writer_sender);
     drop(master);
@@ -773,7 +815,10 @@ fn spawn_reader(
                     }
                 }
                 match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        let _ = controls.send(RuntimeControl::PtyEof);
+                        break;
+                    }
                     Ok(count) => {
                         pending = Some(buffer[..count].to_vec());
                     }

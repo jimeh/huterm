@@ -157,7 +157,8 @@ Desktop structural commands serialize through the Mux mutex on background
 workers. Never acquire it from rendering or input callbacks. Terminal clients
 send directly to their own runtime, so sibling input and snapshots continue
 while another workspace spawns or closes. TerminalView destruction only detaches;
-window commands explicitly delete their initial private session.
+window commands use assessed attachment close to detach or delete the final
+view's session.
 Use one refresh pump per window to drain bounded batches of tab events. Only the
 active tab may begin a snapshot request. Keep ChromeLayout as the shared source
 of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
@@ -244,5 +245,22 @@ are invalid. Tab title resolution uses the current client title cache without
 locking Mux on the UI thread. Desktop tab records are initial snapshots;
 propagating later core renames to views belongs with the deferred rename UI.
 Moves retain empty parents and never change terminal lifetime. Desktop windows
-retain the ID of their initial private session for explicit close and orphaned
-spawn cleanup. Roll back newly created sessions on initial workspace/tab failure.
+retain their attachment identity for assessed close. Orphaned spawn cleanup
+must preserve resources adopted by another attachment or moved elsewhere. Roll
+back newly created sessions on initial workspace/tab failure.
+
+Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
+and retarget preserve zero-view sessions; an assessed last-window close deletes
+its session. Desktop close uses prepare/check/commit and request generations.
+Run process-table scans off both Mux and terminal-parser threads; carry fresh
+assessed background process groups into teardown. After shell exit, match only
+its still-owned PTY, never its reusable PID/foreground group. macOS ps can
+abbreviate ttys000 as s000, so normalize both forms before matching. An exited
+shell is safely idle only after reader EOF; an unattributed live PTY holder
+requires conservative unknown-state confirmation.
+Quit captures every session plus window navigation and geometry before cleanup;
+retain the first capture through repeated shutdown. The native AppKit bridge
+adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
+until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
+native_quit.rs; run mise run smoke:macos-quit on macOS for real terminate/cancel/
+retry/allow coverage. An on_app_quit callback alone cannot cancel Dock Quit.

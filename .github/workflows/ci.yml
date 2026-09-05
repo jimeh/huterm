@@ -62,6 +62,9 @@ jobs:
       - name: Verify Rust
         run: mise run verify:platform
 
+      - name: Verify cancellable native Quit
+        run: mise run smoke:macos-quit
+
       - name: Build and verify Huterm.app
         run: mise run package:macos
 

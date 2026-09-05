@@ -65,6 +65,7 @@ macro_rules! scoped_id {
     };
 }
 
+scoped_id!(AttachmentId, "Identifies one session view attachment.");
 scoped_id!(SessionId, "Identifies a runtime-owned session.");
 scoped_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
 scoped_id!(TabId, "Identifies a tab within a workspace.");
