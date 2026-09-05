@@ -1,16 +1,62 @@
 use super::*;
 use crate::config::TabPosition;
 use gpui::{Entity, Global, WeakEntity};
-use huterm_core::OpenedTab;
+use huterm_core::{MuxError, OpenedTab};
 use huterm_protocol::WorkspaceId;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 const SIDEBAR_WIDTH: Pixels = px(180.0);
 const TAB_WIDTH: Pixels = px(160.0);
 const CONTROL_SIZE: Pixels = px(28.0);
 
+#[derive(Default)]
+struct DesktopRuntime {
+    mux: Mutex<Mux>,
+    terminating: AtomicBool,
+}
+
+impl DesktopRuntime {
+    fn open_tab(
+        &self,
+        workspace: Option<WorkspaceId>,
+        command: &TerminalCommand,
+    ) -> Result<(WorkspaceId, OpenedTab), MuxError> {
+        let mut mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(RuntimeError::Stopped.into());
+        }
+        let id = match workspace {
+            Some(id) => id,
+            None => mux.create_workspace()?,
+        };
+        match mux.open_tab(id, command) {
+            Ok(tab) => Ok((id, tab)),
+            Err(error) => {
+                if workspace.is_none() {
+                    let _ = mux.close_workspace(id);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn terminate(&self) -> Result<(), MuxError> {
+        // A queued spawn must observe termination after it acquires the same
+        // mutex, even when it had not started when the native quit hook ran.
+        self.terminating.store(true, Ordering::Release);
+        self.mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutdown()
+    }
+}
+
 struct Desktop {
-    mux: Arc<Mutex<Mux>>,
+    runtime: Arc<DesktopRuntime>,
     config: Config,
     config_path: PathBuf,
     config_error: Option<String>,
@@ -27,11 +73,11 @@ pub(super) fn run() -> anyhow::Result<()> {
     if let Some(error) = &loaded.error {
         eprintln!("Huterm configuration error: {error}");
     }
-    let mux = Arc::new(Mutex::new(Mux::default()));
-    let app_mux = Arc::clone(&mux);
+    let runtime = Arc::new(DesktopRuntime::default());
+    let app_runtime = Arc::clone(&runtime);
     Application::new().run(move |cx| {
         cx.set_global(Desktop {
-            mux: app_mux,
+            runtime: Arc::clone(&app_runtime),
             config: loaded.config,
             config_path: loaded.path,
             config_error: loaded.error,
@@ -41,31 +87,23 @@ pub(super) fn run() -> anyhow::Result<()> {
             pending_spawns: 0,
             quit_pending: false,
         });
+        cx.on_app_quit(move |_| {
+            // AppKit terminate: does not return from Application::run. GPUI
+            // allows only 100 ms for quit futures, so this terminal hook must
+            // finish synchronous cleanup before returning its empty future.
+            if let Err(error) = app_runtime.terminate() {
+                eprintln!("Native quit cleanup failed: {error}");
+            }
+            async {}
+        })
+        .detach();
         install_bindings(cx);
         install_menus(cx);
         cx.on_action(|_: &NewWindow, cx| open_window(cx));
         cx.on_action(|_: &ReloadConfiguration, cx| reload(cx));
-        cx.on_action(|_: &Quit, cx| {
-            if cx.global::<Desktop>().pending_spawns > 0 {
-                cx.global_mut::<Desktop>().quit_pending = true;
-                return;
-            }
-            if let Some(handle) = cx.active_window() {
-                let _ = handle.update(cx, |root, window, cx| {
-                    if let Ok(view) = root.downcast::<WorkspaceView>() {
-                        view.update(cx, |view, cx| {
-                            view.request_close(
-                                CloseTarget::Application,
-                                window,
-                                cx,
-                            );
-                        });
-                    }
-                });
-            } else {
-                cx.quit();
-            }
-        });
+        // Global actions run while the dispatching window is borrowed. Route
+        // quit after that window has returned to App's window map.
+        cx.on_action(|_: &Quit, cx| cx.defer(request_quit));
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -84,7 +122,7 @@ pub(super) fn run() -> anyhow::Result<()> {
             }
             if let Some(root) = window.root::<WorkspaceView>().flatten() {
                 root.update(cx, |view, cx| {
-                    if view.busy || view.confirmation.is_some() {
+                    if view.busy || view.close.confirmation.is_some() {
                         return;
                     }
                     if let Some(tab) = view.active_view() {
@@ -102,12 +140,32 @@ pub(super) fn run() -> anyhow::Result<()> {
         open_window(cx);
         cx.activate(true);
     });
-    // Also covers OS-forced quit. The event loop is gone, so joining here cannot
-    // stall a live UI. Normal close and Quit finish cleanup before removing views.
-    mux.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .shutdown()?;
+    // Backends whose event loop returns get the same idempotent cleanup.
+    runtime.terminate()?;
     Ok(())
+}
+
+fn request_quit(cx: &mut App) {
+    if cx.global::<Desktop>().pending_spawns > 0 {
+        cx.global_mut::<Desktop>().quit_pending = true;
+        return;
+    }
+    if let Some(handle) = cx
+        .active_window()
+        .or_else(|| cx.windows().into_iter().next())
+    {
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                window.activate_window();
+                cx.activate(true);
+                view.update(cx, |view, cx| {
+                    view.request_close(CloseTarget::Application, window, cx);
+                });
+            }
+        });
+    } else {
+        cx.quit();
+    }
 }
 
 fn initial_window_size(
@@ -181,8 +239,7 @@ fn open_window(cx: &mut App) {
                 metrics: scaled_metrics,
                 focus: cx.focus_handle(),
                 busy: false,
-                pending_close: None,
-                confirmation: None,
+                close: CloseState::default(),
                 status: cx.global::<Desktop>().config_error.clone(),
             });
             let weak = view.downgrade();
@@ -258,8 +315,7 @@ struct WorkspaceView {
     metrics: GridMetrics,
     focus: FocusHandle,
     busy: bool,
-    pending_close: Option<CloseTarget>,
-    confirmation: Option<CloseTarget>,
+    close: CloseState,
     status: Option<String>,
 }
 
@@ -285,6 +341,83 @@ fn merge_close(
     }
 }
 
+#[derive(Default)]
+struct CloseState {
+    current: Option<CloseTarget>,
+    pending: Option<CloseTarget>,
+    confirmation: Option<CloseTarget>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CloseDecision {
+    Check(CloseTarget),
+    Confirm(CloseTarget),
+    Close(CloseTarget),
+}
+
+impl CloseState {
+    fn begin_check(&mut self, target: CloseTarget) -> CloseTarget {
+        let target = merge_close(self.confirmation.take(), target);
+        self.current = Some(target);
+        target
+    }
+    fn queue(&mut self, target: CloseTarget) {
+        self.pending =
+            Some(merge_close(self.pending, merge_close(self.current, target)));
+    }
+    fn checked(&mut self, foreground: bool) -> Option<CloseDecision> {
+        let target = self.current.take()?;
+        let pending = self.pending.take();
+        let effective = merge_close(pending, target);
+        if effective != target {
+            return Some(CloseDecision::Check(effective));
+        }
+        // A second, different tab close follows the first; wider requests
+        // subsume narrower requests and repeated closes of one tab coalesce.
+        if matches!((target, pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
+        {
+            self.pending = pending;
+        }
+        if foreground {
+            self.confirmation = Some(target);
+            Some(CloseDecision::Confirm(target))
+        } else {
+            Some(CloseDecision::Close(target))
+        }
+    }
+    fn cancel(&mut self) -> Option<CloseTarget> {
+        self.pending = None;
+        self.current = None;
+        self.confirmation.take()
+    }
+    fn take_pending(
+        &mut self,
+        contains: impl FnOnce(TabId) -> bool,
+    ) -> Option<CloseTarget> {
+        self.pending.take().filter(|target| match target {
+            CloseTarget::Tab(id) => contains(*id),
+            _ => true,
+        })
+    }
+}
+
+// Update navigation together with removal, before another close can interrupt
+// completion or open a confirmation dialog.
+fn remove_tab<T>(
+    tabs: &mut Vec<T>,
+    active: &mut Option<TabId>,
+    closed: TabId,
+    id: impl Fn(&T) -> TabId,
+) {
+    let Some(index) = tabs.iter().position(|tab| id(tab) == closed) else {
+        return;
+    };
+    tabs.remove(index);
+    if *active == Some(closed) {
+        *active = tabs.get(index.min(tabs.len().saturating_sub(1))).map(id);
+    }
+}
+
 impl WorkspaceView {
     fn active_view(&self) -> Option<Entity<TerminalView>> {
         self.tabs
@@ -299,7 +432,7 @@ impl WorkspaceView {
     )]
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.busy
-            || self.confirmation.is_some()
+            || self.close.confirmation.is_some()
             || cx.global::<Desktop>().quitting
             || cx.global::<Desktop>().quit_pending
         {
@@ -320,29 +453,14 @@ impl WorkspaceView {
             .unwrap_or(command.program.as_os_str())
             .to_string_lossy()
             .into_owned();
-        let mux = Arc::clone(&cx.global::<Desktop>().mux);
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
-        let task = cx.background_executor().spawn(async move {
-            let mut mux = mux
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let id = match workspace {
-                Some(id) => id,
-                None => mux.create_workspace()?,
-            };
-            match mux.open_tab(id, &command) {
-                Ok(tab) => Ok((id, tab)),
-                Err(error) => {
-                    if workspace.is_none() {
-                        let _ = mux.close_workspace(id);
-                    }
-                    Err(error)
-                }
-            }
-        });
-        let cleanup_mux = Arc::clone(&cx.global::<Desktop>().mux);
+        let task = cx
+            .background_executor()
+            .spawn(async move { runtime.open_tab(workspace, &command) });
+        let cleanup_runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
             let result: Result<
@@ -403,7 +521,8 @@ impl WorkspaceView {
             {
                 cx.background_executor()
                     .spawn(async move {
-                        let _ = cleanup_mux
+                        let _ = cleanup_runtime
+                            .mux
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .close_workspace(id);
@@ -449,7 +568,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.busy || self.confirmation.is_some() || self.tabs.is_empty() {
+        if self.busy
+            || self.close.confirmation.is_some()
+            || self.tabs.is_empty()
+        {
             return;
         }
         let index = self
@@ -471,7 +593,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.busy || self.confirmation.is_some() {
+        if self.busy || self.close.confirmation.is_some() {
             return;
         }
         let tab = if index == 8 {
@@ -490,14 +612,19 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if let CloseTarget::Tab(id) = target
+            && !self.tabs.iter().any(|tab| tab.id == id)
+        {
+            return;
+        }
         if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
         }
         if self.busy {
-            self.pending_close = Some(merge_close(self.pending_close, target));
+            self.close.queue(target);
             return;
         }
-        let target = merge_close(self.confirmation.take(), target);
+        let target = self.close.begin_check(target);
         let clients: Vec<_> = if matches!(target, CloseTarget::Application) {
             cx.global::<Desktop>()
                 .windows
@@ -537,15 +664,18 @@ impl WorkspaceView {
             }
             let _ = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
-                if view.resume_close(window, cx) {
-                    return;
-                }
-                if foreground {
-                    view.confirmation = Some(target);
-                    view.focus.focus(window);
-                    cx.notify();
-                } else {
-                    view.finish_close(target, window, cx);
+                match view.close.checked(foreground) {
+                    Some(CloseDecision::Check(target)) => {
+                        view.request_close(target, window, cx);
+                    }
+                    Some(CloseDecision::Confirm(_)) => {
+                        view.focus.focus(window);
+                        cx.notify();
+                    }
+                    Some(CloseDecision::Close(target)) => {
+                        view.finish_close(target, window, cx);
+                    }
+                    None => {}
                 }
             });
         })
@@ -557,7 +687,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if matches!(self.confirmation.take(), Some(CloseTarget::Application)) {
+        if matches!(self.close.cancel(), Some(CloseTarget::Application)) {
             cx.global_mut::<Desktop>().quitting = false;
         }
         if let Some(tab) = self.active_view() {
@@ -571,7 +701,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        if let Some(target) = self.pending_close.take() {
+        if let Some(target) = self
+            .close
+            .take_pending(|id| self.tabs.iter().any(|tab| tab.id == id))
+        {
             self.request_close(target, window, cx);
             true
         } else {
@@ -585,15 +718,20 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.confirmation = None;
+        self.close.confirmation = None;
+        self.close.current = Some(target);
         self.busy = true;
         if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
         }
-        let mux = Arc::clone(&cx.global::<Desktop>().mux);
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         let task = cx.background_executor().spawn(async move {
-            let mut mux = mux
+            if matches!(target, CloseTarget::Application) {
+                return runtime.terminate();
+            }
+            let mut mux = runtime
+                .mux
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match (target, workspace) {
@@ -611,6 +749,7 @@ impl WorkspaceView {
             let result = task.await;
             let _ = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
+                view.close.current = None;
                 if let Err(error) = result {
                     view.status = Some(format!("Close failed: {error}"));
                     eprintln!(
@@ -622,7 +761,7 @@ impl WorkspaceView {
                     CloseTarget::Application => cx.quit(),
                     CloseTarget::Window => {
                         if matches!(
-                            view.pending_close,
+                            view.close.pending,
                             Some(CloseTarget::Application)
                         ) {
                             cx.defer(|cx| cx.dispatch_action(&Quit));
@@ -630,23 +769,20 @@ impl WorkspaceView {
                         window.remove_window();
                     }
                     CloseTarget::Tab(id) => {
-                        let index = view
-                            .tabs
-                            .iter()
-                            .position(|tab| tab.id == id)
-                            .unwrap_or(0);
-                        view.tabs.retain(|tab| tab.id != id);
+                        remove_tab(
+                            &mut view.tabs,
+                            &mut view.active,
+                            id,
+                            |tab| tab.id,
+                        );
+                        if let Some(active) = view.active {
+                            view.select(active, window, cx);
+                        }
                         if view.resume_close(window, cx) {
                             return;
                         }
                         if view.tabs.is_empty() {
                             view.finish_close(CloseTarget::Window, window, cx);
-                        } else if view.active == Some(id) {
-                            view.select(
-                                view.tabs[index.min(view.tabs.len() - 1)].id,
-                                window,
-                                cx,
-                            );
                         }
                         cx.notify();
                     }
@@ -806,7 +942,7 @@ impl Render for WorkspaceView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
-                    if view.confirmation.is_some()
+                    if view.close.confirmation.is_some()
                         && event.keystroke.key == "escape"
                     {
                         view.cancel_close(window, cx);
@@ -968,7 +1104,7 @@ impl Render for WorkspaceView {
                         tab.bg(foreground.opacity(0.12))
                     })
                     .on_click(cx.listener(move |view, _, window, cx| {
-                        if !view.busy && view.confirmation.is_none() {
+                        if !view.busy && view.close.confirmation.is_none() {
                             view.select(id, window, cx);
                         }
                     }))
@@ -1034,7 +1170,7 @@ impl Render for WorkspaceView {
                     .child(status.clone()),
             );
         }
-        if let Some(target) = self.confirmation {
+        if let Some(target) = self.close.confirmation {
             root = root.child(div().absolute().inset_0().bg(background.opacity(0.9)).flex().items_center().justify_center().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(div().w_full().max_w(px(460.0)).mx_4().p_4().bg(background).border_1().border_color(foreground.opacity(0.3)).flex().flex_col().gap_3()
                     .child("A foreground job is running. Close and terminate it?")
@@ -1078,6 +1214,138 @@ pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_termination_drains_existing_terminals_and_rejects_queued_spawns()
+    {
+        let runtime = Arc::new(DesktopRuntime::default());
+        let command = TerminalCommand {
+            program: "/bin/sh".into(),
+            arguments: vec!["-c".into(), "printf READY; read value".into()],
+            working_directory: std::env::current_dir().unwrap(),
+            environment: Vec::new(),
+            grid_size: GridSize::clamped(40, 8),
+            cell_size: CellSize {
+                width: 8,
+                height: 16,
+            },
+        };
+        let (_, opened) = runtime.open_tab(None, &command).unwrap();
+        // Hold the structural lock as an already-running spawn would, then
+        // queue another spawn and invoke the exact native-hook cleanup method.
+        let guard = runtime.mux.lock().unwrap();
+        let spawn_runtime = Arc::clone(&runtime);
+        let spawn =
+            std::thread::spawn(move || spawn_runtime.open_tab(None, &command));
+        let quit_runtime = Arc::clone(&runtime);
+        let (finished, completion) = std::sync::mpsc::channel();
+        let quit = std::thread::spawn(move || {
+            quit_runtime.terminate().unwrap();
+            finished.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !runtime.terminating.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "quit did not start");
+            std::thread::yield_now();
+        }
+        assert!(
+            completion.try_recv().is_err(),
+            "quit must await the structural owner"
+        );
+        drop(guard);
+        assert!(matches!(
+            spawn.join().unwrap(),
+            Err(MuxError::Runtime(RuntimeError::Stopped))
+        ));
+        quit.join().unwrap();
+        assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
+        assert!(matches!(
+            opened
+                .client
+                .read_snapshot(huterm_protocol::Viewport::default()),
+            Err(RuntimeError::Stopped)
+        ));
+        runtime.terminate().unwrap();
+    }
+
+    #[test]
+    fn widening_a_tab_check_rechecks_all_targets_before_confirmation() {
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Tab(TabId::new(1)));
+        close.queue(CloseTarget::Application);
+        assert_eq!(
+            close.checked(false),
+            Some(CloseDecision::Check(CloseTarget::Application))
+        );
+        close.begin_check(CloseTarget::Application);
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Application))
+        );
+        assert_eq!(close.cancel(), Some(CloseTarget::Application));
+    }
+
+    #[test]
+    fn close_check_completion_preserves_application_and_window_scope() {
+        for (current, later) in [
+            (CloseTarget::Application, CloseTarget::Window),
+            (CloseTarget::Application, CloseTarget::Tab(TabId::new(1))),
+            (CloseTarget::Window, CloseTarget::Tab(TabId::new(1))),
+        ] {
+            let mut close = CloseState::default();
+            close.begin_check(current);
+            close.queue(later);
+            assert_eq!(
+                close.checked(true),
+                Some(CloseDecision::Confirm(current))
+            );
+            assert_eq!(
+                close.cancel(),
+                Some(current),
+                "cancel must retain application scope so it clears quitting"
+            );
+            assert!(close.pending.is_none());
+        }
+    }
+
+    #[test]
+    fn tab_removal_precedes_queued_window_confirmation_and_cancel() {
+        let (first, second) = (TabId::new(1), TabId::new(2));
+        let mut tabs = vec![first, second];
+        let mut active = Some(first);
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Tab(first));
+        assert_eq!(
+            close.checked(false),
+            Some(CloseDecision::Close(CloseTarget::Tab(first)))
+        );
+        close.queue(CloseTarget::Window);
+        remove_tab(&mut tabs, &mut active, first, |id| *id);
+        let next = close.take_pending(|id| tabs.contains(&id)).unwrap();
+        close.begin_check(next);
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Window))
+        );
+        close.cancel();
+        assert_eq!(active, Some(second));
+        assert!(tabs.contains(&active.unwrap()));
+    }
+
+    #[test]
+    fn repeated_tab_close_is_discarded_after_removal() {
+        let (first, second) = (TabId::new(1), TabId::new(2));
+        let mut tabs = vec![first, second];
+        let mut active = Some(first);
+        let mut close = CloseState::default();
+        close.queue(CloseTarget::Tab(first));
+        remove_tab(&mut tabs, &mut active, first, |id| *id);
+        assert_eq!(close.take_pending(|id| tabs.contains(&id)), None);
+        assert_eq!(active, Some(second));
+        remove_tab(&mut tabs, &mut active, first, |id| *id);
+        assert_eq!(tabs, vec![second]);
+        assert_eq!(active, Some(second));
+    }
 
     #[test]
     fn queued_close_preserves_the_widest_requested_scope() {

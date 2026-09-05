@@ -169,3 +169,20 @@ master descriptor can deliver the hangup that exits the shell; reaping only
 before descriptor closure can leave a zombie. Keep this final wait bounded and
 return a cleanup error if the child remains alive. This was exposed on macOS
 when the execution sandbox rejected process-group signals with EPERM.
+
+Keep a synchronous `on_app_quit` cleanup callback for native termination. AppKit
+exits without returning from `Application::run`, and GPUI grants quit futures
+only 100 ms. This terminal-only hook is the exception to asynchronous desktop
+cleanup: set the shared termination gate before locking Mux, reject queued spawns
+after they acquire that lock, and drain existing runtimes before returning.
+Initialize scroll benchmark display scale from the attached native window.
+Async tab creation may finish after Xvfb's only frame; snapshot benchmark startup
+must not depend on TerminalView rendering. Render updates the scale when frames
+are available, but Linux snapshot gates must work without them.
+Use separate Cargo target directories when comparing baseline and feature
+worktrees. Reusing release artifacts across them can retain baseline protocol
+metadata; clean the affected local crates if a rebuild reports missing symbols
+that exist in the current source.
+Global action callbacks run while the dispatching window is borrowed. Defer
+Quit routing before updating a native window handle; a synchronous update of
+the active window fails with `window not found` even though it remains open.

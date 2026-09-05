@@ -318,7 +318,9 @@ impl TerminalView {
             resize_visibility: IndicatorVisibility::default(),
             last_viewport: None,
             selection_edge_direction: 0,
-            scroll_benchmark: ScrollBenchmark::from_environment(),
+            scroll_benchmark: ScrollBenchmark::from_environment(
+                window.scale_factor(),
+            ),
             snapshot_sequence: 0,
         }
     }
@@ -1003,23 +1005,27 @@ struct ScrollBenchmark {
     queue_next: bool,
     pending_injection: Option<(usize, Instant)>,
     last_report: Instant,
-    display_scale: Option<f32>,
+    display_scale: f32,
 }
 
 impl ScrollBenchmark {
-    fn from_environment() -> Option<Self> {
+    fn from_environment(display_scale: f32) -> Option<Self> {
         std::env::var("HUTERM_SCROLL_BENCH")
             .is_ok_and(|value| {
                 value == "1" || value.eq_ignore_ascii_case("true")
             })
-            .then(|| Self {
-                step: 0,
-                started: false,
-                queue_next: false,
-                pending_injection: None,
-                last_report: Instant::now(),
-                display_scale: None,
-            })
+            .then(|| Self::new(display_scale))
+    }
+
+    fn new(display_scale: f32) -> Self {
+        Self {
+            step: 0,
+            started: false,
+            queue_next: false,
+            pending_injection: None,
+            last_report: Instant::now(),
+            display_scale,
+        }
     }
 
     fn is_started(&self) -> bool {
@@ -1032,9 +1038,7 @@ impl ScrollBenchmark {
         visible_rows: u16,
         row_height: f32,
     ) -> bool {
-        let Some(display_scale) = self.display_scale else {
-            return false;
-        };
+        let display_scale = self.display_scale;
         if scroll.history() < 10_000 {
             return false;
         }
@@ -1125,7 +1129,7 @@ impl Render for TerminalView {
     ) -> impl IntoElement {
         self.resize_if_needed(window);
         if let Some(benchmark) = &mut self.scroll_benchmark {
-            benchmark.display_scale = Some(window.scale_factor());
+            benchmark.display_scale = window.scale_factor();
         }
         if self.renderer.borrow().records_stats() {
             window.request_animation_frame();
@@ -1635,6 +1639,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn benchmark_starts_from_attached_window_scale_without_a_render() {
+        let mut benchmark = ScrollBenchmark::new(2.0);
+        let mut scroll = ScrollController::default();
+        scroll.complete(huterm_protocol::Viewport::default(), 10_000);
+        assert!(benchmark.drive(&mut scroll, INITIAL_ROWS, 16.0));
+        assert!(benchmark.is_started());
+        assert_eq!(scroll.desired(), 1);
+        assert!(benchmark.take_injection(1).is_some());
+    }
+
+    #[test]
     fn scrollbar_hover_target_expands_only_while_visible() {
         let geometry = ScrollbarGeometry::new(400.0, 32, 100, 0).unwrap();
         let position = point(px(85.0), px(200.0));
@@ -1942,7 +1957,7 @@ mod tests {
             queue_next: false,
             pending_injection: Some((7, Instant::now())),
             last_report: Instant::now(),
-            display_scale: Some(1.0),
+            display_scale: 1.0,
         };
 
         assert!(benchmark.take_injection(8).is_none());
