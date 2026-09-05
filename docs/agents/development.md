@@ -160,5 +160,5 @@ pinned native inputs, license coverage, and matched benchmark commands.
 
 `check`, `test`, and `verify` exercise both engines and prepare the pinned native
 source through Mise. `mise run check:alacritty` verifies the default build without
-Zig. Source preparation needs Python 3.11 or newer with tarfile's data filter;
+Zig. Source preparation needs Python 3.11.4 or newer with tarfile's data filter;
 Ubuntu 24.04 and current GitHub macOS runners satisfy this requirement.

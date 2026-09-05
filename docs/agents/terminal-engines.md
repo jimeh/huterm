@@ -46,6 +46,9 @@ static linking. `scripts/ghostty-source.json` records the archive checksum and
 full source-tree checksum. Preparation checks the Rust revision constant and
 license provenance against that manifest, then verifies existing source contents;
 a changed generated tree fails rather than silently building different source.
+Generated inputs live in ignored `.native/ghostty`, outside Cargo's `target`
+directory: the CI Cargo cache removes non-Cargo files under `target` before
+saving. Previous `target/ghostty` contents are left untouched and no longer used.
 
 This is a narrow native-source exception to the Cargo registry-only policy.
 The bindings remain registry dependencies. The native archive has an immutable
@@ -55,7 +58,8 @@ configuration, but the VT library does not link Ghostty's renderer or font stack
 Cargo's audit does not cover these native sources. Their linked dependency
 notices and provenance are in `third-party/ghostty` and accompany the app bundle.
 
-Native code uses `ReleaseFast` with SIMD enabled. Linux uses the native CPU;
+Cargo forces the reviewed source path and `ReleaseFast` optimization over
+inherited environment values. Native code uses SIMD. Linux uses the native CPU;
 native macOS builds use Ghostty's upstream baseline CPU workaround.
 The adapter does not request scrollback compression. Compare engines on the same
 host and record CPU information. Cross-host elapsed times are not equivalent
@@ -132,6 +136,8 @@ before applying the command; output can advance it after the client predicts an
 offset. Logs preserve that client prediction separately. Linux Xvfb proves
 snapshot/queue behavior but does not guarantee
 continuous frame delivery; sustained presentation latency needs a native host.
+Xvfb runs with `-noreset` so a last-client disconnect cannot send a second
+readiness signal during the wrapper's temporary-directory cleanup.
 
 A local Linux comparison on an AMD Ryzen 5 5600GT used a flat Alacritty
 baseline at

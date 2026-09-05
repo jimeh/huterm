@@ -99,7 +99,7 @@ def verify_revision(manifest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", type=Path, default=Path(__file__).resolve().parents[1] / "target/ghostty")
+    parser.add_argument("--directory", type=Path, default=Path(__file__).resolve().parents[1] / ".native/ghostty")
     parser.add_argument("--manifest", type=Path, default=Path(__file__).with_name("ghostty-source.json"))
     parser.add_argument("--check", action="store_true", help="verify existing sources without downloading or building")
     arguments = parser.parse_args()

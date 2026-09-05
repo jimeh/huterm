@@ -287,3 +287,16 @@ gate; latch client snapshot failure so pending scroll or invalidation cannot
 create an immediate retry loop. Set Ghostty device attributes explicitly: the
 pinned native implementation answers a callback returning None despite binding
 documentation saying it suppresses replies.
+
+Keep verified native source inputs in `.native/ghostty`, outside Cargo's
+`target` directory. The pinned rust-cache action recursively removes non-Cargo
+files under `target` before saving, leaving incomplete native source trees on
+restore. Preserve source hash checks; never repair mismatches silently.
+
+Run Xvfb with `-noreset` in desktop harnesses. A last-client disconnect otherwise
+resets the server and sends another SIGUSR1 to xvfb-run, which can interrupt its
+cleanup wait and return exit 5 despite successful file removal. Keep application
+exit checks and benchmark budgets strict. Clear any satisfied pending scroll
+intent after authoritative completion, including absolute/live intents, so
+later invalidation cannot replay a stale target. Cargo must force the verified
+native source path and benchmark optimization over inherited environment values.

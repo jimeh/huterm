@@ -393,6 +393,9 @@ impl ScrollController {
             self.pending_scroll =
                 (delta != 0).then_some(ScrollCommand::Relative(delta));
         }
+        if self.desired == self.displayed {
+            self.pending_scroll = None;
+        }
         self.in_flight = false;
         self.submitted_scroll = None;
         self.diagnostics.requests_completed =
@@ -411,6 +414,47 @@ impl ScrollController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn satisfied_pending_scroll_is_not_replayed_on_invalidation() {
+        for (command, returned, history) in [
+            (ScrollCommand::Absolute(3), 3, 10),
+            (ScrollCommand::Absolute(10), 5, 5),
+            (ScrollCommand::Live, 0, 10),
+        ] {
+            let mut scroll = ScrollController::default();
+            scroll.complete(Viewport { bottom_offset: 1 }, 10);
+            scroll.invalidate();
+            scroll.begin_request().unwrap();
+            match command {
+                ScrollCommand::Absolute(offset) => {
+                    scroll.set_desired(offset);
+                }
+                ScrollCommand::Live => {
+                    scroll.bottom();
+                }
+                ScrollCommand::Relative(_) => unreachable!(),
+            }
+            scroll.complete(
+                Viewport {
+                    bottom_offset: returned,
+                },
+                history,
+            );
+            assert!(scroll.begin_request().is_none());
+            scroll.invalidate();
+            scroll.begin_request().unwrap();
+            assert_eq!(scroll.submitted_scroll(), None, "{command:?}");
+        }
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 1 }, 10);
+        scroll.invalidate();
+        scroll.begin_request().unwrap();
+        scroll.set_desired(3);
+        scroll.complete(Viewport { bottom_offset: 2 }, 10);
+        scroll.begin_request().unwrap();
+        assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Absolute(3)));
+    }
 
     #[test]
     fn failed_snapshot_stops_resubmission_with_pending_scroll() {

@@ -29,10 +29,9 @@ Huterm is based on four decisions:
   compatible permissive licenses. GPL-covered Zed application code is outside
   the project boundary.
 
-The terminal engine is replaceable in principle, but Huterm will not build a
-generic backend framework before a second engine exists. A future
-`libghostty-vt` experiment should replace the private emulator module without
-changing PTY ownership, workspaces, client messages, or renderers.
+Both engines stay behind the runtime's private emulator module and expose the
+same Huterm-owned snapshot and input boundary. PTY ownership, workspaces, and
+GPUI rendering are shared.
 
 ## Current desktop
 
@@ -276,7 +275,8 @@ restoration, and shared GUI/TUI access.
   its views.
 - **Tab**: an ordered container with one pane layout.
 - **Pane**: a leaf in a tab's split tree.
-- **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
+- **Terminal**: a PTY, child process, terminal-emulator state, scrollback, and
+  shared viewport.
 - **Client**: a desktop, TUI, or command-line connection to the runtime.
 - **Client view**: client-local focus, active tab, selection gestures, and
   presentation preferences.
@@ -298,7 +298,8 @@ engine = "ghostty" # Or "alacritty".
 ```
 
 Reloading configuration changes subsequently created tabs and windows. Existing
-and pending terminals retain their captured engine, child process, and history.
+terminals retain their captured engine, child process, and history. Pending
+terminal creation retains its captured engine choice across reloads.
 An unavailable engine is an explicit configuration error. The ordinary
 `mise run dev` build does not require Zig or Ghostty source.
 

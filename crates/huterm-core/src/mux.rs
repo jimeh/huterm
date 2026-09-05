@@ -1031,7 +1031,7 @@ mod tests {
         mux.close_session(first_session).unwrap();
         for client in [&first.client, &second.client] {
             assert!(matches!(
-                client.read_snapshot(Viewport::default()),
+                client.read_snapshot(),
                 Err(RuntimeError::Stopped)
             ));
         }
