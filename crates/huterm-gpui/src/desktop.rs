@@ -245,6 +245,7 @@ struct TerminalView {
     font_family: String,
     font_size: Pixels,
     window_config: WindowConfig,
+    sidebar_width: Pixels,
     theme: Theme,
     config_path: PathBuf,
     status: Option<String>,
@@ -323,6 +324,7 @@ impl TerminalView {
             last_cell_size: None,
             font_size: metrics.font_size,
             window_config: config.window,
+            sidebar_width: windows::SIDEBAR_WIDTH,
             theme,
             config_path,
             status: None,
@@ -1061,10 +1063,11 @@ impl TerminalView {
     }
 
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
-        windows::ChromeLayout::new(
+        windows::ChromeLayout::with_sidebar(
             window.viewport_size(),
             terminal_top(window),
             self.window_config.tab_position,
+            self.sidebar_width,
         )
         .terminal
     }

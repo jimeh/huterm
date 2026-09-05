@@ -6,11 +6,11 @@ use huterm_protocol::WorkspaceId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
-const SIDEBAR_WIDTH: Pixels = px(180.0);
-const TAB_WIDTH: Pixels = px(160.0);
+pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+mod tab_strip;
+use tab_strip::TabStrip;
 const CONTROL_SIZE: Pixels = px(28.0);
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
-const TAB_PAGE_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct DesktopRuntime {
@@ -261,7 +261,11 @@ fn open_window(cx: &mut App) {
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
-                first_visible: 0,
+                tab_scroll: px(0.0),
+                scroll_target: None,
+                last_scroll: Instant::now(),
+                sidebar_width: SIDEBAR_WIDTH,
+                resizing_sidebar: false,
                 reorder: None,
                 config,
                 family,
@@ -284,34 +288,39 @@ fn open_window(cx: &mut App) {
                 view.new_tab(window, cx);
             });
             let pump_view = view.downgrade();
+            let pump_window = window.window_handle();
             cx.spawn(async move |cx| {
                 loop {
                     cx.background_executor()
                         .timer(Duration::from_millis(16))
                         .await;
-                    if pump_view
-                        .update(cx, |view, cx| {
-                            if view.advance_drag_page(Instant::now()) {
-                                cx.notify();
-                            }
-                            let mut metadata_changed = false;
-                            for tab in &view.tabs {
-                                tab.view.update(cx, |terminal, cx| {
-                                    let previous = (
-                                        terminal.title.clone(),
-                                        terminal.exited,
-                                    );
-                                    terminal.refresh(cx);
-                                    metadata_changed |= previous
-                                        != (
+                    if pump_window
+                        .update(cx, |_, window, cx| {
+                            let _ = pump_view.update(cx, |view, cx| {
+                                if view
+                                    .advance_tab_scroll(Instant::now(), window)
+                                {
+                                    cx.notify();
+                                }
+                                let mut metadata_changed = false;
+                                for tab in &view.tabs {
+                                    tab.view.update(cx, |terminal, cx| {
+                                        let previous = (
                                             terminal.title.clone(),
                                             terminal.exited,
                                         );
-                                });
-                            }
-                            if metadata_changed {
-                                cx.notify();
-                            }
+                                        terminal.refresh(cx);
+                                        metadata_changed |= previous
+                                            != (
+                                                terminal.title.clone(),
+                                                terminal.exited,
+                                            );
+                                    });
+                                }
+                                if metadata_changed {
+                                    cx.notify();
+                                }
+                            });
                         })
                         .is_err()
                     {
@@ -357,7 +366,11 @@ struct WorkspaceView {
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
     active: Option<TabId>,
-    first_visible: usize,
+    tab_scroll: Pixels,
+    scroll_target: Option<Pixels>,
+    last_scroll: Instant,
+    sidebar_width: Pixels,
+    resizing_sidebar: bool,
     reorder: Option<TabReorder>,
     config: Config,
     family: String,
@@ -380,149 +393,8 @@ struct TabReorder {
     origin: gpui::Point<Pixels>,
     pointer: gpui::Point<Pixels>,
     dragging: bool,
-    original_first: usize,
-    page: Option<(bool, Instant)>,
+    original_scroll: Pixels,
     strip: TabStrip,
-}
-
-#[derive(Clone, Debug)]
-struct TabStrip {
-    bounds: Bounds<Pixels>,
-    vertical: bool,
-    visible: std::ops::Range<usize>,
-    capacity: usize,
-    count: usize,
-    extent: Pixels,
-    leading: Pixels,
-}
-
-impl TabStrip {
-    fn new(
-        bounds: Bounds<Pixels>,
-        vertical: bool,
-        count: usize,
-        active: usize,
-        first: usize,
-        pin_active: bool,
-    ) -> Self {
-        let available = if vertical {
-            bounds.size.height
-        } else {
-            bounds.size.width
-        };
-        let nominal = if vertical { TAB_HEIGHT } else { TAB_WIDTH };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "bounded nonnegative window dimension"
-        )]
-        let capacity = ((available - CONTROL_SIZE * 3.0).max(nominal) / nominal)
-            .floor() as usize;
-        let visible = if pin_active {
-            visible_tabs(count, active, first, capacity)
-        } else {
-            let first = first.min(count.saturating_sub(capacity));
-            first..(first + capacity).min(count)
-        };
-        Self {
-            bounds,
-            vertical,
-            visible,
-            capacity,
-            count,
-            extent: if vertical {
-                TAB_HEIGHT
-            } else {
-                TAB_WIDTH.min((available - CONTROL_SIZE * 3.0).max(px(1.0)))
-            },
-            leading: if count > capacity {
-                CONTROL_SIZE * 2.0
-            } else {
-                px(0.0)
-            },
-        }
-    }
-    fn axis(&self, pointer: gpui::Point<Pixels>) -> Pixels {
-        if self.vertical {
-            pointer.y - self.bounds.origin.y
-        } else {
-            pointer.x - self.bounds.origin.x
-        }
-    }
-    fn available(&self) -> Pixels {
-        if self.vertical {
-            self.bounds.size.height
-        } else {
-            self.bounds.size.width
-        }
-    }
-    fn slot(&self, pointer: gpui::Point<Pixels>) -> usize {
-        let axis = self.axis(pointer);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "clamped insertion slot"
-        )]
-        let offset = ((axis - self.leading).max(px(0.0)) / self.extent + 0.5)
-            .floor() as usize;
-        self.visible.start + offset.min(self.visible.len())
-    }
-    fn page_direction(&self, pointer: gpui::Point<Pixels>) -> Option<bool> {
-        if self.count <= self.capacity {
-            return None;
-        }
-        let axis = self.axis(pointer);
-        if axis < CONTROL_SIZE && self.visible.start > 0 {
-            Some(false)
-        } else if (axis < self.leading
-            || axis >= self.available() - CONTROL_SIZE)
-            && axis >= CONTROL_SIZE
-            && self.visible.end < self.count
-        {
-            Some(true)
-        } else {
-            None
-        }
-    }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "visible slot count is bounded by window dimensions"
-    )]
-    fn marker(&self, slot: usize) -> Bounds<Pixels> {
-        let offset = self.leading
-            + self.extent
-                * (slot
-                    .saturating_sub(self.visible.start)
-                    .min(self.visible.len()) as f32);
-        let offset = offset.min((self.available() - px(2.0)).max(px(0.0)));
-        if self.vertical {
-            Bounds::new(
-                self.bounds.origin + point(px(0.0), offset),
-                size(self.bounds.size.width, px(2.0)),
-            )
-        } else {
-            Bounds::new(
-                self.bounds.origin + point(offset, px(0.0)),
-                size(px(2.0), self.bounds.size.height),
-            )
-        }
-    }
-    fn preview(&self, pointer: gpui::Point<Pixels>) -> Bounds<Pixels> {
-        let extent = self.extent.min(self.available());
-        let offset = (self.axis(pointer) - extent / 2.0)
-            .clamp(px(0.0), (self.available() - extent).max(px(0.0)));
-        if self.vertical {
-            Bounds::new(
-                self.bounds.origin + point(px(0.0), offset),
-                size(self.bounds.size.width, extent),
-            )
-        } else {
-            Bounds::new(
-                self.bounds.origin + point(offset, px(0.0)),
-                size(extent, self.bounds.size.height),
-            )
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -650,24 +522,64 @@ fn remove_tab<T>(
 impl WorkspaceView {
     fn tab_strip(&self, window: &Window) -> TabStrip {
         let position = self.config.window.tab_position;
-        let layout = ChromeLayout::new(
+        let layout = ChromeLayout::with_sidebar(
             window.viewport_size(),
             terminal_top(window),
             position,
+            self.sidebar_width,
         );
-        let active = self
-            .tabs
-            .iter()
-            .position(|tab| Some(tab.id) == self.active)
-            .unwrap_or(0);
         TabStrip::new(
             layout.tabs,
             position.vertical(),
             self.tabs.len(),
-            active,
-            self.first_visible,
-            !self.reorder.as_ref().is_some_and(|drag| drag.dragging),
+            self.tab_scroll,
         )
+    }
+
+    fn reveal_active(&mut self, window: &Window) {
+        self.scroll_target = None;
+        if let Some(index) =
+            self.tabs.iter().position(|tab| Some(tab.id) == self.active)
+        {
+            self.tab_scroll = self.tab_strip(window).reveal(index);
+        }
+    }
+
+    fn scroll_tabs(
+        &mut self,
+        delta: Pixels,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.scroll_target = None;
+        let strip = self.tab_strip(window);
+        self.tab_scroll =
+            (strip.offset + delta).clamp(px(0.0), strip.max_offset());
+        cx.notify();
+    }
+
+    fn resize_sidebar(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let desired = if self.config.window.tab_position == TabPosition::Left {
+            pointer.x
+        } else {
+            window.viewport_size().width - pointer.x
+        };
+        self.sidebar_width = desired.clamp(px(140.0), px(400.0));
+        for tab in &self.tabs {
+            tab.view.update(cx, |view, cx| {
+                view.sidebar_width = self.sidebar_width;
+                if view.visible {
+                    view.resize_if_needed(window);
+                }
+                cx.notify();
+            });
+        }
+        cx.notify();
     }
 
     fn can_reorder(
@@ -703,13 +615,13 @@ impl WorkspaceView {
         if !self.can_reorder(source, window, cx) {
             return;
         }
+        self.scroll_target = None;
         self.reorder = Some(TabReorder {
             source,
             origin: pointer,
             pointer,
             dragging: false,
-            original_first: self.first_visible,
-            page: None,
+            original_scroll: self.tab_scroll,
             strip: self.tab_strip(window),
         });
         cx.notify();
@@ -726,6 +638,7 @@ impl WorkspaceView {
         };
         if !self.can_reorder(source, window, cx) {
             self.cancel_reorder(window, cx);
+            self.resizing_sidebar = false;
             return;
         }
         let strip = self.tab_strip(window);
@@ -737,37 +650,33 @@ impl WorkspaceView {
                 drag.dragging = true;
             }
             drag.strip = strip;
-            let direction =
-                drag.strip.page_direction(pointer).filter(|_| drag.dragging);
-            if direction != drag.page.map(|(forward, _)| forward) {
-                drag.page = direction
-                    .map(|forward| (forward, Instant::now() + TAB_PAGE_DELAY));
-            }
         }
         cx.notify();
     }
 
-    fn advance_drag_page(&mut self, now: Instant) -> bool {
-        let Some(drag) = &mut self.reorder else {
-            return false;
-        };
-        let Some((forward, deadline)) = drag.page else {
-            return false;
-        };
-        if !drag.dragging || now < deadline {
-            return false;
-        }
-        let previous = self.first_visible;
-        self.first_visible = if forward {
-            self.first_visible
-                .saturating_add(drag.strip.capacity)
-                .min(drag.strip.count.saturating_sub(drag.strip.capacity))
+    fn advance_tab_scroll(&mut self, now: Instant, window: &Window) -> bool {
+        let elapsed = now.saturating_duration_since(self.last_scroll);
+        self.last_scroll = now;
+        let strip = self.tab_strip(window);
+        let next = if let Some(drag) = &mut self.reorder {
+            drag.strip = strip;
+            if !drag.dragging {
+                return false;
+            }
+            drag.strip.autoscroll(drag.pointer, elapsed)
+        } else if let Some(target) = self.scroll_target {
+            let target = target.clamp(px(0.0), strip.max_offset());
+            let next = strip.toward(target, elapsed);
+            if next == target {
+                self.scroll_target = None;
+            }
+            next
         } else {
-            self.first_visible.saturating_sub(drag.strip.capacity)
+            return false;
         };
-        drag.page = (self.first_visible != previous)
-            .then_some((forward, now + TAB_PAGE_DELAY));
-        self.first_visible != previous
+        let changed = self.tab_scroll != next;
+        self.tab_scroll = next;
+        changed
     }
 
     fn restore_tab_focus(&self, window: &mut Window, cx: &App) {
@@ -782,7 +691,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         if let Some(drag) = self.reorder.take() {
-            self.first_visible = drag.original_first;
+            self.tab_scroll = drag.original_scroll;
             self.restore_tab_focus(window, cx);
             cx.notify();
         }
@@ -854,6 +763,7 @@ impl WorkspaceView {
     )]
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.cancel_reorder(window, cx);
+        self.resizing_sidebar = false;
         if self.busy
             || self.close.confirmation.is_some()
             || cx.global::<Desktop>().quitting
@@ -967,8 +877,10 @@ impl WorkspaceView {
             return;
         }
         self.active = Some(id);
+        self.reveal_active(window);
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
+                view.sidebar_width = self.sidebar_width;
                 view.visible = tab.id == id;
                 if view.visible {
                     view.resize_if_needed(window);
@@ -1037,6 +949,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.cancel_reorder(window, cx);
+        self.resizing_sidebar = false;
         if let CloseTarget::Tab(id) = target
             && !self.tabs.iter().any(|tab| tab.id == id)
         {
@@ -1246,6 +1159,8 @@ fn reload(cx: &mut App) {
                 let _ = window.update(cx, |view, cx| {
                     match &result {
                         Ok((config, family, metrics)) => {
+                            view.resizing_sidebar = false;
+                            view.scroll_target = None;
                             view.config = config.clone();
                             view.family.clone_from(family);
                             view.metrics = *metrics;
@@ -1287,10 +1202,19 @@ pub(super) struct ChromeLayout {
     tabs: Bounds<Pixels>,
 }
 impl ChromeLayout {
+    #[cfg(test)]
     pub(super) fn new(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
         position: TabPosition,
+    ) -> Self {
+        Self::with_sidebar(viewport, titlebar, position, SIDEBAR_WIDTH)
+    }
+    pub(super) fn with_sidebar(
+        viewport: gpui::Size<Pixels>,
+        titlebar: Pixels,
+        position: TabPosition,
+        sidebar_width: Pixels,
     ) -> Self {
         let top = titlebar.min(viewport.height);
         let available = size(
@@ -1300,7 +1224,9 @@ impl ChromeLayout {
         let mut terminal = Bounds::new(point(px(0.0), top), available);
         let mut tabs = terminal;
         if position.vertical() {
-            tabs.size.width = SIDEBAR_WIDTH.min(available.width * 0.5);
+            tabs.size.width = sidebar_width
+                .clamp(px(140.0), px(400.0))
+                .min(available.width * 0.5);
             terminal.size.width =
                 (available.width - tabs.size.width).max(px(0.0));
             if position == TabPosition::Left {
@@ -1322,27 +1248,10 @@ impl ChromeLayout {
     }
 }
 
-// Paging keeps the selected tab visible without depending on GPUI scroll offsets.
-fn visible_tabs(
-    count: usize,
-    active: usize,
-    first: usize,
-    capacity: usize,
-) -> std::ops::Range<usize> {
-    let capacity = capacity.max(1);
-    let mut first = first.min(count.saturating_sub(capacity));
-    if active < first {
-        first = active;
-    }
-    if active >= first + capacity {
-        first = active + 1 - capacity;
-    }
-    first..(first + capacity).min(count)
-}
-
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
+        clippy::cast_precision_loss,
         reason = "window chrome composes tab controls and close confirmation"
     )]
     fn render(
@@ -1351,10 +1260,11 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let position = self.config.window.tab_position;
-        let layout = ChromeLayout::new(
+        let layout = ChromeLayout::with_sidebar(
             window.viewport_size(),
             terminal_top(window),
             position,
+            self.sidebar_width,
         );
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
@@ -1440,7 +1350,14 @@ impl Render for WorkspaceView {
                         move |event: &MouseMoveEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = move_view.update(cx, |view, cx| {
-                                    if view.reorder.is_some() {
+                                    if view.resizing_sidebar {
+                                        view.resize_sidebar(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    } else if view.reorder.is_some() {
                                         view.update_reorder(
                                             event.position,
                                             window,
@@ -1458,7 +1375,15 @@ impl Render for WorkspaceView {
                                 && event.button == MouseButton::Left
                             {
                                 let _ = release_view.update(cx, |view, cx| {
-                                    if view.reorder.is_some() {
+                                    if view.resizing_sidebar {
+                                        view.resize_sidebar(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        view.resizing_sidebar = false;
+                                        cx.stop_propagation();
+                                    } else if view.reorder.is_some() {
                                         view.finish_reorder(
                                             event.position,
                                             window,
@@ -1492,56 +1417,51 @@ impl Render for WorkspaceView {
         }
         let strip = self.tab_strip(window);
         let vertical = strip.vertical;
-        let capacity = strip.capacity;
-        let visible = strip.visible.clone();
-        self.first_visible = visible.start;
+        self.tab_scroll = strip.offset;
         if let Some(drag) = &mut self.reorder {
             drag.strip = strip.clone();
         }
         let mut bar = div()
+            .id("tab-strip")
             .absolute()
-            .left(layout.tabs.origin.x)
-            .top(layout.tabs.origin.y)
-            .w(layout.tabs.size.width)
-            .h(layout.tabs.size.height)
+            .left(strip.bounds.origin.x)
+            .top(strip.bounds.origin.y)
+            .w(strip.bounds.size.width)
+            .h(strip.bounds.size.height)
             .overflow_hidden()
-            .flex()
-            .when(vertical, Styled::flex_col)
-            .bg(foreground.opacity(0.06));
-        if self.tabs.len() > capacity {
-            for (label, forward) in [("‹", false), ("›", true)] {
-                bar = bar.child(
-                    div()
-                        .id(if forward {
-                            "next-tabs"
-                        } else {
-                            "previous-tabs"
-                        })
-                        .flex_shrink_0()
-                        .w(if vertical {
-                            layout.tabs.size.width
-                        } else {
-                            CONTROL_SIZE
-                        })
-                        .h(CONTROL_SIZE)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.navigate(forward, window, cx);
-                        }))
-                        .child(label),
-                );
-            }
-        }
-        for index in visible {
+            .bg(foreground.opacity(0.06))
+            .on_scroll_wheel(cx.listener(
+                move |view, event: &ScrollWheelEvent, window, cx| {
+                    let delta = event.delta.pixel_delta(px(32.0));
+                    let delta = if vertical {
+                        if delta.y == px(0.0) { delta.x } else { delta.y }
+                    } else if delta.x != px(0.0) {
+                        delta.x
+                    } else {
+                        delta.y
+                    };
+                    view.scroll_tabs(-delta, window, cx);
+                    cx.stop_propagation();
+                },
+            ));
+        for index in 0..self.tabs.len() {
             let tab = &self.tabs[index];
             let id = tab.id;
             let title = tab.title(cx);
             bar = bar.child(
                 div()
                     .id(("tab", id.get()))
+                    .absolute()
+                    .left(if vertical {
+                        px(0.0)
+                    } else {
+                        strip.extent * index as f32 - strip.offset
+                    })
+                    .top(if vertical {
+                        strip.extent * index as f32 - strip.offset
+                    } else {
+                        px(0.0)
+                    })
                     .flex_shrink_0()
                     .w(if vertical {
                         layout.tabs.size.width
@@ -1596,11 +1516,82 @@ impl Render for WorkspaceView {
                     ),
             );
         }
-        bar = bar.child(
+        for forward in [false, true] {
+            if (forward && strip.offset < strip.max_offset())
+                || (!forward && strip.offset > px(0.0))
+            {
+                let edge = if forward {
+                    (strip.available() - CONTROL_SIZE).max(px(0.0))
+                } else {
+                    px(0.0)
+                };
+                bar = bar.child(
+                    div()
+                        .id(if forward {
+                            "scroll-tabs-forward"
+                        } else {
+                            "scroll-tabs-backward"
+                        })
+                        .absolute()
+                        .left(if vertical {
+                            (strip.bounds.size.width - CONTROL_SIZE)
+                                .max(px(0.0))
+                                / 2.0
+                        } else {
+                            edge
+                        })
+                        .top(if vertical { edge } else { px(2.0) })
+                        .w(CONTROL_SIZE)
+                        .h(CONTROL_SIZE)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(background)
+                        .rounded_md()
+                        .opacity(0.9)
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            let amount = view.tab_strip(window).available()
+                                * if forward { 0.75 } else { -0.75 };
+                            let strip = view.tab_strip(window);
+                            view.scroll_target = Some(
+                                (view.scroll_target.unwrap_or(strip.offset)
+                                    + amount)
+                                    .clamp(px(0.0), strip.max_offset()),
+                            );
+                            cx.notify();
+                            cx.stop_propagation();
+                        }))
+                        .child(if vertical {
+                            if forward { "⌄" } else { "⌃" }
+                        } else if forward {
+                            "›"
+                        } else {
+                            "‹"
+                        }),
+                );
+            }
+        }
+        root = root.child(bar).child(
             div()
                 .id("new-tab")
-                .flex_shrink_0()
-                .w(CONTROL_SIZE)
+                .absolute()
+                .left(
+                    layout.tabs.origin.x
+                        + if vertical { px(0.0) } else { strip.available() },
+                )
+                .top(
+                    layout.tabs.origin.y
+                        + if vertical { strip.available() } else { px(0.0) },
+                )
+                .w(if vertical {
+                    layout.tabs.size.width
+                } else {
+                    CONTROL_SIZE
+                })
                 .h(CONTROL_SIZE)
                 .flex()
                 .items_center()
@@ -1611,7 +1602,30 @@ impl Render for WorkspaceView {
                 )
                 .child("+"),
         );
-        root = root.child(bar);
+        if vertical {
+            root = root.child(
+                div()
+                    .id("sidebar-resize")
+                    .absolute()
+                    .left(if position == TabPosition::Left {
+                        layout.tabs.size.width - px(3.0)
+                    } else {
+                        layout.tabs.origin.x - px(3.0)
+                    })
+                    .top(layout.tabs.origin.y)
+                    .w(px(6.0))
+                    .h(layout.tabs.size.height)
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.cancel_reorder(window, cx);
+                            view.resizing_sidebar = true;
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
         if let Some(tab) = self.active_view() {
             root = root.child(
                 div()
@@ -1732,13 +1746,11 @@ mod tests {
                 position,
             );
             let strip =
-                TabStrip::new(layout.tabs, position.vertical(), 8, 0, 0, true);
+                TabStrip::new(layout.tabs, position.vertical(), 8, px(0.0));
             let pointer = if strip.vertical {
-                strip.bounds.origin
-                    + point(px(20.0), strip.leading + strip.extent * 1.1)
+                strip.bounds.origin + point(px(20.0), strip.extent * 1.1)
             } else {
-                strip.bounds.origin
-                    + point(strip.leading + strip.extent * 1.1, px(10.0))
+                strip.bounds.origin + point(strip.extent * 1.1, px(10.0))
             };
             assert_eq!(strip.slot(pointer), 1, "{position:?}");
             for excursion in [-10_000.0, 10_000.0] {
@@ -1759,9 +1771,15 @@ mod tests {
                 assert_eq!(
                     slot,
                     if excursion < 0.0 {
-                        strip.visible.start
+                        0
                     } else {
-                        strip.visible.end
+                        strip.slot(
+                            strip.bounds.origin
+                                + point(
+                                    strip.bounds.size.width,
+                                    strip.bounds.size.height,
+                                ),
+                        )
                     }
                 );
                 for bounds in [
@@ -1787,33 +1805,48 @@ mod tests {
     }
 
     #[test]
-    fn overflow_drag_pages_are_not_pinned_to_active_tab() {
-        for vertical in [false, true] {
-            let bounds = Bounds::new(
-                point(px(20.0), px(40.0)),
-                size(px(600.0), px(220.0)),
+    fn sidebar_width_clamps_to_window_without_losing_preference() {
+        for position in [TabPosition::Left, TabPosition::Right] {
+            let preferred = px(350.0);
+            let wide = ChromeLayout::with_sidebar(
+                size(px(1000.0), px(600.0)),
+                px(32.0),
+                position,
+                preferred,
             );
-            let initial = TabStrip::new(bounds, vertical, 15, 0, 0, true);
-            let next =
-                TabStrip::new(bounds, vertical, 15, 0, initial.capacity, false);
-            assert_eq!(next.visible.start, initial.capacity);
-            let previous_control = bounds.origin + point(px(2.0), px(2.0));
-            assert_eq!(next.page_direction(previous_control), Some(false));
-            let end = bounds.origin + point(px(10_000.0), px(10_000.0));
-            assert_eq!(next.page_direction(end), Some(true));
-            let last = TabStrip::new(bounds, vertical, 15, 0, 15, false);
-            assert_eq!(last.visible.end, 15);
-            assert_eq!(last.slot(end), 15);
-            assert_eq!(last.page_direction(end), None);
-            let canceled = TabStrip::new(
-                bounds,
-                vertical,
-                15,
-                0,
-                last.visible.start,
-                true,
+            let narrow = ChromeLayout::with_sidebar(
+                size(px(300.0), px(600.0)),
+                px(32.0),
+                position,
+                preferred,
             );
-            assert_eq!(canceled.visible.start, 0);
+            let restored = ChromeLayout::with_sidebar(
+                size(px(1000.0), px(600.0)),
+                px(32.0),
+                position,
+                preferred,
+            );
+            assert_eq!(wide.tabs.size.width, px(350.0));
+            assert_eq!(narrow.tabs.size.width, px(150.0));
+            assert_eq!(restored.tabs.size.width, px(350.0));
+            let minimum = ChromeLayout::with_sidebar(
+                size(px(1000.0), px(600.0)),
+                px(32.0),
+                position,
+                px(20.0),
+            );
+            let maximum = ChromeLayout::with_sidebar(
+                size(px(1000.0), px(600.0)),
+                px(32.0),
+                position,
+                px(900.0),
+            );
+            assert_eq!(minimum.tabs.size.width, px(140.0));
+            assert_eq!(maximum.tabs.size.width, px(400.0));
+            assert_eq!(
+                wide.terminal.size.width + wide.tabs.size.width,
+                px(1000.0)
+            );
         }
     }
 
@@ -2119,15 +2152,6 @@ mod tests {
                 assert!(layout.tabs.size.width <= px(1.5));
             }
         }
-    }
-
-    #[test]
-    fn tab_overflow_keeps_active_tab_visible_after_navigation_and_removal() {
-        assert_eq!(visible_tabs(12, 11, 0, 3), 9..12);
-        assert_eq!(visible_tabs(12, 0, 9, 3), 0..3);
-        assert_eq!(visible_tabs(2, 1, 9, 3), 0..2);
-        assert_eq!(visible_tabs(12, 7, 0, 0), 7..8);
-        assert_eq!(visible_tabs(0, 0, 0, 3), 0..0);
     }
 
     #[test]

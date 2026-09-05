@@ -78,13 +78,23 @@ Window and tab shortcuts:
 | Select last tab | `Cmd-9` | `Alt-9` |
 
 Set `[window].tab_position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. Overflow controls navigate through tabs and keep the active tab visible.
-Drag a tab to reorder it within its window, horizontally or vertically. The
-preview and insertion position remain constrained to the bar when the pointer
-leaves it; release commits and Escape cancels. During a drag, hovering an overflow
-arrow pages without changing the active terminal. Reordering preserves terminal
-processes, focus, selection, and scroll position. Cross-window moves and tear-out
-remain deferred.
+default. Horizontal tabs divide the available width equally until their
+120-pixel minimum, then scroll horizontally. Vertical tabs stay 32 pixels tall
+and fill the sidebar width. Drag the sidebar's inner edge to resize it between
+140 and 400 logical pixels, capped at half the window width. Each window keeps
+its preferred width for its lifetime, including through temporary window
+shrinking. The full-width vertical new-tab button follows the last tab and
+stays visible at the bottom when tabs overflow.
+
+Trackpad and wheel scrolling move the strip without selecting a tab. Floating
+arrows indicate hidden content and animate scrolling when clicked. Explicit
+selection or creating a tab reveals it; ordinary redraws preserve manual
+scroll. Drag a tab to reorder it within its window, horizontally or
+vertically. The preview and insertion position remain constrained to the bar
+when the pointer leaves it; release commits and Escape cancels. During a drag,
+hovering an overflow edge scrolls continuously without changing the active
+terminal. Reordering preserves terminal processes, focus, selection, and
+scroll position. Cross-window moves and tear-out remain deferred.
 Reload applies placement, font, padding, and theme changes across all windows.
 Shell titles label tabs, with the launched program as fallback. Directory and
 process labels and directory inheritance are not implemented yet.

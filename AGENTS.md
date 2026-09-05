@@ -216,7 +216,13 @@ normal shutdown bound. Deferred cleanup cannot outlive OS application terminatio
 Tab reorder uses source-window capture listeners registered before terminal
 mouse handlers. Project movement onto the tab-bar axis and clamp preview/drop
 geometry, including release outside the window. Stop propagation when Escape
-cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus during
-the drag to avoid false application focus-out/in reports. Overflow
-paging must not pin to the active tab during a drag. Commit canonical Mux order
-on a worker and reorder retained views without selecting or recreating them.
+cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus
+during the drag to avoid false application focus-out/in reports. TabStrip owns
+pixel geometry for rendering, reveal, wheel input, and drag slots;
+WorkspaceView owns its only scroll offset. Include that offset in drop
+mapping. Edge autoscroll runs in the window refresh pump with bounded elapsed
+time. Manual scrolling must not pin the active tab. Pass the same preferred
+sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
+retained views on resize and before activation. Resolve window-size caps
+without overwriting the preferred width. Commit canonical Mux order on a
+worker and reorder retained views without selecting or recreating them.
