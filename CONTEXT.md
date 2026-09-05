@@ -5,9 +5,22 @@ provide independent views into the same workspaces.
 
 ## Language
 
+**Socket**:
+A named runtime scope containing sessions, independent of any client connection.
+
+**Session**:
+A collection of ordered workspaces within one socket scope, independent of names
+and windows.
+_Avoid_: Workspace.
+
 **Workspace**:
-A named collection of ordered tabs that exists independently of its views.
+A collection of ordered tabs within a session that exists independently of its
+views.
 _Avoid_: Session, tab group.
+
+**Custom name**:
+An optional display-name override for a session, workspace, or tab. Names can be
+duplicated and do not identify objects.
 
 **Tab**:
 An ordered container within a workspace, containing one pane layout.

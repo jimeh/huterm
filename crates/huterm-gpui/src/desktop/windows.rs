@@ -2,7 +2,7 @@ use super::*;
 use crate::config::TabPosition;
 use gpui::{Entity, Global, WeakEntity};
 use huterm_core::{MuxError, OpenedTab};
-use huterm_protocol::WorkspaceId;
+use huterm_protocol::{SessionId, WorkspaceId};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -23,7 +23,7 @@ impl DesktopRuntime {
         &self,
         workspace: Option<WorkspaceId>,
         command: &TerminalCommand,
-    ) -> Result<(WorkspaceId, OpenedTab), MuxError> {
+    ) -> Result<(SessionId, WorkspaceId, OpenedTab), MuxError> {
         let mut mux = self
             .mux
             .lock()
@@ -31,19 +31,35 @@ impl DesktopRuntime {
         if self.terminating.load(Ordering::Acquire) {
             return Err(RuntimeError::Stopped.into());
         }
-        let id = match workspace {
-            Some(id) => id,
-            None => mux.create_workspace()?,
+        let id = if let Some(id) = workspace {
+            id
+        } else {
+            let session = mux.create_session(None)?;
+            match mux.create_workspace(session, None) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = mux.close_session(session);
+                    return Err(error);
+                }
+            }
         };
         match mux.open_tab(id, command) {
-            Ok(tab) => Ok((id, tab)),
+            Ok(tab) => Ok((mux.select_workspace(id)?.session, id, tab)),
             Err(error) => {
                 if workspace.is_none() {
-                    let _ = mux.close_workspace(id);
+                    let session = mux.select_workspace(id)?.session;
+                    let _ = mux.close_session(session);
                 }
                 Err(error)
             }
         }
+    }
+
+    fn close_session(&self, session: SessionId) -> Result<(), MuxError> {
+        self.mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close_session(session)
     }
 
     fn reorder_tab(
@@ -258,6 +274,7 @@ fn open_window(cx: &mut App) {
                 window.resize(initial_window_size(&config, scaled_metrics));
             }
             let view = cx.new(|cx| WorkspaceView {
+                session: None,
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -342,18 +359,14 @@ fn open_window(cx: &mut App) {
 
 struct TabView {
     id: TabId,
-    fallback_title: String,
+    record: huterm_core::Tab,
     view: Entity<TerminalView>,
 }
 
 impl TabView {
     fn title(&self, cx: &App) -> String {
         let terminal = self.view.read(cx);
-        let title = if terminal.title.trim().is_empty() {
-            self.fallback_title.clone()
-        } else {
-            terminal.title.clone()
-        };
+        let title = self.record.display_name(&terminal.title).to_owned();
         if terminal.exited {
             format!("{title} · exited")
         } else {
@@ -363,6 +376,7 @@ impl TabView {
 }
 
 struct WorkspaceView {
+    session: Option<SessionId>,
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
     active: Option<TabId>,
@@ -757,10 +771,6 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "spawn completion publishes a tab or cleans up an orphaned workspace"
-    )]
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
@@ -780,12 +790,6 @@ impl WorkspaceView {
                     return;
                 }
             };
-        let fallback = command
-            .program
-            .file_name()
-            .unwrap_or(command.program.as_os_str())
-            .to_string_lossy()
-            .into_owned();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         self.busy = true;
@@ -797,7 +801,7 @@ impl WorkspaceView {
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
             let result: Result<
-                (WorkspaceId, OpenedTab),
+                (SessionId, WorkspaceId, OpenedTab),
                 huterm_core::MuxError,
             > = task.await;
             let _ = app.update(|cx| {
@@ -814,7 +818,8 @@ impl WorkspaceView {
                 view.busy = false;
                 if let Some(result) = result.take() {
                     match result {
-                        Ok((id, opened)) => {
+                        Ok((session, id, opened)) => {
+                            view.session = Some(session);
                             view.workspace = Some(id);
                             let config_path =
                                 cx.global::<Desktop>().config_path.clone();
@@ -833,7 +838,7 @@ impl WorkspaceView {
                             let tab_id = opened.tab.id;
                             view.tabs.push(TabView {
                                 id: tab_id,
-                                fallback_title: fallback,
+                                record: opened.tab,
                                 view: terminal,
                             });
                             view.select(tab_id, window, cx);
@@ -850,15 +855,11 @@ impl WorkspaceView {
                 cx.notify();
             });
             if update.is_err()
-                && let Some(Ok((id, _))) = result
+                && let Some(Ok((session, _, _))) = result
             {
                 cx.background_executor()
                     .spawn(async move {
-                        let _ = cleanup_runtime
-                            .mux
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .close_workspace(id);
+                        let _ = cleanup_runtime.close_session(session);
                     })
                     .await;
             }
@@ -1064,9 +1065,14 @@ impl WorkspaceView {
         }
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
+        let session = self.session;
         let task = cx.background_executor().spawn(async move {
             if matches!(target, CloseTarget::Application) {
                 return runtime.terminate();
+            }
+            if matches!(target, CloseTarget::Window) {
+                return session
+                    .map_or(Ok(()), |session| runtime.close_session(session));
             }
             let mut mux = runtime
                 .mux
@@ -1076,9 +1082,6 @@ impl WorkspaceView {
                 (CloseTarget::Application, _) => mux.shutdown(),
                 (CloseTarget::Tab(id), Some(workspace)) => {
                     mux.close_tab(workspace, id)
-                }
-                (CloseTarget::Window, Some(workspace)) => {
-                    mux.close_workspace(workspace)
                 }
                 _ => Ok(()),
             }
@@ -1987,6 +1990,68 @@ mod tests {
     }
 
     #[test]
+    fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
+        let runtime = DesktopRuntime::default();
+        let mut command = TerminalCommand {
+            program: "/huterm-nonexistent-shell".into(),
+            arguments: vec!["-c".into(), "printf READY; read value".into()],
+            working_directory: std::env::current_dir().unwrap(),
+            environment: Vec::new(),
+            grid_size: GridSize::clamped(40, 8),
+            cell_size: CellSize {
+                width: 8,
+                height: 16,
+            },
+        };
+        assert!(runtime.open_tab(None, &command).is_err());
+        assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+        assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
+        command.program = "/bin/sh".into();
+        let (session, workspace, first) =
+            runtime.open_tab(None, &command).unwrap();
+        let (sibling, _, second) = runtime.open_tab(None, &command).unwrap();
+        assert_ne!(session, sibling);
+        command.program = "/huterm-nonexistent-shell".into();
+        assert!(runtime.open_tab(None, &command).is_err());
+        assert!(runtime.open_tab(Some(workspace), &command).is_err());
+        assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 2);
+        assert_eq!(
+            runtime
+                .mux
+                .lock()
+                .unwrap()
+                .workspace(workspace)
+                .unwrap()
+                .tabs,
+            [first.tab]
+        );
+        runtime.close_session(session).unwrap();
+        assert!(runtime.mux.lock().unwrap().workspace(workspace).is_none());
+        assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 1);
+        assert!(matches!(
+            first
+                .client
+                .read_snapshot(huterm_protocol::Viewport::default()),
+            Err(RuntimeError::Stopped)
+        ));
+        assert!(
+            second
+                .client
+                .read_snapshot(huterm_protocol::Viewport::default())
+                .is_ok()
+        );
+        runtime.close_session(sibling).unwrap();
+        assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+        assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
+        runtime.mux.lock().unwrap().reserve_through(u64::MAX - 1);
+        assert!(matches!(
+            runtime.open_tab(None, &command),
+            Err(MuxError::IdExhausted)
+        ));
+        assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    }
+
+    #[test]
     fn native_termination_drains_existing_terminals_and_rejects_queued_spawns()
     {
         let runtime = Arc::new(DesktopRuntime::default());
@@ -2001,7 +2066,7 @@ mod tests {
                 height: 16,
             },
         };
-        let (_, opened) = runtime.open_tab(None, &command).unwrap();
+        let (_, _, opened) = runtime.open_tab(None, &command).unwrap();
         // Hold the structural lock as an already-running spawn would, then
         // queue another spawn and invoke the exact native-hook cleanup method.
         let guard = runtime.mux.lock().unwrap();

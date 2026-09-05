@@ -1,8 +1,8 @@
 # Huterm agent guide
 
 Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
-workspaces, tabs, and panes. GPUI is one client. The runtime boundary must remain
-usable by a future local server and text client.
+sessions, workspaces, tabs, and panes. GPUI is one client. The runtime boundary
+must remain usable by a future local server and text client.
 
 Read [README.md](README.md) for product scope and
 [the initial desktop plan](docs/plans/initial-desktop-poc.md) for the current
@@ -10,9 +10,10 @@ architecture and acceptance criteria.
 
 Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
 [the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
-direction and follow-up milestones. Core uses WorkspaceId and owns ordered
-workspace/tab records and terminal runtimes. Windows attach independently to
-workspaces. Keep view destruction and detachment separate from explicit close.
+direction and follow-up milestones. Core owns a logical socket scope with
+ordered sessions, workspaces, tabs, and terminal runtimes. Each desktop window
+creates a private session and workspace; shared attachments remain deferred.
+Keep view destruction and detachment separate from explicit close.
 
 ## Boundaries that must hold
 
@@ -156,7 +157,7 @@ Desktop structural commands serialize through the Mux mutex on background
 workers. Never acquire it from rendering or input callbacks. Terminal clients
 send directly to their own runtime, so sibling input and snapshots continue
 while another workspace spawns or closes. TerminalView destruction only detaches;
-window commands explicitly delete their initial private workspace.
+window commands explicitly delete their initial private session.
 Use one refresh pump per window to drain bounded batches of tab events. Only the
 active tab may begin a snapshot request. Keep ChromeLayout as the shared source
 of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
@@ -229,3 +230,19 @@ worker and reorder retained views without selecting or recreating them.
 Keep the sidebar resize handle entirely inside sidebar bounds. A grab zone
 straddling the terminal can start terminal selection or application mouse input
 before resize capture consumes release, leaving that terminal gesture stuck.
+
+SessionId, WorkspaceId, and TabId carry a RuntimeId as well as a numeric ID.
+Validate the runtime scope on every structural target, including move anchors;
+matching socket names do not permit transfers between Mux instances. The numeric
+`new` constructors create unscoped IDs for fixtures/restoration input and are
+rejected by structural APIs. RuntimeId is unique only within this process; future
+IPC needs incarnation identity across processes/restarts. Scope checks prevent
+accidental aliasing, not deliberately fabricated IDs.
+Keep session/workspace automatic names tied to immutable per-kind creation
+ordinals, not membership positions. `None` clears an override; blank custom names
+are invalid. Tab title resolution uses the current client title cache without
+locking Mux on the UI thread. Desktop tab records are initial snapshots;
+propagating later core renames to views belongs with the deferred rename UI.
+Moves retain empty parents and never change terminal lifetime. Desktop windows
+retain the ID of their initial private session for explicit close and orphaned
+spawn cleanup. Roll back newly created sessions on initial workspace/tab failure.
