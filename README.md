@@ -46,14 +46,35 @@ and stops all its terminals; closing the last window quits. Foreground jobs
 require confirmation before closing. An exited shell remains visible until its
 tab is closed. Window and workspace restoration is not implemented yet.
 
-Keyboard input, paste, selection and copy, client-owned scrollback, configurable
-fonts and themes, native fullscreen, and alternate-screen applications are
-supported. A background server, local IPC, workspace switching, split panes,
-and a TUI client remain follow-up work.
+Keyboard and application mouse input, paste, selection and copy, client-owned
+scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
+applications are supported. A background server, local IPC, workspace switching,
+split panes, and a TUI client remain follow-up work.
 
 See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
 boundaries and follow-up milestones, and the
 [initial desktop plan](docs/plans/initial-desktop-poc.md) for the original scope.
+
+## Mouse interaction
+
+Applications can request button reports with mode 1000, held-button motion with
+1002, or all motion with 1003. Huterm supports left, middle, and right buttons,
+vertical and horizontal wheels, and legacy, UTF-8 1005, and SGR 1006 reports.
+Control and Alt/Option modifiers are included. Applications that do not enable
+reporting receive no mouse input.
+
+Hold Shift when starting a selection or scrolling to use local terminal
+selection and scrollback. The scrollbar always stays local. Mouse input also
+stays local while viewing scrollback, including while a scroll away from live
+is waiting for its snapshot. Return to the live viewport to interact with the
+application again. A drag keeps its original ownership until release, even if
+Shift changes or the pointer leaves the grid.
+
+Leaving the live viewport or losing focus ends application button gestures.
+Coordinates for continuing gestures clamp to the grid edge. Fast application
+wheel input is limited to 32 steps per platform event; excess whole steps and
+wheel steps that cannot fit the input queue are discarded. Legacy reports clamp
+to column/row 223 and UTF-8 reports to 2015; SGR uses the full terminal grid.
 
 ## Development
 

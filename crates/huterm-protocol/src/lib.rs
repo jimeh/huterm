@@ -99,7 +99,7 @@ pub enum TerminalKey {
     Delete,
 }
 
-/// Keyboard modifiers attached to a terminal key.
+/// Keyboard modifiers attached to terminal input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Modifiers {
     /// Control modifier.
@@ -108,6 +108,89 @@ pub struct Modifiers {
     pub alt: bool,
     /// Shift modifier.
     pub shift: bool,
+}
+
+/// Application mouse tracking requested by the terminal.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MouseTracking {
+    /// No mouse reporting.
+    #[default]
+    Disabled,
+    /// Button and wheel events, mode 1000.
+    Buttons,
+    /// Also report motion with a held button, mode 1002.
+    ButtonMotion,
+    /// Also report hover motion, mode 1003.
+    AllMotion,
+}
+
+/// Wire format for mouse reports, independent of tracking.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MouseEncoding {
+    /// Byte coordinates.
+    #[default]
+    Legacy,
+    /// UTF-8 coordinates, mode 1005.
+    Utf8,
+    /// Decimal coordinates, mode 1006.
+    Sgr,
+}
+
+/// Zero-based position in the live terminal grid.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MousePosition {
+    /// Column from the left edge.
+    pub column: u32,
+    /// Row from the top edge.
+    pub row: u32,
+}
+
+/// Supported physical mouse buttons.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+    /// Primary button.
+    Left,
+    /// Middle button.
+    Middle,
+    /// Secondary button.
+    Right,
+}
+
+/// Direction of one application wheel step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WheelDirection {
+    /// Upward scroll.
+    Up,
+    /// Downward scroll.
+    Down,
+    /// Leftward scroll.
+    Left,
+    /// Rightward scroll.
+    Right,
+}
+
+/// Mouse action, with wheel releases excluded by construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseAction {
+    /// A physical button was pressed.
+    Press(MouseButton),
+    /// A physical button was released.
+    Release(MouseButton),
+    /// Motion with the most recently pressed held button, or hover.
+    Motion(Option<MouseButton>),
+    /// One wheel step.
+    Wheel(WheelDirection),
+}
+
+/// Structured mouse input interpreted using current runtime modes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseInput {
+    /// Live-grid coordinates, clamped by the runtime before encoding.
+    pub position: MousePosition,
+    /// Physical action.
+    pub action: MouseAction,
+    /// Modifiers at the time of the event.
+    pub modifiers: Modifiers,
 }
 
 /// Structured terminal input from a client.
@@ -127,6 +210,8 @@ pub enum TerminalInput {
     Paste(String),
     /// Focus state for terminal focus-reporting mode.
     Focus(bool),
+    /// Application mouse action.
+    Mouse(MouseInput),
 }
 
 /// A command used to start a terminal.
@@ -291,6 +376,10 @@ pub struct TerminalModes {
     pub bracketed_paste: bool,
     /// Focus reporting mode.
     pub focus_reporting: bool,
+    /// Requested application mouse events.
+    pub mouse_tracking: MouseTracking,
+    /// Mouse report wire format.
+    pub mouse_encoding: MouseEncoding,
 }
 
 /// Immutable viewport snapshot produced by the terminal runtime.

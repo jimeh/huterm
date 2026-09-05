@@ -212,6 +212,10 @@ pub(super) struct ScrollDiagnostics {
 }
 
 impl ScrollController {
+    pub(super) fn reset_wheel(&mut self) {
+        self.pixel_remainder = 0.0;
+    }
+
     pub(super) fn desired(&self) -> usize {
         self.desired
     }

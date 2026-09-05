@@ -552,10 +552,7 @@ impl WorkspaceView {
                     view.focus.focus(window);
                     view.start_initial_snapshot(cx);
                 } else {
-                    view.selecting = false;
-                    view.scrollbar_dragging = false;
-                    view.scrollbar_hovering = false;
-                    view.selection_edge_direction = 0;
+                    view.hide(cx);
                 }
             });
         }
@@ -1214,6 +1211,65 @@ pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_mouse_coordinates_follow_all_tab_placements() {
+        use crate::config::TabPosition;
+        let cell = size(px(8.0), px(16.0));
+        for placement in [
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Right,
+        ] {
+            let chrome = ChromeLayout::new(
+                size(px(800.0), px(600.0)),
+                px(32.0),
+                placement,
+            );
+            let layout = TerminalLayout::new(
+                chrome.terminal.size,
+                cell,
+                WindowConfig::default(),
+            );
+            let start = chrome.terminal.origin + layout.bounds.origin;
+            assert_eq!(
+                application_mouse_geometry(
+                    start,
+                    chrome.terminal.origin,
+                    layout,
+                    cell
+                ),
+                (true, MousePosition::default()),
+                "{placement:?}"
+            );
+            assert_eq!(
+                application_mouse_geometry(
+                    start + point(px(8.0), px(16.0)),
+                    chrome.terminal.origin,
+                    layout,
+                    cell
+                ),
+                (true, MousePosition { column: 1, row: 1 }),
+                "{placement:?}"
+            );
+            let tab_center = chrome.tabs.origin
+                + point(
+                    chrome.tabs.size.width / 2.0,
+                    chrome.tabs.size.height / 2.0,
+                );
+            assert!(
+                !application_mouse_geometry(
+                    tab_center,
+                    chrome.terminal.origin,
+                    layout,
+                    cell
+                )
+                .0,
+                "{placement:?}"
+            );
+        }
+    }
 
     #[test]
     fn native_termination_drains_existing_terminals_and_rejects_queued_spawns()

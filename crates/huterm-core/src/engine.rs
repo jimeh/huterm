@@ -1,3 +1,4 @@
+use huterm_protocol::{MouseEncoding, MouseTracking};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -74,6 +75,13 @@ impl TerminalEngine {
     pub(crate) fn resize(&mut self, size: GridSize) {
         self.term.resize(EngineDimensions::from(size));
         self.generation = self.generation.saturating_add(1);
+    }
+
+    pub(crate) fn size(&self) -> GridSize {
+        GridSize::clamped(
+            u16::try_from(self.term.columns()).unwrap_or(u16::MAX),
+            u16::try_from(self.term.screen_lines()).unwrap_or(u16::MAX),
+        )
     }
 
     pub(crate) fn modes(&self) -> TerminalModes {
@@ -291,6 +299,22 @@ fn named_color(named: NamedColor) -> CellColor {
 
 fn modes(mode: TermMode) -> TerminalModes {
     TerminalModes {
+        mouse_tracking: if mode.contains(TermMode::MOUSE_MOTION) {
+            MouseTracking::AllMotion
+        } else if mode.contains(TermMode::MOUSE_DRAG) {
+            MouseTracking::ButtonMotion
+        } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            MouseTracking::Buttons
+        } else {
+            MouseTracking::Disabled
+        },
+        mouse_encoding: if mode.contains(TermMode::SGR_MOUSE) {
+            MouseEncoding::Sgr
+        } else if mode.contains(TermMode::UTF8_MOUSE) {
+            MouseEncoding::Utf8
+        } else {
+            MouseEncoding::Legacy
+        },
         application_cursor: mode.contains(TermMode::APP_CURSOR),
         alternate_screen: mode.contains(TermMode::ALT_SCREEN),
         bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
@@ -315,6 +339,99 @@ mod tests {
 
     fn engine() -> TerminalEngine {
         TerminalEngine::new(TerminalId::new(1), GridSize::clamped(8, 3))
+    }
+
+    #[test]
+    fn mouse_modes_follow_parser_including_inactive_reset_and_terminal_reset() {
+        let mut engine = engine();
+        let mut generation = 0;
+        for (sequence, tracking, encoding) in [
+            ("\x1b[?1006h", MouseTracking::Disabled, MouseEncoding::Sgr),
+            ("\x1b[?1000h", MouseTracking::Buttons, MouseEncoding::Sgr),
+            (
+                "\x1b[?1002h",
+                MouseTracking::ButtonMotion,
+                MouseEncoding::Sgr,
+            ),
+            ("\x1b[?1003h", MouseTracking::AllMotion, MouseEncoding::Sgr),
+            ("\x1b[?1000l", MouseTracking::AllMotion, MouseEncoding::Sgr),
+            ("\x1b[?1002l", MouseTracking::AllMotion, MouseEncoding::Sgr),
+            ("\x1b[?1005h", MouseTracking::AllMotion, MouseEncoding::Utf8),
+            ("\x1b[?1006l", MouseTracking::AllMotion, MouseEncoding::Utf8),
+            (
+                "\x1b[?1005l",
+                MouseTracking::AllMotion,
+                MouseEncoding::Legacy,
+            ),
+            (
+                "\x1b[?1003l",
+                MouseTracking::Disabled,
+                MouseEncoding::Legacy,
+            ),
+            (
+                "\x1b[?1002h\x1b[?1006h\x1bc",
+                MouseTracking::Disabled,
+                MouseEncoding::Legacy,
+            ),
+        ] {
+            engine.process(sequence.as_bytes());
+            let snapshot = engine.snapshot(Viewport::default());
+            assert!(snapshot.generation > generation);
+            generation = snapshot.generation;
+            assert_eq!(
+                (snapshot.modes.mouse_tracking, snapshot.modes.mouse_encoding),
+                (tracking, encoding),
+                "{sequence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn queued_mouse_uses_current_modes_dimensions_and_format_for_each_event() {
+        use huterm_protocol::{
+            Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
+            TerminalInput,
+        };
+        let mut engine = engine();
+        let input = |action| {
+            TerminalInput::Mouse(MouseInput {
+                action,
+                position: MousePosition { column: 7, row: 2 },
+                modifiers: Modifiers::default(),
+            })
+        };
+        let encode = |engine: &TerminalEngine, action| {
+            crate::input::encode_input(
+                &input(action),
+                engine.modes(),
+                engine.size(),
+            )
+        };
+        engine.process(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(
+            encode(&engine, MouseAction::Press(MouseButton::Right)),
+            b"\x1b[<2;8;3M"
+        );
+        engine.resize(GridSize::clamped(2, 1));
+        engine.process(b"\x1b[?1006l");
+        assert_eq!(
+            encode(&engine, MouseAction::Release(MouseButton::Right)),
+            b"\x1b[M#\"!"
+        );
+        engine.process(b"\x1b[?1002l");
+        assert!(
+            encode(&engine, MouseAction::Motion(Some(MouseButton::Right)))
+                .is_empty()
+        );
+        assert!(
+            encode(&engine, MouseAction::Release(MouseButton::Right))
+                .is_empty()
+        );
+        engine.process(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(
+            encode(&engine, MouseAction::Motion(Some(MouseButton::Right))),
+            b"\x1b[<34;2;1M"
+        );
     }
 
     #[test]

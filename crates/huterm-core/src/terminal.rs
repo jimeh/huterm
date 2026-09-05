@@ -691,7 +691,7 @@ fn run_terminal(
                 reserved_bytes,
             } => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                let bytes = encode_input(&input, engine.modes());
+                let bytes = encode_input(&input, engine.modes(), engine.size());
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
                         == WriterQueueState::Disconnected
@@ -988,6 +988,55 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn pty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
+        use huterm_protocol::{
+            Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
+            MouseTracking,
+        };
+        let expected = b"\x1b[<0;2;3MK\x1b[<0;2;3m";
+        let script = format!(
+            "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; bytes=$(dd bs=1 count={} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:DONE\\033[?1000lDISABLED' \"$bytes\"; byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'SILENT:%s:END' \"$byte\"",
+            expected.len(),
+        );
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(91), &command(&script))
+                .unwrap();
+        let client = runtime.client();
+        let ready = wait_for_text(&client, "READY");
+        assert_eq!(ready.modes.mouse_tracking, MouseTracking::Buttons);
+        let mouse = |action| {
+            TerminalInput::Mouse(MouseInput {
+                action,
+                position: MousePosition { column: 1, row: 2 },
+                modifiers: Modifiers::default(),
+            })
+        };
+        client
+            .send_input(mouse(MouseAction::Press(MouseButton::Left)))
+            .unwrap();
+        client.send_input(TerminalInput::Text("K".into())).unwrap();
+        client
+            .send_input(mouse(MouseAction::Release(MouseButton::Left)))
+            .unwrap();
+        let disabled = wait_for_text(&client, "DISABLED");
+        assert_eq!(disabled.modes.mouse_tracking, MouseTracking::Disabled);
+        let hex = "1b5b3c303b323b334d4b1b5b3c303b323b336d";
+        let text: String = disabled
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(text.contains(&format!("HEX:{hex}:DONE")), "{text:?}");
+        client
+            .send_input(mouse(MouseAction::Press(MouseButton::Left)))
+            .unwrap();
+        client.send_input(TerminalInput::Text("Z".into())).unwrap();
+        wait_for_text(&client, "SILENT:5a:END");
+        assert_eq!(wait_for_exit(&client).code, Some(0));
+        runtime.shutdown().unwrap();
+    }
 
     #[test]
     fn blocking_snapshot_receive_times_out_and_reports_disconnect() {

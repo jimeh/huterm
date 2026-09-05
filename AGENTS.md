@@ -186,3 +186,26 @@ that exist in the current source.
 Global action callbacks run while the dispatching window is borrowed. Defer
 Quit routing before updating a native window handle; a synchronous update of
 the active window fails with `window not found` even though it remains open.
+
+Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
+enabled format wins. Project its current bits rather than retaining independent
+client format flags. Encode mouse events at dequeue time against live modes and
+dimensions. GPUI owns physical-button lifetimes and may admit one overflow
+release per accepted button, consuming ownership before enqueueing the release.
+GPUI's X11 backend remaps Shift vertical wheel lines to horizontal-only deltas.
+Restore those deltas to vertical only on the local scroll path on Linux. Leave
+application horizontal wheel reports and macOS deltas unchanged until native
+macOS device evidence justifies normalization there.
+On macOS, GPUI 0.2.2 remaps Control-left independently at press and release,
+clearing Control and discarding the original button identity. Match releases
+to held logical buttons first; an unmatched Left/Right release closes the held
+opposite Left/Right only on macOS. Simultaneous Control-left and physical Right
+can collapse into one logical button, so their physical release order cannot be
+recovered. Do not extend this fallback to Middle or Linux. Finalize local
+selection text on blur as well as release before stopping the drag.
+Application mouse coordinates use ChromeLayout's full terminal origin, including
+horizontal offsets from vertical tabs. When hiding a retained TerminalView,
+release accepted application gestures, finalize selection, and forget canceled
+physical buttons: the eventual release may reach a different tab. Ignore stale
+pointer callbacks for hidden views; keep focus and window-activation cleanup
+subscriptions on each TerminalView.

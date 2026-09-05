@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -23,16 +22,23 @@ use huterm_protocol::{
 
 use crate::APP_ID;
 use crate::config::{self, Config, Theme, WindowConfig};
+#[cfg(test)]
+use crate::input_queue::buffered_input_bytes;
+use crate::input_queue::{
+    Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
+};
+use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::{
     IndicatorVisibility, ScrollController, ScrollbarExpansion,
     ScrollbarGeometry,
 };
+use huterm_protocol::{
+    MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
+};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
-const PENDING_INPUT_CAPACITY: usize = 256;
-const PENDING_INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
@@ -225,8 +231,8 @@ struct TerminalView {
     title: String,
     exited: bool,
     visible: bool,
-    pending_inputs: VecDeque<TerminalInput>,
-    pending_input_bytes: usize,
+    input_queue: InputQueue,
+    mouse: MouseState,
     pending_resize: Option<(GridSize, CellSize)>,
     snapshot: Option<Arc<TerminalSnapshot>>,
     renderer: Rc<RefCell<TerminalRenderer>>,
@@ -271,20 +277,32 @@ impl TerminalView {
         let theme = config.theme.clone();
         let focus_subscription =
             cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
-                if view.enqueue_input(TerminalInput::Focus(true)) {
+                if view.visible
+                    && view.enqueue_input(TerminalInput::Focus(true))
+                {
                     cx.notify();
                 }
             });
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
+                view.blur_mouse(cx);
                 if view.enqueue_input(TerminalInput::Focus(false)) {
                     cx.notify();
                 }
             });
+        let activation_subscription = cx.observe_window_activation(
+            window,
+            |view: &mut TerminalView, window, cx| {
+                if view.visible && !window.is_window_active() {
+                    view.blur_mouse(cx);
+                    cx.notify();
+                }
+            },
+        );
         TerminalView {
             client,
-            pending_inputs: VecDeque::new(),
-            pending_input_bytes: 0,
+            input_queue: InputQueue::default(),
+            mouse: MouseState::default(),
             pending_resize: None,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
@@ -293,7 +311,11 @@ impl TerminalView {
                 metrics,
             ))),
             focus,
-            _focus_subscriptions: vec![focus_subscription, blur_subscription],
+            _focus_subscriptions: vec![
+                focus_subscription,
+                blur_subscription,
+                activation_subscription,
+            ],
             scroll: ScrollController::default(),
             last_grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
             metrics,
@@ -331,6 +353,9 @@ impl TerminalView {
     }
 
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
+        if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
+            self.cancel_mouse();
+        }
         let Some(viewport) =
             begin_visible_snapshot(&mut self.scroll, self.visible)
         else {
@@ -397,6 +422,13 @@ impl TerminalView {
     }
 
     fn apply_snapshot(&mut self, snapshot: TerminalSnapshot) {
+        if self.mouse.observe_modes(snapshot.modes) {
+            self.input_queue.cancel_motion();
+            self.scroll.reset_wheel();
+        }
+        if snapshot.viewport.bottom_offset > 0 || self.scroll.desired() > 0 {
+            self.cancel_mouse();
+        }
         self.scroll
             .complete(snapshot.viewport, snapshot.history_size);
         if self.selection.is_some_and(|selection| {
@@ -424,6 +456,9 @@ impl TerminalView {
     }
 
     fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+        if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
+            self.cancel_mouse();
+        }
         let mut changed = self.retry_client_messages();
         changed |= self.scrollbar_visibility.update(
             Instant::now(),
@@ -523,16 +558,58 @@ impl TerminalView {
     fn scroll(
         &mut self,
         event: &ScrollWheelEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let changed = match event.delta {
-            ScrollDelta::Pixels(delta) => self.scroll.scroll_pixels(
-                f32::from(delta.y),
-                f32::from(self.metrics.cell_height),
-            ),
-            ScrollDelta::Lines(delta) => self.scroll.scroll_lines(delta.y),
-        };
+        if !self.visible {
+            return;
+        }
+        let (application, cell) =
+            self.application_mouse(event.position, event.modifiers, window);
+        if self.mouse.wheel_route(application) {
+            self.scroll.reset_wheel();
+            self.input_queue.boundary();
+        }
+        if application {
+            let delta = match event.delta {
+                ScrollDelta::Pixels(delta) => {
+                    let width = f64::from(f32::from(self.metrics.cell_width));
+                    let height = f64::from(f32::from(self.metrics.cell_height));
+                    if !width.is_finite()
+                        || !height.is_finite()
+                        || width <= 0.0
+                        || height <= 0.0
+                    {
+                        return;
+                    }
+                    (
+                        f64::from(f32::from(delta.x)) / width,
+                        f64::from(f32::from(delta.y)) / height,
+                    )
+                }
+                ScrollDelta::Lines(delta) => {
+                    (f64::from(delta.x), f64::from(delta.y))
+                }
+            };
+            self.input_queue.boundary();
+            for direction in self.mouse.wheel(delta.0, delta.1) {
+                self.admit_input(
+                    TerminalInput::Mouse(MouseInput {
+                        position: cell,
+                        action: MouseAction::Wheel(direction),
+                        modifiers: protocol_modifiers(event.modifiers),
+                    }),
+                    false,
+                    true,
+                );
+            }
+            return;
+        }
+        let changed = local_scroll(
+            &mut self.scroll,
+            event,
+            f32::from(self.metrics.cell_height),
+        );
         if self.scroll.history() > 0 {
             self.activate_scrollbar();
             cx.notify();
@@ -666,13 +743,73 @@ impl TerminalView {
         window.zoom_window();
     }
 
+    fn application_mouse(
+        &self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+    ) -> (bool, MousePosition) {
+        let (in_grid, cell) = application_mouse_geometry(
+            position,
+            self.content_bounds(window).origin,
+            self.terminal_layout(window),
+            size(self.metrics.cell_width, self.metrics.cell_height),
+        );
+        let in_grid = in_grid
+            && window.is_window_active()
+            && self.focus.is_focused(window);
+        let position = position - self.content_bounds(window).origin;
+        let route = self.snapshot.as_ref().is_some_and(|snapshot| {
+            application_route(
+                in_grid,
+                self.scrollbar_at(position, window).is_some(),
+                modifiers.shift,
+                snapshot.modes.mouse_tracking,
+                self.scroll.displayed(),
+                self.scroll.desired(),
+            )
+        });
+        (route, cell)
+    }
+
     fn mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if !self.visible {
+            return;
+        }
         self.focus.focus(window);
+        let Some(button) = protocol_mouse_button(event.button) else {
+            return;
+        };
+        let (application, cell) =
+            self.application_mouse(event.position, event.modifiers, window);
+        if self.mouse.held(button) {
+            return;
+        }
+        self.input_queue.boundary();
+        if self.mouse.down(button, application) {
+            let (accepted, _) = self.admit_input(
+                TerminalInput::Mouse(MouseInput {
+                    position: cell,
+                    action: MouseAction::Press(button),
+                    modifiers: protocol_modifiers(event.modifiers),
+                }),
+                false,
+                false,
+            );
+            if accepted {
+                self.mouse.accepted(button, cell);
+            }
+            cx.notify();
+            return;
+        }
+        if application || event.button != MouseButton::Left {
+            return;
+        }
         let position = event.position - self.content_bounds(window).origin;
         if let Some(geometry) = self.scrollbar_at(position, window) {
             if geometry.contains(f32::from(position.y)) {
@@ -714,7 +851,22 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if !self.visible {
+            return;
+        }
         let position = event.position - self.content_bounds(window).origin;
+        if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
+            self.cancel_mouse();
+        }
+        let (application, cell) =
+            self.application_mouse(event.position, event.modifiers, window);
+        if let Some(motion) = self.mouse.motion(
+            cell,
+            protocol_modifiers(event.modifiers),
+            application,
+        ) {
+            self.admit_input(TerminalInput::Mouse(motion), false, true);
+        }
         let was_hovering = self.scrollbar_hovering;
         self.scrollbar_hovering = self.scrollbar_at(position, window).is_some();
         if self.scrollbar_hovering {
@@ -765,15 +917,43 @@ impl TerminalView {
 
     fn mouse_up(
         &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
+        event: &MouseUpEvent,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if !self.visible {
+            return;
+        }
+        let Some(button) = protocol_mouse_button(event.button) else {
+            return;
+        };
+        let button = self
+            .mouse
+            .release_button(button, cfg!(target_os = "macos"))
+            .unwrap_or(button);
+        let (_, cell) =
+            self.application_mouse(event.position, event.modifiers, window);
+        self.input_queue.boundary();
+        if let Some(release) = self.mouse.release(
+            button,
+            cell,
+            protocol_modifiers(event.modifiers),
+        ) {
+            self.admit_input(TerminalInput::Mouse(release), true, false);
+            cx.notify();
+        }
+        if button != ProtocolMouseButton::Left {
+            return;
+        }
         if self.scrollbar_dragging {
             self.scrollbar_dragging = false;
             self.activate_scrollbar();
             cx.notify();
         }
+        self.finish_selection(cx);
+    }
+
+    fn finish_selection(&mut self, cx: &mut Context<'_, Self>) {
         self.selection_edge_direction = 0;
         if !self.selecting {
             return;
@@ -940,42 +1120,57 @@ impl TerminalView {
     }
 
     fn enqueue_input(&mut self, input: TerminalInput) -> bool {
-        if self.pending_inputs.is_empty() {
-            match self.client.send_input(input.clone()) {
-                Ok(()) => return false,
-                Err(RuntimeError::Busy) => {}
-                Err(error) => return self.set_status(error.to_string()),
+        self.mouse.boundary();
+        let (_, changed) = self.admit_input(input, false, false);
+        changed
+    }
+
+    fn admit_input(
+        &mut self,
+        input: TerminalInput,
+        release: bool,
+        quiet: bool,
+    ) -> (bool, bool) {
+        match self.input_queue.enqueue(input, release, |input| self.client.send_input(input)) {
+            Ok(Admission::Accepted) => (true, false),
+            Ok(Admission::Full) if quiet => (false, false),
+            Ok(Admission::Full) => (false, self.set_status(format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
+            Err(error) => {
+                self.mouse = MouseState::default();
+                (false, self.set_status(error.to_string()))
             }
         }
-        let input_bytes = buffered_input_bytes(&input);
-        if self.pending_inputs.len() == PENDING_INPUT_CAPACITY
-            || self.pending_input_bytes.saturating_add(input_bytes)
-                > PENDING_INPUT_BYTE_CAPACITY
-        {
-            return self.set_status(format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"));
+    }
+
+    fn cancel_mouse(&mut self) {
+        self.input_queue.cancel_motion();
+        for release in self.mouse.cancel() {
+            self.admit_input(TerminalInput::Mouse(release), true, false);
         }
-        self.pending_inputs.push_back(input);
-        self.pending_input_bytes += input_bytes;
-        false
+    }
+
+    fn hide(&mut self, cx: &mut Context<'_, Self>) {
+        self.blur_mouse(cx);
+        self.mouse.forget_released_buttons();
+        self.scrollbar_hovering = false;
+        self.visible = false;
+    }
+
+    fn blur_mouse(&mut self, cx: &mut Context<'_, Self>) {
+        self.cancel_mouse();
+        self.finish_selection(cx);
+        self.scrollbar_dragging = false;
+        self.selection_edge_direction = 0;
+        self.scroll.reset_wheel();
     }
 
     fn retry_client_messages(&mut self) -> bool {
-        while let Some(input) = self.pending_inputs.front().cloned() {
-            match self.client.send_input(input) {
-                Ok(()) => {
-                    if let Some(sent) = self.pending_inputs.pop_front() {
-                        self.pending_input_bytes = self
-                            .pending_input_bytes
-                            .saturating_sub(buffered_input_bytes(&sent));
-                    }
-                }
-                Err(RuntimeError::Busy) => break,
-                Err(error) => {
-                    self.pending_inputs.clear();
-                    self.pending_input_bytes = 0;
-                    return self.set_status(error.to_string());
-                }
-            }
+        if let Err(error) = self
+            .input_queue
+            .retry(|input| self.client.send_input(input))
+        {
+            self.mouse = MouseState::default();
+            return self.set_status(error.to_string());
         }
         if let Some((grid, cell)) = self.pending_resize {
             match self.client.resize(grid, cell) {
@@ -1165,6 +1360,12 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(Self::mouse_up))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::mouse_up))
             .relative()
             .w_full()
             .h(self.viewport(window).height)
@@ -1444,6 +1645,79 @@ fn point_for_position(
         column,
     }
 }
+fn local_scroll(
+    controller: &mut ScrollController,
+    event: &ScrollWheelEvent,
+    row_height: f32,
+) -> bool {
+    match event.delta {
+        ScrollDelta::Pixels(delta) => {
+            controller.scroll_pixels(f32::from(delta.y), row_height)
+        }
+        ScrollDelta::Lines(delta) => {
+            // GPUI's X11 backend moves Shift-wheel vertical lines into x.
+            let lines = if cfg!(target_os = "linux")
+                && event.modifiers.shift
+                && delta.y == 0.0
+            {
+                delta.x
+            } else {
+                delta.y
+            };
+            controller.scroll_lines(lines)
+        }
+    }
+}
+
+fn application_mouse_geometry(
+    position: gpui::Point<Pixels>,
+    origin: gpui::Point<Pixels>,
+    layout: TerminalLayout,
+    cell: gpui::Size<Pixels>,
+) -> (bool, MousePosition) {
+    let relative = position - origin - layout.bounds.origin;
+    let inside = relative.x >= px(0.0)
+        && relative.y >= px(0.0)
+        && relative.x < layout.bounds.size.width
+        && relative.y < layout.bounds.size.height;
+    (inside, mouse_position(relative, layout.grid, cell))
+}
+
+fn protocol_mouse_button(button: MouseButton) -> Option<ProtocolMouseButton> {
+    match button {
+        MouseButton::Left => Some(ProtocolMouseButton::Left),
+        MouseButton::Middle => Some(ProtocolMouseButton::Middle),
+        MouseButton::Right => Some(ProtocolMouseButton::Right),
+        MouseButton::Navigate(_) => None,
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite coordinates clamp to the u16 grid before conversion"
+)]
+fn mouse_position(
+    position: gpui::Point<Pixels>,
+    grid: GridSize,
+    cell: gpui::Size<Pixels>,
+) -> MousePosition {
+    let coordinate = |value: Pixels, dimension: Pixels, count: u16| {
+        let value = f32::from(value);
+        let dimension = f32::from(dimension);
+        if !value.is_finite() || !dimension.is_finite() || dimension <= 0.0 {
+            return 0;
+        }
+        (value / dimension)
+            .floor()
+            .clamp(0.0, f32::from(count.saturating_sub(1))) as u32
+    };
+    MousePosition {
+        column: coordinate(position.x, cell.width, grid.columns),
+        row: coordinate(position.y, cell.height, grid.rows),
+    }
+}
+
 fn protocol_modifiers(modifiers: GpuiModifiers) -> Modifiers {
     Modifiers {
         control: modifiers.control,
@@ -1624,15 +1898,6 @@ fn control_byte(key: &str) -> Option<u8> {
     let byte = byte.to_ascii_uppercase();
     matches!(byte, b'@'..=b'_').then_some(byte & 0x1f)
 }
-fn buffered_input_bytes(input: &TerminalInput) -> usize {
-    match input {
-        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
-        TerminalInput::Key { .. } | TerminalInput::Focus(_) => {
-            std::mem::size_of::<TerminalInput>()
-        }
-        _ => std::mem::size_of::<TerminalInput>(),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1647,6 +1912,83 @@ mod tests {
         assert!(benchmark.is_started());
         assert_eq!(scroll.desired(), 1);
         assert!(benchmark.take_injection(1).is_some());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn x11_shift_wheel_uses_remapped_lines_for_local_scrollback() {
+        let mut scroll = ScrollController::default();
+        scroll.complete(huterm_protocol::Viewport::default(), 100);
+        let mut event = ScrollWheelEvent {
+            position: point(px(40.0), px(40.0)),
+            delta: ScrollDelta::Lines(point(3.0, 0.0)),
+            modifiers: GpuiModifiers {
+                shift: true,
+                ..GpuiModifiers::default()
+            },
+            touch_phase: gpui::TouchPhase::default(),
+        };
+        assert!(local_scroll(&mut scroll, &event, 16.0));
+        assert_eq!(scroll.desired(), 3);
+        event.modifiers.shift = false;
+        assert!(!local_scroll(&mut scroll, &event, 16.0));
+        assert_eq!(scroll.desired(), 3);
+        event.modifiers.shift = true;
+        event.delta = ScrollDelta::Lines(point(9.0, -2.0));
+        assert!(local_scroll(&mut scroll, &event, 16.0));
+        assert_eq!(scroll.desired(), 1);
+    }
+
+    #[test]
+    fn application_coordinates_exclude_titlebar_padding_and_grid_endpoints() {
+        let cell = size(px(8.0), px(16.0));
+        let layout = TerminalLayout::new(
+            size(px(105.0), px(59.0)),
+            cell,
+            WindowConfig::default(),
+        );
+        let geometry = |x, y| {
+            application_mouse_geometry(
+                point(px(x), px(y)),
+                point(px(0.0), px(32.0)),
+                layout,
+                cell,
+            )
+        };
+        assert_eq!(
+            geometry(4.0, 36.0),
+            (true, MousePosition { column: 0, row: 0 })
+        );
+        assert_eq!(
+            geometry(99.9, 83.9),
+            (true, MousePosition { column: 11, row: 2 })
+        );
+        for (x, y) in [
+            (4.0, 31.0),
+            (3.9, 40.0),
+            (10.0, 35.9),
+            (100.0, 40.0),
+            (10.0, 84.0),
+            (-100.0, -100.0),
+            (1000.0, 1000.0),
+        ] {
+            assert!(!geometry(x, y).0, "{x} {y}");
+        }
+        assert_eq!(
+            geometry(1000.0, 1000.0).1,
+            MousePosition { column: 11, row: 2 }
+        );
+        assert_eq!(geometry(-100.0, -100.0).1, MousePosition::default());
+        for dimension in [0.0, -1.0, f32::INFINITY, f32::NAN] {
+            assert_eq!(
+                mouse_position(
+                    point(px(50.0), px(50.0)),
+                    layout.grid,
+                    size(px(dimension), px(dimension))
+                ),
+                MousePosition::default()
+            );
+        }
     }
 
     #[test]
