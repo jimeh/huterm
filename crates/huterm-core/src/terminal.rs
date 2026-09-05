@@ -531,7 +531,7 @@ fn run_terminal(
             );
             drop(writer);
             drop(master);
-            let _ = pty::reap_child(child.as_mut());
+            let _ = pty::reap_child(child);
             return Err(error);
         }
     };
@@ -556,7 +556,7 @@ fn run_terminal(
             drop(master);
             drop(messages);
             join_worker(reader_join);
-            let _ = pty::reap_child(child.as_mut());
+            let _ = pty::reap_child(child);
             return Err(error);
         }
     };
@@ -730,7 +730,7 @@ fn run_terminal(
     drop(messages);
     join_worker(reader_join);
     join_worker(writer_join);
-    if pty::reap_child(child.as_mut()) {
+    if pty::reap_child(child) {
         Ok(())
     } else {
         report_failure(

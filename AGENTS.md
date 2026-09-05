@@ -209,3 +209,7 @@ release accepted application gestures, finalize selection, and forget canceled
 physical buttons: the eventual release may reach a different tab. Ignore stale
 pointer callbacks for hidden views; keep focus and window-activation cleanup
 subscriptions on each TerminalView.
+After bounded PTY cleanup times out, transfer the child handle to a deferred
+reaper until wait succeeds; preserve ShutdownTimedOut for the caller. If the
+reaper thread cannot be created, emergency synchronous reaping can exceed the
+normal shutdown bound. Deferred cleanup cannot outlive OS application termination.
