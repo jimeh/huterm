@@ -215,7 +215,8 @@ reaper thread cannot be created, emergency synchronous reaping can exceed the
 normal shutdown bound. Deferred cleanup cannot outlive OS application termination.
 Tab reorder uses source-window capture listeners registered before terminal
 mouse handlers. Project movement onto the tab-bar axis and clamp preview/drop
-geometry, including release outside the window. Keep Escape cancellation deferred
-through keystroke observation so it cannot also reach the terminal. Overflow
+geometry, including release outside the window. Stop propagation when Escape
+cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus during
+the drag to avoid false application focus-out/in reports. Overflow
 paging must not pin to the active tab during a drag. Commit canonical Mux order
 on a worker and reorder retained views without selecting or recreating them.

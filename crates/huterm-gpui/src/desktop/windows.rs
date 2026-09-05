@@ -337,6 +337,22 @@ struct TabView {
     view: Entity<TerminalView>,
 }
 
+impl TabView {
+    fn title(&self, cx: &App) -> String {
+        let terminal = self.view.read(cx);
+        let title = if terminal.title.trim().is_empty() {
+            self.fallback_title.clone()
+        } else {
+            terminal.title.clone()
+        };
+        if terminal.exited {
+            format!("{title} · exited")
+        } else {
+            title
+        }
+    }
+}
+
 struct WorkspaceView {
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
@@ -719,7 +735,6 @@ impl WorkspaceView {
                 && (pointer - drag.origin).magnitude() > TAB_DRAG_THRESHOLD
             {
                 drag.dragging = true;
-                self.focus.focus(window);
             }
             drag.strip = strip;
             let direction =
@@ -1354,11 +1369,9 @@ impl Render for WorkspaceView {
                 |view, event: &gpui::KeyDownEvent, window, cx| {
                     if view.reorder.is_some() && event.keystroke.key == "escape"
                     {
-                        // Retain the gesture through keystroke observation, so
-                        // Escape cannot also reach the active terminal.
-                        cx.defer_in(window, |view, window, cx| {
-                            view.cancel_reorder(window, cx);
-                        });
+                        view.cancel_reorder(window, cx);
+                        // GPUI skips raw keystroke observers after propagation
+                        // stops, so this Escape cannot also reach the terminal.
                         cx.stop_propagation();
                         return;
                     }
@@ -1525,17 +1538,7 @@ impl Render for WorkspaceView {
         for index in visible {
             let tab = &self.tabs[index];
             let id = tab.id;
-            let terminal = tab.view.read(cx);
-            let title = if terminal.title.trim().is_empty() {
-                tab.fallback_title.clone()
-            } else {
-                terminal.title.clone()
-            };
-            let title = if terminal.exited {
-                format!("{title} · exited")
-            } else {
-                title
-            };
+            let title = tab.title(cx);
             bar = bar.child(
                 div()
                     .id(("tab", id.get()))
@@ -1630,7 +1633,7 @@ impl Render for WorkspaceView {
                 .tabs
                 .iter()
                 .find(|tab| tab.id == drag.source.tab)
-                .map(|tab| tab.fallback_title.clone())
+                .map(|tab| tab.title(cx))
                 .unwrap_or_default();
             root = root.child(
                 div()
