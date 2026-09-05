@@ -78,7 +78,10 @@ navigation affects only the initiating view.
 The original milestone used WorkspaceId in place of an earlier SessionId.
 Session now names the distinct parent of Workspace, as specified above.
 
-## First PR: multiple windows and tabs
+## Historical first PR: multiple windows and tabs
+
+This section records the original milestone. Its private-workspace creation and
+close rules are superseded by the private-session ownership described above.
 
 Deliver independent native windows with working tabs on macOS and Linux. Each
 window initially attaches to a fresh workspace; workspace switching and shared
