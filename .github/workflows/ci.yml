@@ -62,8 +62,11 @@ jobs:
       - name: Verify Rust
         run: mise run verify:platform
 
-      - name: Build and verify Huterm.app
-        run: mise run package:macos
+      - name: Check Alacritty-only build
+        run: mise run check:alacritty
+
+      - name: Build and verify Huterm.app with both engines
+        run: mise run package:macos:ghostty
 
   verify-linux:
     name: Verify Linux x86_64
@@ -98,6 +101,9 @@ jobs:
       - name: Verify Rust
         run: mise run verify:platform
 
+      - name: Check Alacritty-only build
+        run: mise run check:alacritty
+
       - name: Audit dependencies
         run: mise run license
 
@@ -106,3 +112,6 @@ jobs:
 
       - name: Verify scroll performance budgets
         run: mise run bench:scroll
+
+      - name: Verify Ghostty scroll performance budgets
+        run: mise run bench:scroll:ghostty

@@ -1,0 +1,26 @@
+{
+  "revision": "a887df42c56f6de86c0fe6da9c4eeca37931e083",
+  "zig": "0.15.2",
+  "source": {
+    "name": "ghostty",
+    "url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/a887df42c56f6de86c0fe6da9c4eeca37931e083",
+    "sha256": "fb4b2f9ffa0af125983041fdbe4ef94d3fa79fb9f2d22b9c213c0e3847a866b6",
+    "tree_sha256": "1fe5c8c08233b58aa0b166ed0c8b714b622c05225cc71679486fd7929b79975a"
+  },
+  "packages": [
+    {
+      "name": "uucode",
+      "url": "https://deps.files.ghostty.org/uucode-0.2.0-ZZjBPqZVVABQepOqZHR7vV_NcaN-wats0IB6o-Exj6m9.tar.gz",
+      "sha256": "d0abee0f4f8bd6eae3c051777e16e7c42d8964aaaa015591c4e565703f465f95",
+      "zig_hash": "uucode-0.2.0-ZZjBPqZVVABQepOqZHR7vV_NcaN-wats0IB6o-Exj6m9",
+      "tree_sha256": "b8edd2736bd6484603b141571fffe3a11bc3548e1a883b39a39a603caaa2d120"
+    },
+    {
+      "name": "highway",
+      "url": "https://deps.files.ghostty.org/highway-66486a10623fa0d72fe91260f96c892e41aceb06.tar.gz",
+      "sha256": "87d4f8893ef4e08f224973608ffebf94268a81380ba79c12e8841968c80aa212",
+      "zig_hash": "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE",
+      "tree_sha256": "09fab3b2ea3fb72fbee8b96047c95dba4f806d05aaa1429873ce0969bffea712"
+    }
+  ]
+}

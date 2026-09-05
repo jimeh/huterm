@@ -150,3 +150,15 @@ preemption, not just per-thread CPU execution.
 On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
 version, Developer Tools category, icon, executable, and arm64 architecture.
+
+## Optional terminal engine
+
+`mise run dev:ghostty` builds both engines. Set `[terminal] engine = "ghostty"`
+and reload to use Ghostty for new tabs and windows. Shared scrolling and immutable
+rows apply to both engines. See [the engine guide](terminal-engines.md) for
+pinned native inputs, license coverage, and matched benchmark commands.
+
+`check`, `test`, and `verify` exercise both engines and prepare the pinned native
+source through Mise. `mise run check:alacritty` verifies the default build without
+Zig. Source preparation needs Python 3.11 or newer with tarfile's data filter;
+Ubuntu 24.04 and current GitHub macOS runners satisfy this requirement.

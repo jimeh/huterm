@@ -7,6 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = []
+ghostty = ["huterm-core/ghostty"]
+
 [dependencies]
 anyhow.workspace = true
 huterm-core.workspace = true

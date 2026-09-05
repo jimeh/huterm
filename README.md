@@ -7,7 +7,7 @@ terminal state, sessions, workspaces, tabs, and pane layouts so other clients
 can attach to the same runtime later.
 
 The first proof-of-concept implementation is under active validation. It has a
-working PTY runtime, Alacritty-backed snapshots, and macOS/Linux GPUI clients.
+working PTY runtime, incremental terminal snapshots, and macOS/Linux GPUI clients.
 Portable core tests, repository checks, Linux native tests, and the Linux Xvfb
 smoke pass locally. CI enforces the same suite on Apple Silicon macOS and Linux
 x86_64; green current-head CI is required for PR readiness, while manual
@@ -20,9 +20,9 @@ Huterm is based on four decisions:
 - Huterm owns PTY spawning, I/O, resize, process lifetime, and attachment
   behavior. It will initially use `portable-pty` for the operating-system
   implementation.
-- The runtime owns canonical terminal state. It will initially use upstream
-  `alacritty_terminal` for escape-sequence parsing, the terminal grid,
-  scrollback, modes, and cursor state.
+- The runtime owns canonical terminal state and the shared scroll position.
+  Upstream `alacritty_terminal` is the default engine; experimental builds also
+  provide `libghostty-vt` behind the same snapshot and input boundary.
 - Clients render Huterm-owned terminal snapshots. The first client uses GPUI;
   a text-based terminal client can use the same model later.
 - Huterm application code targets the MIT license. Dependencies may use other
@@ -56,7 +56,7 @@ and stops all its terminals; closing the last window quits. Foreground jobs
 require confirmation before closing. An exited shell remains visible until its
 tab is closed. Window and workspace restoration is not implemented yet.
 
-Keyboard and application mouse input, paste, selection and copy, client-owned
+Keyboard and application mouse input, paste, selection and copy, runtime-owned
 scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
 applications are supported. A background server, local IPC, workspace switching,
 split panes, and a TUI client remain follow-up work.
@@ -278,13 +278,34 @@ restoration, and shared GUI/TUI access.
 - **Pane**: a leaf in a tab's split tree.
 - **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
 - **Client**: a desktop, TUI, or command-line connection to the runtime.
-- **Client view**: client-local focus, active tab, viewport, and scroll
-  position.
+- **Client view**: client-local focus, active tab, selection gestures, and
+  presentation preferences.
 
 Tab order and pane layout belong to the workspace. Each window or TUI view
-selects its workspace independently and owns focus, the selected tab, and
-viewport position. Tab-bar orientation is a client preference, not workspace
-state. See [CONTEXT.md](CONTEXT.md) for the full glossary.
+selects its workspace independently and owns focus and the selected tab.
+Terminal scroll position is shared across views for the engine experiment.
+Tab-bar orientation is a client preference, not workspace state. See
+[CONTEXT.md](CONTEXT.md) for the full glossary.
+
+## Terminal engine experiment
+
+Alacritty remains the default. Run `mise run dev:ghostty` to build an app with
+both engines, then choose the default for new terminals in your configuration:
+
+```toml
+[terminal]
+engine = "ghostty" # Or "alacritty".
+```
+
+Reloading configuration changes subsequently created tabs and windows. Existing
+and pending terminals retain their captured engine, child process, and history.
+An unavailable engine is an explicit configuration error. The ordinary
+`mise run dev` build does not require Zig or Ghostty source.
+
+Each terminal owns one shared viewport. Snapshots remain complete and immutable;
+unchanged rows share storage between generations. Both engines use the existing
+GPUI renderer. See [the experiment guide](docs/agents/terminal-engines.md) for
+native build inputs, benchmarks, and known engine differences.
 
 ## Licensing
 

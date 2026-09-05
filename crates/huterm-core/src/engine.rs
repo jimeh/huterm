@@ -1,28 +1,12 @@
-use huterm_protocol::{MouseEncoding, MouseTracking};
-use std::sync::mpsc::{self, Receiver, Sender};
+mod alacritty;
+#[cfg(feature = "ghostty")]
+mod ghostty;
 
-use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{
-    Color, CursorShape as AlacrittyCursorShape, NamedColor,
-};
-use alacritty_terminal::vte::ansi::{Processor, Rgb as AlacrittyRgb};
+use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
-    GridSize, Rgb, TerminalId, TerminalModes, TerminalSnapshot, Viewport,
+    BufferRange, CellSize, GridSize, ScrollCommand, TerminalEngineKind,
+    TerminalId, TerminalModes, TerminalSnapshot,
 };
-
-#[derive(Clone, Debug)]
-struct EventProxy(Sender<Event>);
-
-impl EventListener for EventProxy {
-    fn send_event(&self, event: Event) {
-        let _ = self.0.send(event);
-    }
-}
 
 #[derive(Debug)]
 pub(crate) enum EngineEffect {
@@ -31,606 +15,606 @@ pub(crate) enum EngineEffect {
     Bell,
 }
 
-pub(crate) struct TerminalEngine {
-    terminal_id: TerminalId,
-    generation: u64,
-    parser: Processor,
-    term: Term<EventProxy>,
-    events: Receiver<Event>,
-}
-
-impl std::fmt::Debug for TerminalEngine {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TerminalEngine")
-            .field("terminal_id", &self.terminal_id)
-            .field("generation", &self.generation)
-            .finish_non_exhaustive()
-    }
+#[derive(Debug)]
+pub(crate) enum TerminalEngine {
+    Alacritty(Box<alacritty::TerminalEngine>),
+    #[cfg(feature = "ghostty")]
+    Ghostty(Box<ghostty::TerminalEngine>),
 }
 
 impl TerminalEngine {
-    pub(crate) fn new(terminal_id: TerminalId, size: GridSize) -> Self {
-        let (sender, events) = mpsc::channel();
-        let dimensions = EngineDimensions::from(size);
-        let config = Config {
-            scrolling_history: 10_000,
-            ..Config::default()
-        };
-        Self {
-            terminal_id,
-            generation: 0,
-            parser: Processor::new(),
-            term: Term::new(config, &dimensions, EventProxy(sender)),
-            events,
-        }
-    }
-
-    pub(crate) fn process(&mut self, bytes: &[u8]) -> Vec<EngineEffect> {
-        self.parser.advance(&mut self.term, bytes);
-        self.generation = self.generation.saturating_add(1);
-        self.drain_effects()
-    }
-
-    pub(crate) fn resize(&mut self, size: GridSize) {
-        self.term.resize(EngineDimensions::from(size));
-        self.generation = self.generation.saturating_add(1);
-    }
-
-    pub(crate) fn size(&self) -> GridSize {
-        GridSize::clamped(
-            u16::try_from(self.term.columns()).unwrap_or(u16::MAX),
-            u16::try_from(self.term.screen_lines()).unwrap_or(u16::MAX),
-        )
-    }
-
-    pub(crate) fn modes(&self) -> TerminalModes {
-        modes(*self.term.mode())
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub(crate) fn snapshot(&self, viewport: Viewport) -> TerminalSnapshot {
-        let columns = self.term.columns();
-        let rows = self.term.screen_lines();
-        let history_size = self.term.history_size();
-        let bottom_offset = viewport.bottom_offset.min(history_size);
-        let top_line = -i32::try_from(bottom_offset).unwrap_or(i32::MAX);
-        let mut cells = Vec::with_capacity(rows.saturating_mul(columns));
-        let renderable = self.term.renderable_content();
-
-        for row in 0..rows {
-            let line = Line(top_line + i32::try_from(row).unwrap_or(i32::MAX));
-            for column in 0..columns {
-                cells.push(snapshot_cell(
-                    &self.term.grid()[line][Column(column)],
-                    renderable.colors,
-                ));
+    pub(crate) fn new(
+        id: TerminalId,
+        size: GridSize,
+        cell: CellSize,
+        kind: TerminalEngineKind,
+    ) -> Result<Self, RuntimeError> {
+        match kind {
+            TerminalEngineKind::Alacritty => Ok(Self::Alacritty(Box::new(
+                alacritty::TerminalEngine::new(id, size),
+            ))),
+            TerminalEngineKind::Ghostty => {
+                #[cfg(feature = "ghostty")]
+                {
+                    ghostty::TerminalEngine::new(id, size, cell)
+                        .map(Box::new)
+                        .map(Self::Ghostty)
+                }
+                #[cfg(not(feature = "ghostty"))]
+                {
+                    let _ = cell;
+                    Err(RuntimeError::Engine(
+                        "Ghostty engine is unavailable in this build".into(),
+                    ))
+                }
             }
         }
-
-        let cursor = (bottom_offset == 0).then(|| Cursor {
-            row: u16::try_from(renderable.cursor.point.line.0)
-                .unwrap_or_default(),
-            column: u16::try_from(renderable.cursor.point.column.0)
-                .unwrap_or_default(),
-            shape: cursor_shape(renderable.cursor.shape),
-        });
-
-        TerminalSnapshot {
-            terminal_id: self.terminal_id,
-            generation: self.generation,
-            size: GridSize::clamped(
-                u16::try_from(columns).unwrap_or(u16::MAX),
-                u16::try_from(rows).unwrap_or(u16::MAX),
+    }
+    pub(crate) fn requested_viewport(
+        &self,
+        scroll: Option<ScrollCommand>,
+    ) -> Result<huterm_protocol::Viewport, RuntimeError> {
+        let (current, history) = match self {
+            Self::Alacritty(engine) => engine.viewport_state(),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.viewport_state()?,
+        };
+        let offset = match scroll {
+            None => current,
+            Some(ScrollCommand::Live) => 0,
+            Some(ScrollCommand::Absolute(offset)) => offset,
+            Some(ScrollCommand::Relative(delta)) if delta >= 0 => current
+                .saturating_add(usize::try_from(delta).unwrap_or(usize::MAX)),
+            Some(ScrollCommand::Relative(delta)) => current.saturating_sub(
+                usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX),
             ),
-            cells,
-            cursor,
-            modes: modes(renderable.mode),
-            viewport: Viewport { bottom_offset },
-            history_size,
-            cursor_color: renderable.colors[NamedColor::Cursor].map(rgb),
-        }
+        };
+        Ok(huterm_protocol::Viewport {
+            bottom_offset: offset.min(history),
+        })
     }
 
+    pub(crate) fn process(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => Ok(engine.process(bytes)),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.process(bytes),
+        }
+    }
+    pub(crate) fn resize(
+        &mut self,
+        size: GridSize,
+        cell: CellSize,
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => {
+                let _ = cell;
+                engine.resize(size);
+                Ok(engine.drain_effects())
+            }
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.resize(size, cell),
+        }
+    }
+    pub(crate) fn size(&self) -> GridSize {
+        match self {
+            Self::Alacritty(engine) => engine.size(),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.size(),
+        }
+    }
+    pub(crate) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => Ok(engine.modes()),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.modes(),
+        }
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        match self {
+            Self::Alacritty(engine) => engine.generation(),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.generation(),
+        }
+    }
+    pub(crate) fn scroll(
+        &mut self,
+        scroll: ScrollCommand,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => {
+                engine.scroll(scroll);
+                Ok(())
+            }
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.scroll(scroll),
+        }
+    }
+    pub(crate) fn snapshot(
+        &mut self,
+    ) -> Result<TerminalSnapshot, RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => Ok(engine.snapshot()),
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.snapshot(),
+        }
+    }
     pub(crate) fn extract_text(
         &self,
         generation: u64,
         range: BufferRange,
-    ) -> Option<String> {
-        if generation != self.generation {
-            return None;
+    ) -> Result<Option<String>, RuntimeError> {
+        match self {
+            Self::Alacritty(engine) => {
+                Ok(engine.extract_text(generation, range))
+            }
+            #[cfg(feature = "ghostty")]
+            Self::Ghostty(engine) => engine.extract_text(generation, range),
         }
-        let start = self.buffer_point(range.start)?;
-        let end = self.buffer_point(range.end)?;
-        (start <= end).then(|| self.term.bounds_to_string(start, end))
-    }
-
-    fn buffer_point(
-        &self,
-        point: BufferPoint,
-    ) -> Option<alacritty_terminal::index::Point> {
-        let rows = self.term.screen_lines();
-        let max_row = self
-            .term
-            .history_size()
-            .saturating_add(rows.saturating_sub(1));
-        if point.rows_from_live_bottom > max_row
-            || usize::from(point.column) >= self.term.columns()
-        {
-            return None;
-        }
-        let bottom = i32::try_from(rows.saturating_sub(1)).ok()?;
-        let distance = i32::try_from(point.rows_from_live_bottom).ok()?;
-        Some(alacritty_terminal::index::Point::new(
-            Line(bottom.saturating_sub(distance)),
-            Column(usize::from(point.column)),
-        ))
-    }
-
-    fn drain_effects(&self) -> Vec<EngineEffect> {
-        self.events
-            .try_iter()
-            .filter_map(|event| match event {
-                Event::PtyWrite(text) => {
-                    Some(EngineEffect::PtyWrite(text.into_bytes()))
-                }
-                Event::Title(title) => Some(EngineEffect::Title(title)),
-                Event::ResetTitle => Some(EngineEffect::Title("Huterm".into())),
-                Event::Bell => Some(EngineEffect::Bell),
-                _ => None,
-            })
-            .collect()
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct EngineDimensions {
-    columns: usize,
-    rows: usize,
-}
-
-impl From<GridSize> for EngineDimensions {
-    fn from(size: GridSize) -> Self {
-        let size = GridSize::clamped(size.columns, size.rows);
-        Self {
-            columns: usize::from(size.columns),
-            rows: usize::from(size.rows),
-        }
-    }
-}
-
-impl Dimensions for EngineDimensions {
-    fn total_lines(&self) -> usize {
-        self.rows
-    }
-
-    fn screen_lines(&self) -> usize {
-        self.rows
-    }
-
-    fn columns(&self) -> usize {
-        self.columns
-    }
-}
-
-fn snapshot_cell(
-    cell: &alacritty_terminal::term::cell::Cell,
-    colors: &alacritty_terminal::term::color::Colors,
-) -> Cell {
-    let mut text = String::from(cell.c);
-    if let Some(combining) = cell.zerowidth() {
-        text.extend(combining);
-    }
-
-    let mut foreground = resolve_color(cell.fg, colors);
-    let mut background = resolve_color(cell.bg, colors);
-    if cell.flags.contains(Flags::INVERSE) {
-        std::mem::swap(&mut foreground, &mut background);
-    }
-
-    Cell {
-        text,
-        foreground,
-        background,
-        style: CellStyle {
-            bold: cell.flags.contains(Flags::BOLD),
-            dim: cell.flags.contains(Flags::DIM),
-            italic: cell.flags.contains(Flags::ITALIC),
-            underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
-            strikeout: cell.flags.contains(Flags::STRIKEOUT),
-            hidden: cell.flags.contains(Flags::HIDDEN),
-            wide: cell.flags.contains(Flags::WIDE_CHAR),
-            wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
-        },
-    }
-}
-
-fn resolve_color(
-    color: Color,
-    colors: &alacritty_terminal::term::color::Colors,
-) -> CellColor {
-    match color {
-        Color::Spec(value) => CellColor::Rgb(rgb(value)),
-        Color::Indexed(index) => colors[usize::from(index)]
-            .map(rgb)
-            .map_or(CellColor::Indexed(index), CellColor::Rgb),
-        Color::Named(named) => colors[named]
-            .map(rgb)
-            .map_or_else(|| named_color(named), CellColor::Rgb),
-    }
-}
-
-fn rgb(value: AlacrittyRgb) -> Rgb {
-    Rgb {
-        red: value.r,
-        green: value.g,
-        blue: value.b,
-    }
-}
-
-fn named_color(named: NamedColor) -> CellColor {
-    match named {
-        NamedColor::Black | NamedColor::DimBlack => CellColor::Indexed(0),
-        NamedColor::Red | NamedColor::DimRed => CellColor::Indexed(1),
-        NamedColor::Green | NamedColor::DimGreen => CellColor::Indexed(2),
-        NamedColor::Yellow | NamedColor::DimYellow => CellColor::Indexed(3),
-        NamedColor::Blue | NamedColor::DimBlue => CellColor::Indexed(4),
-        NamedColor::Magenta | NamedColor::DimMagenta => CellColor::Indexed(5),
-        NamedColor::Cyan | NamedColor::DimCyan => CellColor::Indexed(6),
-        NamedColor::White | NamedColor::DimWhite => CellColor::Indexed(7),
-        NamedColor::BrightBlack => CellColor::Indexed(8),
-        NamedColor::BrightRed => CellColor::Indexed(9),
-        NamedColor::BrightGreen => CellColor::Indexed(10),
-        NamedColor::BrightYellow => CellColor::Indexed(11),
-        NamedColor::BrightBlue => CellColor::Indexed(12),
-        NamedColor::BrightMagenta => CellColor::Indexed(13),
-        NamedColor::BrightCyan => CellColor::Indexed(14),
-        NamedColor::BrightWhite => CellColor::Indexed(15),
-        NamedColor::Foreground
-        | NamedColor::BrightForeground
-        | NamedColor::DimForeground => CellColor::DefaultForeground,
-        NamedColor::Background => CellColor::DefaultBackground,
-        NamedColor::Cursor => CellColor::Cursor,
-    }
-}
-
-fn modes(mode: TermMode) -> TerminalModes {
-    TerminalModes {
-        mouse_tracking: if mode.contains(TermMode::MOUSE_MOTION) {
-            MouseTracking::AllMotion
-        } else if mode.contains(TermMode::MOUSE_DRAG) {
-            MouseTracking::ButtonMotion
-        } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
-            MouseTracking::Buttons
-        } else {
-            MouseTracking::Disabled
-        },
-        mouse_encoding: if mode.contains(TermMode::SGR_MOUSE) {
-            MouseEncoding::Sgr
-        } else if mode.contains(TermMode::UTF8_MOUSE) {
-            MouseEncoding::Utf8
-        } else {
-            MouseEncoding::Legacy
-        },
-        application_cursor: mode.contains(TermMode::APP_CURSOR),
-        alternate_screen: mode.contains(TermMode::ALT_SCREEN),
-        bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
-        focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
-    }
-}
-
-fn cursor_shape(shape: AlacrittyCursorShape) -> CursorShape {
-    match shape {
-        AlacrittyCursorShape::Block | AlacrittyCursorShape::HollowBlock => {
-            CursorShape::Block
-        }
-        AlacrittyCursorShape::Underline => CursorShape::Underline,
-        AlacrittyCursorShape::Beam => CursorShape::Beam,
-        AlacrittyCursorShape::Hidden => CursorShape::Hidden,
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod benchmark {
     use super::*;
-
-    fn engine() -> TerminalEngine {
-        TerminalEngine::new(TerminalId::new(1), GridSize::clamped(8, 3))
-    }
+    use std::hint::black_box;
+    use std::sync::Arc;
+    use std::time::Instant;
 
     #[test]
-    fn mouse_modes_follow_parser_including_inactive_reset_and_terminal_reset() {
-        let mut engine = engine();
-        let mut generation = 0;
-        for (sequence, tracking, encoding) in [
-            ("\x1b[?1006h", MouseTracking::Disabled, MouseEncoding::Sgr),
-            ("\x1b[?1000h", MouseTracking::Buttons, MouseEncoding::Sgr),
+    #[ignore = "release benchmark; run through mise run bench:engine"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "benchmark fixtures, timing, and output checks remain together"
+    )]
+    fn engine_benchmark() {
+        let kind = match std::env::var("HUTERM_BENCH_ENGINE").as_deref() {
+            Ok("ghostty") => TerminalEngineKind::Ghostty,
+            Ok("alacritty") | Err(_) => TerminalEngineKind::Alacritty,
+            Ok(name) => panic!("unknown benchmark engine {name}"),
+        };
+        for (name, first, second, expected) in [
             (
-                "\x1b[?1002h",
-                MouseTracking::ButtonMotion,
-                MouseEncoding::Sgr,
-            ),
-            ("\x1b[?1003h", MouseTracking::AllMotion, MouseEncoding::Sgr),
-            ("\x1b[?1000l", MouseTracking::AllMotion, MouseEncoding::Sgr),
-            ("\x1b[?1002l", MouseTracking::AllMotion, MouseEncoding::Sgr),
-            ("\x1b[?1005h", MouseTracking::AllMotion, MouseEncoding::Utf8),
-            ("\x1b[?1006l", MouseTracking::AllMotion, MouseEncoding::Utf8),
-            (
-                "\x1b[?1005l",
-                MouseTracking::AllMotion,
-                MouseEncoding::Legacy,
+                "ascii",
+                "ordinary terminal output\r\n".repeat(100),
+                "ordinary terminal output\r\n".repeat(100),
+                "ordinary",
             ),
             (
-                "\x1b[?1003l",
-                MouseTracking::Disabled,
-                MouseEncoding::Legacy,
+                "styled",
+                "\x1b[31;1mred\x1b[0m normal\r\n".repeat(100),
+                "\x1b[32;1mred\x1b[0m normal\r\n".repeat(100),
+                "red",
             ),
             (
-                "\x1b[?1002h\x1b[?1006h\x1bc",
-                MouseTracking::Disabled,
-                MouseEncoding::Legacy,
+                "unicode",
+                "界e\u{301}🙂 terminal\r\n".repeat(100),
+                "界e\u{301}🙂 terminal\r\n".repeat(100),
+                "terminal",
+            ),
+            (
+                "sparse",
+                "\x1b[20;1Hsparse A".to_owned(),
+                "\x1b[20;1Hsparse B".to_owned(),
+                "sparse",
+            ),
+            (
+                "full",
+                "\x1b[H".to_owned() + &"x".repeat(120 * 40),
+                "\x1b[H".to_owned() + &"y".repeat(120 * 40),
+                "",
             ),
         ] {
-            engine.process(sequence.as_bytes());
-            let snapshot = engine.snapshot(Viewport::default());
-            assert!(snapshot.generation > generation);
-            generation = snapshot.generation;
-            assert_eq!(
-                (snapshot.modes.mouse_tracking, snapshot.modes.mouse_encoding),
-                (tracking, encoding),
-                "{sequence:?}"
+            let mut engine = TerminalEngine::new(
+                TerminalId::new(1),
+                GridSize::clamped(120, 40),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+                kind,
+            )
+            .unwrap();
+            engine.process(b"warmup").unwrap();
+            let mut previous = engine.snapshot().unwrap();
+            let mut processing = Vec::new();
+            let mut snapshots = Vec::new();
+            let mut combined = Vec::new();
+            let mut reused = 0;
+            for iteration in 0..200 {
+                let bytes = if iteration % 2 == 0 { &first } else { &second };
+                let started = Instant::now();
+                black_box(engine.process(black_box(bytes.as_bytes())).unwrap());
+                processing.push(started.elapsed().as_nanos());
+                let started = Instant::now();
+                let snapshot = engine.snapshot().unwrap();
+                snapshots.push(started.elapsed().as_nanos());
+                combined.push(processing[iteration] + snapshots[iteration]);
+                assert_eq!(snapshot.size, GridSize::clamped(120, 40));
+                let text: String =
+                    snapshot.cells().map(|cell| cell.text.as_str()).collect();
+                assert!(text.contains(expected), "{name}: {text:?}");
+                if name == "styled" {
+                    let cell =
+                        snapshot.cells().find(|cell| cell.text == "r").unwrap();
+                    assert!(cell.style.bold);
+                    assert_eq!(
+                        cell.foreground,
+                        huterm_protocol::CellColor::Indexed(
+                            if iteration % 2 == 0 { 1 } else { 2 }
+                        )
+                    );
+                }
+                if name == "unicode" {
+                    assert!(
+                        snapshot.cells().any(|cell| cell.text == "e\u{301}")
+                    );
+                }
+                if name == "sparse" {
+                    assert_eq!(
+                        snapshot.rows[19].cells[7].text,
+                        if iteration % 2 == 0 { "A" } else { "B" }
+                    );
+                }
+                if name == "full" {
+                    assert!(snapshot.cells().all(|cell| cell.text
+                        == if iteration % 2 == 0 { "x" } else { "y" }));
+                }
+                reused += snapshot
+                    .rows
+                    .iter()
+                    .zip(&previous.rows)
+                    .filter(|(after, before)| Arc::ptr_eq(after, before))
+                    .count();
+                previous = black_box(snapshot);
+            }
+            let processing_total: u128 = processing.iter().sum();
+            combined.sort_unstable();
+            processing.sort_unstable();
+            snapshots.sort_unstable();
+            println!(
+                "engine={} revision={} fixture={name} bytes={} iterations=200 process_ns_p50={} process_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={} rebuilt_rows={} reused_rows={} history={} combined_ns_p50={} combined_ns_p95={} process_bytes_per_second={}",
+                kind.name(),
+                if kind == TerminalEngineKind::Alacritty {
+                    "0.26.0"
+                } else {
+                    "a887df42c56f6de86c0fe6da9c4eeca37931e083"
+                },
+                first.len(),
+                processing[100],
+                processing[190],
+                snapshots[100],
+                snapshots[190],
+                8000 - reused,
+                reused,
+                previous.history_size,
+                combined[100],
+                combined[190],
+                first.len() as u128 * 200 * 1_000_000_000 / processing_total
             );
         }
     }
 
     #[test]
-    fn queued_mouse_uses_current_modes_dimensions_and_format_for_each_event() {
-        use huterm_protocol::{
-            Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
-            TerminalInput,
+    #[ignore = "release benchmark; run through mise run bench:engine"]
+    fn engine_benchmark_resize() {
+        let kind = if std::env::var("HUTERM_BENCH_ENGINE").as_deref()
+            == Ok("ghostty")
+        {
+            TerminalEngineKind::Ghostty
+        } else {
+            TerminalEngineKind::Alacritty
         };
-        let mut engine = engine();
-        let input = |action| {
-            TerminalInput::Mouse(MouseInput {
-                action,
-                position: MousePosition { column: 7, row: 2 },
-                modifiers: Modifiers::default(),
-            })
+        let cell = CellSize {
+            width: 8,
+            height: 16,
         };
-        let encode = |engine: &TerminalEngine, action| {
-            crate::input::encode_input(
-                &input(action),
-                engine.modes(),
-                engine.size(),
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(120, 40),
+            cell,
+            kind,
+        )
+        .unwrap();
+        engine
+            .process(
+                ("reflow-marker ".to_owned() + &"x".repeat(180)).as_bytes(),
             )
-        };
-        engine.process(b"\x1b[?1002h\x1b[?1006h");
-        assert_eq!(
-            encode(&engine, MouseAction::Press(MouseButton::Right)),
-            b"\x1b[<2;8;3M"
-        );
-        engine.resize(GridSize::clamped(2, 1));
-        engine.process(b"\x1b[?1006l");
-        assert_eq!(
-            encode(&engine, MouseAction::Release(MouseButton::Right)),
-            b"\x1b[M#\"!"
-        );
-        engine.process(b"\x1b[?1002l");
-        assert!(
-            encode(&engine, MouseAction::Motion(Some(MouseButton::Right)))
-                .is_empty()
-        );
-        assert!(
-            encode(&engine, MouseAction::Release(MouseButton::Right))
-                .is_empty()
-        );
-        engine.process(b"\x1b[?1002h\x1b[?1006h");
-        assert_eq!(
-            encode(&engine, MouseAction::Motion(Some(MouseButton::Right))),
-            b"\x1b[<34;2;1M"
+            .unwrap();
+        engine.snapshot().unwrap();
+        let mut resizing = Vec::new();
+        let mut snapshots = Vec::new();
+        for iteration in 0..200 {
+            let size = GridSize::clamped(
+                if iteration % 2 == 0 { 100 } else { 120 },
+                40,
+            );
+            let started = Instant::now();
+            engine.resize(size, cell).unwrap();
+            resizing.push(started.elapsed().as_nanos());
+            let started = Instant::now();
+            let snapshot = engine.snapshot().unwrap();
+            snapshots.push(started.elapsed().as_nanos());
+            assert_eq!(snapshot.size, size);
+            let text: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            assert!(text.contains("reflow-marker"));
+            assert_eq!(text.matches('x').count(), 180);
+            black_box(snapshot);
+        }
+        resizing.sort_unstable();
+        snapshots.sort_unstable();
+        println!(
+            "engine={} fixture=resize-reflow iterations=200 columns=100/120 rows=40 resize_ns_p50={} resize_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={}",
+            kind.name(),
+            resizing[100],
+            resizing[190],
+            snapshots[100],
+            snapshots[190]
         );
     }
+}
 
-    #[test]
-    fn snapshot_should_parse_color_style_and_wide_cells() {
-        let mut engine = engine();
-        engine.process("\x1b[31;1;4mA界".as_bytes());
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use huterm_protocol::{
+        BufferPoint, CellColor, CursorShape, MouseEncoding, MouseTracking, Rgb,
+    };
+    use std::sync::Arc;
 
-        let snapshot = engine.snapshot(Viewport::default());
-        let first = &snapshot.cells[0];
-        let wide = &snapshot.cells[1];
-        let spacer = &snapshot.cells[2];
-
-        assert_eq!(
-            (
-                first.text.as_str(),
-                first.style.bold,
-                first.style.italic,
-                first.style.underline,
-                first.foreground,
-                wide.text.as_str(),
-                wide.style.wide,
-                spacer.style.wide_spacer,
-            ),
-            (
-                "A",
-                true,
-                false,
-                true,
-                CellColor::Indexed(1),
-                "界",
-                true,
-                true,
+    fn each_engine(mut test: impl FnMut(&mut TerminalEngine)) {
+        let mut kinds = vec![TerminalEngineKind::Alacritty];
+        if cfg!(feature = "ghostty") {
+            kinds.push(TerminalEngineKind::Ghostty);
+        }
+        for kind in kinds {
+            let mut engine = TerminalEngine::new(
+                TerminalId::new(1),
+                GridSize::clamped(8, 3),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+                kind,
             )
-        );
+            .unwrap();
+            test(&mut engine);
+        }
     }
 
     #[test]
-    fn snapshot_should_report_alternate_screen_mode() {
-        let mut engine = engine();
-        engine.process(b"primary\x1b[?1049halternate");
-
-        let alternate = engine.snapshot(Viewport::default());
-        engine.process(b"\x1b[?1049l");
-        let primary = engine.snapshot(Viewport::default());
-
-        assert_eq!(
-            (
-                alternate.modes.alternate_screen,
-                primary.modes.alternate_screen
-            ),
-            (true, false)
-        );
-    }
-
-    #[test]
-    fn snapshot_should_read_scrollback_without_mutating_live_view() {
-        let mut engine = engine();
-        engine.process(b"one\r\ntwo\r\nthree\r\nfour");
-
-        let live = engine.snapshot(Viewport::default());
-        let scrolled = engine.snapshot(Viewport { bottom_offset: 1 });
-        let live_again = engine.snapshot(Viewport::default());
-
-        assert!(live.history_size > 0);
-        assert_ne!(scrolled.cells, live.cells);
-        assert_eq!(live_again, live);
-        assert!(live.cursor.is_some());
-        assert!(scrolled.cursor.is_none());
-
-        let clamped = engine.snapshot(Viewport {
-            bottom_offset: usize::MAX,
+    fn engines_preserve_style_unicode_defaults_and_dynamic_colors() {
+        each_engine(|engine| {
+            engine
+                .process("A\x1b[31;1;4m界e\u{301}".as_bytes())
+                .unwrap();
+            let snapshot = engine.snapshot().unwrap();
+            let cells = &snapshot.rows[0].cells;
+            assert_eq!(cells[0].foreground, CellColor::DefaultForeground);
+            assert_eq!(cells[1].text, "界");
+            assert!(
+                cells[1].style.wide
+                    && cells[1].style.bold
+                    && cells[1].style.underline
+            );
+            assert!(cells[2].style.wide_spacer);
+            assert_eq!(cells[3].text, "e\u{301}");
+            assert_eq!(cells[1].foreground, CellColor::Indexed(1));
+            engine.process(b"\x1b]10;#123456\x07").unwrap();
+            let changed = engine.snapshot().unwrap();
+            assert_eq!(
+                changed.rows[0].cells[0].foreground,
+                CellColor::Rgb(Rgb {
+                    red: 0x12,
+                    green: 0x34,
+                    blue: 0x56
+                })
+            );
+            assert_eq!(
+                snapshot.rows[0].cells[0].foreground,
+                CellColor::DefaultForeground
+            );
         });
-        assert_eq!(clamped.viewport.bottom_offset, live.history_size);
     }
 
     #[test]
-    fn resize_should_advance_generation_and_change_snapshot_size() {
-        let mut engine = engine();
-        engine.process(b"hello");
-        let before = engine.generation();
-
-        engine.resize(GridSize::clamped(12, 4));
-        let snapshot = engine.snapshot(Viewport::default());
-
-        assert_eq!(
-            (snapshot.generation, snapshot.size),
-            (before + 1, GridSize::clamped(12, 4))
-        );
+    fn engines_publish_sparse_rows_metadata_and_skipped_generations() {
+        each_engine(|engine| {
+            engine.process(b"one\r\ntwo\r\nthree").unwrap();
+            let before = engine.snapshot().unwrap();
+            engine.process(b"\x1b[2;1HX").unwrap();
+            let skipped = engine.snapshot().unwrap();
+            engine.process(b"\x1b[2;2HY\x1b[?2004h\x1b[?25l").unwrap();
+            let latest = engine.snapshot().unwrap();
+            assert!(Arc::ptr_eq(&skipped.rows[0], &latest.rows[0]));
+            assert_eq!(before.rows[1].cells[0].text, "t");
+            assert_eq!(skipped.rows[1].cells[1].text, "w");
+            assert_eq!(latest.rows[1].cells[0].text, "X");
+            assert_eq!(latest.rows[1].cells[1].text, "Y");
+            assert!(latest.modes.bracketed_paste);
+            assert!(
+                latest
+                    .cursor
+                    .is_none_or(|cursor| cursor.shape == CursorShape::Hidden)
+            );
+        });
     }
 
     #[test]
-    fn dynamic_default_color_overrides_remain_explicit() {
-        let mut engine = engine();
-        engine.process(b"\x1b]10;#112233\x07A");
-
-        let snapshot = engine.snapshot(Viewport::default());
-        assert_eq!(
-            snapshot.cells[0].foreground,
-            CellColor::Rgb(Rgb {
-                red: 0x11,
-                green: 0x22,
-                blue: 0x33,
-            })
-        );
+    fn engines_preserve_shared_scrollback_and_generation_checked_selection() {
+        each_engine(|engine| {
+            engine
+                .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive")
+                .unwrap();
+            let generation = engine.generation();
+            engine.scroll(ScrollCommand::Absolute(1)).unwrap();
+            let before = engine.snapshot().unwrap();
+            assert_eq!(engine.generation(), generation);
+            let range = BufferRange::ordered(
+                BufferPoint {
+                    rows_from_live_bottom: 3,
+                    column: 0,
+                },
+                BufferPoint {
+                    rows_from_live_bottom: 2,
+                    column: 4,
+                },
+            );
+            assert_eq!(
+                engine.extract_text(generation, range).unwrap().as_deref(),
+                Some("two\nthree")
+            );
+            assert_eq!(
+                engine
+                    .extract_text(
+                        generation,
+                        BufferRange {
+                            start: range.end,
+                            end: range.start
+                        }
+                    )
+                    .unwrap(),
+                None
+            );
+            engine.process(b"\r\nsix").unwrap();
+            assert_eq!(engine.snapshot().unwrap().rows[0], before.rows[0]);
+            assert_eq!(engine.extract_text(generation, range).unwrap(), None);
+            engine.scroll(ScrollCommand::Live).unwrap();
+            assert_eq!(engine.snapshot().unwrap().viewport.bottom_offset, 0);
+            engine.process(b"\x1b[?1049hALT").unwrap();
+            assert!(engine.snapshot().unwrap().modes.alternate_screen);
+            engine.process(b"\x1b[?1049l").unwrap();
+            assert!(!engine.snapshot().unwrap().modes.alternate_screen);
+        });
     }
 
     #[test]
-    fn snapshot_preserves_defaults_true_color_indexed_and_reverse_video() {
-        let mut engine = engine();
-        engine.process(b"D\x1b[38;2;1;2;3;48;5;4;7mR");
-
-        let snapshot = engine.snapshot(Viewport::default());
-        assert_eq!(snapshot.cells[0].foreground, CellColor::DefaultForeground);
-        assert_eq!(snapshot.cells[0].background, CellColor::DefaultBackground);
-        assert_eq!(snapshot.cells[1].foreground, CellColor::Indexed(4));
-        assert_eq!(
-            snapshot.cells[1].background,
-            CellColor::Rgb(Rgb {
-                red: 1,
-                green: 2,
-                blue: 3,
-            })
-        );
+    fn relative_scroll_expectation_uses_runtime_state_before_the_command() {
+        each_engine(|engine| {
+            engine
+                .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive")
+                .unwrap();
+            engine.scroll(ScrollCommand::Absolute(1)).unwrap();
+            let client_offset =
+                engine.snapshot().unwrap().viewport.bottom_offset;
+            engine.process(b"\r\nsix").unwrap();
+            let command = ScrollCommand::Relative(1);
+            let expected = engine.requested_viewport(Some(command)).unwrap();
+            assert_eq!(expected.bottom_offset, client_offset + 2);
+            engine.scroll(command).unwrap();
+            assert_eq!(engine.snapshot().unwrap().viewport, expected);
+            let command = ScrollCommand::Absolute(1);
+            assert_eq!(
+                engine
+                    .requested_viewport(Some(command))
+                    .unwrap()
+                    .bottom_offset,
+                1
+            );
+            engine.scroll(command).unwrap();
+            assert_eq!(engine.snapshot().unwrap().viewport.bottom_offset, 1);
+        });
     }
 
     #[test]
-    fn selection_extracts_hard_broken_lines_and_rejects_stale_ranges() {
-        let mut engine = engine();
-        engine.process(b"alpha\r\nbeta");
-        let generation = engine.generation();
-        let range = BufferRange::ordered(
-            BufferPoint {
-                rows_from_live_bottom: 2,
-                column: 0,
-            },
-            BufferPoint {
-                rows_from_live_bottom: 1,
-                column: 3,
-            },
-        );
-
-        assert_eq!(
-            engine.extract_text(generation, range).as_deref(),
-            Some("alpha\nbeta")
-        );
-        assert_eq!(engine.extract_text(generation + 1, range), None);
-        assert_eq!(
-            engine.extract_text(
-                generation,
-                BufferRange::ordered(
-                    BufferPoint {
-                        rows_from_live_bottom: usize::MAX,
-                        column: 0,
+    fn engines_resize_reflow_and_preserve_soft_wrapped_selection() {
+        each_engine(|engine| {
+            engine.process("abcdef界e\u{301}Z".as_bytes()).unwrap();
+            let range = BufferRange::ordered(
+                BufferPoint {
+                    rows_from_live_bottom: 2,
+                    column: 0,
+                },
+                BufferPoint {
+                    rows_from_live_bottom: 1,
+                    column: 1,
+                },
+            );
+            assert_eq!(
+                engine
+                    .extract_text(engine.generation(), range)
+                    .unwrap()
+                    .as_deref(),
+                Some("abcdef界e\u{301}Z")
+            );
+            engine
+                .resize(
+                    GridSize::clamped(12, 4),
+                    CellSize {
+                        width: 9,
+                        height: 17,
                     },
-                    range.end,
-                ),
-            ),
-            None
-        );
+                )
+                .unwrap();
+            let snapshot = engine.snapshot().unwrap();
+            assert_eq!(snapshot.size, GridSize::clamped(12, 4));
+            assert_eq!(snapshot.rows.len(), 4);
+            assert!(snapshot.rows.iter().all(|row| row.cells.len() == 12));
+        });
     }
 
     #[test]
-    fn selection_preserves_soft_wraps_combining_marks_and_wide_cells() {
-        let mut wrapped = engine();
-        wrapped.process("abcdefghij".as_bytes());
-        let wrapped_range = BufferRange::ordered(
-            BufferPoint {
-                rows_from_live_bottom: 2,
-                column: 0,
-            },
-            BufferPoint {
-                rows_from_live_bottom: 1,
-                column: 1,
-            },
-        );
-        assert_eq!(
-            wrapped
-                .extract_text(wrapped.generation(), wrapped_range)
-                .as_deref(),
-            Some("abcdefghij")
-        );
+    fn engines_use_the_last_enabled_mouse_encoding() {
+        each_engine(|engine| {
+            let inactive_reset =
+                if matches!(engine, TerminalEngine::Alacritty(_)) {
+                    MouseEncoding::Utf8
+                } else {
+                    MouseEncoding::Legacy
+                };
+            engine
+                .resize(
+                    GridSize::clamped(1, 1),
+                    CellSize {
+                        width: 1,
+                        height: 1,
+                    },
+                )
+                .unwrap();
+            for (sequence, encoding) in [
+                ("\x1b[?1002h\x1b[?1006h", MouseEncoding::Sgr),
+                ("\x1b[?1005h", MouseEncoding::Utf8),
+                ("\x1b[?1006l", inactive_reset),
+                ("\x1b[?1005l", MouseEncoding::Legacy),
+                ("\x1b[?1006h\x1bc", MouseEncoding::Legacy),
+            ] {
+                engine.process(sequence.as_bytes()).unwrap();
+                assert_eq!(
+                    engine.modes().unwrap().mouse_encoding,
+                    encoding,
+                    "{sequence:?}"
+                );
+            }
+        });
+    }
 
-        let mut unicode = engine();
-        unicode.process("e\u{301}界".as_bytes());
-        let unicode_range = BufferRange::ordered(
-            BufferPoint {
-                rows_from_live_bottom: 2,
-                column: 0,
-            },
-            BufferPoint {
-                rows_from_live_bottom: 2,
-                column: 2,
-            },
-        );
-        assert_eq!(
-            unicode
-                .extract_text(unicode.generation(), unicode_range)
-                .as_deref(),
-            Some("e\u{301}界")
-        );
+    #[test]
+    fn engines_do_not_advertise_unsupported_kitty_keyboard_input() {
+        each_engine(|engine| {
+            let effects = engine.process(b"\x1b[?u\x1b[>31u\x1b[?u").unwrap();
+            assert!(!effects.iter().any(|effect| matches!(effect, EngineEffect::PtyWrite(bytes) if bytes.ends_with(b"u"))));
+        });
+    }
+
+    #[test]
+    fn engines_report_modes_and_owned_effects() {
+        each_engine(|engine| {
+            let effects = engine.process(b"\x1b]2;contract\x07\x07\x1b[6n\x1b[?1002h\x1b[?1006h\x1b[?1004h").unwrap();
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, EngineEffect::Bell))
+            );
+            assert!(effects.iter().any(|effect| matches!(effect, EngineEffect::Title(title) if title == "contract")));
+            assert!(effects.iter().any(|effect| matches!(effect, EngineEffect::PtyWrite(bytes) if bytes == b"\x1b[1;1R")));
+            let modes = engine.modes().unwrap();
+            assert_eq!(modes.mouse_tracking, MouseTracking::ButtonMotion);
+            assert_eq!(modes.mouse_encoding, MouseEncoding::Sgr);
+            assert!(modes.focus_reporting);
+        });
     }
 }

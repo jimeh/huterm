@@ -44,6 +44,10 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = []
+ghostty = ["huterm-gpui/ghostty"]
+
 [dependencies]
 anyhow.workspace = true
 huterm-gpui.workspace = true
@@ -56,9 +60,9 @@ formats = ["app"]
 outDir = "target/release/bundle"
 binariesDir = "target/aarch64-apple-darwin/release"
 targetTriple = "aarch64-apple-darwin"
-beforePackagingCommand = "cargo build --release --locked --target aarch64-apple-darwin -p huterm"
+beforePackagingCommand = "mise run package:build:macos"
 icons = ["assets/Huterm.icns"]
-resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }]
 
 [[package.metadata.packager.binaries]]
 path = "huterm"

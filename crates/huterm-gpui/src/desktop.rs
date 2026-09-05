@@ -350,6 +350,15 @@ impl TerminalView {
     }
 
     fn start_initial_snapshot(&mut self, cx: &mut Context<'_, Self>) {
+        if std::env::var_os("HUTERM_SCROLL_BENCH").is_some()
+            || std::env::var_os("HUTERM_RENDER_BENCH").is_some()
+        {
+            eprintln!(
+                "huterm-engine engine={} revision={} snapshot=shared-rows native_optimize=ReleaseFast compression=disabled",
+                self.client.engine().name(),
+                self.client.engine_revision()
+            );
+        }
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
     }
@@ -363,7 +372,11 @@ impl TerminalView {
         else {
             return;
         };
-        let request = match self.client.request_snapshot(viewport) {
+        let requested = self.scroll.submitted_scroll().map_or_else(
+            || self.client.request_snapshot(),
+            |scroll| self.client.request_scrolled_snapshot(scroll),
+        );
+        let request = match requested {
             Ok(request) => request,
             Err(error) => {
                 self.scroll.fail();
@@ -406,6 +419,7 @@ impl TerminalView {
                     Ok(reply) => {
                         view.renderer.borrow_mut().complete_scroll_snapshot(
                             reply.snapshot_duration,
+                            reply.requested_viewport.bottom_offset,
                             reply.snapshot.viewport.bottom_offset,
                             reply.completed_at.elapsed(),
                         );
@@ -1579,7 +1593,10 @@ fn terminal_top(window: &Window) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), window.is_fullscreen())
 }
 
-fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
+fn shell_command(
+    metrics: GridMetrics,
+    engine: huterm_protocol::TerminalEngineKind,
+) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
     let is_macos = cfg!(target_os = "macos");
@@ -1596,6 +1613,7 @@ fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
         std::env::current_dir()?
     };
     Ok(TerminalCommand {
+        engine,
         program: shell,
         arguments,
         working_directory,

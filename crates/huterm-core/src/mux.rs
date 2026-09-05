@@ -652,9 +652,7 @@ pub enum MuxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{
-        CellSize, GridSize, TerminalEvent, TerminalInput, Viewport,
-    };
+    use huterm_protocol::{CellSize, GridSize, TerminalEvent, TerminalInput};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1150,6 +1148,7 @@ mod tests {
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -1164,12 +1163,9 @@ mod tests {
     fn wait_for_text(client: &RuntimeClient, needle: &str) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let snapshot = client.read_snapshot(Viewport::default()).unwrap();
-            let text: String = snapshot
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
+            let snapshot = client.read_snapshot().unwrap();
+            let text: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
             if text.contains(needle) {
                 return;
             }
@@ -1230,7 +1226,7 @@ mod tests {
         assert_ne!(first.tab.terminal_id, third.tab.terminal_id);
         mux.close_tab(first_workspace, first.tab.id).unwrap();
         assert!(matches!(
-            first.client.read_snapshot(Viewport::default()),
+            first.client.read_snapshot(),
             Err(RuntimeError::Stopped)
         ));
         assert_eq!(
@@ -1239,7 +1235,7 @@ mod tests {
         );
         mux.close_workspace(first_workspace).unwrap();
         assert!(matches!(
-            second.client.read_snapshot(Viewport::default()),
+            second.client.read_snapshot(),
             Err(RuntimeError::Stopped)
         ));
         wait_for_text(&third.client, "READY");
@@ -1270,13 +1266,9 @@ mod tests {
             )
             .unwrap();
         wait_for_text(&opened.client, "READY");
-        let snapshot =
-            opened.client.read_snapshot(Viewport::default()).unwrap();
-        let text: String = snapshot
-            .cells
-            .iter()
-            .map(|cell| cell.text.as_str())
-            .collect();
+        let snapshot = opened.client.read_snapshot().unwrap();
+        let text: String =
+            snapshot.cells().map(|cell| cell.text.as_str()).collect();
         let pid = text
             .split("PID:")
             .nth(1)

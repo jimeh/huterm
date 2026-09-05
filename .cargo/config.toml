@@ -1,0 +1,4 @@
+[env]
+# All feature builds use the reviewed native source prepared by Mise.
+GHOSTTY_SOURCE_DIR = { value = "target/ghostty/source", relative = true }
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

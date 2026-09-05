@@ -1,6 +1,7 @@
 # Configurable terminal engines and incremental snapshots
 
-Status: agreed experiment direction; implementation has not started.
+Status: implemented experiment; validation and measured results are recorded in
+[the experiment guide](../agents/terminal-engines.md).
 
 ## Outcome and scope
 

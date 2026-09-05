@@ -21,14 +21,15 @@ Keep view destruction and detachment separate from explicit close.
   immutable snapshots. Its public types must not expose GPUI, Alacritty, or
   `portable-pty` types. `mise run architecture` enforces its empty dependency
   set.
-- `huterm-core` alone owns PTYs and canonical Alacritty state. One runtime
+- `huterm-core` alone owns PTYs and canonical emulator state. One runtime
   thread mutates each terminal. Blocking PTY reads, ordered writes, and child
   waits stay off the GPUI thread.
 - `huterm-gpui` owns macOS/Linux window state, rendering, key translation,
-  focus, and each client's viewport offset. Scrolling must not mutate shared
-  emulator state.
-- Use upstream `alacritty_terminal`; do not use its PTY event loop. Do not copy
-  or depend on GPL-covered Zed application or terminal-view code.
+  focus, selection gestures, and scrollbar animation. The terminal runtime owns
+  the shared viewport; clients send ordered scroll commands.
+- Alacritty is the default; optional `libghostty-vt` uses the same owned rows and
+  PTY/input runtime. Do not use either engine's application or PTY event loop.
+  Do not copy or depend on GPL-covered Zed application or terminal-view code.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
@@ -121,9 +122,9 @@ GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.
 Bind reload as `cmd-<` / `ctrl-<`, not `cmd-shift-,` / `ctrl-shift-,`; test
 the real `KeyBinding` matcher as well as terminal-input reservation.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
-Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
-adjust its offset for both history growth and shrinkage to avoid resize drift;
-offset zero remains pinned to live output.
+Growing the grid pulls rows out of Alacritty history. Let the runtime engine
+anchor its shared viewport across output and resize; never also compensate the
+client's offset for history growth or shrinkage. Offset zero follows live output.
 Protocol selection ranges include both endpoints. Keep a mouse-down anchor
 without exposing a range until dragging reaches another cell; use that same
 optional range for highlighting and text extraction.
@@ -246,3 +247,35 @@ propagating later core renames to views belongs with the deferred rename UI.
 Moves retain empty parents and never change terminal lifetime. Desktop windows
 retain the ID of their initial private session for explicit close and orphaned
 spawn cleanup. Roll back newly created sessions on initial workspace/tab failure.
+
+Ghostty builds use libghostty-vt/sys 0.2.1, native revision
+`a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig 0.15.2. Run
+`mise run ghostty:prepare` before optional-feature Cargo commands; it checks the
+full native source tree against `scripts/ghostty-source.json`. Keep that source,
+the binding versions, and bundled notices aligned. Plain Alacritty builds must
+remain independent of Zig. Native source dependencies use Zig's content hashes;
+they are outside Cargo's license audit and have notices in `third-party/ghostty`.
+At this native pin `max_scrollback` is bytes despite the published binding/header
+claiming lines. The adapter uses 16 MiB and reports actual retained rows.
+Ghostty color-only OSC updates can leave render rows clean. Compare effective
+colors and retain explicit palette override information before consuming damage.
+Its API lacks the override mask; the adapter probes changed defaults after
+OSC/RIS invalidation hints, then restores defaults before rendering. Keep this
+hint state across input chunks, including snapshots between fragments.
+Construct non-Send native handles on their owner thread before spawning the PTY;
+only publish startup after workers are ready. Scroll-and-snapshot share one
+ordered control operation. Ordinary snapshots must not reset the viewport.
+Complete snapshots share immutable `Arc<TerminalRow>` values; never clear engine
+damage before owned cache state is coherent. Content generation excludes scrolling.
+
+Ghostty's public mode bits can disagree with its active mouse format/tracking.
+Read the active behavior through the retained native mouse probe, with synthetic
+200x200 geometry independent of the real grid, then feed Huterm's shared encoder.
+Never send probe output to the PTY. At the selected native pin, disabling an
+inactive format resets to legacy encoding; Alacritty preserves the active format.
+
+Shared relative scroll requests can follow output that advances the runtime
+viewport. Benchmark expected offsets use command plus pre-operation runtime
+viewport/history; retain the client prediction separately. Clamp pending relative
+UI intents after an authoritative completion so a saturated history boundary
+does not leave scroll debt that affects later reversal.

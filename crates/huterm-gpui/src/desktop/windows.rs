@@ -111,6 +111,15 @@ impl Global for Desktop {}
 
 pub(super) fn run() -> anyhow::Result<()> {
     let loaded = config::load();
+    if loaded.fatal {
+        anyhow::bail!(
+            "{}",
+            loaded
+                .error
+                .as_deref()
+                .unwrap_or("invalid engine configuration")
+        );
+    }
     if let Some(error) = &loaded.error {
         eprintln!("Huterm configuration error: {error}");
     }
@@ -781,15 +790,17 @@ impl WorkspaceView {
         {
             return;
         }
-        let command =
-            match shell_command(self.metrics.at_scale(window.scale_factor())) {
-                Ok(command) => command,
-                Err(error) => {
-                    self.status = Some(error.to_string());
-                    cx.notify();
-                    return;
-                }
-            };
+        let command = match shell_command(
+            self.metrics.at_scale(window.scale_factor()),
+            cx.global::<Desktop>().config.engine,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                self.status = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         self.busy = true;
@@ -2056,6 +2067,7 @@ mod tests {
     {
         let runtime = Arc::new(DesktopRuntime::default());
         let command = TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -2096,9 +2108,7 @@ mod tests {
         quit.join().unwrap();
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         assert!(matches!(
-            opened
-                .client
-                .read_snapshot(huterm_protocol::Viewport::default()),
+            opened.client.read_snapshot(),
             Err(RuntimeError::Stopped)
         ));
         runtime.terminate().unwrap();
