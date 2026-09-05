@@ -16,7 +16,11 @@ use libghostty_vt::render::{
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, StyleColor, Underline};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{
+    ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
+    Mode, Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
+    SecondaryDeviceAttributes, TertiaryDeviceAttributes,
+};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
 impl From<libghostty_vt::Error> for RuntimeError {
@@ -80,7 +84,20 @@ impl TerminalEngine {
         let title_changed = Rc::clone(&title_dirty);
         terminal.on_title_changed(move |_| title_changed.set(true))?;
         // Huterm does not implement Ghostty's image or keyboard extensions.
-        terminal.on_device_attributes(|_| None)?;
+        terminal.on_device_attributes(|_| {
+            Some(DeviceAttributes {
+                primary: PrimaryDeviceAttributes::new(
+                    ConformanceLevel::VT220,
+                    &[DeviceAttributeFeature::ANSI_COLOR],
+                ),
+                secondary: SecondaryDeviceAttributes {
+                    device_type: DeviceType::VT220,
+                    firmware_version: 0,
+                    rom_cartridge: 0,
+                },
+                tertiary: TertiaryDeviceAttributes { unit_id: 0 },
+            })
+        })?;
         terminal.on_xtversion(|_| Some("Huterm"))?;
         terminal.resize(
             size.columns,

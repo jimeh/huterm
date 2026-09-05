@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -84,6 +85,18 @@ def prepare_source(item, root, archives, check):
         children[0].rename(source)
 
 
+def verify_revision(manifest):
+    repository = Path(__file__).resolve().parents[1]
+    source = (repository / "crates/huterm-core/src/lib.rs").read_text()
+    revision = re.search(r'pub const GHOSTTY_REVISION: &str =\s*"([0-9a-f]{40})";', source)
+    provenance = json.loads((repository / "third-party/ghostty/provenance.json").read_text())
+    if revision is None or revision.group(1) != manifest["revision"]:
+        raise ValueError("Rust Ghostty revision differs from the native source manifest")
+    expected_notice = f"https://github.com/ghostty-org/ghostty/blob/{manifest['revision']}/LICENSE"
+    if provenance["ghostty-MIT.txt"]["url"] != expected_notice:
+        raise ValueError("Ghostty license provenance differs from the native source manifest")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, default=Path(__file__).resolve().parents[1] / "target/ghostty")
@@ -91,6 +104,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="verify existing sources without downloading or building")
     arguments = parser.parse_args()
     manifest = json.loads(arguments.manifest.read_text())
+    verify_revision(manifest)
     root = arguments.directory.absolute()
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".prepare.lock").open("a") as lock:

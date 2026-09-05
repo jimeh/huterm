@@ -281,7 +281,7 @@ mod benchmark {
                 if kind == TerminalEngineKind::Alacritty {
                     "0.26.0"
                 } else {
-                    "a887df42c56f6de86c0fe6da9c4eeca37931e083"
+                    crate::GHOSTTY_REVISION
                 },
                 first.len(),
                 processing[100],
@@ -453,6 +453,19 @@ mod contract_tests {
             let generation = engine.generation();
             engine.scroll(ScrollCommand::Absolute(1)).unwrap();
             let before = engine.snapshot().unwrap();
+            let visible: Vec<String> = before
+                .rows
+                .iter()
+                .map(|row| {
+                    row.cells
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect();
+            assert_eq!(visible, ["two", "three", "four"]);
             assert_eq!(engine.generation(), generation);
             let range = BufferRange::ordered(
                 BufferPoint {
@@ -589,6 +602,26 @@ mod contract_tests {
                     "{sequence:?}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn engines_answer_primary_device_attributes_conservatively() {
+        each_engine(|engine| {
+            let expected = if matches!(engine, TerminalEngine::Alacritty(_)) {
+                b"\x1b[?6c".as_slice()
+            } else {
+                b"\x1b[?62;22c".as_slice()
+            };
+            let effects = engine.process(b"\x1b[c").unwrap();
+            let replies: Vec<_> = effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    EngineEffect::PtyWrite(bytes) => Some(bytes.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(replies, [expected]);
         });
     }
 

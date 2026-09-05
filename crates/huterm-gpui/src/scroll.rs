@@ -199,6 +199,7 @@ pub(super) struct ScrollController {
     history: usize,
     pixel_remainder: f32,
     in_flight: bool,
+    failed: bool,
     dirty: bool,
     diagnostics: ScrollDiagnostics,
 }
@@ -337,6 +338,9 @@ impl ScrollController {
     }
 
     pub(super) fn begin_request(&mut self) -> Option<Viewport> {
+        if self.failed {
+            return None;
+        }
         if self.in_flight {
             if self.dirty || self.desired != self.displayed {
                 self.diagnostics.requests_coalesced =
@@ -396,8 +400,10 @@ impl ScrollController {
     }
 
     pub(super) fn fail(&mut self) {
-        self.pending_scroll = Some(ScrollCommand::Absolute(self.desired));
-        self.dirty = true;
+        self.failed = true;
+        self.pending_scroll = None;
+        self.submitted_scroll = None;
+        self.dirty = false;
         self.in_flight = false;
     }
 }
@@ -405,6 +411,20 @@ impl ScrollController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_snapshot_stops_resubmission_with_pending_scroll() {
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 2 }, 10);
+        scroll.scroll_rows(1);
+        scroll.begin_request().unwrap();
+        scroll.scroll_rows(1);
+        scroll.fail();
+        assert!(scroll.begin_request().is_none());
+        scroll.invalidate();
+        scroll.scroll_rows(-1);
+        assert!(scroll.begin_request().is_none());
+    }
 
     #[test]
     #[expect(

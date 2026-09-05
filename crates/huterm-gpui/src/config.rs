@@ -192,20 +192,21 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 error: None,
                 fatal: false,
             },
-            Err(error) => LoadedConfig {
-                config: Config::default(),
-                fatal: matches!(error, ConfigError::Engine(_))
-                    || toml::from_str::<toml::Value>(&source).is_ok_and(
-                        |value| {
-                            value
-                                .get("terminal")
-                                .and_then(|terminal| terminal.get("engine"))
-                                .is_some()
-                        },
-                    ),
-                error: Some(format!("{}: {error}", path.display())),
-                path,
-            },
+            Err(error) => {
+                let (engine, fatal, error) = match fallback_engine(&source) {
+                    Ok(engine) => (engine, false, error),
+                    Err(error) => (TerminalEngineKind::default(), true, error),
+                };
+                LoadedConfig {
+                    config: Config {
+                        engine,
+                        ..Config::default()
+                    },
+                    fatal,
+                    error: Some(format!("{}: {error}", path.display())),
+                    path,
+                }
+            }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             LoadedConfig {
@@ -286,23 +287,39 @@ pub(super) fn reload(path: &Path) -> Result<Config, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn fallback_engine(source: &str) -> Result<TerminalEngineKind, ConfigError> {
+    let value: toml::Value =
+        toml::from_str(source).map_err(ConfigError::Toml)?;
+    let Some(engine) = value
+        .get("terminal")
+        .and_then(|terminal| terminal.get("engine"))
+    else {
+        return Ok(TerminalEngineKind::default());
+    };
+    parse_engine(engine.as_str().ok_or_else(|| {
+        ConfigError::Engine("terminal.engine must be a string".into())
+    })?)
+}
+
+fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
+    match name {
+        "alacritty" => Ok(TerminalEngineKind::Alacritty),
+        "ghostty" if cfg!(feature = "ghostty") => {
+            Ok(TerminalEngineKind::Ghostty)
+        }
+        "ghostty" => Err(ConfigError::Engine(
+            "Ghostty is unavailable; use a build with the ghostty feature"
+                .into(),
+        )),
+        name => Err(ConfigError::Engine(format!(
+            "unknown terminal engine {name:?}"
+        ))),
+    }
+}
+
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
-    let engine = match raw.terminal.engine.as_str() {
-        "alacritty" => TerminalEngineKind::Alacritty,
-        "ghostty" if cfg!(feature = "ghostty") => TerminalEngineKind::Ghostty,
-        "ghostty" => {
-            return Err(ConfigError::Engine(
-                "Ghostty is unavailable; use a build with the ghostty feature"
-                    .into(),
-            ));
-        }
-        name => {
-            return Err(ConfigError::Engine(format!(
-                "unknown terminal engine {name:?}"
-            )));
-        }
-    };
+    let engine = parse_engine(&raw.terminal.engine)?;
     if raw.font.family.trim().is_empty() {
         return Err(ConfigError::Invalid("font.family must not be empty"));
     }
@@ -471,19 +488,43 @@ mod tests {
     }
 
     #[test]
-    fn loading_an_explicit_engine_does_not_fall_back_after_an_error() {
+    fn config_fallback_preserves_only_a_valid_engine_choice() {
         let directory = test_directory();
         fs::create_dir(&directory).unwrap();
         let file = directory.join("config.toml");
         for source in [
             "[terminal]\nengine = 'unknown'",
             "[terminal]\nengine = 12",
-            "[terminal]\nengine = 'alacritty'\n[font]\nsize = 'bad'",
+            "[terminal]\nengine = 'unknown'\n[font]\nsize =",
+            "[terminal]\nengine = 'ghostty'\n[font]\nsize =",
+            "[font]\nsize =",
         ] {
             fs::write(&file, source).unwrap();
             let loaded = load_path(file.clone());
             assert!(loaded.fatal, "{source}");
             assert!(loaded.error.is_some());
+        }
+        for (source, expected, fatal) in [
+            (
+                "[terminal]\nengine = 'alacritty'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Alacritty,
+                false,
+            ),
+            (
+                "[terminal]\nengine = 'ghostty'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Ghostty,
+                !cfg!(feature = "ghostty"),
+            ),
+            ("[font]\nsize = 'bad'", TerminalEngineKind::Alacritty, false),
+        ] {
+            fs::write(&file, source).unwrap();
+            let loaded = load_path(file.clone());
+            assert_eq!(loaded.fatal, fatal, "{source}");
+            assert!(loaded.error.is_some());
+            if !fatal {
+                assert_eq!(loaded.config.engine, expected);
+                assert_eq!(loaded.config.font, Config::default().font);
+            }
         }
         fs::remove_dir_all(directory).unwrap();
     }

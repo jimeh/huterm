@@ -21,8 +21,10 @@ engine = "ghostty"
 Reload configuration and open a tab or window. Configuration is captured before
 a spawn starts; reload does not change existing or pending terminals. Use
 `"alacritty"` to switch the default back. An explicit unknown or unavailable
-engine fails configuration validation. Startup does not fall back to Alacritty
-when an explicit engine configuration fails; reload retains the previous config.
+engine fails configuration validation. Malformed TOML also stops startup because
+the engine choice cannot be recovered safely. With valid TOML and an available
+engine, unrelated settings errors print a diagnostic and use default settings
+while preserving that engine. Reload errors retain the previous configuration.
 
 The ordinary `mise run dev` and `mise run check:alacritty` paths need no native
 Ghostty build. `check`, `test`, and `verify` cover both engines. For a direct Cargo
@@ -41,7 +43,8 @@ engines and the native license notices. `package:macos` retains the default buil
 The published Rust bindings and sys crate are pinned to 0.2.1. Native Ghostty is
 pinned to `a887df42c56f6de86c0fe6da9c4eeca37931e083`, built with Zig 0.15.2 and
 static linking. `scripts/ghostty-source.json` records the archive checksum and
-full source-tree checksum. Preparation verifies existing contents on each run;
+full source-tree checksum. Preparation checks the Rust revision constant and
+license provenance against that manifest, then verifies existing source contents;
 a changed generated tree fails rather than silently building different source.
 
 This is a narrow native-source exception to the Cargo registry-only policy.
@@ -64,7 +67,8 @@ Both engines use Huterm's input encoder, modes, owned effects, snapshot cell
 styles, selection extraction, and lifecycle cleanup. Native handles stay on the
 runtime thread. Failed engine initialization occurs before PTY creation; startup
 waits for I/O workers before returning a usable client. Resize effects use the
-same ordered PTY writer as parser replies.
+same ordered PTY writer as parser replies. Snapshot errors close the runtime
+through the normal cleanup path and stop client snapshot resubmission.
 
 The Ghostty history option is a byte budget at this pin, despite its binding and
 header documentation calling it lines. The adapter uses 16 MiB. Alacritty retains
@@ -80,7 +84,8 @@ also invalidate rows independently of native row damage.
 
 Image rendering and Kitty keyboard input remain outside this experiment. The
 adapter disables the glyph protocol and APC payload storage and suppresses
-extended device-attribute advertisements. It continues answering ordinary cursor
+extended device-attribute advertisements. Primary device attributes explicitly
+report VT220 with ANSI color. It continues answering ordinary cursor
 position queries and suppresses Kitty keyboard/graphics capability replies.
 This does not add support for every terminal extension that
 Ghostty understands internally.
@@ -90,7 +95,10 @@ native encoder probes local synthetic events to read the active tracking and
 format, using fixed geometry even when the real grid is 1x1. These bytes never
 reach the PTY; Huterm encodes real input. One intentional engine difference is
 that Ghostty resets to legacy format when disabling an inactive mouse encoding,
-while Alacritty preserves the active encoding.
+while Alacritty preserves the active encoding. SGR-pixel mouse mode 1016 is not
+supported: the shared input protocol encodes cell coordinates for legacy, UTF-8,
+and SGR mouse reports. Applications requiring pixel coordinates cannot use that
+mode correctly in this experiment.
 
 Terminal scrolling is shared. Selection gestures, window navigation, active tabs,
 and scrollbar animation remain client state. Multiple-attachment UI, terminal

@@ -58,7 +58,7 @@ impl RuntimeClient {
         match self.engine {
             huterm_protocol::TerminalEngineKind::Alacritty => "0.26.0",
             huterm_protocol::TerminalEngineKind::Ghostty => {
-                "a887df42c56f6de86c0fe6da9c4eeca37931e083"
+                crate::GHOSTTY_REVISION
             }
         }
     }
@@ -528,6 +528,20 @@ enum RuntimeControl {
     Wake,
 }
 
+fn complete_snapshot_request(
+    result: Result<SnapshotReply, RuntimeError>,
+    reply: &async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
+    events: &mpsc::Sender<TerminalEvent>,
+    terminal_id: TerminalId,
+    closing: &AtomicBool,
+) {
+    if let Err(error) = &result {
+        report_failure(events, terminal_id, error.to_string());
+        closing.store(true, Ordering::Release);
+    }
+    let _ = reply.try_send(result);
+}
+
 #[derive(Debug)]
 enum WriterMessage {
     Write(Vec<u8>),
@@ -675,7 +689,13 @@ fn run_terminal(
                             completed_at: Instant::now(),
                         })
                     })();
-                    let _ = reply.try_send(result);
+                    complete_snapshot_request(
+                        result,
+                        &reply,
+                        &events,
+                        terminal_id,
+                        &closing,
+                    );
                 }
                 RuntimeControl::Selection {
                     generation,
@@ -1098,6 +1118,28 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn snapshot_failure_reports_error_and_enters_runtime_cleanup() {
+        let (reply, receiver) = async_channel::bounded(1);
+        let (events, event_receiver) = mpsc::channel();
+        let closing = AtomicBool::new(false);
+        let id = TerminalId::new(96);
+        complete_snapshot_request(
+            Err(RuntimeError::Engine("snapshot allocation failed".into())),
+            &reply,
+            &events,
+            id,
+            &closing,
+        );
+        assert!(closing.load(Ordering::Acquire));
+        assert!(
+            matches!(receiver.try_recv(), Ok(Err(RuntimeError::Engine(message))) if message == "snapshot allocation failed")
+        );
+        assert!(
+            matches!(event_receiver.try_recv(), Ok(TerminalEvent::Failed { terminal_id, message }) if terminal_id == id && message.contains("snapshot allocation failed"))
+        );
+    }
 
     #[cfg(feature = "ghostty")]
     #[test]

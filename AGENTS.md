@@ -279,3 +279,11 @@ viewport. Benchmark expected offsets use command plus pre-operation runtime
 viewport/history; retain the client prediction separately. Clamp pending relative
 UI intents after an authoritative completion so a saturated history boundary
 does not leave scroll debt that affects later reversal.
+
+Treat malformed TOML and invalid/unavailable engine choices as fatal at startup.
+For valid TOML with a known available engine, fallback from unrelated settings
+errors must preserve that engine. Fatal snapshot errors set the runtime closing
+gate; latch client snapshot failure so pending scroll or invalidation cannot
+create an immediate retry loop. Set Ghostty device attributes explicitly: the
+pinned native implementation answers a callback returning None despite binding
+documentation saying it suppresses replies.
