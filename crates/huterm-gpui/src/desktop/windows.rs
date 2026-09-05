@@ -9,6 +9,8 @@ const TAB_HEIGHT: Pixels = px(32.0);
 const SIDEBAR_WIDTH: Pixels = px(180.0);
 const TAB_WIDTH: Pixels = px(160.0);
 const CONTROL_SIZE: Pixels = px(28.0);
+const TAB_DRAG_THRESHOLD: f64 = 4.0;
+const TAB_PAGE_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct DesktopRuntime {
@@ -42,6 +44,29 @@ impl DesktopRuntime {
                 Err(error)
             }
         }
+    }
+
+    fn reorder_tab(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        before: Option<TabId>,
+    ) -> Result<Vec<TabId>, MuxError> {
+        let mut mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(RuntimeError::Stopped.into());
+        }
+        mux.reorder_tab(workspace, tab, before)?;
+        Ok(mux
+            .workspace(workspace)
+            .ok_or(MuxError::UnknownWorkspace(workspace))?
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect())
     }
 
     fn terminate(&self) -> Result<(), MuxError> {
@@ -122,7 +147,10 @@ pub(super) fn run() -> anyhow::Result<()> {
             }
             if let Some(root) = window.root::<WorkspaceView>().flatten() {
                 root.update(cx, |view, cx| {
-                    if view.busy || view.close.confirmation.is_some() {
+                    if view.busy
+                        || view.close.confirmation.is_some()
+                        || view.reorder.is_some()
+                    {
                         return;
                     }
                     if let Some(tab) = view.active_view() {
@@ -234,6 +262,7 @@ fn open_window(cx: &mut App) {
                 tabs: Vec::new(),
                 active: None,
                 first_visible: 0,
+                reorder: None,
                 config,
                 family,
                 metrics: scaled_metrics,
@@ -262,6 +291,9 @@ fn open_window(cx: &mut App) {
                         .await;
                     if pump_view
                         .update(cx, |view, cx| {
+                            if view.advance_drag_page(Instant::now()) {
+                                cx.notify();
+                            }
                             let mut metadata_changed = false;
                             for tab in &view.tabs {
                                 tab.view.update(cx, |terminal, cx| {
@@ -310,6 +342,7 @@ struct WorkspaceView {
     tabs: Vec<TabView>,
     active: Option<TabId>,
     first_visible: usize,
+    reorder: Option<TabReorder>,
     config: Config,
     family: String,
     metrics: GridMetrics,
@@ -317,6 +350,163 @@ struct WorkspaceView {
     busy: bool,
     close: CloseState,
     status: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TabDragSource {
+    workspace: WorkspaceId,
+    window: gpui::WindowId,
+    tab: TabId,
+}
+
+struct TabReorder {
+    source: TabDragSource,
+    origin: gpui::Point<Pixels>,
+    pointer: gpui::Point<Pixels>,
+    dragging: bool,
+    original_first: usize,
+    page: Option<(bool, Instant)>,
+    strip: TabStrip,
+}
+
+#[derive(Clone, Debug)]
+struct TabStrip {
+    bounds: Bounds<Pixels>,
+    vertical: bool,
+    visible: std::ops::Range<usize>,
+    capacity: usize,
+    count: usize,
+    extent: Pixels,
+    leading: Pixels,
+}
+
+impl TabStrip {
+    fn new(
+        bounds: Bounds<Pixels>,
+        vertical: bool,
+        count: usize,
+        active: usize,
+        first: usize,
+        pin_active: bool,
+    ) -> Self {
+        let available = if vertical {
+            bounds.size.height
+        } else {
+            bounds.size.width
+        };
+        let nominal = if vertical { TAB_HEIGHT } else { TAB_WIDTH };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "bounded nonnegative window dimension"
+        )]
+        let capacity = ((available - CONTROL_SIZE * 3.0).max(nominal) / nominal)
+            .floor() as usize;
+        let visible = if pin_active {
+            visible_tabs(count, active, first, capacity)
+        } else {
+            let first = first.min(count.saturating_sub(capacity));
+            first..(first + capacity).min(count)
+        };
+        Self {
+            bounds,
+            vertical,
+            visible,
+            capacity,
+            count,
+            extent: if vertical {
+                TAB_HEIGHT
+            } else {
+                TAB_WIDTH.min((available - CONTROL_SIZE * 3.0).max(px(1.0)))
+            },
+            leading: if count > capacity {
+                CONTROL_SIZE * 2.0
+            } else {
+                px(0.0)
+            },
+        }
+    }
+    fn axis(&self, pointer: gpui::Point<Pixels>) -> Pixels {
+        if self.vertical {
+            pointer.y - self.bounds.origin.y
+        } else {
+            pointer.x - self.bounds.origin.x
+        }
+    }
+    fn available(&self) -> Pixels {
+        if self.vertical {
+            self.bounds.size.height
+        } else {
+            self.bounds.size.width
+        }
+    }
+    fn slot(&self, pointer: gpui::Point<Pixels>) -> usize {
+        let axis = self.axis(pointer);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped insertion slot"
+        )]
+        let offset = ((axis - self.leading).max(px(0.0)) / self.extent + 0.5)
+            .floor() as usize;
+        self.visible.start + offset.min(self.visible.len())
+    }
+    fn page_direction(&self, pointer: gpui::Point<Pixels>) -> Option<bool> {
+        if self.count <= self.capacity {
+            return None;
+        }
+        let axis = self.axis(pointer);
+        if axis < CONTROL_SIZE && self.visible.start > 0 {
+            Some(false)
+        } else if (axis < self.leading
+            || axis >= self.available() - CONTROL_SIZE)
+            && axis >= CONTROL_SIZE
+            && self.visible.end < self.count
+        {
+            Some(true)
+        } else {
+            None
+        }
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "visible slot count is bounded by window dimensions"
+    )]
+    fn marker(&self, slot: usize) -> Bounds<Pixels> {
+        let offset = self.leading
+            + self.extent
+                * (slot
+                    .saturating_sub(self.visible.start)
+                    .min(self.visible.len()) as f32);
+        let offset = offset.min((self.available() - px(2.0)).max(px(0.0)));
+        if self.vertical {
+            Bounds::new(
+                self.bounds.origin + point(px(0.0), offset),
+                size(self.bounds.size.width, px(2.0)),
+            )
+        } else {
+            Bounds::new(
+                self.bounds.origin + point(offset, px(0.0)),
+                size(px(2.0), self.bounds.size.height),
+            )
+        }
+    }
+    fn preview(&self, pointer: gpui::Point<Pixels>) -> Bounds<Pixels> {
+        let extent = self.extent.min(self.available());
+        let offset = (self.axis(pointer) - extent / 2.0)
+            .clamp(px(0.0), (self.available() - extent).max(px(0.0)));
+        if self.vertical {
+            Bounds::new(
+                self.bounds.origin + point(px(0.0), offset),
+                size(self.bounds.size.width, extent),
+            )
+        } else {
+            Bounds::new(
+                self.bounds.origin + point(offset, px(0.0)),
+                size(extent, self.bounds.size.height),
+            )
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -401,6 +591,29 @@ impl CloseState {
     }
 }
 
+fn apply_tab_order<T>(
+    tabs: &mut [T],
+    order: &[TabId],
+    id: impl Fn(&T) -> TabId,
+) -> bool {
+    if tabs.len() != order.len()
+        || order
+            .iter()
+            .enumerate()
+            .any(|(index, tab)| order[..index].contains(tab))
+        || tabs.iter().any(|tab| !order.contains(&id(tab)))
+    {
+        return false;
+    }
+    tabs.sort_by_key(|tab| {
+        order
+            .iter()
+            .position(|candidate| *candidate == id(tab))
+            .unwrap_or(usize::MAX)
+    });
+    true
+}
+
 // Update navigation together with removal, before another close can interrupt
 // completion or open a confirmation dialog.
 fn remove_tab<T>(
@@ -419,6 +632,200 @@ fn remove_tab<T>(
 }
 
 impl WorkspaceView {
+    fn tab_strip(&self, window: &Window) -> TabStrip {
+        let position = self.config.window.tab_position;
+        let layout = ChromeLayout::new(
+            window.viewport_size(),
+            terminal_top(window),
+            position,
+        );
+        let active = self
+            .tabs
+            .iter()
+            .position(|tab| Some(tab.id) == self.active)
+            .unwrap_or(0);
+        TabStrip::new(
+            layout.tabs,
+            position.vertical(),
+            self.tabs.len(),
+            active,
+            self.first_visible,
+            !self.reorder.as_ref().is_some_and(|drag| drag.dragging),
+        )
+    }
+
+    fn can_reorder(
+        &self,
+        source: TabDragSource,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        source.window == window.window_handle().window_id()
+            && Some(source.workspace) == self.workspace
+            && self.tabs.iter().any(|tab| tab.id == source.tab)
+            && !self.busy
+            && self.close.confirmation.is_none()
+            && !cx.global::<Desktop>().quitting
+            && !cx.global::<Desktop>().quit_pending
+    }
+
+    fn begin_reorder(
+        &mut self,
+        tab: TabId,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(workspace) = self.workspace else {
+            return;
+        };
+        let source = TabDragSource {
+            workspace,
+            window: window.window_handle().window_id(),
+            tab,
+        };
+        if !self.can_reorder(source, window, cx) {
+            return;
+        }
+        self.reorder = Some(TabReorder {
+            source,
+            origin: pointer,
+            pointer,
+            dragging: false,
+            original_first: self.first_visible,
+            page: None,
+            strip: self.tab_strip(window),
+        });
+        cx.notify();
+    }
+
+    fn update_reorder(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(source) = self.reorder.as_ref().map(|drag| drag.source) else {
+            return;
+        };
+        if !self.can_reorder(source, window, cx) {
+            self.cancel_reorder(window, cx);
+            return;
+        }
+        let strip = self.tab_strip(window);
+        if let Some(drag) = &mut self.reorder {
+            drag.pointer = pointer;
+            if !drag.dragging
+                && (pointer - drag.origin).magnitude() > TAB_DRAG_THRESHOLD
+            {
+                drag.dragging = true;
+                self.focus.focus(window);
+            }
+            drag.strip = strip;
+            let direction =
+                drag.strip.page_direction(pointer).filter(|_| drag.dragging);
+            if direction != drag.page.map(|(forward, _)| forward) {
+                drag.page = direction
+                    .map(|forward| (forward, Instant::now() + TAB_PAGE_DELAY));
+            }
+        }
+        cx.notify();
+    }
+
+    fn advance_drag_page(&mut self, now: Instant) -> bool {
+        let Some(drag) = &mut self.reorder else {
+            return false;
+        };
+        let Some((forward, deadline)) = drag.page else {
+            return false;
+        };
+        if !drag.dragging || now < deadline {
+            return false;
+        }
+        let previous = self.first_visible;
+        self.first_visible = if forward {
+            self.first_visible
+                .saturating_add(drag.strip.capacity)
+                .min(drag.strip.count.saturating_sub(drag.strip.capacity))
+        } else {
+            self.first_visible.saturating_sub(drag.strip.capacity)
+        };
+        drag.page = (self.first_visible != previous)
+            .then_some((forward, now + TAB_PAGE_DELAY));
+        self.first_visible != previous
+    }
+
+    fn restore_tab_focus(&self, window: &mut Window, cx: &App) {
+        if let Some(tab) = self.active_view() {
+            tab.read(cx).focus.focus(window);
+        }
+    }
+
+    fn cancel_reorder(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(drag) = self.reorder.take() {
+            self.first_visible = drag.original_first;
+            self.restore_tab_focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn finish_reorder(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.update_reorder(pointer, window, cx);
+        let Some(drag) = self.reorder.take() else {
+            return;
+        };
+        if !self.can_reorder(drag.source, window, cx) {
+            self.restore_tab_focus(window, cx);
+            return;
+        }
+        if !drag.dragging {
+            self.select(drag.source.tab, window, cx);
+            return;
+        }
+        let before = self.tabs.get(drag.strip.slot(pointer)).map(|tab| tab.id);
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        self.busy = true;
+        let task = cx.background_executor().spawn(async move {
+            runtime.reorder_tab(drag.source.workspace, drag.source.tab, before)
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                match result {
+                    Ok(order) => {
+                        if !apply_tab_order(&mut view.tabs, &order, |tab| {
+                            tab.id
+                        }) {
+                            view.status = Some(
+                                "Tab order changed before reorder completed"
+                                    .into(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        view.status =
+                            Some(format!("Cannot reorder tab: {error}"));
+                    }
+                }
+                view.restore_tab_focus(window, cx);
+                view.resume_close(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn active_view(&self) -> Option<Entity<TerminalView>> {
         self.tabs
             .iter()
@@ -431,6 +838,7 @@ impl WorkspaceView {
         reason = "spawn completion publishes a tab or cleans up an orphaned workspace"
     )]
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.cancel_reorder(window, cx);
         if self.busy
             || self.close.confirmation.is_some()
             || cx.global::<Desktop>().quitting
@@ -566,6 +974,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         if self.busy
+            || self.reorder.is_some()
             || self.close.confirmation.is_some()
             || self.tabs.is_empty()
         {
@@ -590,7 +999,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.busy || self.close.confirmation.is_some() {
+        if self.busy
+            || self.reorder.is_some()
+            || self.close.confirmation.is_some()
+        {
             return;
         }
         let tab = if index == 8 {
@@ -609,6 +1021,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.cancel_reorder(window, cx);
         if let CloseTarget::Tab(id) = target
             && !self.tabs.iter().any(|tab| tab.id == id)
         {
@@ -939,6 +1352,16 @@ impl Render for WorkspaceView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
+                    if view.reorder.is_some() && event.keystroke.key == "escape"
+                    {
+                        // Retain the gesture through keystroke observation, so
+                        // Escape cannot also reach the active terminal.
+                        cx.defer_in(window, |view, window, cx| {
+                            view.cancel_reorder(window, cx);
+                        });
+                        cx.stop_propagation();
+                        return;
+                    }
                     if view.close.confirmation.is_some()
                         && event.keystroke.key == "escape"
                     {
@@ -992,6 +1415,53 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|view, _: &Tab9, window, cx| {
                 view.select_index(8, window, cx);
             }));
+        let move_view = cx.entity().downgrade();
+        let release_view = move_view.clone();
+        // Register before terminal children so capture consumes drag movement
+        // and release even beyond the bar/window, before application mouse input.
+        root = root.child(
+            canvas(
+                |_, _, _| (),
+                move |_, (), window, _| {
+                    window.on_mouse_event(
+                        move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = move_view.update(cx, |view, cx| {
+                                    if view.reorder.is_some() {
+                                        view.update_reorder(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }
+                                });
+                            }
+                        },
+                    );
+                    window.on_mouse_event(
+                        move |event: &MouseUpEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture
+                                && event.button == MouseButton::Left
+                            {
+                                let _ = release_view.update(cx, |view, cx| {
+                                    if view.reorder.is_some() {
+                                        view.finish_reorder(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }
+                                });
+                            }
+                        },
+                    );
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
         if terminal_top(window) > px(0.0) {
             root = root.child(
                 div()
@@ -1007,28 +1477,14 @@ impl Render for WorkspaceView {
                     .child("Huterm"),
             );
         }
-        let vertical = position.vertical();
-        let available = if vertical {
-            layout.tabs.size.height
-        } else {
-            layout.tabs.size.width
-        };
-        let extent = if vertical { TAB_HEIGHT } else { TAB_WIDTH };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "nonnegative bounded window dimension"
-        )]
-        let capacity = ((available - CONTROL_SIZE * 3.0).max(extent) / extent)
-            .floor() as usize;
-        let active = self
-            .tabs
-            .iter()
-            .position(|tab| Some(tab.id) == self.active)
-            .unwrap_or(0);
-        let visible =
-            visible_tabs(self.tabs.len(), active, self.first_visible, capacity);
+        let strip = self.tab_strip(window);
+        let vertical = strip.vertical;
+        let capacity = strip.capacity;
+        let visible = strip.visible.clone();
         self.first_visible = visible.start;
+        if let Some(drag) = &mut self.reorder {
+            drag.strip = strip.clone();
+        }
         let mut bar = div()
             .absolute()
             .left(layout.tabs.origin.x)
@@ -1087,8 +1543,7 @@ impl Render for WorkspaceView {
                     .w(if vertical {
                         layout.tabs.size.width
                     } else {
-                        TAB_WIDTH
-                            .min((available - CONTROL_SIZE * 3.0).max(px(1.0)))
+                        strip.extent
                     })
                     .h(TAB_HEIGHT)
                     .flex()
@@ -1100,11 +1555,20 @@ impl Render for WorkspaceView {
                     .when(Some(id) == self.active, |tab| {
                         tab.bg(foreground.opacity(0.12))
                     })
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if !view.busy && view.close.confirmation.is_none() {
-                            view.select(id, window, cx);
-                        }
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(
+                            move |view, event: &MouseDownEvent, window, cx| {
+                                view.begin_reorder(
+                                    id,
+                                    event.position,
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            },
+                        ),
+                    )
                     .child(
                         div().flex_1().min_w_0().text_ellipsis().child(title),
                     )
@@ -1112,6 +1576,9 @@ impl Render for WorkspaceView {
                         div()
                             .id(("close-tab", id.get()))
                             .flex_shrink_0()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(
                                 move |view, _, window, cx| {
                                     cx.stop_propagation();
@@ -1152,6 +1619,42 @@ impl Render for WorkspaceView {
                     .h(layout.terminal.size.height)
                     .overflow_hidden()
                     .child(tab),
+            );
+        }
+        if let Some(drag) = &self.reorder
+            && drag.dragging
+        {
+            let marker = strip.marker(strip.slot(drag.pointer));
+            let preview = strip.preview(drag.pointer);
+            let title = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id == drag.source.tab)
+                .map(|tab| tab.fallback_title.clone())
+                .unwrap_or_default();
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(preview.origin.x)
+                    .top(preview.origin.y)
+                    .w(preview.size.width)
+                    .h(preview.size.height)
+                    .overflow_hidden()
+                    .px_2()
+                    .bg(background)
+                    .border_1()
+                    .border_color(foreground.opacity(0.5))
+                    .opacity(0.8)
+                    .child(title),
+            );
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(marker.origin.x)
+                    .top(marker.origin.y)
+                    .w(marker.size.width)
+                    .h(marker.size.height)
+                    .bg(foreground),
             );
         }
         if let Some(status) = &self.status {
@@ -1211,6 +1714,136 @@ pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reorder_projection_and_preview_stay_in_bar_for_all_four_placements() {
+        for position in [
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Right,
+        ] {
+            let layout = ChromeLayout::new(
+                size(px(600.0), px(240.0)),
+                px(32.0),
+                position,
+            );
+            let strip =
+                TabStrip::new(layout.tabs, position.vertical(), 8, 0, 0, true);
+            let pointer = if strip.vertical {
+                strip.bounds.origin
+                    + point(px(20.0), strip.leading + strip.extent * 1.1)
+            } else {
+                strip.bounds.origin
+                    + point(strip.leading + strip.extent * 1.1, px(10.0))
+            };
+            assert_eq!(strip.slot(pointer), 1, "{position:?}");
+            for excursion in [-10_000.0, 10_000.0] {
+                let perpendicular = pointer
+                    + if strip.vertical {
+                        point(px(excursion), px(0.0))
+                    } else {
+                        point(px(0.0), px(excursion))
+                    };
+                assert_eq!(strip.slot(perpendicular), 1, "{position:?}");
+                let beyond = pointer
+                    + if strip.vertical {
+                        point(px(0.0), px(excursion))
+                    } else {
+                        point(px(excursion), px(0.0))
+                    };
+                let slot = strip.slot(beyond);
+                assert_eq!(
+                    slot,
+                    if excursion < 0.0 {
+                        strip.visible.start
+                    } else {
+                        strip.visible.end
+                    }
+                );
+                for bounds in [
+                    strip.preview(beyond),
+                    strip.preview(perpendicular),
+                    strip.marker(slot),
+                ] {
+                    assert!(
+                        bounds.origin.x >= strip.bounds.origin.x
+                            && bounds.origin.y >= strip.bounds.origin.y
+                    );
+                    assert!(
+                        bounds.origin.x + bounds.size.width
+                            <= strip.bounds.origin.x + strip.bounds.size.width
+                    );
+                    assert!(
+                        bounds.origin.y + bounds.size.height
+                            <= strip.bounds.origin.y + strip.bounds.size.height
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overflow_drag_pages_are_not_pinned_to_active_tab() {
+        for vertical in [false, true] {
+            let bounds = Bounds::new(
+                point(px(20.0), px(40.0)),
+                size(px(600.0), px(220.0)),
+            );
+            let initial = TabStrip::new(bounds, vertical, 15, 0, 0, true);
+            let next =
+                TabStrip::new(bounds, vertical, 15, 0, initial.capacity, false);
+            assert_eq!(next.visible.start, initial.capacity);
+            let previous_control = bounds.origin + point(px(2.0), px(2.0));
+            assert_eq!(next.page_direction(previous_control), Some(false));
+            let end = bounds.origin + point(px(10_000.0), px(10_000.0));
+            assert_eq!(next.page_direction(end), Some(true));
+            let last = TabStrip::new(bounds, vertical, 15, 0, 15, false);
+            assert_eq!(last.visible.end, 15);
+            assert_eq!(last.slot(end), 15);
+            assert_eq!(last.page_direction(end), None);
+            let canceled = TabStrip::new(
+                bounds,
+                vertical,
+                15,
+                0,
+                last.visible.start,
+                true,
+            );
+            assert_eq!(canceled.visible.start, 0);
+        }
+    }
+
+    #[test]
+    fn applying_canonical_order_retains_view_state_and_rejects_stale_reply() {
+        let a = TabId::new(1);
+        let b = TabId::new(2);
+        let c = TabId::new(3);
+        let active = b;
+        let mut views = vec![
+            (a, "selection-a", 123),
+            (b, "selection-b", 456),
+            (c, "selection-c", 789),
+        ];
+        assert!(apply_tab_order(&mut views, &[c, a, b], |view| view.0));
+        assert_eq!(
+            views,
+            [
+                (c, "selection-c", 789),
+                (a, "selection-a", 123),
+                (b, "selection-b", 456)
+            ]
+        );
+        assert_eq!(views.iter().find(|view| view.0 == active).unwrap().2, 456);
+        let before = views.clone();
+        assert!(!apply_tab_order(&mut views, &[a, a, c], |view| view.0));
+        assert!(!apply_tab_order(
+            &mut views,
+            &[a, b, TabId::new(4)],
+            |view| view.0
+        ));
+        assert_eq!(views, before);
+    }
 
     #[test]
     fn application_mouse_coordinates_follow_all_tab_placements() {

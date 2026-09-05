@@ -109,6 +109,49 @@ impl Mux {
         Ok(OpenedTab { tab, client })
     }
 
+    /// Moves a tab before an existing anchor, or to the end when `before` is None.
+    /// Terminal and pane identities, attachments, and processes are unchanged.
+    ///
+    /// # Errors
+    /// Returns an error for a stale workspace, tab, or anchor without changing order.
+    pub fn reorder_tab(
+        &mut self,
+        workspace_id: WorkspaceId,
+        tab_id: TabId,
+        before: Option<TabId>,
+    ) -> Result<(), MuxError> {
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or(MuxError::UnknownWorkspace(workspace_id))?;
+        let source = workspace
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .ok_or(MuxError::UnknownTab(tab_id))?;
+        let destination =
+            before.map_or(Ok(workspace.tabs.len()), |anchor| {
+                workspace
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == anchor)
+                    .ok_or(MuxError::UnknownTab(anchor))
+            })?;
+        if source == destination {
+            return Ok(());
+        }
+        let tab = workspace.tabs.remove(source);
+        workspace.tabs.insert(
+            if source < destination {
+                destination - 1
+            } else {
+                destination
+            },
+            tab,
+        );
+        Ok(())
+    }
+
     /// Attaches to a terminal without transferring runtime ownership.
     ///
     /// Events currently have one consumer; simultaneous clients need broadcast.
@@ -222,6 +265,61 @@ mod tests {
         CellSize, GridSize, TerminalEvent, TerminalInput, Viewport,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn reorder_preserves_live_terminals_and_rejects_stale_or_foreign_anchors() {
+        let mut mux = Mux::default();
+        let workspace = mux.create_workspace().unwrap();
+        let sibling = mux.create_workspace().unwrap();
+        let first = mux.open_tab(workspace, &command("printf FIRST; read value; printf 'GOT_%s' \"$value\"; read value")).unwrap();
+        let second = mux
+            .open_tab(workspace, &command("printf SECOND; read value"))
+            .unwrap();
+        let third = mux
+            .open_tab(workspace, &command("printf THIRD; read value"))
+            .unwrap();
+        let foreign = mux
+            .open_tab(sibling, &command("printf FOREIGN; read value"))
+            .unwrap();
+        wait_for_text(&first.client, "FIRST");
+        let original = mux.workspace(workspace).unwrap().tabs.clone();
+        mux.reorder_tab(workspace, third.tab.id, Some(first.tab.id))
+            .unwrap();
+        assert_eq!(
+            mux.workspace(workspace).unwrap().tabs,
+            [third.tab, first.tab, second.tab]
+        );
+        mux.reorder_tab(workspace, third.tab.id, None).unwrap();
+        assert_eq!(mux.workspace(workspace).unwrap().tabs, original);
+        for anchor in [Some(first.tab.id), Some(second.tab.id)] {
+            mux.reorder_tab(workspace, first.tab.id, anchor).unwrap();
+            assert_eq!(mux.workspace(workspace).unwrap().tabs, original);
+        }
+        for (tab, anchor) in [
+            (first.tab.id, Some(TabId::new(u64::MAX))),
+            (first.tab.id, Some(foreign.tab.id)),
+            (foreign.tab.id, None),
+        ] {
+            assert!(matches!(
+                mux.reorder_tab(workspace, tab, anchor),
+                Err(MuxError::UnknownTab(_))
+            ));
+            assert_eq!(mux.workspace(workspace).unwrap().tabs, original);
+        }
+        assert!(matches!(
+            mux.reorder_tab(WorkspaceId::new(u64::MAX), first.tab.id, None),
+            Err(MuxError::UnknownWorkspace(_))
+        ));
+        first
+            .client
+            .send_input(TerminalInput::Text("alive\n".into()))
+            .unwrap();
+        wait_for_text(&first.client, "GOT_alive");
+        wait_for_text(&second.client, "SECOND");
+        assert_eq!(mux.terminal_count(), 4);
+        assert_eq!(mux.workspace(sibling).unwrap().tabs, [foreign.tab]);
+        mux.shutdown().unwrap();
+    }
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {

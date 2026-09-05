@@ -40,6 +40,10 @@ Huterm runs on macOS Apple Silicon and Linux x86_64. Each native window has a
 private backing workspace with ordered tabs, one pane per tab, and independent
 terminal processes. Tabs can appear at the top, bottom, left, or right. Hidden
 tabs keep processing output without preparing viewport snapshots or painting.
+Drag tabs to reorder them within a window. The preview stays in the tab bar even
+when the pointer leaves the window; releasing commits the clamped insertion
+position. Escape cancels. Hover the overflow arrows to reach hidden tabs while
+dragging. Moving tabs between windows and tearing tabs out are not supported.
 
 Closing a tab stops its terminal. Closing a window deletes its private workspace
 and stops all its terminals; closing the last window quits. Foreground jobs
@@ -222,7 +226,7 @@ restoration, and shared GUI/TUI access.
 - Native fullscreen on supported platforms.
 - Borderless non-native fullscreen on macOS without creating a separate
   Mission Control space.
-- Drag-and-drop tab management, notifications, and restored window layouts.
+- Moving tabs between windows, notifications, and restored window layouts.
 - Accessibility and platform-native input behavior.
 
 ### Multiplexer
