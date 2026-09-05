@@ -12,11 +12,11 @@ from pathlib import Path
 WARM_SAMPLES = 5
 MIN_SAMPLES = 20
 MIN_INPUT_SAMPLES = 10
-MEDIAN_SNAPSHOT_CPU_BUDGET_US = 8_000
-P95_SNAPSHOT_CPU_BUDGET_US = 16_700
+MEDIAN_SNAPSHOT_ELAPSED_BUDGET_US = 8_000
+P95_SNAPSHOT_ELAPSED_BUDGET_US = 16_700
 P95_SNAPSHOT_LATENCY_BUDGET_US = 33_400
-MEDIAN_PAINT_CPU_BUDGET_US = 8_000
-P95_PAINT_CPU_BUDGET_US = 16_700
+MEDIAN_PAINT_ELAPSED_BUDGET_US = 8_000
+P95_PAINT_ELAPSED_BUDGET_US = 16_700
 P95_LATENCY_BUDGET_US = 33_400
 MEDIAN_WAKEUP_BUDGET_US = 8_000
 
@@ -76,25 +76,25 @@ def main() -> None:
             f"{MIN_INPUT_SAMPLES} matched snapshot input samples after warmup, "
             f"got {len(input_snapshots)}"
         )
-    snapshot_cpu = [sample["snapshot_us"] for sample in snapshots]
+    snapshot_elapsed = [sample["snapshot_us"] for sample in snapshots]
     snapshot_latency = [
         sample["latency_us"] for sample in input_snapshots
     ]
     wakeup_delay = [sample["timer_wait_us"] for sample in snapshots]
-    median_snapshot_cpu = int(statistics.median(snapshot_cpu))
-    p95_snapshot_cpu = percentile(snapshot_cpu, 0.95)
+    median_snapshot_elapsed = int(statistics.median(snapshot_elapsed))
+    p95_snapshot_elapsed = percentile(snapshot_elapsed, 0.95)
     p95_snapshot_latency = percentile(snapshot_latency, 0.95)
     median_wakeup = int(statistics.median(wakeup_delay))
 
-    if median_snapshot_cpu >= MEDIAN_SNAPSHOT_CPU_BUDGET_US:
+    if median_snapshot_elapsed >= MEDIAN_SNAPSHOT_ELAPSED_BUDGET_US:
         fail(
-            f"median snapshot CPU {median_snapshot_cpu}us exceeds "
-            f"{MEDIAN_SNAPSHOT_CPU_BUDGET_US}us"
+            f"median snapshot elapsed time {median_snapshot_elapsed}us exceeds "
+            f"{MEDIAN_SNAPSHOT_ELAPSED_BUDGET_US}us"
         )
-    if p95_snapshot_cpu >= P95_SNAPSHOT_CPU_BUDGET_US:
+    if p95_snapshot_elapsed >= P95_SNAPSHOT_ELAPSED_BUDGET_US:
         fail(
-            f"p95 snapshot CPU {p95_snapshot_cpu}us exceeds "
-            f"{P95_SNAPSHOT_CPU_BUDGET_US}us"
+            f"p95 snapshot elapsed time {p95_snapshot_elapsed}us exceeds "
+            f"{P95_SNAPSHOT_ELAPSED_BUDGET_US}us"
         )
     if p95_snapshot_latency >= P95_SNAPSHOT_LATENCY_BUDGET_US:
         fail(
@@ -119,8 +119,8 @@ def main() -> None:
 
     presentation = "not_measured"
     input_paint_samples = 0
-    median_paint_cpu = 0
-    p95_paint_cpu = 0
+    median_paint_elapsed = 0
+    p95_paint_elapsed = 0
     p95_paint_latency = 0
     if len(paint_samples) >= WARM_SAMPLES + MIN_SAMPLES:
         paint_samples = paint_samples[WARM_SAMPLES:]
@@ -140,18 +140,18 @@ def main() -> None:
             for sample in paint_samples
         ]
         paint_latency = [sample["latency_us"] for sample in input_paint]
-        median_paint_cpu = int(statistics.median(combined))
-        p95_paint_cpu = percentile(combined, 0.95)
+        median_paint_elapsed = int(statistics.median(combined))
+        p95_paint_elapsed = percentile(combined, 0.95)
         p95_paint_latency = percentile(paint_latency, 0.95)
-        if median_paint_cpu >= MEDIAN_PAINT_CPU_BUDGET_US:
+        if median_paint_elapsed >= MEDIAN_PAINT_ELAPSED_BUDGET_US:
             fail(
-                f"median combined paint CPU {median_paint_cpu}us exceeds "
-                f"{MEDIAN_PAINT_CPU_BUDGET_US}us"
+                f"median combined paint elapsed time {median_paint_elapsed}us exceeds "
+                f"{MEDIAN_PAINT_ELAPSED_BUDGET_US}us"
             )
-        if p95_paint_cpu >= P95_PAINT_CPU_BUDGET_US:
+        if p95_paint_elapsed >= P95_PAINT_ELAPSED_BUDGET_US:
             fail(
-                f"p95 combined paint CPU {p95_paint_cpu}us exceeds "
-                f"{P95_PAINT_CPU_BUDGET_US}us"
+                f"p95 combined paint elapsed time {p95_paint_elapsed}us exceeds "
+                f"{P95_PAINT_ELAPSED_BUDGET_US}us"
             )
         if p95_paint_latency >= P95_LATENCY_BUDGET_US:
             fail(
@@ -177,14 +177,14 @@ def main() -> None:
         "huterm-scroll summary "
         f"snapshot_samples={len(snapshots)} "
         f"input_snapshot_samples={len(input_snapshots)} "
-        f"median_snapshot_cpu_us={median_snapshot_cpu} "
-        f"p95_snapshot_cpu_us={p95_snapshot_cpu} "
+        f"median_snapshot_elapsed_us={median_snapshot_elapsed} "
+        f"p95_snapshot_elapsed_us={p95_snapshot_elapsed} "
         f"p95_input_to_snapshot_us={p95_snapshot_latency} "
         f"median_wakeup_us={median_wakeup} "
         f"paint_samples={len(paint_samples)} "
         f"input_paint_samples={input_paint_samples} "
-        f"median_paint_cpu_us={median_paint_cpu} "
-        f"p95_paint_cpu_us={p95_paint_cpu} "
+        f"median_paint_elapsed_us={median_paint_elapsed} "
+        f"p95_paint_elapsed_us={p95_paint_elapsed} "
         f"p95_input_to_paint_us={p95_paint_latency} "
         f"presentation={presentation} "
         f"requests_started={latest['requests_started']} "
@@ -198,7 +198,7 @@ def main() -> None:
             "Paint budgets were not measured because the host produced "
             f"fewer than {WARM_SAMPLES + MIN_SAMPLES} paint samples."
         )
-    print("CPU preparation and paint encoding do not prove GPU presentation.")
+    print("Elapsed preparation and paint encoding do not prove GPU presentation.")
 
 
 if __name__ == "__main__":

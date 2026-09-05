@@ -235,7 +235,7 @@ pub struct Cursor {
 }
 
 /// A point in canonical terminal scrollback.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BufferPoint {
     /// Number of rows above the live screen bottom.
     pub rows_from_live_bottom: usize,

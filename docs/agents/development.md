@@ -102,13 +102,14 @@ mise run bench:scroll
 
 `bench:scroll` drives wheel-equivalent fractional movement, rows, pages, and
 thumb jumps through the production scroll controller over 10,000 unique rows.
-Under Xvfb, it enforces snapshot CPU, input-to-snapshot latency, wakeup delay,
-returned offsets, and queue bounds. If the host produces at least 25 paint
-samples, it also enforces combined paint CPU, input-to-paint latency, and row
-reuse. The same task runs in a native window on macOS to collect those
+Under Xvfb, it enforces snapshot elapsed time, input-to-snapshot latency, wakeup
+delay, returned offsets, and queue bounds. If the host produces at least 25 paint
+samples, it also enforces combined paint elapsed time, input-to-paint latency,
+and row reuse. The same task runs in a native window on macOS to collect those
 frame-bound measurements. Benchmark metadata records the hardware model and
 GPUI window scale. CPU preparation and paint encoding do not prove GPU
-presentation.
+presentation. These durations use a monotonic wall clock and include scheduler
+preemption, not just per-thread CPU execution.
 
 On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived

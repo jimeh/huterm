@@ -200,7 +200,7 @@ pub struct SnapshotRequest {
     receiver: async_channel::Receiver<SnapshotReply>,
 }
 
-/// A runtime snapshot and the CPU time spent producing it.
+/// A runtime snapshot and the elapsed time spent producing it.
 ///
 /// Timing stays in the in-process client boundary so performance diagnostics do
 /// not leak into the dependency-neutral wire protocol.
@@ -208,7 +208,8 @@ pub struct SnapshotRequest {
 pub struct SnapshotReply {
     /// Immutable terminal snapshot.
     pub snapshot: TerminalSnapshot,
-    /// Runtime CPU duration spent constructing the snapshot.
+    /// Monotonic wall-clock duration of snapshot construction, including any
+    /// scheduler preemption. Excludes request queueing and response delivery.
     pub snapshot_duration: Duration,
     /// Monotonic instant when snapshot construction completed.
     pub completed_at: Instant,

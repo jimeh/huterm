@@ -115,8 +115,11 @@ animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
 `HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.
 
-`mise run bench:scroll` accounts for this limitation by gating snapshot CPU,
-wakeup delay, returned offsets, and queue bounds from completion-time records.
-It also checks renderer CPU, row reuse, and input-to-paint latency when a host
-produces at least 25 paint samples. Linux Xvfb does not satisfy that condition;
-run the same task from a frame-delivering macOS session for those measurements.
+`mise run bench:scroll` accounts for this limitation by gating snapshot elapsed
+time, wakeup delay, returned offsets, and queue bounds from completion-time
+records. It also checks renderer elapsed time, row reuse, and input-to-paint
+latency when a host produces at least 25 paint samples. Linux Xvfb does not
+satisfy that condition; run the same task from a frame-delivering macOS session
+for those measurements.
+The scroll timings use a monotonic wall clock and include scheduler preemption;
+they do not measure per-thread CPU time.

@@ -57,6 +57,7 @@ class ScrollBenchmarkCheckerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("presentation=not_measured", result.stdout)
+        self.assertIn("median_snapshot_elapsed_us=1000", result.stdout)
         self.assertIn("Paint budgets were not measured", result.stdout)
 
     def test_accepts_log_with_enough_paint_samples(self) -> None:
@@ -65,6 +66,7 @@ class ScrollBenchmarkCheckerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("paint_samples=20", result.stdout)
         self.assertIn("presentation=pass", result.stdout)
+        self.assertIn("median_paint_elapsed_us=3000", result.stdout)
 
     def test_rejects_snapshot_offset_mismatch(self) -> None:
         result = run_checker(benchmark_log(mismatch_at=6))
