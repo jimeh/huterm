@@ -33,14 +33,14 @@ For direct Cargo commands, prepare the inputs first and use the SDK wrapper:
 
 ```sh
 mise run ghostty:prepare
-mise run ghostty:exec -- cargo build --locked
+mise run build:exec -- cargo build --locked
 ```
 
 `mise run package:macos` builds and verifies an Apple Silicon app with both
 engines and the native license notices. Benchmark engine selectors change only
 configuration; both engines run from the same compiled binary.
 
-Build tasks use `ghostty:exec`'s shared Bash SDK wrapper.
+Build tasks use `build:exec`'s shared Bash SDK wrapper.
 Mise pins Bun and Zig; the wrapper only selects the SDK and executes its
 command. On macOS, if the
 selected SDK is 27 or newer, it selects Xcode 26 at
@@ -50,7 +50,7 @@ Ghostty compiles. If Xcode 26 is elsewhere, set `DEVELOPER_DIR` to its developer
 directory. An explicit `DEVELOPER_DIR` is always preserved. This selection applies
 only to the invoked command; it does not change `xcode-select` or other projects.
 Direct Cargo builds must supply the compatible environment themselves or run
-through `mise run ghostty:exec -- <command>`.
+through `mise run build:exec -- <command>`.
 
 ## Native inputs and policy
 

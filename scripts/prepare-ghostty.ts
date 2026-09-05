@@ -75,7 +75,8 @@ async function download(item: Source, directory: string): Promise<string> {
       signal: AbortSignal.timeout(120_000),
     });
     if (!response.ok) throw new Error(`download failed: HTTP ${response.status} for ${item.name}`);
-    await Bun.write(temporary, response);
+    // Bun 1.4.0 can stall writing a live HTTPS Response on Linux.
+    await Bun.write(temporary, await response.arrayBuffer());
     if (fileHash(temporary) !== item.sha256) throw new Error(`archive checksum mismatch for ${item.name}`);
     renameSync(temporary, destination);
   } finally {

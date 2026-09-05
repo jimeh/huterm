@@ -57,8 +57,10 @@ jobs require confirmation; exited shells remain visible until closed.
 Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
 `$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
 that order. Settings creates the default document without overwriting an
-existing file and opens it with the system editor. Invalid settings fall back
-to defaults and remain visible in the terminal status overlay.
+existing file and opens it with the system editor. Malformed TOML and invalid
+`terminal.engine` values are fatal at startup, before UI creation. With valid
+TOML and a known engine, unrelated settings errors fall back to defaults while
+preserving that engine and showing a diagnostic in the terminal status overlay.
 
 Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
 `Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified

@@ -303,11 +303,11 @@ intent after authoritative completion, including absolute/live intents, so
 later invalidation cannot replay a stale target. Cargo must force the verified
 native source path and benchmark optimization over inherited environment values.
 
-Ghostty commands use `scripts/ghostty-exec.sh` to select Xcode 26 when the default
+Build commands use `scripts/build-exec.sh` to select Xcode 26 when the default
 macOS SDK is 27 or newer. Zig 0.15.2 otherwise fails linking its own build runner
 with undefined system symbols before compiling Ghostty. Preserve explicit
 `DEVELOPER_DIR` overrides; route new native build tasks through this wrapper or
-`mise run ghostty:exec -- <command>`. Preparation cannot export this environment
+`mise run build:exec -- <command>`. Preparation cannot export this environment
 to a later Cargo task, so each native build invocation needs the wrapper.
 
 Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
@@ -318,3 +318,6 @@ Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
 exit and the existing top-down source-tree hash order. Test changes to extraction
 and locking on macOS and Linux. The Linux FFI library is glibc, matching
 Ubuntu CI.
+Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
+can stall on Linux when writing the live HTTPS response directly, even though
+local HTTP fixtures pass. Verify download changes with a cold preparation run.

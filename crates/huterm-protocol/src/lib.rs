@@ -114,7 +114,7 @@ pub enum TerminalEngineKind {
     /// Alacritty 0.26.0, available in every build.
     #[default]
     Alacritty,
-    /// Optional statically linked libghostty-vt.
+    /// Ghostty via libghostty-vt, available in every Huterm build.
     Ghostty,
 }
 

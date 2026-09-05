@@ -52,12 +52,12 @@ fi
 [tasks.dev]
 description = "Run the native Huterm app"
 depends = ["ghostty:prepare"]
-run = "bash scripts/ghostty-exec.sh cargo run --locked -p huterm"
+run = "bash scripts/build-exec.sh cargo run --locked -p huterm"
 
 [tasks.build]
 description = "Build the workspace"
 depends = ["ghostty:prepare"]
-run = "bash scripts/ghostty-exec.sh cargo build --workspace --locked"
+run = "bash scripts/build-exec.sh cargo build --workspace --locked"
 
 [tasks.format]
 description = "Format Rust and repository configuration"
@@ -78,7 +78,7 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 depends = ["ghostty:prepare"]
 description = "Run Clippy with warnings denied"
-run = "bash scripts/ghostty-exec.sh cargo clippy --workspace --all-targets --locked -- -D warnings"
+run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
@@ -91,7 +91,7 @@ run = "markdownlint-cli2 --no-globs --"
 [tasks.typecheck]
 depends = ["ghostty:prepare"]
 description = "Type-check all workspace targets"
-run = "bash scripts/ghostty-exec.sh cargo check --workspace --all-targets --locked"
+run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --locked"
 
 [tasks.architecture]
 description = "Check dependency-neutral protocol boundary"
@@ -119,7 +119,7 @@ depends = ["lint", "architecture"]
 [tasks.test]
 description = "Run workspace tests"
 depends = ["test:scripts", "ghostty:prepare"]
-run = "bash scripts/ghostty-exec.sh cargo test --workspace --all-targets --locked"
+run = "bash scripts/build-exec.sh cargo test --workspace --all-targets --locked"
 
 [tasks."test:scroll-checker"]
 description = "Test scroll benchmark log validation"
@@ -133,7 +133,7 @@ if [ "$(uname -s)" != Linux ]; then
   echo "Linux smoke skipped on $(uname -s)"
   exit 0
 fi
-bash scripts/ghostty-exec.sh cargo build --workspace --locked
+bash scripts/build-exec.sh cargo build --workspace --locked
 set +e
 SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
@@ -157,12 +157,12 @@ if ! command -v twm >/dev/null 2>&1; then
   echo "Renderer benchmark requires twm so Xvfb exposes the GPUI window" >&2
   exit 1
 fi
-bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm
+bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
 trap 'rm -f "$bench_config"' EXIT
 printf '[terminal]\nengine = "%s"\n' "${HUTERM_BENCH_ENGINE:-alacritty}" > "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
-bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload
+bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload
 workload="$(pwd)/target/release/examples/render_workload"
 set +e
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
@@ -196,11 +196,11 @@ if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
   echo "Scroll benchmark requires twm so Xvfb exposes the GPUI window" >&2
   exit 1
 fi
-bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm
+bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
 printf '[terminal]\nengine = "%s"\n' "${HUTERM_BENCH_ENGINE:-alacritty}" > "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
-bash scripts/ghostty-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
+bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
 report="$(mktemp)"
 revision="$(git rev-parse HEAD)"
@@ -364,11 +364,11 @@ run = "mise run verify:parallel"
 [tasks."bench:engine"]
 depends = ["ghostty:prepare"]
 description = "Measure release engine processing and snapshot elapsed times"
-run = "bash scripts/ghostty-exec.sh cargo test --release --locked -p huterm-core engine_benchmark -- --ignored --nocapture --test-threads=1"
+run = "bash scripts/build-exec.sh cargo test --release --locked -p huterm-core engine_benchmark -- --ignored --nocapture --test-threads=1"
 
 [tasks."ghostty:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
-run = "bash scripts/ghostty-exec.sh bun scripts/prepare-ghostty.ts"
+run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 
 [tasks."ghostty:check"]
 description = "Verify prepared Ghostty sources against the reviewed tree hash"
@@ -389,15 +389,15 @@ run = "HUTERM_BENCH_ENGINE=ghostty mise run bench:renderer"
 [tasks."package:build:macos"]
 hide = true
 depends = ["ghostty:prepare"]
-run = "bash scripts/ghostty-exec.sh cargo build --release --locked --target aarch64-apple-darwin -p huterm"
+run = "bash scripts/build-exec.sh cargo build --release --locked --target aarch64-apple-darwin -p huterm"
 
-[tasks."ghostty:exec"]
+[tasks."build:exec"]
 description = "Run a command with a compatible macOS SDK"
-run = "bash scripts/ghostty-exec.sh"
+run = "bash scripts/build-exec.sh"
 
-[tasks."test:ghostty-toolchain"]
+[tasks."test:build-toolchain"]
 description = "Test Ghostty SDK selection"
-run = "bun test ./scripts/ghostty-exec.test.ts"
+run = "bun test ./scripts/build-exec.test.ts"
 
 [tasks."scripts:install"]
 description = "Install locked TypeScript tooling dependencies"
@@ -414,7 +414,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/ghostty-exec.sh"
+run = "bash -n scripts/build-exec.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"

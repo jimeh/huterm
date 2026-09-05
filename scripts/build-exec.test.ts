@@ -20,7 +20,7 @@ function run(platform: string, selected = "27.0", fallback = "26.2", developer?:
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TEST_PLATFORM: platform, TEST_SELECTED: selected, TEST_FALLBACK: fallback, TEST_EXIT: String(exit) };
   delete env.DEVELOPER_DIR;
   if (developer) env.DEVELOPER_DIR = developer;
-  const result = Bun.spawnSync(["/bin/bash", join(import.meta.dir, "ghostty-exec.sh"), "command", "argument with spaces", "$(literal)"], { env });
+  const result = Bun.spawnSync(["/bin/bash", join(import.meta.dir, "build-exec.sh"), "command", "argument with spaces", "$(literal)"], { env });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
 
