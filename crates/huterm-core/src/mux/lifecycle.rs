@@ -260,7 +260,24 @@ impl Mux {
         current: &CloseAssessment,
         confirmed: bool,
     ) -> Result<(), MuxError> {
+        self.commit_close_with(consent, current, confirmed, |_| {})
+    }
+    /// Validates once, captures accepted state, then performs teardown.
+    /// The callback receives immutable Mux access under the caller's structural
+    /// lock, after all rejection paths and before any cleanup. Elapsed time in
+    /// capture does not invalidate an already accepted close.
+    /// # Errors
+    /// Rejects stale scope or widened job evidence before invoking the callback;
+    /// requires consent for jobs/unknown state and reports cleanup failures.
+    pub fn commit_close_with(
+        &mut self,
+        consent: &CloseAssessment,
+        current: &CloseAssessment,
+        confirmed: bool,
+        before_teardown: impl FnOnce(&Self),
+    ) -> Result<(), MuxError> {
         self.validate_close(consent, current, confirmed)?;
+        before_teardown(self);
         current.record_cleanup_groups();
         match current.ticket.effect {
             CloseEffect::Detach(attachment) => self.detach_session(attachment),
@@ -273,7 +290,9 @@ impl Mux {
     }
     /// Validates consent without mutation, allowing capture before an approved quit.
     /// # Errors
-    /// Rejects stale scope/evidence or missing consent.
+    /// Rejects stale scope, newly independent groups, lost group continuity,
+    /// known-to-unknown transitions, or missing consent. Child churn within an
+    /// authorized group and completed jobs do not require renewed consent.
     pub fn validate_close(
         &self,
         consent: &CloseAssessment,
@@ -287,7 +306,10 @@ impl Mux {
             || consent.ticket.revision != ticket.revision
             || consent.ticket.request != ticket.request
             || consent.ticket.effect != ticket.effect
-            || consent.jobs != current.jobs
+            || consent.jobs.len() != current.jobs.len()
+            || !current.jobs.iter().zip(&consent.jobs).all(
+                |(current, consent)| crate::jobs::covered_by(current, consent),
+            )
             || current.checked_at.elapsed() > Duration::from_secs(2)
         {
             return Err(MuxError::StaleClose);
@@ -594,6 +616,68 @@ mod tests {
         assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
         mux.commit_close(&assessment, &assessment.recheck(), false)
             .unwrap();
+    }
+
+    #[test]
+    fn consent_survives_child_replacement_inside_the_same_live_job_group() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let opened = mux.open_tab(workspace, &command("sleep 30 & first=$!; printf FIRST; read step; kill $first; wait $first 2>/dev/null; sleep 30 & printf SECOND; read step")).unwrap();
+        ready(&opened.client, "FIRST");
+        let consent = mux
+            .prepare_close(CloseRequest::Application)
+            .unwrap()
+            .check_jobs();
+        assert!(consent.needs_confirmation());
+        opened
+            .client
+            .send_input(TerminalInput::Text("next\n".into()))
+            .unwrap();
+        ready(&opened.client, "SECOND");
+        let current = consent.recheck();
+        assert_ne!(
+            consent.jobs(),
+            current.jobs(),
+            "fixture did not replace the child"
+        );
+        mux.commit_close(&consent, &current, true).unwrap();
+        assert_eq!(mux.terminal_count(), 0);
+        for state in current.jobs() {
+            if let JobState::Running(jobs) = state {
+                for job in jobs {
+                    assert_eq!(
+                        nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(
+                                i32::try_from(job.pid).unwrap()
+                            ),
+                            None
+                        ),
+                        Err(nix::errno::Errno::ESRCH)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_capture_precedes_teardown_without_a_second_freshness_check() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let assessment = mux
+            .prepare_close(CloseRequest::Application)
+            .unwrap()
+            .check_jobs();
+        let mut captured = None;
+        mux.commit_close_with(&assessment, &assessment, false, |mux| {
+            captured = Some(mux.capture_hierarchy());
+            // Cross the freshness deadline after validation. Capture must not
+            // leave a half-accepted quit when teardown follows this callback.
+            std::thread::sleep(Duration::from_millis(2100));
+        })
+        .unwrap();
+        assert_eq!(captured.unwrap().sessions[0].id, session);
+        assert!(mux.sessions().is_empty());
     }
 
     #[test]

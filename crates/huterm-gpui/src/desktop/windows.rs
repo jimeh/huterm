@@ -135,12 +135,12 @@ impl DesktopRuntime {
             .mux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mux.validate_close(assessment, &current, confirmed)?;
-        if let Some(windows) = windows {
-            self.terminating.store(true, Ordering::Release);
-            self.capture(&mux, windows);
-        }
-        mux.commit_close(assessment, &current, confirmed)
+        mux.commit_close_with(assessment, &current, confirmed, |mux| {
+            if let Some(windows) = windows {
+                self.terminating.store(true, Ordering::Release);
+                self.capture(mux, windows);
+            }
+        })
     }
 
     fn capture(&self, mux: &Mux, windows: Vec<WindowRestore>) {
@@ -407,19 +407,20 @@ fn approved_quit(cx: &mut App) {
     cx.quit();
 }
 
-fn install_native_quit(_cx: &mut App) {
-    #[cfg(target_os = "macos")]
-    {
-        let requests = native_quit::install()
-            .expect("cannot install cancellable native termination hook");
-        _cx.spawn(async move |cx| {
-            while requests.recv().await.is_ok() {
-                let _ = cx.update(|cx| cx.defer(request_quit));
-            }
-        })
-        .detach();
-    }
+#[cfg(target_os = "macos")]
+fn install_native_quit(cx: &mut App) {
+    let requests = native_quit::install()
+        .expect("cannot install cancellable native termination hook");
+    cx.spawn(async move |cx| {
+        while requests.recv().await.is_ok() {
+            let _ = cx.update(|cx| cx.defer(request_quit));
+        }
+    })
+    .detach();
 }
+
+#[cfg(not(target_os = "macos"))]
+fn install_native_quit(_: &mut App) {}
 
 fn initial_window_size(
     config: &Config,
@@ -444,6 +445,14 @@ fn initial_window_size(
     )
 }
 
+fn can_open_window(
+    launch_shell: bool,
+    quitting: bool,
+    quit_pending: bool,
+) -> bool {
+    !launch_shell || (!quitting && !quit_pending)
+}
+
 fn open_window(cx: &mut App) {
     open_window_inner(cx, true);
 }
@@ -453,7 +462,11 @@ fn open_window(cx: &mut App) {
     reason = "native window creation installs lifecycle and event pump"
 )]
 fn open_window_inner(cx: &mut App, launch_shell: bool) {
-    if cx.global::<Desktop>().quitting || cx.global::<Desktop>().quit_pending {
+    if !can_open_window(
+        launch_shell,
+        cx.global::<Desktop>().quitting,
+        cx.global::<Desktop>().quit_pending,
+    ) {
         return;
     }
     let config = cx.global::<Desktop>().config.clone();
@@ -2476,6 +2489,44 @@ mod tests {
     }
 
     #[test]
+    fn rejected_quit_never_sets_termination_gate_or_capture() {
+        let runtime = DesktopRuntime::default();
+        runtime.mux.lock().unwrap().create_session(None).unwrap();
+        let assessment = runtime.assess(CloseRequest::Application).unwrap();
+        runtime
+            .mux
+            .lock()
+            .unwrap()
+            .create_session(Some("new survivor"))
+            .unwrap();
+        assert!(matches!(
+            runtime.commit(&assessment, false, Some(Vec::new())),
+            Err(MuxError::StaleClose)
+        ));
+        assert!(!runtime.terminating.load(Ordering::Acquire));
+        assert!(runtime.restore.lock().unwrap().is_none());
+        assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 2);
+        let assessment = runtime.assess(CloseRequest::Application).unwrap();
+        runtime
+            .commit(&assessment, false, Some(Vec::new()))
+            .unwrap();
+        assert!(runtime.terminating.load(Ordering::Acquire));
+        assert_eq!(
+            runtime
+                .restore
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .hierarchy
+                .sessions
+                .len(),
+            2
+        );
+        assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    }
+
+    #[test]
     fn cancellation_invalidates_assessment_generation_and_application_intent() {
         let mut state = CloseState::default();
         state.begin_check(CloseTarget::Application);
@@ -2598,6 +2649,47 @@ mod tests {
             Err(RuntimeError::Stopped)
         ));
         runtime.terminate().unwrap();
+    }
+
+    #[test]
+    fn queued_quit_after_final_window_close_admits_a_confirmation_host() {
+        let runtime = DesktopRuntime::default();
+        let mut mux = runtime.mux.lock().unwrap();
+        let visible = mux.create_session(None).unwrap();
+        let attachment = mux.attach_session(visible).unwrap();
+        let unviewed = mux.create_session(Some("keep alive")).unwrap();
+        drop(mux);
+        let assessment =
+            runtime.assess(CloseRequest::Window(attachment)).unwrap();
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Window);
+        close.current = Some(CloseTarget::Window);
+        close.queue(CloseTarget::Application);
+        runtime.commit(&assessment, false, None).unwrap();
+        assert_eq!(
+            close.take_pending(|_| false),
+            Some(CloseTarget::Application)
+        );
+        assert_eq!(
+            runtime
+                .mux
+                .lock()
+                .unwrap()
+                .sessions()
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec![unviewed]
+        );
+        // Production retains quitting=true while removing the final window.
+        assert!(
+            can_open_window(false, true, false),
+            "ongoing Quit lost its confirmation host"
+        );
+        assert!(
+            !can_open_window(true, true, false),
+            "Quit admitted a new shell"
+        );
     }
 
     #[test]

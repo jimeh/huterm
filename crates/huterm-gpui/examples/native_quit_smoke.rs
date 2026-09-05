@@ -5,6 +5,45 @@
 mod native_quit;
 
 #[cfg(target_os = "macos")]
+async fn acknowledge(
+    client: &huterm_core::RuntimeClient,
+    probe: &str,
+    cx: &gpui::AsyncApp,
+) {
+    use huterm_protocol::{TerminalInput, Viewport};
+    use std::time::{Duration, Instant};
+
+    // Input echo cannot produce the ACK prefix; only the live shell loop can.
+    client
+        .send_input(TerminalInput::Text(format!("{probe}\n")))
+        .unwrap();
+    let expected = format!("ACK:{probe}");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut request = client.request_snapshot(Viewport::default()).unwrap();
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "live shell did not acknowledge {probe}"
+        );
+        if let Some(reply) = request.try_recv().unwrap() {
+            let text: String = reply
+                .snapshot
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            if text.contains(&expected) {
+                return;
+            }
+            request = client.request_snapshot(Viewport::default()).unwrap();
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     use gpui::Application;
     use huterm_core::{RuntimeError, TerminalRuntime};
@@ -23,7 +62,7 @@ fn main() {
 
     let command = TerminalCommand {
         program: "/bin/sh".into(),
-        arguments: vec!["-c".into(), "printf READY; read value".into()],
+        arguments: vec!["-c".into(), r#"printf READY; while IFS= read -r value; do printf 'ACK:%s\n' "$value"; done"#.into()],
         working_directory: std::env::current_dir().unwrap(),
         environment: Vec::new(),
         grid_size: GridSize::clamped(40, 8),
@@ -52,7 +91,7 @@ fn main() {
             // Calling terminate: outside cx.update avoids reentrant App borrows.
             native_quit::request_termination().unwrap();
             receiver.recv().await.unwrap();
-            assert!(client.read_snapshot(Viewport::default()).is_ok());
+            acknowledge(&client, "cancel", cx).await;
             marker("cancel-kept-pty-alive");
             native_quit::request_termination().unwrap();
             cx.background_executor()
@@ -66,7 +105,7 @@ fn main() {
             native_quit::cancel_request();
             native_quit::request_termination().unwrap();
             receiver.recv().await.unwrap();
-            assert!(client.read_snapshot(Viewport::default()).is_ok());
+            acknowledge(&client, "retry", cx).await;
             marker("retry-kept-pty-alive");
             // The desktop owns aggregate capture; this bridge probe records the
             // ordering contract before terminating its one real PTY runtime.

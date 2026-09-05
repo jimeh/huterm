@@ -264,3 +264,14 @@ adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
 until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
 native_quit.rs; run mise run smoke:macos-quit on macOS for real terminate/cancel/
 retry/allow coverage. An on_app_quit callback alone cannot cancel Dock Quit.
+
+Allow no-PTY Quit confirmation hosts while quitting, including when a queued
+Application request outlives the final Window close. Only new shell windows
+remain blocked. Use commit_close_with for capture and termination-gate changes:
+validate once before side effects, then capture before teardown. A second
+freshness check after capture can strand a half-accepted Quit.
+Close consent follows process groups with stable leader creation identity,
+including exec and worker churn; leaderless groups need an original surviving
+member. New groups or unknown-state widening require reassessment. Use fresh
+members for cleanup. Native cancellation tests must send input and observe a
+unique shell ACK after cancel and retry; an exited terminal retains snapshots.

@@ -59,8 +59,12 @@ reopen creates a window. Hiding a window keeps its attachment.
 
 Close and Quit warn about foreground/background jobs or unknown process state.
 Idle shells need no confirmation. Structure and job evidence are rechecked before
-teardown; changed evidence requires another assessment and, when needed, renewed
-consent. macOS Dock Quit uses the same cancellable path as the application menu.
+teardown. Consent covers existing job groups while their leader creation identity
+survives, including leader exec and child churn. A leaderless group needs an
+original surviving member. New groups, lost identity evidence, structural changes,
+or newly unknown process state require reassessment and renewed consent when
+needed. Completed jobs do not re-prompt. macOS Dock Quit uses the same cancellable
+path as the application menu.
 Quit includes all sessions, even those with no views. Before teardown it retains
 one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
 terminal-history serialization, and restart restoration remain unimplemented.

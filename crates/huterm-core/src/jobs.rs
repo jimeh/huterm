@@ -30,10 +30,42 @@ pub struct JobProcess {
     pub pid: u32,
     /// Process group used for assessed terminal cleanup.
     pub group: i32,
+    /// Group leader creation time, when its process record is still present.
+    /// Command changes caused by exec do not change this identity.
+    pub group_started: Option<String>,
     /// Whether this process belongs to the PTY foreground process group.
     pub foreground: bool,
     /// OS command name and creation time, used to detect changed evidence.
     pub identity: String,
+}
+
+/// Whether current evidence stays within previously assessed job groups.
+/// A live group leader's creation time tolerates exec and child churn. A
+/// leaderless group needs a surviving original member to prove continuity.
+pub(crate) fn covered_by(current: &JobState, consent: &JobState) -> bool {
+    match (current, consent) {
+        (JobState::Idle, _) | (JobState::Unknown, JobState::Unknown) => true,
+        (JobState::Running(current), JobState::Running(consent)) => {
+            current.iter().all(|process| {
+                consent.iter().any(|previous| {
+                    if process.group != previous.group {
+                        return false;
+                    }
+                    match (&process.group_started, &previous.group_started) {
+                        (Some(current), Some(consent)) => current == consent,
+                        // A leader cannot newly appear within an existing group.
+                        (Some(_), None) => false,
+                        _ => current.iter().any(|member| {
+                            member.group == previous.group
+                                && member.pid == previous.pid
+                                && member.identity == previous.identity
+                        }),
+                    }
+                })
+            })
+        }
+        _ => false,
+    }
 }
 
 struct Process {
@@ -43,6 +75,7 @@ struct Process {
     zombie: bool,
     tty: String,
     command: String,
+    started: String,
     identity: String,
 }
 
@@ -114,6 +147,7 @@ fn parse_process(line: &str) -> Option<Process> {
         zombie,
         tty,
         identity: format!("{start} {command}"),
+        started: start,
         command,
     })
 }
@@ -214,6 +248,10 @@ fn classify(
         .map(|p| JobProcess {
             pid: p.pid,
             group: p.group,
+            group_started: table
+                .iter()
+                .find(|leader| i32::try_from(leader.pid).ok() == Some(p.group))
+                .map(|leader| leader.started.clone()),
             foreground: !exited && p.group == foreground,
             identity: p.identity.clone(),
         })
@@ -243,6 +281,7 @@ mod tests {
             tty: tty.into(),
             zombie: false,
             command: command.into(),
+            started: "start".into(),
             identity: format!("start {command}"),
         }
     }
@@ -296,6 +335,68 @@ mod tests {
         );
         assert_eq!(classify(&[], 10, 0, Some("pts/0"), true), JobState::Idle);
     }
+    #[test]
+    fn consent_rejects_new_groups_reused_leaders_and_unknown_widening() {
+        let original = vec![
+            process(10, 1, 10, "pts/0", "sh"),
+            process(20, 10, 20, "pts/0", "make"),
+            process(21, 20, 20, "pts/0", "cc"),
+        ];
+        let consent = classify(&original, 10, 20, Some("pts/0"), false);
+        let churn = vec![
+            process(10, 1, 10, "pts/0", "sh"),
+            process(20, 10, 20, "pts/0", "cargo"),
+            process(22, 20, 20, "pts/0", "rustc"),
+        ];
+        let current = classify(&churn, 10, 20, Some("pts/0"), false);
+        assert!(
+            covered_by(&current, &consent),
+            "leader exec and child churn must preserve group consent"
+        );
+        let mut new_group = churn;
+        new_group.push(process(30, 10, 30, "pts/0", "vim"));
+        assert!(!covered_by(
+            &classify(&new_group, 10, 20, Some("pts/0"), false),
+            &consent
+        ));
+        new_group.pop();
+        new_group[1].started = "later incarnation".into();
+        assert!(!covered_by(
+            &classify(&new_group, 10, 20, Some("pts/0"), false),
+            &consent
+        ));
+        assert!(!covered_by(&JobState::Unknown, &consent));
+        assert!(!covered_by(&current, &JobState::Idle));
+        assert!(covered_by(&JobState::Idle, &consent));
+    }
+
+    #[test]
+    fn leaderless_group_needs_an_original_surviving_member() {
+        let original = vec![
+            process(10, 1, 10, "pts/0", "sh"),
+            process(20, 10, 20, "pts/0", "make"),
+            process(21, 20, 20, "pts/0", "cc"),
+        ];
+        let consent = classify(&original, 10, 20, Some("pts/0"), false);
+        let mut current = vec![
+            process(10, 1, 10, "pts/0", "sh"),
+            process(21, 1, 20, "pts/0", "cc"),
+            process(22, 1, 20, "pts/0", "ld"),
+        ];
+        assert!(covered_by(
+            &classify(&current, 10, 20, Some("pts/0"), false),
+            &consent
+        ));
+        current.remove(1);
+        assert!(
+            !covered_by(
+                &classify(&current, 10, 20, Some("pts/0"), false),
+                &consent
+            ),
+            "group number alone cannot prove continuity"
+        );
+    }
+
     #[test]
     fn root_program_and_exec_replacement_are_jobs() {
         let table = vec![process(10, 1, 10, "pts/0", "vim")];
