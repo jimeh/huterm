@@ -39,8 +39,9 @@ A desktop view with its own selected workspace. A workspace can appear in more
 than one window, and a window can switch between workspaces.
 
 **Attachment**:
-A view's connection to a workspace, with independent navigation and presentation
-state. Detaching does not mean closing the workspace or its terminals.
+A view's connection to a workspace, with independent workspace/tab selection and
+presentation state. Terminal scrolling uses the terminal's shared viewport.
+Detaching does not mean closing the workspace or its terminals.
 
 **Client layout**:
 The saved arrangement of a client's views, workspace selections, and presentation
