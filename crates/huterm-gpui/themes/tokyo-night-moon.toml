@@ -1,0 +1,25 @@
+# Adapted from https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/extras/alacritty/tokyonight_moon.toml
+# See licenses/folke.txt for the upstream license.
+[theme]
+background = "#222436"
+foreground = "#c8d3f5"
+cursor = "#c8d3f5"
+selection = "#82aaff"
+selection_foreground = "#222436"
+ansi_black = "#1b1d2b"
+ansi_red = "#ff757f"
+ansi_green = "#c3e88d"
+ansi_yellow = "#ffc777"
+ansi_blue = "#82aaff"
+ansi_magenta = "#c099ff"
+ansi_cyan = "#86e1fc"
+ansi_white = "#828bb8"
+ansi_bright_black = "#444a73"
+ansi_bright_red = "#ff8d94"
+ansi_bright_green = "#c7fb6d"
+ansi_bright_yellow = "#ffd8ab"
+ansi_bright_blue = "#9ab8ff"
+ansi_bright_magenta = "#caabff"
+ansi_bright_cyan = "#b2ebff"
+ansi_bright_white = "#c8d3f5"
+

@@ -1,6 +1,6 @@
-# HUTerm agent guide
+# Huterm agent guide
 
-HUTerm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
+Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
 sessions, tabs, and panes. GPUI is one client. The runtime boundary must remain
 usable by a future local server and text client.
 
@@ -44,6 +44,11 @@ Run `mise tasks` to discover the full task set.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
+- `mise run bench:scroll` drives production scroll inputs against 10,000 rows
+  and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
+  Linux runs it under Xvfb; macOS runs it natively and also enforces paint
+  elapsed time, reuse, and input latency when the host delivers enough frames.
+- `mise run package:macos` builds and verifies the Apple Silicon `Huterm.app`.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
@@ -99,6 +104,44 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
 family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
 missing-font fallback path.
+Derive the terminal's grid geometry once through `GridMetrics`. GPUI 0.2.2
+reports raw font descent as negative on macOS and Linux, so normalize it to a
+positive distance before calculating cell height, baseline, or decorations.
+Round grid dimensions in physical pixels using the window scale, then convert
+back to logical points. Keep unrounded font measurements for scale changes;
+rounding up to logical points makes Menlo 12's grid 14% too wide on Retina.
+GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.
+Bind reload as `cmd-<` / `ctrl-<`, not `cmd-shift-,` / `ctrl-shift-,`; test
+the real `KeyBinding` matcher as well as terminal-input reservation.
+Derive scrollbar geometry and label text from the displayed snapshot offset.
+Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
+adjust its offset for both history growth and shrinkage to avoid resize drift;
+offset zero remains pinned to live output.
+Protocol selection ranges include both endpoints. Keep a mouse-down anchor
+without exposing a range until dragging reaches another cell; use that same
+optional range for highlighting and text extraction.
+Use the same inset track for painting and drag mapping. Indicator visibility
+depends on recent interaction, including at offset zero; advance its fade in
+the UI refresh loop so idle terminals redraw it. Keep the label background
+opaque before applying the indicator's fade opacity.
+Theme reload must invalidate prepared row colors even when the terminal snapshot
+is unchanged. Font changes must also invalidate glyph layouts and update PTY cell
+pixel dimensions even if the row/column count stays the same. Keep bundled theme
+licenses in the packaged resources.
+GPUI element `on_mouse_move` filters by hover. Register drag tracking through
+`Window::on_mouse_event` during canvas paint to receive movement outside the
+window. Transparent macOS titlebars extend the content area; use the shared
+terminal viewport inset for PTY sizing, scrollbar geometry, and mouse input.
+Within that viewport, `TerminalLayout` owns padded grid bounds and dimensions
+for painting, PTY sizing, and selection coordinates. Keep scrollbar geometry
+relative to the outer viewport. Clip grid painting to its bounds because a
+snapshot from before a resize may arrive after the viewport has shrunk.
+Headless Xvfb does not deliver continuous GPUI frames after the initial
+presentation. Keep Linux scroll gates based on completion-time snapshot and
+queue evidence; require frame-bound paint and input-latency evidence only on a
+host that actually delivers enough frames.
+Benchmark durations measured with `Instant` include scheduler preemption; label
+them as elapsed time, not per-thread CPU time.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.

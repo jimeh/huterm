@@ -1,0 +1,24 @@
+# Adapted from https://github.com/Binaryify/OneDark-Pro/blob/54c3280b29f2c2ed9751e5ca4e071380b7b42205/themes/OneDark-Pro.json
+# See licenses/binaryify.txt for the upstream license.
+# Cursor uses editorCursor.foreground; selection is composited over background.
+[theme]
+background = "#282c34"
+foreground = "#abb2bf"
+cursor = "#528bff"
+selection = "#41454e"
+ansi_black = "#3f4451"
+ansi_red = "#e05561"
+ansi_green = "#8cc265"
+ansi_yellow = "#d18f52"
+ansi_blue = "#4aa5f0"
+ansi_magenta = "#c162de"
+ansi_cyan = "#42b3c2"
+ansi_white = "#d7dae0"
+ansi_bright_black = "#4f5666"
+ansi_bright_red = "#ff616e"
+ansi_bright_green = "#a5e075"
+ansi_bright_yellow = "#f0a45d"
+ansi_bright_blue = "#4dc4ff"
+ansi_bright_magenta = "#de73ff"
+ansi_bright_cyan = "#4cd1e0"
+ansi_bright_white = "#e6e6e6"

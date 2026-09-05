@@ -4,31 +4,133 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Bounds, FontStyle, FontWeight, Hsla, LineLayout, Pixels, Point,
-    StrikethroughStyle, TextRun, UnderlineStyle, Window, fill, font, point, px,
-    rgba, size,
+    StrikethroughStyle, TextRun, TextSystem, UnderlineStyle, Window, fill,
+    font, point, px, rgba, size,
 };
-use huterm_protocol::{Cell, Cursor, CursorShape, Rgb, TerminalSnapshot};
+use huterm_protocol::{
+    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
+};
 
-pub(super) const FONT_SIZE: Pixels = px(14.0);
-pub(super) const CELL_WIDTH: Pixels = px(8.4);
-pub(super) const CELL_HEIGHT: Pixels = px(18.0);
+use crate::config::Theme;
 
-#[cfg(target_os = "macos")]
-pub(super) const FONT_FAMILY: &str = "Menlo";
-#[cfg(target_os = "linux")]
-pub(super) const FONT_FAMILY: &str = "monospace";
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct GridMetrics {
+    pub(super) cell_width: Pixels,
+    pub(super) cell_height: Pixels,
+    pub(super) font_size: Pixels,
+    baseline: Pixels,
+    underline: Pixels,
+    strikeout: Pixels,
+    glyph_offset_x: Pixels,
+    advance: Pixels,
+    ascent: Pixels,
+    descent: Pixels,
+    pub(super) scale_factor: f32,
+}
+
+impl GridMetrics {
+    pub(super) fn resolve(
+        text_system: &TextSystem,
+        font_family: &str,
+        font_size: Pixels,
+    ) -> anyhow::Result<Self> {
+        let font_id = text_system.resolve_font(&font(font_family.to_owned()));
+        let cell_width = text_system.advance(font_id, font_size, 'M')?.width;
+        let ascent = text_system.ascent(font_id, font_size);
+        let descent = text_system.descent(font_id, font_size);
+        Ok(Self::from_measurements(
+            font_size, cell_width, ascent, descent, 1.0,
+        ))
+    }
+
+    fn from_measurements(
+        font_size: Pixels,
+        cell_width: Pixels,
+        ascent: Pixels,
+        descent: Pixels,
+        scale_factor: f32,
+    ) -> Self {
+        // GPUI metric sources use different descent signs. Grid geometry stores
+        // the distance below the baseline, independent of that convention.
+        let descent = descent.abs();
+        let advance = cell_width;
+        // Round in device pixels, not logical points: a whole-point ceiling
+        // adds almost two pixels of spacing per cell on Retina displays.
+        let align =
+            |value: Pixels| (value * scale_factor).round() / scale_factor;
+        let minimum = px(1.0 / scale_factor);
+        let cell_height = align(ascent + descent).max(minimum);
+        let cell_width = align(advance).max(minimum);
+        let baseline = align((cell_height - ascent - descent) / 2.0 + ascent);
+        Self {
+            cell_width,
+            cell_height,
+            font_size,
+            baseline,
+            underline: baseline + descent * 0.618,
+            strikeout: ((ascent * 0.5) + baseline) * 0.5,
+            glyph_offset_x: (cell_width - advance) / 2.0,
+            advance,
+            ascent,
+            descent,
+            scale_factor,
+        }
+    }
+
+    pub(super) fn at_scale(self, scale_factor: f32) -> Self {
+        Self::from_measurements(
+            self.font_size,
+            self.advance,
+            self.ascent,
+            self.descent,
+            scale_factor,
+        )
+    }
+}
 
 pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
-    metrics: Option<GridMetrics>,
+    metrics: GridMetrics,
+    font_family: String,
+    theme: Theme,
+    selection: Option<BufferRange>,
     stats: Option<RendererStats>,
+    scroll_benchmark: Option<ScrollBenchmarkStats>,
 }
 
 impl TerminalRenderer {
-    pub(super) fn new() -> Self {
+    pub(super) fn reconfigure(
+        &mut self,
+        font_family: String,
+        theme: Theme,
+        metrics: GridMetrics,
+    ) {
+        if self.font_family == font_family
+            && self.theme == theme
+            && self.metrics == metrics
+        {
+            return;
+        }
+        if self.font_family != font_family || self.metrics != metrics {
+            self.layouts = GlyphLayoutCache::default();
+        }
+        self.snapshot = None;
+        self.rows.clear();
+        self.font_family = font_family;
+        self.theme = theme;
+        self.metrics = metrics;
+    }
+
+    pub(super) fn new(
+        font_family: String,
+        theme: Theme,
+        metrics: GridMetrics,
+    ) -> Self {
         let stats = renderer_stats_enabled().then(RendererStats::new);
+        let scroll_benchmark =
+            scroll_benchmark_enabled().then(ScrollBenchmarkStats::default);
         if stats.is_some() {
             eprintln!("huterm-render stats=enabled");
         }
@@ -36,13 +138,47 @@ impl TerminalRenderer {
             snapshot: None,
             rows: Vec::new(),
             layouts: GlyphLayoutCache::default(),
-            metrics: None,
+            metrics,
+            font_family,
+            theme,
+            selection: None,
             stats,
+            scroll_benchmark,
         }
     }
 
     pub(super) fn records_stats(&self) -> bool {
-        self.stats.is_some()
+        timing_enabled(self.stats.is_some(), self.scroll_benchmark.is_some())
+    }
+
+    pub(super) fn begin_scroll_sample(
+        &mut self,
+        sequence: u64,
+        requested_offset: usize,
+        injected_at: Option<Instant>,
+    ) {
+        if let Some(benchmark) = &mut self.scroll_benchmark {
+            benchmark.begin(sequence, requested_offset, injected_at);
+        }
+    }
+
+    pub(super) fn complete_scroll_snapshot(
+        &mut self,
+        duration: Duration,
+        returned_offset: usize,
+        wakeup_delay: Duration,
+    ) {
+        if let Some(benchmark) = &mut self.scroll_benchmark {
+            benchmark.complete_snapshot(
+                duration,
+                returned_offset,
+                wakeup_delay,
+            );
+        }
+    }
+
+    pub(super) fn set_selection(&mut self, selection: Option<BufferRange>) {
+        self.selection = selection;
     }
 
     pub(super) fn prepare(
@@ -50,7 +186,7 @@ impl TerminalRenderer {
         snapshot: Option<&Arc<TerminalSnapshot>>,
         window: &mut Window,
     ) {
-        let started = self.stats.as_ref().map(|_| Instant::now());
+        let started = self.records_stats().then(Instant::now);
         let Some(snapshot) = snapshot else {
             let changed = usize::from(!self.rows.is_empty());
             self.snapshot = None;
@@ -67,7 +203,7 @@ impl TerminalRenderer {
             return;
         }
 
-        self.ensure_metrics(window);
+        self.align_rows(snapshot);
         let rebuilds = rows_to_rebuild(self.snapshot.as_deref(), snapshot);
         let rebuilt_rows = rebuilds.iter().filter(|rebuild| **rebuild).count();
         let rows = usize::from(snapshot.size.rows);
@@ -90,6 +226,9 @@ impl TerminalRenderer {
                         &mut self.layouts,
                         window,
                         &mut cache_activity,
+                        &self.font_family,
+                        self.metrics.font_size,
+                        &self.theme,
                     );
                 }
             }
@@ -104,7 +243,7 @@ impl TerminalRenderer {
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) {
-        let started = self.stats.as_ref().map(|_| Instant::now());
+        let started = self.records_stats().then(Instant::now);
         let Some(snapshot) = &self.snapshot else {
             self.record_paint(started);
             return;
@@ -118,21 +257,49 @@ impl TerminalRenderer {
                         background.start,
                         row_index,
                         background.columns,
+                        self.metrics,
                     ),
                     background.color,
                 ));
             }
         }
 
-        let metrics = self.metrics.unwrap_or_default();
-        let grid_width = CELL_WIDTH * f32::from(snapshot.size.columns);
+        if let Some(selection) = self.selection {
+            paint_selection(
+                snapshot,
+                selection,
+                bounds.origin,
+                self.metrics,
+                &self.theme,
+                window,
+            );
+        }
+
+        let metrics = self.metrics;
+        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
         for (row_index, row) in self.rows.iter().enumerate() {
             let row_bounds = Bounds::new(
-                cell_origin(bounds.origin, 0, row_index),
-                size(grid_width, CELL_HEIGHT),
+                cell_origin(bounds.origin, 0, row_index, metrics),
+                size(grid_width, metrics.cell_height),
             );
             window.paint_layer(row_bounds, |window| {
-                paint_row(row, row_index, bounds.origin, metrics, window);
+                paint_row(
+                    row,
+                    row_index,
+                    bounds.origin,
+                    metrics,
+                    window,
+                    |column, original| {
+                        selected_foreground(
+                            snapshot,
+                            self.selection,
+                            &self.theme,
+                            row_index,
+                            column,
+                        )
+                        .map_or(original, rgb_color)
+                    },
+                );
             });
         }
 
@@ -141,22 +308,50 @@ impl TerminalRenderer {
             .filter(|cursor| cursor.shape != CursorShape::Hidden)
         {
             window.paint_quad(fill(
-                cursor_bounds(bounds.origin, cursor),
-                rgba(0xffff_ff66),
+                cursor_bounds(bounds.origin, cursor, metrics),
+                cursor_fill(
+                    snapshot.cursor_color.unwrap_or(self.theme.cursor),
+                    cursor.shape,
+                ),
             ));
         }
         self.record_paint(started);
     }
 
-    fn ensure_metrics(&mut self, window: &mut Window) {
-        if self.metrics.is_some() {
+    fn align_rows(&mut self, current: &TerminalSnapshot) {
+        let Some(previous) = self.snapshot.as_deref() else {
+            return;
+        };
+        if previous.size != current.size
+            || self.rows.len() != usize::from(current.size.rows)
+        {
             return;
         }
-        let runs = [text_run("M", FontVariant::default())];
-        let layout = window
-            .text_system()
-            .layout_line("M", FONT_SIZE, &runs, None);
-        self.metrics = Some(GridMetrics::from_layout(&layout));
+        let offset_delta = current.viewport.bottom_offset as i128
+            - previous.viewport.bottom_offset as i128;
+        let history_delta =
+            current.history_size as i128 - previous.history_size as i128;
+        let shift = offset_delta - history_delta;
+        let rows = i128::from(current.size.rows);
+        if shift == 0 || shift.unsigned_abs() >= rows.unsigned_abs() {
+            return;
+        }
+        let mut old: Vec<Option<PreparedRow>> = std::mem::take(&mut self.rows)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.rows = (0..usize::from(current.size.rows))
+            .map(|new_row| {
+                let old_row = new_row as i128 - shift;
+                if (0..rows).contains(&old_row) {
+                    old[usize::try_from(old_row).unwrap_or_default()]
+                        .take()
+                        .unwrap_or_default()
+                } else {
+                    PreparedRow::default()
+                }
+            })
+            .collect();
     }
 
     fn record_prepare(
@@ -165,14 +360,26 @@ impl TerminalRenderer {
         rebuilt_rows: usize,
         cache: CacheActivity,
     ) {
-        if let (Some(stats), Some(started)) = (&mut self.stats, started) {
-            stats.record_prepare(started.elapsed(), rebuilt_rows, cache);
+        let duration = started.map(|started| started.elapsed());
+        if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
+            stats.record_prepare(duration, rebuilt_rows, cache);
+        }
+        if let (Some(benchmark), Some(duration)) =
+            (&mut self.scroll_benchmark, duration)
+        {
+            benchmark.complete_prepare(duration, rebuilt_rows, self.rows.len());
         }
     }
 
     fn record_paint(&mut self, started: Option<Instant>) {
-        if let (Some(stats), Some(started)) = (&mut self.stats, started) {
-            stats.record_paint(started.elapsed());
+        let duration = started.map(|started| started.elapsed());
+        if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
+            stats.record_paint(duration);
+        }
+        if let (Some(benchmark), Some(duration)) =
+            (&mut self.scroll_benchmark, duration)
+        {
+            benchmark.complete_paint(duration);
         }
     }
 }
@@ -208,11 +415,18 @@ fn prepare_row(
     layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
+    font_family: &str,
+    font_size: Pixels,
+    theme: &Theme,
 ) -> PreparedRow {
     let mut row = PreparedRow {
-        backgrounds: prepare_backgrounds(cells),
-        underlines: prepare_decorations(cells, |cell| cell.style.underline),
-        strikeouts: prepare_decorations(cells, |cell| cell.style.strikeout),
+        backgrounds: prepare_backgrounds(cells, theme),
+        underlines: prepare_decorations(cells, theme, |cell| {
+            cell.style.underline
+        }),
+        strikeouts: prepare_decorations(cells, theme, |cell| {
+            cell.style.strikeout
+        }),
         ..PreparedRow::default()
     };
 
@@ -230,17 +444,17 @@ fn prepare_row(
         };
         let (layout, hit) =
             layouts.get_or_insert_with(&cell.text, variant, || {
-                let runs = [text_run(&cell.text, variant)];
+                let runs = [text_run(&cell.text, variant, font_family)];
                 window
                     .text_system()
-                    .layout_line(&cell.text, FONT_SIZE, &runs, None)
+                    .layout_line(&cell.text, font_size, &runs, None)
             });
         cache_activity.record(hit);
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
             layout,
             color: rgb_color(display_foreground(
-                cell.foreground,
+                resolve_color(cell.foreground, theme),
                 cell.style.dim,
             )),
         });
@@ -248,13 +462,18 @@ fn prepare_row(
     row
 }
 
-fn prepare_backgrounds(cells: &[Cell]) -> Vec<PreparedBackground> {
+fn prepare_backgrounds(
+    cells: &[Cell],
+    theme: &Theme,
+) -> Vec<PreparedBackground> {
     let mut backgrounds = Vec::new();
     let mut start = 0;
     while start < cells.len() {
-        let background = cells[start].background;
+        let background = resolve_color(cells[start].background, theme);
         let mut end = start + 1;
-        while end < cells.len() && cells[end].background == background {
+        while end < cells.len()
+            && resolve_color(cells[end].background, theme) == background
+        {
             end += 1;
         }
         backgrounds.push(PreparedBackground {
@@ -269,6 +488,7 @@ fn prepare_backgrounds(cells: &[Cell]) -> Vec<PreparedBackground> {
 
 fn prepare_decorations(
     cells: &[Cell],
+    theme: &Theme,
     decorated: impl Fn(&Cell) -> bool,
 ) -> Vec<PreparedDecoration> {
     let mut decorations: Vec<PreparedDecoration> = Vec::new();
@@ -284,8 +504,10 @@ fn prepare_decorations(
             1
         };
         let columns = u16::try_from(columns).unwrap_or(1);
-        let color =
-            rgb_color(display_foreground(cell.foreground, cell.style.dim));
+        let color = rgb_color(display_foreground(
+            resolve_color(cell.foreground, theme),
+            cell.style.dim,
+        ));
         if let Some(previous) = decorations.last_mut()
             && previous.start.saturating_add(previous.columns) == start
             && previous.color == color
@@ -308,14 +530,19 @@ fn paint_row(
     grid_origin: Point<Pixels>,
     metrics: GridMetrics,
     window: &mut Window,
+    foreground: impl Fn(u16, Hsla) -> Hsla,
 ) {
     for glyph in &row.glyphs {
-        let origin =
-            cell_origin(grid_origin, usize::from(glyph.column), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(glyph.column),
+            row_index,
+            metrics,
+        );
         for run in &glyph.layout.runs {
             for shaped in &run.glyphs {
                 let glyph_origin = point(
-                    origin.x + shaped.position.x,
+                    origin.x + metrics.glyph_offset_x + shaped.position.x,
                     origin.y + metrics.baseline,
                 );
                 let result = if shaped.is_emoji {
@@ -331,7 +558,7 @@ fn paint_row(
                         run.font_id,
                         shaped.id,
                         glyph.layout.font_size,
-                        glyph.color,
+                        foreground(glyph.column, glyph.color),
                     )
                 };
                 let _ = result;
@@ -340,11 +567,15 @@ fn paint_row(
     }
 
     for decoration in &row.underlines {
-        let origin =
-            cell_origin(grid_origin, usize::from(decoration.start), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(decoration.start),
+            row_index,
+            metrics,
+        );
         window.paint_underline(
             point(origin.x, origin.y + metrics.underline),
-            CELL_WIDTH * f32::from(decoration.columns),
+            metrics.cell_width * f32::from(decoration.columns),
             &UnderlineStyle {
                 color: Some(decoration.color),
                 thickness: px(1.0),
@@ -353,11 +584,15 @@ fn paint_row(
         );
     }
     for decoration in &row.strikeouts {
-        let origin =
-            cell_origin(grid_origin, usize::from(decoration.start), row_index);
+        let origin = cell_origin(
+            grid_origin,
+            usize::from(decoration.start),
+            row_index,
+            metrics,
+        );
         window.paint_strikethrough(
             point(origin.x, origin.y + metrics.strikeout),
-            CELL_WIDTH * f32::from(decoration.columns),
+            metrics.cell_width * f32::from(decoration.columns),
             &StrikethroughStyle {
                 color: Some(decoration.color),
                 thickness: px(1.0),
@@ -381,11 +616,24 @@ fn rows_to_rebuild(
         return vec![true; rows];
     };
 
-    previous
+    let offset_delta = current.viewport.bottom_offset as i128
+        - previous.viewport.bottom_offset as i128;
+    let history_delta =
+        current.history_size as i128 - previous.history_size as i128;
+    let shift = offset_delta - history_delta;
+    let previous_rows: Vec<&[Cell]> =
+        previous.cells.chunks_exact(columns).collect();
+    current
         .cells
         .chunks_exact(columns)
-        .zip(current.cells.chunks_exact(columns))
-        .map(|(before, after)| before != after)
+        .enumerate()
+        .map(|(new_row, after)| {
+            let old_row = new_row as i128 - shift;
+            old_row < 0
+                || old_row >= rows as i128
+                || previous_rows[usize::try_from(old_row).unwrap_or_default()]
+                    != after
+        })
         .collect()
 }
 
@@ -480,8 +728,8 @@ fn single_scalar(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
-fn text_run(text: &str, variant: FontVariant) -> TextRun {
-    let mut cell_font = font(FONT_FAMILY);
+fn text_run(text: &str, variant: FontVariant, font_family: &str) -> TextRun {
+    let mut cell_font = font(font_family.to_owned());
     cell_font.weight = if variant.bold {
         FontWeight::BOLD
     } else {
@@ -502,35 +750,17 @@ fn text_run(text: &str, variant: FontVariant) -> TextRun {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct GridMetrics {
-    baseline: Pixels,
-    underline: Pixels,
-    strikeout: Pixels,
-}
-
-impl GridMetrics {
-    fn from_layout(layout: &LineLayout) -> Self {
-        let padding_top = (CELL_HEIGHT - layout.ascent - layout.descent) / 2.0;
-        let baseline = padding_top + layout.ascent;
-        Self {
-            baseline,
-            underline: baseline + layout.descent * 0.618,
-            strikeout: (layout.ascent * 0.5 + baseline) * 0.5,
-        }
-    }
-}
-
 fn cell_origin(
     grid_origin: Point<Pixels>,
     column: usize,
     row: usize,
+    metrics: GridMetrics,
 ) -> Point<Pixels> {
     let column = u16::try_from(column).unwrap_or(u16::MAX);
     let row = u16::try_from(row).unwrap_or(u16::MAX);
     point(
-        grid_origin.x + CELL_WIDTH * f32::from(column),
-        grid_origin.y + CELL_HEIGHT * f32::from(row),
+        grid_origin.x + metrics.cell_width * f32::from(column),
+        grid_origin.y + metrics.cell_height * f32::from(row),
     )
 }
 
@@ -539,29 +769,168 @@ fn cell_bounds(
     column: u16,
     row: usize,
     columns: u16,
+    metrics: GridMetrics,
 ) -> Bounds<Pixels> {
     Bounds::new(
-        cell_origin(grid_origin, usize::from(column), row),
-        size(CELL_WIDTH * f32::from(columns), CELL_HEIGHT),
+        cell_origin(grid_origin, usize::from(column), row, metrics),
+        size(metrics.cell_width * f32::from(columns), metrics.cell_height),
     )
 }
 
-fn cursor_bounds(grid_origin: Point<Pixels>, cursor: Cursor) -> Bounds<Pixels> {
+fn cursor_fill(color: Rgb, shape: CursorShape) -> Hsla {
+    // The cursor is painted over text; keep block-covered glyphs visible.
+    rgb_color(color).opacity(if shape == CursorShape::Block {
+        0.4
+    } else {
+        1.0
+    })
+}
+
+fn cursor_bounds(
+    grid_origin: Point<Pixels>,
+    cursor: Cursor,
+    metrics: GridMetrics,
+) -> Bounds<Pixels> {
     let origin = point(
-        grid_origin.x + CELL_WIDTH * f32::from(cursor.column),
-        grid_origin.y + CELL_HEIGHT * f32::from(cursor.row),
+        grid_origin.x + metrics.cell_width * f32::from(cursor.column),
+        grid_origin.y + metrics.cell_height * f32::from(cursor.row),
     );
     match cursor.shape {
         CursorShape::Block => {
-            Bounds::new(origin, size(CELL_WIDTH, CELL_HEIGHT))
+            Bounds::new(origin, size(metrics.cell_width, metrics.cell_height))
         }
         CursorShape::Underline => Bounds::new(
-            point(origin.x, origin.y + CELL_HEIGHT - px(2.0)),
-            size(CELL_WIDTH, px(2.0)),
+            point(origin.x, origin.y + metrics.cell_height - px(2.0)),
+            size(metrics.cell_width, px(2.0)),
         ),
-        CursorShape::Beam => Bounds::new(origin, size(px(2.0), CELL_HEIGHT)),
+        CursorShape::Beam => {
+            Bounds::new(origin, size(px(2.0), metrics.cell_height))
+        }
         CursorShape::Hidden => Bounds::new(origin, size(px(0.0), px(0.0))),
     }
+}
+
+fn resolve_color(color: CellColor, theme: &Theme) -> Rgb {
+    match color {
+        CellColor::DefaultForeground => theme.foreground,
+        CellColor::DefaultBackground => theme.background,
+        CellColor::Cursor => theme.cursor,
+        CellColor::Indexed(index) => theme.indexed(index),
+        CellColor::Rgb(color) => color,
+    }
+}
+
+fn selected_foreground(
+    snapshot: &TerminalSnapshot,
+    selection: Option<BufferRange>,
+    theme: &Theme,
+    row: usize,
+    column: u16,
+) -> Option<Rgb> {
+    let foreground = theme.selection_foreground?;
+    let selection = selection?;
+    let columns = usize::from(snapshot.size.columns);
+    let rows = usize::from(snapshot.size.rows);
+    let offset = snapshot
+        .viewport
+        .bottom_offset
+        .saturating_add(rows.saturating_sub(1).saturating_sub(row));
+    let start = row.saturating_mul(columns);
+    let cells = snapshot
+        .cells
+        .get(start..start.saturating_add(columns))
+        .unwrap_or_default();
+    selection_covers_column(selection, offset, column, cells)
+        .then_some(foreground)
+}
+
+fn paint_selection(
+    snapshot: &TerminalSnapshot,
+    selection: BufferRange,
+    origin: Point<Pixels>,
+    metrics: GridMetrics,
+    theme: &Theme,
+    window: &mut Window,
+) {
+    let rows = usize::from(snapshot.size.rows);
+    let columns = usize::from(snapshot.size.columns);
+    for row in 0..rows {
+        let rows_from_live_bottom = snapshot
+            .viewport
+            .bottom_offset
+            .saturating_add(rows.saturating_sub(1).saturating_sub(row));
+        let mut start = None;
+        let mut end = 0_u16;
+        let row_start = row.saturating_mul(columns);
+        let row_cells = snapshot
+            .cells
+            .get(row_start..row_start.saturating_add(columns))
+            .unwrap_or_default();
+        for column in 0..snapshot.size.columns {
+            if selection_covers_column(
+                selection,
+                rows_from_live_bottom,
+                column,
+                row_cells,
+            ) {
+                start.get_or_insert(column);
+                end = column.saturating_add(1);
+            }
+        }
+        if let Some(start) = start {
+            window.paint_quad(fill(
+                cell_bounds(
+                    origin,
+                    start,
+                    row,
+                    end.saturating_sub(start),
+                    metrics,
+                ),
+                rgb_color(theme.selection),
+            ));
+        }
+    }
+}
+
+fn selection_covers_column(
+    selection: BufferRange,
+    rows_from_live_bottom: usize,
+    column: u16,
+    row: &[Cell],
+) -> bool {
+    let contains = |column| {
+        range_contains(
+            selection,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom,
+                column,
+            },
+        )
+    };
+    if contains(column) {
+        return true;
+    }
+    let index = usize::from(column);
+    if row.get(index).is_some_and(|cell| cell.style.wide) {
+        return column.checked_add(1).is_some_and(contains);
+    }
+    row.get(index).is_some_and(|cell| cell.style.wide_spacer)
+        && column.checked_sub(1).is_some_and(contains)
+}
+
+fn range_contains(
+    range: BufferRange,
+    point: huterm_protocol::BufferPoint,
+) -> bool {
+    let after_start = point.rows_from_live_bottom
+        < range.start.rows_from_live_bottom
+        || (point.rows_from_live_bottom == range.start.rows_from_live_bottom
+            && point.column >= range.start.column);
+    let before_end = point.rows_from_live_bottom
+        > range.end.rows_from_live_bottom
+        || (point.rows_from_live_bottom == range.end.rows_from_live_bottom
+            && point.column <= range.end.column);
+    after_start && before_end
 }
 
 pub(super) fn display_foreground(foreground: Rgb, dim: bool) -> Rgb {
@@ -692,11 +1061,400 @@ fn renderer_stats_enabled() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
+fn timing_enabled(renderer_stats: bool, scroll_benchmark: bool) -> bool {
+    renderer_stats || scroll_benchmark
+}
+
+fn scroll_benchmark_enabled() -> bool {
+    std::env::var("HUTERM_SCROLL_BENCH")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+#[derive(Default)]
+struct ScrollBenchmarkStats {
+    in_flight: Option<ScrollBenchmarkSample>,
+    ready_to_paint: Option<ScrollBenchmarkSample>,
+    dropped_before_paint: usize,
+}
+
+impl ScrollBenchmarkStats {
+    fn begin(
+        &mut self,
+        sequence: u64,
+        requested_offset: usize,
+        injected_at: Option<Instant>,
+    ) {
+        if self
+            .in_flight
+            .replace(ScrollBenchmarkSample {
+                sequence,
+                requested_offset,
+                injected_at,
+                ..ScrollBenchmarkSample::default()
+            })
+            .is_some()
+        {
+            self.dropped_before_paint += 1;
+        }
+    }
+
+    fn complete_snapshot(
+        &mut self,
+        duration: Duration,
+        returned_offset: usize,
+        wakeup_delay: Duration,
+    ) {
+        let Some(mut sample) = self.in_flight.take() else {
+            return;
+        };
+        sample.snapshot = duration;
+        sample.returned_offset = returned_offset;
+        sample.wakeup_delay = wakeup_delay;
+        let matched_input = usize::from(sample.injected_at.is_some());
+        let latency = sample
+            .injected_at
+            .map_or(Duration::ZERO, |injected_at| injected_at.elapsed());
+        eprintln!(
+            "huterm-scroll snapshot sequence={} requested={} returned={} snapshot_us={} input={} latency_us={} timer_wait_us={}",
+            sample.sequence,
+            sample.requested_offset,
+            sample.returned_offset,
+            sample.snapshot.as_micros(),
+            matched_input,
+            latency.as_micros(),
+            sample.wakeup_delay.as_micros(),
+        );
+        if self.ready_to_paint.replace(sample).is_some() {
+            self.dropped_before_paint += 1;
+        }
+    }
+
+    fn complete_prepare(
+        &mut self,
+        duration: Duration,
+        rebuilt_rows: usize,
+        total_rows: usize,
+    ) {
+        if let Some(sample) = &mut self.ready_to_paint {
+            sample.prepare = duration;
+            sample.rebuilt_rows = rebuilt_rows;
+            sample.total_rows = total_rows;
+            sample.prepared = true;
+        }
+    }
+
+    fn complete_paint(&mut self, duration: Duration) {
+        if !self
+            .ready_to_paint
+            .as_ref()
+            .is_some_and(|sample| sample.prepared)
+        {
+            return;
+        }
+        let Some(mut sample) = self.ready_to_paint.take() else {
+            return;
+        };
+        sample.paint = duration;
+        let matched_input = usize::from(sample.injected_at.is_some());
+        let latency = sample
+            .injected_at
+            .map_or(Duration::ZERO, |injected_at| injected_at.elapsed());
+        eprintln!(
+            "huterm-scroll sample sequence={} requested={} returned={} snapshot_us={} prepare_us={} paint_us={} input={} latency_us={} timer_wait_us={} rebuilt_rows={} reused_rows={} dropped={}",
+            sample.sequence,
+            sample.requested_offset,
+            sample.returned_offset,
+            sample.snapshot.as_micros(),
+            sample.prepare.as_micros(),
+            sample.paint.as_micros(),
+            matched_input,
+            latency.as_micros(),
+            sample.wakeup_delay.as_micros(),
+            sample.rebuilt_rows,
+            sample.total_rows.saturating_sub(sample.rebuilt_rows),
+            self.dropped_before_paint,
+        );
+    }
+}
+
+struct ScrollBenchmarkSample {
+    sequence: u64,
+    requested_offset: usize,
+    returned_offset: usize,
+    injected_at: Option<Instant>,
+    snapshot: Duration,
+    prepare: Duration,
+    paint: Duration,
+    wakeup_delay: Duration,
+    rebuilt_rows: usize,
+    total_rows: usize,
+    prepared: bool,
+}
+
+impl Default for ScrollBenchmarkSample {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            requested_offset: 0,
+            returned_offset: 0,
+            injected_at: None,
+            snapshot: Duration::ZERO,
+            prepare: Duration::ZERO,
+            paint: Duration::ZERO,
+            wakeup_delay: Duration::ZERO,
+            rebuilt_rows: 0,
+            total_rows: 0,
+            prepared: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use huterm_protocol::{CellStyle, GridSize, TerminalId, TerminalModes};
+    use huterm_protocol::{
+        CellStyle, GridSize, TerminalId, TerminalModes, Viewport,
+    };
 
     use super::*;
+
+    #[test]
+    fn reconfigure_invalidates_rows_but_preserves_snapshot_data() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.0),
+            px(12.0),
+            px(-3.0),
+            1.0,
+        );
+        let original = Arc::new(snapshot(1, 1, &["A"]));
+        let mut renderer =
+            TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
+        renderer.snapshot = Some(Arc::clone(&original));
+        renderer.rows.push(PreparedRow::default());
+        renderer.reconfigure("Menlo".into(), Theme::default(), metrics);
+        assert!(renderer.snapshot.is_some());
+        assert_eq!(renderer.rows.len(), 1);
+        let mut theme = Theme::default();
+        theme.background = theme.foreground;
+        renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
+        assert!(renderer.snapshot.is_none());
+        assert!(renderer.rows.is_empty());
+        assert_eq!(original.cells[0].text, "A");
+        renderer.snapshot = Some(Arc::clone(&original));
+        let larger = GridMetrics::from_measurements(
+            px(18.0),
+            px(10.0),
+            px(15.0),
+            px(-4.0),
+            1.0,
+        );
+        renderer.reconfigure("Menlo".into(), theme, larger);
+        assert!(renderer.snapshot.is_none());
+        assert_eq!(renderer.metrics.cell_height, px(19.0));
+    }
+
+    #[test]
+    fn selection_foreground_only_affects_selected_visible_cells() {
+        let mut snapshot = snapshot(2, 1, &["A", "B"]);
+        snapshot.viewport.bottom_offset = 10;
+        let range = BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 10,
+                column: 0,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 10,
+                column: 0,
+            },
+        );
+        let mut theme = Theme::default();
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            None
+        );
+        theme.selection_foreground = Some(theme.background);
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            Some(theme.background)
+        );
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 1),
+            None
+        );
+        assert_eq!(selected_foreground(&snapshot, None, &theme, 0, 0), None);
+        snapshot.viewport.bottom_offset = 11;
+        assert_eq!(
+            selected_foreground(&snapshot, Some(range), &theme, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn font_changes_evict_layouts_while_palette_changes_reuse_them() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.0),
+            px(12.0),
+            px(-3.0),
+            1.0,
+        );
+        let mut renderer =
+            TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
+        let variant = FontVariant::default();
+        renderer.layouts.get_or_insert_with("A", variant, || {
+            Arc::new(LineLayout::default())
+        });
+        let mut theme = Theme::default();
+        theme.background = theme.foreground;
+        renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
+        assert!(
+            renderer
+                .layouts
+                .get_or_insert_with("A", variant, || panic!(
+                    "palette change must reuse glyph layout"
+                ))
+                .1
+        );
+        renderer.reconfigure("Monaco".into(), theme, metrics);
+        assert!(
+            !renderer
+                .layouts
+                .get_or_insert_with("A", variant, || Arc::new(
+                    LineLayout::default()
+                ))
+                .1
+        );
+    }
+
+    #[test]
+    fn block_cursor_overlay_preserves_underlying_glyph_visibility() {
+        let color = Rgb {
+            red: 255,
+            green: 255,
+            blue: 255,
+        };
+        assert!(
+            (cursor_fill(color, CursorShape::Block).a - 0.4).abs()
+                < f32::EPSILON
+        );
+        for shape in [CursorShape::Beam, CursorShape::Underline] {
+            assert!((cursor_fill(color, shape).a - 1.0).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn menlo_12_matches_reference_terminal_grid_width() {
+        // Measured with CoreText for Menlo Nerd Font Mono Regular at 12pt.
+        let metrics = GridMetrics::from_measurements(
+            px(12.0),
+            px(7.224_609_4),
+            px(11.138_672),
+            px(-2.830_078_1),
+            2.0,
+        );
+        assert_eq!(metrics.cell_width * 120.0, px(840.0));
+        assert_eq!(metrics.cell_height * 40.0, px(560.0));
+    }
+
+    #[test]
+    fn display_scale_round_trips_preserve_unrounded_font_measurements() {
+        let original = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+            1.0,
+        );
+        let retina = original.at_scale(2.0);
+        assert_eq!(
+            size(original.cell_width, original.cell_height),
+            size(px(8.0), px(16.0))
+        );
+        assert_eq!(
+            size(retina.cell_width, retina.cell_height),
+            size(px(8.5), px(16.5))
+        );
+        assert_eq!(retina.baseline * 2.0, (retina.baseline * 2.0).round());
+        assert_eq!(retina.at_scale(1.0), original);
+        assert_eq!(retina.at_scale(1.5).at_scale(2.0), retina);
+    }
+
+    #[test]
+    fn rounded_grid_shares_cell_edges_and_centers_glyph_advance() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(3.302),
+            2.0,
+        );
+        let origin = point(px(4.0), px(36.0));
+        let next = cell_origin(origin, 120, 40, metrics);
+        assert_eq!(next, origin + point(px(1020.0), px(660.0)));
+        assert!(
+            (f32::from(
+                metrics.glyph_offset_x * 2.0 + metrics.advance
+                    - metrics.cell_width
+            ))
+            .abs()
+                < 0.0001
+        );
+        assert_eq!(
+            metrics,
+            GridMetrics::from_measurements(
+                px(14.0),
+                px(8.429),
+                px(12.995),
+                px(-3.302),
+                2.0,
+            )
+        );
+    }
+
+    #[test]
+    fn tiny_font_metrics_keep_at_least_one_device_pixel() {
+        let metrics = GridMetrics::from_measurements(
+            px(0.1),
+            px(0.01),
+            px(0.02),
+            px(-0.01),
+            2.0,
+        );
+        assert_eq!(
+            size(metrics.cell_width, metrics.cell_height),
+            size(px(0.5), px(0.5))
+        );
+    }
+
+    #[test]
+    fn grid_metrics_round_height_with_signed_descent() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+            1.0,
+        );
+
+        assert_eq!(metrics.cell_height, px(16.0));
+    }
+
+    #[test]
+    fn grid_metrics_should_order_vertical_positions_with_signed_descent() {
+        let metrics = GridMetrics::from_measurements(
+            px(14.0),
+            px(8.429),
+            px(12.995),
+            px(-3.302),
+            1.0,
+        );
+
+        assert!(
+            metrics.strikeout < metrics.baseline
+                && metrics.baseline < metrics.underline
+                && metrics.underline < metrics.cell_height
+        );
+    }
 
     #[test]
     fn cache_reuses_layouts_without_calling_factory() {
@@ -784,6 +1542,36 @@ mod tests {
     }
 
     #[test]
+    fn row_diff_reuses_shifted_rows_during_static_scrolling() {
+        let mut previous = snapshot(1, 3, &["B", "C", "D"]);
+        previous.history_size = 10;
+        let mut current = snapshot(1, 3, &["A", "B", "C"]);
+        current.history_size = 10;
+        current.viewport.bottom_offset = 1;
+
+        assert_eq!(
+            rows_to_rebuild(Some(&previous), &current),
+            vec![true, false, false]
+        );
+    }
+
+    #[test]
+    fn row_diff_reuses_every_row_when_pinned_history_grows() {
+        let mut previous = snapshot(1, 3, &["A", "B", "C"]);
+        previous.history_size = 100;
+        previous.viewport.bottom_offset = 10;
+        let mut current = previous.clone();
+        current.history_size = 101;
+        current.viewport.bottom_offset = 11;
+        current.generation += 1;
+
+        assert_eq!(
+            rows_to_rebuild(Some(&previous), &current),
+            vec![false, false, false]
+        );
+    }
+
+    #[test]
     fn decorations_merge_across_a_wide_cell_and_its_spacer() {
         let mut cells = snapshot(3, 1, &["界", " ", "A"]).cells;
         cells[0].style.wide = true;
@@ -792,11 +1580,130 @@ mod tests {
         cells[2].style.underline = true;
 
         let decorations =
-            prepare_decorations(&cells, |cell| cell.style.underline);
+            prepare_decorations(&cells, &Theme::default(), |cell| {
+                cell.style.underline
+            });
 
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].start, 0);
         assert_eq!(decorations[0].columns, 3);
+    }
+
+    #[test]
+    fn selection_expands_over_both_halves_of_a_wide_character() {
+        let mut cells = snapshot(2, 1, &["界", " "]).cells;
+        cells[0].style.wide = true;
+        cells[1].style.wide_spacer = true;
+
+        for selected_column in 0..=1 {
+            let point = huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: selected_column,
+            };
+            let selection = BufferRange::ordered(point, point);
+
+            assert!(selection_covers_column(selection, 0, 0, &cells));
+            assert!(selection_covers_column(selection, 0, 1, &cells));
+        }
+    }
+
+    #[test]
+    fn scroll_benchmark_alone_enables_renderer_timing() {
+        assert!(!timing_enabled(false, false));
+        assert!(timing_enabled(true, false));
+        assert!(timing_enabled(false, true));
+    }
+
+    #[test]
+    fn next_scroll_request_does_not_replace_snapshot_awaiting_paint() {
+        let mut benchmark = ScrollBenchmarkStats::default();
+        benchmark.begin(1, 10, Some(Instant::now()));
+        benchmark.complete_snapshot(
+            Duration::from_micros(10),
+            10,
+            Duration::from_micros(2),
+        );
+
+        benchmark.begin(2, 11, Some(Instant::now()));
+        benchmark.complete_prepare(Duration::from_micros(20), 1, 32);
+
+        assert_eq!(
+            benchmark.in_flight.as_ref().map(|sample| sample.sequence),
+            Some(2)
+        );
+        assert!(
+            benchmark
+                .ready_to_paint
+                .as_ref()
+                .is_some_and(|sample| sample.sequence == 1)
+        );
+
+        benchmark.complete_paint(Duration::from_micros(30));
+
+        assert!(benchmark.ready_to_paint.is_none());
+        assert_eq!(
+            benchmark.in_flight.as_ref().map(|sample| sample.sequence),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn semantic_colors_and_dim_are_resolved_only_for_paint() {
+        let theme = Theme::default();
+        assert_eq!(
+            resolve_color(CellColor::DefaultForeground, &theme),
+            theme.foreground
+        );
+        assert_eq!(
+            resolve_color(CellColor::DefaultBackground, &theme),
+            theme.background
+        );
+        assert_eq!(resolve_color(CellColor::Cursor, &theme), theme.cursor);
+        assert_eq!(resolve_color(CellColor::Indexed(9), &theme), theme.ansi[9]);
+        let explicit = Rgb {
+            red: 30,
+            green: 60,
+            blue: 90,
+        };
+        assert_eq!(resolve_color(CellColor::Rgb(explicit), &theme), explicit);
+        assert_eq!(
+            display_foreground(explicit, true),
+            Rgb {
+                red: 20,
+                green: 40,
+                blue: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn selection_range_includes_ordered_multiline_endpoints() {
+        let range = BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 4,
+                column: 3,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 1,
+            },
+        );
+        assert!(range_contains(range, range.start));
+        assert!(range_contains(
+            range,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 3,
+                column: 0,
+            }
+        ));
+        assert!(range_contains(range, range.end));
+        assert!(!range_contains(
+            range,
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 4,
+                column: 2,
+            }
+        ));
     }
 
     fn snapshot(
@@ -812,22 +1719,24 @@ mod tests {
                 .iter()
                 .map(|text| Cell {
                     text: (*text).to_owned(),
-                    foreground: Rgb {
+                    foreground: CellColor::Rgb(Rgb {
                         red: 255,
                         green: 255,
                         blue: 255,
-                    },
-                    background: Rgb {
+                    }),
+                    background: CellColor::Rgb(Rgb {
                         red: 0,
                         green: 0,
                         blue: 0,
-                    },
+                    }),
                     style: CellStyle::default(),
                 })
                 .collect(),
             cursor: None,
             modes: TerminalModes::default(),
+            viewport: Viewport::default(),
             history_size: 0,
+            cursor_color: None,
         }
     }
 }

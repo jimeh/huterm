@@ -45,10 +45,23 @@ The initial desktop client runs on macOS and Linux:
 mise run dev
 ```
 
-The app launches `$SHELL` in the current working directory, falling back to
-`/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11` toggles native
-fullscreen. Closing the window shuts down the terminal runtime and its child
-process.
+On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
+Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
+inherited. Linux launches `$SHELL` in the current working directory. The
+fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11`
+toggles native fullscreen. Closing the window shuts down the terminal runtime
+and its child process.
+
+Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
+`$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
+that order. Settings creates the default document without overwriting an
+existing file and opens it with the system editor. Invalid settings fall back
+to defaults and remain visible in the terminal status overlay.
+
+Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
+`Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified
+Page Up, Page Down, and End scroll the viewport. The macOS Window menu exposes
+native Minimize and Zoom commands.
 
 ## Validation ladder
 
@@ -61,6 +74,8 @@ process.
 | Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
 | Pull request | `mise run license` on Ubuntu 24.04 | Dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
+| Scroll benchmark | `mise run bench:scroll` | Snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | Implementer |
+| macOS package | `mise run package:macos` | Apple Silicon app metadata, icon, executable, and architecture | CI or implementer |
 
 The pre-commit hook runs independent jobs in parallel. Markdown and Rust
 formatting receive only matching staged paths. Clippy compilation and the
@@ -76,10 +91,26 @@ Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
 correctness or native input behavior. Use Apple Silicon CI and the manual
 checklist in the initial plan for macOS evidence.
 
-The opt-in renderer benchmark additionally needs `twm`, which ensures GPUI's
-window is exposed and painted under Xvfb:
+On Linux, the opt-in renderer and scroll benchmarks need `twm`, which ensures
+GPUI's window is exposed and painted under Xvfb:
 
 ```sh
 sudo apt-get install --no-install-recommends twm
 mise run bench:renderer
+mise run bench:scroll
 ```
+
+`bench:scroll` drives wheel-equivalent fractional movement, rows, pages, and
+thumb jumps through the production scroll controller over 10,000 unique rows.
+Under Xvfb, it enforces snapshot elapsed time, input-to-snapshot latency, wakeup
+delay, returned offsets, and queue bounds. If the host produces at least 25 paint
+samples, it also enforces combined paint elapsed time, input-to-paint latency,
+and row reuse. The same task runs in a native window on macOS to collect those
+frame-bound measurements. Benchmark metadata records the hardware model and
+GPUI window scale. CPU preparation and paint encoding do not prove GPU
+presentation. These durations use a monotonic wall clock and include scheduler
+preemption, not just per-thread CPU execution.
+
+On Apple Silicon macOS, `mise run package:macos` creates
+`target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
+version, Developer Tools category, icon, executable, and arm64 architecture.

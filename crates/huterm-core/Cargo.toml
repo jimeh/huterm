@@ -1,6 +1,6 @@
 [package]
 name = "huterm-core"
-description = "PTY, emulator, runtime, and mux ownership for HUTerm"
+description = "PTY, emulator, runtime, and mux ownership for Huterm"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,6 +9,7 @@ version.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
+async-channel.workspace = true
 huterm-protocol.workspace = true
 portable-pty.workspace = true
 thiserror.workspace = true

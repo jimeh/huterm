@@ -5,6 +5,7 @@ minimum_release_age = "3d"
 [tools]
 actionlint = "1.7.12"
 "cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-packager" = "0.11.8"
 lefthook = "2.1.12"
 markdownlint-cli2 = "0.23.2"
 pinact = "4.1.1"
@@ -20,7 +21,7 @@ description = "Check platform development prerequisites"
 run = '''
 if [ "$(uname -s)" = Darwin ]; then
   if ! xcodebuild -version >/dev/null 2>&1; then
-    echo "Xcode is not installed or selected for HUTerm's macOS build" >&2
+    echo "Xcode is not installed or selected for Huterm's macOS build" >&2
     echo "install Xcode and select it with xcode-select" >&2
     echo "see docs/agents/development.md for macOS setup" >&2
     exit 1
@@ -47,7 +48,7 @@ fi
 '''
 
 [tasks.dev]
-description = "Run the native HUTerm app"
+description = "Run the native Huterm app"
 run = "cargo run --locked -p huterm"
 
 [tasks.build]
@@ -111,7 +112,12 @@ depends = ["lint", "architecture"]
 
 [tasks.test]
 description = "Run workspace tests"
+depends = ["test:scroll-checker"]
 run = "cargo test --workspace --all-targets --all-features --locked"
+
+[tasks."test:scroll-checker"]
+description = "Test scroll benchmark log validation"
+run = "python3 scripts/test-scroll-benchmark-checker.py"
 
 [tasks."smoke:linux"]
 description = "Launch the Linux GPUI client under Xvfb"
@@ -127,7 +133,7 @@ SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
 status=$?
 set -e
 if [ "$status" -ne 124 ]; then
-  echo "HUTerm exited before the 8-second smoke window (status $status)" >&2
+  echo "Huterm exited before the 8-second smoke window (status $status)" >&2
   exit 1
 fi
 '''
@@ -160,9 +166,144 @@ xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
 status=$?
 set -e
 if [ "$status" -ne 124 ]; then
-  echo "HUTerm renderer benchmark ended early (status $status)" >&2
+  echo "Huterm renderer benchmark ended early (status $status)" >&2
   exit 1
 fi
+'''
+
+[tasks."bench:scroll"]
+description = "Measure release-mode scroll coordination and rendering"
+run = '''
+platform="$(uname -s)"
+if [ "$platform" != Linux ] && [ "$platform" != Darwin ]; then
+  echo "Scroll benchmark requires Linux or macOS" >&2
+  exit 1
+fi
+if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
+  echo "Scroll benchmark requires twm so Xvfb exposes the GPUI window" >&2
+  exit 1
+fi
+cargo build --release --locked -p huterm
+cargo build --release --locked -p huterm-gpui --example scroll_workload
+workload="$(pwd)/target/release/examples/scroll_workload"
+report="$(mktemp)"
+revision="$(git rev-parse HEAD)"
+if [ "$platform" = Darwin ]; then
+  hardware="$(sysctl -n hw.model)"
+else
+  hardware="$(lscpu | awk -F: '$1 == "Model name" { sub(/^[[:space:]]+/, "", $2); print $2; exit }')"
+fi
+app_pid=""
+cleanup() {
+  if [ -n "$app_pid" ]; then
+    kill "$app_pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$report"
+}
+trap cleanup EXIT
+if [ "$platform" = Linux ]; then
+  set +e
+  xvfb-run -a -s '-screen 0 1280x800x24' sh -c '
+    twm >/dev/null 2>&1 &
+    wm_pid=$!
+    SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
+      HUTERM_SCROLL_HARDWARE="$5" \
+      timeout --signal=TERM 10s "$2" >"$3" 2>&1
+    result=$?
+    cat "$3"
+    kill "$wm_pid" >/dev/null 2>&1 || true
+    wait "$wm_pid" >/dev/null 2>&1 || true
+    exit "$result"
+  ' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
+  status=$?
+  set -e
+  if [ "$status" -ne 124 ]; then
+    echo "Huterm scroll benchmark ended early (status $status)" >&2
+    exit 1
+  fi
+else
+  SHELL="$workload" HUTERM_SCROLL_BENCH=1 \
+    HUTERM_SCROLL_REVISION="$revision" \
+    HUTERM_SCROLL_HARDWARE="$hardware" \
+    target/release/huterm >"$report" 2>&1 &
+  app_pid=$!
+  sleep 10
+  if ! kill -0 "$app_pid" >/dev/null 2>&1; then
+    set +e
+    wait "$app_pid"
+    status=$?
+    set -e
+    app_pid=""
+    cat "$report"
+    echo "Huterm scroll benchmark ended early (status $status)" >&2
+    exit 1
+  fi
+  kill -TERM "$app_pid" >/dev/null 2>&1 || true
+  set +e
+  wait "$app_pid"
+  set -e
+  app_pid=""
+  cat "$report"
+fi
+python3 scripts/check-scroll-benchmark.py "$report"
+'''
+
+[tasks."package:macos"]
+description = "Build and verify the Apple Silicon Huterm.app bundle"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "macOS packaging requires an Apple Silicon macOS host" >&2
+  exit 1
+fi
+if [ "$(uname -m)" != arm64 ]; then
+  echo "Huterm.app packaging currently supports Apple Silicon only" >&2
+  exit 1
+fi
+cargo packager --release --formats app
+bundle="target/release/bundle/Huterm.app"
+plist="$bundle/Contents/Info.plist"
+executable="$bundle/Contents/MacOS/huterm"
+metadata="$(cargo metadata --no-deps --format-version 1)"
+identifier="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["metadata"]["packager"]["identifier"])')"
+version="$(printf '%s' "$metadata" | python3 -c 'import json,sys; package=next(item for item in json.load(sys.stdin)["packages"] if item["name"] == "huterm"); print(package["version"])')"
+assert_equal() {
+  if [ "$1" != "$2" ]; then
+    echo "package verification failed for $3: expected '$2', got '$1'" >&2
+    exit 1
+  fi
+}
+assert_file() {
+  if [ ! -f "$1" ]; then
+    echo "package verification failed: missing $2 at $1" >&2
+    exit 1
+  fi
+}
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" "$identifier" "CFBundleIdentifier"
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" "$version" "CFBundleShortVersionString"
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" "public.app-category.developer-tools" "LSApplicationCategoryType"
+icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")"
+packaged_icon="$bundle/Contents/Resources/$icon"
+assert_file "$packaged_icon" "bundle icon"
+for notice in catppuccin folke dracula nordtheme binaryify chriskempson; do
+  assert_file "$bundle/Contents/Resources/themes/licenses/$notice.txt" "theme license"
+done
+if ! cmp -s assets/Huterm.icns "$packaged_icon"; then
+  echo "package verification failed: $packaged_icon differs from assets/Huterm.icns" >&2
+  exit 1
+fi
+if [ ! -x "$executable" ]; then
+  echo "package verification failed: executable is missing or not executable at $executable" >&2
+  exit 1
+fi
+architecture="$(file "$executable")"
+case "$architecture" in
+  *arm64*) ;;
+  *)
+    echo "package verification failed: expected arm64 executable, got: $architecture" >&2
+    exit 1
+    ;;
+esac
+echo "verified $bundle ($identifier, version $version, arm64)"
 '''
 
 [tasks.license]

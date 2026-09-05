@@ -1,4 +1,4 @@
-//! Dependency-neutral messages and snapshots shared by `HUTerm` clients.
+//! Dependency-neutral messages and snapshots shared by Huterm clients.
 
 #![deny(missing_docs)]
 
@@ -157,6 +157,21 @@ pub struct Rgb {
     pub blue: u8,
 }
 
+/// A terminal color which clients resolve through their active theme.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellColor {
+    /// Client theme foreground.
+    DefaultForeground,
+    /// Client theme background.
+    DefaultBackground,
+    /// Client theme cursor color.
+    Cursor,
+    /// Entry in the terminal's 256-color palette.
+    Indexed(u8),
+    /// Explicit RGB color supplied by terminal content.
+    Rgb(Rgb),
+}
+
 /// Renderable terminal cell style.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[expect(
@@ -187,10 +202,10 @@ pub struct CellStyle {
 pub struct Cell {
     /// Cell text, including combining characters.
     pub text: String,
-    /// Resolved foreground color.
-    pub foreground: Rgb,
-    /// Resolved background color.
-    pub background: Rgb,
+    /// Semantic foreground color.
+    pub foreground: CellColor,
+    /// Semantic background color.
+    pub background: CellColor,
     /// Text and width attributes.
     pub style: CellStyle,
 }
@@ -217,6 +232,48 @@ pub struct Cursor {
     pub column: u16,
     /// Rendered cursor shape.
     pub shape: CursorShape,
+}
+
+/// A point in canonical terminal scrollback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferPoint {
+    /// Number of rows above the live screen bottom.
+    pub rows_from_live_bottom: usize,
+    /// Zero-based terminal column.
+    pub column: u16,
+}
+
+/// An inclusive ordered range in canonical terminal scrollback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferRange {
+    /// Earlier endpoint in terminal reading order.
+    pub start: BufferPoint,
+    /// Later endpoint in terminal reading order.
+    pub end: BufferPoint,
+}
+
+impl BufferRange {
+    /// Creates a range with endpoints ordered in terminal reading order.
+    #[must_use]
+    pub fn ordered(first: BufferPoint, second: BufferPoint) -> Self {
+        if buffer_point_precedes(first, second) {
+            Self {
+                start: first,
+                end: second,
+            }
+        } else {
+            Self {
+                start: second,
+                end: first,
+            }
+        }
+    }
+}
+
+fn buffer_point_precedes(first: BufferPoint, second: BufferPoint) -> bool {
+    first.rows_from_live_bottom > second.rows_from_live_bottom
+        || (first.rows_from_live_bottom == second.rows_from_live_bottom
+            && first.column <= second.column)
 }
 
 /// Emulator modes that clients need for input and presentation.
@@ -251,8 +308,12 @@ pub struct TerminalSnapshot {
     pub cursor: Option<Cursor>,
     /// Modes current at this generation.
     pub modes: TerminalModes,
+    /// Actual viewport used after clamping the requested offset.
+    pub viewport: Viewport,
     /// Maximum valid client scroll offset.
     pub history_size: usize,
+    /// Effective cursor color override, when terminal content defines one.
+    pub cursor_color: Option<Rgb>,
 }
 
 /// Child-process exit status independent of a platform process type.
@@ -300,4 +361,38 @@ pub enum TerminalEvent {
         /// Human-readable failure.
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_ranges_are_ordered_by_reading_position() {
+        let upper = BufferPoint {
+            rows_from_live_bottom: 8,
+            column: 4,
+        };
+        let lower = BufferPoint {
+            rows_from_live_bottom: 3,
+            column: 1,
+        };
+        assert_eq!(
+            BufferRange::ordered(lower, upper),
+            BufferRange {
+                start: upper,
+                end: lower
+            }
+        );
+
+        let left = BufferPoint {
+            rows_from_live_bottom: 3,
+            column: 1,
+        };
+        let right = BufferPoint {
+            rows_from_live_bottom: 3,
+            column: 7,
+        };
+        assert_eq!(BufferRange::ordered(right, left).start, left);
+    }
 }

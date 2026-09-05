@@ -1,0 +1,24 @@
+# Adapted from https://github.com/dracula/alacritty/blob/c8a3a13404b78d520d04354e133b5075d9b785e1/dracula.toml
+# See licenses/dracula.txt for the upstream license.
+[theme]
+background = "#282a36"
+foreground = "#f8f8f2"
+cursor = "#f8f8f2"
+selection = "#44475a"
+ansi_black = "#21222c"
+ansi_red = "#ff5555"
+ansi_green = "#50fa7b"
+ansi_yellow = "#f1fa8c"
+ansi_blue = "#bd93f9"
+ansi_magenta = "#ff79c6"
+ansi_cyan = "#8be9fd"
+ansi_white = "#f8f8f2"
+ansi_bright_black = "#6272a4"
+ansi_bright_red = "#ff6e6e"
+ansi_bright_green = "#69ff94"
+ansi_bright_yellow = "#ffffa5"
+ansi_bright_blue = "#d6acff"
+ansi_bright_magenta = "#ff92df"
+ansi_bright_cyan = "#a4ffff"
+ansi_bright_white = "#ffffff"
+

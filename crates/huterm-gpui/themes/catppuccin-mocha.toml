@@ -1,0 +1,25 @@
+# Adapted from https://github.com/catppuccin/alacritty/blob/f6cb5a5c2b404cdaceaff193b9c52317f62c62f7/catppuccin-mocha.toml
+# See licenses/catppuccin.txt for the upstream license.
+[theme]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+cursor = "#f5e0dc"
+selection = "#f5e0dc"
+selection_foreground = "#1e1e2e"
+ansi_black = "#45475a"
+ansi_red = "#f38ba8"
+ansi_green = "#a6e3a1"
+ansi_yellow = "#f9e2af"
+ansi_blue = "#89b4fa"
+ansi_magenta = "#f5c2e7"
+ansi_cyan = "#94e2d5"
+ansi_white = "#bac2de"
+ansi_bright_black = "#585b70"
+ansi_bright_red = "#f38ba8"
+ansi_bright_green = "#a6e3a1"
+ansi_bright_yellow = "#f9e2af"
+ansi_bright_blue = "#89b4fa"
+ansi_bright_magenta = "#f5c2e7"
+ansi_bright_cyan = "#94e2d5"
+ansi_bright_white = "#a6adc8"
+

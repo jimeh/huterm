@@ -7,11 +7,11 @@ validation remains pending.
 
 ## Outcome
 
-Build a native HUTerm development application for the
+Build a native Huterm development application for the
 `aarch64-apple-darwin` target, with `x86_64-unknown-linux-gnu` as an additional
 development target. Running the application opens one GPUI window
-with one interactive local shell. HUTerm owns the shell's PTY and canonical
-Alacritty terminal state. GPUI renders a HUTerm-defined snapshot and sends
+with one interactive local shell. Huterm owns the shell's PTY and canonical
+Alacritty terminal state. GPUI renders a Huterm-defined snapshot and sends
 structured input, resize commands, and snapshot requests to the runtime.
 
 This milestone proves the terminal data path and the boundary between the
@@ -22,10 +22,10 @@ or multiplexer user experience.
 
 The first build provides:
 
-- One native window titled `HUTerm`.
+- One native window titled `Huterm`.
 - One session, one tab, one pane, and one terminal runtime.
 - The user's `$SHELL`, falling back to `/bin/zsh` on macOS or `/bin/sh` on
-  Linux, launched in HUTerm's working directory with the inherited environment.
+  Linux, launched in Huterm's working directory with the inherited environment.
 - Printable text and the common control and navigation keys needed to use a
   shell and basic full-screen terminal programs.
 - Foreground and background colors, basic text decorations, a visible cursor,
@@ -34,7 +34,7 @@ The first build provides:
 - PTY and terminal-grid resize when the window changes size.
 - Native platform fullscreen through GPUI.
 - A visible exited state when the shell terminates.
-- Clean shutdown of the child process when HUTerm closes the terminal.
+- Clean shutdown of the child process when Huterm closes the terminal.
 
 The initial build may use a fixed monospace font, color palette, shell-launch
 policy, and scrollback limit in code. It does not need configuration files or
@@ -47,11 +47,11 @@ settings UI.
 - Pin `gpui` 0.2.2, `alacritty_terminal` 0.26.0, and `portable-pty` 0.9.0 for the
   first implementation. Upgrade only through an explicit dependency and
   license review.
-- Use `portable-pty` for platform PTY mechanics. HUTerm still owns spawning,
+- Use `portable-pty` for platform PTY mechanics. Huterm still owns spawning,
   I/O scheduling, resize policy, attachment lifetime, and child shutdown.
 - Use `alacritty_terminal::Term` and its VTE processor for canonical terminal
   state. Do not use Alacritty's PTY implementation or PTY event loop.
-- Keep GPUI and Alacritty types out of HUTerm's client messages and shared
+- Keep GPUI and Alacritty types out of Huterm's client messages and shared
   terminal representation.
 - Represent the future client boundary with typed in-process messages. Do not
   add serialization, sockets, daemonization, or protocol compatibility logic
@@ -61,9 +61,9 @@ settings UI.
 - Use GPUI's separately licensed crate and examples. Do not copy or depend on
   GPL-covered Zed application or terminal-view code.
 - Treat Hubris as a reference for PTY ownership and detach behavior, not as a
-  dependency. Unlike Hubris's browser client, HUTerm keeps the canonical
+  dependency. Unlike Hubris's browser client, Huterm keeps the canonical
   emulator grid in the runtime and sends semantic snapshots to clients.
-- License HUTerm-owned source under MIT once the repository receives its
+- License Huterm-owned source under MIT once the repository receives its
   `LICENSE` file. Preserve notices for Apache-2.0 dependencies.
 
 ## Architecture
@@ -92,7 +92,7 @@ messages in a defined order rather than sharing `Term` behind a mutex between
 the PTY and UI threads.
 
 The GPUI client never reads the Alacritty grid directly. It requests a viewport
-and receives an immutable snapshot containing HUTerm-owned rows, cells, styles,
+and receives an immutable snapshot containing Huterm-owned rows, cells, styles,
 terminal modes, cursor state, grid size, and generation number. The request does
 not change the canonical terminal or another client's viewport.
 
@@ -100,7 +100,7 @@ not change the canonical terminal or another client's viewport.
 
 ```text
 Cargo.toml
-src/main.rs                  HUTerm executable
+src/main.rs                  Huterm executable
 crates/
   huterm-protocol/           Client commands, events, IDs, snapshots
   huterm-core/               PTY, emulator, terminal runtime, minimal mux model
@@ -140,7 +140,7 @@ management yet.
   scrolling one client never changes another client's view.
 - Client disconnection and child exit are separate events. Closing the GPUI
   window requests terminal shutdown; losing a future attachment will not.
-- No public HUTerm type contains a GPUI, Alacritty, or `portable-pty` type.
+- No public Huterm type contains a GPUI, Alacritty, or `portable-pty` type.
 - Public core and protocol APIs contain no platform-specific types. Private PTY
   plumbing may use narrowly scoped `cfg` implementations. The first desktop
   build supports macOS and Linux; this milestone does not claim Windows
@@ -191,7 +191,7 @@ The shell starts with at least:
 ```text
 TERM=xterm-256color
 COLORTERM=truecolor
-TERM_PROGRAM=HUTerm
+TERM_PROGRAM=Huterm
 ```
 
 The implementation should inherit the remaining environment and start in the
@@ -239,7 +239,7 @@ output stress test must not create one queued GPUI task per PTY read.
   building the full renderer.
 - Keep Linux's XKB link dependencies and Vulkan runtime prerequisites explicit;
   a type check alone does not prove the GPUI binary links or starts.
-- Compile the pinned `alacritty_terminal` API behind HUTerm's adapter before
+- Compile the pinned `alacritty_terminal` API behind Huterm's adapter before
   designing around undocumented internals.
 - Prove that shutdown can unblock every PTY reader, writer, and child-wait path;
   a window that closes while leaving a task or shell behind fails the milestone.
@@ -255,12 +255,12 @@ output stress test must not create one queued GPUI task per PTY read.
    and open a minimal focused GPUI window on the target Mac. Confirm text and
    key events, native fullscreen, and the resolved dependency licenses. Add
    formatting, Clippy, tests, and license checks as Mise tasks.
-2. Define HUTerm IDs, input types, events, cell styles, cursor state, and full
+2. Define Huterm IDs, input types, events, cell styles, cursor state, and full
    terminal snapshots in `huterm-protocol`. Add serialization derives only when
    local IPC work starts.
 3. Build the terminal engine wrapper around `alacritty_terminal::Term` and its
    VTE processor. Feed recorded byte sequences into it and convert renderable
-   content into HUTerm snapshots.
+   content into Huterm snapshots.
 4. Build the PTY runtime around `portable-pty`. Spawn the shell, read output,
    serialize writes, resize the PTY, observe child exit, and guarantee cleanup
    after partial startup failures.
@@ -309,7 +309,7 @@ Launch the application with `cargo run -p huterm` and verify:
 7. Native fullscreen enters and exits without losing focus or corrupting the
    terminal grid.
 8. Exiting the shell reports the terminal's exited state.
-9. Closing HUTerm with a live shell leaves no child process behind.
+9. Closing Huterm with a live shell leaves no child process behind.
 
 ## Acceptance criteria
 
@@ -322,7 +322,7 @@ The milestone is complete when:
 - The manual shell, alternate-screen, resize, scrollback, fullscreen, and
   shutdown checks pass.
 - Automated terminal, PTY, runtime, and mux tests pass and are confirmed to run.
-- The GPUI client depends only on HUTerm protocol and client-facing core APIs,
+- The GPUI client depends only on Huterm protocol and client-facing core APIs,
   not Alacritty or `portable-pty` types.
 - The dependency audit reports no GPL or AGPL packages in the distributed
   dependency graph.

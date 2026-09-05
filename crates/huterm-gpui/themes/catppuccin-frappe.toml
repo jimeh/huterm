@@ -1,0 +1,25 @@
+# Adapted from https://github.com/catppuccin/alacritty/blob/f6cb5a5c2b404cdaceaff193b9c52317f62c62f7/catppuccin-frappe.toml
+# See licenses/catppuccin.txt for the upstream license.
+[theme]
+background = "#303446"
+foreground = "#c6d0f5"
+cursor = "#f2d5cf"
+selection = "#f2d5cf"
+selection_foreground = "#303446"
+ansi_black = "#51576d"
+ansi_red = "#e78284"
+ansi_green = "#a6d189"
+ansi_yellow = "#e5c890"
+ansi_blue = "#8caaee"
+ansi_magenta = "#f4b8e4"
+ansi_cyan = "#81c8be"
+ansi_white = "#b5bfe2"
+ansi_bright_black = "#626880"
+ansi_bright_red = "#e78284"
+ansi_bright_green = "#a6d189"
+ansi_bright_yellow = "#e5c890"
+ansi_bright_blue = "#8caaee"
+ansi_bright_magenta = "#f4b8e4"
+ansi_bright_cyan = "#81c8be"
+ansi_bright_white = "#a5adce"
+

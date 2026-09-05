@@ -1,0 +1,24 @@
+# Adapted from https://github.com/nordtheme/alacritty/blob/9949642f3903e8fcb62bfc03f09410e3d78440c2/src/nord.yaml
+# See licenses/nordtheme.txt for the upstream license.
+[theme]
+background = "#2e3440"
+foreground = "#d8dee9"
+cursor = "#d8dee9"
+selection = "#4c566a"
+ansi_black = "#3b4252"
+ansi_red = "#bf616a"
+ansi_green = "#a3be8c"
+ansi_yellow = "#ebcb8b"
+ansi_blue = "#81a1c1"
+ansi_magenta = "#b48ead"
+ansi_cyan = "#88c0d0"
+ansi_white = "#e5e9f0"
+ansi_bright_black = "#4c566a"
+ansi_bright_red = "#bf616a"
+ansi_bright_green = "#a3be8c"
+ansi_bright_yellow = "#ebcb8b"
+ansi_bright_blue = "#81a1c1"
+ansi_bright_magenta = "#b48ead"
+ansi_bright_cyan = "#8fbcbb"
+ansi_bright_white = "#eceff4"
+
