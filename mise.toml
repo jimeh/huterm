@@ -374,6 +374,13 @@ run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 description = "Verify prepared Ghostty sources against the reviewed tree hash"
 run = "bun scripts/prepare-ghostty.ts --check"
 
+[tasks."ghostty:clean"]
+description = "Discard host-specific native build artifacts after moving Cargo caches"
+run = [
+  "cargo clean --locked -p libghostty-vt-sys",
+  "cargo clean --locked --release -p libghostty-vt-sys",
+]
+
 [tasks."bench:engine:ghostty"]
 description = "Measure the release Ghostty engine with matching fixtures"
 run = "HUTERM_BENCH_ENGINE=ghostty mise run bench:engine"

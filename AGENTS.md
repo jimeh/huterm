@@ -321,3 +321,8 @@ Ubuntu CI.
 Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
 can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
+The pinned sys crate builds for the native Linux CPU without including that CPU
+in Cargo's fingerprint. Run `mise run ghostty:clean` after restoring CI artifacts
+and before parallel Cargo builds; reusing another runner's native code can cause
+SIGILL. Clean both debug and release profiles; package-scoped Cargo cleaning
+defaults to debug only. Preserve the other Rust cache.

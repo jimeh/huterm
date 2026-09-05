@@ -52,6 +52,12 @@ only to the invoked command; it does not change `xcode-select` or other projects
 Direct Cargo builds must supply the compatible environment themselves or run
 through `mise run build:exec -- <command>`.
 
+The pinned binding builds Ghostty for the host CPU on Linux. After moving Cargo
+artifacts between machines, run `mise run ghostty:clean` before rebuilding.
+Linux CI does this after cache restoration to avoid illegal instructions from
+another runner's native code. macOS uses Ghostty's generic Apple Silicon target.
+Portable Linux binary distribution will need an explicit baseline CPU target.
+
 ## Native inputs and policy
 
 The published Rust bindings and sys crate are pinned to 0.2.1. Native Ghostty is
