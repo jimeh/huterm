@@ -405,6 +405,36 @@ mod tests {
         assert!(mux.attachment_session(second).is_err());
     }
     #[test]
+    fn rejected_wrong_workspace_close_preserves_an_unrelated_assessment() {
+        let mut mux = Mux::default();
+        let source = mux.create_session(None).unwrap();
+        let source_workspace = mux.create_workspace(source, None).unwrap();
+        let opened = mux
+            .open_tab(source_workspace, &command("printf READY; read value"))
+            .unwrap();
+        ready(&opened.client, "READY");
+        let target = mux.create_session(None).unwrap();
+        let wrong_workspace = mux.create_workspace(target, None).unwrap();
+        let attachment = mux.attach_session(target).unwrap();
+        let assessment = mux
+            .prepare_close(CloseRequest::Window(attachment))
+            .unwrap()
+            .check_jobs();
+        assert!(
+            matches!(mux.close_tab(wrong_workspace, opened.tab.id), Err(MuxError::UnknownTab(id)) if id == opened.tab.id)
+        );
+        mux.commit_close(&assessment, &assessment.recheck(), false)
+            .expect("rejected close invalidated an unrelated assessment");
+        assert!(mux.session(target).is_none());
+        assert_eq!(
+            mux.select_tab(opened.tab.id).unwrap().workspace,
+            Some(source_workspace)
+        );
+        assert!(opened.client.read_snapshot(Viewport::default()).is_ok());
+        mux.shutdown().unwrap();
+    }
+
+    #[test]
     fn structural_changes_invalidate_consent_without_consuming_attachment() {
         let mut mux = Mux::default();
         let first = mux.create_session(None).unwrap();

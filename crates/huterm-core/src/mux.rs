@@ -547,7 +547,6 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_workspace(workspace)?;
         self.validate_scope(tab.runtime())?;
-        self.changed();
         let record = self
             .workspaces
             .get_mut(&workspace)
@@ -558,6 +557,7 @@ impl Mux {
             .position(|t| t.id == tab)
             .ok_or(MuxError::UnknownTab(tab))?;
         let tab = record.tabs.remove(index);
+        self.changed();
         if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
             runtime.shutdown()?;
         }
