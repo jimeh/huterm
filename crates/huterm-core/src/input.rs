@@ -1,10 +1,16 @@
+use huterm_protocol::{
+    GridSize, MouseAction, MouseButton, MouseEncoding, MouseInput,
+    MouseTracking, WheelDirection,
+};
 use huterm_protocol::{Modifiers, TerminalInput, TerminalKey, TerminalModes};
 
 pub(crate) fn encode_input(
     input: &TerminalInput,
     modes: TerminalModes,
+    size: GridSize,
 ) -> Vec<u8> {
     match input {
+        TerminalInput::Mouse(mouse) => encode_mouse(*mouse, modes, size),
         TerminalInput::Paste(text) if modes.bracketed_paste => {
             let mut bytes = b"\x1b[200~".to_vec();
             bytes.extend(text.replace('\x1b', "").as_bytes());
@@ -26,6 +32,76 @@ pub(crate) fn encode_input(
         }
         _ => Vec::new(),
     }
+}
+
+fn encode_mouse(
+    mouse: MouseInput,
+    modes: TerminalModes,
+    size: GridSize,
+) -> Vec<u8> {
+    if modes.mouse_tracking == MouseTracking::Disabled
+        || matches!(mouse.action, MouseAction::Motion(_))
+            && (modes.mouse_tracking == MouseTracking::Buttons
+                || mouse.action == MouseAction::Motion(None)
+                    && modes.mouse_tracking != MouseTracking::AllMotion)
+    {
+        return Vec::new();
+    }
+    let button_code = |button| match button {
+        MouseButton::Left => 0_u8,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    };
+    let release = matches!(mouse.action, MouseAction::Release(_));
+    let mut code = match mouse.action {
+        MouseAction::Press(button) => button_code(button),
+        MouseAction::Release(button)
+            if modes.mouse_encoding == MouseEncoding::Sgr =>
+        {
+            button_code(button)
+        }
+        MouseAction::Release(_) => 3,
+        MouseAction::Motion(button) => 32 + button.map_or(3, button_code),
+        MouseAction::Wheel(direction) => match direction {
+            WheelDirection::Up => 64,
+            WheelDirection::Down => 65,
+            WheelDirection::Left => 66,
+            WheelDirection::Right => 67,
+        },
+    };
+    code |= (u8::from(mouse.modifiers.shift) * 4)
+        | (u8::from(mouse.modifiers.alt) * 8)
+        | (u8::from(mouse.modifiers.control) * 16);
+    let limit = match modes.mouse_encoding {
+        MouseEncoding::Legacy => 223,
+        MouseEncoding::Utf8 => 2015,
+        MouseEncoding::Sgr => u32::MAX,
+    };
+    let coordinate = |value: u32, dimension: u16| {
+        value
+            .min(u32::from(dimension.saturating_sub(1)))
+            .saturating_add(1)
+            .min(limit)
+    };
+    let column = coordinate(mouse.position.column, size.columns);
+    let row = coordinate(mouse.position.row, size.rows);
+    if modes.mouse_encoding == MouseEncoding::Sgr {
+        let terminator = if release { 'm' } else { 'M' };
+        return format!("\x1b[<{code};{column};{row}{terminator}").into_bytes();
+    }
+    let mut bytes = vec![0x1b, b'[', b'M', code + 32];
+    for coordinate in [column, row] {
+        if modes.mouse_encoding == MouseEncoding::Utf8 {
+            if let Some(character) = char::from_u32(coordinate + 32) {
+                bytes.extend_from_slice(
+                    character.encode_utf8(&mut [0; 4]).as_bytes(),
+                );
+            }
+        } else {
+            bytes.push(u8::try_from(coordinate + 32).unwrap_or(u8::MAX));
+        }
+    }
+    bytes
 }
 
 fn encode_key(
@@ -70,6 +146,182 @@ fn encode_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_input(input: &TerminalInput, modes: TerminalModes) -> Vec<u8> {
+        super::encode_input(input, modes, GridSize::clamped(80, 24))
+    }
+
+    fn report(
+        action: MouseAction,
+        encoding: MouseEncoding,
+        position: huterm_protocol::MousePosition,
+        modifiers: Modifiers,
+    ) -> Vec<u8> {
+        super::encode_input(
+            &TerminalInput::Mouse(MouseInput {
+                action,
+                position,
+                modifiers,
+            }),
+            TerminalModes {
+                mouse_tracking: MouseTracking::AllMotion,
+                mouse_encoding: encoding,
+                ..TerminalModes::default()
+            },
+            GridSize::clamped(4000, 4000),
+        )
+    }
+
+    #[test]
+    fn mouse_formats_encode_all_buttons_motion_wheels_and_modifiers() {
+        use huterm_protocol::MousePosition;
+        let position = MousePosition { column: 1, row: 2 };
+        let modifiers = Modifiers {
+            control: true,
+            alt: true,
+            shift: true,
+        };
+        for (action, code, release) in [
+            (MouseAction::Press(MouseButton::Left), 0, false),
+            (MouseAction::Press(MouseButton::Middle), 1, false),
+            (MouseAction::Press(MouseButton::Right), 2, false),
+            (MouseAction::Release(MouseButton::Left), 0, true),
+            (MouseAction::Release(MouseButton::Middle), 1, true),
+            (MouseAction::Release(MouseButton::Right), 2, true),
+            (MouseAction::Motion(Some(MouseButton::Left)), 32, false),
+            (MouseAction::Motion(Some(MouseButton::Middle)), 33, false),
+            (MouseAction::Motion(Some(MouseButton::Right)), 34, false),
+            (MouseAction::Motion(None), 35, false),
+            (MouseAction::Wheel(WheelDirection::Up), 64, false),
+            (MouseAction::Wheel(WheelDirection::Down), 65, false),
+            (MouseAction::Wheel(WheelDirection::Left), 66, false),
+            (MouseAction::Wheel(WheelDirection::Right), 67, false),
+        ] {
+            let terminator = if release { 'm' } else { 'M' };
+            assert_eq!(
+                report(action, MouseEncoding::Sgr, position, modifiers),
+                format!("\x1b[<{};2;3{terminator}", code + 28).as_bytes()
+            );
+            for encoding in [MouseEncoding::Legacy, MouseEncoding::Utf8] {
+                let button = if release { 3 } else { code };
+                assert_eq!(
+                    report(action, encoding, position, modifiers),
+                    [27, b'[', b'M', button + 28 + 32, 34, 35]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_coordinates_clamp_to_encoding_and_live_size_without_wrapping() {
+        use huterm_protocol::MousePosition;
+        for (encoding, limit) in
+            [(MouseEncoding::Legacy, 223), (MouseEncoding::Utf8, 2015)]
+        {
+            for coordinate in [0, limit - 1, limit, u32::MAX] {
+                let bytes = report(
+                    MouseAction::Release(MouseButton::Right),
+                    encoding,
+                    MousePosition {
+                        column: coordinate,
+                        row: coordinate,
+                    },
+                    Modifiers::default(),
+                );
+                let wire = coordinate.saturating_add(1).min(limit) + 32;
+                if encoding == MouseEncoding::Legacy {
+                    assert_eq!(&bytes[4..], &[u8::try_from(wire).unwrap(); 2]);
+                } else {
+                    let character = char::from_u32(wire).unwrap();
+                    assert_eq!(
+                        &bytes[4..],
+                        format!("{character}{character}").as_bytes()
+                    );
+                }
+            }
+        }
+        for action in [
+            MouseAction::Press(MouseButton::Left),
+            MouseAction::Release(MouseButton::Left),
+            MouseAction::Motion(Some(MouseButton::Left)),
+            MouseAction::Wheel(WheelDirection::Up),
+        ] {
+            let mouse = TerminalInput::Mouse(MouseInput {
+                action,
+                position: MousePosition {
+                    column: u32::MAX,
+                    row: u32::MAX,
+                },
+                modifiers: Modifiers::default(),
+            });
+            for encoding in [
+                MouseEncoding::Legacy,
+                MouseEncoding::Utf8,
+                MouseEncoding::Sgr,
+            ] {
+                let bytes = super::encode_input(
+                    &mouse,
+                    TerminalModes {
+                        mouse_tracking: MouseTracking::AllMotion,
+                        mouse_encoding: encoding,
+                        ..TerminalModes::default()
+                    },
+                    GridSize::clamped(2, 1),
+                );
+                if encoding == MouseEncoding::Sgr {
+                    assert!(String::from_utf8(bytes).unwrap().contains(";2;1"));
+                } else {
+                    assert_eq!(&bytes[4..], &[34, 33]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tracking_filters_motion_and_encoding_alone_never_enables_reports() {
+        for tracking in [
+            MouseTracking::Disabled,
+            MouseTracking::Buttons,
+            MouseTracking::ButtonMotion,
+            MouseTracking::AllMotion,
+        ] {
+            for action in [
+                MouseAction::Press(MouseButton::Left),
+                MouseAction::Release(MouseButton::Left),
+                MouseAction::Motion(None),
+                MouseAction::Motion(Some(MouseButton::Left)),
+                MouseAction::Wheel(WheelDirection::Down),
+            ] {
+                let encoded = encode_input(
+                    &TerminalInput::Mouse(MouseInput {
+                        action,
+                        position: huterm_protocol::MousePosition::default(),
+                        modifiers: Modifiers::default(),
+                    }),
+                    TerminalModes {
+                        mouse_tracking: tracking,
+                        mouse_encoding: MouseEncoding::Sgr,
+                        ..TerminalModes::default()
+                    },
+                );
+                let expected = tracking != MouseTracking::Disabled
+                    && match action {
+                        MouseAction::Motion(None) => {
+                            tracking == MouseTracking::AllMotion
+                        }
+                        MouseAction::Motion(Some(_)) => {
+                            tracking != MouseTracking::Buttons
+                        }
+                        _ => true,
+                    };
+                assert_eq!(
+                    !encoded.is_empty(),
+                    expected,
+                    "{tracking:?} {action:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn cursor_keys_should_follow_application_cursor_mode() {
