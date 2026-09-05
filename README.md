@@ -41,7 +41,8 @@ additional development platform. It opens one GPUI window containing one tab,
 one pane, and one interactive local shell. Huterm owns the PTY and Alacritty
 terminal state, then renders a Huterm-defined snapshot in GPUI.
 
-The milestone includes keyboard input, paste, selection and copy, fast
+The milestone includes keyboard and application mouse input, paste, selection
+and copy, fast
 client-owned scrollback with a position indicator, configurable font and theme,
 terminal resize, native fullscreen, alternate-screen applications, a macOS menu
 bar and Apple Silicon application bundle, and clean child-process shutdown. It
@@ -50,6 +51,27 @@ a TUI client.
 
 See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
 for the implementation sequence and acceptance criteria.
+
+## Mouse interaction
+
+Applications can request button reports with mode 1000, held-button motion with
+1002, or all motion with 1003. Huterm supports left, middle, and right buttons,
+vertical and horizontal wheels, and legacy, UTF-8 1005, and SGR 1006 reports.
+Control and Alt/Option modifiers are included. Applications that do not enable
+reporting receive no mouse input.
+
+Hold Shift when starting a selection or scrolling to use local terminal
+selection and scrollback. The scrollbar always stays local. Mouse input also
+stays local while viewing scrollback, including while a scroll away from live
+is waiting for its snapshot. Return to the live viewport to interact with the
+application again. A drag keeps its original ownership until release, even if
+Shift changes or the pointer leaves the grid.
+
+Leaving the live viewport or losing focus ends application button gestures.
+Coordinates for continuing gestures clamp to the grid edge. Fast application
+wheel input is limited to 32 steps per platform event; excess whole steps and
+wheel steps that cannot fit the input queue are discarded. Legacy reports clamp
+to column/row 223 and UTF-8 reports to 2015; SGR uses the full terminal grid.
 
 ## Development
 

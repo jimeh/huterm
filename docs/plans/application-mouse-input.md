@@ -1,6 +1,6 @@
 # Application mouse input plan
 
-Status: proposed for implementation after review.
+Status: implemented; remaining native verification is listed below.
 
 Issue: [#5: Add mouse input support for terminal applications][issue].
 
@@ -188,10 +188,12 @@ remainder on direction reversal, routing changes, mode changes, and focus loss.
 Preserve the existing local scroll controller's behavior. For diagonal
 application input, emit vertical steps before horizontal steps consistently.
 Reject non-finite deltas and invalid cell dimensions before arithmetic or
-integer conversion. Verify macOS Shift-wheel with both a physical wheel and a
-trackpad: a possible platform axis remapping must not defeat vertical local
-scrolling. Add normalization only if native input evidence confirms it is
-needed; do not assume every horizontal Shift delta came from a vertical wheel.
+integer conversion. Linux X11 event injection confirmed that GPUI remaps Shift
+vertical wheel lines to horizontal-only deltas. Normalize those deltas back to
+vertical only in Linux's local scroll path. Keep application horizontal input
+unchanged. Verify macOS Shift-wheel with both a physical wheel and a trackpad;
+its possible axis remapping remains unverified, so do not normalize macOS
+without native device evidence.
 
 Bound application motion before it enters the runtime queue. Retain at most one
 unsent motion sample per uninterrupted compatible run and replace it with the

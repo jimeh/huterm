@@ -145,3 +145,13 @@ them as elapsed time, not per-thread CPU time.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.
+
+Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
+enabled format wins. Project its current bits rather than retaining independent
+client format flags. Encode mouse events at dequeue time against live modes and
+dimensions. GPUI owns physical-button lifetimes and may admit one overflow
+release per accepted button, consuming ownership before enqueueing the release.
+GPUI's X11 backend remaps Shift vertical wheel lines to horizontal-only deltas.
+Restore those deltas to vertical only on the local scroll path on Linux. Leave
+application horizontal wheel reports and macOS deltas unchanged until native
+macOS device evidence justifies normalization there.

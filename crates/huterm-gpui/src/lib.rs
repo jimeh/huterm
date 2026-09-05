@@ -7,6 +7,10 @@ mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod input_queue;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod mouse;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
