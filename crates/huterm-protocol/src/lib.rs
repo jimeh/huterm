@@ -26,8 +26,8 @@ macro_rules! opaque_id {
     };
 }
 
-opaque_id!(SessionId, "Identifies a server-owned session.");
-opaque_id!(TabId, "Identifies a tab within a session.");
+opaque_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
+opaque_id!(TabId, "Identifies a tab within a workspace.");
 opaque_id!(PaneId, "Identifies a pane within a tab.");
 opaque_id!(TerminalId, "Identifies a terminal runtime.");
 

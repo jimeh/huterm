@@ -160,6 +160,16 @@ impl MouseState {
         releases
     }
 
+    // Hidden tabs no longer receive the physical releases. Call after cancel
+    // has emitted releases for every accepted application button.
+    pub(super) fn forget_released_buttons(&mut self) {
+        for ownership in &mut self.buttons {
+            if *ownership != Ownership::Application {
+                *ownership = Ownership::Up;
+            }
+        }
+    }
+
     pub(super) fn motion(
         &mut self,
         position: MousePosition,
@@ -257,6 +267,28 @@ mod tests {
             ..TerminalModes::default()
         });
         state
+    }
+
+    #[test]
+    fn hidden_tab_cancels_its_press_without_waiting_for_another_tabs_release() {
+        let mut hidden = state();
+        let mut active = state();
+        let button = MouseButton::Left;
+        assert!(hidden.down(button, true));
+        hidden.accepted(button, MousePosition::default());
+        let releases = hidden.cancel();
+        hidden.forget_released_buttons();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].action, MouseAction::Release(button));
+        assert!(
+            active
+                .release(button, MousePosition::default(), Modifiers::default())
+                .is_none()
+        );
+        // Returning to the original tab must admit the next physical press.
+        assert!(hidden.down(button, true));
+        hidden.accepted(button, MousePosition::default());
+        assert_eq!(hidden.cancel().len(), 1);
     }
 
     #[test]

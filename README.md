@@ -3,7 +3,7 @@
 Huterm is an experimental terminal emulator and multiplexer written in Rust.
 It will start as a native desktop application built with GPUI, but the terminal
 runtime will not belong to the desktop UI. Huterm will own its pseudoterminals,
-terminal state, sessions, tabs, and pane layouts so other clients can attach to
+terminal state, workspaces, tabs, and pane layouts so other clients can attach to
 the same runtime later.
 
 The first proof-of-concept implementation is under active validation. It has a
@@ -32,25 +32,37 @@ Huterm is based on four decisions:
 The terminal engine is replaceable in principle, but Huterm will not build a
 generic backend framework before a second engine exists. A future
 `libghostty-vt` experiment should replace the private emulator module without
-changing PTY ownership, sessions, client messages, or renderers.
+changing PTY ownership, workspaces, client messages, or renderers.
 
-## Initial build target
+## Current desktop
 
-The first milestone targets macOS on Apple Silicon, with Linux x86_64 as an
-additional development platform. It opens one GPUI window containing one tab,
-one pane, and one interactive local shell. Huterm owns the PTY and Alacritty
-terminal state, then renders a Huterm-defined snapshot in GPUI.
+Huterm runs on macOS Apple Silicon and Linux x86_64. Each native window has a
+private backing workspace with ordered tabs, one pane per tab, and independent
+terminal processes. Tabs can appear at the top, bottom, left, or right. Hidden
+tabs keep processing output without preparing viewport snapshots or painting.
+Drag tabs to reorder them within a window. The preview stays in the tab bar
+even when the pointer leaves the window; releasing commits the clamped
+insertion position. Escape cancels. Drag near a bar edge to scroll toward
+hidden tabs. Horizontal tabs share the window width, shrinking to 120 logical
+pixels before scrolling. Vertical tabs keep a fixed height in a resizable
+sidebar. Scroll the bar with a trackpad or mouse wheel; floating arrows show
+where more tabs remain. The new-tab button stays visible and follows the last
+tab in vertical mode. Moving tabs between windows and tearing tabs out are not
+supported.
 
-The milestone includes keyboard and application mouse input, paste, selection
-and copy, fast
-client-owned scrollback with a position indicator, configurable font and theme,
-terminal resize, native fullscreen, alternate-screen applications, a macOS menu
-bar and Apple Silicon application bundle, and clean child-process shutdown. It
-does not include a background server, local IPC, multiple tabs, split panes, or
-a TUI client.
+Closing a tab stops its terminal. Closing a window deletes its private workspace
+and stops all its terminals; closing the last window quits. Foreground jobs
+require confirmation before closing. An exited shell remains visible until its
+tab is closed. Window and workspace restoration is not implemented yet.
 
-See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
-for the implementation sequence and acceptance criteria.
+Keyboard and application mouse input, paste, selection and copy, client-owned
+scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
+applications are supported. A background server, local IPC, workspace switching,
+split panes, and a TUI client remain follow-up work.
+
+See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
+boundaries and follow-up milestones, and the
+[initial desktop plan](docs/plans/initial-desktop-poc.md) for the original scope.
 
 ## Mouse interaction
 
@@ -100,6 +112,7 @@ Terminal padding defaults to 4 logical points on each side. Add or adjust the
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
+tab_position = "top" # top, bottom, left, or right
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
@@ -165,7 +178,9 @@ macOS / Ctrl+Shift+, on Linux with a US keyboard layout. GPUI represents these
 as Cmd+< / Ctrl+<; on other layouts use the corresponding less-than chord.
 It rereads the config and selected theme chain
 and applies font, padding, and colors without restarting the shell or losing
-scrollback. The window stays the same size; its grid is recalculated.
+scrollback. All open windows and retained tabs receive the reload. Windows keep
+their size;
+visible grids are recalculated and hidden grids resize when selected.
 Invalid configuration leaves the running settings intact and displays an error.
 An unreadable or missing config file does the same. To reset to defaults,
 empty the config file and reload it.
@@ -192,6 +207,10 @@ limits, and the validation ladder.
 The following list describes the intended product direction. Items outside the
 current milestone are not yet scheduled.
 
+The [workspace, window, and tab plan](docs/plans/workspaces-windows-tabs.md)
+records the next proposed PR and the path toward workspace switching,
+restoration, and shared GUI/TUI access.
+
 ### Terminal
 
 - Local shells and arbitrary commands with configurable working directory and
@@ -212,32 +231,32 @@ current milestone are not yet scheduled.
 - Native fullscreen on supported platforms.
 - Borderless non-native fullscreen on macOS without creating a separate
   Mission Control space.
-- Multiple windows, drag-and-drop tab management, notifications, and restored
-  window layouts.
+- Moving tabs between windows, notifications, and restored window layouts.
 - Accessibility and platform-native input behavior.
 
 ### Multiplexer
 
 - A local server that owns terminal processes independently of client windows.
-- Named sessions containing tabs and split-pane layouts.
+- Named workspaces containing tabs and split-pane layouts.
 - Detach and reattach without terminating terminal processes while the server
   remains alive.
 - Multiple simultaneous clients with explicit terminal-size policy.
 - A text-based client that can run inside another terminal.
-- A command-line client for session and pane automation.
+- A command-line client for workspace and pane automation.
 - Versioned local IPC, followed by optional authenticated remote attachment if
   the local design proves useful.
 
 ### State and recovery
 
-- Persisted configuration, session metadata, tab order, and pane layouts.
+- Persisted configuration, workspace metadata, tab order, and pane layouts.
 - Scrollback and presentation-state recovery where it can be made reliable.
 - Clear distinction between restoring saved presentation and preserving a live
   child process. A server crash is allowed to terminate its PTYs.
 
 ## Terminology
 
-- **Session**: a named, server-owned collection of tabs.
+- **Workspace**: a named, runtime-owned collection of ordered tabs, independent
+  of its views. Earlier code and plans call this a session.
 - **Tab**: an ordered container with one pane layout.
 - **Pane**: a leaf in a tab's split tree.
 - **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.
@@ -245,9 +264,10 @@ current milestone are not yet scheduled.
 - **Client view**: client-local focus, active tab, viewport, and scroll
   position.
 
-Tab order and pane layout belong to the session. Focus, the selected tab, and
-viewport position belong to each client. Tab-bar orientation is a client
-preference, not session state.
+Tab order and pane layout belong to the workspace. Each window or TUI view
+selects its workspace independently and owns focus, the selected tab, and
+viewport position. Tab-bar orientation is a client preference, not workspace
+state. See [CONTEXT.md](CONTEXT.md) for the full glossary.
 
 ## Licensing
 

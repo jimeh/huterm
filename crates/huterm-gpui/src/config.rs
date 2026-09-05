@@ -17,6 +17,8 @@ padding_x = 4.0
 padding_y = 4.0
 # Split unused column space between left and right instead of only the right.
 padding_balance = false
+# Tab placement: top, bottom, left, or right.
+tab_position = "top"
 
 [theme]
 name = "huterm-dark"
@@ -35,14 +37,11 @@ pub(super) struct Config {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "fields match the public window configuration keys"
-)]
 pub(super) struct WindowConfig {
     pub(super) padding_x: f32,
     pub(super) padding_y: f32,
     pub(super) padding_balance: bool,
+    pub(super) tab_position: TabPosition,
 }
 
 impl Default for WindowConfig {
@@ -51,7 +50,24 @@ impl Default for WindowConfig {
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
+            tab_position: TabPosition::Top,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum TabPosition {
+    #[default]
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TabPosition {
+    pub(super) fn vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
     }
 }
 
@@ -384,6 +400,30 @@ mod tests {
     }
 
     #[test]
+    fn tab_placement_accepts_four_edges_and_rejects_other_values() {
+        for (name, expected) in [
+            ("top", TabPosition::Top),
+            ("bottom", TabPosition::Bottom),
+            ("left", TabPosition::Left),
+            ("right", TabPosition::Right),
+        ] {
+            let config = parse(&DEFAULT_CONFIG.replace(
+                "tab_position = \"top\"",
+                &format!("tab_position = \"{name}\""),
+            ))
+            .unwrap();
+            assert_eq!(config.window.tab_position, expected);
+        }
+        assert!(
+            parse(&DEFAULT_CONFIG.replace(
+                "tab_position = \"top\"",
+                "tab_position = \"middle\""
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn named_themes_layer_individual_colors_and_legacy_ansi() {
         let theme = parse(
             r##"
@@ -598,6 +638,7 @@ background = "#040506"
                 padding_x: 0.0,
                 padding_y: 0.0,
                 padding_balance: false,
+                tab_position: TabPosition::Top,
             }
         );
     }

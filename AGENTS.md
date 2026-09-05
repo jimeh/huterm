@@ -1,12 +1,18 @@
 # Huterm agent guide
 
 Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
-sessions, tabs, and panes. GPUI is one client. The runtime boundary must remain
+workspaces, tabs, and panes. GPUI is one client. The runtime boundary must remain
 usable by a future local server and text client.
 
 Read [README.md](README.md) for product scope and
 [the initial desktop plan](docs/plans/initial-desktop-poc.md) for the current
 architecture and acceptance criteria.
+
+Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
+[the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
+direction and follow-up milestones. Core uses WorkspaceId and owns ordered
+workspace/tab records and terminal runtimes. Windows attach independently to
+workspaces. Keep view destruction and detachment separate from explicit close.
 
 ## Boundaries that must hold
 
@@ -146,6 +152,41 @@ Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.
 
+Desktop structural commands serialize through the Mux mutex on background
+workers. Never acquire it from rendering or input callbacks. Terminal clients
+send directly to their own runtime, so sibling input and snapshots continue
+while another workspace spawns or closes. TerminalView destruction only detaches;
+window commands explicitly delete their initial private workspace.
+Use one refresh pump per window to drain bounded batches of tab events. Only the
+active tab may begin a snapshot request. Keep ChromeLayout as the shared source
+of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
+GPUI close callbacks must return false while asynchronous checks and cleanup run.
+Carry close intent across pending operations, and defer application quit until
+all pending spawns have published or failed. Foreground checks belong to the PTY
+owner, and confirmation must move focus away from terminal action handlers.
+Reap the child again after closing the master and joining I/O workers. The last
+master descriptor can deliver the hangup that exits the shell; reaping only
+before descriptor closure can leave a zombie. Keep this final wait bounded and
+return a cleanup error if the child remains alive. This was exposed on macOS
+when the execution sandbox rejected process-group signals with EPERM.
+
+Keep a synchronous `on_app_quit` cleanup callback for native termination. AppKit
+exits without returning from `Application::run`, and GPUI grants quit futures
+only 100 ms. This terminal-only hook is the exception to asynchronous desktop
+cleanup: set the shared termination gate before locking Mux, reject queued spawns
+after they acquire that lock, and drain existing runtimes before returning.
+Initialize scroll benchmark display scale from the attached native window.
+Async tab creation may finish after Xvfb's only frame; snapshot benchmark startup
+must not depend on TerminalView rendering. Render updates the scale when frames
+are available, but Linux snapshot gates must work without them.
+Use separate Cargo target directories when comparing baseline and feature
+worktrees. Reusing release artifacts across them can retain baseline protocol
+metadata; clean the affected local crates if a rebuild reports missing symbols
+that exist in the current source.
+Global action callbacks run while the dispatching window is borrowed. Defer
+Quit routing before updating a native window handle; a synchronous update of
+the active window fails with `window not found` even though it remains open.
+
 Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Project its current bits rather than retaining independent
 client format flags. Encode mouse events at dequeue time against live modes and
@@ -162,3 +203,29 @@ opposite Left/Right only on macOS. Simultaneous Control-left and physical Right
 can collapse into one logical button, so their physical release order cannot be
 recovered. Do not extend this fallback to Middle or Linux. Finalize local
 selection text on blur as well as release before stopping the drag.
+Application mouse coordinates use ChromeLayout's full terminal origin, including
+horizontal offsets from vertical tabs. When hiding a retained TerminalView,
+release accepted application gestures, finalize selection, and forget canceled
+physical buttons: the eventual release may reach a different tab. Ignore stale
+pointer callbacks for hidden views; keep focus and window-activation cleanup
+subscriptions on each TerminalView.
+After bounded PTY cleanup times out, transfer the child handle to a deferred
+reaper until wait succeeds; preserve ShutdownTimedOut for the caller. If the
+reaper thread cannot be created, emergency synchronous reaping can exceed the
+normal shutdown bound. Deferred cleanup cannot outlive OS application termination.
+Tab reorder uses source-window capture listeners registered before terminal
+mouse handlers. Project movement onto the tab-bar axis and clamp preview/drop
+geometry, including release outside the window. Stop propagation when Escape
+cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus
+during the drag to avoid false application focus-out/in reports. TabStrip owns
+pixel geometry for rendering, reveal, wheel input, and drag slots;
+WorkspaceView owns its only scroll offset. Include that offset in drop
+mapping. Edge autoscroll runs in the window refresh pump with bounded elapsed
+time. Manual scrolling must not pin the active tab. Pass the same preferred
+sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
+retained views on resize and before activation. Resolve window-size caps
+without overwriting the preferred width. Commit canonical Mux order on a
+worker and reorder retained views without selecting or recreating them.
+Keep the sidebar resize handle entirely inside sidebar bounds. A grab zone
+straddling the terminal can start terminal selection or application mouse input
+before resize capture consumes release, leaving that terminal gesture stuck.

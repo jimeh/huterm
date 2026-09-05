@@ -2,6 +2,7 @@
 use filedescriptor::{AsRawFileDescriptor, FileDescriptor, RawFileDescriptor};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -90,6 +91,12 @@ impl Drop for PtyProcess {
             record_foreground_group(master.as_ref(), &mut groups);
         }
         terminate_child(child.as_mut(), killer.as_mut(), &groups);
+        drop(self.reader.take());
+        drop(self.writer.take());
+        drop(self.master.take());
+        if let Some(child) = self.child.take() {
+            let _ = reap_child(child);
+        }
     }
 }
 
@@ -272,7 +279,7 @@ pub(crate) fn terminate_child(
     _killer: &mut dyn ChildKiller,
     groups: &ProcessGroups,
 ) -> bool {
-    let child_running = matches!(child.try_wait(), Ok(None));
+    let child_running = !matches!(child.try_wait(), Ok(Some(_)));
 
     #[cfg(unix)]
     {
@@ -341,7 +348,7 @@ fn poll_termination(
 
     let deadline = Instant::now() + timeout;
     loop {
-        let child_done = !matches!(child.try_wait(), Ok(None));
+        let child_done = matches!(child.try_wait(), Ok(Some(_)));
         let groups_done = groups.iter().all(|group| {
             matches!(killpg(Pid::from_raw(*group), None), Err(Errno::ESRCH))
         });
@@ -355,13 +362,80 @@ fn poll_termination(
     }
 }
 
-#[cfg(not(unix))]
+// The final master descriptor can deliver the hangup that actually exits a
+// child. Reap after I/O workers have released their descriptor clones as well.
+pub(crate) fn reap_child(child: Box<dyn Child + Send + Sync>) -> bool {
+    reap_child_with(child, KILL_WAIT_TIMEOUT, spawn_reaper)
+}
+
+fn spawn_reaper(reap: ReapTask) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name("huterm-child-reaper".into())
+        .spawn(reap)
+        .map(drop)
+}
+
+type ReapTask = Box<dyn FnOnce() + Send>;
+
+fn reap_child_with(
+    mut child: Box<dyn Child + Send + Sync>,
+    timeout: Duration,
+    spawn: impl FnOnce(ReapTask) -> std::io::Result<()>,
+) -> bool {
+    if poll_child_exit(child.as_mut(), timeout) {
+        return true;
+    }
+    // Keep a second owner until spawn succeeds: Builder::spawn drops its
+    // closure on failure, which must not drop the only unreaped child handle.
+    let retained = Arc::new(Mutex::new(Some(child)));
+    let deferred = Arc::clone(&retained);
+    let reap = Box::new(move || {
+        if let Some(child) = deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            wait_until_reaped(child);
+        }
+    });
+    if let Err(error) = spawn(reap) {
+        eprintln!("Cannot start child reaper ({error}); waiting synchronously");
+        if let Some(child) = retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            wait_until_reaped(child);
+        }
+    }
+    false
+}
+
+fn wait_until_reaped(mut child: Box<dyn Child + Send + Sync>) {
+    let mut reported_error = false;
+    loop {
+        match child.wait() {
+            Ok(_) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                if !reported_error {
+                    eprintln!("Deferred child wait failed ({error}); retrying");
+                    reported_error = true;
+                }
+                // Preserve ownership even if a platform wait fails transiently.
+                thread::sleep(SIGNAL_GRACE_PERIOD);
+            }
+        }
+    }
+}
+
 fn poll_child_exit(child: &mut dyn Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(_)) => return true,
             Ok(None) => thread::sleep(POLL_INTERVAL),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return false,
         }
     }
@@ -375,5 +449,158 @@ pub(crate) fn pty_size(grid: GridSize, cell: CellSize) -> PtySize {
         cols: grid.columns,
         pixel_width: cell.width.saturating_mul(grid.columns),
         pixel_height: cell.height.saturating_mul(grid.rows),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io::ErrorKind;
+    use std::sync::mpsc::{self, Receiver, Sender};
+
+    #[derive(Debug)]
+    struct ControlledChild {
+        exit: Mutex<Receiver<()>>,
+        events: Sender<&'static str>,
+        failures: VecDeque<ErrorKind>,
+    }
+
+    impl Drop for ControlledChild {
+        fn drop(&mut self) {
+            let _ = self.events.send("dropped");
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopKiller;
+
+    impl ChildKiller for NoopKiller {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NoopKiller)
+        }
+    }
+    impl ChildKiller for ControlledChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NoopKiller)
+        }
+    }
+    impl Child for ControlledChild {
+        fn try_wait(
+            &mut self,
+        ) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            self.events.send("waiting").unwrap();
+            if let Some(error) = self.failures.pop_front() {
+                return Err(error.into());
+            }
+            self.exit.lock().unwrap().recv().unwrap();
+            self.events.send("reaped").unwrap();
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    fn child(
+        failures: VecDeque<ErrorKind>,
+    ) -> (
+        Box<dyn Child + Send + Sync>,
+        Sender<()>,
+        Receiver<&'static str>,
+    ) {
+        let (exit, receiver) = mpsc::channel();
+        let (events, observed) = mpsc::channel();
+        (
+            Box::new(ControlledChild {
+                exit: Mutex::new(receiver),
+                events,
+                failures,
+            }),
+            exit,
+            observed,
+        )
+    }
+
+    fn event(events: &Receiver<&'static str>, expected: &str) {
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(3)).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn timed_out_child_is_retained_until_exit_without_blocking_sibling_reap() {
+        let (child, exit, events) = child(VecDeque::new());
+        let started = Instant::now();
+        assert!(!reap_child_with(child, Duration::ZERO, spawn_reaper));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        event(&events, "waiting");
+        assert!(events.try_recv().is_err(), "child dropped before exit");
+
+        let (sibling, sibling_exit, sibling_events) =
+            self::child(VecDeque::new());
+        sibling_exit.send(()).unwrap();
+        assert!(!reap_child_with(sibling, Duration::ZERO, spawn_reaper));
+        event(&sibling_events, "waiting");
+        event(&sibling_events, "reaped");
+        event(&sibling_events, "dropped");
+        assert!(events.try_recv().is_err(), "sibling affected pending child");
+
+        exit.send(()).unwrap();
+        event(&events, "reaped");
+        event(&events, "dropped");
+    }
+
+    #[test]
+    fn deferred_reaper_retains_child_across_interrupted_and_repeated_wait_errors()
+     {
+        let (child, exit, events) = child(VecDeque::from([
+            ErrorKind::Interrupted,
+            ErrorKind::Other,
+            ErrorKind::Other,
+        ]));
+        assert!(!reap_child_with(child, Duration::ZERO, spawn_reaper));
+        event(&events, "waiting");
+        event(&events, "waiting");
+        event(&events, "waiting");
+        event(&events, "waiting");
+        assert!(events.try_recv().is_err(), "wait errors dropped the child");
+        exit.send(()).unwrap();
+        event(&events, "reaped");
+        event(&events, "dropped");
+    }
+
+    #[test]
+    fn reaper_spawn_failure_keeps_child_for_synchronous_emergency_wait() {
+        let (child, exit, events) = child(VecDeque::new());
+        let (returned, completion) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = reap_child_with(child, Duration::ZERO, |_| {
+                Err(std::io::Error::other("injected thread limit"))
+            });
+            returned.send(result).unwrap();
+        });
+        event(&events, "waiting");
+        assert!(completion.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        exit.send(()).unwrap();
+        event(&events, "reaped");
+        event(&events, "dropped");
+        assert!(!completion.recv_timeout(Duration::from_secs(3)).unwrap());
+        worker.join().unwrap();
     }
 }
