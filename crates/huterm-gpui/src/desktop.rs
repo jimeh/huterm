@@ -1132,11 +1132,10 @@ impl TerminalView {
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
         };
-        let Some(button) =
-            self.mouse.release_button(button, cfg!(target_os = "macos"))
-        else {
-            return;
-        };
+        let button = self
+            .mouse
+            .release_button(button, cfg!(target_os = "macos"))
+            .unwrap_or(button);
         let (_, cell) =
             self.application_mouse(event.position, event.modifiers, window);
         self.input_queue.boundary();
