@@ -3,8 +3,8 @@
 Huterm is an experimental terminal emulator and multiplexer written in Rust.
 It will start as a native desktop application built with GPUI, but the terminal
 runtime will not belong to the desktop UI. Huterm will own its pseudoterminals,
-terminal state, workspaces, tabs, and pane layouts so other clients can attach to
-the same runtime later.
+terminal state, sessions, workspaces, tabs, and pane layouts so other clients
+can attach to the same runtime later.
 
 The first proof-of-concept implementation is under active validation. It has a
 working PTY runtime, Alacritty-backed snapshots, and macOS/Linux GPUI clients.
@@ -37,9 +37,10 @@ changing PTY ownership, workspaces, client messages, or renderers.
 ## Current desktop
 
 Huterm runs on macOS Apple Silicon and Linux x86_64. Each native window has a
-private backing workspace with ordered tabs, one pane per tab, and independent
-terminal processes. Tabs can appear at the top, bottom, left, or right. Hidden
-tabs keep processing output without preparing viewport snapshots or painting.
+private session and backing workspace with ordered tabs, one pane per tab,
+and independent terminal processes. Tabs can appear at the top, bottom, left,
+or right. Hidden tabs keep processing output without preparing viewport
+snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
 even when the pointer leaves the window; releasing commits the clamped
 insertion position. Escape cancels. Drag near a bar edge to scroll toward
@@ -50,7 +51,7 @@ where more tabs remain. The new-tab button stays visible and follows the last
 tab in vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 
-Closing a tab stops its terminal. Closing a window deletes its private workspace
+Closing a tab stops its terminal. Closing a window deletes its private session
 and stops all its terminals; closing the last window quits. Foreground jobs
 require confirmation before closing. An exited shell remains visible until its
 tab is closed. Window and workspace restoration is not implemented yet.
@@ -63,6 +64,20 @@ split panes, and a TUI client remain follow-up work.
 See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
 boundaries and follow-up milestones, and the
 [initial desktop plan](docs/plans/initial-desktop-poc.md) for the original scope.
+
+## Core ownership
+
+One runtime owns a logical socket scope, ordered sessions, ordered workspaces,
+and ordered tabs. The socket name defaults to `default`; this does not create a
+socket file or listener. Core supports custom names, clearing name overrides,
+ID-targeted selection validation, tab transfers between workspaces, and workspace
+transfers between sessions. Moves preserve pane and terminal identities, live
+processes, and attachments. Names can be duplicated; structural IDs include the
+runtime incarnation so equal numeric IDs in different runtimes cannot alias.
+
+These are core APIs. The desktop still creates a private session per window;
+rename controls, cross-window transfers, session/workspace switching, shared
+views, persistence, and revised close policies remain follow-up work.
 
 ## Mouse interaction
 
@@ -255,8 +270,10 @@ restoration, and shared GUI/TUI access.
 
 ## Terminology
 
-- **Workspace**: a named, runtime-owned collection of ordered tabs, independent
-  of its views. Earlier code and plans call this a session.
+- **Socket**: a named runtime scope containing sessions.
+- **Session**: a runtime-owned collection of ordered workspaces within a socket.
+- **Workspace**: a collection of ordered tabs within a session, independent of
+  its views.
 - **Tab**: an ordered container with one pane layout.
 - **Pane**: a leaf in a tab's split tree.
 - **Terminal**: a PTY, child process, terminal-emulator state, and scrollback.

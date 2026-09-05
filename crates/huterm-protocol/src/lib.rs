@@ -26,8 +26,48 @@ macro_rules! opaque_id {
     };
 }
 
-opaque_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
-opaque_id!(TabId, "Identifies a tab within a workspace.");
+opaque_id!(
+    RuntimeId,
+    "Identifies one runtime incarnation within the current process."
+);
+
+macro_rules! scoped_id {
+    ($name:ident, $docs:literal) => {
+        #[doc = $docs]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name {
+            runtime: RuntimeId,
+            value: u64,
+        }
+        impl $name {
+            /// Creates an unscoped identifier for fixtures or restoration input.
+            /// Structural runtime APIs reject it until assigned the correct scope.
+            #[must_use]
+            pub const fn new(value: u64) -> Self {
+                Self::in_runtime(RuntimeId::new(0), value)
+            }
+            /// Creates an identifier in a runtime incarnation.
+            #[must_use]
+            pub const fn in_runtime(runtime: RuntimeId, value: u64) -> Self {
+                Self { runtime, value }
+            }
+            /// Returns the numeric identity within the runtime.
+            #[must_use]
+            pub const fn get(self) -> u64 {
+                self.value
+            }
+            /// Returns the owning runtime incarnation.
+            #[must_use]
+            pub const fn runtime(self) -> RuntimeId {
+                self.runtime
+            }
+        }
+    };
+}
+
+scoped_id!(SessionId, "Identifies a runtime-owned session.");
+scoped_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
+scoped_id!(TabId, "Identifies a tab within a workspace.");
 opaque_id!(PaneId, "Identifies a pane within a tab.");
 opaque_id!(TerminalId, "Identifies a terminal runtime.");
 

@@ -1,7 +1,61 @@
 # Workspaces, windows, and tabs
 
-Status: first desktop milestone implemented; follow-up scope remains below.
+Status: first desktop milestone and session ownership implemented; follow-up
+scope remains below.
 Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
+
+## Session ownership supersession
+
+Issue [#20](https://github.com/jimeh/huterm/issues/20) adds Session as the parent
+of Workspace. It supersedes this plan's original use of Session as a synonym
+and its private-workspace-only desktop setup. The first-PR sections below
+retain the original milestone design. Current ownership is:
+
+```text
+Logical socket / Mux runtime
+  Session
+    Workspace, ordered within session
+      Tab, ordered within workspace
+        Pane / terminal
+```
+
+Core lists sessions in creation order and keeps workspace/tab order per parent.
+`create_session` and `create_workspace` accept optional names; `rename_session`,
+`rename_workspace`, and `rename_tab` set or clear overrides. `None` clears a name,
+while empty or whitespace-only custom names are rejected. Automatic session and
+workspace names are `Session N` and `Workspace N`, using independent, immutable
+creation ordinals across the runtime. Removal or moves do not renumber them.
+Tab names resolve custom override, current terminal title, then launched program
+basename. Clearing an override uses the current title, including title changes
+that arrived while the override was set. Duplicate display names are allowed.
+
+`select_session`, `select_workspace`, and `select_tab` validate scoped IDs and
+return current ancestors without storing selected state. SessionId, WorkspaceId,
+and TabId contain a RuntimeId plus numeric identity. Mux rejects foreign scope
+on mutations and selection validation, even when numeric IDs and socket names
+match. Numeric `new` constructors are unscoped restoration/fixture input;
+`in_runtime` supplies a scope. `reserve_through` advances numeric allocation
+without decreasing it. The process-local checked runtime counter is sufficient
+for in-process identity; a future wire protocol must define incarnation identity
+across processes and restarts. This prevents accidental aliasing and is not an
+authorization boundary against fabricated IDs.
+
+`move_tab` and `move_workspace` take an explicit source parent, destination
+parent, and optional before-anchor. `None` appends. Same-parent moves reorder;
+a self-anchor is a no-op. A missing, stale, foreign, or wrong-parent target
+rejects the whole operation before membership changes. Moves retain IDs,
+contents, PTYs, attachments, and empty parents. Explicit close controls process
+lifetime. `close_session` attempts cleanup for all its terminals while preserving
+siblings. Spawn/close waits run behind the existing background structural owner.
+
+The default logical socket name is `default`; core creates no IPC endpoint.
+Desktop windows create a private session and workspace, rolling both back if
+initial creation fails. Window close and orphaned spawn cleanup delete that
+window's initial private session. Tab records cached in GPUI are initial
+snapshots; title resolution uses the existing live title cache without locking
+Mux during rendering. Core rename propagation and UI, shared views, session and
+workspace switching, drag transfers, persistence, and revised close policies
+remain deferred to the roadmap follow-ups.
 
 ## Product direction
 
@@ -21,10 +75,13 @@ scroll positions, selection, and tab-bar placement. Each view remembers its
 navigation state per workspace. Shared tab or pane mutations affect all views;
 navigation affects only the initiating view.
 
-Use Workspace in both product language and the core model. WorkspaceId replaces
-the earlier SessionId. Historical plans retain their original terminology.
+The original milestone used WorkspaceId in place of an earlier SessionId.
+Session now names the distinct parent of Workspace, as specified above.
 
-## First PR: multiple windows and tabs
+## Historical first PR: multiple windows and tabs
+
+This section records the original milestone. Its private-workspace creation and
+close rules are superseded by the private-session ownership described above.
 
 Deliver independent native windows with working tabs on macOS and Linux. Each
 window initially attaches to a fresh workspace; workspace switching and shared
