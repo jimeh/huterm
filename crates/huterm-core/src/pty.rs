@@ -90,6 +90,10 @@ impl Drop for PtyProcess {
             record_foreground_group(master.as_ref(), &mut groups);
         }
         terminate_child(child.as_mut(), killer.as_mut(), &groups);
+        drop(self.reader.take());
+        drop(self.writer.take());
+        drop(self.master.take());
+        let _ = reap_child(child.as_mut());
     }
 }
 
@@ -272,7 +276,7 @@ pub(crate) fn terminate_child(
     _killer: &mut dyn ChildKiller,
     groups: &ProcessGroups,
 ) -> bool {
-    let child_running = matches!(child.try_wait(), Ok(None));
+    let child_running = !matches!(child.try_wait(), Ok(Some(_)));
 
     #[cfg(unix)]
     {
@@ -341,7 +345,7 @@ fn poll_termination(
 
     let deadline = Instant::now() + timeout;
     loop {
-        let child_done = !matches!(child.try_wait(), Ok(None));
+        let child_done = matches!(child.try_wait(), Ok(Some(_)));
         let groups_done = groups.iter().all(|group| {
             matches!(killpg(Pid::from_raw(*group), None), Err(Errno::ESRCH))
         });
@@ -355,13 +359,19 @@ fn poll_termination(
     }
 }
 
-#[cfg(not(unix))]
+// The final master descriptor can deliver the hangup that actually exits a
+// child. Reap after I/O workers have released their descriptor clones as well.
+pub(crate) fn reap_child(child: &mut dyn Child) -> bool {
+    poll_child_exit(child, KILL_WAIT_TIMEOUT)
+}
+
 fn poll_child_exit(child: &mut dyn Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(_)) => return true,
             Ok(None) => thread::sleep(POLL_INTERVAL),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return false,
         }
     }

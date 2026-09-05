@@ -14,13 +14,11 @@ use gpui::{
     WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::*,
     px, size,
 };
-use huterm_core::{
-    Mux, RuntimeClient, RuntimeError, TerminalOwner, TerminalRuntime,
-};
+use huterm_core::{Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
-    BufferPoint, BufferRange, CellSize, GridSize, Modifiers, PaneId, SessionId,
-    TabId, TerminalCommand, TerminalEvent, TerminalId, TerminalInput,
-    TerminalKey, TerminalSnapshot,
+    BufferPoint, BufferRange, CellSize, GridSize, Modifiers, TabId,
+    TerminalCommand, TerminalEvent, TerminalInput, TerminalKey,
+    TerminalSnapshot,
 };
 
 use crate::APP_ID;
@@ -42,6 +40,21 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 actions!(
     huterm,
     [
+        NewWindow,
+        NewTab,
+        CloseTab,
+        CloseWindow,
+        NextTab,
+        PreviousTab,
+        Tab1,
+        Tab2,
+        Tab3,
+        Tab4,
+        Tab5,
+        Tab6,
+        Tab7,
+        Tab8,
+        Tab9,
         About,
         Copy,
         Hide,
@@ -60,256 +73,10 @@ actions!(
     ]
 );
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "desktop startup binds the runtime and one-window application lifetime"
-)]
+mod windows;
+
 pub(crate) fn run() -> anyhow::Result<()> {
-    let loaded = config::load();
-    if let Some(error) = &loaded.error {
-        eprintln!("Huterm configuration error: {error}");
-    }
-    let config_path = loaded.path;
-    let config = loaded.config;
-    let config_error = loaded.error;
-    let runtime_owner = Arc::new(Mutex::new(None));
-    let startup_runtime_owner = Arc::clone(&runtime_owner);
-    let app_runtime_owner = Arc::clone(&runtime_owner);
-    let startup_error = Arc::new(Mutex::new(None));
-    let app_startup_error = Arc::clone(&startup_error);
-
-    Application::new().run(move |cx: &mut App| {
-        install_bindings(cx);
-        install_menus(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_action(|_: &Hide, cx| cx.hide());
-        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
-        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-        cx.on_app_quit(move |_| {
-            if let Err(error) = shutdown_runtime(&app_runtime_owner) {
-                eprintln!("failed to stop the terminal runtime: {error}");
-            }
-            async {}
-        })
-        .detach();
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-
-        let (font_family, metrics) = match resolve_metrics(&config, cx) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                *app_startup_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(error);
-                cx.quit();
-                return;
-            }
-        };
-        let command = match shell_command(metrics) {
-            Ok(command) => command,
-            Err(error) => {
-                *app_startup_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(error);
-                cx.quit();
-                return;
-            }
-        };
-        let terminal_id = TerminalId::new(1);
-        let runtime = match TerminalRuntime::spawn(terminal_id, &command) {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                *app_startup_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(error.into());
-                cx.quit();
-                return;
-            }
-        };
-        let client = runtime.client();
-        *startup_runtime_owner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runtime);
-        let mut mux = Mux::default();
-        if let Err(error) = mux.insert(
-            terminal_id,
-            TerminalOwner {
-                session_id: SessionId::new(1),
-                tab_id: TabId::new(1),
-                pane_id: PaneId::new(1),
-            },
-        ) {
-            *app_startup_error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(error.into());
-            cx.quit();
-            return;
-        }
-
-        let bounds = Bounds::centered(
-            None,
-            size(
-                metrics.cell_width * f32::from(INITIAL_COLUMNS)
-                    + px(config.window.padding_x * 2.0),
-                metrics.cell_height * f32::from(INITIAL_ROWS)
-                    + px(config.window.padding_y * 2.0)
-                    + titlebar_inset(cfg!(target_os = "macos"), false),
-            ),
-            cx,
-        );
-        let theme = config.theme.clone();
-        let window = match cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Huterm".into()),
-                    appears_transparent: cfg!(target_os = "macos"),
-                    ..TitlebarOptions::default()
-                }),
-                app_id: Some(APP_ID.into()),
-                ..WindowOptions::default()
-            },
-            move |window, cx| {
-                let scaled_metrics = metrics.at_scale(window.scale_factor());
-                if scaled_metrics != metrics {
-                    window.resize(size(
-                        scaled_metrics.cell_width * f32::from(INITIAL_COLUMNS)
-                            + px(config.window.padding_x * 2.0),
-                        scaled_metrics.cell_height * f32::from(INITIAL_ROWS)
-                            + px(config.window.padding_y * 2.0)
-                            + titlebar_inset(cfg!(target_os = "macos"), false),
-                    ));
-                }
-                let metrics = scaled_metrics;
-                let focus = cx.focus_handle();
-                let view = cx.new(|cx| {
-                    let focus_subscription = cx.on_focus(
-                        &focus,
-                        window,
-                        |view: &mut TerminalView, _, cx| {
-                            if view.enqueue_input(TerminalInput::Focus(true)) {
-                                cx.notify();
-                            }
-                        },
-                    );
-                    let blur_subscription = cx.on_blur(
-                        &focus,
-                        window,
-                        |view: &mut TerminalView, _, cx| {
-                            if view.enqueue_input(TerminalInput::Focus(false)) {
-                                cx.notify();
-                            }
-                        },
-                    );
-                    let mut view = TerminalView {
-                        mux,
-                        client,
-                        pending_inputs: VecDeque::new(),
-                        pending_input_bytes: 0,
-                        pending_resize: None,
-                        snapshot: None,
-                        renderer: Rc::new(RefCell::new(TerminalRenderer::new(
-                            font_family.clone(),
-                            theme.clone(),
-                            metrics,
-                        ))),
-                        focus,
-                        _focus_subscriptions: vec![
-                            focus_subscription,
-                            blur_subscription,
-                        ],
-                        scroll: ScrollController::default(),
-                        last_grid_size: GridSize::clamped(
-                            INITIAL_COLUMNS,
-                            INITIAL_ROWS,
-                        ),
-                        metrics,
-                        font_family,
-                        last_cell_size: None,
-                        reload_task: None,
-                        font_size: metrics.font_size,
-                        window_config: config.window,
-                        theme,
-                        config_path,
-                        status: config_error,
-                        selection: None,
-                        selected_text: None,
-                        selecting: false,
-                        scrollbar_dragging: false,
-                        scrollbar_drag_offset: px(0.0),
-                        scrollbar_hovering: false,
-                        scrollbar_visibility: IndicatorVisibility::default(),
-                        scrollbar_expansion: ScrollbarExpansion::default(),
-                        resize_visibility: IndicatorVisibility::default(),
-                        last_viewport: None,
-                        selection_edge_direction: 0,
-                        scroll_benchmark: ScrollBenchmark::from_environment(),
-                        snapshot_sequence: 0,
-                    };
-                    view.start_initial_snapshot(cx);
-                    TerminalView::start_event_pump(cx);
-                    view
-                });
-                view.read(cx).focus.focus(window);
-                view
-            },
-        ) {
-            Ok(window) => window,
-            Err(error) => {
-                *app_startup_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(anyhow::anyhow!(
-                        "failed to open the Huterm window: {error}"
-                    ));
-                cx.quit();
-                return;
-            }
-        };
-        let view = match window.update(cx, |_view, _, cx| cx.entity()) {
-            Ok(view) => view,
-            Err(error) => {
-                *app_startup_error
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(anyhow::anyhow!(
-                        "failed to initialize the Huterm window: {error}"
-                    ));
-                cx.quit();
-                return;
-            }
-        };
-        cx.observe_keystrokes(move |event, _, cx| {
-            if event.action.is_some() || reserved_keystroke(&event.keystroke) {
-                return;
-            }
-            view.update(cx, |view, cx| {
-                if view.handle_keystroke(&event.keystroke) {
-                    cx.notify();
-                }
-                view.start_snapshot_if_needed(cx);
-            });
-        })
-        .detach();
-        cx.activate(true);
-    });
-
-    if let Some(error) = startup_error
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    {
-        return Err(error);
-    }
-    shutdown_runtime(&runtime_owner).map_err(Into::into)
+    windows::run()
 }
 
 fn install_bindings(cx: &mut App) {
@@ -338,6 +105,7 @@ fn install_bindings(cx: &mut App) {
             reload_binding(false),
         ]);
     }
+    bindings.extend(windows::tab_bindings(cfg!(target_os = "macos")));
     cx.bind_keys(bindings);
 }
 
@@ -371,6 +139,15 @@ fn install_menus(cx: &mut App) {
             ],
         },
         Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("New Tab", NewTab),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
+            ],
+        },
+        Menu {
             name: "Edit".into(),
             items: vec![
                 MenuItem::action("Copy", Copy),
@@ -392,6 +169,8 @@ fn install_menus(cx: &mut App) {
             items: vec![
                 MenuItem::action("Minimize", Minimize),
                 MenuItem::action("Zoom", Zoom),
+                MenuItem::action("Next Tab", NextTab),
+                MenuItem::action("Previous Tab", PreviousTab),
             ],
         },
     ]);
@@ -422,16 +201,6 @@ fn resolve_metrics(
     Ok((family, metrics))
 }
 
-fn shutdown_runtime(
-    runtime_owner: &Mutex<Option<TerminalRuntime>>,
-) -> Result<(), RuntimeError> {
-    let runtime = runtime_owner
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
-    runtime.map_or(Ok(()), TerminalRuntime::shutdown)
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Selection {
     generation: u64,
@@ -447,9 +216,15 @@ impl Selection {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "terminal visibility, lifecycle, and pointer states are independent"
+)]
 struct TerminalView {
-    mux: Mux,
     client: RuntimeClient,
+    title: String,
+    exited: bool,
+    visible: bool,
     pending_inputs: VecDeque<TerminalInput>,
     pending_input_bytes: usize,
     pending_resize: Option<(GridSize, CellSize)>,
@@ -460,7 +235,6 @@ struct TerminalView {
     scroll: ScrollController,
     last_grid_size: GridSize,
     last_cell_size: Option<CellSize>,
-    reload_task: Option<gpui::Task<()>>,
     metrics: GridMetrics,
     font_family: String,
     font_size: Pixels,
@@ -483,26 +257,70 @@ struct TerminalView {
     snapshot_sequence: u64,
 }
 
-impl Drop for TerminalView {
-    fn drop(&mut self) {
-        let _ = self.mux.close(self.client.terminal_id());
-        let _ = self.client.close();
-    }
-}
-
 impl TerminalView {
-    fn start_event_pump(cx: &mut Context<'_, Self>) {
-        cx.spawn(async move |view, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if view.update(cx, TerminalView::refresh).is_err() {
-                    break;
+    fn new(
+        client: RuntimeClient,
+        config: &Config,
+        config_path: PathBuf,
+        font_family: String,
+        metrics: GridMetrics,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        let theme = config.theme.clone();
+        let focus_subscription =
+            cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
+                if view.enqueue_input(TerminalInput::Focus(true)) {
+                    cx.notify();
                 }
-            }
-        })
-        .detach();
+            });
+        let blur_subscription =
+            cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
+                if view.enqueue_input(TerminalInput::Focus(false)) {
+                    cx.notify();
+                }
+            });
+        TerminalView {
+            client,
+            pending_inputs: VecDeque::new(),
+            pending_input_bytes: 0,
+            pending_resize: None,
+            snapshot: None,
+            renderer: Rc::new(RefCell::new(TerminalRenderer::new(
+                font_family.clone(),
+                theme.clone(),
+                metrics,
+            ))),
+            focus,
+            _focus_subscriptions: vec![focus_subscription, blur_subscription],
+            scroll: ScrollController::default(),
+            last_grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
+            metrics,
+            font_family,
+            last_cell_size: None,
+            font_size: metrics.font_size,
+            window_config: config.window,
+            theme,
+            config_path,
+            status: None,
+            title: String::new(),
+            exited: false,
+            visible: false,
+            selection: None,
+            selected_text: None,
+            selecting: false,
+            scrollbar_dragging: false,
+            scrollbar_drag_offset: px(0.0),
+            scrollbar_hovering: false,
+            scrollbar_visibility: IndicatorVisibility::default(),
+            scrollbar_expansion: ScrollbarExpansion::default(),
+            resize_visibility: IndicatorVisibility::default(),
+            last_viewport: None,
+            selection_edge_direction: 0,
+            scroll_benchmark: ScrollBenchmark::from_environment(),
+            snapshot_sequence: 0,
+        }
     }
 
     fn start_initial_snapshot(&mut self, cx: &mut Context<'_, Self>) {
@@ -511,7 +329,9 @@ impl TerminalView {
     }
 
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(viewport) = self.scroll.begin_request() else {
+        let Some(viewport) =
+            begin_visible_snapshot(&mut self.scroll, self.visible)
+        else {
             return;
         };
         let request = match self.client.request_snapshot(viewport) {
@@ -613,7 +433,7 @@ impl TerminalView {
             self.scrollbar_visibility.opacity > 0.0,
             self.scrollbar_hovering || self.scrollbar_dragging,
         );
-        loop {
+        for _ in 0..64 {
             match self.client.try_recv_event() {
                 Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
                     if self.selection.is_some_and(|selection| {
@@ -625,7 +445,12 @@ impl TerminalView {
                     self.scroll.invalidate();
                 }
                 Ok(Some(TerminalEvent::Ready(_))) => self.scroll.invalidate(),
+                Ok(Some(TerminalEvent::TitleChanged { title, .. })) => {
+                    self.title = title;
+                    changed = true;
+                }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
+                    self.exited = true;
                     changed |= self.set_status(status.code.map_or_else(
                         || "Process exited".into(),
                         |code| format!("Process exited with status {code}"),
@@ -787,55 +612,6 @@ impl TerminalView {
             }
         }
     }
-    fn reload_configuration(
-        &mut self,
-        _: &ReloadConfiguration,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        if self.reload_task.is_some() {
-            return;
-        }
-        let config_path = self.config_path.clone();
-        let task = cx
-            .background_executor()
-            .spawn(async move { config::reload(&config_path) });
-        self.reload_task = Some(cx.spawn(async move |view, cx| {
-            let result = task.await;
-            let _ = view.update(cx, |view, cx| {
-                view.reload_task = None;
-                let result = result.and_then(|config| {
-                    resolve_metrics(&config, cx)
-                        .map(|(family, metrics)| (config, family, metrics))
-                        .map_err(|error| error.to_string())
-                });
-                match result {
-                    Ok((config, family, metrics)) => {
-                        let metrics =
-                            metrics.at_scale(view.metrics.scale_factor);
-                        view.renderer.borrow_mut().reconfigure(
-                            family.clone(),
-                            config.theme.clone(),
-                            metrics,
-                        );
-                        view.font_family = family;
-                        view.font_size = metrics.font_size;
-                        view.metrics = metrics;
-                        view.window_config = config.window;
-                        view.theme = config.theme;
-                        view.status = None;
-                    }
-                    Err(error) => {
-                        view.set_status(format!(
-                            "Config reload failed: {error}"
-                        ));
-                    }
-                }
-                cx.notify();
-            });
-        }));
-    }
     #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
     fn about(
         &mut self,
@@ -895,7 +671,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         self.focus.focus(window);
-        let position = event.position - point(px(0.0), terminal_top(window));
+        let position = event.position - self.content_bounds(window).origin;
         if let Some(geometry) = self.scrollbar_at(position, window) {
             if geometry.contains(f32::from(position.y)) {
                 self.scrollbar_dragging = true;
@@ -936,7 +712,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let position = event.position - point(px(0.0), terminal_top(window));
+        let position = event.position - self.content_bounds(window).origin;
         let was_hovering = self.scrollbar_hovering;
         self.scrollbar_hovering = self.scrollbar_at(position, window).is_some();
         if self.scrollbar_hovering {
@@ -1060,7 +836,7 @@ impl TerminalView {
 
     fn scrollbar_geometry(&self, window: &Window) -> Option<ScrollbarGeometry> {
         ScrollbarGeometry::new(
-            f32::from(terminal_viewport(window).height),
+            f32::from(self.viewport(window).height),
             self.last_grid_size.rows,
             self.scroll.history(),
             self.scroll.displayed(),
@@ -1079,7 +855,7 @@ impl TerminalView {
         let geometry = self.scrollbar_geometry(window)?;
         scrollbar_hit_test(
             position,
-            terminal_viewport(window).width,
+            self.viewport(window).width,
             geometry,
             self.scrollbar_visibility.opacity,
             self.scrollbar_expanded(),
@@ -1102,9 +878,21 @@ impl TerminalView {
             .set_selection(self.selection.and_then(Selection::range));
     }
 
+    fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
+        windows::ChromeLayout::new(
+            window.viewport_size(),
+            terminal_top(window),
+            self.window_config.tab_position,
+        )
+        .terminal
+    }
+    fn viewport(&self, window: &Window) -> gpui::Size<Pixels> {
+        self.content_bounds(window).size
+    }
+
     fn terminal_layout(&self, window: &Window) -> TerminalLayout {
         TerminalLayout::new(
-            terminal_viewport(window),
+            self.viewport(window),
             size(self.metrics.cell_width, self.metrics.cell_height),
             self.window_config,
         )
@@ -1120,7 +908,7 @@ impl TerminalView {
                 metrics,
             );
         }
-        let viewport = terminal_viewport(window);
+        let viewport = self.viewport(window);
         if self
             .last_viewport
             .replace(viewport)
@@ -1363,7 +1151,6 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::settings))
-            .on_action(cx.listener(Self::reload_configuration))
             .on_action(cx.listener(Self::toggle_fullscreen))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom))
@@ -1376,7 +1163,7 @@ impl Render for TerminalView {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
             .relative()
             .w_full()
-            .h(terminal_viewport(window).height)
+            .h(self.viewport(window).height)
             .bg(color(self.theme.background))
             .text_size(self.font_size)
             .font_family(self.font_family.clone())
@@ -1487,7 +1274,7 @@ impl Render for TerminalView {
                     ),
             );
         }
-        let root = root.when_some(status, |view, status| {
+        root.when_some(status, |view, status| {
             view.child(
                 div()
                     .absolute()
@@ -1500,27 +1287,18 @@ impl Render for TerminalView {
                     .text_color(color(self.theme.foreground))
                     .child(status),
             )
-        });
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(color(self.theme.background))
-            .when(terminal_top(window) > px(0.0), |view| {
-                view.child(
-                    div()
-                        .h(terminal_top(window))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .pl(px(84.0))
-                        .text_size(px(13.0))
-                        .text_color(color(self.theme.foreground))
-                        .window_control_area(WindowControlArea::Drag)
-                        .child("Huterm"),
-                )
-            })
-            .child(root)
+        })
+    }
+}
+
+fn begin_visible_snapshot(
+    scroll: &mut ScrollController,
+    visible: bool,
+) -> Option<huterm_protocol::Viewport> {
+    if visible {
+        scroll.begin_request()
+    } else {
+        None
     }
 }
 
@@ -1591,14 +1369,6 @@ fn titlebar_inset(macos: bool, fullscreen: bool) -> Pixels {
 
 fn terminal_top(window: &Window) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), window.is_fullscreen())
-}
-
-fn terminal_viewport(window: &Window) -> gpui::Size<Pixels> {
-    let viewport = window.viewport_size();
-    size(
-        viewport.width,
-        (viewport.height - terminal_top(window)).max(px(0.0)),
-    )
 }
 
 fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
@@ -1688,6 +1458,9 @@ fn reserved_chord_for_platform(
     modifiers: GpuiModifiers,
     key: &str,
 ) -> bool {
+    if tab_chord_for_platform(is_macos, modifiers, key) {
+        return true;
+    }
     if exact_modifiers(modifiers, ModifierChord::Shift) {
         return matches!(key, "pageup" | "pagedown" | "end");
     }
@@ -1705,8 +1478,35 @@ fn reserved_chord_for_platform(
                 && key == "<")
     }
 }
+fn tab_chord_for_platform(
+    macos: bool,
+    modifiers: GpuiModifiers,
+    key: &str,
+) -> bool {
+    let digit =
+        matches!(key, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9");
+    if key == "tab"
+        && (exact_modifiers(modifiers, ModifierChord::Control)
+            || exact_modifiers(modifiers, ModifierChord::ControlShift))
+    {
+        return true;
+    }
+    if macos {
+        (exact_modifiers(modifiers, ModifierChord::Command)
+            && (digit || matches!(key, "n" | "t" | "w")))
+            || (exact_modifiers(modifiers, ModifierChord::CommandShift)
+                && key == "w")
+    } else {
+        (exact_modifiers(modifiers, ModifierChord::ControlShift)
+            && matches!(key, "n" | "t" | "w" | "q"))
+            || (exact_modifiers(modifiers, ModifierChord::Alt) && digit)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ModifierChord {
+    Alt,
+    CommandShift,
     Shift,
     Command,
     CommandAlt,
@@ -1717,6 +1517,8 @@ enum ModifierChord {
 fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
     let matches = match chord {
         ModifierChord::Shift => modifiers.shift,
+        ModifierChord::Alt => modifiers.alt,
+        ModifierChord::CommandShift => modifiers.platform && modifiers.shift,
         ModifierChord::Command => modifiers.platform,
         ModifierChord::Control => modifiers.control,
         ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
@@ -1732,9 +1534,11 @@ fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
         + usize::from(modifiers.function);
     let expected_count = match chord {
         ModifierChord::Shift
+        | ModifierChord::Alt
         | ModifierChord::Command
         | ModifierChord::Control => 1,
         ModifierChord::CommandAlt
+        | ModifierChord::CommandShift
         | ModifierChord::CommandControl
         | ModifierChord::ControlShift => 2,
     };

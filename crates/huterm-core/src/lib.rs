@@ -8,7 +8,7 @@ mod mux;
 mod pty;
 mod terminal;
 
-pub use mux::{Mux, MuxError, TerminalOwner};
+pub use mux::{Mux, MuxError, OpenedTab, Tab, Workspace};
 pub use terminal::{
     RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
     SnapshotRequest, TerminalRuntime,

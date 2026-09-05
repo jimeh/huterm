@@ -1,7 +1,7 @@
 # Workspaces, windows, and tabs
 
-Status: agreed product direction and first PR scope. No implementation is
-claimed by this document. Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
+Status: first desktop milestone implemented; follow-up scope remains below.
+Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
 
 ## Product direction
 
@@ -21,9 +21,8 @@ scroll positions, selection, and tab-bar placement. Each view remembers its
 navigation state per workspace. Shared tab or pane mutations affect all views;
 navigation affects only the initiating view.
 
-Use Workspace in both product language and the core model. Existing SessionId
-and session terminology describe the earlier proof of concept and should migrate
-with the ownership implementation. Historical plans need not be rewritten.
+Use Workspace in both product language and the core model. WorkspaceId replaces
+the earlier SessionId. Historical plans retain their original terminology.
 
 ## First PR: multiple windows and tabs
 

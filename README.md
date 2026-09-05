@@ -32,24 +32,28 @@ Huterm is based on four decisions:
 The terminal engine is replaceable in principle, but Huterm will not build a
 generic backend framework before a second engine exists. A future
 `libghostty-vt` experiment should replace the private emulator module without
-changing PTY ownership, sessions, client messages, or renderers.
+changing PTY ownership, workspaces, client messages, or renderers.
 
-## Initial build target
+## Current desktop
 
-The first milestone targets macOS on Apple Silicon, with Linux x86_64 as an
-additional development platform. It opens one GPUI window containing one tab,
-one pane, and one interactive local shell. Huterm owns the PTY and Alacritty
-terminal state, then renders a Huterm-defined snapshot in GPUI.
+Huterm runs on macOS Apple Silicon and Linux x86_64. Each native window has a
+private backing workspace with ordered tabs, one pane per tab, and independent
+terminal processes. Tabs can appear at the top, bottom, left, or right. Hidden
+tabs keep processing output without preparing viewport snapshots or painting.
 
-The milestone includes keyboard input, paste, selection and copy, fast
-client-owned scrollback with a position indicator, configurable font and theme,
-terminal resize, native fullscreen, alternate-screen applications, a macOS menu
-bar and Apple Silicon application bundle, and clean child-process shutdown. It
-does not include a background server, local IPC, multiple tabs, split panes, or
-a TUI client.
+Closing a tab stops its terminal. Closing a window deletes its private workspace
+and stops all its terminals; closing the last window quits. Foreground jobs
+require confirmation before closing. An exited shell remains visible until its
+tab is closed. Window and workspace restoration is not implemented yet.
 
-See the [initial desktop proof-of-concept plan](docs/plans/initial-desktop-poc.md)
-for the implementation sequence and acceptance criteria.
+Keyboard input, paste, selection and copy, client-owned scrollback, configurable
+fonts and themes, native fullscreen, and alternate-screen applications are
+supported. A background server, local IPC, workspace switching, split panes,
+and a TUI client remain follow-up work.
+
+See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
+boundaries and follow-up milestones, and the
+[initial desktop plan](docs/plans/initial-desktop-poc.md) for the original scope.
 
 ## Development
 
@@ -78,6 +82,7 @@ Terminal padding defaults to 4 logical points on each side. Add or adjust the
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
+tab_position = "top" # top, bottom, left, or right
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
@@ -143,7 +148,9 @@ macOS / Ctrl+Shift+, on Linux with a US keyboard layout. GPUI represents these
 as Cmd+< / Ctrl+<; on other layouts use the corresponding less-than chord.
 It rereads the config and selected theme chain
 and applies font, padding, and colors without restarting the shell or losing
-scrollback. The window stays the same size; its grid is recalculated.
+scrollback. All open windows and retained tabs receive the reload. Windows keep
+their size;
+visible grids are recalculated and hidden grids resize when selected.
 Invalid configuration leaves the running settings intact and displays an error.
 An unreadable or missing config file does the same. To reset to defaults,
 empty the config file and reload it.
@@ -194,8 +201,7 @@ restoration, and shared GUI/TUI access.
 - Native fullscreen on supported platforms.
 - Borderless non-native fullscreen on macOS without creating a separate
   Mission Control space.
-- Multiple windows, drag-and-drop tab management, notifications, and restored
-  window layouts.
+- Drag-and-drop tab management, notifications, and restored window layouts.
 - Accessibility and platform-native input behavior.
 
 ### Multiplexer
@@ -206,7 +212,7 @@ restoration, and shared GUI/TUI access.
   remains alive.
 - Multiple simultaneous clients with explicit terminal-size policy.
 - A text-based client that can run inside another terminal.
-- A command-line client for session and pane automation.
+- A command-line client for workspace and pane automation.
 - Versioned local IPC, followed by optional authenticated remote attachment if
   the local design proves useful.
 

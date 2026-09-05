@@ -181,6 +181,18 @@ impl RuntimeClient {
         Ok(event)
     }
 
+    /// Checks whether the PTY has a foreground job other than its shell.
+    ///
+    /// # Errors
+    /// Returns an error if the terminal stops before answering.
+    pub async fn has_foreground_job(&self) -> Result<bool, RuntimeError> {
+        let (reply, receiver) = async_channel::bounded(1);
+        self.controls
+            .send(RuntimeControl::ForegroundJob(reply))
+            .map_err(|_| RuntimeError::Stopped)?;
+        receiver.recv().await.map_err(|_| RuntimeError::Stopped)
+    }
+
     /// Requests orderly terminal shutdown.
     ///
     /// # Errors
@@ -300,7 +312,7 @@ impl SelectionRequest {
 #[derive(Debug)]
 pub struct TerminalRuntime {
     client: RuntimeClient,
-    join: Option<JoinHandle<()>>,
+    join: Option<JoinHandle<Result<(), RuntimeError>>>,
 }
 
 impl TerminalRuntime {
@@ -342,7 +354,7 @@ impl TerminalRuntime {
                     runtime_pending,
                     runtime_closing,
                     runtime_input_bytes,
-                );
+                )
             })
             .map_err(|error| RuntimeError::Thread(error.to_string()))?;
 
@@ -371,7 +383,7 @@ impl TerminalRuntime {
     ///
     /// # Errors
     ///
-    /// Returns an error if the runtime thread panicked.
+    /// Returns an error if the runtime thread failed or its child did not exit.
     pub fn shutdown(mut self) -> Result<(), RuntimeError> {
         let _ = self.client.close();
         self.join_runtime()
@@ -381,7 +393,7 @@ impl TerminalRuntime {
         let Some(join) = self.join.take() else {
             return Ok(());
         };
-        join.join().map_err(|_| RuntimeError::ThreadPanic)
+        join.join().map_err(|_| RuntimeError::ThreadPanic)?
     }
 }
 
@@ -404,6 +416,9 @@ pub enum RuntimeError {
     /// A worker thread could not be created.
     #[error("failed to create terminal worker: {0}")]
     Thread(String),
+    /// The child did not exit within the bounded cleanup interval.
+    #[error("terminal child did not exit after shutdown")]
+    ShutdownTimedOut,
     /// A runtime worker panicked.
     #[error("terminal runtime worker panicked")]
     ThreadPanic,
@@ -439,6 +454,7 @@ enum RuntimeMessage {
 
 #[derive(Debug)]
 enum RuntimeControl {
+    ForegroundJob(async_channel::Sender<bool>),
     Snapshot {
         viewport: Viewport,
         reply: async_channel::Sender<SnapshotReply>,
@@ -475,7 +491,7 @@ fn run_terminal(
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
-) {
+) -> Result<(), RuntimeError> {
     let parts = match process.into_parts() {
         Ok(parts) => parts,
         Err(error) => {
@@ -483,7 +499,7 @@ fn run_terminal(
                 terminal_id,
                 message: error.to_string(),
             });
-            return;
+            return Err(error);
         }
     };
     let crate::pty::PtyParts {
@@ -513,7 +529,10 @@ fn run_terminal(
                 killer.as_mut(),
                 &process_groups,
             );
-            return;
+            drop(writer);
+            drop(master);
+            let _ = pty::reap_child(child.as_mut());
+            return Err(error);
         }
     };
     let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
@@ -537,7 +556,8 @@ fn run_terminal(
             drop(master);
             drop(messages);
             join_worker(reader_join);
-            return;
+            let _ = pty::reap_child(child.as_mut());
+            return Err(error);
         }
     };
     drop(message_sender);
@@ -599,6 +619,17 @@ fn run_terminal(
                 RuntimeControl::WorkerFailed(message) => {
                     report_failure(&events, terminal_id, message);
                     closing.store(true, Ordering::Release);
+                }
+                RuntimeControl::ForegroundJob(reply) => {
+                    let shell = child
+                        .process_id()
+                        .and_then(|id| i32::try_from(id).ok());
+                    let foreground = master.process_group_leader();
+                    let busy = !child_exited
+                        && foreground.zip(shell).is_none_or(
+                            |(foreground, shell)| foreground != shell,
+                        );
+                    let _ = reply.try_send(busy);
                 }
                 RuntimeControl::Wake => {}
             }
@@ -699,6 +730,16 @@ fn run_terminal(
     drop(messages);
     join_worker(reader_join);
     join_worker(writer_join);
+    if pty::reap_child(child.as_mut()) {
+        Ok(())
+    } else {
+        report_failure(
+            &events,
+            terminal_id,
+            RuntimeError::ShutdownTimedOut.to_string(),
+        );
+        Err(RuntimeError::ShutdownTimedOut)
+    }
 }
 
 fn spawn_reader(
@@ -964,6 +1005,53 @@ mod tests {
             request.recv_blocking_with_timeout(Duration::from_secs(1)),
             Err(RuntimeError::Stopped)
         ));
+    }
+
+    fn foreground_job(client: &RuntimeClient) -> bool {
+        let mut future = std::pin::pin!(client.has_foreground_job());
+        let waker = std::task::Waker::noop();
+        let mut context = std::task::Context::from_waker(waker);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let std::task::Poll::Ready(result) =
+                std::future::Future::poll(future.as_mut(), &mut context)
+            {
+                return result.unwrap();
+            }
+            assert!(Instant::now() < deadline, "foreground query timed out");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn close_confirmation_distinguishes_idle_shell_foreground_job_and_exit() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(31),
+            &command(
+                "printf IDLE; read value; set -m; sleep 30 & fg; printf DONE",
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "IDLE");
+        assert!(!foreground_job(&client), "shell waiting for input is idle");
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !foreground_job(&client) {
+            assert!(Instant::now() < deadline, "foreground job not detected");
+            thread::sleep(Duration::from_millis(10));
+        }
+        client
+            .send_input(TerminalInput::Text("\x03".into()))
+            .unwrap();
+        wait_for_exit(&client);
+        assert!(
+            !foreground_job(&client),
+            "exited child must not need confirmation"
+        );
+        runtime.shutdown().unwrap();
     }
 
     fn command(script: &str) -> TerminalCommand {

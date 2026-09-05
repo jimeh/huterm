@@ -10,8 +10,8 @@ architecture and acceptance criteria.
 
 Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
 [the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
-direction and proposed next milestone. Workspace replaces session in the new
-model; existing code still uses session names. Windows attach independently to
+direction and follow-up milestones. Core uses WorkspaceId and owns ordered
+workspace/tab records and terminal runtimes. Windows attach independently to
 workspaces. Keep view destruction and detachment separate from explicit close.
 
 ## Boundaries that must hold
@@ -151,3 +151,21 @@ them as elapsed time, not per-thread CPU time.
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not
 allowed.
+
+Desktop structural commands serialize through the Mux mutex on background
+workers. Never acquire it from rendering or input callbacks. Terminal clients
+send directly to their own runtime, so sibling input and snapshots continue
+while another workspace spawns or closes. TerminalView destruction only detaches;
+window commands explicitly delete their initial private workspace.
+Use one refresh pump per window to drain bounded batches of tab events. Only the
+active tab may begin a snapshot request. Keep ChromeLayout as the shared source
+of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
+GPUI close callbacks must return false while asynchronous checks and cleanup run.
+Carry close intent across pending operations, and defer application quit until
+all pending spawns have published or failed. Foreground checks belong to the PTY
+owner, and confirmation must move focus away from terminal action handlers.
+Reap the child again after closing the master and joining I/O workers. The last
+master descriptor can deliver the hangup that exits the shell; reaping only
+before descriptor closure can leave a zombie. Keep this final wait bounded and
+return a cleanup error if the child remains alive. This was exposed on macOS
+when the execution sandbox rejected process-group signals with EPERM.
