@@ -161,6 +161,21 @@ outside-window delivery remains an acceptance check. Clamp continuation
 coordinates to the grid edge. Clear local held-button state after cancellation
 so a later physical release does not generate another report.
 
+GPUI 0.2.2 on macOS independently maps Control-left to Right on press and
+release, removing both Control and the original button identity. Releasing or
+pressing Control mid-gesture can therefore change the reported button. Match a
+release to its held logical button first; on macOS only, an unmatched Left or
+Right release closes the held opposite Left or Right. Middle and Linux keep
+exact matching. Concurrent physical Right and Control-left gestures can collapse
+into the same logical button; physical identity and release order are then
+unrecoverable. This bounded fallback preserves logical gesture completion but
+cannot reconstruct simultaneous physical gestures. Native macOS verification
+of these sequences remains outstanding.
+
+On focus loss, finalize any local selection through the same text request used
+by mouse-up before stopping drag updates. A later release must not submit a
+second request or leave a highlighted selection without copyable text.
+
 Core interprets each event using the mode when it dequeues that event. While
 reporting is disabled, it emits no mouse bytes, including cleanup releases.
 When the client observes disabled tracking, clear its gesture state and require

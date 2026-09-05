@@ -104,6 +104,24 @@ impl MouseState {
         self.last = position;
     }
 
+    pub(super) fn release_button(
+        &self,
+        button: MouseButton,
+        macos: bool,
+    ) -> Option<MouseButton> {
+        if self.held(button) {
+            return Some(button);
+        }
+        // GPUI remaps macOS Control-left independently on down and up. It
+        // exposes no physical-button identity for recovering a changed pair.
+        let opposite = match button {
+            MouseButton::Left => MouseButton::Right,
+            MouseButton::Right => MouseButton::Left,
+            MouseButton::Middle => return None,
+        };
+        (macos && self.held(opposite)).then_some(opposite)
+    }
+
     pub(super) fn release(
         &mut self,
         button: MouseButton,
@@ -239,6 +257,120 @@ mod tests {
             ..TerminalModes::default()
         });
         state
+    }
+
+    #[test]
+    fn macos_collapsed_right_presses_emit_one_release_in_either_order() {
+        for releases in [
+            [MouseButton::Left, MouseButton::Right],
+            [MouseButton::Right, MouseButton::Left],
+            [MouseButton::Right, MouseButton::Right],
+        ] {
+            let mut state = state();
+            assert!(state.down(MouseButton::Right, true));
+            state.accepted(MouseButton::Right, MousePosition::default());
+            assert!(!state.down(MouseButton::Right, true));
+            let mut reports = Vec::new();
+            for released in releases {
+                if let Some(button) = state.release_button(released, true)
+                    && let Some(report) = state.release(
+                        button,
+                        MousePosition::default(),
+                        Modifiers::default(),
+                    )
+                {
+                    reports.push(report.action);
+                }
+            }
+            assert_eq!(reports, [MouseAction::Release(MouseButton::Right)]);
+            assert!(state.cancel().is_empty());
+            assert!(state.down(MouseButton::Right, true));
+        }
+        let mut local = state();
+        assert!(!local.down(MouseButton::Left, false));
+        assert_eq!(
+            local.release_button(MouseButton::Right, true),
+            Some(MouseButton::Left)
+        );
+    }
+
+    #[test]
+    fn macos_release_pairs_control_click_across_modifier_changes() {
+        for (pressed, released) in [
+            (MouseButton::Right, MouseButton::Left),
+            (MouseButton::Left, MouseButton::Right),
+        ] {
+            let mut state = state();
+            state.down(pressed, true);
+            state.accepted(pressed, MousePosition::default());
+            assert_eq!(state.release_button(released, false), None);
+            let button = state.release_button(released, true).unwrap();
+            assert_eq!(button, pressed);
+            assert_eq!(
+                state
+                    .release(
+                        button,
+                        MousePosition::default(),
+                        Modifiers::default()
+                    )
+                    .unwrap()
+                    .action,
+                MouseAction::Release(pressed)
+            );
+            assert_eq!(state.release_button(released, true), None);
+            assert!(state.cancel().is_empty());
+            assert!(state.down(pressed, true));
+        }
+    }
+
+    #[test]
+    fn macos_release_preserves_exact_multibutton_ownership_and_consumes_suppression()
+     {
+        let mut state = state();
+        for button in
+            [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        {
+            state.down(button, true);
+            state.accepted(button, MousePosition::default());
+        }
+        assert_eq!(
+            state.release_button(MouseButton::Right, true),
+            Some(MouseButton::Right)
+        );
+        state.release(
+            MouseButton::Right,
+            MousePosition::default(),
+            Modifiers::default(),
+        );
+        assert!(state.held(MouseButton::Left));
+        assert!(state.held(MouseButton::Middle));
+        assert_eq!(state.cancel().len(), 2);
+        let button = state.release_button(MouseButton::Right, true).unwrap();
+        assert_eq!(button, MouseButton::Left);
+        assert!(
+            state
+                .release(button, MousePosition::default(), Modifiers::default())
+                .is_none()
+        );
+        assert_eq!(state.release_button(MouseButton::Right, true), None);
+        assert!(state.held(MouseButton::Middle));
+        state.release(
+            MouseButton::Middle,
+            MousePosition::default(),
+            Modifiers::default(),
+        );
+        state.down(MouseButton::Right, true);
+        assert_eq!(state.release_button(MouseButton::Middle, true), None);
+        assert!(
+            state
+                .release(
+                    state.release_button(MouseButton::Left, true).unwrap(),
+                    MousePosition::default(),
+                    Modifiers::default()
+                )
+                .is_none()
+        );
+        assert!(state.down(MouseButton::Right, true));
     }
 
     #[test]

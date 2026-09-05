@@ -155,3 +155,10 @@ GPUI's X11 backend remaps Shift vertical wheel lines to horizontal-only deltas.
 Restore those deltas to vertical only on the local scroll path on Linux. Leave
 application horizontal wheel reports and macOS deltas unchanged until native
 macOS device evidence justifies normalization there.
+On macOS, GPUI 0.2.2 remaps Control-left independently at press and release,
+clearing Control and discarding the original button identity. Match releases
+to held logical buttons first; an unmatched Left/Right release closes the held
+opposite Left/Right only on macOS. Simultaneous Control-left and physical Right
+can collapse into one logical button, so their physical release order cannot be
+recovered. Do not extend this fallback to Middle or Linux. Finalize local
+selection text on blur as well as release before stopping the drag.

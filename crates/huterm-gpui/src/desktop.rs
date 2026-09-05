@@ -210,7 +210,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         &focus,
                         window,
                         |view: &mut TerminalView, _, cx| {
-                            view.blur_mouse();
+                            view.blur_mouse(cx);
                             if view.enqueue_input(TerminalInput::Focus(false)) {
                                 cx.notify();
                             }
@@ -220,7 +220,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         window,
                         |view: &mut TerminalView, window, cx| {
                             if !window.is_window_active() {
-                                view.blur_mouse();
+                                view.blur_mouse(cx);
                                 cx.notify();
                             }
                         },
@@ -1132,6 +1132,11 @@ impl TerminalView {
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
         };
+        let Some(button) =
+            self.mouse.release_button(button, cfg!(target_os = "macos"))
+        else {
+            return;
+        };
         let (_, cell) =
             self.application_mouse(event.position, event.modifiers, window);
         self.input_queue.boundary();
@@ -1143,7 +1148,7 @@ impl TerminalView {
             self.admit_input(TerminalInput::Mouse(release), true, false);
             cx.notify();
         }
-        if event.button != MouseButton::Left {
+        if button != ProtocolMouseButton::Left {
             return;
         }
         if self.scrollbar_dragging {
@@ -1151,6 +1156,10 @@ impl TerminalView {
             self.activate_scrollbar();
             cx.notify();
         }
+        self.finish_selection(cx);
+    }
+
+    fn finish_selection(&mut self, cx: &mut Context<'_, Self>) {
         self.selection_edge_direction = 0;
         if !self.selecting {
             return;
@@ -1334,9 +1343,9 @@ impl TerminalView {
         }
     }
 
-    fn blur_mouse(&mut self) {
+    fn blur_mouse(&mut self, cx: &mut Context<'_, Self>) {
         self.cancel_mouse();
-        self.selecting = false;
+        self.finish_selection(cx);
         self.scrollbar_dragging = false;
         self.selection_edge_direction = 0;
         self.scroll.reset_wheel();
