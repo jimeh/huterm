@@ -5,6 +5,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod command;
+pub use command::{
+    ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
+    CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
+    catalog, ids, lookup, validate,
+};
+
 macro_rules! opaque_id {
     ($name:ident, $docs:literal) => {
         #[doc = $docs]
