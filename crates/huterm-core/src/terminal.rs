@@ -10,8 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    BufferRange, CellSize, ExitStatus, GridSize, TerminalCommand,
-    TerminalEvent, TerminalId, TerminalInput, TerminalSnapshot, Viewport,
+    BufferRange, CellSize, ExitStatus, GridSize, ScrollCommand,
+    TerminalCommand, TerminalEvent, TerminalId, TerminalInput,
+    TerminalSnapshot,
 };
 use thiserror::Error;
 
@@ -29,6 +30,7 @@ const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
     terminal_id: TerminalId,
+    engine: huterm_protocol::TerminalEngineKind,
     messages: SyncSender<RuntimeMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
@@ -42,6 +44,23 @@ impl RuntimeClient {
     #[must_use]
     pub fn terminal_id(&self) -> TerminalId {
         self.terminal_id
+    }
+
+    /// Returns the engine captured when this terminal was created.
+    #[must_use]
+    pub fn engine(&self) -> huterm_protocol::TerminalEngineKind {
+        self.engine
+    }
+
+    /// Returns the immutable engine version used by this terminal.
+    #[must_use]
+    pub fn engine_revision(&self) -> &'static str {
+        match self.engine {
+            huterm_protocol::TerminalEngineKind::Alacritty => "0.26.0",
+            huterm_protocol::TerminalEngineKind::Ghostty => {
+                crate::GHOSTTY_REVISION
+            }
+        }
     }
 
     /// Sends structured input using emulator modes owned by the runtime.
@@ -106,13 +125,28 @@ impl RuntimeClient {
     /// # Errors
     ///
     /// Returns an error when the terminal has stopped.
-    pub fn request_snapshot(
+    pub fn request_snapshot(&self) -> Result<SnapshotRequest, RuntimeError> {
+        self.snapshot_request(None)
+    }
+
+    /// Moves the shared viewport and reads it atomically on the runtime owner.
+    ///
+    /// # Errors
+    /// Returns an error when the terminal has stopped.
+    pub fn request_scrolled_snapshot(
         &self,
-        viewport: Viewport,
+        scroll: ScrollCommand,
+    ) -> Result<SnapshotRequest, RuntimeError> {
+        self.snapshot_request(Some(scroll))
+    }
+
+    fn snapshot_request(
+        &self,
+        scroll: Option<ScrollCommand>,
     ) -> Result<SnapshotRequest, RuntimeError> {
         let (reply, receiver) = async_channel::bounded(1);
         self.controls
-            .send(RuntimeControl::Snapshot { viewport, reply })
+            .send(RuntimeControl::Snapshot { scroll, reply })
             .map_err(|_| RuntimeError::Stopped)?;
         Ok(SnapshotRequest { receiver })
     }
@@ -138,7 +172,7 @@ impl RuntimeClient {
         Ok(SelectionRequest { receiver })
     }
 
-    /// Reads an immutable snapshot for a client-owned viewport.
+    /// Reads an immutable snapshot of the shared terminal viewport.
     ///
     /// This blocking convenience is intended for worker threads and tests.
     /// Interactive clients should await [`Self::request_snapshot`] instead.
@@ -146,11 +180,8 @@ impl RuntimeClient {
     /// # Errors
     ///
     /// Returns an error when the runtime is unavailable or does not answer.
-    pub fn read_snapshot(
-        &self,
-        viewport: Viewport,
-    ) -> Result<TerminalSnapshot, RuntimeError> {
-        self.request_snapshot(viewport)?
+    pub fn read_snapshot(&self) -> Result<TerminalSnapshot, RuntimeError> {
+        self.request_snapshot()?
             .recv_blocking()
             .map(|reply| reply.snapshot)
     }
@@ -209,7 +240,7 @@ impl RuntimeClient {
 /// Pending asynchronous snapshot response.
 #[derive(Debug)]
 pub struct SnapshotRequest {
-    receiver: async_channel::Receiver<SnapshotReply>,
+    receiver: async_channel::Receiver<Result<SnapshotReply, RuntimeError>>,
 }
 
 /// A runtime snapshot and the elapsed time spent producing it.
@@ -220,6 +251,8 @@ pub struct SnapshotRequest {
 pub struct SnapshotReply {
     /// Immutable terminal snapshot.
     pub snapshot: TerminalSnapshot,
+    /// Expected viewport computed from the command and runtime state before it runs.
+    pub requested_viewport: huterm_protocol::Viewport,
     /// Monotonic wall-clock duration of snapshot construction, including any
     /// scheduler preemption. Excludes request queueing and response delivery.
     pub snapshot_duration: Duration,
@@ -235,7 +268,7 @@ impl SnapshotRequest {
     /// Returns an error if the runtime stops before replying.
     pub fn try_recv(&self) -> Result<Option<SnapshotReply>, RuntimeError> {
         match self.receiver.try_recv() {
-            Ok(snapshot) => Ok(Some(snapshot)),
+            Ok(snapshot) => snapshot.map(Some),
             Err(async_channel::TryRecvError::Empty) => Ok(None),
             Err(async_channel::TryRecvError::Closed) => {
                 Err(RuntimeError::Stopped)
@@ -252,7 +285,7 @@ impl SnapshotRequest {
         self.receiver
             .recv()
             .await
-            .map_err(|_| RuntimeError::Stopped)
+            .map_err(|_| RuntimeError::Stopped)?
     }
 
     fn recv_blocking(self) -> Result<SnapshotReply, RuntimeError> {
@@ -266,7 +299,7 @@ impl SnapshotRequest {
         let deadline = Instant::now() + timeout;
         loop {
             match self.receiver.try_recv() {
-                Ok(reply) => return Ok(reply),
+                Ok(reply) => return reply,
                 Err(async_channel::TryRecvError::Closed) => {
                     return Err(RuntimeError::Stopped);
                 }
@@ -289,7 +322,7 @@ impl SnapshotRequest {
 /// Pending asynchronous selection extraction response.
 #[derive(Debug)]
 pub struct SelectionRequest {
-    receiver: async_channel::Receiver<Option<String>>,
+    receiver: async_channel::Receiver<Result<Option<String>, RuntimeError>>,
 }
 
 impl SelectionRequest {
@@ -304,7 +337,7 @@ impl SelectionRequest {
         self.receiver
             .recv()
             .await
-            .map_err(|_| RuntimeError::Stopped)
+            .map_err(|_| RuntimeError::Stopped)?
     }
 }
 
@@ -325,7 +358,9 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
-        let process = pty::spawn(command)?;
+        let command = command.clone();
+        let engine_kind = command.engine;
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
@@ -334,7 +369,7 @@ impl TerminalRuntime {
         let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
         let queued_input_bytes = Arc::new(AtomicUsize::new(0));
-        let initial_size = command.grid_size;
+
         let runtime_sender = message_sender.clone();
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
@@ -342,24 +377,46 @@ impl TerminalRuntime {
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
-                run_terminal(
-                    terminal_id,
-                    initial_size,
-                    process,
-                    message_receiver,
-                    runtime_sender,
-                    control_receiver,
-                    runtime_controls,
-                    event_sender,
-                    runtime_pending,
-                    runtime_closing,
-                    runtime_input_bytes,
-                )
+                let result = (|| {
+                    let engine = TerminalEngine::new(
+                        terminal_id,
+                        command.grid_size,
+                        command.cell_size,
+                        command.engine,
+                    )?;
+                    let process = pty::spawn(&command)?;
+                    run_terminal(
+                        terminal_id,
+                        engine,
+                        process,
+                        message_receiver,
+                        runtime_sender,
+                        control_receiver,
+                        runtime_controls,
+                        event_sender,
+                        runtime_pending,
+                        runtime_closing,
+                        runtime_input_bytes,
+                        &startup_sender,
+                    )
+                })();
+                if let Err(error) = &result {
+                    let _ = startup_sender.send(Err(error.clone()));
+                }
+                result
             })
             .map_err(|error| RuntimeError::Thread(error.to_string()))?;
 
+        if let Err(error) = startup_receiver
+            .recv()
+            .unwrap_or(Err(RuntimeError::ThreadPanic))
+        {
+            let _ = join.join();
+            return Err(error);
+        }
         let client = RuntimeClient {
             terminal_id,
+            engine: engine_kind,
             messages: message_sender,
             controls: control_sender,
             closing,
@@ -405,8 +462,11 @@ impl Drop for TerminalRuntime {
 }
 
 /// Terminal runtime startup and command error.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum RuntimeError {
+    /// Emulator initialization or operation failed.
+    #[error("terminal engine error: {0}")]
+    Engine(String),
     /// PTY creation or I/O setup failed.
     #[error("PTY error: {0}")]
     Pty(String),
@@ -456,16 +516,30 @@ enum RuntimeMessage {
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
     Snapshot {
-        viewport: Viewport,
-        reply: async_channel::Sender<SnapshotReply>,
+        scroll: Option<ScrollCommand>,
+        reply: async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
     },
     Selection {
         generation: u64,
         range: BufferRange,
-        reply: async_channel::Sender<Option<String>>,
+        reply: async_channel::Sender<Result<Option<String>, RuntimeError>>,
     },
     WorkerFailed(String),
     Wake,
+}
+
+fn complete_snapshot_request(
+    result: Result<SnapshotReply, RuntimeError>,
+    reply: &async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
+    events: &mpsc::Sender<TerminalEvent>,
+    terminal_id: TerminalId,
+    closing: &AtomicBool,
+) {
+    if let Err(error) = &result {
+        report_failure(events, terminal_id, error.to_string());
+        closing.store(true, Ordering::Release);
+    }
+    let _ = reply.try_send(result);
 }
 
 #[derive(Debug)]
@@ -481,7 +555,7 @@ enum WriterMessage {
 )]
 fn run_terminal(
     terminal_id: TerminalId,
-    initial_size: GridSize,
+    mut engine: TerminalEngine,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
     message_sender: SyncSender<RuntimeMessage>,
@@ -491,6 +565,7 @@ fn run_terminal(
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
+    startup: &SyncSender<Result<(), RuntimeError>>,
 ) -> Result<(), RuntimeError> {
     let parts = match process.into_parts() {
         Ok(parts) => parts,
@@ -561,7 +636,7 @@ fn run_terminal(
         }
     };
     drop(message_sender);
-    let mut engine = TerminalEngine::new(terminal_id, initial_size);
+    let _ = startup.send(Ok(()));
     let _ = events.send(TerminalEvent::Ready(terminal_id));
     publish_invalidation(
         &events,
@@ -598,15 +673,29 @@ fn run_terminal(
                 break;
             }
             match control {
-                RuntimeControl::Snapshot { viewport, reply } => {
+                RuntimeControl::Snapshot { scroll, reply } => {
                     let started = Instant::now();
-                    let snapshot = engine.snapshot(viewport);
-                    let snapshot_duration = started.elapsed();
-                    let _ = reply.try_send(SnapshotReply {
-                        snapshot,
-                        snapshot_duration,
-                        completed_at: Instant::now(),
-                    });
+                    let result = (|| {
+                        let requested_viewport =
+                            engine.requested_viewport(scroll)?;
+                        if let Some(scroll) = scroll {
+                            engine.scroll(scroll)?;
+                        }
+                        let snapshot = engine.snapshot()?;
+                        Ok(SnapshotReply {
+                            snapshot,
+                            requested_viewport,
+                            snapshot_duration: started.elapsed(),
+                            completed_at: Instant::now(),
+                        })
+                    })();
+                    complete_snapshot_request(
+                        result,
+                        &reply,
+                        &events,
+                        terminal_id,
+                        &closing,
+                    );
                 }
                 RuntimeControl::Selection {
                     generation,
@@ -660,7 +749,15 @@ fn run_terminal(
         };
         match message {
             RuntimeMessage::PtyOutput(bytes) => {
-                for effect in engine.process(&bytes) {
+                let effects = match engine.process(&bytes) {
+                    Ok(effects) => effects,
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                        continue;
+                    }
+                };
+                for effect in effects {
                     if handle_effect(
                         effect,
                         terminal_id,
@@ -691,7 +788,15 @@ fn run_terminal(
                 reserved_bytes,
             } => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                let bytes = encode_input(&input, engine.modes(), engine.size());
+                let modes = match engine.modes() {
+                    Ok(modes) => modes,
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                        continue;
+                    }
+                };
+                let bytes = encode_input(&input, modes, engine.size());
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
                         == WriterQueueState::Disconnected
@@ -711,7 +816,32 @@ fn run_terminal(
                         message: "failed to resize PTY".into(),
                     });
                 }
-                engine.resize(grid);
+                let effects = match engine.resize(grid, cell) {
+                    Ok(effects) => effects,
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                        continue;
+                    }
+                };
+                for effect in effects {
+                    if handle_effect(
+                        effect,
+                        terminal_id,
+                        &writer_sender,
+                        &mut pending_writes,
+                        &events,
+                    ) == WriterQueueState::Disconnected
+                    {
+                        report_failure(
+                            &events,
+                            terminal_id,
+                            "PTY writer stopped during resize".into(),
+                        );
+                        closing.store(true, Ordering::Release);
+                        break;
+                    }
+                }
                 publish_invalidation(
                     &events,
                     &invalidation_pending,
@@ -990,7 +1120,102 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_failure_reports_error_and_enters_runtime_cleanup() {
+        let (reply, receiver) = async_channel::bounded(1);
+        let (events, event_receiver) = mpsc::channel();
+        let closing = AtomicBool::new(false);
+        let id = TerminalId::new(96);
+        complete_snapshot_request(
+            Err(RuntimeError::Engine("snapshot allocation failed".into())),
+            &reply,
+            &events,
+            id,
+            &closing,
+        );
+        assert!(closing.load(Ordering::Acquire));
+        assert!(
+            matches!(receiver.try_recv(), Ok(Err(RuntimeError::Engine(message))) if message == "snapshot allocation failed")
+        );
+        assert!(
+            matches!(event_receiver.try_recv(), Ok(TerminalEvent::Failed { terminal_id, message }) if terminal_id == id && message.contains("snapshot allocation failed"))
+        );
+    }
+
+    #[test]
+    fn ghostty_runtime_round_trips_and_closes_a_live_child() {
+        let mut command = command(
+            "printf READY; read line; printf 'GHOSTTY:%s' \"$line\"; sleep 30",
+        );
+        command.engine = huterm_protocol::TerminalEngineKind::Ghostty;
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(92), &command).unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        client
+            .send_input(TerminalInput::Text("hello\n".into()))
+            .unwrap();
+        wait_for_text(&client, "GHOSTTY:hello");
+        let started = Instant::now();
+        runtime.shutdown().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn rejected_engine_initialization_does_not_launch_the_child() {
+        let marker = std::env::temp_dir()
+            .join(format!("huterm-engine-startup-{}", std::process::id()));
+        let mut command =
+            command(&format!("touch {}; sleep 30", marker.display()));
+        command.engine = huterm_protocol::TerminalEngineKind::Ghostty;
+        // Zero dimensions fail native initialization before the child starts.
+        command.grid_size = GridSize {
+            columns: 0,
+            rows: 0,
+        };
+        let error =
+            TerminalRuntime::spawn(TerminalId::new(93), &command).unwrap_err();
+        assert!(matches!(error, RuntimeError::Engine(_)));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn shared_scroll_snapshot_is_observed_by_a_second_client() {
+        let runtime = TerminalRuntime::spawn(TerminalId::new(94), &command("i=0; while [ $i -lt 30 ]; do printf 'ROW-%s\\n' $i; i=$((i+1)); done; printf READY; read line")).unwrap();
+        let client = runtime.client();
+        let sibling = runtime.client();
+        wait_for_text(&client, "READY");
+        let scrolled = client
+            .request_scrolled_snapshot(ScrollCommand::Absolute(5))
+            .unwrap()
+            .recv_blocking()
+            .unwrap()
+            .snapshot;
+        assert_eq!(scrolled.viewport.bottom_offset, 5);
+        assert_eq!(
+            sibling.read_snapshot().unwrap().viewport,
+            scrolled.viewport
+        );
+        let latest = client
+            .request_scrolled_snapshot(ScrollCommand::Live)
+            .unwrap()
+            .recv_blocking()
+            .unwrap()
+            .snapshot;
+        assert_eq!(latest.viewport.bottom_offset, 0);
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
     fn pty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
+        mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Alacritty);
+    }
+
+    #[test]
+    fn ghostty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
+        mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Ghostty);
+    }
+
+    fn mouse_reports_roundtrip(kind: huterm_protocol::TerminalEngineKind) {
         use huterm_protocol::{
             Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
             MouseTracking,
@@ -1000,10 +1225,12 @@ mod tests {
             "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; bytes=$(dd bs=1 count={} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:DONE\\033[?1000lDISABLED' \"$bytes\"; byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'SILENT:%s:END' \"$byte\"",
             expected.len(),
         );
+        let mut command = command(&script);
+        command.engine = kind;
         let runtime =
-            TerminalRuntime::spawn(TerminalId::new(91), &command(&script))
-                .unwrap();
+            TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
         let client = runtime.client();
+        assert_eq!(client.engine(), kind);
         let ready = wait_for_text(&client, "READY");
         assert_eq!(ready.modes.mouse_tracking, MouseTracking::Buttons);
         let mouse = |action| {
@@ -1023,11 +1250,8 @@ mod tests {
         let disabled = wait_for_text(&client, "DISABLED");
         assert_eq!(disabled.modes.mouse_tracking, MouseTracking::Disabled);
         let hex = "1b5b3c303b323b334d4b1b5b3c303b323b336d";
-        let text: String = disabled
-            .cells
-            .iter()
-            .map(|cell| cell.text.as_str())
-            .collect();
+        let text: String =
+            disabled.cells().map(|cell| cell.text.as_str()).collect();
         assert!(text.contains(&format!("HEX:{hex}:DONE")), "{text:?}");
         client
             .send_input(mouse(MouseAction::Press(MouseButton::Left)))
@@ -1105,6 +1329,7 @@ mod tests {
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: PathBuf::from("/bin/sh"),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir()
@@ -1121,14 +1346,10 @@ mod tests {
     fn wait_for_text(client: &RuntimeClient, needle: &str) -> TerminalSnapshot {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let snapshot = client
-                .read_snapshot(Viewport::default())
-                .expect("snapshot should work");
-            let text: String = snapshot
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
+            let snapshot =
+                client.read_snapshot().expect("snapshot should work");
+            let text: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
             if text.contains(needle) {
                 return snapshot;
             }
@@ -1182,7 +1403,7 @@ mod tests {
             }
         );
         let final_snapshot = client
-            .read_snapshot(Viewport::default())
+            .read_snapshot()
             .expect("final snapshot should remain available after exit");
         assert!(final_snapshot.generation >= snapshot.generation);
         thread::sleep(Duration::from_millis(25));
@@ -1240,16 +1461,15 @@ mod tests {
             .expect("resize should send");
         let deadline = Instant::now() + Duration::from_secs(2);
         let snapshot = loop {
-            let snapshot = client
-                .read_snapshot(Viewport::default())
-                .expect("snapshot should work");
+            let snapshot =
+                client.read_snapshot().expect("snapshot should work");
             if snapshot.size == GridSize::clamped(52, 13) {
                 break snapshot;
             }
             assert!(Instant::now() < deadline, "terminal grid did not resize");
         };
 
-        assert_eq!(snapshot.cells.len(), 52 * 13);
+        assert_eq!(snapshot.cells().count(), 52 * 13);
         runtime.shutdown().expect("runtime should stop cleanly");
     }
 

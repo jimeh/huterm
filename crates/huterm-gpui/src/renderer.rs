@@ -165,12 +165,14 @@ impl TerminalRenderer {
     pub(super) fn complete_scroll_snapshot(
         &mut self,
         duration: Duration,
+        requested_offset: usize,
         returned_offset: usize,
         wakeup_delay: Duration,
     ) {
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.complete_snapshot(
                 duration,
+                requested_offset,
                 returned_offset,
                 wakeup_delay,
             );
@@ -207,9 +209,7 @@ impl TerminalRenderer {
         let rebuilds = rows_to_rebuild(self.snapshot.as_deref(), snapshot);
         let rebuilt_rows = rebuilds.iter().filter(|rebuild| **rebuild).count();
         let rows = usize::from(snapshot.size.rows);
-        let columns = usize::from(snapshot.size.columns);
-        let expected_cells = rows.saturating_mul(columns);
-        if self.rows.len() != rows || snapshot.cells.len() != expected_cells {
+        if self.rows.len() != rows || snapshot.rows.len() != rows {
             self.rows.clear();
             self.rows.resize_with(rows, PreparedRow::default);
         }
@@ -217,12 +217,10 @@ impl TerminalRenderer {
         let mut cache_activity = CacheActivity::default();
         if rebuilt_rows > 0 {
             self.layouts.begin_generation();
-            for (row, cells) in
-                snapshot.cells.chunks_exact(columns).take(rows).enumerate()
-            {
+            for (row, cells) in snapshot.rows.iter().take(rows).enumerate() {
                 if rebuilds[row] {
                     self.rows[row] = prepare_row(
-                        cells,
+                        &cells.cells,
                         &mut self.layouts,
                         window,
                         &mut cache_activity,
@@ -606,33 +604,30 @@ fn rows_to_rebuild(
     current: &TerminalSnapshot,
 ) -> Vec<bool> {
     let rows = usize::from(current.size.rows);
-    let columns = usize::from(current.size.columns);
-    let expected = rows.saturating_mul(columns);
     let Some(previous) = previous.filter(|previous| {
         previous.size == current.size
-            && previous.cells.len() == expected
-            && current.cells.len() == expected
+            && previous.rows.len() == rows
+            && current.rows.len() == rows
     }) else {
         return vec![true; rows];
     };
-
-    let offset_delta = current.viewport.bottom_offset as i128
-        - previous.viewport.bottom_offset as i128;
-    let history_delta =
-        current.history_size as i128 - previous.history_size as i128;
-    let shift = offset_delta - history_delta;
-    let previous_rows: Vec<&[Cell]> =
-        previous.cells.chunks_exact(columns).collect();
+    let shift = current.viewport.bottom_offset as i128
+        - previous.viewport.bottom_offset as i128
+        - (current.history_size as i128 - previous.history_size as i128);
     current
-        .cells
-        .chunks_exact(columns)
+        .rows
+        .iter()
         .enumerate()
         .map(|(new_row, after)| {
             let old_row = new_row as i128 - shift;
-            old_row < 0
-                || old_row >= rows as i128
-                || previous_rows[usize::try_from(old_row).unwrap_or_default()]
-                    != after
+            let Some(before) = usize::try_from(old_row)
+                .ok()
+                .and_then(|row| previous.rows.get(row))
+            else {
+                return true;
+            };
+            // Full refreshes after scrolling may allocate rows with identical content.
+            !Arc::ptr_eq(before, after) && before != after
         })
         .collect()
 }
@@ -829,17 +824,15 @@ fn selected_foreground(
 ) -> Option<Rgb> {
     let foreground = theme.selection_foreground?;
     let selection = selection?;
-    let columns = usize::from(snapshot.size.columns);
     let rows = usize::from(snapshot.size.rows);
     let offset = snapshot
         .viewport
         .bottom_offset
         .saturating_add(rows.saturating_sub(1).saturating_sub(row));
-    let start = row.saturating_mul(columns);
     let cells = snapshot
-        .cells
-        .get(start..start.saturating_add(columns))
-        .unwrap_or_default();
+        .rows
+        .get(row)
+        .map_or(&[][..], |row| row.cells.as_slice());
     selection_covers_column(selection, offset, column, cells)
         .then_some(foreground)
 }
@@ -853,7 +846,6 @@ fn paint_selection(
     window: &mut Window,
 ) {
     let rows = usize::from(snapshot.size.rows);
-    let columns = usize::from(snapshot.size.columns);
     for row in 0..rows {
         let rows_from_live_bottom = snapshot
             .viewport
@@ -861,11 +853,10 @@ fn paint_selection(
             .saturating_add(rows.saturating_sub(1).saturating_sub(row));
         let mut start = None;
         let mut end = 0_u16;
-        let row_start = row.saturating_mul(columns);
         let row_cells = snapshot
-            .cells
-            .get(row_start..row_start.saturating_add(columns))
-            .unwrap_or_default();
+            .rows
+            .get(row)
+            .map_or(&[][..], |row| row.cells.as_slice());
         for column in 0..snapshot.size.columns {
             if selection_covers_column(
                 selection,
@@ -1101,12 +1092,15 @@ impl ScrollBenchmarkStats {
     fn complete_snapshot(
         &mut self,
         duration: Duration,
+        requested_offset: usize,
         returned_offset: usize,
         wakeup_delay: Duration,
     ) {
         let Some(mut sample) = self.in_flight.take() else {
             return;
         };
+        let client_predicted = sample.requested_offset;
+        sample.requested_offset = requested_offset;
         sample.snapshot = duration;
         sample.returned_offset = returned_offset;
         sample.wakeup_delay = wakeup_delay;
@@ -1115,7 +1109,7 @@ impl ScrollBenchmarkStats {
             .injected_at
             .map_or(Duration::ZERO, |injected_at| injected_at.elapsed());
         eprintln!(
-            "huterm-scroll snapshot sequence={} requested={} returned={} snapshot_us={} input={} latency_us={} timer_wait_us={}",
+            "huterm-scroll snapshot sequence={} requested={} returned={} snapshot_us={} input={} latency_us={} timer_wait_us={} client_predicted={}",
             sample.sequence,
             sample.requested_offset,
             sample.returned_offset,
@@ -1123,6 +1117,7 @@ impl ScrollBenchmarkStats {
             matched_input,
             latency.as_micros(),
             sample.wakeup_delay.as_micros(),
+            client_predicted,
         );
         if self.ready_to_paint.replace(sample).is_some() {
             self.dropped_before_paint += 1;
@@ -1239,7 +1234,7 @@ mod tests {
         renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
         assert!(renderer.snapshot.is_none());
         assert!(renderer.rows.is_empty());
-        assert_eq!(original.cells[0].text, "A");
+        assert_eq!(original.rows[0].cells[0].text, "A");
         renderer.snapshot = Some(Arc::clone(&original));
         let larger = GridMetrics::from_measurements(
             px(18.0),
@@ -1573,7 +1568,7 @@ mod tests {
 
     #[test]
     fn decorations_merge_across_a_wide_cell_and_its_spacer() {
-        let mut cells = snapshot(3, 1, &["界", " ", "A"]).cells;
+        let mut cells = snapshot(3, 1, &["界", " ", "A"]).rows[0].cells.clone();
         cells[0].style.wide = true;
         cells[0].style.underline = true;
         cells[1].style.wide_spacer = true;
@@ -1591,7 +1586,7 @@ mod tests {
 
     #[test]
     fn selection_expands_over_both_halves_of_a_wide_character() {
-        let mut cells = snapshot(2, 1, &["界", " "]).cells;
+        let mut cells = snapshot(2, 1, &["界", " "]).rows[0].cells.clone();
         cells[0].style.wide = true;
         cells[1].style.wide_spacer = true;
 
@@ -1620,6 +1615,7 @@ mod tests {
         benchmark.begin(1, 10, Some(Instant::now()));
         benchmark.complete_snapshot(
             Duration::from_micros(10),
+            10,
             10,
             Duration::from_micros(2),
         );
@@ -1715,21 +1711,28 @@ mod tests {
             terminal_id: TerminalId::new(1),
             generation: 1,
             size: GridSize::clamped(columns, rows),
-            cells: contents
-                .iter()
-                .map(|text| Cell {
-                    text: (*text).to_owned(),
-                    foreground: CellColor::Rgb(Rgb {
-                        red: 255,
-                        green: 255,
-                        blue: 255,
-                    }),
-                    background: CellColor::Rgb(Rgb {
-                        red: 0,
-                        green: 0,
-                        blue: 0,
-                    }),
-                    style: CellStyle::default(),
+            rows: contents
+                .chunks(usize::from(columns))
+                .map(|contents| {
+                    Arc::new(huterm_protocol::TerminalRow {
+                        cells: contents
+                            .iter()
+                            .map(|text| Cell {
+                                text: (*text).to_owned(),
+                                foreground: CellColor::Rgb(Rgb {
+                                    red: 255,
+                                    green: 255,
+                                    blue: 255,
+                                }),
+                                background: CellColor::Rgb(Rgb {
+                                    red: 0,
+                                    green: 0,
+                                    blue: 0,
+                                }),
+                                style: CellStyle::default(),
+                            })
+                            .collect(),
+                    })
                 })
                 .collect(),
             cursor: None,

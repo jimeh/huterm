@@ -16,3 +16,10 @@ updates:
       interval: daily
     cooldown:
       default-days: 3
+
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: daily
+    cooldown:
+      default-days: 3

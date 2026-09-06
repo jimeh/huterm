@@ -8,6 +8,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+# Keep the native binding/build pin aligned with scripts/ghostty-source.json.
+libghostty-vt = { version = "=0.2.1", default-features = false }
+libghostty-vt-sys = { version = "=0.2.1" }
 alacritty_terminal.workspace = true
 async-channel.workspace = true
 huterm-protocol.workspace = true

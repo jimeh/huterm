@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/huterm-core", "crates/huterm-gpui", "crates/huterm-protocol"]
+exclude = ["third-party/vendor/libghostty-vt-sys-0.2.1"]
 resolver = "2"
 
 [workspace.package]
@@ -56,9 +57,9 @@ formats = ["app"]
 outDir = "target/release/bundle"
 binariesDir = "target/aarch64-apple-darwin/release"
 targetTriple = "aarch64-apple-darwin"
-beforePackagingCommand = "cargo build --release --locked --target aarch64-apple-darwin -p huterm"
+beforePackagingCommand = "mise run package:build:macos"
 icons = ["assets/Huterm.icns"]
-resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }]
 
 [[package.metadata.packager.binaries]]
 path = "huterm"
@@ -66,3 +67,6 @@ main = true
 
 [lints]
 workspace = true
+
+[patch.crates-io]
+libghostty-vt-sys = { path = "third-party/vendor/libghostty-vt-sys-0.2.1" }

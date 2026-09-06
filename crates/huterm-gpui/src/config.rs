@@ -4,10 +4,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::themes::{self, ThemeDefinition};
-use huterm_protocol::Rgb;
+use huterm_protocol::{Rgb, TerminalEngineKind};
 use serde::Deserialize;
 
-pub(super) const DEFAULT_CONFIG: &str = r##"[font]
+pub(super) const DEFAULT_CONFIG: &str = r##"[terminal]
+# Changes apply to newly created terminals. Both engines are included in every build.
+engine = "alacritty"
+
+[font]
 family = "Menlo"
 size = 14.0
 
@@ -30,6 +34,7 @@ name = "huterm-dark"
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Config {
+    pub(super) engine: TerminalEngineKind,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) theme: Theme,
@@ -92,6 +97,7 @@ pub(super) struct LoadedConfig {
     pub(super) config: Config,
     pub(super) path: PathBuf,
     pub(super) error: Option<String>,
+    pub(super) fatal: bool,
 }
 
 impl Default for Config {
@@ -102,6 +108,7 @@ impl Default for Config {
             "monospace"
         };
         Self {
+            engine: TerminalEngineKind::Alacritty,
             font: FontConfig {
                 family: family.into(),
                 size: 14.0,
@@ -183,22 +190,35 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 config,
                 path,
                 error: None,
+                fatal: false,
             },
-            Err(error) => LoadedConfig {
-                config: Config::default(),
-                error: Some(format!("{}: {error}", path.display())),
-                path,
-            },
+            Err(error) => {
+                let (engine, fatal, error) = match fallback_engine(&source) {
+                    Ok(engine) => (engine, false, error),
+                    Err(error) => (TerminalEngineKind::default(), true, error),
+                };
+                LoadedConfig {
+                    config: Config {
+                        engine,
+                        ..Config::default()
+                    },
+                    fatal,
+                    error: Some(format!("{}: {error}", path.display())),
+                    path,
+                }
+            }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             LoadedConfig {
                 config: Config::default(),
                 path,
                 error: None,
+                fatal: false,
             }
         }
         Err(error) => LoadedConfig {
             config: Config::default(),
+            fatal: false,
             error: Some(format!("{}: {error}", path.display())),
             path,
         },
@@ -267,8 +287,33 @@ pub(super) fn reload(path: &Path) -> Result<Config, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn fallback_engine(source: &str) -> Result<TerminalEngineKind, ConfigError> {
+    let value: toml::Value =
+        toml::from_str(source).map_err(ConfigError::Toml)?;
+    let Some(engine) = value
+        .get("terminal")
+        .and_then(|terminal| terminal.get("engine"))
+    else {
+        return Ok(TerminalEngineKind::default());
+    };
+    parse_engine(engine.as_str().ok_or_else(|| {
+        ConfigError::Engine("terminal.engine must be a string".into())
+    })?)
+}
+
+fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
+    match name {
+        "alacritty" => Ok(TerminalEngineKind::Alacritty),
+        "ghostty" => Ok(TerminalEngineKind::Ghostty),
+        name => Err(ConfigError::Engine(format!(
+            "unknown terminal engine {name:?}"
+        ))),
+    }
+}
+
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
+    let engine = parse_engine(&raw.terminal.engine)?;
     if raw.font.family.trim().is_empty() {
         return Err(ConfigError::Invalid("font.family must not be empty"));
     }
@@ -288,6 +333,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         .join("themes");
     let theme = themes::resolve(&raw.theme, &raw.themes, &directory)?;
     Ok(Config {
+        engine,
         window: raw.window,
         font: FontConfig {
             family: raw.font.family,
@@ -321,6 +367,8 @@ const fn rgb(value: u32) -> Rgb {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
+    terminal: RawTerminal,
+    #[serde(default)]
     font: RawFont,
     #[serde(default)]
     window: WindowConfig,
@@ -328,6 +376,19 @@ struct RawConfig {
     theme: ThemeDefinition,
     #[serde(default)]
     themes: BTreeMap<String, ThemeDefinition>,
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawTerminal {
+    engine: String,
+}
+impl Default for RawTerminal {
+    fn default() -> Self {
+        Self {
+            engine: "alacritty".into(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -353,6 +414,7 @@ pub(super) enum ConfigError {
     Color(String),
     Invalid(&'static str),
     Theme(String),
+    Engine(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -364,7 +426,9 @@ impl fmt::Display for ConfigError {
                 "invalid RGB color {value:?}; expected #rrggbb"
             ),
             Self::Invalid(message) => formatter.write_str(message),
-            Self::Theme(message) => formatter.write_str(message),
+            Self::Theme(message) | Self::Engine(message) => {
+                formatter.write_str(message)
+            }
         }
     }
 }
@@ -397,6 +461,65 @@ mod tests {
         let result = parse_at(source, &directory.join("config.toml"));
         fs::remove_dir(directory).expect("remove empty config directory");
         result
+    }
+
+    #[test]
+    fn both_engines_are_available_and_alacritty_is_default() {
+        assert_eq!(
+            parse("[terminal]\nengine = 'alacritty'").unwrap().engine,
+            TerminalEngineKind::Alacritty
+        );
+        assert!(matches!(
+            parse("[terminal]\nengine = 'unknown'"),
+            Err(ConfigError::Engine(_))
+        ));
+        assert_eq!(parse("").unwrap().engine, TerminalEngineKind::Alacritty);
+        assert_eq!(
+            parse("[terminal]\nengine = 'ghostty'").unwrap().engine,
+            TerminalEngineKind::Ghostty
+        );
+    }
+
+    #[test]
+    fn config_fallback_preserves_only_a_valid_engine_choice() {
+        let directory = test_directory();
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("config.toml");
+        for source in [
+            "[terminal]\nengine = 'unknown'",
+            "[terminal]\nengine = 12",
+            "[terminal]\nengine = 'unknown'\n[font]\nsize =",
+            "[terminal]\nengine = 'ghostty'\n[font]\nsize =",
+            "[font]\nsize =",
+        ] {
+            fs::write(&file, source).unwrap();
+            let loaded = load_path(file.clone());
+            assert!(loaded.fatal, "{source}");
+            assert!(loaded.error.is_some());
+        }
+        for (source, expected, fatal) in [
+            (
+                "[terminal]\nengine = 'alacritty'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Alacritty,
+                false,
+            ),
+            (
+                "[terminal]\nengine = 'ghostty'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Ghostty,
+                false,
+            ),
+            ("[font]\nsize = 'bad'", TerminalEngineKind::Alacritty, false),
+        ] {
+            fs::write(&file, source).unwrap();
+            let loaded = load_path(file.clone());
+            assert_eq!(loaded.fatal, fatal, "{source}");
+            assert!(loaded.error.is_some());
+            if !fatal {
+                assert_eq!(loaded.config.engine, expected);
+                assert_eq!(loaded.config.font, Config::default().font);
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -21,14 +21,16 @@ Keep view destruction and detachment separate from explicit close.
   immutable snapshots. Its public types must not expose GPUI, Alacritty, or
   `portable-pty` types. `mise run architecture` enforces its empty dependency
   set.
-- `huterm-core` alone owns PTYs and canonical Alacritty state. One runtime
+- `huterm-core` alone owns PTYs and canonical emulator state. One runtime
   thread mutates each terminal. Blocking PTY reads, ordered writes, and child
   waits stay off the GPUI thread.
 - `huterm-gpui` owns macOS/Linux window state, rendering, key translation,
-  focus, and each client's viewport offset. Scrolling must not mutate shared
-  emulator state.
-- Use upstream `alacritty_terminal`; do not use its PTY event loop. Do not copy
-  or depend on GPL-covered Zed application or terminal-view code.
+  focus, selection gestures, and scrollbar animation. The terminal runtime owns
+  the shared viewport; clients send ordered scroll commands.
+- Alacritty is the default; every build includes `libghostty-vt`, which shares
+  the same owned rows and PTY/input runtime. Do not use either engine's
+  application or PTY event loop.
+  Do not copy or depend on GPL-covered Zed application or terminal-view code.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
@@ -121,9 +123,9 @@ GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.
 Bind reload as `cmd-<` / `ctrl-<`, not `cmd-shift-,` / `ctrl-shift-,`; test
 the real `KeyBinding` matcher as well as terminal-input reservation.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
-Growing the grid pulls rows out of Alacritty history. A scrolled viewport must
-adjust its offset for both history growth and shrinkage to avoid resize drift;
-offset zero remains pinned to live output.
+Growing the grid pulls rows out of Alacritty history. Let the runtime engine
+anchor its shared viewport across output and resize; never also compensate the
+client's offset for history growth or shrinkage. Offset zero follows live output.
 Protocol selection ranges include both endpoints. Keep a mouse-down anchor
 without exposing a range until dragging reaches another cell; use that same
 optional range for highlighting and text extraction.
@@ -246,3 +248,87 @@ propagating later core renames to views belongs with the deferred rename UI.
 Moves retain empty parents and never change terminal lifetime. Desktop windows
 retain the ID of their initial private session for explicit close and orphaned
 spawn cleanup. Roll back newly created sessions on initial workspace/tab failure.
+
+Ghostty builds use libghostty-vt/sys 0.2.1, native revision
+`a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig 0.15.2. Run
+`mise run ghostty:prepare` before direct Cargo build commands; it checks the
+full native source tree against `scripts/ghostty-source.json`. Keep that source,
+the binding versions, and bundled notices aligned. All builds include both
+engines and require the pinned Zig toolchain. Native source dependencies use
+Zig's content hashes; their notices are in `third-party/ghostty` because they
+are outside Cargo's license audit.
+At this native pin `max_scrollback` is bytes despite the published binding/header
+claiming lines. The adapter uses 16 MiB and reports actual retained rows.
+Ghostty color-only OSC updates can leave render rows clean. Compare effective
+colors and retain explicit palette override information before consuming damage.
+Its API lacks the override mask; the adapter probes changed defaults after
+OSC/RIS invalidation hints, then restores defaults before rendering. Keep this
+hint state across input chunks, including snapshots between fragments.
+Construct non-Send native handles on their owner thread before spawning the PTY;
+only publish startup after workers are ready. Scroll-and-snapshot share one
+ordered control operation. Ordinary snapshots must not reset the viewport.
+Complete snapshots share immutable `Arc<TerminalRow>` values; never clear engine
+damage before owned cache state is coherent. Content generation excludes scrolling.
+
+Ghostty's public mode bits can disagree with its active mouse format/tracking.
+Read the active behavior through the retained native mouse probe, with synthetic
+200x200 geometry independent of the real grid, then feed Huterm's shared encoder.
+Never send probe output to the PTY. At the selected native pin, disabling an
+inactive format resets to legacy encoding; Alacritty preserves the active format.
+
+Shared relative scroll requests can follow output that advances the runtime
+viewport. Benchmark expected offsets use command plus pre-operation runtime
+viewport/history; retain the client prediction separately. Clamp pending relative
+UI intents after an authoritative completion so a saturated history boundary
+does not leave scroll debt that affects later reversal.
+
+Treat malformed TOML and invalid engine choices as fatal at startup.
+For valid TOML with a known engine, fallback from unrelated settings
+errors must preserve that engine. Fatal snapshot errors set the runtime closing
+gate; latch client snapshot failure so pending scroll or invalidation cannot
+create an immediate retry loop. Set Ghostty device attributes explicitly: the
+pinned native implementation answers a callback returning None despite binding
+documentation saying it suppresses replies.
+
+Keep verified native source inputs in `.native/ghostty`, outside Cargo's
+`target` directory. The pinned rust-cache action recursively removes non-Cargo
+files under `target` before saving, leaving incomplete native source trees on
+restore. Preserve source hash checks; never repair mismatches silently.
+
+Run Xvfb with `-noreset` in desktop harnesses. A last-client disconnect otherwise
+resets the server and sends another SIGUSR1 to xvfb-run, which can interrupt its
+cleanup wait and return exit 5 despite successful file removal. Keep application
+exit checks and benchmark budgets strict. Clear any satisfied pending scroll
+intent after authoritative completion, including absolute/live intents, so
+later invalidation cannot replay a stale target. Cargo must force the verified
+native source path and benchmark optimization over inherited environment values.
+
+Build commands use `scripts/build-exec.sh` to select Xcode 26 when the default
+macOS SDK is 27 or newer. Zig 0.15.2 otherwise fails linking its own build runner
+with undefined system symbols before compiling Ghostty. Preserve explicit
+`DEVELOPER_DIR` overrides; route new native build tasks through this wrapper or
+`mise run build:exec -- <command>`. Preparation cannot export this environment
+to a later Cargo task, so each native build invocation needs the wrapper.
+
+Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
+SDK wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
+keep bunfig.toml's minimum release age aligned with the three-day policy.
+Run `mise run check:scripts` for tooling edits. Native source preparation uses
+Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
+exit and the existing top-down source-tree hash order. Test changes to extraction
+and locking on macOS and Linux. The Linux FFI library is glibc, matching
+Ubuntu CI.
+Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
+can stall on Linux when writing the live HTTPS response directly, even though
+local HTTP fixtures pass. Verify download changes with a cold preparation run.
+The local sys 0.2.1 patch backports the upstream CPU-target option and fixes its
+crate-relative build-script watch path for vendoring. Cargo
+forces `LIBGHOSTTY_VT_SYS_CPU=baseline` for portable native instructions.
+Keep bindings and the native revision unchanged; remove the patch
+when a reviewed published release supplies the fix. See
+`third-party/vendor/README.md` for provenance. The path dependency has a distinct
+Cargo fingerprint from the old registry crate; no manual cache cleanup is needed.
+Local builds retain warm native artifacts. The pinned CI cache action prunes
+path dependencies inside the repository, so CI rebuilds the vendored sys crate.
+Preserve upstream formatting in vendored crates. The staged Rust formatter
+excludes `third-party/vendor`; Cargo still compiles it as a dependency.
