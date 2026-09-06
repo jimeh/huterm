@@ -53,9 +53,10 @@ Direct Cargo builds must supply the compatible environment themselves or run
 through `mise run build:exec -- <command>`.
 
 All builds explicitly target Zig's portable CPU baseline. Cargo forces this
-setting over inherited environment values, so CI can reuse native artifacts
-across runner CPUs. A narrow local sys-crate backport supplies the CPU option;
-see [its provenance](../../third-party/vendor/README.md).
+setting over inherited environment values. A narrow local sys-crate backport
+supplies the CPU option; see [its provenance](../../third-party/vendor/README.md).
+Local builds reuse warm native artifacts. The pinned CI cache action prunes
+vendored path dependencies, so each CI run rebuilds the sys crate.
 
 ## Native inputs and policy
 
@@ -166,7 +167,8 @@ A local Linux comparison on an AMD Ryzen 5 5600GT used a flat Alacritty
 baseline at
 `d1fbff3` and this implementation, with the same alternating fixture. Median
 elapsed times below are microseconds; processing and snapshot construction are
-measured separately.
+measured separately. These measurements predate portable CPU targeting; they
+are not measurements of the current baseline-CPU build.
 
 | Fixture | Flat Alacritty snapshot | Shared Alacritty process / snapshot | Ghostty process / snapshot |
 | --- | ---: | ---: | ---: |

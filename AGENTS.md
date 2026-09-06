@@ -323,10 +323,12 @@ can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
 The local sys 0.2.1 patch backports the upstream CPU-target option and fixes its
 crate-relative build-script watch path for vendoring. Cargo
-forces `LIBGHOSTTY_VT_SYS_CPU=baseline` so native artifacts can move between
-runner CPUs. Keep bindings and the native revision unchanged; remove the patch
+forces `LIBGHOSTTY_VT_SYS_CPU=baseline` for portable native instructions.
+Keep bindings and the native revision unchanged; remove the patch
 when a reviewed published release supplies the fix. See
 `third-party/vendor/README.md` for provenance. The path dependency has a distinct
-Cargo fingerprint from the old registry crate; no cache cleanup is needed.
+Cargo fingerprint from the old registry crate; no manual cache cleanup is needed.
+Local builds retain warm native artifacts. The pinned CI cache action prunes
+path dependencies inside the repository, so CI rebuilds the vendored sys crate.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
