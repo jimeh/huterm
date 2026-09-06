@@ -321,8 +321,12 @@ Ubuntu CI.
 Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
 can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
-The pinned sys crate builds for the native Linux CPU without including that CPU
-in Cargo's fingerprint. Run `mise run ghostty:clean` after restoring CI artifacts
-and before parallel Cargo builds; reusing another runner's native code can cause
-SIGILL. Clean both debug and release profiles; package-scoped Cargo cleaning
-defaults to debug only. Preserve the other Rust cache.
+The local sys 0.2.1 patch backports the upstream CPU-target option and fixes its
+crate-relative build-script watch path for vendoring. Cargo
+forces `LIBGHOSTTY_VT_SYS_CPU=baseline` so native artifacts can move between
+runner CPUs. Keep bindings and the native revision unchanged; remove the patch
+when a reviewed published release supplies the fix. See
+`third-party/vendor/README.md` for provenance. The path dependency has a distinct
+Cargo fingerprint from the old registry crate; no cache cleanup is needed.
+Preserve upstream formatting in vendored crates. The staged Rust formatter
+excludes `third-party/vendor`; Cargo still compiles it as a dependency.

@@ -2,3 +2,4 @@
 # All builds use the reviewed native source prepared by Mise.
 GHOSTTY_SOURCE_DIR = { value = ".native/ghostty/source", relative = true, force = true }
 LIBGHOSTTY_VT_SYS_OPTIMIZE = { value = "ReleaseFast", force = true }
+LIBGHOSTTY_VT_SYS_CPU = { value = "baseline", force = true }

@@ -95,9 +95,6 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Discard native artifacts from other runner CPUs
-        run: mise run ghostty:clean
-
       - name: Verify Rust and both terminal engines
         run: mise run verify:platform
 

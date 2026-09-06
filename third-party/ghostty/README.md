@@ -20,6 +20,6 @@ lazy dependencies while evaluating the build; their hashes remain pinned in the
 upstream package manifests. No Ghostty renderer or font stack is linked.
 
 The sys crate selects static linking and maps release builds to ReleaseFast.
-This published wrapper has no CPU override. Linux builds use Zig's native CPU
-default; native macOS builds use Ghostty's upstream baseline CPU workaround.
+Huterm backports the CPU option into the pinned sys crate and forces a portable
+baseline target. See [the patch provenance](../vendor/README.md).
 Record CPU and optimization when comparing measurements.

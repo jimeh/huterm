@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/huterm-core", "crates/huterm-gpui", "crates/huterm-protocol"]
+exclude = ["third-party/vendor/libghostty-vt-sys-0.2.1"]
 resolver = "2"
 
 [workspace.package]
@@ -66,3 +67,6 @@ main = true
 
 [lints]
 workspace = true
+
+[patch.crates-io]
+libghostty-vt-sys = { path = "third-party/vendor/libghostty-vt-sys-0.2.1" }

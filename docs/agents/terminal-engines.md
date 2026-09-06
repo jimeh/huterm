@@ -52,18 +52,17 @@ only to the invoked command; it does not change `xcode-select` or other projects
 Direct Cargo builds must supply the compatible environment themselves or run
 through `mise run build:exec -- <command>`.
 
-The pinned binding builds Ghostty for the host CPU on Linux. After moving Cargo
-artifacts between machines, run `mise run ghostty:clean` before rebuilding.
-Linux CI does this after cache restoration to avoid illegal instructions from
-another runner's native code. macOS uses Ghostty's generic Apple Silicon target.
-Portable Linux binary distribution will need an explicit baseline CPU target.
+All builds explicitly target Zig's portable CPU baseline. Cargo forces this
+setting over inherited environment values, so CI can reuse native artifacts
+across runner CPUs. A narrow local sys-crate backport supplies the CPU option;
+see [its provenance](../../third-party/vendor/README.md).
 
 ## Native inputs and policy
 
-The published Rust bindings and sys crate are pinned to 0.2.1. Native Ghostty is
-pinned to `a887df42c56f6de86c0fe6da9c4eeca37931e083`, built with Zig 0.15.2 and
-static linking. Source preparation runs on Bun and retains the OS-owned
-preparation lock and reviewed source-tree hash format.
+The safe Rust bindings and locally patched sys crate are pinned to 0.2.1.
+Native Ghostty is pinned to `a887df42c56f6de86c0fe6da9c4eeca37931e083`,
+built with Zig 0.15.2 and static linking. Source preparation runs on Bun and
+retains the OS-owned preparation lock and reviewed source-tree hash format.
 `scripts/ghostty-source.json` records the archive checksum and
 full source-tree checksum. Preparation checks the Rust revision constant and
 license provenance against that manifest, then verifies existing source contents;
@@ -73,16 +72,18 @@ directory: the CI Cargo cache removes non-Cargo files under `target` before
 saving. Previous `target/ghostty` contents are left untouched and no longer used.
 
 This is a narrow native-source exception to the Cargo registry-only policy.
-The bindings remain registry dependencies. The native archive has an immutable
-revision and SHA-256; Zig dependencies use the content hashes in that reviewed
-source. Zig may download application-related lazy packages during build
+The safe wrapper remains a registry dependency. The sys crate uses a reviewed
+local path patch of that same published version. The native archive has an
+immutable revision and SHA-256; Zig dependencies use the content hashes in
+that reviewed source. Zig may download application-related lazy packages during
+build
 configuration, but the VT library does not link Ghostty's renderer or font stack.
 Cargo's audit does not cover these native sources. Their linked dependency
 notices and provenance are in `third-party/ghostty` and accompany the app bundle.
 
 Cargo forces the reviewed source path and `ReleaseFast` optimization over
-inherited environment values. Native code uses SIMD. Linux uses the native CPU;
-native macOS builds use Ghostty's upstream baseline CPU workaround.
+inherited environment values. Native code uses SIMD within the selected
+baseline CPU target.
 The adapter does not request scrollback compression. Compare engines on the same
 host and record CPU information. Cross-host elapsed times are not equivalent
 measurements.

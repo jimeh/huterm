@@ -3,6 +3,8 @@ pre-commit:
   jobs:
     - name: rustfmt
       glob: "*.rs"
+      exclude:
+        - "third-party/vendor/**"
       run: rustfmt --edition 2024 --check {staged_files}
 
     - name: rust-analysis
