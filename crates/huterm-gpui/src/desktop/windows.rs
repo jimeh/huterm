@@ -263,6 +263,7 @@ struct Desktop {
     config_path: PathBuf,
     config_error: Option<String>,
     windows: Vec<WeakEntity<WorkspaceView>>,
+    reserved: Arc<ReservedKeys>,
     reloading: bool,
     quitting: bool,
     pending_spawns: usize,
@@ -374,12 +375,20 @@ pub(super) fn run() -> anyhow::Result<()> {
         cx.activate(true);
     });
     application.run(move |cx| {
+        // A broken binding never blocks startup: defaults apply and the
+        // diagnostic shows like any other non-fatal configuration error.
+        let (compiled, keymap_error) = compile_keymap(&loaded.config);
+        let reserved = bind_keymap(cx, compiled);
         cx.set_global(Desktop {
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
+            config_error: loaded.error.or_else(|| {
+                keymap_error
+                    .map(|error| format!("{}: {error}", loaded.path.display()))
+            }),
             config_path: loaded.path,
-            config_error: loaded.error,
             windows: Vec::new(),
+            reserved,
             reloading: false,
             quitting: false,
             pending_spawns: 0,
@@ -398,7 +407,6 @@ pub(super) fn run() -> anyhow::Result<()> {
             async {}
         })
         .detach();
-        install_bindings(cx);
         install_menus(cx);
         cx.on_action(|action: &InvokeApp, cx| {
             if let Err(error) = Desktop::invoke(cx, &action.0, None) {
@@ -413,7 +421,9 @@ pub(super) fn run() -> anyhow::Result<()> {
         })
         .detach();
         cx.observe_keystrokes(|event, window, cx| {
-            if event.action.is_some() || reserved_keystroke(&event.keystroke) {
+            let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
+            if event.action.is_some() || reserved.is_reserved(&event.keystroke)
+            {
                 return;
             }
             if let Some(root) = window.root::<WorkspaceView>().flatten() {
@@ -426,7 +436,8 @@ pub(super) fn run() -> anyhow::Result<()> {
                     }
                     if let Some(tab) = view.active_view() {
                         tab.update(cx, |tab, cx| {
-                            if tab.handle_keystroke(&event.keystroke) {
+                            if tab.handle_keystroke(&event.keystroke, &reserved)
+                            {
                                 cx.notify();
                             }
                             tab.start_snapshot_if_needed(cx);
@@ -1278,6 +1289,23 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
+    /// Key context for binding predicates: `Workspace`, plus `confirming`,
+    /// `reordering`, and `fullscreen` while those states hold.
+    fn key_context(&self, window: &Window) -> KeyContext {
+        let mut context = KeyContext::default();
+        context.add("Workspace");
+        if self.close.confirmation.is_some() {
+            context.add("confirming");
+        }
+        if self.reorder.is_some() {
+            context.add("reordering");
+        }
+        if window.is_fullscreen() {
+            context.add("fullscreen");
+        }
+        context
+    }
+
     /// Refuses commands while structural work, a close confirmation, or (when
     /// `reordering` matters) a tab drag would race with them.
     fn check_available(&self, reordering: bool) -> Result<(), CommandError> {
@@ -1718,14 +1746,28 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
         let _ = cx.update(|cx| {
             cx.global_mut::<Desktop>().reloading = false;
             let result = result.and_then(|config| {
-                resolve_metrics(&config, cx)
-                    .map(|(family, metrics)| (config, family, metrics))
-                    .map_err(|error| error.to_string())
+                let (family, metrics) = resolve_metrics(&config, cx)
+                    .map_err(|error| error.to_string())?;
+                let compiled =
+                    keymap::compile(Platform::current(), &config.keybindings)
+                        .map_err(|error| {
+                        format!("{}: {error}", path_for_status(cx))
+                    })?;
+                Ok((config, family, metrics, compiled))
             });
-            if let Ok((config, _, _)) = &result {
+            let mut keymap_status = None;
+            let result = result.map(|(config, family, metrics, compiled)| {
                 cx.global_mut::<Desktop>().config = config.clone();
                 cx.global_mut::<Desktop>().config_error = None;
-            }
+                if !compiled.conflicts.is_empty() {
+                    keymap_status = Some(compiled.conflicts.join("; "));
+                }
+                let reserved = bind_keymap(cx, compiled);
+                cx.global_mut::<Desktop>().reserved = reserved;
+                // macOS menus display shortcuts from the keymap at build time.
+                install_menus(cx);
+                (config, family, metrics)
+            });
             let windows = cx.global::<Desktop>().windows.clone();
             for window in windows {
                 let _ = window.update(cx, |view, cx| {
@@ -1754,6 +1796,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                     cx.notify();
                                 });
                             }
+                            view.status.clone_from(&keymap_status);
                         }
                         Err(error) => {
                             view.status =
@@ -1767,6 +1810,10 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     })
     .detach();
     Ok(CommandOutcome::Accepted)
+}
+
+fn path_for_status(cx: &App) -> String {
+    cx.global::<Desktop>().config_path.display().to_string()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1861,6 +1908,7 @@ impl Render for WorkspaceView {
             .bg(background)
             .text_color(foreground)
             .text_size(px(13.0))
+            .key_context(self.key_context(window))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
@@ -2348,28 +2396,6 @@ impl Render for WorkspaceView {
         }
         root
     }
-}
-
-pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
-    let modifier = if macos { "cmd" } else { "ctrl-shift" };
-    let mut bindings = vec![
-        invoke(ids::NEW_WINDOW).binding(&format!("{modifier}-n")),
-        invoke(ids::NEW_TAB).binding(&format!("{modifier}-t")),
-        invoke(ids::CLOSE_TAB).binding(&format!("{modifier}-w")),
-        invoke(ids::CLOSE_WINDOW).binding(if macos {
-            "cmd-shift-w"
-        } else {
-            "ctrl-shift-q"
-        }),
-        invoke(ids::NEXT_TAB).binding("ctrl-tab"),
-        invoke(ids::PREVIOUS_TAB).binding("ctrl-shift-tab"),
-    ];
-    let modifier = if macos { "cmd" } else { "alt" };
-    bindings.extend((1..=9).map(|index| {
-        invoke_with(ids::SELECT_TAB, [("index", CommandValue::Integer(index))])
-            .binding(&format!("{modifier}-{index}"))
-    }));
-    bindings
 }
 
 #[cfg(test)]
@@ -3159,7 +3185,9 @@ mod tests {
     #[test]
     fn native_tab_shortcuts_match_actions_and_are_reserved_from_terminal_input()
     {
-        for macos in [true, false] {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let macos = platform == Platform::MacOs;
+            let compiled = keymap::compile(platform, &[]).unwrap();
             let prefix = if macos { "cmd" } else { "ctrl-shift" };
             for chord in [
                 format!("{prefix}-n"),
@@ -3171,15 +3199,12 @@ mod tests {
             ] {
                 let key = Keystroke::parse(&chord).unwrap();
                 assert!(
-                    tab_bindings(macos).iter().any(|binding| binding
+                    compiled.bindings.iter().any(|binding| binding
                         .match_keystrokes(std::slice::from_ref(&key))
                         == Some(false)),
                     "{chord}"
                 );
-                assert!(
-                    reserved_chord_for_platform(macos, key.modifiers, &key.key),
-                    "{chord}"
-                );
+                assert!(compiled.reserved.is_reserved(&key), "{chord}");
             }
         }
     }

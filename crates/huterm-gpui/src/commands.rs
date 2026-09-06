@@ -7,7 +7,7 @@
 //! as [`InvokeWindow`] because the window fills omitted targets from its own
 //! context before forwarding to the structural worker.
 
-use gpui::{Action, App, KeyBinding, MenuItem};
+use gpui::{Action, App, MenuItem};
 use huterm_protocol::{
     CommandArgument, CommandError, CommandId, CommandInvocation, CommandScope,
     CommandValue, lookup, validate,
@@ -64,11 +64,11 @@ impl CommandAction {
         }
     }
 
-    pub(crate) fn binding(&self, keystrokes: &str) -> KeyBinding {
-        match self.clone() {
-            Self::App(action) => KeyBinding::new(keystrokes, action, None),
-            Self::Window(action) => KeyBinding::new(keystrokes, action, None),
-            Self::Terminal(action) => KeyBinding::new(keystrokes, action, None),
+    pub(crate) fn into_boxed(self) -> Box<dyn Action> {
+        match self {
+            Self::App(action) => Box::new(action),
+            Self::Window(action) => Box::new(action),
+            Self::Terminal(action) => Box::new(action),
         }
     }
 

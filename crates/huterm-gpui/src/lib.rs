@@ -11,6 +11,8 @@ mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod keymap;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod mouse;
 #[cfg(target_os = "macos")]
 mod native_quit;

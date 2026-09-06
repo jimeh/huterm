@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, DispatchPhase,
-    FocusHandle, Focusable, KeyBinding, Keystroke, Menu, MenuItem,
+    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
     Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
@@ -20,15 +20,14 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
-use crate::commands::{
-    InvokeApp, InvokeTerminal, InvokeWindow, invoke, invoke_with,
-};
+use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow, invoke};
 use crate::config::{self, Config, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
     Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
 };
+use crate::keymap::{self, CompiledKeymap, Platform, ReservedKeys};
 use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::{
@@ -51,43 +50,23 @@ pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
 }
 
-fn install_bindings(cx: &mut App) {
-    let mut bindings = vec![
-        invoke(ids::SCROLL_PAGE_UP).binding("shift-pageup"),
-        invoke(ids::SCROLL_PAGE_DOWN).binding("shift-pagedown"),
-        invoke(ids::SCROLL_TO_BOTTOM).binding("shift-end"),
-        invoke(ids::TOGGLE_FULLSCREEN).binding("f11"),
-    ];
-    if cfg!(target_os = "macos") {
-        bindings.extend([
-            invoke(ids::COPY).binding("cmd-c"),
-            invoke(ids::PASTE).binding("cmd-v"),
-            invoke(ids::OPEN_SETTINGS).binding("cmd-,"),
-            reload_binding(true),
-            invoke(ids::TOGGLE_FULLSCREEN).binding("ctrl-cmd-f"),
-            invoke(ids::QUIT).binding("cmd-q"),
-            invoke(ids::MINIMIZE).binding("cmd-m"),
-            invoke(ids::HIDE).binding("cmd-h"),
-            invoke(ids::HIDE_OTHERS).binding("cmd-alt-h"),
-        ]);
-    } else {
-        bindings.extend([
-            invoke(ids::COPY).binding("ctrl-shift-c"),
-            invoke(ids::PASTE).binding("ctrl-shift-v"),
-            reload_binding(false),
-        ]);
+/// Compiles the platform defaults plus `config`'s entries, falling back to
+/// defaults alone (with the diagnostic) when the user entries fail.
+fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
+    let platform = Platform::current();
+    match keymap::compile(platform, &config.keybindings) {
+        Ok(compiled) => (compiled, None),
+        Err(error) => {
+            (keymap::compile_defaults(platform), Some(error.to_string()))
+        }
     }
-    bindings.extend(windows::tab_bindings(cfg!(target_os = "macos")));
-    cx.bind_keys(bindings);
 }
 
-fn reload_binding(is_macos: bool) -> KeyBinding {
-    // GPUI folds Shift+comma into '<' and clears Shift on both backends.
-    invoke(ids::RELOAD_CONFIG).binding(if is_macos {
-        "cmd-<"
-    } else {
-        "ctrl-<"
-    })
+/// Replaces GPUI's bindings with `compiled` and returns its reserved keys.
+fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
+    cx.clear_key_bindings();
+    cx.bind_keys(compiled.bindings);
+    Arc::new(compiled.reserved)
 }
 
 fn install_menus(cx: &mut App) {
@@ -496,10 +475,14 @@ impl TerminalView {
         }
     }
 
-    fn handle_keystroke(&mut self, keystroke: &Keystroke) -> bool {
+    fn handle_keystroke(
+        &mut self,
+        keystroke: &Keystroke,
+        reserved: &ReservedKeys,
+    ) -> bool {
         if self.exited
             || keystroke.modifiers.platform
-            || reserved_keystroke(keystroke)
+            || reserved.is_reserved(keystroke)
         {
             return false;
         }
@@ -1128,6 +1111,20 @@ impl TerminalView {
         }
         false
     }
+    /// Key context for binding predicates: `Terminal`, plus `selection`
+    /// while text is selected and `exited` after the root shell exits.
+    fn key_context(&self) -> KeyContext {
+        let mut context = KeyContext::default();
+        context.add("Terminal");
+        if self.selection.is_some() {
+            context.add("selection");
+        }
+        if self.exited {
+            context.add("exited");
+        }
+        context
+    }
+
     fn set_status(&mut self, status: String) -> bool {
         if self.status.as_ref() == Some(&status) {
             false
@@ -1288,7 +1285,7 @@ impl Render for TerminalView {
                     cx.notify();
                 }
             }))
-            .key_context("Huterm")
+            .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::invoke_terminal))
             .on_scroll_wheel(cx.listener(Self::scroll))
@@ -1664,103 +1661,6 @@ fn protocol_modifiers(modifiers: GpuiModifiers) -> Modifiers {
         shift: modifiers.shift,
     }
 }
-fn reserved_keystroke(keystroke: &Keystroke) -> bool {
-    reserved_chord(keystroke.modifiers, &keystroke.key)
-}
-fn reserved_chord(modifiers: GpuiModifiers, key: &str) -> bool {
-    reserved_chord_for_platform(cfg!(target_os = "macos"), modifiers, key)
-}
-fn reserved_chord_for_platform(
-    is_macos: bool,
-    modifiers: GpuiModifiers,
-    key: &str,
-) -> bool {
-    if tab_chord_for_platform(is_macos, modifiers, key) {
-        return true;
-    }
-    if exact_modifiers(modifiers, ModifierChord::Shift) {
-        return matches!(key, "pageup" | "pagedown" | "end");
-    }
-    if is_macos {
-        (exact_modifiers(modifiers, ModifierChord::Command)
-            && matches!(key, "c" | "v" | "," | "<" | "q" | "m" | "h"))
-            || (exact_modifiers(modifiers, ModifierChord::CommandAlt)
-                && key == "h")
-            || (exact_modifiers(modifiers, ModifierChord::CommandControl)
-                && key == "f")
-    } else {
-        (exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "c" | "v"))
-            || (exact_modifiers(modifiers, ModifierChord::Control)
-                && key == "<")
-    }
-}
-fn tab_chord_for_platform(
-    macos: bool,
-    modifiers: GpuiModifiers,
-    key: &str,
-) -> bool {
-    let digit =
-        matches!(key, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9");
-    if key == "tab"
-        && (exact_modifiers(modifiers, ModifierChord::Control)
-            || exact_modifiers(modifiers, ModifierChord::ControlShift))
-    {
-        return true;
-    }
-    if macos {
-        (exact_modifiers(modifiers, ModifierChord::Command)
-            && (digit || matches!(key, "n" | "t" | "w")))
-            || (exact_modifiers(modifiers, ModifierChord::CommandShift)
-                && key == "w")
-    } else {
-        (exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "n" | "t" | "w" | "q"))
-            || (exact_modifiers(modifiers, ModifierChord::Alt) && digit)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ModifierChord {
-    Alt,
-    CommandShift,
-    Shift,
-    Command,
-    CommandAlt,
-    CommandControl,
-    Control,
-    ControlShift,
-}
-fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
-    let matches = match chord {
-        ModifierChord::Shift => modifiers.shift,
-        ModifierChord::Alt => modifiers.alt,
-        ModifierChord::CommandShift => modifiers.platform && modifiers.shift,
-        ModifierChord::Command => modifiers.platform,
-        ModifierChord::Control => modifiers.control,
-        ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
-        ModifierChord::CommandControl => {
-            modifiers.platform && modifiers.control
-        }
-        ModifierChord::ControlShift => modifiers.control && modifiers.shift,
-    };
-    let count = usize::from(modifiers.control)
-        + usize::from(modifiers.alt)
-        + usize::from(modifiers.shift)
-        + usize::from(modifiers.platform)
-        + usize::from(modifiers.function);
-    let expected_count = match chord {
-        ModifierChord::Shift
-        | ModifierChord::Alt
-        | ModifierChord::Command
-        | ModifierChord::Control => 1,
-        ModifierChord::CommandAlt
-        | ModifierChord::CommandShift
-        | ModifierChord::CommandControl
-        | ModifierChord::ControlShift => 2,
-    };
-    matches && count == expected_count
-}
 fn selection_request_is_current(
     current: Option<Selection>,
     requested: Selection,
@@ -2068,105 +1968,6 @@ mod tests {
         assert_eq!(edge_scroll_direction(400.0, 400.0), -1);
     }
     #[test]
-    fn application_shortcuts_are_reserved_but_plain_control_c_is_not() {
-        assert!(!reserved_chord(modifiers(&[TestModifier::Control]), "c"));
-        assert!(reserved_chord(modifiers(&[TestModifier::Shift]), "pageup"));
-
-        let clipboard = if cfg!(target_os = "macos") {
-            modifiers(&[TestModifier::Platform])
-        } else {
-            modifiers(&[TestModifier::Control, TestModifier::Shift])
-        };
-        assert!(reserved_chord(clipboard, "c"));
-        assert!(reserved_chord(clipboard, "v"));
-    }
-    #[test]
-    fn reload_binding_matches_gpui_shifted_punctuation() {
-        // Both native backends fold Shift+comma into '<' without Shift.
-        for (is_macos, modifier) in [
-            (true, TestModifier::Platform),
-            (false, TestModifier::Control),
-        ] {
-            let event = Keystroke {
-                modifiers: modifiers(&[modifier]),
-                key: "<".into(),
-                key_char: None,
-            };
-            assert_eq!(
-                reload_binding(is_macos)
-                    .match_keystrokes(std::slice::from_ref(&event)),
-                Some(false) // Complete match, not a pending chord prefix.
-            );
-            assert!(reserved_chord_for_platform(
-                is_macos,
-                event.modifiers,
-                &event.key
-            ));
-        }
-    }
-
-    #[test]
-    fn macos_shortcuts_require_exact_modifiers() {
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Platform]),
-            "<",
-        ));
-        let command = modifiers(&[TestModifier::Platform]);
-        assert!(reserved_chord_for_platform(true, command, "h"));
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
-            "h"
-        ));
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Control, TestModifier::Platform]),
-            "f"
-        ));
-        assert!(!reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
-            "c"
-        ));
-        let mut with_function = command;
-        with_function.function = true;
-        assert!(!reserved_chord_for_platform(true, with_function, "c"));
-    }
-    #[test]
-    fn linux_shortcuts_require_exact_modifiers() {
-        assert!(reserved_chord_for_platform(
-            false,
-            modifiers(&[TestModifier::Control]),
-            "<",
-        ));
-        let clipboard =
-            modifiers(&[TestModifier::Control, TestModifier::Shift]);
-        assert!(reserved_chord_for_platform(false, clipboard, "c"));
-        assert!(reserved_chord_for_platform(false, clipboard, "v"));
-        assert!(!reserved_chord_for_platform(
-            false,
-            modifiers(&[
-                TestModifier::Control,
-                TestModifier::Alt,
-                TestModifier::Shift,
-            ]),
-            "c"
-        ));
-        assert!(!reserved_chord_for_platform(
-            false,
-            modifiers(&[
-                TestModifier::Control,
-                TestModifier::Shift,
-                TestModifier::Platform,
-            ]),
-            "c"
-        ));
-        let mut with_function = clipboard;
-        with_function.function = true;
-        assert!(!reserved_chord_for_platform(false, with_function, "c"));
-    }
-    #[test]
     fn stale_selection_replies_do_not_match_newer_selection() {
         let requested = selection(1, 2, 4);
         assert!(!selection_request_is_current(
@@ -2255,27 +2056,6 @@ mod tests {
         );
         assert!(locale_environment(true, true).is_empty());
         assert!(locale_environment(false, false).is_empty());
-    }
-
-    #[derive(Clone, Copy)]
-    enum TestModifier {
-        Control,
-        Alt,
-        Shift,
-        Platform,
-    }
-
-    fn modifiers(active: &[TestModifier]) -> GpuiModifiers {
-        let mut modifiers = GpuiModifiers::default();
-        for modifier in active {
-            match modifier {
-                TestModifier::Control => modifiers.control = true,
-                TestModifier::Alt => modifiers.alt = true,
-                TestModifier::Shift => modifiers.shift = true,
-                TestModifier::Platform => modifiers.platform = true,
-            }
-        }
-        modifiers
     }
 
     fn selection(generation: u64, anchor: u16, head: u16) -> Selection {

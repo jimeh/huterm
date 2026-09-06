@@ -33,6 +33,21 @@ name = "huterm-dark"
 # background = "#1d1f21"
 # ansi_red = "#cc6666"
 # ansi_bright_red = "#d54e53"
+
+# Keybindings extend the platform defaults; later entries win for the same key.
+# `key` uses GPUI keystroke syntax (cmd, ctrl, alt, shift, fn); `when` is an
+# optional key-context predicate; `args` is a table of named arguments.
+# [[keybinding]]
+# key = "cmd-1"
+# command = "select_tab"
+# args = { index = 1 }
+# when = "Terminal && !confirming"
+# description = "Select the first tab"
+
+# Remove a default binding so the terminal receives the key instead:
+# [[keybinding]]
+# key = "shift-pageup"
+# command = "unbind"
 "##;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +57,20 @@ pub(super) struct Config {
     pub(super) window: WindowConfig,
     pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
+    pub(super) keybindings: Vec<KeybindingEntry>,
+}
+
+/// One `[[keybinding]]` entry as written in the configuration file.
+///
+/// Only structure is validated here; keystroke, predicate, command, and
+/// argument semantics belong to the keymap compiler.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct KeybindingEntry {
+    pub(super) key: String,
+    pub(super) command: String,
+    pub(super) args: Option<toml::Table>,
+    pub(super) when: Option<String>,
+    pub(super) description: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -134,6 +163,7 @@ impl Default for Config {
             theme: Theme::default(),
             window: WindowConfig::default(),
             terminal: TerminalConfig::default(),
+            keybindings: Vec::new(),
         }
     }
 }
@@ -351,6 +381,12 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         .unwrap_or_else(|| Path::new("."))
         .join("themes");
     let theme = themes::resolve(&raw.theme, &raw.themes, &directory)?;
+    let keybindings = raw
+        .keybinding
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| entry.validate(index + 1))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Config {
         engine,
         window: raw.window,
@@ -362,7 +398,17 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
             size: raw.font.size,
         },
         theme,
+        keybindings,
     })
+}
+
+/// Formats a keybinding diagnostic with its 1-based file position and key.
+pub(super) fn keybinding_diagnostic(
+    index: usize,
+    key: &str,
+    message: impl fmt::Display,
+) -> String {
+    format!("keybinding {index} ({key:?}): {message}")
 }
 
 pub(super) fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
@@ -398,6 +444,71 @@ struct RawConfig {
     theme: ThemeDefinition,
     #[serde(default)]
     themes: BTreeMap<String, ThemeDefinition>,
+    #[serde(default)]
+    keybinding: Vec<RawKeybinding>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKeybinding {
+    key: String,
+    command: String,
+    args: Option<toml::Value>,
+    when: Option<String>,
+    description: Option<String>,
+}
+
+impl RawKeybinding {
+    fn validate(self, index: usize) -> Result<KeybindingEntry, ConfigError> {
+        let diagnostic = |message: String| {
+            ConfigError::Keybinding(keybinding_diagnostic(
+                index, &self.key, message,
+            ))
+        };
+        let args = match self.args {
+            None => None,
+            Some(toml::Value::Table(table)) => Some(table),
+            Some(toml::Value::Array(_)) => {
+                let names = huterm_protocol::lookup(&self.command)
+                    .map(|spec| {
+                        spec.args
+                            .iter()
+                            .map(|argument| argument.name)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let expected = if names.is_empty() {
+                    "no arguments".to_owned()
+                } else {
+                    format!("named arguments {}", names.join(", "))
+                };
+                return Err(diagnostic(format!(
+                    "args must be a table, not an array; `{}` takes {expected}",
+                    self.command
+                )));
+            }
+            Some(other) => {
+                return Err(diagnostic(format!(
+                    "args must be a table of named arguments, not {}",
+                    other.type_str()
+                )));
+            }
+        };
+        if self
+            .description
+            .as_deref()
+            .is_some_and(|description| description.trim().is_empty())
+        {
+            return Err(diagnostic("description must not be blank".to_owned()));
+        }
+        Ok(KeybindingEntry {
+            key: self.key,
+            command: self.command,
+            args,
+            when: self.when,
+            description: self.description,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -439,6 +550,7 @@ pub(super) enum ConfigError {
     Invalid(&'static str),
     Theme(String),
     Engine(String),
+    Keybinding(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -450,9 +562,9 @@ impl fmt::Display for ConfigError {
                 "invalid RGB color {value:?}; expected #rrggbb"
             ),
             Self::Invalid(message) => formatter.write_str(message),
-            Self::Theme(message) | Self::Engine(message) => {
-                formatter.write_str(message)
-            }
+            Self::Theme(message)
+            | Self::Engine(message)
+            | Self::Keybinding(message) => formatter.write_str(message),
         }
     }
 }
@@ -817,6 +929,52 @@ background = "#040506"
                 padding_balance: false,
                 tab_position: TabPosition::Top,
             }
+        );
+    }
+
+    #[test]
+    fn keybinding_entries_are_structurally_validated() {
+        let source = format!(
+            "{DEFAULT_CONFIG}\n[[keybinding]]\nkey = \"cmd-1\"\ncommand = \
+             \"select_tab\"\nargs = {{ index = 1 }}\nwhen = \"Terminal\"\n\
+             description = \"First tab\"\n[[keybinding]]\nkey = \"cmd-w\"\n\
+             command = \"unbind\"\n"
+        );
+        let config = parse(&source).unwrap();
+        assert_eq!(config.keybindings.len(), 2);
+        let first = &config.keybindings[0];
+        assert_eq!(first.key, "cmd-1");
+        assert_eq!(first.command, "select_tab");
+        assert_eq!(
+            first.args.as_ref().and_then(|args| args.get("index")),
+            Some(&toml::Value::Integer(1))
+        );
+        assert_eq!(first.when.as_deref(), Some("Terminal"));
+        assert_eq!(first.description.as_deref(), Some("First tab"));
+        assert_eq!(config.keybindings[1].args, None);
+        assert!(parse(DEFAULT_CONFIG).unwrap().keybindings.is_empty());
+
+        let entry = |body: &str| {
+            format!(
+                "{DEFAULT_CONFIG}\n[[keybinding]]\nkey = \"cmd-1\"\n{body}\n"
+            )
+        };
+        let error = parse(&entry("command = \"select_tab\"\nargs = [1]"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("keybinding 1 (\"cmd-1\"): "), "{error}");
+        assert!(error.contains("named arguments index"), "{error}");
+        let error = parse(&entry("command = \"select_tab\"\nargs = 1"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not integer"), "{error}");
+        let error =
+            parse(&entry("command = \"select_tab\"\ndescription = \"  \""))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("description must not be blank"), "{error}");
+        assert!(
+            parse(&entry("command = \"select_tab\"\nkeys = \"x\"")).is_err()
         );
     }
 
