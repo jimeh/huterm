@@ -241,6 +241,15 @@ impl Global for Desktop {}
 
 pub(super) fn run() -> anyhow::Result<()> {
     let loaded = config::load();
+    if loaded.fatal {
+        anyhow::bail!(
+            "{}",
+            loaded
+                .error
+                .as_deref()
+                .unwrap_or("invalid engine configuration")
+        );
+    }
     if let Some(error) = &loaded.error {
         eprintln!("Huterm configuration error: {error}");
     }
@@ -1071,15 +1080,17 @@ impl WorkspaceView {
         {
             return;
         }
-        let command =
-            match shell_command(self.metrics.at_scale(window.scale_factor())) {
-                Ok(command) => command,
-                Err(error) => {
-                    self.status = Some(error.to_string());
-                    cx.notify();
-                    return;
-                }
-            };
+        let command = match shell_command(
+            self.metrics.at_scale(window.scale_factor()),
+            cx.global::<Desktop>().config.engine,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                self.status = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         self.busy = true;
@@ -2454,6 +2465,7 @@ mod tests {
 
     fn lifecycle_command() -> TerminalCommand {
         TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::default(),
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -2642,6 +2654,7 @@ mod tests {
     fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         let runtime = DesktopRuntime::default();
         let mut command = TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/huterm-nonexistent-shell".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -2678,17 +2691,10 @@ mod tests {
         assert!(runtime.mux.lock().unwrap().workspace(workspace).is_none());
         assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 1);
         assert!(matches!(
-            first
-                .client
-                .read_snapshot(huterm_protocol::Viewport::default()),
+            first.client.read_snapshot(),
             Err(RuntimeError::Stopped)
         ));
-        assert!(
-            second
-                .client
-                .read_snapshot(huterm_protocol::Viewport::default())
-                .is_ok()
-        );
+        assert!(second.client.read_snapshot().is_ok());
         runtime.mux.lock().unwrap().close_session(sibling).unwrap();
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
@@ -2705,6 +2711,7 @@ mod tests {
     {
         let runtime = Arc::new(DesktopRuntime::default());
         let command = TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -2745,9 +2752,7 @@ mod tests {
         quit.join().unwrap();
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         assert!(matches!(
-            opened
-                .client
-                .read_snapshot(huterm_protocol::Viewport::default()),
+            opened.client.read_snapshot(),
             Err(RuntimeError::Stopped)
         ));
         runtime.terminate().unwrap();

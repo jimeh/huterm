@@ -29,6 +29,7 @@ impl HolderFixture {
 
     pub(super) fn command(&self) -> TerminalCommand {
         TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::default(),
             program: "/bin/sh".into(),
             arguments: vec![
                 "-c".into(),

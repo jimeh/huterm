@@ -58,8 +58,10 @@ tab quietly unless `[terminal] close_on_exit = false` retains the history.
 Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
 `$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
 that order. Settings creates the default document without overwriting an
-existing file and opens it with the system editor. Invalid settings fall back
-to defaults and remain visible in the terminal status overlay.
+existing file and opens it with the system editor. Malformed TOML and invalid
+`terminal.engine` values are fatal at startup, before UI creation. With valid
+TOML and a known engine, unrelated settings errors fall back to defaults while
+preserving that engine and showing a diagnostic in the terminal status overlay.
 
 Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
 `Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified
@@ -151,3 +153,20 @@ preemption, not just per-thread CPU execution.
 On Apple Silicon macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
 version, Developer Tools category, icon, executable, and arm64 architecture.
+
+## Terminal engines
+
+Every build includes both engines; `mise run dev` starts the app. Set
+`[terminal] engine = "ghostty"`
+and reload to use Ghostty for new tabs and windows. Shared scrolling and immutable
+rows apply to both engines. See [the engine guide](terminal-engines.md) for
+pinned native inputs, license coverage, and matched benchmark commands.
+
+`check`, `test`, and `verify` exercise both engines and prepare the pinned native
+source through Mise. Normal build and packaging tasks do the same.
+Standard setup installs the pinned Bun and Zig tools alongside
+Rust. Repository scripts run on Bun and are type-checked with TypeScript 7;
+Python is not required. Run `mise run scripts:install` to install the locked
+TypeScript dependencies, `mise run check:scripts` for script tests and type
+checking, and `mise run audit:scripts` for dependency advisories. These checks
+also run through the appropriate verification and CI tasks.

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use huterm_protocol::Viewport;
+use huterm_protocol::{ScrollCommand, Viewport};
 
 const MIN_THUMB_SIZE: f32 = 24.0;
 const TRACK_TOP_MARGIN: f32 = 2.0;
@@ -193,10 +193,13 @@ impl ScrollbarGeometry {
 #[derive(Debug, Default)]
 pub(super) struct ScrollController {
     desired: usize,
+    pending_scroll: Option<ScrollCommand>,
+    submitted_scroll: Option<ScrollCommand>,
     displayed: usize,
     history: usize,
     pixel_remainder: f32,
     in_flight: bool,
+    failed: bool,
     dirty: bool,
     diagnostics: ScrollDiagnostics,
 }
@@ -284,7 +287,21 @@ impl ScrollController {
                 usize::try_from(rows.unsigned_abs()).unwrap_or(usize::MAX),
             );
         }
-        self.desired != previous
+        let changed = self.desired != previous;
+        if changed {
+            let delta = i64::try_from(self.desired).unwrap_or(i64::MAX)
+                - i64::try_from(previous).unwrap_or(i64::MAX);
+            self.pending_scroll = Some(match self.pending_scroll {
+                Some(ScrollCommand::Absolute(_) | ScrollCommand::Live) => {
+                    ScrollCommand::Absolute(self.desired)
+                }
+                Some(ScrollCommand::Relative(pending)) => {
+                    ScrollCommand::Relative(pending.saturating_add(delta))
+                }
+                None => ScrollCommand::Relative(delta),
+            });
+        }
+        changed
     }
 
     pub(super) fn page(&mut self, rows: u16, upward: bool) -> bool {
@@ -298,6 +315,9 @@ impl ScrollController {
     pub(super) fn bottom(&mut self) -> bool {
         let changed = self.desired != 0;
         self.desired = 0;
+        if changed || self.in_flight {
+            self.pending_scroll = Some(ScrollCommand::Live);
+        }
         self.pixel_remainder = 0.0;
         changed
     }
@@ -306,6 +326,9 @@ impl ScrollController {
         let offset = offset.min(self.history);
         let changed = self.desired != offset;
         self.desired = offset;
+        if changed {
+            self.pending_scroll = Some(ScrollCommand::Absolute(offset));
+        }
         self.pixel_remainder = 0.0;
         changed
     }
@@ -315,6 +338,9 @@ impl ScrollController {
     }
 
     pub(super) fn begin_request(&mut self) -> Option<Viewport> {
+        if self.failed {
+            return None;
+        }
         if self.in_flight {
             if self.dirty || self.desired != self.displayed {
                 self.diagnostics.requests_coalesced =
@@ -329,6 +355,7 @@ impl ScrollController {
             return None;
         }
         self.in_flight = true;
+        self.submitted_scroll = self.pending_scroll.take();
         self.dirty = false;
         self.diagnostics.requests_started =
             self.diagnostics.requests_started.saturating_add(1);
@@ -339,25 +366,47 @@ impl ScrollController {
         })
     }
 
+    pub(super) fn submitted_scroll(&self) -> Option<ScrollCommand> {
+        self.submitted_scroll
+    }
+
     pub(super) fn complete(&mut self, viewport: Viewport, history: usize) {
-        let pinned = self.desired > 0;
-        if pinned {
-            // Height changes move rows both into and out of history. Track
-            // both directions to keep the top visible buffer row anchored.
-            self.desired = self
-                .desired
-                .saturating_add(history.saturating_sub(self.history))
-                .saturating_sub(self.history.saturating_sub(history));
-        }
         self.history = history;
-        self.desired = self.desired.min(history);
         self.displayed = viewport.bottom_offset.min(history);
+        self.desired = match self.pending_scroll {
+            None => self.displayed,
+            Some(ScrollCommand::Live) => 0,
+            Some(ScrollCommand::Absolute(offset)) => offset.min(history),
+            Some(ScrollCommand::Relative(delta)) if delta >= 0 => self
+                .displayed
+                .saturating_add(usize::try_from(delta).unwrap_or(usize::MAX))
+                .min(history),
+            Some(ScrollCommand::Relative(delta)) => {
+                self.displayed.saturating_sub(
+                    usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX),
+                )
+            }
+        };
+        if matches!(self.pending_scroll, Some(ScrollCommand::Relative(_))) {
+            let delta = i64::try_from(self.desired).unwrap_or(i64::MAX)
+                - i64::try_from(self.displayed).unwrap_or(i64::MAX);
+            self.pending_scroll =
+                (delta != 0).then_some(ScrollCommand::Relative(delta));
+        }
+        if self.desired == self.displayed {
+            self.pending_scroll = None;
+        }
         self.in_flight = false;
+        self.submitted_scroll = None;
         self.diagnostics.requests_completed =
             self.diagnostics.requests_completed.saturating_add(1);
     }
 
     pub(super) fn fail(&mut self) {
+        self.failed = true;
+        self.pending_scroll = None;
+        self.submitted_scroll = None;
+        self.dirty = false;
         self.in_flight = false;
     }
 }
@@ -367,6 +416,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn satisfied_pending_scroll_is_not_replayed_on_invalidation() {
+        for (command, returned, history) in [
+            (ScrollCommand::Absolute(3), 3, 10),
+            (ScrollCommand::Absolute(10), 5, 5),
+            (ScrollCommand::Live, 0, 10),
+        ] {
+            let mut scroll = ScrollController::default();
+            scroll.complete(Viewport { bottom_offset: 1 }, 10);
+            scroll.invalidate();
+            scroll.begin_request().unwrap();
+            match command {
+                ScrollCommand::Absolute(offset) => {
+                    scroll.set_desired(offset);
+                }
+                ScrollCommand::Live => {
+                    scroll.bottom();
+                }
+                ScrollCommand::Relative(_) => unreachable!(),
+            }
+            scroll.complete(
+                Viewport {
+                    bottom_offset: returned,
+                },
+                history,
+            );
+            assert!(scroll.begin_request().is_none());
+            scroll.invalidate();
+            scroll.begin_request().unwrap();
+            assert_eq!(scroll.submitted_scroll(), None, "{command:?}");
+        }
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 1 }, 10);
+        scroll.invalidate();
+        scroll.begin_request().unwrap();
+        scroll.set_desired(3);
+        scroll.complete(Viewport { bottom_offset: 2 }, 10);
+        scroll.begin_request().unwrap();
+        assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Absolute(3)));
+    }
+
+    #[test]
+    fn failed_snapshot_stops_resubmission_with_pending_scroll() {
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 2 }, 10);
+        scroll.scroll_rows(1);
+        scroll.begin_request().unwrap();
+        scroll.scroll_rows(1);
+        scroll.fail();
+        assert!(scroll.begin_request().is_none());
+        scroll.invalidate();
+        scroll.scroll_rows(-1);
+        assert!(scroll.begin_request().is_none());
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "runtime fixture and resize assertions remain together"
+    )]
     fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
         use huterm_core::TerminalRuntime;
         use huterm_protocol::{
@@ -380,6 +488,7 @@ mod tests {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(1),
             &TerminalCommand {
+                engine: huterm_protocol::TerminalEngineKind::Alacritty,
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(),
                     "i=0; while [ $i -lt 100 ]; do printf 'ROW-%03d\\n' $i; i=$((i+1)); done; printf READY; read line".into()],
@@ -393,21 +502,16 @@ mod tests {
         let resize = |rows| {
             client.resize(GridSize::clamped(20, rows), cell).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
-            while client.read_snapshot(Viewport::default()).unwrap().size.rows
-                != rows
-            {
+            while client.read_snapshot().unwrap().size.rows != rows {
                 assert!(Instant::now() < deadline, "resize was not applied");
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
         let deadline = Instant::now() + Duration::from_secs(3);
         let initial = loop {
-            let snapshot = client.read_snapshot(Viewport::default()).unwrap();
-            let text: String = snapshot
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
+            let snapshot = client.read_snapshot().unwrap();
+            let text: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
             if text.contains("READY") {
                 break snapshot;
             }
@@ -420,17 +524,31 @@ mod tests {
         let settle = |controller: &mut ScrollController| {
             let mut result = None;
             for _ in 0..4 {
-                let Some(viewport) = controller.begin_request() else {
+                let Some(_viewport) = controller.begin_request() else {
                     return result.unwrap();
                 };
-                let snapshot = client.read_snapshot(viewport).unwrap();
+                let snapshot =
+                    if let Some(scroll) = controller.submitted_scroll() {
+                        client.request_scrolled_snapshot(scroll).unwrap()
+                    } else {
+                        client.request_snapshot().unwrap()
+                    };
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let snapshot = loop {
+                    if let Some(reply) = snapshot.try_recv().unwrap() {
+                        break reply.snapshot;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                };
                 controller.complete(snapshot.viewport, snapshot.history_size);
                 result = Some(snapshot);
             }
             panic!("viewport did not settle");
         };
         let top = |snapshot: &huterm_protocol::TerminalSnapshot| -> String {
-            snapshot.cells[..usize::from(snapshot.size.columns)]
+            snapshot.rows[0]
+                .cells
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect()
@@ -456,8 +574,7 @@ mod tests {
             assert_eq!(snapshot.viewport.bottom_offset, 0);
             assert!(
                 snapshot
-                    .cells
-                    .iter()
+                    .cells()
                     .map(|cell| cell.text.as_str())
                     .collect::<String>()
                     .contains("READY")
@@ -606,6 +723,24 @@ mod tests {
     }
 
     #[test]
+    fn clamped_pending_scroll_does_not_leave_debt_after_reversal() {
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 9 }, 10);
+        scroll.invalidate();
+        scroll.begin_request().unwrap();
+        assert!(scroll.scroll_rows(1));
+        // Output advances the authoritative viewport to the history boundary.
+        scroll.complete(Viewport { bottom_offset: 10 }, 10);
+        assert!(scroll.begin_request().is_none());
+        assert!(scroll.scroll_rows(-1));
+        assert_eq!(scroll.begin_request().unwrap().bottom_offset, 9);
+        assert_eq!(
+            scroll.submitted_scroll(),
+            Some(ScrollCommand::Relative(-1))
+        );
+    }
+
+    #[test]
     fn requests_coalesce_while_one_is_in_flight() {
         let mut controller = controller_with_history(100);
         controller.invalidate();
@@ -625,21 +760,19 @@ mod tests {
         controller.set_desired(10);
         controller.invalidate();
         let _ = controller.begin_request();
-        controller.complete(Viewport { bottom_offset: 10 }, 105);
+        controller.complete(Viewport { bottom_offset: 15 }, 105);
         assert_eq!(controller.desired(), 15);
-        assert_eq!(
-            controller.begin_request(),
-            Some(Viewport { bottom_offset: 15 })
-        );
+        assert_eq!(controller.begin_request(), None);
     }
 
     #[test]
     fn shrinking_history_clamps_the_anchor_and_respects_return_to_bottom() {
         let mut controller = controller_with_history(100);
         controller.set_desired(3);
-        controller.complete(Viewport { bottom_offset: 3 }, 95);
+        let _ = controller.begin_request();
+        controller.complete(Viewport { bottom_offset: 0 }, 95);
         assert_eq!(controller.desired(), 0);
-        assert_eq!(controller.begin_request(), Some(Viewport::default()));
+        assert_eq!(controller.begin_request(), None);
 
         let mut controller = controller_with_history(100);
         controller.set_desired(40);

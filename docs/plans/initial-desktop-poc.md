@@ -1,5 +1,10 @@
 # Initial desktop proof-of-concept plan
 
+The [terminal-engine experiment](terminal-engines.md) supersedes this plan's
+Alacritty-only engine, flat snapshots, and client-owned terminal viewport rules.
+The runtime owns one shared terminal scroll position; window navigation remains
+independent. The rest of this document records the initial desktop design.
+
 Status: portable core tests, repository checks, Linux native tests, and the
 Linux Xvfb smoke pass locally. CI enforces the same suite on Apple Silicon
 macOS and Linux x86_64 as the revision-bound PR gate; manual visual/input

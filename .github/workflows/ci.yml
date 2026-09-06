@@ -43,11 +43,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust with Mise
+      - name: Install build tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust cargo:cargo-packager
+          install_args: rust bun zig cargo:cargo-packager
           minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
@@ -59,13 +59,13 @@ jobs:
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = arm64
 
-      - name: Verify Rust
+      - name: Verify Rust and both terminal engines
         run: mise run verify:platform
 
       - name: Verify cancellable native Quit
         run: mise run smoke:macos-quit
 
-      - name: Build and verify Huterm.app
+      - name: Build and verify Huterm.app with both engines
         run: mise run package:macos
 
   verify-linux:
@@ -85,11 +85,11 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             mesa-vulkan-drivers twm xvfb
 
-      - name: Install Rust with Mise
+      - name: Install build tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust cargo:cargo-deny
+          install_args: rust bun zig cargo:cargo-deny
           minimum_release_age: 3d
 
       - name: Cache Cargo build artifacts
@@ -98,14 +98,19 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify Rust
+      - name: Verify Rust and both terminal engines
         run: mise run verify:platform
 
       - name: Audit dependencies
-        run: mise run license
+        run: |
+          mise run license
+          mise run audit:scripts
 
       - name: Smoke GPUI window under Xvfb
         run: mise run smoke:linux
 
       - name: Verify scroll performance budgets
         run: mise run bench:scroll
+
+      - name: Verify Ghostty scroll performance budgets
+        run: mise run bench:scroll:ghostty

@@ -29,7 +29,7 @@ An ordered container within a workspace, containing one pane layout.
 A leaf in a tab's split tree that displays a terminal.
 
 **Terminal**:
-A PTY, its child process, terminal-emulator state, and scrollback.
+A PTY, its child process, terminal-emulator state, scrollback, and shared viewport.
 
 **Client**:
 A desktop, TUI, or command-line connection to the runtime.
@@ -39,8 +39,9 @@ A desktop view with its own selected workspace. A workspace can appear in more
 than one window, and a window can switch between workspaces.
 
 **Attachment**:
-A view's connection to a workspace, with independent navigation and viewport
-state. Detaching does not mean closing the workspace or its terminals.
+A view's connection to a workspace, with independent workspace/tab selection and
+presentation state. Terminal scrolling uses the terminal's shared viewport.
+Detaching does not mean closing the workspace or its terminals.
 
 **Client layout**:
 The saved arrangement of a client's views, workspace selections, and presentation

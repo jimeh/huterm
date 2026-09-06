@@ -10,7 +10,7 @@ async fn acknowledge(
     probe: &str,
     cx: &gpui::AsyncApp,
 ) {
-    use huterm_protocol::{TerminalInput, Viewport};
+    use huterm_protocol::TerminalInput;
     use std::time::{Duration, Instant};
 
     // Input echo cannot produce the ACK prefix; only the live shell loop can.
@@ -19,7 +19,7 @@ async fn acknowledge(
         .unwrap();
     let expected = format!("ACK:{probe}");
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut request = client.request_snapshot(Viewport::default()).unwrap();
+    let mut request = client.request_snapshot().unwrap();
     loop {
         assert!(
             Instant::now() < deadline,
@@ -28,14 +28,13 @@ async fn acknowledge(
         if let Some(reply) = request.try_recv().unwrap() {
             let text: String = reply
                 .snapshot
-                .cells
-                .iter()
+                .cells()
                 .map(|cell| cell.text.as_str())
                 .collect();
             if text.contains(&expected) {
                 return;
             }
-            request = client.request_snapshot(Viewport::default()).unwrap();
+            request = client.request_snapshot().unwrap();
         }
         cx.background_executor()
             .timer(Duration::from_millis(10))
@@ -47,9 +46,7 @@ async fn acknowledge(
 fn main() {
     use gpui::Application;
     use huterm_core::{RuntimeError, TerminalRuntime};
-    use huterm_protocol::{
-        CellSize, GridSize, TerminalCommand, TerminalId, Viewport,
-    };
+    use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalId};
     use std::cell::RefCell;
     use std::io::Write as _;
     use std::rc::Rc;
@@ -61,6 +58,11 @@ fn main() {
     }
 
     let command = TerminalCommand {
+        engine: match std::env::args().nth(1).as_deref() {
+            None | Some("alacritty") => huterm_protocol::TerminalEngineKind::Alacritty,
+            Some("ghostty") => huterm_protocol::TerminalEngineKind::Ghostty,
+            Some(other) => panic!("unknown smoke engine: {other}"),
+        },
         program: "/bin/sh".into(),
         arguments: vec!["-c".into(), r#"printf READY; while IFS= read -r value; do printf 'ACK:%s\n' "$value"; done"#.into()],
         working_directory: std::env::current_dir().unwrap(),
@@ -79,7 +81,7 @@ fn main() {
         let quit_client = client.clone();
         cx.on_app_quit(move |_| {
             assert!(matches!(
-                quit_client.read_snapshot(Viewport::default()),
+                quit_client.read_snapshot(),
                 Err(RuntimeError::Stopped)
             ));
             marker("will-terminate-after-cleanup");
@@ -112,7 +114,7 @@ fn main() {
             marker("capture-before-cleanup");
             runtime.borrow_mut().take().unwrap().shutdown().unwrap();
             assert!(matches!(
-                client.read_snapshot(Viewport::default()),
+                client.read_snapshot(),
                 Err(RuntimeError::Stopped)
             ));
             native_quit::allow_termination();

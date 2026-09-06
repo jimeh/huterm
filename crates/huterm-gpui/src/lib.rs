@@ -70,9 +70,7 @@ mod package_tests {
         );
         assert_eq!(
             packager["beforePackagingCommand"].as_str(),
-            Some(
-                "cargo build --release --locked --target aarch64-apple-darwin -p huterm"
-            )
+            Some("mise run package:build:macos")
         );
         assert!(packager.get("version").is_none());
         assert_eq!(package["version"]["workspace"].as_bool(), Some(true));

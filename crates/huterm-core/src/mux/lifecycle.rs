@@ -328,12 +328,11 @@ impl Mux {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{
-        CellSize, GridSize, TerminalCommand, TerminalInput, Viewport,
-    };
+    use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalInput};
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
+            engine: huterm_protocol::TerminalEngineKind::default(),
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -348,12 +347,9 @@ mod tests {
     fn ready(client: &RuntimeClient, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let snapshot = client.read_snapshot(Viewport::default()).unwrap();
-            let output: String = snapshot
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
+            let snapshot = client.read_snapshot().unwrap();
+            let output: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
             if output.contains(text) {
                 return;
             }
@@ -434,7 +430,7 @@ mod tests {
             mux.select_tab(opened.tab.id).unwrap().workspace,
             Some(source_workspace)
         );
-        assert!(opened.client.read_snapshot(Viewport::default()).is_ok());
+        assert!(opened.client.read_snapshot().is_ok());
         mux.shutdown().unwrap();
     }
 
@@ -504,7 +500,7 @@ mod tests {
             ),
             Err(nix::errno::Errno::ESRCH)
         );
-        assert!(opened.client.read_snapshot(Viewport::default()).is_err());
+        assert!(opened.client.read_snapshot().is_err());
     }
     #[test]
     fn new_background_job_requires_renewed_consent_and_quit_includes_zero_views()
@@ -618,11 +614,23 @@ mod tests {
 
     #[test]
     fn root_exit_completes_the_terminal_even_with_a_surviving_slave_holder() {
+        exited_holder(huterm_protocol::TerminalEngineKind::Alacritty);
+    }
+
+    #[test]
+    fn ghostty_root_exit_completes_the_terminal_even_with_a_surviving_slave_holder()
+     {
+        exited_holder(huterm_protocol::TerminalEngineKind::Ghostty);
+    }
+
+    fn exited_holder(engine: huterm_protocol::TerminalEngineKind) {
         let fixture = super::holder_fixture::HolderFixture::new();
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
         let workspace = mux.create_workspace(session, None).unwrap();
-        let opened = mux.open_tab(workspace, &fixture.command()).unwrap();
+        let mut command = fixture.command();
+        command.engine = engine;
+        let opened = mux.open_tab(workspace, &command).unwrap();
         let helper = fixture.wait_ready();
         let root = opened.client.job_context().unwrap().shell.unwrap();
         let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
@@ -674,7 +682,7 @@ mod tests {
                 "reaping emitted a second exit event"
             );
         }
-        assert!(opened.client.read_snapshot(Viewport::default()).is_ok());
+        assert!(opened.client.read_snapshot().is_ok());
         mux.commit_close(&current, &current.recheck(), false)
             .unwrap();
         assert!(

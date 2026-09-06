@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 macro_rules! opaque_id {
     ($name:ident, $docs:literal) => {
@@ -101,11 +102,43 @@ pub struct CellSize {
     pub height: u16,
 }
 
-/// Client-owned viewport selection.
+/// Shared terminal viewport owned by the runtime.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Viewport {
     /// Number of rows above the live screen bottom.
     pub bottom_offset: usize,
+}
+
+/// Emulator selected once when a terminal starts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TerminalEngineKind {
+    /// Alacritty 0.26.0, available in every build.
+    #[default]
+    Alacritty,
+    /// Ghostty via libghostty-vt, available in every Huterm build.
+    Ghostty,
+}
+
+impl TerminalEngineKind {
+    /// Stable configuration and benchmark name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Alacritty => "alacritty",
+            Self::Ghostty => "ghostty",
+        }
+    }
+}
+
+/// Ordered movement of the shared terminal viewport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollCommand {
+    /// Move toward history for positive values, toward live output for negative.
+    Relative(i64),
+    /// Set a bottom-relative offset, clamped to retained history.
+    Absolute(usize),
+    /// Follow live output.
+    Live,
 }
 
 /// A keyboard key whose terminal encoding depends on emulator modes.
@@ -258,6 +291,8 @@ pub enum TerminalInput {
 /// A command used to start a terminal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalCommand {
+    /// Engine captured at creation; existing terminals retain their engine.
+    pub engine: TerminalEngineKind,
     /// Executable path.
     pub program: PathBuf,
     /// Arguments excluding the executable itself.
@@ -423,6 +458,13 @@ pub struct TerminalModes {
     pub mouse_encoding: MouseEncoding,
 }
 
+/// One immutable row shared between complete snapshot generations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalRow {
+    /// Cells in display-column order.
+    pub cells: Vec<Cell>,
+}
+
 /// Immutable viewport snapshot produced by the terminal runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalSnapshot {
@@ -430,20 +472,27 @@ pub struct TerminalSnapshot {
     pub terminal_id: TerminalId,
     /// Monotonic terminal generation.
     pub generation: u64,
-    /// Grid size represented by `cells`.
+    /// Grid size represented by `rows`.
     pub size: GridSize,
-    /// Row-major cells, exactly `size.rows * size.columns` entries.
-    pub cells: Vec<Cell>,
+    /// Complete viewport rows, each containing `size.columns` cells.
+    pub rows: Vec<Arc<TerminalRow>>,
     /// Cursor when it falls within this viewport.
     pub cursor: Option<Cursor>,
     /// Modes current at this generation.
     pub modes: TerminalModes,
     /// Actual viewport used after clamping the requested offset.
     pub viewport: Viewport,
-    /// Maximum valid client scroll offset.
+    /// Maximum valid shared scroll offset.
     pub history_size: usize,
     /// Effective cursor color override, when terminal content defines one.
     pub cursor_color: Option<Rgb>,
+}
+
+impl TerminalSnapshot {
+    /// Iterates the viewport cells without copying their contents.
+    pub fn cells(&self) -> impl Iterator<Item = &Cell> {
+        self.rows.iter().flat_map(|row| row.cells.iter())
+    }
 }
 
 /// Child-process exit status independent of a platform process type.
