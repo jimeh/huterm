@@ -65,8 +65,8 @@ or require changes to `~/.rustfmt.toml`.
 Keep the Rust version, minimal profile, and `clippy`/`rustfmt` components in
 `mise.toml` aligned with `rust-toolchain.toml`; CI installs only the named Mise
 tools for each job. `mise.lock` also records the Rust version, so run
-`mise install` and commit the lock after any toolchain bump; otherwise CI fails to
-resolve the tool.
+`mise install` and commit the lock after any toolchain bump; otherwise CI
+fails to resolve the tool.
 
 Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
 CI cache can restore its Rust install symlink without the corresponding rustup
