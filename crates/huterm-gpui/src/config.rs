@@ -12,7 +12,8 @@ family = "Menlo"
 size = 14.0
 
 [terminal]
-# Close exited tabs after any required job confirmation.
+# Close tabs quietly when their root shell exits.
+# Set false to retain read-only history after exit.
 close_on_exit = true
 
 [window]
