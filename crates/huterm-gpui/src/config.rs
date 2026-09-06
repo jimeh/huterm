@@ -10,6 +10,9 @@ use serde::Deserialize;
 pub(super) const DEFAULT_CONFIG: &str = r##"[terminal]
 # Changes apply to newly created terminals. Both engines are included in every build.
 engine = "alacritty"
+# Close tabs quietly when their root shell exits.
+# Set false to retain read-only history after exit.
+close_on_exit = true
 
 [font]
 family = "Menlo"
@@ -37,7 +40,22 @@ pub(super) struct Config {
     pub(super) engine: TerminalEngineKind,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
+    pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct TerminalConfig {
+    pub(super) close_on_exit: bool,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            close_on_exit: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -115,6 +133,7 @@ impl Default for Config {
             },
             theme: Theme::default(),
             window: WindowConfig::default(),
+            terminal: TerminalConfig::default(),
         }
     }
 }
@@ -335,6 +354,9 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     Ok(Config {
         engine,
         window: raw.window,
+        terminal: TerminalConfig {
+            close_on_exit: raw.terminal.close_on_exit,
+        },
         font: FontConfig {
             family: raw.font.family,
             size: raw.font.size,
@@ -382,11 +404,13 @@ struct RawConfig {
 #[serde(default, deny_unknown_fields)]
 struct RawTerminal {
     engine: String,
+    close_on_exit: bool,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: "alacritty".into(),
+            close_on_exit: TerminalConfig::default().close_on_exit,
         }
     }
 }
@@ -461,6 +485,36 @@ mod tests {
         let result = parse_at(source, &directory.join("config.toml"));
         fs::remove_dir(directory).expect("remove empty config directory");
         result
+    }
+
+    #[test]
+    fn terminal_close_on_exit_defaults_true_and_requires_a_boolean() {
+        assert!(Config::default().terminal.close_on_exit);
+        assert!(parse("").unwrap().terminal.close_on_exit);
+        assert!(parse(DEFAULT_CONFIG).unwrap().terminal.close_on_exit);
+        assert!(
+            !parse("[terminal]\nclose_on_exit = false")
+                .unwrap()
+                .terminal
+                .close_on_exit
+        );
+        for value in ["0", "\"false\"", "[]"] {
+            assert!(
+                parse(&format!("[terminal]\nclose_on_exit = {value}")).is_err()
+            );
+        }
+        assert!(parse("[terminal]\nclose_on_exiit = false").is_err());
+        for (name, engine) in [
+            ("alacritty", TerminalEngineKind::Alacritty),
+            ("ghostty", TerminalEngineKind::Ghostty),
+        ] {
+            let config = parse(&format!(
+                "[terminal]\nengine = '{name}'\nclose_on_exit = false"
+            ))
+            .unwrap();
+            assert_eq!(config.engine, engine);
+            assert!(!config.terminal.close_on_exit);
+        }
     }
 
     #[test]

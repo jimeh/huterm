@@ -159,7 +159,8 @@ Desktop structural commands serialize through the Mux mutex on background
 workers. Never acquire it from rendering or input callbacks. Terminal clients
 send directly to their own runtime, so sibling input and snapshots continue
 while another workspace spawns or closes. TerminalView destruction only detaches;
-window commands explicitly delete their initial private session.
+window commands use assessed attachment close to detach or delete the final
+view's session.
 Use one refresh pump per window to drain bounded batches of tab events. Only the
 active tab may begin a snapshot request. Keep ChromeLayout as the shared source
 of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
@@ -246,9 +247,55 @@ are invalid. Tab title resolution uses the current client title cache without
 locking Mux on the UI thread. Desktop tab records are initial snapshots;
 propagating later core renames to views belongs with the deferred rename UI.
 Moves retain empty parents and never change terminal lifetime. Desktop windows
-retain the ID of their initial private session for explicit close and orphaned
-spawn cleanup. Roll back newly created sessions on initial workspace/tab failure.
+retain their attachment identity for assessed close. Orphaned spawn cleanup
+must preserve resources adopted by another attachment or moved elsewhere. Roll
+back newly created sessions on initial workspace/tab failure.
 
+Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
+and retarget preserve zero-view sessions; an assessed last-window close deletes
+its session. Desktop close uses prepare/check/commit and request generations.
+Run process-table scans off both Mux and terminal-parser threads; carry fresh
+assessed background process groups into teardown. For live-shell PTY matching,
+normalize macOS ps ttys000/s000 abbreviations before comparing tty names.
+Root-shell exit completes the terminal, matching Ghostty, iTerm2, WezTerm, and
+Alacritty. Reap through portable-pty immediately, even when history is retained;
+do not require an empty OS session or warn about post-exit survivors. Clear
+historical cleanup groups after exit, and never signal them when closing
+completed history. JobLifecycle lets queued live assessments observe exit or
+retirement without looking up old process IDs. Live-shell job warnings remain.
+Do not restore post-exit ps/getsid scans: concurrent ps children and unrelated
+process churn made ordinary macOS exits require confirmation or retain zombies.
+Use explicit FIFO release in the surviving-holder test, never a timed sleep.
+Quit captures every session plus window navigation and geometry before cleanup;
+retain the first capture through repeated shutdown. The native AppKit bridge
+adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
+until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
+native_quit.rs; run mise run smoke:macos-quit on macOS for real terminate/cancel/
+retry/allow coverage. An on_app_quit callback alone cannot cancel Dock Quit.
+
+Allow no-PTY Quit confirmation hosts while quitting, including when a queued
+Application request outlives the final Window close. Only new shell windows
+remain blocked. Use commit_close_with for capture and termination-gate changes:
+validate once before side effects, then capture before teardown. A second
+freshness check after capture can strand a half-accepted Quit.
+Close consent follows process groups with stable leader creation identity,
+including exec and worker churn; leaderless groups need an original surviving
+member. New groups or unknown-state widening require reassessment. Use fresh
+members for cleanup. Native cancellation tests must send input and observe a
+unique shell ACK after cancel and retry; an exited terminal retains snapshots.
+
+The window refresh pump queues shell-exit transitions once for assessed tab close.
+Keep automatic exit requests separate from the merged manual close intent, so
+canceling one prompt does not lose inactive siblings. Config reload changes only
+future exit events. Exited tabs retain history and local selection/scrolling;
+close their input queue and reset mouse ownership without emitting releases.
+Core drops queued input and terminal replies after root exit, stops the writer,
+and keeps final-output parsing, snapshot/selection requests, and emulator resize.
+A late writer failure after observed exit must not destroy retained history.
+
+Give confirmation dialogs an explicit viewport-clamped width before measuring
+wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
+let buttons escape the panel; keep text and button containers nonshrinking.
 Ghostty builds use libghostty-vt/sys 0.2.1, native revision
 `a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig 0.15.2. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the

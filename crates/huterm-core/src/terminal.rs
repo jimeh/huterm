@@ -37,6 +37,7 @@ pub struct RuntimeClient {
     queued_input_bytes: Arc<AtomicUsize>,
     events: Arc<Mutex<Receiver<TerminalEvent>>>,
     invalidation_pending: Arc<AtomicBool>,
+    shutdown_groups: Arc<Mutex<Vec<i32>>>,
 }
 
 impl RuntimeClient {
@@ -64,6 +65,7 @@ impl RuntimeClient {
     }
 
     /// Sends structured input using emulator modes owned by the runtime.
+    /// Input queued after observed child exit is discarded; history remains readable.
     ///
     /// # Errors
     ///
@@ -224,6 +226,19 @@ impl RuntimeClient {
         receiver.recv().await.map_err(|_| RuntimeError::Stopped)
     }
 
+    pub(crate) fn record_shutdown_groups(&self, groups: Vec<i32>) {
+        *self
+            .shutdown_groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = groups;
+    }
+
+    pub(crate) fn job_context(&self) -> Option<crate::jobs::JobContext> {
+        let (reply, receiver) = mpsc::channel();
+        self.controls.send(RuntimeControl::JobContext(reply)).ok()?;
+        receiver.recv_timeout(Duration::from_secs(1)).ok()
+    }
+
     /// Requests orderly terminal shutdown.
     ///
     /// # Errors
@@ -374,6 +389,8 @@ impl TerminalRuntime {
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
         let runtime_input_bytes = Arc::clone(&queued_input_bytes);
+        let shutdown_groups = Arc::new(Mutex::new(Vec::new()));
+        let runtime_groups = Arc::clone(&shutdown_groups);
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
@@ -397,6 +414,7 @@ impl TerminalRuntime {
                         runtime_pending,
                         runtime_closing,
                         runtime_input_bytes,
+                        runtime_groups,
                         &startup_sender,
                     )
                 })();
@@ -423,6 +441,7 @@ impl TerminalRuntime {
             queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
             invalidation_pending,
+            shutdown_groups,
         };
         Ok(Self {
             client,
@@ -515,6 +534,8 @@ enum RuntimeMessage {
 #[derive(Debug)]
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
+    JobContext(Sender<crate::jobs::JobContext>),
+    PtyEof,
     Snapshot {
         scroll: Option<ScrollCommand>,
         reply: async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
@@ -525,6 +546,7 @@ enum RuntimeControl {
         reply: async_channel::Sender<Result<Option<String>, RuntimeError>>,
     },
     WorkerFailed(String),
+    WriterFailed(String),
     Wake,
 }
 
@@ -565,6 +587,7 @@ fn run_terminal(
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
+    shutdown_groups: Arc<Mutex<Vec<i32>>>,
     startup: &SyncSender<Result<(), RuntimeError>>,
 ) -> Result<(), RuntimeError> {
     let parts = match process.into_parts() {
@@ -611,12 +634,14 @@ fn run_terminal(
         }
     };
     let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
+    let input_closed = Arc::new(AtomicBool::new(false));
     let writer_join = match spawn_writer(
         terminal_id,
         writer,
         writer_receiver,
         control_sender,
         Arc::clone(&closing),
+        Arc::clone(&input_closed),
     ) {
         Ok(join) => join,
         Err(error) => {
@@ -645,28 +670,26 @@ fn run_terminal(
         engine.generation(),
     );
 
+    let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
+    #[cfg(test)]
+    let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
-        pty::record_foreground_group(master.as_ref(), &mut process_groups);
         if !child_exited {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    child_exited = true;
-                    let _ = events.send(TerminalEvent::Exited {
-                        terminal_id,
-                        status: ExitStatus {
-                            code: Some(status.exit_code()),
-                            success: status.success(),
-                        },
-                    });
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    report_failure(&events, terminal_id, error.to_string());
-                    closing.store(true, Ordering::Release);
-                }
-            }
+            pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        }
+        if let Err(error) = observe_child_exit(
+            child.as_mut(),
+            &lifecycle,
+            terminal_id,
+            &events,
+            &mut child_exited,
+            &input_closed,
+            &mut pending_writes,
+        ) {
+            report_failure(&events, terminal_id, error);
+            closing.store(true, Ordering::Release);
         }
         while let Ok(control) = controls.try_recv() {
             if closing.load(Ordering::Acquire) {
@@ -705,19 +728,62 @@ fn run_terminal(
                     let _ =
                         reply.try_send(engine.extract_text(generation, range));
                 }
+                RuntimeControl::WriterFailed(message) => {
+                    // Exit may have happened since the loop's initial poll.
+                    if let Err(error) = observe_child_exit(
+                        child.as_mut(),
+                        &lifecycle,
+                        terminal_id,
+                        &events,
+                        &mut child_exited,
+                        &input_closed,
+                        &mut pending_writes,
+                    ) {
+                        report_failure(&events, terminal_id, error);
+                        closing.store(true, Ordering::Release);
+                    } else if !child_exited {
+                        report_failure(&events, terminal_id, message);
+                        closing.store(true, Ordering::Release);
+                    }
+                }
                 RuntimeControl::WorkerFailed(message) => {
                     report_failure(&events, terminal_id, message);
                     closing.store(true, Ordering::Release);
                 }
+                RuntimeControl::PtyEof => {
+                    #[cfg(test)]
+                    {
+                        pty_eof = true;
+                    }
+                }
+                RuntimeControl::JobContext(reply) => {
+                    let _ = reply.send(crate::jobs::JobContext {
+                        lifecycle: Arc::clone(&lifecycle),
+                        shell: child.process_id(),
+                        foreground: (!child_exited)
+                            .then(|| master.process_group_leader())
+                            .flatten(),
+                        #[cfg(test)]
+                        exited: child_exited,
+                        #[cfg(test)]
+                        pty_eof,
+                        tty: master.tty_name().map(|name| {
+                            name.to_string_lossy()
+                                .trim_start_matches("/dev/")
+                                .to_owned()
+                        }),
+                    });
+                }
                 RuntimeControl::ForegroundJob(reply) => {
-                    let shell = child
-                        .process_id()
-                        .and_then(|id| i32::try_from(id).ok());
-                    let foreground = master.process_group_leader();
-                    let busy = !child_exited
-                        && foreground.zip(shell).is_none_or(
+                    let busy = !child_exited && {
+                        let shell = child
+                            .process_id()
+                            .and_then(|id| i32::try_from(id).ok());
+                        let foreground = master.process_group_leader();
+                        foreground.zip(shell).is_none_or(
                             |(foreground, shell)| foreground != shell,
-                        );
+                        )
+                    };
                     let _ = reply.try_send(busy);
                 }
                 RuntimeControl::Wake => {}
@@ -758,6 +824,11 @@ fn run_terminal(
                     }
                 };
                 for effect in effects {
+                    if child_exited
+                        && matches!(effect, EngineEffect::PtyWrite(_))
+                    {
+                        continue;
+                    }
                     if handle_effect(
                         effect,
                         terminal_id,
@@ -788,6 +859,9 @@ fn run_terminal(
                 reserved_bytes,
             } => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
+                if child_exited {
+                    continue;
+                }
                 let modes = match engine.modes() {
                     Ok(modes) => modes,
                     Err(error) => {
@@ -810,7 +884,9 @@ fn run_terminal(
                 }
             }
             RuntimeMessage::Resize { grid, cell } => {
-                if master.resize(pty::pty_size(grid, cell)).is_err() {
+                if !child_exited
+                    && master.resize(pty::pty_size(grid, cell)).is_err()
+                {
                     let _ = events.send(TerminalEvent::Failed {
                         terminal_id,
                         message: "failed to resize PTY".into(),
@@ -853,7 +929,20 @@ fn run_terminal(
     }
 
     closing.store(true, Ordering::Release);
-    pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    lifecycle.retire();
+    if child_exited {
+        // Root exit completes the terminal. Never signal historical groups
+        // after reaping, even when detached descendants remain alive.
+        process_groups = pty::process_groups(None);
+    } else {
+        pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        process_groups.assessed = shutdown_groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect();
+    }
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
     drop(writer_sender);
     drop(master);
@@ -903,7 +992,10 @@ fn spawn_reader(
                     }
                 }
                 match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        let _ = controls.send(RuntimeControl::PtyEof);
+                        break;
+                    }
                     Ok(count) => {
                         pending = Some(buffer[..count].to_vec());
                     }
@@ -933,18 +1025,50 @@ fn spawn_reader(
         .map_err(|error| RuntimeError::Thread(error.to_string()))
 }
 
+fn observe_child_exit(
+    child: &mut dyn portable_pty::Child,
+    lifecycle: &crate::jobs::JobLifecycle,
+    terminal_id: TerminalId,
+    events: &Sender<TerminalEvent>,
+    exited: &mut bool,
+    input_closed: &AtomicBool,
+    pending_writes: &mut VecDeque<Vec<u8>>,
+) -> Result<(), String> {
+    if *exited {
+        return Ok(());
+    }
+    let status = child.try_wait().map_err(|error| error.to_string())?;
+    if let Some(status) = status {
+        *exited = true;
+        lifecycle.observe_exit();
+        input_closed.store(true, Ordering::Release);
+        pending_writes.clear();
+        let _ = events.send(TerminalEvent::Exited {
+            terminal_id,
+            status: ExitStatus {
+                code: Some(status.exit_code()),
+                success: status.success(),
+            },
+        });
+    }
+    Ok(())
+}
+
 fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
     messages: Receiver<WriterMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
+    input_closed: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-writer-{}", terminal_id.get()))
         .spawn(move || {
             let mut current: Option<(Vec<u8>, usize)> = None;
-            while !closing.load(Ordering::Acquire) {
+            while !closing.load(Ordering::Acquire)
+                && !input_closed.load(Ordering::Acquire)
+            {
                 if current.is_none() {
                     current = match messages.recv_timeout(RUNTIME_POLL_INTERVAL)
                     {
@@ -952,6 +1076,9 @@ fn spawn_writer(
                         Err(RecvTimeoutError::Timeout) => continue,
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
+                }
+                if input_closed.load(Ordering::Acquire) {
+                    break;
                 }
                 let Some((bytes, offset)) = current.as_mut() else {
                     continue;
@@ -967,7 +1094,7 @@ fn spawn_writer(
                         }
                         Err(error) => {
                             let _ =
-                                controls.send(RuntimeControl::WorkerFailed(
+                                controls.send(RuntimeControl::WriterFailed(
                                     format!("PTY flush failed: {error}"),
                                 ));
                             break;
@@ -977,7 +1104,7 @@ fn spawn_writer(
                 }
                 match writer.write(&bytes[*offset..]) {
                     Ok(0) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                        let _ = controls.send(RuntimeControl::WriterFailed(
                             "PTY write returned zero bytes".into(),
                         ));
                         break;
@@ -989,7 +1116,7 @@ fn spawn_writer(
                         thread::sleep(RUNTIME_POLL_INTERVAL);
                     }
                     Err(error) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
+                        let _ = controls.send(RuntimeControl::WriterFailed(
                             format!("PTY write failed: {error}"),
                         ));
                         break;
@@ -1120,6 +1247,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_clean_exits_reap_without_close_assessments() {
+        let runtimes: Vec<_> = (100..104)
+            .map(|id| {
+                let mut command = command("printf READY; read line; exit 0");
+                if id % 2 == 0 {
+                    command.engine =
+                        huterm_protocol::TerminalEngineKind::Ghostty;
+                }
+                TerminalRuntime::spawn(TerminalId::new(id), &command).unwrap()
+            })
+            .collect();
+        let clients: Vec<_> =
+            runtimes.iter().map(TerminalRuntime::client).collect();
+        let roots: Vec<_> = clients
+            .iter()
+            .map(|client| {
+                wait_for_text(client, "READY");
+                nix::unistd::Pid::from_raw(
+                    i32::try_from(client.job_context().unwrap().shell.unwrap())
+                        .unwrap(),
+                )
+            })
+            .collect();
+        for client in &clients {
+            client.send_input(TerminalInput::Text("\n".into())).unwrap();
+        }
+        for client in &clients {
+            assert!(wait_for_exit(client).success);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while roots
+            .iter()
+            .any(|root| nix::sys::signal::kill(*root, None).is_ok())
+        {
+            assert!(
+                Instant::now() < deadline,
+                "concurrent idle roots were not reaped"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        for runtime in runtimes {
+            runtime.shutdown().unwrap();
+        }
+    }
+
+    #[test]
+    fn clean_exit_reaps_automatically_while_retained_history_stays_available() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(93),
+            &command("printf FINAL; read line; exit 7"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "FINAL");
+        let root = client.job_context().unwrap().shell.unwrap();
+        let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
+        client.send_input(TerminalInput::Text("\n".into())).unwrap();
+        assert_eq!(
+            wait_for_exit(&client),
+            ExitStatus {
+                code: Some(7),
+                success: false
+            }
+        );
+        // Root exit reaps immediately, without an assessment or close request.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(root, None).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "idle history retained a zombie root"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let context = client.job_context().unwrap();
+        assert_eq!(
+            context
+                .lifecycle
+                .assess(|| panic!("exited history inspected live PID")),
+            crate::jobs::JobState::Idle
+        );
+        wait_for_text(&client, "FINAL");
+        runtime.shutdown().unwrap();
+        assert_eq!(
+            context.lifecycle.assess(|| panic!()),
+            crate::jobs::JobState::Unknown
+        );
+    }
+
+    #[test]
     fn snapshot_failure_reports_error_and_enters_runtime_cleanup() {
         let (reply, receiver) = async_channel::bounded(1);
         let (events, event_receiver) = mpsc::channel();
@@ -1139,6 +1355,146 @@ mod tests {
         assert!(
             matches!(event_receiver.try_recv(), Ok(TerminalEvent::Failed { terminal_id, message }) if terminal_id == id && message.contains("snapshot allocation failed"))
         );
+    }
+
+    #[test]
+    fn writer_failure_with_live_root_remains_observable_and_stops_runtime() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(92),
+            &command("printf READY; read line"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        client
+            .controls
+            .send(RuntimeControl::WriterFailed("test write failure".into()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(TerminalEvent::Failed { message, .. }) =
+                client.try_recv_event().unwrap()
+            {
+                assert_eq!(message, "test write failure");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "live-root write failure disappeared"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn exited_runtime_discards_late_input_and_replies_but_keeps_history() {
+        exited_history(huterm_protocol::TerminalEngineKind::Alacritty);
+    }
+
+    #[test]
+    fn ghostty_exited_runtime_discards_late_input_and_replies_but_keeps_history()
+     {
+        exited_history(huterm_protocol::TerminalEngineKind::Ghostty);
+    }
+
+    fn exited_history(engine: huterm_protocol::TerminalEngineKind) {
+        let mut command = command(
+            "i=0; while [ $i -lt 40 ]; do printf 'history\\n'; i=$((i + 1)); done; printf '\\033[?1004hFINAL'; exit 0",
+        );
+        command.engine = engine;
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
+        let client = runtime.client();
+        wait_for_exit(&client);
+        wait_for_text(&client, "FINAL");
+        for input in [
+            TerminalInput::Text("LATE".into()),
+            TerminalInput::Paste("PASTE".into()),
+            TerminalInput::Focus(true),
+        ] {
+            client.send_input(input).unwrap();
+        }
+        // Deliver an already-in-flight writer failure and final output that
+        // asks for a terminal reply after the root has exited.
+        client
+            .controls
+            .send(RuntimeControl::WriterFailed(
+                "late revoked PTY write".into(),
+            ))
+            .unwrap();
+        client
+            .messages
+            .send(RuntimeMessage::PtyOutput(b"TAIL\x1b[6n".to_vec()))
+            .unwrap();
+        let snapshot = wait_for_text(&client, "FINALTAIL");
+        assert!(snapshot.history_size > 0);
+        let history = client
+            .request_scrolled_snapshot(ScrollCommand::Absolute(
+                snapshot.history_size,
+            ))
+            .unwrap()
+            .recv_blocking()
+            .unwrap()
+            .snapshot;
+        assert!(history.viewport.bottom_offset > 0);
+        assert!(
+            history
+                .cells()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("history")
+        );
+        let selection = client
+            .request_selection(
+                snapshot.generation,
+                BufferRange {
+                    start: huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 0,
+                        column: 0,
+                    },
+                    end: huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 0,
+                        column: 8,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            selection
+                .receiver
+                .recv_blocking()
+                .unwrap()
+                .unwrap()
+                .as_deref(),
+            Some("FINALTAIL")
+        );
+        client
+            .resize(
+                GridSize::clamped(90, 30),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = client.read_snapshot().unwrap();
+            if snapshot.size == GridSize::clamped(90, 30) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        while let Some(event) = client.try_recv_event().unwrap() {
+            assert!(
+                !matches!(event, TerminalEvent::Failed { .. }),
+                "{event:?}"
+            );
+        }
+        assert_eq!(client.queued_input_bytes.load(Ordering::Acquire), 0);
+        runtime.shutdown().unwrap();
     }
 
     #[test]
@@ -1640,6 +1996,7 @@ mod tests {
             receiver,
             controls,
             Arc::clone(&closing),
+            Arc::new(AtomicBool::new(false)),
         )
         .expect("writer worker should start");
         sender

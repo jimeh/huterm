@@ -2518,9 +2518,11 @@ name = "huterm-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "gpui",
  "huterm-core",
  "huterm-protocol",
+ "objc",
  "serde",
  "toml 0.8.23",
 ]

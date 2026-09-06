@@ -27,14 +27,14 @@ pub(super) fn application_route(
     in_grid: bool,
     scrollbar: bool,
     shift: bool,
-    tracking: MouseTracking,
+    tracking: Option<MouseTracking>,
     displayed: usize,
     desired: usize,
 ) -> bool {
     in_grid
         && !scrollbar
         && !shift
-        && tracking != MouseTracking::Disabled
+        && tracking.is_some_and(|tracking| tracking != MouseTracking::Disabled)
         && displayed == 0
         && desired == 0
 }
@@ -270,6 +270,18 @@ mod tests {
     }
 
     #[test]
+    fn exited_terminal_returns_mouse_and_wheel_to_local_history() {
+        assert!(!application_route(true, false, false, None, 0, 0));
+        let mut mouse = MouseState::default();
+        assert!(!mouse.down(MouseButton::Left, false));
+        assert!(mouse.held(MouseButton::Left));
+        assert!(
+            mouse.cancel().is_empty(),
+            "local selection emitted a PTY release"
+        );
+    }
+
+    #[test]
     fn hidden_tab_cancels_its_press_without_waiting_for_another_tabs_release() {
         let mut hidden = state();
         let mut active = state();
@@ -425,7 +437,7 @@ mod tests {
             true,
             false,
             false,
-            MouseTracking::Buttons,
+            Some(MouseTracking::Buttons),
             0,
             0
         ));
@@ -434,22 +446,50 @@ mod tests {
                 false,
                 false,
                 false,
-                MouseTracking::Buttons,
+                Some(MouseTracking::Buttons),
                 0,
                 0,
             ),
-            application_route(true, true, false, MouseTracking::Buttons, 0, 0),
-            application_route(true, false, true, MouseTracking::Buttons, 0, 0),
+            application_route(
+                true,
+                true,
+                false,
+                Some(MouseTracking::Buttons),
+                0,
+                0,
+            ),
+            application_route(
+                true,
+                false,
+                true,
+                Some(MouseTracking::Buttons),
+                0,
+                0,
+            ),
             application_route(
                 true,
                 false,
                 false,
-                MouseTracking::Disabled,
+                Some(MouseTracking::Disabled),
                 0,
                 0,
             ),
-            application_route(true, false, false, MouseTracking::Buttons, 1, 0),
-            application_route(true, false, false, MouseTracking::Buttons, 0, 1),
+            application_route(
+                true,
+                false,
+                false,
+                Some(MouseTracking::Buttons),
+                1,
+                0,
+            ),
+            application_route(
+                true,
+                false,
+                false,
+                Some(MouseTracking::Buttons),
+                0,
+                1,
+            ),
         ] {
             assert!(!route);
         }

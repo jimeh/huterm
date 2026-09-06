@@ -134,8 +134,11 @@ if [ "$(uname -s)" != Linux ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --workspace --locked
+smoke_config=$(mktemp)
+trap 'rm -f "$smoke_config"' EXIT
+printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
-SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
 status=$?
 set -e
@@ -360,6 +363,15 @@ depends = ["lint:docs", "ci:workflows"]
 description = "Run the broad CI-equivalent validation"
 depends = ["verify:toolchain"]
 run = "mise run verify:parallel"
+
+[tasks."smoke:macos-quit"]
+depends = ["ghostty:prepare"]
+description = "Verify cancellable AppKit termination with a real PTY"
+run = [
+  "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_quit_smoke",
+  "bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke",
+  "bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke ghostty",
+]
 
 [tasks."bench:engine"]
 depends = ["ghostty:prepare"]

@@ -10,6 +10,8 @@ mod desktop;
 mod input_queue;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod mouse;
+#[cfg(target_os = "macos")]
+mod native_quit;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

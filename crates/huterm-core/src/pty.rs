@@ -252,12 +252,14 @@ fn set_nonblocking(_: &dyn MasterPty) -> Result<(), RuntimeError> {
 pub(crate) struct ProcessGroups {
     shell: Option<i32>,
     foreground: Option<i32>,
+    pub(crate) assessed: BTreeSet<i32>,
 }
 
 pub(crate) fn process_groups(child_pid: Option<u32>) -> ProcessGroups {
     ProcessGroups {
         shell: child_pid.and_then(|pid| i32::try_from(pid).ok()),
         foreground: None,
+        assessed: BTreeSet::new(),
     }
 }
 
@@ -312,13 +314,20 @@ pub(crate) fn terminate_child(
 impl ProcessGroups {
     #[cfg(unix)]
     fn signal_targets(&self, child_running: bool) -> BTreeSet<i32> {
-        let mut targets = BTreeSet::new();
+        let mut targets: BTreeSet<_> = self
+            .assessed
+            .iter()
+            .copied()
+            .filter(|group| *group > 0)
+            .collect();
         if let Some(foreground) = self.foreground {
             targets.insert(foreground);
         }
         if child_running && let Some(shell) = self.shell {
             targets.insert(shell);
-        } else if let Some(shell) = self.shell {
+        } else if let Some(shell) = self.shell
+            && !self.assessed.contains(&shell)
+        {
             targets.remove(&shell);
         }
         targets

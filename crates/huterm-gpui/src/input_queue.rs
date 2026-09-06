@@ -8,6 +8,7 @@ pub(super) const PENDING_INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct InputQueue {
+    closed: bool,
     inputs: VecDeque<TerminalInput>,
     bytes: usize,
     motion_run: bool,
@@ -16,10 +17,18 @@ pub(super) struct InputQueue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Admission {
     Accepted,
+    Closed,
     Full,
 }
 
 impl InputQueue {
+    pub(super) fn close(&mut self) {
+        *self = Self {
+            closed: true,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn boundary(&mut self) {
         self.motion_run = false;
     }
@@ -40,6 +49,9 @@ impl InputQueue {
         owned_release: bool,
         mut send: impl FnMut(TerminalInput) -> Result<(), RuntimeError>,
     ) -> Result<Admission, RuntimeError> {
+        if self.closed {
+            return Ok(Admission::Closed);
+        }
         let motion = matches!(&input, TerminalInput::Mouse(mouse) if matches!(mouse.action, MouseAction::Motion(_)));
         if motion
             && self.motion_run
@@ -122,6 +134,39 @@ mod tests {
             position: MousePosition { column, row: 0 },
             modifiers: Modifiers::default(),
         })
+    }
+
+    #[test]
+    fn exit_discards_pending_input_and_rejects_all_later_terminal_input() {
+        let mut queue = InputQueue::default();
+        queue
+            .enqueue(TerminalInput::Text("queued".into()), false, |_| {
+                Err(RuntimeError::Busy)
+            })
+            .unwrap();
+        queue.close();
+        queue
+            .retry(|_| panic!("exited input reached runtime"))
+            .unwrap();
+        for input in [
+            TerminalInput::Text("key".into()),
+            TerminalInput::Paste("paste".into()),
+            TerminalInput::Focus(true),
+            TerminalInput::Focus(false),
+            mouse(MouseAction::Press(MouseButton::Left), 0),
+            mouse(MouseAction::Release(MouseButton::Left), 0),
+        ] {
+            assert_eq!(
+                queue
+                    .enqueue(input, false, |_| panic!(
+                        "exited input reached runtime"
+                    ))
+                    .unwrap(),
+                Admission::Closed
+            );
+        }
+        assert_eq!(queue.bytes, 0);
+        assert!(queue.inputs.is_empty());
     }
 
     #[test]

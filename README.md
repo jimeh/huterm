@@ -50,10 +50,27 @@ where more tabs remain. The new-tab button stays visible and follows the last
 tab in vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 
-Closing a tab stops its terminal. Closing a window deletes its private session
-and stops all its terminals; closing the last window quits. Foreground jobs
-require confirmation before closing. An exited shell remains visible until its
-tab is closed. Window and workspace restoration is not implemented yet.
+Closing a tab stops its terminal. Windows attach to sessions. Closing a window
+only detaches when another view remains; closing its final view terminates that
+session. Core detachment and attachment retargeting preserve zero-view sessions.
+Huterm stays alive without windows while any session survives, and macOS Dock
+reopen creates a window. Hiding a window keeps its attachment.
+
+Close and Quit warn about foreground/background jobs or unknown process state.
+Idle shells need no confirmation. Structure and job evidence are rechecked before
+teardown. Consent covers existing job groups while their leader creation identity
+survives, including leader exec and child churn. A leaderless group needs an
+original surviving member. New groups, lost identity evidence, structural changes,
+or newly unknown process state require reassessment and renewed consent when
+needed. Completed jobs do not re-prompt. macOS Dock Quit uses the same cancellable
+path as the application menu.
+Quit includes all sessions, even those with no views. Before teardown it retains
+one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
+terminal-history serialization, and restart restoration remain unimplemented.
+Tabs close automatically without confirmation when their root shell exits.
+Set `[terminal] close_on_exit = false` to retain exited tabs for history. Retained
+tabs allow selection, copy, scrolling, and resizing, but send no terminal input.
+Reloading this setting affects future exit events only.
 
 Keyboard and application mouse input, paste, selection and copy, runtime-owned
 scrollback, configurable fonts and themes, native fullscreen, and alternate-screen
@@ -76,7 +93,19 @@ runtime incarnation so equal numeric IDs in different runtimes cannot alias.
 
 These are core APIs. The desktop still creates a private session per window;
 rename controls, cross-window transfers, session/workspace switching, shared
-views, persistence, and revised close policies remain follow-up work.
+views, and persistence remain follow-up work. The embedded attachment and close
+lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
+
+Process inspection uses a bounded system `ps` snapshot off the UI and terminal
+parser threads. It follows shell descendants and the owned PTY, including
+background process groups while the root shell is alive. Scan failures require
+confirmation. Root-shell exit completes the terminal and reaps the child
+immediately, including when its tab is retained for history. Closing completed
+history does not scan for or signal surviving processes. This follows the
+root-exit policy used by other desktop terminals; a surviving background job
+does not keep the terminal open or trigger a warning after shell exit.
+Detached processes cannot always be attributed or terminated. Process creation
+or identity changes after the final live-process snapshot are inherently racy.
 
 ## Mouse interaction
 
