@@ -3,6 +3,8 @@
 #![deny(missing_docs)]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod commands;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;

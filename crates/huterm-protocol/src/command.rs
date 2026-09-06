@@ -566,14 +566,14 @@ const CATALOG: &[CommandSpec] = &[
     ),
     spec(
         ids::OPEN_SETTINGS,
-        CommandScope::Application,
+        CommandScope::Window,
         "Open Settings",
         "Open the configuration file for editing.",
         &[],
     ),
     spec(
         ids::ABOUT,
-        CommandScope::Application,
+        CommandScope::Window,
         "About Huterm",
         "Show application version and license information.",
         &[],

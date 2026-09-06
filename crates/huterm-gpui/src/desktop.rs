@@ -10,17 +10,19 @@ use gpui::{
     Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::*,
-    px, size,
+    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
-    BufferPoint, BufferRange, CellSize, GridSize, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalKey,
-    TerminalSnapshot,
+    BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
+    CommandOutcome, CommandValue, GridSize, Modifiers, TabId, TerminalCommand,
+    TerminalEvent, TerminalInput, TerminalKey, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
+use crate::commands::{
+    InvokeApp, InvokeTerminal, InvokeWindow, invoke, invoke_with,
+};
 use crate::config::{self, Config, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
@@ -43,42 +45,6 @@ const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
-actions!(
-    huterm,
-    [
-        NewWindow,
-        NewTab,
-        CloseTab,
-        CloseWindow,
-        NextTab,
-        PreviousTab,
-        Tab1,
-        Tab2,
-        Tab3,
-        Tab4,
-        Tab5,
-        Tab6,
-        Tab7,
-        Tab8,
-        Tab9,
-        About,
-        Copy,
-        Hide,
-        HideOthers,
-        Minimize,
-        Paste,
-        Quit,
-        ScrollPageDown,
-        ScrollPageUp,
-        ScrollToBottom,
-        Settings,
-        ReloadConfiguration,
-        ShowAll,
-        ToggleFullscreen,
-        Zoom
-    ]
-);
-
 mod windows;
 
 pub(crate) fn run() -> anyhow::Result<()> {
@@ -87,27 +53,27 @@ pub(crate) fn run() -> anyhow::Result<()> {
 
 fn install_bindings(cx: &mut App) {
     let mut bindings = vec![
-        KeyBinding::new("shift-pageup", ScrollPageUp, None),
-        KeyBinding::new("shift-pagedown", ScrollPageDown, None),
-        KeyBinding::new("shift-end", ScrollToBottom, None),
-        KeyBinding::new("f11", ToggleFullscreen, None),
+        invoke(ids::SCROLL_PAGE_UP).binding("shift-pageup"),
+        invoke(ids::SCROLL_PAGE_DOWN).binding("shift-pagedown"),
+        invoke(ids::SCROLL_TO_BOTTOM).binding("shift-end"),
+        invoke(ids::TOGGLE_FULLSCREEN).binding("f11"),
     ];
     if cfg!(target_os = "macos") {
         bindings.extend([
-            KeyBinding::new("cmd-c", Copy, None),
-            KeyBinding::new("cmd-v", Paste, None),
-            KeyBinding::new("cmd-,", Settings, None),
+            invoke(ids::COPY).binding("cmd-c"),
+            invoke(ids::PASTE).binding("cmd-v"),
+            invoke(ids::OPEN_SETTINGS).binding("cmd-,"),
             reload_binding(true),
-            KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-m", Minimize, None),
-            KeyBinding::new("cmd-h", Hide, None),
-            KeyBinding::new("cmd-alt-h", HideOthers, None),
+            invoke(ids::TOGGLE_FULLSCREEN).binding("ctrl-cmd-f"),
+            invoke(ids::QUIT).binding("cmd-q"),
+            invoke(ids::MINIMIZE).binding("cmd-m"),
+            invoke(ids::HIDE).binding("cmd-h"),
+            invoke(ids::HIDE_OTHERS).binding("cmd-alt-h"),
         ]);
     } else {
         bindings.extend([
-            KeyBinding::new("ctrl-shift-c", Copy, None),
-            KeyBinding::new("ctrl-shift-v", Paste, None),
+            invoke(ids::COPY).binding("ctrl-shift-c"),
+            invoke(ids::PASTE).binding("ctrl-shift-v"),
             reload_binding(false),
         ]);
     }
@@ -117,66 +83,64 @@ fn install_bindings(cx: &mut App) {
 
 fn reload_binding(is_macos: bool) -> KeyBinding {
     // GPUI folds Shift+comma into '<' and clears Shift on both backends.
-    KeyBinding::new(
-        if is_macos { "cmd-<" } else { "ctrl-<" },
-        ReloadConfiguration,
-        None,
-    )
+    invoke(ids::RELOAD_CONFIG).binding(if is_macos {
+        "cmd-<"
+    } else {
+        "ctrl-<"
+    })
 }
 
 fn install_menus(cx: &mut App) {
     if !cfg!(target_os = "macos") {
         return;
     }
+    let item = |id| invoke(id).menu_item();
     cx.set_menus(vec![
         Menu {
             name: "Huterm".into(),
             items: vec![
-                MenuItem::action("About Huterm", About),
-                MenuItem::action("Settings...", Settings),
-                MenuItem::action("Reload Configuration", ReloadConfiguration),
+                item(ids::ABOUT),
+                item(ids::OPEN_SETTINGS),
+                item(ids::RELOAD_CONFIG),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Hide Huterm", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
+                item(ids::HIDE),
+                item(ids::HIDE_OTHERS),
+                item(ids::SHOW_ALL),
                 MenuItem::separator(),
-                MenuItem::action("Quit Huterm", Quit),
+                item(ids::QUIT),
             ],
         },
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("New Tab", NewTab),
-                MenuItem::action("Close Tab", CloseTab),
-                MenuItem::action("Close Window", CloseWindow),
+                item(ids::NEW_WINDOW),
+                item(ids::NEW_TAB),
+                item(ids::CLOSE_TAB),
+                item(ids::CLOSE_WINDOW),
             ],
         },
         Menu {
             name: "Edit".into(),
-            items: vec![
-                MenuItem::action("Copy", Copy),
-                MenuItem::action("Paste", Paste),
-            ],
+            items: vec![item(ids::COPY), item(ids::PASTE)],
         },
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action("Scroll Page Up", ScrollPageUp),
-                MenuItem::action("Scroll Page Down", ScrollPageDown),
-                MenuItem::action("Scroll to Bottom", ScrollToBottom),
+                item(ids::SCROLL_PAGE_UP),
+                item(ids::SCROLL_PAGE_DOWN),
+                item(ids::SCROLL_TO_BOTTOM),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Full Screen", ToggleFullscreen),
+                item(ids::TOGGLE_FULLSCREEN),
             ],
         },
         Menu {
             name: "Window".into(),
             items: vec![
-                MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Zoom", Zoom),
-                MenuItem::action("Next Tab", NextTab),
-                MenuItem::action("Previous Tab", PreviousTab),
+                item(ids::MINIMIZE),
+                item(ids::ZOOM),
+                item(ids::NEXT_TAB),
+                item(ids::PREVIOUS_TAB),
             ],
         },
     ]);
@@ -247,7 +211,6 @@ struct TerminalView {
     window_config: WindowConfig,
     sidebar_width: Pixels,
     theme: Theme,
-    config_path: PathBuf,
     status: Option<String>,
     selection: Option<Selection>,
     selected_text: Option<String>,
@@ -268,7 +231,6 @@ impl TerminalView {
     fn new(
         client: RuntimeClient,
         config: &Config,
-        config_path: PathBuf,
         font_family: String,
         metrics: GridMetrics,
         window: &mut Window,
@@ -326,7 +288,6 @@ impl TerminalView {
             window_config: config.window,
             sidebar_width: windows::SIDEBAR_WIDTH,
             theme,
-            config_path,
             status: None,
             title: String::new(),
             exited: false,
@@ -641,131 +602,81 @@ impl TerminalView {
         }
     }
 
-    fn page_up(
+    fn invoke_terminal(
         &mut self,
-        _: &ScrollPageUp,
-        _: &mut Window,
+        action: &InvokeTerminal,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         cx.stop_propagation();
-        if self.scroll.page(self.last_grid_size.rows, true) {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn page_down(
-        &mut self,
-        _: &ScrollPageDown,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        if self.scroll.page(self.last_grid_size.rows, false) {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn scroll_to_bottom(
-        &mut self,
-        _: &ScrollToBottom,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        if self.scroll.bottom() {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<'_, Self>) {
-        cx.stop_propagation();
-        if self.exited {
-            return;
-        }
-        if let Some(text) =
-            cx.read_from_clipboard().and_then(|item| item.text())
+        if let Err(error) = self.run_command(&action.0, window, cx)
+            && self.set_status(error.to_string())
         {
-            self.enqueue_input(TerminalInput::Paste(text));
-            self.scroll.bottom();
-            self.scroll.invalidate();
-            self.start_snapshot_if_needed(cx);
             cx.notify();
         }
     }
-    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<'_, Self>) {
-        cx.stop_propagation();
-        if let Some(text) = &self.selected_text {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        }
-    }
-    fn settings(
+
+    /// Runs a terminal-scope catalog command against this view.
+    ///
+    /// # Errors
+    /// Reports refused commands as [`CommandError::Unavailable`] and commands
+    /// this view does not own as [`CommandError::UnknownCommand`].
+    fn run_command(
         &mut self,
-        _: &Settings,
+        invocation: &CommandInvocation,
         _: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        match config::create_default(&self.config_path) {
-            Ok(()) => cx.open_with_system(&self.config_path),
-            Err(error) => {
-                self.set_status(format!("failed to open settings: {error}"));
-                cx.notify();
+    ) -> Result<CommandOutcome, CommandError> {
+        match invocation.id {
+            ids::COPY => {
+                if let Some(text) = &self.selected_text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        text.clone(),
+                    ));
+                }
             }
+            ids::PASTE => {
+                if self.exited {
+                    return Err(CommandError::Unavailable(
+                        "terminal has exited".to_owned(),
+                    ));
+                }
+                if let Some(text) =
+                    cx.read_from_clipboard().and_then(|item| item.text())
+                {
+                    self.enqueue_input(TerminalInput::Paste(text));
+                    self.scroll.bottom();
+                    self.scroll.invalidate();
+                    self.start_snapshot_if_needed(cx);
+                    cx.notify();
+                }
+            }
+            ids::SCROLL_PAGE_UP => {
+                self.scroll_command(cx, |scroll, rows| scroll.page(rows, true));
+            }
+            ids::SCROLL_PAGE_DOWN => {
+                self.scroll_command(cx, |scroll, rows| {
+                    scroll.page(rows, false)
+                });
+            }
+            ids::SCROLL_TO_BOTTOM => {
+                self.scroll_command(cx, |scroll, _| scroll.bottom());
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
         }
+        Ok(CommandOutcome::Completed)
     }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn about(
+
+    fn scroll_command(
         &mut self,
-        _: &About,
-        window: &mut Window,
         cx: &mut Context<'_, Self>,
+        apply: impl FnOnce(&mut ScrollController, u16) -> bool,
     ) {
-        cx.stop_propagation();
-        let detail = format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
-        let answer = window.prompt(
-            PromptLevel::Info,
-            "Huterm",
-            Some(&detail),
-            &["OK"],
-            cx,
-        );
-        cx.spawn(async move |_, _| {
-            let _ = answer.await;
-        })
-        .detach();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn toggle_fullscreen(
-        &mut self,
-        _: &ToggleFullscreen,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.toggle_fullscreen();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn minimize(
-        &mut self,
-        _: &Minimize,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.minimize_window();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn zoom(
-        &mut self,
-        _: &Zoom,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.zoom_window();
+        if apply(&mut self.scroll, self.last_grid_size.rows) {
+            self.activate_scrollbar();
+            self.start_snapshot_if_needed(cx);
+            cx.notify();
+        }
     }
 
     fn application_mouse(
@@ -1379,16 +1290,7 @@ impl Render for TerminalView {
             }))
             .key_context("Huterm")
             .track_focus(&self.focus)
-            .on_action(cx.listener(Self::about))
-            .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::settings))
-            .on_action(cx.listener(Self::toggle_fullscreen))
-            .on_action(cx.listener(Self::minimize))
-            .on_action(cx.listener(Self::zoom))
-            .on_action(cx.listener(Self::page_up))
-            .on_action(cx.listener(Self::page_down))
-            .on_action(cx.listener(Self::scroll_to_bottom))
+            .on_action(cx.listener(Self::invoke_terminal))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
