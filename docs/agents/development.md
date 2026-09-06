@@ -52,7 +52,8 @@ fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11`
 toggles native fullscreen. Closing a tab stops its terminal. Closing a window
 deletes its private backing
 workspace and stops all its terminals. The last window closes the app. Foreground
-jobs require confirmation; exited shells remain visible until closed.
+jobs require confirmation while the shell is alive. Root-shell exit closes its
+tab quietly unless `[terminal] close_on_exit = false` retains the history.
 
 Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
 `$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in

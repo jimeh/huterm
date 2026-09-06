@@ -68,8 +68,7 @@ path as the application menu.
 Quit includes all sessions, even those with no views. Before teardown it retains
 one in-memory hierarchy and window-navigation/layout capture. Disk persistence,
 terminal-history serialization, and restart restoration remain unimplemented.
-Tabs close automatically when their shell exits, using the same job checks and
-confirmation as manual close. Cancel keeps the exited tab without asking again.
+Tabs close automatically without confirmation when their root shell exits.
 Set `[terminal] close_on_exit = false` to retain exited tabs for history. Retained
 tabs allow selection, copy, scrolling, and resizing, but send no terminal input.
 Reloading this setting affects future exit events only.
@@ -100,15 +99,14 @@ lifecycle is implemented; server-mode lifetime policy and IPC remain deferred.
 
 Process inspection uses a bounded system `ps` snapshot off the UI and terminal
 parser threads. It follows shell descendants and the owned PTY, including
-background process groups. Scan failures require confirmation. After a shell
-exits, Huterm keeps its root PID unreaped while checking live session members,
-including jobs whose controlling terminal was revoked on macOS. A complete
-empty scan seals the session as idle before reaping the root. The exited shell
-is reaped automatically even when its tab is retained for history. Incomplete
-process evidence stays unknown and requires confirmation.
-Processes that leave the original OS session, including detached daemons, cannot
-always be attributed or terminated. Process creation or identity changes after
-the final OS snapshot are also inherently racy.
+background process groups while the root shell is alive. Scan failures require
+confirmation. Root-shell exit completes the terminal and reaps the child
+immediately, including when its tab is retained for history. Closing completed
+history does not scan for or signal surviving processes. This follows the
+root-exit policy used by other desktop terminals; a surviving background job
+does not keep the terminal open or trigger a warning after shell exit.
+Detached processes cannot always be attributed or terminated. Process creation
+or identity changes after the final live-process snapshot are inherently racy.
 
 ## Mouse interaction
 

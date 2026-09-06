@@ -595,18 +595,18 @@ fn run_terminal(
         engine.generation(),
     );
 
-    let root_pid = child.process_id();
-    let evidence = Arc::new(crate::jobs::ExitEvidence::new(root_pid));
-    let mut exit_watcher: Option<crate::jobs::ExitWatcher> = None;
+    let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
     #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
-        pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        if !child_exited {
+            pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        }
         if let Err(error) = observe_child_exit(
-            root_pid,
-            &evidence,
+            child.as_mut(),
+            &lifecycle,
             terminal_id,
             &events,
             &mut child_exited,
@@ -615,32 +615,6 @@ fn run_terminal(
         ) {
             report_failure(&events, terminal_id, error);
             closing.store(true, Ordering::Release);
-        }
-        if child_exited
-            && exit_watcher.is_none()
-            && !closing.load(Ordering::Acquire)
-        {
-            match crate::jobs::ExitWatcher::start(Arc::clone(&evidence)) {
-                Ok(watcher) => exit_watcher = Some(watcher),
-                Err(error) => {
-                    report_failure(
-                        &events,
-                        terminal_id,
-                        format!("Cannot start exit watcher: {error}"),
-                    );
-                    closing.store(true, Ordering::Release);
-                }
-            }
-        }
-        if evidence.reap_ready() {
-            match child.try_wait() {
-                Ok(Some(_)) => evidence.reaped(),
-                Ok(None) => {}
-                Err(error) => {
-                    report_failure(&events, terminal_id, error.to_string());
-                    closing.store(true, Ordering::Release);
-                }
-            }
         }
         while let Ok(control) = controls.try_recv() {
             if closing.load(Ordering::Acquire) {
@@ -668,8 +642,8 @@ fn run_terminal(
                 RuntimeControl::WriterFailed(message) => {
                     // Exit may have happened since the loop's initial poll.
                     if let Err(error) = observe_child_exit(
-                        root_pid,
-                        &evidence,
+                        child.as_mut(),
+                        &lifecycle,
                         terminal_id,
                         &events,
                         &mut child_exited,
@@ -695,9 +669,11 @@ fn run_terminal(
                 }
                 RuntimeControl::JobContext(reply) => {
                     let _ = reply.send(crate::jobs::JobContext {
-                        evidence: Arc::clone(&evidence),
+                        lifecycle: Arc::clone(&lifecycle),
                         shell: child.process_id(),
-                        foreground: master.process_group_leader(),
+                        foreground: (!child_exited)
+                            .then(|| master.process_group_leader())
+                            .flatten(),
                         #[cfg(test)]
                         exited: child_exited,
                         #[cfg(test)]
@@ -710,14 +686,15 @@ fn run_terminal(
                     });
                 }
                 RuntimeControl::ForegroundJob(reply) => {
-                    let shell = child
-                        .process_id()
-                        .and_then(|id| i32::try_from(id).ok());
-                    let foreground = master.process_group_leader();
-                    let busy = !child_exited
-                        && foreground.zip(shell).is_none_or(
+                    let busy = !child_exited && {
+                        let shell = child
+                            .process_id()
+                            .and_then(|id| i32::try_from(id).ok());
+                        let foreground = master.process_group_leader();
+                        foreground.zip(shell).is_none_or(
                             |(foreground, shell)| foreground != shell,
-                        );
+                        )
+                    };
                     let _ = reply.try_send(busy);
                 }
                 RuntimeControl::Wake => {}
@@ -822,20 +799,13 @@ fn run_terminal(
     }
 
     closing.store(true, Ordering::Release);
-    let session_idle = if let Some(watcher) = exit_watcher {
-        watcher.stop(&evidence)
-    } else {
-        evidence.retire()
-    };
-    if session_idle {
-        // Historical group numbers may have been reused after automatic reap.
+    lifecycle.retire();
+    if child_exited {
+        // Root exit completes the terminal. Never signal historical groups
+        // after reaping, even when detached descendants remain alive.
         process_groups = pty::process_groups(None);
     } else {
-        if child_exited {
-            process_groups = pty::process_groups(root_pid);
-        } else {
-            pty::record_foreground_group(master.as_ref(), &mut process_groups);
-        }
+        pty::record_foreground_group(master.as_ref(), &mut process_groups);
         process_groups.assessed = shutdown_groups
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -926,8 +896,8 @@ fn spawn_reader(
 }
 
 fn observe_child_exit(
-    root: Option<u32>,
-    evidence: &crate::jobs::ExitEvidence,
+    child: &mut dyn portable_pty::Child,
+    lifecycle: &crate::jobs::JobLifecycle,
     terminal_id: TerminalId,
     events: &Sender<TerminalEvent>,
     exited: &mut bool,
@@ -937,35 +907,17 @@ fn observe_child_exit(
     if *exited {
         return Ok(());
     }
-    let pid = root
-        .and_then(|pid| i32::try_from(pid).ok())
-        .and_then(rustix::process::Pid::from_raw)
-        .ok_or("PTY root has no valid process ID")?;
-    let status = match rustix::process::waitid(
-        rustix::process::WaitId::Pid(pid),
-        rustix::process::WaitIdOptions::EXITED
-            | rustix::process::WaitIdOptions::NOHANG
-            | rustix::process::WaitIdOptions::NOWAIT,
-    ) {
-        Ok(status) => status,
-        Err(rustix::io::Errno::INTR) => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
+    let status = child.try_wait().map_err(|error| error.to_string())?;
     if let Some(status) = status {
         *exited = true;
-        evidence.observe_exit();
+        lifecycle.observe_exit();
         input_closed.store(true, Ordering::Release);
         pending_writes.clear();
-        // Match portable-pty: signaled exits have code 1 and success false.
-        let code = status
-            .exit_status()
-            .and_then(|code| u32::try_from(code).ok())
-            .unwrap_or(1);
         let _ = events.send(TerminalEvent::Exited {
             terminal_id,
             status: ExitStatus {
-                code: Some(code),
-                success: status.exited() && code == 0,
+                code: Some(status.exit_code()),
+                success: status.success(),
             },
         });
     }
@@ -1165,6 +1117,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_clean_exits_reap_without_close_assessments() {
+        let runtimes: Vec<_> = (100..104)
+            .map(|id| {
+                TerminalRuntime::spawn(
+                    TerminalId::new(id),
+                    &command("printf READY; read line; exit 0"),
+                )
+                .unwrap()
+            })
+            .collect();
+        let clients: Vec<_> =
+            runtimes.iter().map(TerminalRuntime::client).collect();
+        let roots: Vec<_> = clients
+            .iter()
+            .map(|client| {
+                wait_for_text(client, "READY");
+                nix::unistd::Pid::from_raw(
+                    i32::try_from(client.job_context().unwrap().shell.unwrap())
+                        .unwrap(),
+                )
+            })
+            .collect();
+        for client in &clients {
+            client.send_input(TerminalInput::Text("\n".into())).unwrap();
+        }
+        for client in &clients {
+            assert!(wait_for_exit(client).success);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while roots
+            .iter()
+            .any(|root| nix::sys::signal::kill(*root, None).is_ok())
+        {
+            assert!(
+                Instant::now() < deadline,
+                "concurrent idle roots were not reaped"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        for runtime in runtimes {
+            runtime.shutdown().unwrap();
+        }
+    }
+
+    #[test]
     fn clean_exit_reaps_automatically_while_retained_history_stays_available() {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(93),
@@ -1183,7 +1180,7 @@ mod tests {
                 success: false
             }
         );
-        // No assessment/close triggers reaping: the exit watcher owns this work.
+        // Root exit reaps immediately, without an assessment or close request.
         let deadline = Instant::now() + Duration::from_secs(5);
         while nix::sys::signal::kill(root, None).is_ok() {
             assert!(
@@ -1195,14 +1192,14 @@ mod tests {
         let context = client.job_context().unwrap();
         assert_eq!(
             context
-                .evidence
-                .assess(|| panic!("sealed history inspected live PID")),
+                .lifecycle
+                .assess(|| panic!("exited history inspected live PID")),
             crate::jobs::JobState::Idle
         );
         wait_for_text(&client, "FINAL");
         runtime.shutdown().unwrap();
         assert_eq!(
-            context.evidence.assess(|| panic!()),
+            context.lifecycle.assess(|| panic!()),
             crate::jobs::JobState::Unknown
         );
     }

@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn exited_shell_with_live_slave_holder_requires_consent() {
+    fn root_exit_completes_the_terminal_even_with_a_surviving_slave_holder() {
         let fixture = super::holder_fixture::HolderFixture::new();
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
@@ -650,8 +650,8 @@ mod tests {
         }
         assert_eq!(exit_events, 1, "signaled root exit must be reported once");
         assert!(
-            nix::sys::signal::kill(root, None).is_ok(),
-            "root PID must stay pinned while helper lives"
+            nix::sys::signal::kill(root, None).is_err(),
+            "root must be reaped when its exit is published"
         );
         assert!(!fixture.directory.join("done").exists());
         assert!(nix::sys::signal::kill(helper, None).is_ok());
@@ -661,35 +661,13 @@ mod tests {
             .check_jobs();
         assert!(nix::sys::signal::kill(helper, None).is_ok());
         assert!(
-            assessment.needs_confirmation(),
+            !assessment.needs_confirmation(),
             "live helper={helper}, context={:?}, jobs={:?}",
             opened.client.job_context(),
             assessment.jobs()
         );
-        fixture.release().unwrap();
-        while !fixture.directory.join("done").exists()
-            || !opened.client.job_context().unwrap().pty_eof
-        {
-            assert!(
-                Instant::now() < deadline,
-                "release did not complete; helper={helper}, context={:?}",
-                opened.client.job_context()
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        while nix::sys::signal::kill(root, None).is_ok() {
-            assert!(
-                Instant::now() < deadline,
-                "idle root not automatically reaped"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
         let current = assessment.recheck();
-        assert!(
-            !current.needs_confirmation(),
-            "released helper, jobs={:?}",
-            current.jobs()
-        );
+        assert_eq!(current.jobs(), &[JobState::Idle]);
         while let Some(event) = opened.client.try_recv_event().unwrap() {
             assert!(
                 !matches!(event, huterm_protocol::TerminalEvent::Exited { .. }),
@@ -699,6 +677,19 @@ mod tests {
         assert!(opened.client.read_snapshot(Viewport::default()).is_ok());
         mux.commit_close(&current, &current.recheck(), false)
             .unwrap();
+        assert!(
+            nix::sys::signal::kill(helper, None).is_ok(),
+            "closing completed history must not signal old process groups"
+        );
+        fixture.release().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !fixture.directory.join("done").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "helper did not finish after release"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

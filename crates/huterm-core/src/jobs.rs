@@ -1,6 +1,6 @@
-mod exit;
+mod lifecycle;
 
-pub(crate) use exit::{ExitEvidence, ExitWatcher};
+pub(crate) use lifecycle::JobLifecycle;
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub(crate) struct JobContext {
-    pub evidence: std::sync::Arc<ExitEvidence>,
+    pub lifecycle: std::sync::Arc<JobLifecycle>,
     pub shell: Option<u32>,
     pub foreground: Option<i32>,
     #[cfg(test)]
@@ -22,7 +22,7 @@ pub(crate) struct JobContext {
 /// Observable process evidence for a terminal close assessment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobState {
-    /// Only an idle shell remains, or its exited session has no live members.
+    /// Only an idle shell remains, or the terminal root has exited.
     Idle,
     /// Non-shell processes, including descendants in background groups.
     Running(Vec<JobProcess>),
@@ -133,8 +133,7 @@ fn process_table() -> Option<Vec<Process>> {
         return None;
     }
     let text = String::from_utf8(bytes).ok()?;
-    // ps includes itself, but this owned observer has already been waited.
-    // Its guaranteed ESRCH must not make an otherwise complete scan unknown.
+    // The owned ps observer has already been waited and is not a terminal job.
     text.lines()
         .map(parse_process)
         .collect::<Option<Vec<_>>>()
@@ -188,7 +187,7 @@ pub(crate) fn inspect_all(contexts: Vec<Option<JobContext>>) -> Vec<JobState> {
     let table = contexts
         .iter()
         .flatten()
-        .any(|context| !context.evidence.exited())
+        .any(|context| context.lifecycle.running())
         .then(process_table)
         .flatten();
     contexts
@@ -201,7 +200,7 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
     let Some(context) = context else {
         return JobState::Unknown;
     };
-    context.evidence.assess(|| {
+    context.lifecycle.assess(|| {
         let Some(shell) = context.shell else {
             return JobState::Unknown;
         };
@@ -319,7 +318,7 @@ mod tests {
         assert_eq!(
             inspect(
                 Some(JobContext {
-                    evidence: std::sync::Arc::new(ExitEvidence::new(Some(10))),
+                    lifecycle: std::sync::Arc::new(JobLifecycle::default()),
                     shell: Some(10),
                     foreground: Some(10),
                     exited: false,

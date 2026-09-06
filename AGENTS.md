@@ -255,20 +255,15 @@ its session. Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
 assessed background process groups into teardown. For live-shell PTY matching,
 normalize macOS ps ttys000/s000 abbreviations before comparing tty names.
-Observe root exit with safe
-rustix waitid NOWAIT, retaining portable-pty's child owner and unreaped PID until
-a complete empty session scan seals Idle. portable-pty creates a session leader
-with setsid before exec. Each post-exit evidence guard serializes its own fresh
-process scan against sealing and retirement; never reuse a pre-exit ps snapshot
-for that scan. Only workers lock the guard; parser exit/reap signals are atomic.
-Retire the guard and join its cancellable watcher before shutdown reaps anything.
-Use nix getsid for session scans: SID 0 is valid for kernel processes, whereas
-rustix's Pid requires nonzero. Skip the PID 0 kernel row because getsid(0) means
-the caller. Exclude only the exact owned ps child from its result; it is already
-reaped before later lookups. Other lookup failures, including ESRCH, leave the
-scan incomplete. Validate matching rows with getpgid and a second getsid before
-using their group for cleanup. A sealed Idle guard never looks up its old SID.
-Use explicit FIFO release in the exited-holder test, never a timed sleep.
+Root-shell exit completes the terminal, matching Ghostty, iTerm2, WezTerm, and
+Alacritty. Reap through portable-pty immediately, even when history is retained;
+do not require an empty OS session or warn about post-exit survivors. Clear
+historical cleanup groups after exit, and never signal them when closing
+completed history. JobLifecycle lets queued live assessments observe exit or
+retirement without looking up old process IDs. Live-shell job warnings remain.
+Do not restore post-exit ps/getsid scans: concurrent ps children and unrelated
+process churn made ordinary macOS exits require confirmation or retain zombies.
+Use explicit FIFO release in the surviving-holder test, never a timed sleep.
 Quit captures every session plus window navigation and geometry before cleanup;
 retain the first capture through repeated shutdown. The native AppKit bridge
 adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
