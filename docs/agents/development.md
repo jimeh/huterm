@@ -49,11 +49,13 @@ On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
 Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
 inherited. Linux launches `$SHELL` in the current working directory. The
 fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11`
-toggles native fullscreen. Closing a tab stops its terminal. Closing a window
-deletes its private backing
-workspace and stops all its terminals. The last window closes the app. Foreground
-jobs require confirmation while the shell is alive. Root-shell exit closes its
-tab quietly unless `[terminal] close_on_exit = false` retains the history.
+toggles native fullscreen. Closing a tab stops its terminal. Closing a shared
+session view detaches it; closing the final view terminates that session and
+its terminals. Explicit detachment preserves sessions without viewers. Huterm
+exits after the last window closes only when no sessions or pending spawns
+remain. Foreground and background jobs require confirmation while the shell is
+alive. Root-shell exit closes its tab quietly unless
+`[terminal] close_on_exit = false` retains the history.
 
 Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
 `$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
