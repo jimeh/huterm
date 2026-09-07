@@ -78,6 +78,15 @@ runs the same checks plus an Xvfb smoke on Linux x86_64. Linux development
 requires the XKB packages documented in
 [the development guide](docs/agents/development.md).
 
+For desktop behavior, run the relevant automated smoke tests before using
+computer use. Discover them with `mise tasks`; native input coverage lives in
+`smoke:macos-input` and `smoke:linux-input`, with separate macOS menu and Quit
+smokes. Extend these tests when new behavior needs coverage. Use computer use
+for uncovered behavior, visual checks, and investigation, then turn useful
+manual reproductions into automated regression checks where practical. Physical
+device behavior and unsupported IMEs may still require manual testing; state
+those coverage limits explicitly.
+
 The pre-commit hook runs staged-path formatting and Markdown checks, then
 triggers whole-workspace Clippy or workflow checks only for relevant staged
 inputs. Install it with `mise run setup`. Keep its representative warm path
