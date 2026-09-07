@@ -127,10 +127,11 @@ the real `KeyBinding` matcher as well as terminal-input reservation.
 Validate `when` with `KeyBindingContextPredicate::parse` before building a
 `KeyBinding`; `KeyBinding::new` unwraps its predicate parse. Reserved
 keystrokes derive from the compiled keymap and compare modifiers plus `key`,
-never `key_char`, so `alt-r` stays reserved when macOS reports `®`. A binding
-with `when` reserves only its chord prefixes; its final key must reach the
-shell when the predicate is false, or `ctrl-c` with `when = "selection"` would
-swallow interrupts. Per-scope
+never `key_char`, so `alt-r` stays reserved when macOS reports `®`. Multi-key
+bindings reserve only their first stroke; GPUI owns pending sequences and matched
+final strokes. Later strokes typed alone must reach terminal input. A conditional
+single-key binding reserves nothing, or `ctrl-c` with `when = "selection"` would
+swallow interrupts when the predicate is false. Per-scope
 wrapper actions (`InvokeApp`, `InvokeWindow`, `InvokeTerminal`) route catalog
 commands; anything that needs a window, such as about and open_settings, must
 be Window scope because global action handlers receive only `App`. Runtime
@@ -398,3 +399,28 @@ Local builds retain warm native artifacts. The pinned CI cache action prunes
 path dependencies inside the repository, so CI rebuilds the vendored sys crate.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
+
+GPUI's macOS `key_char` resolves Option dead keys separately, and AppKit handles
+marked text before GPUI shortcuts. Keep Option-only composition in caller-owned
+`UCKeyTranslate` state after GPUI dispatch; never create native marked text for
+Option dead keys. Use the selected input source's Unicode layout and leave
+input methods without one on the native text path. Cancel local Option state on
+commands, pending shortcut prefixes, focus/tab/policy changes, and layout changes.
+GPUI replays unmatched chord prefixes directly through its input handler; only
+replays with an accepted action reach raw keystroke observers, where they are
+skipped before reading the current native event.
+`UCKeyTranslate` can emit text while starting another dead key, and completed
+state can remain nonzero. Probe Space with NoDeadKeys on copied state and compare
+against zero-state output; never send probe text to the PTY or decode state bits.
+Serialize all native layout tests with their shared mutex. Parallel Carbon calls
+caused SIGSEGV; the SDK marks `LMGetKbdType` as not thread safe. Production calls
+stay on the main thread.
+Route other printable input through `EntityInputHandler`. Consume recognized raw
+Meta/Control/special chords even when their input queue is full, or AppKit can
+insert a second interpretation. Cancel native preedit on the exact NSView outside
+GPUI's update borrow, and skip deferred cancellation when the active view already
+has newer preedit. Bindings and menu installation share one operation;
+`smoke:macos-menus` reads actual NSMenuItem shortcuts.
+Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
+does not exercise the server's XKB modifier state. The smoke explicitly unbinds
+Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.

@@ -1,7 +1,7 @@
 # Terminal Meta input and menu shortcut verification
 
-Status: proposed implementation plan. Left/right Option support is explicitly
-deferred by agreement. No implementation is included in this change.
+Status: implemented, with native keyboard verification and PR review recorded
+separately in the delivery evidence. Left/right Option remains deferred.
 
 Deliver [#55: Option/Alt-as-Meta][issue-55] with
 [#57: native menu shortcut verification][issue-57] in one keyboard-focused PR.
@@ -127,12 +127,53 @@ Success means unbound Meta input works with either engine, ordinary macOS
 composition still works with the policy off, bound shortcuts do not leak,
 reload changes only later input, and actual AppKit shortcuts track the keymap.
 
+## Implementation findings
+
+The existing desktop had no platform text input handler. Ordinary native text
+uses a bounded `EntityInputHandler` which holds preedit until commit. Native
+cancellation uses the exact NSView's input context after releasing GPUI's borrow
+and skips newer active preedit. The direct `raw-window-handle` pin reuses version
+0.6.2 already in Cargo.lock.
+
+Native verification found that Cocoa selector bindings can swallow unbound
+Option characters. AppKit also handles active marked text before GPUI shortcuts,
+allowing a dead key to commit before Cmd-T or consume a bound Option chord.
+The approved local Option composition approach uses `UCKeyTranslate` with the
+selected input source's Unicode layout after the existing GPUI matcher. It owns
+only Option dead-key state and consumes those events before AppKit starts marked
+text. Input methods without Unicode layout data retain the native text path.
+No GPUI fork, native event swizzling, or second keybinding matcher is needed.
+
+Local Option state is canceled by commands, pending shortcut prefixes, focus or
+tab changes, policy changes, and a changed input source. Bare Escape and Backspace
+cancel an unfinished accent without sending that cancellation key to the PTY.
+Other control and special keys cancel the accent and retain terminal semantics.
+Translation failures clear state, consume the event, and report an input error.
+`UCKeyTranslate` can return nonzero state after committing text and can emit an
+old accent while starting a new one. Space probes with NoDeadKeys compare copied
+state against the same layout's zero-state output to detect unfinished accents.
+Probe output never enters the terminal. Native-layout tests serialize Carbon
+calls because the SDK marks `LMGetKbdType` as not thread safe.
+
+The desktop raw observer stops propagation for recognized Meta input. GPUI's
+unmatched chord replay goes directly to its input handler, so it cannot translate
+an old keystroke using a newer `NSApplication.currentEvent`. Accepted replayed
+actions are skipped before accessing the native event.
+
+Startup and reload now install bindings and menus together. The macOS smoke
+reads real NSMenuItem equivalents for user bindings, a default, and a reload.
+The Linux input smoke uses XTest on an isolated Xvfb display with a US layout
+and raw PTYs for both engines. It covers modified characters, an Alt arrow,
+shortcut consumption, conditional fallthrough, and explicit unbinding.
+
+Local automated checks do not establish physical-keyboard behavior. Record
+native synthetic and physical typing evidence separately, and require the Linux
+smoke on Linux CI before claiming that platform's native path is verified.
+
 ## Open questions
 
-No product decisions block implementation. Native composition behavior through
-the pinned GPUI event path remains an implementation verification question.
-Resolve it early; if preserving composition needs a broader platform change,
-bring back the evidence and scope tradeoff before expanding this PR.
+No product decisions remain. Complete native verification and independent PR
+review before marking the delivery ready.
 
 [issue-55]: https://github.com/jimeh/huterm/issues/55
 [issue-57]: https://github.com/jimeh/huterm/issues/57

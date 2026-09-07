@@ -16,6 +16,10 @@ use objc::declare::MethodImplementation;
 use objc::runtime::{self, Class, NO, Object, Sel, YES};
 use objc::{Encode as _, msg_send, sel, sel_impl};
 
+#[path = "native_quit/option.rs"]
+mod option;
+pub(crate) type OptionComposition = option::OptionComposition;
+
 struct Bridge {
     requests: Sender<()>,
     pending: AtomicBool,
@@ -160,4 +164,130 @@ fn is_main_thread() -> anyhow::Result<bool> {
     // Objective-C BOOL, and is documented for use from any thread.
     let main: runtime::BOOL = unsafe { msg_send![class, isMainThread] };
     Ok(main == YES)
+}
+
+/// Retained context for one native view. It must stay on `AppKit`'s thread.
+pub(crate) struct TextInputContext(*mut Object);
+
+impl TextInputContext {
+    /// Cancels the native preedit after GPUI has released its window borrow.
+    pub(crate) fn discard_marked_text(self) {
+        // SAFETY: The context was retained on the main thread and this non-Send
+        // value can only be used there. No GPUI update is active during this
+        // call, so synchronous NSTextInputClient callbacks can update views.
+        unsafe {
+            let _: () = msg_send![self.0, discardMarkedText];
+        }
+    }
+}
+
+impl Drop for TextInputContext {
+    fn drop(&mut self) {
+        // SAFETY: Balances text_input_context's retain on the same thread.
+        unsafe {
+            let _: () = msg_send![self.0, release];
+        }
+    }
+}
+
+/// Captures the exact window's native input context while GPUI owns the view.
+pub(crate) fn text_input_context(
+    window: &gpui::Window,
+) -> anyhow::Result<TextInputContext> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    ensure!(
+        is_main_thread()?,
+        "composition cleanup requires the main thread"
+    );
+    let RawWindowHandle::AppKit(handle) =
+        HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow::anyhow!("native window handle: {error}"))?
+            .as_raw()
+    else {
+        anyhow::bail!("composition cleanup requires an AppKit window");
+    };
+    let view = handle.ns_view.as_ptr().cast::<Object>();
+    // SAFETY: The borrowed window handle identifies GPUI's live NSView. Retain
+    // the context before leaving that borrow; it is released by the wrapper.
+    let context: *mut Object = unsafe { msg_send![view, inputContext] };
+    ensure!(
+        !context.is_null(),
+        "native text input context is unavailable"
+    );
+    unsafe {
+        let _: *mut Object = msg_send![context, retain];
+    }
+    Ok(TextInputContext(context))
+}
+
+/// Shortcut currently installed in an actual `NSMenuItem`.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct MenuShortcut {
+    pub(crate) key: String,
+    pub(crate) modifiers: usize,
+}
+
+/// Reads a uniquely named menu item from this process's `AppKit` menu tree.
+pub(crate) fn menu_shortcut(title: &str) -> anyhow::Result<MenuShortcut> {
+    ensure!(
+        is_main_thread()?,
+        "menu inspection requires the main thread"
+    );
+    let application = application()?;
+    // SAFETY: AppKit owns mainMenu and all descendants during this synchronous
+    // main-thread walk. No callback mutates the tree while it is borrowed.
+    let menu: *mut Object = unsafe { msg_send![application, mainMenu] };
+    ensure!(!menu.is_null(), "AppKit main menu is unavailable");
+    let mut matches = Vec::new();
+    unsafe {
+        find_menu_shortcuts(menu, title, &mut matches)?;
+    }
+    ensure!(
+        matches.len() == 1,
+        "expected one menu item {title:?}, found {}",
+        matches.len()
+    );
+    matches.pop().context("menu item disappeared")
+}
+
+unsafe fn find_menu_shortcuts(
+    menu: *mut Object,
+    title: &str,
+    matches: &mut Vec<MenuShortcut>,
+) -> anyhow::Result<()> {
+    // SAFETY: The caller guarantees a live NSMenu on the AppKit thread. Item
+    // indices are bounded by its count; NSString values are copied immediately.
+    unsafe {
+        let count: usize = msg_send![menu, numberOfItems];
+        for index in 0..count {
+            let item: *mut Object = msg_send![menu, itemAtIndex: index];
+            ensure!(!item.is_null(), "AppKit returned a null menu item");
+            let native_title: *mut Object = msg_send![item, title];
+            if native_string(native_title)? == title {
+                let key: *mut Object = msg_send![item, keyEquivalent];
+                matches.push(MenuShortcut {
+                    key: native_string(key)?,
+                    modifiers: msg_send![item, keyEquivalentModifierMask],
+                });
+            }
+            let submenu: *mut Object = msg_send![item, submenu];
+            if !submenu.is_null() {
+                find_menu_shortcuts(submenu, title, matches)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+unsafe fn native_string(value: *mut Object) -> anyhow::Result<String> {
+    ensure!(!value.is_null(), "AppKit returned a null string");
+    // SAFETY: The caller supplies a live NSString. UTF8String stays borrowed
+    // until the next mutation; copy it before returning to the caller.
+    let bytes: *const std::ffi::c_char =
+        unsafe { msg_send![value, UTF8String] };
+    ensure!(!bytes.is_null(), "AppKit returned a null UTF-8 string");
+    Ok(unsafe { std::ffi::CStr::from_ptr(bytes) }
+        .to_str()?
+        .to_owned())
 }

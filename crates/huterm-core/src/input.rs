@@ -10,6 +10,14 @@ pub(crate) fn encode_input(
     size: GridSize,
 ) -> Vec<u8> {
     match input {
+        TerminalInput::Character { text, meta } => {
+            let mut bytes = Vec::with_capacity(text.len() + usize::from(*meta));
+            if *meta && !text.is_empty() {
+                bytes.push(0x1b);
+            }
+            bytes.extend_from_slice(text.as_bytes());
+            bytes
+        }
         TerminalInput::Mouse(mouse) => encode_mouse(*mouse, modes, size),
         TerminalInput::Paste(text) if modes.bracketed_paste => {
             let mut bytes = b"\x1b[200~".to_vec();
@@ -170,6 +178,52 @@ mod tests {
             },
             GridSize::clamped(4000, 4000),
         )
+    }
+
+    #[test]
+    fn character_meta_adds_exactly_one_prefix_without_changing_text_or_paste() {
+        for (text, meta, expected) in [
+            ("r", true, "\x1br"),
+            ("R", true, "\x1bR"),
+            ("\x12", true, "\x1b\x12"),
+            ("λ", true, "\x1bλ"),
+            ("\x1b", true, "\x1b\x1b"),
+            ("é", false, "é"),
+            ("", true, ""),
+        ] {
+            assert_eq!(
+                encode_input(
+                    &TerminalInput::Character {
+                        text: text.into(),
+                        meta
+                    },
+                    TerminalModes::default()
+                ),
+                expected.as_bytes()
+            );
+        }
+        for input in [
+            TerminalInput::Text("®".into()),
+            TerminalInput::Paste("®".into()),
+        ] {
+            assert_eq!(
+                encode_input(&input, TerminalModes::default()),
+                "®".as_bytes()
+            );
+        }
+        assert_eq!(
+            encode_input(
+                &TerminalInput::Character {
+                    text: "r".into(),
+                    meta: true
+                },
+                TerminalModes {
+                    bracketed_paste: true,
+                    ..Default::default()
+                }
+            ),
+            b"\x1br"
+        );
     }
 
     #[test]

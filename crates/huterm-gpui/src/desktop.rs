@@ -16,7 +16,7 @@ use huterm_core::{Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, Modifiers, TabId, TerminalCommand,
-    TerminalEvent, TerminalInput, TerminalKey, TerminalSnapshot, ids,
+    TerminalEvent, TerminalInput, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -44,6 +44,10 @@ const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
+mod composition;
+mod keyboard;
+#[cfg(target_os = "macos")]
+pub(crate) mod menus_smoke;
 mod windows;
 
 pub(crate) fn run() -> anyhow::Result<()> {
@@ -62,10 +66,11 @@ fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
     }
 }
 
-/// Replaces GPUI's bindings with `compiled` and returns its reserved keys.
+/// Replaces GPUI's bindings and menu shortcuts together, returning reserved keys.
 fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
     cx.clear_key_bindings();
     cx.bind_keys(compiled.bindings);
+    install_menus(cx);
     Arc::new(compiled.reserved)
 }
 
@@ -175,6 +180,12 @@ struct TerminalView {
     exited: bool,
     visible: bool,
     input_queue: InputQueue,
+    option_as_alt: config::MacosOptionAsAlt,
+    composition: composition::Composition,
+    #[cfg(target_os = "macos")]
+    option_composition: crate::native_quit::OptionComposition,
+    #[cfg(target_os = "macos")]
+    native_window: gpui::AnyWindowHandle,
     mouse: MouseState,
     pending_resize: Option<(GridSize, CellSize)>,
     snapshot: Option<Arc<TerminalSnapshot>>,
@@ -227,6 +238,7 @@ impl TerminalView {
             });
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
+                view.clear_composition(cx);
                 view.blur_mouse(cx);
                 if view.enqueue_input(TerminalInput::Focus(false)) {
                     cx.notify();
@@ -236,14 +248,38 @@ impl TerminalView {
             window,
             |view: &mut TerminalView, window, cx| {
                 if view.visible && !window.is_window_active() {
+                    view.clear_composition(cx);
                     view.blur_mouse(cx);
                     cx.notify();
                 }
             },
         );
+        let pending_input_subscription = cx.observe_pending_input(
+            window,
+            |view: &mut TerminalView, window, _| {
+                if view.visible && window.has_pending_keystrokes() {
+                    view.clear_option_composition();
+                }
+            },
+        );
+        #[cfg(target_os = "macos")]
+        let layout_subscription = {
+            let view = cx.entity().downgrade();
+            cx.on_keyboard_layout_change(move |cx| {
+                let _ =
+                    view.update(cx, |view, _| view.clear_option_composition());
+            })
+        };
         TerminalView {
             client,
             input_queue: InputQueue::default(),
+            option_as_alt: config.terminal.macos_option_as_alt,
+            composition: composition::Composition::default(),
+            #[cfg(target_os = "macos")]
+            option_composition: crate::native_quit::OptionComposition::default(
+            ),
+            #[cfg(target_os = "macos")]
+            native_window: window.window_handle(),
             mouse: MouseState::default(),
             pending_resize: None,
             snapshot: None,
@@ -257,6 +293,9 @@ impl TerminalView {
                 focus_subscription,
                 blur_subscription,
                 activation_subscription,
+                pending_input_subscription,
+                #[cfg(target_os = "macos")]
+                layout_subscription,
             ],
             scroll: ScrollController::default(),
             last_grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
@@ -444,6 +483,7 @@ impl TerminalView {
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
                     self.exited = true;
+                    self.clear_composition(cx);
                     self.input_queue.close();
                     self.mouse = MouseState::default();
                     changed |= self.set_status(status.code.map_or_else(
@@ -475,50 +515,82 @@ impl TerminalView {
         }
     }
 
+    fn clear_option_composition(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.option_composition.clear();
+    }
+
     fn handle_keystroke(
         &mut self,
         keystroke: &Keystroke,
         reserved: &ReservedKeys,
+        window: &Window,
     ) -> bool {
         if self.exited
             || keystroke.modifiers.platform
             || reserved.is_reserved(keystroke)
         {
+            self.clear_option_composition();
             return false;
         }
-        let modifiers = protocol_modifiers(keystroke.modifiers);
-        let key = match keystroke.key.as_str() {
-            "enter" => Some(TerminalKey::Enter),
-            "tab" => Some(TerminalKey::Tab),
-            "backspace" => Some(TerminalKey::Backspace),
-            "escape" => Some(TerminalKey::Escape),
-            "up" => Some(TerminalKey::Up),
-            "down" => Some(TerminalKey::Down),
-            "left" => Some(TerminalKey::Left),
-            "right" => Some(TerminalKey::Right),
-            "home" => Some(TerminalKey::Home),
-            "end" => Some(TerminalKey::End),
-            "pageup" => Some(TerminalKey::PageUp),
-            "pagedown" => Some(TerminalKey::PageDown),
-            "delete" => Some(TerminalKey::Delete),
-            _ => None,
+        #[cfg(target_os = "macos")]
+        if let Err(error) = self.option_composition.refresh_source() {
+            self.clear_option_composition();
+            self.set_status(format!("Option text input failed: {error}"));
+        }
+        #[cfg(target_os = "macos")]
+        if self.option_composition.is_pending()
+            && matches!(keystroke.key.as_str(), "escape" | "backspace")
+            && keystroke.modifiers == gpui::Modifiers::default()
+        {
+            self.clear_option_composition();
+            return true;
+        }
+        let input = keyboard::translate(
+            keystroke,
+            Platform::current(),
+            self.option_as_alt,
+        );
+        #[cfg(target_os = "macos")]
+        let input = {
+            if input.is_some()
+                || self.option_as_alt != config::MacosOptionAsAlt::Off
+            {
+                self.clear_option_composition();
+                input
+            } else if self.composition.is_empty()
+                && keystroke.key_char.is_some()
+                && (keystroke.modifiers.alt
+                    || self.option_composition.is_pending())
+            {
+                match self.option_composition.translate_current(window) {
+                    Ok(Some(text)) if text.is_empty() => return true,
+                    Ok(Some(text)) => Some(TerminalInput::Text(text)),
+                    Ok(None) => None,
+                    Err(error) => {
+                        self.clear_option_composition();
+                        self.set_status(format!(
+                            "Option text input failed: {error}"
+                        ));
+                        return true;
+                    }
+                }
+            } else {
+                self.clear_option_composition();
+                input
+            }
         };
-        let input = if let Some(key) = key {
-            TerminalInput::Key { key, modifiers }
-        } else if keystroke.modifiers.control {
-            let Some(byte) = control_byte(&keystroke.key) else {
-                return false;
-            };
-            TerminalInput::Text(String::from(char::from(byte)))
-        } else if let Some(text) = &keystroke.key_char {
-            TerminalInput::Text(text.clone())
-        } else {
+        #[cfg(not(target_os = "macos"))]
+        let _ = window;
+        let Some(input) = input else {
             return false;
         };
-        let changed = self.enqueue_input(input);
+        self.enqueue_input(input);
         self.scroll.bottom();
         self.scroll.invalidate();
-        changed
+        // Recognized chords stay consumed even when the bounded queue rejects
+        // them. Falling through would send Option text through AppKit instead.
+        true
     }
 
     fn scroll(
@@ -610,6 +682,7 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        self.clear_option_composition();
         match invocation.id {
             ids::COPY => {
                 if let Some(text) = &self.selected_text {
@@ -1074,6 +1147,7 @@ impl TerminalView {
     }
 
     fn hide(&mut self, cx: &mut Context<'_, Self>) {
+        self.clear_composition(cx);
         self.blur_mouse(cx);
         self.mouse.forget_released_buttons();
         self.scrollbar_hovering = false;
@@ -1277,6 +1351,10 @@ impl Render for TerminalView {
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
         let mouse_view = cx.entity().downgrade();
+        #[cfg(target_os = "macos")]
+        let input_view = cx.entity();
+        #[cfg(target_os = "macos")]
+        let input_focus = self.focus.clone();
         let layout = self.terminal_layout(window);
         let mut root = div()
             .id("terminal")
@@ -1313,11 +1391,19 @@ impl Render for TerminalView {
                             .borrow_mut()
                             .prepare(snapshot.as_ref(), window);
                     },
-                    move |bounds, (), window, _| {
+                    move |bounds, (), window, cx| {
                         let bounds = Bounds::new(
                             bounds.origin + layout.bounds.origin,
                             layout.bounds.size,
                         );
+                        #[cfg(target_os = "macos")]
+                        window.handle_input(
+                            &input_focus,
+                            gpui::ElementInputHandler::new(bounds, input_view),
+                            cx,
+                        );
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = cx;
                         window.with_content_mask(
                             Some(gpui::ContentMask { bounds }),
                             |window| {

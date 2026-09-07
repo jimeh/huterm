@@ -47,6 +47,13 @@ pub fn run() -> anyhow::Result<()> {
     anyhow::bail!("the current Huterm desktop build requires macOS or Linux")
 }
 
+/// Runs the isolated `AppKit` menu verification executable.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_native_menu_smoke() {
+    desktop::menus_smoke::run();
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::APP_ID;

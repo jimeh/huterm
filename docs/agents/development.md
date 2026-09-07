@@ -25,7 +25,8 @@ headless smoke test:
 
 ```sh
 sudo apt-get install --no-install-recommends \
-  libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb
+  libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb \
+  xdotool x11-xkb-utils
 ```
 
 These packages are tracked by apt and can be removed with `sudo apt-get remove`
@@ -115,6 +116,8 @@ process labels and directory inheritance are not implemented yet.
 | Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
 | Pull request | `mise run license` on Ubuntu 24.04 | Dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
+| Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
+| macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
 | Scroll benchmark | `mise run bench:scroll` | Snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | Implementer |
 | macOS package | `mise run package:macos` | Apple Silicon app metadata, icon, executable, and architecture | CI or implementer |
 

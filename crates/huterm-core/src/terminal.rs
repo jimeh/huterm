@@ -1209,6 +1209,9 @@ fn report_failure(
 fn input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Character { text, meta } => text
+            .len()
+            .saturating_add(usize::from(*meta && !text.is_empty())),
         TerminalInput::Key { .. } | TerminalInput::Focus(_) => {
             std::mem::size_of::<TerminalInput>()
         }
@@ -1245,6 +1248,69 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn character_queue_bytes_include_utf8_payload_and_meta_prefix() {
+        for (text, meta, expected) in
+            [("λ", true, 3), ("λ", false, 2), ("", true, 0)]
+        {
+            assert_eq!(
+                input_bytes(&TerminalInput::Character {
+                    text: text.into(),
+                    meta
+                }),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn pty_meta_characters_preserve_exact_bytes_and_input_order() {
+        meta_roundtrip(huterm_protocol::TerminalEngineKind::Alacritty);
+    }
+
+    #[test]
+    fn ghostty_meta_characters_preserve_exact_bytes_and_input_order() {
+        meta_roundtrip(huterm_protocol::TerminalEngineKind::Ghostty);
+    }
+
+    fn meta_roundtrip(kind: huterm_protocol::TerminalEngineKind) {
+        use std::fmt::Write as _;
+        let expected =
+            "\x1br\x1bR\x1b3\x1b<\x1b\x12\x1b \x1bλ®paste".as_bytes();
+        let script = format!(
+            "stty raw -echo; printf READY; bytes=$(dd bs=1 count={} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:DONE' \"$bytes\"",
+            expected.len(),
+        );
+        let mut command = command(&script);
+        command.engine = kind;
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(94), &command).unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        for text in ["r", "R", "3", "<", "\x12", " ", "λ"] {
+            client
+                .send_input(TerminalInput::Character {
+                    text: text.into(),
+                    meta: true,
+                })
+                .unwrap();
+        }
+        client.send_input(TerminalInput::Text("®".into())).unwrap();
+        client
+            .send_input(TerminalInput::Paste("paste".into()))
+            .unwrap();
+        let snapshot = wait_for_text(&client, ":DONE");
+        let text: String =
+            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        let mut hex = String::new();
+        for byte in expected {
+            write!(hex, "{byte:02x}").unwrap();
+        }
+        assert!(text.contains(&format!("HEX:{hex}:DONE")), "{text:?}");
+        assert_eq!(wait_for_exit(&client).code, Some(0));
+        runtime.shutdown().unwrap();
+    }
 
     #[test]
     fn concurrent_clean_exits_reap_without_close_assessments() {

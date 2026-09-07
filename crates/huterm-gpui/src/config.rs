@@ -13,6 +13,9 @@ engine = "alacritty"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
+# Send Option character chords as terminal Meta: "off" or "both".
+# Reload applies this to existing terminals. Linux always uses Alt as Meta.
+macos_option_as_alt = "off"
 
 [font]
 family = "Menlo"
@@ -77,14 +80,24 @@ pub(super) struct KeybindingEntry {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct TerminalConfig {
     pub(super) close_on_exit: bool,
+    pub(super) macos_option_as_alt: MacosOptionAsAlt,
 }
 
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             close_on_exit: true,
+            macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum MacosOptionAsAlt {
+    #[default]
+    Off,
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -392,6 +405,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         window: raw.window,
         terminal: TerminalConfig {
             close_on_exit: raw.terminal.close_on_exit,
+            macos_option_as_alt: raw.terminal.macos_option_as_alt,
         },
         font: FontConfig {
             family: raw.font.family,
@@ -516,12 +530,14 @@ impl RawKeybinding {
 struct RawTerminal {
     engine: String,
     close_on_exit: bool,
+    macos_option_as_alt: MacosOptionAsAlt,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: "alacritty".into(),
             close_on_exit: TerminalConfig::default().close_on_exit,
+            macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
 }
@@ -597,6 +613,58 @@ mod tests {
         let result = parse_at(source, &directory.join("config.toml"));
         fs::remove_dir(directory).expect("remove empty config directory");
         result
+    }
+
+    #[test]
+    fn option_policy_defaults_and_validation_are_explicit() {
+        assert_eq!(
+            parse("").unwrap().terminal.macos_option_as_alt,
+            MacosOptionAsAlt::Off
+        );
+        for (value, expected) in [
+            ("off", MacosOptionAsAlt::Off),
+            ("both", MacosOptionAsAlt::Both),
+        ] {
+            assert_eq!(
+                parse(&format!("[terminal]\nmacos_option_as_alt = '{value}'"))
+                    .unwrap()
+                    .terminal
+                    .macos_option_as_alt,
+                expected
+            );
+        }
+        for value in ["left", "right", "yes", "BOTH"] {
+            let error =
+                parse(&format!("[terminal]\nmacos_option_as_alt = '{value}'"))
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("off") && error.contains("both"), "{error}");
+        }
+    }
+
+    #[test]
+    fn option_policy_reload_rejects_invalid_values_without_fallback() {
+        let directory = test_directory();
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(&path, "[terminal]\nmacos_option_as_alt = 'both'").unwrap();
+        let working = reload(&path).unwrap();
+        assert_eq!(
+            working.terminal.macos_option_as_alt,
+            MacosOptionAsAlt::Both
+        );
+        fs::write(&path, "[terminal]\nmacos_option_as_alt = 'left'").unwrap();
+        assert!(reload(&path).is_err());
+        assert_eq!(
+            working.terminal.macos_option_as_alt,
+            MacosOptionAsAlt::Both
+        );
+        fs::write(&path, "[terminal]\nmacos_option_as_alt = 'off'").unwrap();
+        assert_eq!(
+            reload(&path).unwrap().terminal.macos_option_as_alt,
+            MacosOptionAsAlt::Off
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

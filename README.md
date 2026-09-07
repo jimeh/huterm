@@ -163,6 +163,33 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
+### Option and Alt as Meta
+
+On macOS, set this to use either Option key for terminal Meta chords in Emacs,
+tmux, or readline:
+
+```toml
+[terminal]
+macos_option_as_alt = "both"
+```
+
+The default is `"off"`, which uses the selected macOS keyboard layout for
+printable Option characters and dead-key composition. With `"both"`, Option-r
+sends ESC followed by `r`, and Option-Shift-r sends ESC followed by `R`.
+Supported Control combinations retain
+the Control byte after the ESC prefix. Special keys, such as Option-arrow,
+keep their existing Alt-modified escape sequences with either setting.
+Left/right-only Option settings are not supported yet.
+
+Linux always sends unbound Alt character chords as Meta. Huterm shortcuts take
+precedence on both platforms, including Linux's default Alt-1 through Alt-9 tab
+selection. Unbind a shortcut to pass that chord to terminal applications.
+
+Reload applies the policy to subsequent input in existing tabs; queued input
+keeps its original interpretation. Invalid reloads leave the working settings
+in place. Changing the policy or leaving a terminal cancels unfinished text
+composition. Paste content is unaffected by the Meta setting.
+
 ### Themes and config reload
 
 Select a built-in theme and optionally override individual colors:
