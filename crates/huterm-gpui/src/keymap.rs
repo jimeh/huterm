@@ -68,6 +68,10 @@ pub(crate) struct EffectiveBinding {
 }
 
 /// Keystrokes claimed by effective bindings, compared by modifiers and key.
+///
+/// Conditional bindings claim only their chord prefixes; their final keystroke
+/// is consumed by GPUI when the predicate matches and reaches the terminal
+/// otherwise.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ReservedKeys(HashSet<(Modifiers, String)>);
 
@@ -79,8 +83,16 @@ impl ReservedKeys {
             .contains(&(keystroke.modifiers, keystroke.key.clone()))
     }
 
-    fn insert(&mut self, keystroke: &Keystroke) {
-        self.0.insert((keystroke.modifiers, keystroke.key.clone()));
+    /// Claims a binding's keystrokes. A binding without `when` claims every
+    /// keystroke. A conditional binding claims only its chord prefixes: GPUI
+    /// holds those pending while the predicate matches, but the final
+    /// keystroke must reach the shell when it does not, or `ctrl-c` bound
+    /// with `when = "selection"` would swallow interrupts.
+    fn claim(&mut self, keystrokes: &[Keystroke], conditional: bool) {
+        let claimed = keystrokes.len() - usize::from(conditional);
+        for keystroke in &keystrokes[..claimed] {
+            self.0.insert((keystroke.modifiers, keystroke.key.clone()));
+        }
     }
 }
 
@@ -274,9 +286,7 @@ fn compile_entries(
     let mut bindings = Vec::with_capacity(resolved.len());
     let mut effective = Vec::with_capacity(resolved.len());
     for binding in resolved {
-        for keystroke in &binding.keystrokes {
-            reserved.insert(keystroke);
-        }
+        reserved.claim(&binding.keystrokes, binding.predicate.is_some());
         let key_binding = KeyBinding::load(
             &binding.effective.key,
             binding.action.into_boxed(),
@@ -749,6 +759,32 @@ mod tests {
         let mut typed = keystroke("alt-r");
         typed.key_char = Some("®".into());
         assert!(compiled.reserved.is_reserved(&typed));
+    }
+
+    #[test]
+    fn conditional_bindings_reserve_only_their_chord_prefixes() {
+        let user = [
+            KeybindingEntry {
+                when: Some("selection".into()),
+                ..entry("ctrl-c", "copy")
+            },
+            KeybindingEntry {
+                when: Some("Terminal".into()),
+                ..entry("ctrl-k ctrl-x", "new_tab")
+            },
+        ];
+        let compiled = compile(Platform::Linux, &user).unwrap();
+        // Ctrl-C must still interrupt the shell when nothing is selected.
+        assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-c")));
+        assert!(compiled.reserved.is_reserved(&keystroke("ctrl-k")));
+        assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-x")));
+        // The bindings themselves still exist for GPUI to match.
+        let bound = compiled
+            .bindings
+            .iter()
+            .filter_map(bound_command)
+            .collect::<Vec<_>>();
+        assert!(bound.contains(&ids::COPY) && bound.contains(&ids::NEW_TAB));
     }
 
     #[test]

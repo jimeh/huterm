@@ -72,5 +72,6 @@ A config entry binding a key to an invocation, with an optional `when`
 predicate over key contexts and an optional description.
 
 **Reserved key**:
-A keystroke used by an effective binding, kept from terminal input. Unbound
-keystrokes reach the shell.
+A keystroke kept from terminal input because an effective binding without
+`when` uses it, or because it starts a multi-key chord. A conditional binding's
+final key reaches the shell whenever its predicate does not match.

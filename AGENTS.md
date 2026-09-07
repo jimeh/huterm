@@ -127,7 +127,10 @@ the real `KeyBinding` matcher as well as terminal-input reservation.
 Validate `when` with `KeyBindingContextPredicate::parse` before building a
 `KeyBinding`; `KeyBinding::new` unwraps its predicate parse. Reserved
 keystrokes derive from the compiled keymap and compare modifiers plus `key`,
-never `key_char`, so `alt-r` stays reserved when macOS reports `®`. Per-scope
+never `key_char`, so `alt-r` stays reserved when macOS reports `®`. A binding
+with `when` reserves only its chord prefixes; its final key must reach the
+shell when the predicate is false, or `ctrl-c` with `when = "selection"` would
+swallow interrupts. Per-scope
 wrapper actions (`InvokeApp`, `InvokeWindow`, `InvokeTerminal`) route catalog
 commands; anything that needs a window, such as about and open_settings, must
 be Window scope because global action handlers receive only `App`. Runtime

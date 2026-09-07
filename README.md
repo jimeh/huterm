@@ -279,7 +279,11 @@ the key first.
 
 Bound chords never reach the shell; unbound ones do. Unbind `shift-pageup` to
 send it to a full-screen program, or bind `alt-r` to a command and the shell
-never sees the key or its typed character. Reload compiles the whole file: a
+never sees the key or its typed character. A binding with `when` consumes its
+key only while the predicate matches, so `ctrl-c` bound to `copy` with
+`when = "selection"` still interrupts the shell when nothing is selected. The
+prefix keystrokes of a multi-key chord are always reserved. Reload compiles
+the whole file: a
 bad entry keeps the last working bindings and shows the diagnostic with its
 entry number and key. At startup a bad entry falls back to the defaults with
 the same error shown in the status line.

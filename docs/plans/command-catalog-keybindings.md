@@ -203,8 +203,11 @@ GPUI `KeyBinding`s after parsing:
   defaults or the user file, so later UI can list bindings without re-parsing
   the config.
 - The compiled keymap exposes a reserved-key set containing every keystroke
-  used by any effective binding, including every keystroke of a multi-key
-  chord. That set replaces the static reservation table and is consulted by
+  of each effective binding without `when`, and only the chord prefixes of a
+  binding with `when`: GPUI consumes its final keystroke while the predicate
+  matches, and the shell must receive it otherwise, so `ctrl-c` bound to copy
+  with `when = "selection"` still interrupts. That set replaces the static
+  reservation table and is consulted by
   both `handle_keystroke` and the keystroke observer. Reservation compares the
   keystroke `key` and modifiers, never `key_char`, so `alt-r` is bindable on
   macOS even though GPUI reports its typed character as `®`.
