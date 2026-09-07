@@ -1,5 +1,7 @@
 use super::*;
-use crate::commands::{Route, fill_target, route, select_tab_slot};
+use crate::commands::{
+    Route, fill_rename_target, fill_target, route, select_tab_slot,
+};
 use crate::config::TabPosition;
 #[cfg(target_os = "macos")]
 use crate::native_quit;
@@ -1392,21 +1394,11 @@ impl WorkspaceView {
                 cx.open_with_system(&config_path);
                 Ok(CommandOutcome::Completed)
             }
-            ids::RENAME_TAB => {
-                let invocation = fill_target(
+            ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
+                let invocation = fill_rename_target(
                     invocation,
-                    "tab",
-                    self.active.map(CommandValue::Tab),
-                )?;
-                Ok(run_on_runtime(invocation, cx))
-            }
-            ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
-                // The session target is resolved from this workspace on the
-                // structural worker, where the ownership is canonical.
-                let invocation = fill_target(
-                    invocation,
-                    "workspace",
-                    self.workspace.map(CommandValue::Workspace),
+                    self.active,
+                    self.workspace,
                 )?;
                 Ok(run_on_runtime(invocation, cx))
             }

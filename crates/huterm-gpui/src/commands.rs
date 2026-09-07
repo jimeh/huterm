@@ -10,7 +10,7 @@
 use gpui::{Action, App, MenuItem};
 use huterm_protocol::{
     CommandArgument, CommandError, CommandId, CommandInvocation, CommandScope,
-    CommandValue, lookup, validate,
+    CommandValue, TabId, WorkspaceId, ids, lookup, validate,
 };
 
 /// Application-scope command carried through GPUI's global action handlers.
@@ -171,6 +171,36 @@ pub(crate) fn fill_target(
     Ok(filled)
 }
 
+/// Fills the target a rename command omits from the invoking window.
+///
+/// An explicit target always wins. `rename_session` without a session carries
+/// the window's workspace instead, because the session owning a workspace is
+/// canonical runtime state and is resolved under the Mux lock on the worker.
+///
+/// # Errors
+/// Returns [`CommandError::Unavailable`] when the window cannot supply the
+/// omitted target, and [`CommandError::UnknownCommand`] for other commands.
+pub(crate) fn fill_rename_target(
+    invocation: &CommandInvocation,
+    active_tab: Option<TabId>,
+    workspace: Option<WorkspaceId>,
+) -> Result<CommandInvocation, CommandError> {
+    match invocation.id {
+        ids::RENAME_TAB => {
+            fill_target(invocation, "tab", active_tab.map(CommandValue::Tab))
+        }
+        ids::RENAME_SESSION if invocation.argument("session").is_some() => {
+            Ok(invocation.clone())
+        }
+        ids::RENAME_WORKSPACE | ids::RENAME_SESSION => fill_target(
+            invocation,
+            "workspace",
+            workspace.map(CommandValue::Workspace),
+        ),
+        other => Err(CommandError::UnknownCommand(other)),
+    }
+}
+
 /// Converts a validated one-based `select_tab` index to a tab slot.
 ///
 /// # Errors
@@ -200,7 +230,7 @@ pub(crate) fn select_tab_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{TabId, ids};
+    use huterm_protocol::SessionId;
 
     fn invocation(
         id: CommandId,
@@ -310,5 +340,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(kept.tab("tab"), Some(TabId::new(1)));
+    }
+
+    #[test]
+    fn explicit_session_target_skips_the_workspace_fill() {
+        let name = ("name", CommandValue::Text("work".into()));
+        let explicit = invocation(
+            ids::RENAME_SESSION,
+            &[
+                name.clone(),
+                ("session", CommandValue::Session(SessionId::new(2))),
+            ],
+        );
+        assert_eq!(
+            fill_rename_target(&explicit, None, None),
+            Ok(explicit.clone())
+        );
+        assert!(validate(&explicit).is_ok());
+
+        let omitted = invocation(ids::RENAME_SESSION, &[name]);
+        assert!(matches!(
+            fill_rename_target(&omitted, None, None),
+            Err(CommandError::Unavailable(_))
+        ));
+        let filled =
+            fill_rename_target(&omitted, None, Some(WorkspaceId::new(4)))
+                .unwrap();
+        assert_eq!(filled.workspace("workspace"), Some(WorkspaceId::new(4)));
+        assert_eq!(filled.session("session"), None);
     }
 }
