@@ -21,7 +21,9 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
         keybindings: vec![
             KeybindingEntry {
                 key: "cmd-w".into(),
-                command: "toggle_fullscreen".into(),
+                // The menu must keep New Tab's default ahead of this conditional
+                // binding, while dispatch gives the conditional binding priority.
+                command: "new_tab".into(),
                 when: Some("Terminal".into()),
                 args: None,
                 description: None,
