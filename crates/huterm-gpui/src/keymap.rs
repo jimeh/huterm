@@ -210,6 +210,20 @@ struct Resolved {
     position: usize,
 }
 
+impl Resolved {
+    /// GPUI's macOS menus display the earliest binding for an action, while
+    /// dispatch ties between different predicates go to the latest. Listing
+    /// unconditional user bindings first puts them in menus; keeping
+    /// conditional user bindings last lets them win ties against defaults.
+    fn dispatch_rank(&self) -> u8 {
+        match (self.effective.origin, self.predicate.is_some()) {
+            (Origin::User, false) => 0,
+            (Origin::Default, _) => 1,
+            (Origin::User, true) => 2,
+        }
+    }
+}
+
 fn compile_entries(
     entries: &[BindingEntry],
 ) -> Result<CompiledKeymap, KeymapError> {
@@ -283,10 +297,15 @@ fn compile_entries(
         });
     }
     let mut reserved = ReservedKeys::default();
-    let mut bindings = Vec::with_capacity(resolved.len());
     let mut effective = Vec::with_capacity(resolved.len());
-    for binding in resolved {
+    for binding in &resolved {
         reserved.claim(&binding.keystrokes, binding.predicate.is_some());
+        effective.push(binding.effective.clone());
+    }
+    // `effective` keeps resolution order for display.
+    resolved.sort_by_key(Resolved::dispatch_rank);
+    let mut bindings = Vec::with_capacity(resolved.len());
+    for binding in resolved {
         let key_binding = KeyBinding::load(
             &binding.effective.key,
             binding.action.into_boxed(),
@@ -302,7 +321,6 @@ fn compile_entries(
             ))
         })?;
         bindings.push(key_binding);
-        effective.push(binding.effective);
     }
     Ok(CompiledKeymap {
         bindings,
@@ -505,6 +523,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::invoke;
     use gpui::{KeyContext, Keymap};
 
     fn entry(key: &str, command: &str) -> KeybindingEntry {
@@ -673,6 +692,45 @@ mod tests {
             .map(|binding| binding.command)
             .collect::<Vec<_>>();
         assert_eq!(bound, vec![ids::NEW_WINDOW]);
+    }
+
+    #[test]
+    fn unconditional_user_bindings_lead_menus_and_conditional_ones_win_ties() {
+        let user = [
+            KeybindingEntry {
+                when: Some("Terminal".into()),
+                ..entry("cmd-w", "toggle_fullscreen")
+            },
+            entry("cmd-r", "reload_config"),
+        ];
+        let compiled = compile(Platform::MacOs, &user).unwrap();
+        let keymap = Keymap::new(compiled.bindings);
+        // Menus take the first binding listed for the action.
+        let reload = invoke(ids::RELOAD_CONFIG).into_boxed();
+        let shown =
+            keymap
+                .bindings_for_action(reload.as_ref())
+                .next()
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(|keystroke| keystroke.inner().clone())
+                        .collect::<Vec<_>>()
+                });
+        assert_eq!(shown, Some(vec![keystroke("cmd-r")]));
+        // Equal-depth ties go to the later binding, so a conditional user
+        // binding must follow the default for the same key.
+        let stack = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let (bindings, _) =
+            keymap.bindings_for_input(&[keystroke("cmd-w")], &stack);
+        assert_eq!(
+            bindings.first().map(command_of),
+            Some(ids::TOGGLE_FULLSCREEN)
+        );
     }
 
     #[test]

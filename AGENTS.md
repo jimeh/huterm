@@ -136,9 +136,11 @@ commands; anything that needs a window, such as about and open_settings, must
 be Window scope because global action handlers receive only `App`. Runtime
 rename commands fill omitted tab/workspace targets on the UI thread and resolve
 the session under the Mux lock on the worker. Rebuild menus on reload so macOS
-shortcut display follows user bindings. GPUI's `Not` predicate checks every
-ancestor context, so `Terminal && !confirming` works across the Workspace and
-Terminal stack.
+shortcut display follows user bindings. GPUI menus show the earliest binding
+for an action and equal-depth dispatch ties go to the latest, so the compiled
+keymap lists unconditional user bindings first and conditional ones last.
+GPUI's `Not` predicate checks every ancestor context, so
+`Terminal && !confirming` works across the Workspace and Terminal stack.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of Alacritty history. Let the runtime engine
 anchor its shared viewport across output and resize; never also compensate the

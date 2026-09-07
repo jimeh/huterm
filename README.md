@@ -267,7 +267,9 @@ order. A later entry wins over an earlier one for the same key and `when`;
 two user entries with the same key and `when` produce a conflict notice in the
 window status after reload, and the last one wins. Different `when` predicates
 for one key coexist; GPUI then prefers the binding whose predicate matches
-closest to the focused view, and only among equals the later entry.
+closest to the focused view. Among equals, a user binding with `when` beats
+one without, and otherwise the later entry wins. macOS menus display a user
+binding without `when` ahead of the default for the same command.
 
 A context identifier matches only the innermost context that contains it, and
 a binding with no `when` matches at the innermost depth. So `fullscreen` on its
