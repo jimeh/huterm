@@ -448,3 +448,11 @@ never participates and cannot detect conditional bindings moving ahead of defaul
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
+
+Native input smoke events must enter NSApplication through `postEvent:atStart:`;
+calling NSView.keyDown: directly does not establish `currentEvent` for Option
+composition. Use printable Option prefixes and held printable suffixes in replay
+regressions: control-only prefixes can pass even when replay suppression breaks.
+Conditional fallback tests must change selection after the prefix starts and
+before resolution; GPUI may dispatch a conditional short binding immediately
+when that condition was already true at prefix start.

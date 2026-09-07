@@ -65,6 +65,9 @@ jobs:
       - name: Verify native menu shortcuts
         run: mise run smoke:macos-menus
 
+      - name: Verify native input through both engines
+        run: mise run smoke:macos-input
+
       - name: Verify cancellable native Quit
         run: mise run smoke:macos-quit
 

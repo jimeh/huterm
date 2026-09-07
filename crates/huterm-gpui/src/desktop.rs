@@ -49,6 +49,8 @@ mod keyboard;
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
+#[cfg(target_os = "macos")]
+pub(crate) use windows::input_smoke;
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()

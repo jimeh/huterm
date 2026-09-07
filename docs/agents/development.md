@@ -175,3 +175,38 @@ Python is not required. Run `mise run scripts:install` to install the locked
 TypeScript dependencies, `mise run check:scripts` for script tests and type
 checking, and `mise run audit:scripts` for dependency advisories. These checks
 also run through the appropriate verification and CI tasks.
+
+### Native macOS input smoke
+
+Run `mise run smoke:macos-input` in a macOS GUI session with the US, ABC, or
+British keyboard layout selected. The smoke reads the current input source and
+fails with its identifier when unsupported. It does not change the input source
+or require Accessibility permission.
+
+The dedicated `native_input_smoke` executable opens production WorkspaceView and
+TerminalView instances. Its isolated native helper posts synthetic NSEvent key,
+modifier, and mouse events to NSApplication's queue. AppKit dispatches them through
+GPUI's native window, shortcut matcher, and text input handler. Queue dispatch
+also supplies the real NSApplication.currentEvent used by Option composition.
+The ordinary application entrypoint does not enable the smoke command protocol.
+
+Both Alacritty and Ghostty receive input through a raw, no-echo PTY recorder.
+Assertions compare cumulative bytes after a printable barrier, including negative
+assertions for consumed shortcuts and replayed prefixes. Read-only probes wait
+for GPUI pending-input completion, configuration changes, tab readiness, and
+terminal exit. Cases cover Option symbols/dead keys, Meta policy reload,
+printable chord timeout/mismatch, collapsed fallback, modifier-only mismatch,
+selection changes during pending input, fallback reload removing its binding,
+paste, and mouse-driven tab focus cancellation. The recorder has a bounded
+lifetime, and normal completion exits it before invoking native Quit. Failure
+cleanup requests application shutdown before escalating to process signals.
+
+The runner snapshots every clipboard item's declared data formats and restores
+those bytes in its cleanup path, including an empty clipboard. It runs in a
+separate process so app failure cannot discard the snapshot. Avoid editing the
+clipboard while the smoke runs. A restoration error retains the temporary
+snapshot and fails the task.
+
+This proves synthetic AppKit event dispatch into real GPUI input and PTY bytes.
+It does not prove physical keyboard device behavior, arbitrary input-method
+preedit, alternate layouts, or hardware key-up ordering.

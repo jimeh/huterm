@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+#[path = "input_smoke.rs"]
+pub(crate) mod input_smoke;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
@@ -406,6 +409,12 @@ pub(super) fn install_startup_keymap(
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
+    run_with_startup(|_| {})
+}
+
+pub(super) fn run_with_startup(
+    startup: impl FnOnce(&mut App) + 'static,
+) -> anyhow::Result<()> {
     let loaded = config::load();
     if loaded.fatal {
         anyhow::bail!(
@@ -475,6 +484,7 @@ pub(super) fn run() -> anyhow::Result<()> {
         cx.observe_keystrokes(observe_keystroke).detach();
         open_window(cx);
         cx.activate(true);
+        startup(cx);
     });
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;

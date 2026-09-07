@@ -54,6 +54,13 @@ pub fn run_native_menu_smoke() {
     desktop::menus_smoke::run();
 }
 
+/// Runs the isolated native input verification executable.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_native_input_smoke() -> anyhow::Result<()> {
+    desktop::input_smoke::run()
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::APP_ID;
