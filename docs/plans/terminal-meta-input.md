@@ -162,8 +162,11 @@ pending sequence and consumes replayed `on_key_down` events before they reach
 the input handler. Timeout and mismatch have different notification ordering;
 tracking preserves both, including partial three-key chords and nonprinting
 prefixes. GPUI collapses a matched fallback prefix to its last key, so tracking
-retains enabled binding snapshots and uses GPUI's matcher to consume the complete
-prefix. The snapshot survives actions that reload or remove bindings. Focus
+captures enabled bindings at resolution and uses GPUI's matcher to consume the
+complete prefix. Selection changes can enable a fallback while a sequence is
+pending. Timeout's pre-replay notification and wrapper action capture listeners
+freeze the current eligibility before any handler runs, including modifier-only
+mismatches. The snapshot survives actions that reload or remove bindings. Focus
 cancellation and accepted actions clear completed tracking. Ordinary native
 commits remain unchanged. Accepted replayed actions are skipped
 before accessing `NSApplication.currentEvent`.

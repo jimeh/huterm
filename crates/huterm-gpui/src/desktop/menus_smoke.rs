@@ -24,7 +24,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
                 // The menu must keep New Tab's default ahead of this conditional
                 // binding, while dispatch gives the conditional binding priority.
                 command: "new_tab".into(),
-                when: Some("Terminal".into()),
+                when: Some("!confirming".into()),
                 args: None,
                 description: None,
             },

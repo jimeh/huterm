@@ -10,6 +10,7 @@ use huterm_protocol::{TerminalInput, TerminalKey};
 pub(super) struct PendingShortcuts {
     strokes: std::collections::VecDeque<Keystroke>,
     action_observed: bool,
+    resolution_captured: bool,
     bindings: Vec<gpui::KeyBinding>,
 }
 
@@ -19,6 +20,7 @@ impl PendingShortcuts {
         self.strokes.clear();
         self.action_observed = false;
         self.bindings.clear();
+        self.resolution_captured = false;
     }
 
     pub(super) fn update(
@@ -30,11 +32,27 @@ impl PendingShortcuts {
             self.strokes = pending.iter().cloned().collect();
             self.bindings = bindings;
             self.action_observed = false;
+            self.resolution_captured = false;
         } else if self.action_observed {
             self.clear();
         }
         // GPUI announces None before timeout replay, but after mismatch replay.
         // Keep unmatched strokes until on_key_down consumes their replay.
+    }
+
+    pub(super) fn resolution_strokes(&self) -> Option<Vec<Keystroke>> {
+        (!self.resolution_captured && !self.strokes.is_empty())
+            .then(|| self.strokes.iter().cloned().collect())
+    }
+
+    pub(super) fn capture_resolution(
+        &mut self,
+        bindings: Vec<gpui::KeyBinding>,
+    ) {
+        if !self.resolution_captured {
+            self.bindings = bindings;
+            self.resolution_captured = true;
+        }
     }
 
     pub(super) fn observe_action(
@@ -160,6 +178,30 @@ mod tests {
     }
 
     #[test]
+    fn resolution_captures_changed_context_before_actions_and_freezes_the_batch()
+     {
+        let held = prefix(&["alt-k", "alt-r"]);
+        for timeout in [false, true] {
+            let mut pending = PendingShortcuts::default();
+            // The conditional fallback was inactive when the prefix started.
+            pending.update(Some(&held), Vec::new());
+            if timeout {
+                pending.update(None, Vec::new());
+            }
+            // Selection now enables the fallback. Capture precedes its handler.
+            assert_eq!(pending.resolution_strokes(), Some(held.clone()));
+            pending.capture_resolution(fallback_bindings(&["alt-k"]));
+            assert!(pending.resolution_strokes().is_none());
+            // A handler can reload away that binding before later replay actions.
+            pending.capture_resolution(Vec::new());
+            pending.observe_action(&held[0], reload_action().as_ref());
+            assert!(pending.consume_replay(&held[1]), "timeout={timeout}");
+            pending.update(None, Vec::new());
+            assert!(!pending.consume_replay(&held[0]));
+        }
+    }
+
+    #[test]
     fn collapsed_fallback_actions_consume_the_whole_prefix_including_repeated_keys()
      {
         for (held_keys, short, long, final_index) in [
@@ -223,9 +265,11 @@ mod tests {
             .bindings,
         );
         let mut pending = PendingShortcuts::default();
-        pending.update(Some(&held), bindings);
+        pending.update(Some(&held), Vec::new());
         pending.update(None, Vec::new());
+        pending.capture_resolution(bindings);
         pending.observe_action(&held[1], reload_action().as_ref());
+        pending.capture_resolution(Vec::new());
         pending.observe_action(
             &held[2],
             crate::commands::invoke(huterm_protocol::ids::NEW_TAB)

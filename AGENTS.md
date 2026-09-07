@@ -411,10 +411,15 @@ handler, bypassing raw keystroke observers. Track the actual pending sequence an
 consume replay keys before they become text, including nonprinting strokes.
 Timeout announces no pending input before replay; mismatch announces it after.
 A replayed fallback action reports only its matched prefix's last key. Capture
-GPUI's enabled fallback bindings with each pending sequence, then use their
-matcher to consume the whole prefix, including repeated keys. Keep that snapshot
-through actions that reload the keymap; the later pending notification clears
-completed actions. Put shorter fallback bindings before longer chords in config:
+GPUI's enabled fallback bindings when it resolves a sequence, not when the
+prefix starts: selection can change conditional eligibility without changing
+focus. Capture at timeout's pre-replay notification or the first wrapper action's
+capture phase, then freeze through all replay actions, including keymap reloads.
+Use GPUI's matcher to consume whole prefixes, including repeated keys. Public
+keystroke interceptors omit modifier-only mismatches, so do not rely on them for
+this capture. Ignore menu actions while GPUI still holds a pending sequence.
+The later pending notification clears completed actions. Put shorter fallback
+bindings before longer chords in config:
 a newer short binding makes GPUI discard the longer pending match.
 Mirror GPUI's cancellation on focus change;
 window deactivation alone leaves its pending sequence alive. Native commits must
@@ -435,3 +440,11 @@ has newer preedit. Bindings and menu installation share one operation;
 Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.
+
+GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
+ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
+never participates and cannot detect conditional bindings moving ahead of defaults.
+
+Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
+Without it, GNU timeout puts the reader outside the terminal foreground process
+group, so accepted terminal input never reaches the fixture reader.

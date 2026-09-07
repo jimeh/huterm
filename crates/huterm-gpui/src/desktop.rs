@@ -527,39 +527,54 @@ impl TerminalView {
         if self.visible {
             #[cfg(target_os = "macos")]
             {
-                let pending = window.pending_input_keystrokes();
-                // Capture GPUI's enabled fallback bindings before an action can
-                // reload the keymap. Replay reports only a matched prefix's last key.
-                let bindings = pending.map_or_else(Vec::new, |strokes| {
-                    let mut bindings = Vec::<gpui::KeyBinding>::new();
-                    // Replay continues through suffixes after a fallback action.
-                    for start in 0..strokes.len() {
-                        for end in start + 1..=strokes.len() {
-                            for candidate in
-                                cx.all_bindings_for_input(&strokes[start..end])
-                            {
-                                if bindings.iter().any(|binding| {
-                                    binding
-                                        .action()
-                                        .partial_eq(candidate.action())
-                                }) {
-                                    continue;
-                                }
-                                bindings.extend(window.bindings_for_action_in(
-                                    candidate.action(),
-                                    &self.focus,
-                                ));
-                            }
-                        }
-                    }
-                    bindings
-                });
-                self.pending_shortcuts.update(pending, bindings);
+                self.pending_shortcuts
+                    .update(window.pending_input_keystrokes(), Vec::new());
+                if !window.has_pending_keystrokes() {
+                    // Timeout announces None after resolving the current context,
+                    // before replaying actions. Mismatch announces it afterward.
+                    self.capture_shortcut_resolution(window, cx);
+                }
             }
             if window.has_pending_keystrokes() {
                 self.clear_option_composition();
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture_shortcut_resolution(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // Menu/programmatic actions can run while GPUI still holds the sequence.
+        // Keyboard resolution takes it before dispatching any replay action.
+        if window.has_pending_keystrokes() {
+            return;
+        }
+        let Some(strokes) = self.pending_shortcuts.resolution_strokes() else {
+            return;
+        };
+        let mut bindings = Vec::<gpui::KeyBinding>::new();
+        // GPUI resolves every replay action before invoking any handler. Freeze
+        // the current eligibility once, before a handler can change it.
+        for start in 0..strokes.len() {
+            for end in start + 1..=strokes.len() {
+                for candidate in cx.all_bindings_for_input(&strokes[start..end])
+                {
+                    if bindings.iter().any(|binding| {
+                        binding.action().partial_eq(candidate.action())
+                    }) {
+                        continue;
+                    }
+                    bindings.extend(window.bindings_for_action_in(
+                        candidate.action(),
+                        &self.focus,
+                    ));
+                }
+            }
+        }
+        self.pending_shortcuts.capture_resolution(bindings);
     }
 
     #[cfg_attr(
@@ -1482,15 +1497,34 @@ impl Render for TerminalView {
             );
         #[cfg(target_os = "macos")]
         {
-            root = root.on_key_down(cx.listener(
-                |view, event: &gpui::KeyDownEvent, _, cx| {
-                    // GPUI sends unmatched chord replays here before dispatch_input,
-                    // which otherwise looks identical to a native text commit.
-                    if view.pending_shortcuts.consume_replay(&event.keystroke) {
-                        cx.stop_propagation();
-                    }
-                },
-            ));
+            root = root
+                .capture_action(cx.listener(
+                    |view, _: &InvokeApp, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |view, _: &InvokeWindow, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |view, _: &InvokeTerminal, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .on_key_down(cx.listener(
+                    |view, event: &gpui::KeyDownEvent, _, cx| {
+                        // GPUI sends unmatched chord replays here before dispatch_input,
+                        // which otherwise looks identical to a native text commit.
+                        if view
+                            .pending_shortcuts
+                            .consume_replay(&event.keystroke)
+                        {
+                            cx.stop_propagation();
+                        }
+                    },
+                ));
         }
         let displayed_offset = self.scroll.displayed();
         if self.scrollbar_visibility.opacity > 0.0

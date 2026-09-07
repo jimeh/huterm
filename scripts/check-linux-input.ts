@@ -32,7 +32,7 @@ async function checkInput(executable: string, engine: string): Promise<void> {
   await writeFile(shell, `#!/bin/sh
 stty raw -echo
 printf READY > ${quote(ready)}
-timeout 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/dev/null
+timeout --foreground 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/dev/null
 printf COMPLETE > ${quote(complete)}
 `, { mode: 0o700 });
   await writeFile(config, `[terminal]
