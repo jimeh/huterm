@@ -77,8 +77,15 @@ command = "quit"
     if (await app.exited !== 0) throw new Error(`${engine}: Huterm exited with ${app.exitCode}`);
     console.log(`LINUX_INPUT_SMOKE ${engine} exact-bytes=${actual.toString("hex")} layout=us`);
   } finally {
-    if (app.exitCode === null) app.kill("SIGTERM");
-    await app.exited;
+    const forceKill = setTimeout(() => {
+      if (app.exitCode === null) app.kill("SIGKILL");
+    }, 1_000);
+    try {
+      if (app.exitCode === null) app.kill("SIGTERM");
+      await app.exited;
+    } finally {
+      clearTimeout(forceKill);
+    }
     for (const text of await diagnostics) if (text) process.stderr.write(text);
     await rm(directory, { recursive: true, force: true });
   }
