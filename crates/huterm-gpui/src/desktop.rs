@@ -1112,11 +1112,13 @@ impl TerminalView {
         false
     }
     /// Key context for binding predicates: `Terminal`, plus `selection`
-    /// while text is selected and `exited` after the root shell exits.
+    /// while a range is selected and `exited` after the root shell exits.
     fn key_context(&self) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Terminal");
-        if self.selection.is_some() {
+        // A mouse-down anchor is not a selection until the drag reaches
+        // another cell, so a plain click must not enable `selection`.
+        if self.selection.and_then(Selection::range).is_some() {
             context.add("selection");
         }
         if self.exited {

@@ -121,8 +121,11 @@ pub(crate) fn compile(
     user: &[KeybindingEntry],
 ) -> Result<CompiledKeymap, KeymapError> {
     let mut entries = defaults(platform);
-    for entry in user {
-        entries.push(BindingEntry::from_config(entry));
+    for (index, entry) in user.iter().enumerate() {
+        let entry = BindingEntry::from_config(entry).map_err(|message| {
+            KeymapError(keybinding_diagnostic(index + 1, &entry.key, message))
+        })?;
+        entries.push(entry);
     }
     compile_entries(&entries)
 }
@@ -134,34 +137,57 @@ pub(crate) fn compile_defaults(platform: Platform) -> CompiledKeymap {
 }
 
 impl BindingEntry {
-    fn from_config(entry: &KeybindingEntry) -> Self {
+    /// Converts a config entry, rejecting argument values that no catalog
+    /// kind accepts so a float or table never reaches a text argument.
+    fn from_config(entry: &KeybindingEntry) -> Result<Self, String> {
         let args = entry
             .args
             .iter()
             .flat_map(|table| table.iter())
-            .map(|(name, value)| (name.clone(), toml_value(value)))
-            .collect();
-        Self {
+            .map(|(name, value)| Ok((name.clone(), toml_value(name, value)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
             key: entry.key.clone(),
             command: entry.command.clone(),
             args,
             when: entry.when.clone(),
             description: entry.description.clone(),
             origin: Origin::User,
-        }
+        })
     }
 }
 
-/// Carries a TOML value until the catalog says what kind it must be.
-fn toml_value(value: &toml::Value) -> CommandValue {
+/// Converts a scalar TOML value; the catalog checks the kind afterwards.
+fn toml_value(name: &str, value: &toml::Value) -> Result<CommandValue, String> {
     match value {
-        toml::Value::Integer(integer) => CommandValue::Integer(*integer),
-        toml::Value::Boolean(boolean) => CommandValue::Bool(*boolean),
-        toml::Value::String(text) => CommandValue::Text(text.clone()),
-        // Everything else fails catalog type validation with a message
-        // naming the expected kind.
-        other => CommandValue::Text(other.to_string()),
+        toml::Value::Integer(integer) => Ok(CommandValue::Integer(*integer)),
+        toml::Value::Boolean(boolean) => Ok(CommandValue::Bool(*boolean)),
+        toml::Value::String(text) => Ok(CommandValue::Text(text.clone())),
+        other => Err(format!(
+            "argument `{name}` must be a string, integer, or boolean, not {}",
+            other.type_str()
+        )),
     }
+}
+
+/// Returns the catalog command a compiled binding dispatches.
+#[cfg(test)]
+pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
+    use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow};
+    let action = binding.action().as_any();
+    action
+        .downcast_ref::<InvokeApp>()
+        .map(|action| action.0.id)
+        .or_else(|| {
+            action
+                .downcast_ref::<InvokeWindow>()
+                .map(|action| action.0.id)
+        })
+        .or_else(|| {
+            action
+                .downcast_ref::<InvokeTerminal>()
+                .map(|action| action.0.id)
+        })
 }
 
 struct Resolved {
@@ -490,22 +516,7 @@ mod tests {
     }
 
     fn command_of(binding: &KeyBinding) -> CommandId {
-        let action = binding.action().as_any();
-        [
-            action
-                .downcast_ref::<crate::commands::InvokeApp>()
-                .map(|action| action.0.id),
-            action
-                .downcast_ref::<crate::commands::InvokeWindow>()
-                .map(|action| action.0.id),
-            action
-                .downcast_ref::<crate::commands::InvokeTerminal>()
-                .map(|action| action.0.id),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
-        .expect("binding carries a catalog action")
+        bound_command(binding).expect("binding carries a catalog action")
     }
 
     #[test]
@@ -684,6 +695,14 @@ mod tests {
             ),
             (
                 with_args(
+                    entry("cmd-t", "rename_tab"),
+                    &[("name", toml::Value::Float(1.5))],
+                ),
+                "argument `name` must be a string, integer, or boolean, not \
+                 float",
+            ),
+            (
+                with_args(
                     entry("cmd-t", "unbind"),
                     &[("index", toml::Value::Integer(1))],
                 ),
@@ -780,5 +799,41 @@ mod tests {
             });
             assert_eq!(matched(select_last, &terminal), vec![ids::SELECT_TAB]);
         }
+    }
+
+    #[test]
+    fn window_context_predicates_need_the_descendant_form_to_beat_defaults() {
+        // GPUI ranks a predicate-free binding at the full stack depth and an
+        // identifier predicate at the depth of the context that contains it,
+        // so `fullscreen` alone ranks below the default and only the
+        // descendant form `fullscreen > Terminal` wins.
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let fullscreen = [
+            KeyContext::parse("Workspace fullscreen").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let first = |when: &str, contexts: &[KeyContext]| {
+            let user = [KeybindingEntry {
+                when: Some(when.into()),
+                ..entry("cmd-w", "toggle_fullscreen")
+            }];
+            let compiled = compile(Platform::MacOs, &user).unwrap();
+            let keymap = Keymap::new(compiled.bindings);
+            let (bindings, _) =
+                keymap.bindings_for_input(&[keystroke("cmd-w")], contexts);
+            bindings.first().map(command_of)
+        };
+        assert_eq!(first("fullscreen", &fullscreen), Some(ids::CLOSE_TAB));
+        assert_eq!(
+            first("fullscreen > Terminal", &fullscreen),
+            Some(ids::TOGGLE_FULLSCREEN)
+        );
+        assert_eq!(
+            first("fullscreen > Terminal", &terminal),
+            Some(ids::CLOSE_TAB)
+        );
     }
 }

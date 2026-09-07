@@ -266,7 +266,16 @@ Precedence: the platform defaults apply first, then user entries in file
 order. A later entry wins over an earlier one for the same key and `when`;
 two user entries with the same key and `when` produce a conflict notice in the
 window status after reload, and the last one wins. Different `when` predicates
-for one key coexist, and the later entry is tried first.
+for one key coexist; GPUI then prefers the binding whose predicate matches
+closest to the focused view, and only among equals the later entry.
+
+A context identifier matches only the innermost context that contains it, and
+a binding with no `when` matches at the innermost depth. So `fullscreen` on its
+own ranks below a default for the same key while a terminal is focused, and
+never runs. To require a window context while a terminal is focused, use the
+descendant form: `when = "fullscreen > Terminal"`. Negations look through every
+ancestor, so `Terminal && !confirming` works as written. Alternatively `unbind`
+the key first.
 
 Bound chords never reach the shell; unbound ones do. Unbind `shift-pageup` to
 send it to a full-screen program, or bind `alt-r` to a command and the shell

@@ -1,7 +1,5 @@
 use super::*;
-use crate::commands::{
-    Route, fill_rename_target, fill_target, route, select_tab_slot,
-};
+use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
 #[cfg(target_os = "macos")]
 use crate::native_quit;
@@ -9,7 +7,9 @@ use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_core::{
     CloseAssessment, CloseRequest, HierarchySnapshot, MuxError, OpenedTab,
 };
-use huterm_protocol::{AttachmentId, SessionId, WorkspaceId, validate};
+use huterm_protocol::{
+    AttachmentId, CommandArgument, SessionId, WorkspaceId, validate,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -170,19 +170,32 @@ impl DesktopRuntime {
                 "runtime is terminating".to_owned(),
             ));
         }
-        let invocation = if invocation.id == ids::RENAME_SESSION {
+        let mut invocation = invocation.clone();
+        if invocation.id == ids::RENAME_SESSION {
             // The window knows its workspace; the session owning it is
-            // canonical runtime state, so resolve it under the same lock.
-            let session = invocation
-                .workspace("workspace")
-                .and_then(|id| mux.workspace(id))
-                .map(|workspace| CommandValue::Session(workspace.session_id));
-            let mut filled = fill_target(invocation, "session", session)?;
-            filled.args.retain(|argument| argument.name != "workspace");
-            filled
-        } else {
-            invocation.clone()
-        };
+            // canonical runtime state, so resolve it under the same lock. A
+            // workspace that vanished since the window captured it is a
+            // stale target, not a missing one.
+            if invocation.session("session").is_none() {
+                let workspace = invocation.workspace("workspace").ok_or(
+                    CommandError::MissingArgument {
+                        command: ids::RENAME_SESSION,
+                        name: "session",
+                    },
+                )?;
+                let session = mux
+                    .workspace(workspace)
+                    .map(|workspace| workspace.session_id)
+                    .ok_or(CommandError::StaleTarget)?;
+                invocation.args.push(CommandArgument::new(
+                    "session",
+                    CommandValue::Session(session),
+                ));
+            }
+            invocation
+                .args
+                .retain(|argument| argument.name != "workspace");
+        }
         huterm_core::execute(&mut mux, &invocation)
     }
 
@@ -321,6 +334,21 @@ impl Desktop {
     }
 }
 
+/// Shows `message` in the active window's status line, if there is one.
+fn show_active_window_status(cx: &mut App, message: String) {
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    let _ = window.update(cx, |root, _, cx| {
+        if let Ok(view) = root.downcast::<WorkspaceView>() {
+            view.update(cx, |view, cx| {
+                view.status = Some(message);
+                cx.notify();
+            });
+        }
+    });
+}
+
 fn run_app_command(
     cx: &mut App,
     invocation: &CommandInvocation,
@@ -353,6 +381,30 @@ fn run_app_command(
     }
 }
 
+/// Binds the startup keymap and returns its reserved keys with the first
+/// diagnostic to show: a config error, a keymap error, or binding conflicts.
+///
+/// A broken binding never blocks startup: defaults apply and the diagnostic
+/// shows like any other non-fatal configuration error.
+fn install_startup_keymap(
+    cx: &mut App,
+    loaded: &config::LoadedConfig,
+) -> (Arc<ReservedKeys>, Option<String>) {
+    let (compiled, keymap_error) = compile_keymap(&loaded.config);
+    let conflicts =
+        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
+    let reserved = bind_keymap(cx, compiled);
+    let diagnostic = loaded
+        .error
+        .clone()
+        .or_else(|| {
+            keymap_error
+                .map(|error| format!("{}: {error}", loaded.path.display()))
+        })
+        .or(conflicts);
+    (reserved, diagnostic)
+}
+
 pub(super) fn run() -> anyhow::Result<()> {
     let loaded = config::load();
     if loaded.fatal {
@@ -377,17 +429,11 @@ pub(super) fn run() -> anyhow::Result<()> {
         cx.activate(true);
     });
     application.run(move |cx| {
-        // A broken binding never blocks startup: defaults apply and the
-        // diagnostic shows like any other non-fatal configuration error.
-        let (compiled, keymap_error) = compile_keymap(&loaded.config);
-        let reserved = bind_keymap(cx, compiled);
+        let (reserved, config_error) = install_startup_keymap(cx, &loaded);
         cx.set_global(Desktop {
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
-            config_error: loaded.error.or_else(|| {
-                keymap_error
-                    .map(|error| format!("{}: {error}", loaded.path.display()))
-            }),
+            config_error,
             config_path: loaded.path,
             windows: Vec::new(),
             reserved,
@@ -412,7 +458,12 @@ pub(super) fn run() -> anyhow::Result<()> {
         install_menus(cx);
         cx.on_action(|action: &InvokeApp, cx| {
             if let Err(error) = Desktop::invoke(cx, &action.0, None) {
-                eprintln!("Huterm command `{}` failed: {error}", action.0.id);
+                let message =
+                    format!("Command `{}` failed: {error}", action.0.id);
+                eprintln!("Huterm {message}");
+                // Global action callbacks run while the dispatching window
+                // is borrowed, so update its status after it is returned.
+                cx.defer(move |cx| show_active_window_status(cx, message));
             }
         });
         cx.on_window_closed(|cx| {
@@ -3181,21 +3232,28 @@ mod tests {
             let macos = platform == Platform::MacOs;
             let compiled = keymap::compile(platform, &[]).unwrap();
             let prefix = if macos { "cmd" } else { "ctrl-shift" };
-            for chord in [
-                format!("{prefix}-n"),
-                format!("{prefix}-t"),
-                format!("{prefix}-w"),
-                "ctrl-tab".into(),
-                "ctrl-shift-tab".into(),
-                format!("{}-9", if macos { "cmd" } else { "alt" }),
+            for (chord, command) in [
+                (format!("{prefix}-n"), ids::NEW_WINDOW),
+                (format!("{prefix}-t"), ids::NEW_TAB),
+                (format!("{prefix}-w"), ids::CLOSE_TAB),
+                ("ctrl-tab".into(), ids::NEXT_TAB),
+                ("ctrl-shift-tab".into(), ids::PREVIOUS_TAB),
+                (
+                    format!("{}-9", if macos { "cmd" } else { "alt" }),
+                    ids::SELECT_TAB,
+                ),
             ] {
                 let key = Keystroke::parse(&chord).unwrap();
-                assert!(
-                    compiled.bindings.iter().any(|binding| binding
-                        .match_keystrokes(std::slice::from_ref(&key))
-                        == Some(false)),
-                    "{chord}"
-                );
+                let matched = compiled
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.match_keystrokes(std::slice::from_ref(&key))
+                            == Some(false)
+                    })
+                    .map(keymap::bound_command)
+                    .collect::<Vec<_>>();
+                assert_eq!(matched, vec![Some(command)], "{chord}");
                 assert!(compiled.reserved.is_reserved(&key), "{chord}");
             }
         }
