@@ -316,6 +316,14 @@ fn parse_keystrokes(key: &str) -> Result<Vec<Keystroke>, String> {
     let keystrokes = key
         .split_whitespace()
         .map(|source| {
+            // GPUI parses `cmd+<` as one unmodified key literally named
+            // `cmd+<`, so a plus-joined chord binds nothing and unbinds
+            // nothing without any error. A trailing `+` is the plus key.
+            if source[..source.len() - 1].contains('+') {
+                return Err(format!(
+                    "invalid key {source:?}: join modifiers with `-`, not `+`"
+                ));
+            }
             Keystroke::parse(source)
                 .map_err(|error| format!("invalid key: {error}"))
         })
@@ -668,9 +676,17 @@ mod tests {
     }
 
     #[test]
+    fn a_trailing_plus_is_the_plus_key() {
+        let compiled =
+            compile(Platform::MacOs, &[entry("cmd-+", "new_tab")]).unwrap();
+        assert!(compiled.reserved.is_reserved(&keystroke("cmd-+")));
+    }
+
+    #[test]
     fn invalid_entries_fail_with_index_and_key() {
         let cases: Vec<(KeybindingEntry, &str)> = vec![
             (entry("cmd-x-y", "new_tab"), "invalid key"),
+            (entry("cmd+<", "unbind"), "join modifiers with `-`, not `+`"),
             (
                 KeybindingEntry {
                     when: Some("Terminal &&".into()),

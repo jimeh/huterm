@@ -290,9 +290,11 @@ the same error shown in the status line.
 
 `key` uses GPUI keystroke syntax: modifiers `cmd`, `ctrl`, `alt`, `shift`, and
 `fn` joined with hyphens before the key name (`cmd-shift-w`, `ctrl-tab`,
-`f11`, `shift-pageup`). Separate the keystrokes of a multi-key chord with
-spaces: `ctrl-k ctrl-t`. Shifted punctuation is written as the resulting
-symbol, so Cmd+Shift+, is `cmd-<`.
+`f11`, `shift-pageup`). A `+` between modifiers, such as `cmd+<`, is rejected
+rather than silently parsed as an unmodified key; a trailing `+` is the plus
+key. Separate the keystrokes of a multi-key chord with spaces: `ctrl-k ctrl-t`.
+Shifted punctuation is written as the resulting symbol, so Cmd+Shift+, is
+`cmd-<`.
 
 `when` uses GPUI's predicate language: context identifiers combined with `&&`,
 `||`, `!`, `==` and `!=` for `key == value` entries, and `>` to require a
