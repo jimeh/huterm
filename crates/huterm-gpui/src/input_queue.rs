@@ -118,6 +118,9 @@ impl InputQueue {
 pub(super) fn buffered_input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Character { text, meta } => text
+            .len()
+            .saturating_add(usize::from(*meta && !text.is_empty())),
         _ => std::mem::size_of::<TerminalInput>(),
     }
 }
@@ -134,6 +137,71 @@ mod tests {
             position: MousePosition { column, row: 0 },
             modifiers: Modifiers::default(),
         })
+    }
+
+    #[test]
+    fn meta_prefix_counts_toward_queue_capacity() {
+        let mut queue = InputQueue::default();
+        let full = TerminalInput::Character {
+            text: "x".repeat(PENDING_INPUT_BYTE_CAPACITY),
+            meta: true,
+        };
+        assert_eq!(
+            queue
+                .enqueue(full, false, |_| panic!(
+                    "oversized input reached runtime"
+                ))
+                .unwrap(),
+            Admission::Full
+        );
+        let fits = TerminalInput::Character {
+            text: "x".repeat(PENDING_INPUT_BYTE_CAPACITY - 1),
+            meta: true,
+        };
+        assert_eq!(
+            queue
+                .enqueue(fits, false, |_| Err(RuntimeError::Busy))
+                .unwrap(),
+            Admission::Accepted
+        );
+        assert_eq!(queue.bytes, PENDING_INPUT_BYTE_CAPACITY);
+        assert_eq!(
+            buffered_input_bytes(&TerminalInput::Character {
+                text: "λ".into(),
+                meta: true
+            }),
+            3
+        );
+    }
+
+    #[test]
+    fn queued_characters_retain_policy_and_order_across_later_input() {
+        let mut queue = InputQueue::default();
+        let inputs = vec![
+            TerminalInput::Text("®".into()),
+            TerminalInput::Character {
+                text: "r".into(),
+                meta: true,
+            },
+            TerminalInput::Paste("r".into()),
+        ];
+        for input in &inputs {
+            assert_eq!(
+                queue
+                    .enqueue(input.clone(), false, |_| Err(RuntimeError::Busy))
+                    .unwrap(),
+                Admission::Accepted
+            );
+        }
+        let mut drained = Vec::new();
+        queue
+            .retry(|input| {
+                drained.push(input);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(drained, inputs);
+        assert_eq!(queue.bytes, 0);
     }
 
     #[test]

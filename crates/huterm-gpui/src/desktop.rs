@@ -16,7 +16,7 @@ use huterm_core::{Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, Modifiers, TabId, TerminalCommand,
-    TerminalEvent, TerminalInput, TerminalKey, TerminalSnapshot, ids,
+    TerminalEvent, TerminalInput, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -44,7 +44,13 @@ const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
+mod composition;
+mod keyboard;
+#[cfg(target_os = "macos")]
+pub(crate) mod menus_smoke;
 mod windows;
+#[cfg(target_os = "macos")]
+pub(crate) use windows::input_smoke;
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
@@ -62,10 +68,11 @@ fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
     }
 }
 
-/// Replaces GPUI's bindings with `compiled` and returns its reserved keys.
+/// Replaces GPUI's bindings and menu shortcuts together, returning reserved keys.
 fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
     cx.clear_key_bindings();
     cx.bind_keys(compiled.bindings);
+    install_menus(cx);
     Arc::new(compiled.reserved)
 }
 
@@ -175,6 +182,14 @@ struct TerminalView {
     exited: bool,
     visible: bool,
     input_queue: InputQueue,
+    option_as_alt: config::MacosOptionAsAlt,
+    composition: composition::Composition,
+    #[cfg(target_os = "macos")]
+    option_composition: crate::native_quit::OptionComposition,
+    #[cfg(target_os = "macos")]
+    pending_shortcuts: keyboard::PendingShortcuts,
+    #[cfg(target_os = "macos")]
+    native_window: gpui::AnyWindowHandle,
     mouse: MouseState,
     pending_resize: Option<(GridSize, CellSize)>,
     snapshot: Option<Arc<TerminalSnapshot>>,
@@ -227,6 +242,11 @@ impl TerminalView {
             });
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
+                // GPUI cancels pending shortcuts when focus changes. Window
+                // deactivation alone does not, so retain replay tracking there.
+                #[cfg(target_os = "macos")]
+                view.pending_shortcuts.clear();
+                view.clear_composition(cx);
                 view.blur_mouse(cx);
                 if view.enqueue_input(TerminalInput::Focus(false)) {
                     cx.notify();
@@ -236,14 +256,34 @@ impl TerminalView {
             window,
             |view: &mut TerminalView, window, cx| {
                 if view.visible && !window.is_window_active() {
+                    view.clear_composition(cx);
                     view.blur_mouse(cx);
                     cx.notify();
                 }
             },
         );
+        let pending_input_subscription =
+            cx.observe_pending_input(window, Self::pending_input_changed);
+        #[cfg(target_os = "macos")]
+        let layout_subscription = {
+            let view = cx.entity().downgrade();
+            cx.on_keyboard_layout_change(move |cx| {
+                let _ =
+                    view.update(cx, |view, _| view.clear_option_composition());
+            })
+        };
         TerminalView {
             client,
             input_queue: InputQueue::default(),
+            option_as_alt: config.terminal.macos_option_as_alt,
+            composition: composition::Composition::default(),
+            #[cfg(target_os = "macos")]
+            option_composition: crate::native_quit::OptionComposition::default(
+            ),
+            #[cfg(target_os = "macos")]
+            native_window: window.window_handle(),
+            #[cfg(target_os = "macos")]
+            pending_shortcuts: keyboard::PendingShortcuts::default(),
             mouse: MouseState::default(),
             pending_resize: None,
             snapshot: None,
@@ -257,6 +297,9 @@ impl TerminalView {
                 focus_subscription,
                 blur_subscription,
                 activation_subscription,
+                pending_input_subscription,
+                #[cfg(target_os = "macos")]
+                layout_subscription,
             ],
             scroll: ScrollController::default(),
             last_grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
@@ -444,6 +487,7 @@ impl TerminalView {
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
                     self.exited = true;
+                    self.clear_composition(cx);
                     self.input_queue.close();
                     self.mouse = MouseState::default();
                     changed |= self.set_status(status.code.map_or_else(
@@ -475,50 +519,149 @@ impl TerminalView {
         }
     }
 
+    fn pending_input_changed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = cx;
+        if self.visible {
+            #[cfg(target_os = "macos")]
+            {
+                self.pending_shortcuts
+                    .update(window.pending_input_keystrokes(), Vec::new());
+                if !window.has_pending_keystrokes() {
+                    // Timeout announces None after resolving the current context,
+                    // before replaying actions. Mismatch announces it afterward.
+                    self.capture_shortcut_resolution(window, cx);
+                }
+            }
+            if window.has_pending_keystrokes() {
+                self.clear_option_composition();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture_shortcut_resolution(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // Menu/programmatic actions can run while GPUI still holds the sequence.
+        // Keyboard resolution takes it before dispatching any replay action.
+        if window.has_pending_keystrokes() {
+            return;
+        }
+        let Some(strokes) = self.pending_shortcuts.resolution_strokes() else {
+            return;
+        };
+        let mut bindings = Vec::<gpui::KeyBinding>::new();
+        // GPUI resolves every replay action before invoking any handler. Freeze
+        // the current eligibility once, before a handler can change it.
+        for start in 0..strokes.len() {
+            for end in start + 1..=strokes.len() {
+                for candidate in cx.all_bindings_for_input(&strokes[start..end])
+                {
+                    if bindings.iter().any(|binding| {
+                        binding.action().partial_eq(candidate.action())
+                    }) {
+                        continue;
+                    }
+                    bindings.extend(window.bindings_for_action_in(
+                        candidate.action(),
+                        &self.focus,
+                    ));
+                }
+            }
+        }
+        self.pending_shortcuts.capture_resolution(bindings);
+    }
+
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            clippy::unused_self,
+            reason = "shared lifecycle callbacks cancel macOS-only composition"
+        )
+    )]
+    fn clear_option_composition(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.option_composition.clear();
+    }
+
     fn handle_keystroke(
         &mut self,
         keystroke: &Keystroke,
         reserved: &ReservedKeys,
+        window: &Window,
     ) -> bool {
         if self.exited
             || keystroke.modifiers.platform
             || reserved.is_reserved(keystroke)
         {
+            self.clear_option_composition();
             return false;
         }
-        let modifiers = protocol_modifiers(keystroke.modifiers);
-        let key = match keystroke.key.as_str() {
-            "enter" => Some(TerminalKey::Enter),
-            "tab" => Some(TerminalKey::Tab),
-            "backspace" => Some(TerminalKey::Backspace),
-            "escape" => Some(TerminalKey::Escape),
-            "up" => Some(TerminalKey::Up),
-            "down" => Some(TerminalKey::Down),
-            "left" => Some(TerminalKey::Left),
-            "right" => Some(TerminalKey::Right),
-            "home" => Some(TerminalKey::Home),
-            "end" => Some(TerminalKey::End),
-            "pageup" => Some(TerminalKey::PageUp),
-            "pagedown" => Some(TerminalKey::PageDown),
-            "delete" => Some(TerminalKey::Delete),
-            _ => None,
+        #[cfg(target_os = "macos")]
+        if let Err(error) = self.option_composition.refresh_source() {
+            self.clear_option_composition();
+            self.set_status(format!("Option text input failed: {error}"));
+        }
+        #[cfg(target_os = "macos")]
+        if self.option_composition.is_pending()
+            && matches!(keystroke.key.as_str(), "escape" | "backspace")
+            && keystroke.modifiers == gpui::Modifiers::default()
+        {
+            self.clear_option_composition();
+            return true;
+        }
+        let input = keyboard::translate(
+            keystroke,
+            Platform::current(),
+            self.option_as_alt,
+        );
+        #[cfg(target_os = "macos")]
+        let input = {
+            if input.is_some()
+                || self.option_as_alt != config::MacosOptionAsAlt::Off
+            {
+                self.clear_option_composition();
+                input
+            } else if self.composition.is_empty()
+                && keystroke.key_char.is_some()
+                && (keystroke.modifiers.alt
+                    || self.option_composition.is_pending())
+            {
+                match self.option_composition.translate_current(window) {
+                    Ok(Some(text)) if text.is_empty() => return true,
+                    Ok(Some(text)) => Some(TerminalInput::Text(text)),
+                    Ok(None) => None,
+                    Err(error) => {
+                        self.clear_option_composition();
+                        self.set_status(format!(
+                            "Option text input failed: {error}"
+                        ));
+                        return true;
+                    }
+                }
+            } else {
+                self.clear_option_composition();
+                input
+            }
         };
-        let input = if let Some(key) = key {
-            TerminalInput::Key { key, modifiers }
-        } else if keystroke.modifiers.control {
-            let Some(byte) = control_byte(&keystroke.key) else {
-                return false;
-            };
-            TerminalInput::Text(String::from(char::from(byte)))
-        } else if let Some(text) = &keystroke.key_char {
-            TerminalInput::Text(text.clone())
-        } else {
+        #[cfg(not(target_os = "macos"))]
+        let _ = window;
+        let Some(input) = input else {
             return false;
         };
-        let changed = self.enqueue_input(input);
+        self.enqueue_input(input);
         self.scroll.bottom();
         self.scroll.invalidate();
-        changed
+        // Recognized chords stay consumed even when the bounded queue rejects
+        // them. Falling through would send Option text through AppKit instead.
+        true
     }
 
     fn scroll(
@@ -610,6 +753,7 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        self.clear_option_composition();
         match invocation.id {
             ids::COPY => {
                 if let Some(text) = &self.selected_text {
@@ -1074,6 +1218,7 @@ impl TerminalView {
     }
 
     fn hide(&mut self, cx: &mut Context<'_, Self>) {
+        self.clear_composition(cx);
         self.blur_mouse(cx);
         self.mouse.forget_released_buttons();
         self.scrollbar_hovering = false;
@@ -1277,6 +1422,10 @@ impl Render for TerminalView {
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
         let mouse_view = cx.entity().downgrade();
+        #[cfg(target_os = "macos")]
+        let input_view = cx.entity();
+        #[cfg(target_os = "macos")]
+        let input_focus = self.focus.clone();
         let layout = self.terminal_layout(window);
         let mut root = div()
             .id("terminal")
@@ -1313,11 +1462,19 @@ impl Render for TerminalView {
                             .borrow_mut()
                             .prepare(snapshot.as_ref(), window);
                     },
-                    move |bounds, (), window, _| {
+                    move |bounds, (), window, cx| {
                         let bounds = Bounds::new(
                             bounds.origin + layout.bounds.origin,
                             layout.bounds.size,
                         );
+                        #[cfg(target_os = "macos")]
+                        window.handle_input(
+                            &input_focus,
+                            gpui::ElementInputHandler::new(bounds, input_view),
+                            cx,
+                        );
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = cx;
                         window.with_content_mask(
                             Some(gpui::ContentMask { bounds }),
                             |window| {
@@ -1340,6 +1497,37 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             );
+        #[cfg(target_os = "macos")]
+        {
+            root = root
+                .capture_action(cx.listener(
+                    |view, _: &InvokeApp, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |view, _: &InvokeWindow, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |view, _: &InvokeTerminal, window, cx| {
+                        view.capture_shortcut_resolution(window, cx);
+                    },
+                ))
+                .on_key_down(cx.listener(
+                    |view, event: &gpui::KeyDownEvent, _, cx| {
+                        // GPUI sends unmatched chord replays here before dispatch_input,
+                        // which otherwise looks identical to a native text commit.
+                        if view
+                            .pending_shortcuts
+                            .consume_replay(&event.keystroke)
+                        {
+                            cx.stop_propagation();
+                        }
+                    },
+                ));
+        }
         let displayed_offset = self.scroll.displayed();
         if self.scrollbar_visibility.opacity > 0.0
             && let Some(geometry) = self.scrollbar_geometry(window)

@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+#[path = "input_smoke.rs"]
+pub(crate) mod input_smoke;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
@@ -386,7 +389,7 @@ fn run_app_command(
 ///
 /// A broken binding never blocks startup: defaults apply and the diagnostic
 /// shows like any other non-fatal configuration error.
-fn install_startup_keymap(
+pub(super) fn install_startup_keymap(
     cx: &mut App,
     loaded: &config::LoadedConfig,
 ) -> (Arc<ReservedKeys>, Option<String>) {
@@ -406,6 +409,12 @@ fn install_startup_keymap(
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
+    run_with_startup(|_| {})
+}
+
+pub(super) fn run_with_startup(
+    startup: impl FnOnce(&mut App) + 'static,
+) -> anyhow::Result<()> {
     let loaded = config::load();
     if loaded.fatal {
         anyhow::bail!(
@@ -455,7 +464,6 @@ pub(super) fn run() -> anyhow::Result<()> {
             async {}
         })
         .detach();
-        install_menus(cx);
         cx.on_action(|action: &InvokeApp, cx| {
             if let Err(error) = Desktop::invoke(cx, &action.0, None) {
                 let message =
@@ -473,39 +481,53 @@ pub(super) fn run() -> anyhow::Result<()> {
             maybe_exit(cx);
         })
         .detach();
-        cx.observe_keystrokes(|event, window, cx| {
-            let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
-            if event.action.is_some() || reserved.is_reserved(&event.keystroke)
-            {
-                return;
-            }
-            if let Some(root) = window.root::<WorkspaceView>().flatten() {
-                root.update(cx, |view, cx| {
-                    if view.busy
-                        || view.close.confirmation.is_some()
-                        || view.reorder.is_some()
-                    {
-                        return;
-                    }
-                    if let Some(tab) = view.active_view() {
-                        tab.update(cx, |tab, cx| {
-                            if tab.handle_keystroke(&event.keystroke, &reserved)
-                            {
-                                cx.notify();
-                            }
-                            tab.start_snapshot_if_needed(cx);
-                        });
-                    }
-                });
-            }
-        })
-        .detach();
+        cx.observe_keystrokes(observe_keystroke).detach();
         open_window(cx);
         cx.activate(true);
+        startup(cx);
     });
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
+}
+
+fn observe_keystroke(
+    event: &gpui::KeystrokeEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
+    let consumed =
+        event.action.is_some() || reserved.is_reserved(&event.keystroke);
+    if let Some(root) = window.root::<WorkspaceView>().flatten() {
+        root.update(cx, |view, cx| {
+            let input_blocked = view.busy
+                || view.close.confirmation.is_some()
+                || view.reorder.is_some();
+            if let Some(tab) = view.active_view() {
+                tab.update(cx, |tab, cx| {
+                    #[cfg(target_os = "macos")]
+                    if let Some(action) = &event.action {
+                        tab.pending_shortcuts
+                            .observe_action(&event.keystroke, action.as_ref());
+                    }
+                    if consumed {
+                        tab.clear_option_composition();
+                        return;
+                    }
+                    if input_blocked {
+                        return;
+                    }
+                    if tab.handle_keystroke(&event.keystroke, &reserved, window)
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                    tab.start_snapshot_if_needed(cx);
+                });
+            }
+        });
+    }
 }
 
 fn request_quit(cx: &mut App) {
@@ -1389,6 +1411,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if let Some(tab) = self.active_view() {
+            tab.update(cx, |tab, _| tab.clear_option_composition());
+        }
         match invocation.id {
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::CLOSE_TAB => {
@@ -1807,13 +1832,14 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 }
                 let reserved = bind_keymap(cx, compiled);
                 cx.global_mut::<Desktop>().reserved = reserved;
-                // macOS menus display shortcuts from the keymap at build time.
-                install_menus(cx);
                 (config, family, metrics)
             });
             let windows = cx.global::<Desktop>().windows.clone();
             for window in windows {
                 let _ = window.update(cx, |view, cx| {
+                    if let Some(tab) = view.active_view() {
+                        tab.update(cx, |tab, _| tab.clear_option_composition());
+                    }
                     match &result {
                         Ok((config, family, metrics)) => {
                             view.resizing_sidebar = false;
@@ -1835,6 +1861,13 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                     view.font_size = metrics.font_size;
                                     view.metrics = metrics;
                                     view.window_config = config.window;
+                                    if view.option_as_alt
+                                        != config.terminal.macos_option_as_alt
+                                    {
+                                        view.clear_composition(cx);
+                                        view.option_as_alt =
+                                            config.terminal.macos_option_as_alt;
+                                    }
                                     view.theme = config.theme.clone();
                                     cx.notify();
                                 });
@@ -2439,6 +2472,31 @@ impl Render for WorkspaceView {
         }
         root
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
+    window
+        .root::<WorkspaceView>()
+        .flatten()
+        .is_some_and(|root| {
+            let view = root.read(cx);
+            !view.busy
+                && view.close.confirmation.is_none()
+                && view.reorder.is_none()
+        })
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
+    window
+        .root::<WorkspaceView>()
+        .flatten()
+        .is_some_and(|root| {
+            root.read(cx)
+                .active_view()
+                .is_some_and(|view| !view.read(cx).composition.is_empty())
+        })
 }
 
 #[cfg(test)]

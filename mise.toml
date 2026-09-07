@@ -436,3 +436,39 @@ depends = ["typecheck:scripts", "test:scripts", "check:shell"]
 description = "Audit locked scripting dependencies"
 depends = ["scripts:install"]
 run = "bun audit"
+
+[tasks."smoke:macos-menus"]
+depends = ["ghostty:prepare"]
+description = "Verify native AppKit menu shortcuts at startup and reload"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native menu smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_menus_smoke
+bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
+'''
+
+[tasks."smoke:linux-input"]
+depends = ["ghostty:prepare"]
+description = "Verify X11 Alt input and shortcut dispatch through both PTY engines"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux input smoke skipped: X11 requires Linux"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --workspace --locked
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm
+'''
+
+[tasks."smoke:macos-input"]
+depends = ["ghostty:prepare"]
+description = "Verify native AppKit input and composition through both PTY engines"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native input smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_input_smoke
+bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+'''

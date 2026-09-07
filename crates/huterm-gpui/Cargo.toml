@@ -19,6 +19,7 @@ gpui.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "=0.2.7"
+raw-window-handle = "=0.6.2"
 async-channel.workspace = true
 
 [lints]

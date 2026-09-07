@@ -280,6 +280,13 @@ pub struct MouseInput {
 pub enum TerminalInput {
     /// Text composed by the platform input system.
     Text(String),
+    /// A character chord, interpreted by the client before enqueueing.
+    Character {
+        /// Character text, including any Control transformation.
+        text: String,
+        /// Prefix the character with ESC for terminal Meta input.
+        meta: bool,
+    },
     /// A terminal key and its modifiers.
     Key {
         /// Logical key.

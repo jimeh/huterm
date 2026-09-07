@@ -1,0 +1,190 @@
+# Terminal Meta input and menu shortcut verification
+
+Status: implemented, with native keyboard verification and PR review recorded
+separately in the delivery evidence. Left/right Option remains deferred.
+
+Deliver [#55: Option/Alt-as-Meta][issue-55] with
+[#57: native menu shortcut verification][issue-57] in one keyboard-focused PR.
+Unbound Alt chords should work in Emacs, tmux, and readline; Huterm bindings
+should consume their chords and display the correct macOS menu shortcuts.
+
+## Scope and defaults
+
+- Add `terminal.macos_option_as_alt` with string values `off` and `both`.
+  Default to `off` to preserve existing macOS typing. Document `both` as the
+  setting for users who want Option chords sent as Meta.
+- On Linux, unbound Alt chords use Meta without requiring this macOS setting.
+- When Meta applies, encode one ESC prefix followed by the intended character,
+  including Shift and supported Control combinations. Preserve existing
+  special-key encoding rather than introducing a new keyboard protocol.
+- With macOS Meta disabled, preserve Option text and dead-key composition.
+  Keep the existing Alt behavior for special keys such as arrows; document
+  this distinction from printable character composition.
+- Apply successful reloads to subsequent keystrokes in existing and new views.
+  Already queued input retains its interpretation. Invalid reloads preserve
+  the working configuration and report the error.
+- Preserve effective keybinding precedence, conditional matching, chord
+  reservation, and unbinding. A consumed shortcut never reaches the shell.
+
+Left/right Option, native modifier tracking, Kitty keyboard protocol,
+`modifyOtherKeys`, fullscreen, and global hotkeys are outside this delivery.
+Do not modify personal configuration as part of the repository implementation.
+
+## Current implementation and constraints
+
+`TerminalView::handle_keystroke` in `crates/huterm-gpui/src/desktop.rs`
+forwards printable `key_char` as `TerminalInput::Text`. Control chords also
+become text without retaining Alt. `crates/huterm-core/src/input.rs` writes
+text unchanged and already ESC-prefixes supported Alt special keys.
+
+The pinned GPUI 0.2.2 macOS converter exposes one Alt flag. Its `key_char`
+includes Option composition, while `key` represents the base key. Shifted
+ASCII letters retain Shift; shifted punctuation is already resolved into
+`key` and clears Shift. Translation must respect this normalization rather
+than applying a US keyboard punctuation table.
+
+The existing keymap compiler and real GPUI matcher tests cover shortcut
+reservation and menu-facing binding order. Native menu installation is shared
+by startup and reload. The existing AppKit bridge and macOS quit smoke provide
+the integration pattern for reading real menu items.
+
+## Implementation sequence
+
+1. **Define and test character translation.** Extract a focused translation
+   function from the production handler with explicit platform and Option
+   policy inputs. Add failing cases for Option-r, Alt-r, Shift letters and
+   punctuation, and Control+Alt. Preserve ordinary text, special keys, and
+   unsupported-key handling. Inspect the pinned Linux converter and macOS
+   composition event path before assuming every input arrives as one keydown.
+
+2. **Carry Meta intent through the shared input path.** Keep character Meta
+   encoding in core, using a dependency-neutral structured input representation.
+   Prefer a small explicit character-input variant carrying text and Meta
+   intent; leave paste and composed text semantics intact. Update desktop and
+   runtime queue byte accounting for payload size and the ESC prefix. Enqueue
+   prefix and character as one input so other input cannot interleave them.
+   Cover exact bytes and absence of double prefixes in focused core tests.
+
+3. **Wire configuration and reload.** Add the validated enum and default,
+   propagate it to retained terminal views through the existing reload path,
+   and document the setting and platform behavior in the README and starter
+   configuration. Reject `left`, `right`, and unknown values clearly. Test
+   omission, both supported values, invalid reload, and a queued input followed
+   by reload and a later keystroke.
+
+4. **Verify shortcut interaction through production dispatch.** Extend the
+   real matcher coverage for a bound Alt chord, an unbound chord, and a
+   conditional binding whose predicate is false. Prove that matching commands
+   consume the input and unmatched chords follow the Option policy. Exercise
+   the shared encoder through a raw PTY fixture for both engines, asserting
+   exact received bytes rather than relying only on displayed characters.
+
+5. **Add the AppKit menu smoke.** Keep unsafe menu inspection in
+   `native_quit.rs`, with a safe entry point for the smoke. Boot a real GPUI
+   application using the production keymap and menu installation path. Assert
+   that rebinding Reload Configuration to `cmd-r` yields the actual AppKit
+   key equivalent `r` and Command modifier, and that an untouched default still
+   displays correctly. Rebind and reinstall through the reload path, then
+   assert the new equivalent. Include a conditional binding to preserve the
+   ordering case described in #57. Expose `smoke:macos-menus` through Mise and
+   macOS CI, using the SDK build wrapper and an explicit Linux skip. Reverse
+   binding order once to prove failure at the shortcut assertion, then restore
+   it and rerun successfully.
+
+6. **Complete native verification and review.** Run the checks below, inspect
+   the final diff, and record completed evidence separately from outstanding
+   manual checks in the PR. Keep #57 in this PR unless its harness exposes an
+   unrelated blocker; split it out if necessary to avoid delaying usable Meta
+   input. Fullscreen #40 and quake #41 follow as separate deliveries.
+
+## Verification and acceptance
+
+Use focused Cargo tests while iterating, through the repository's native build
+wrapper after Ghostty preparation. Confirm new tests are collected and fail at
+their intended assertions before the relevant fix where practical.
+
+- Translation and encoder tests cover Option off/both, Linux Alt, Shift,
+  digits, punctuation, Control+Alt, Unicode text, existing special keys, and
+  paste remaining unchanged. Queue checks cover the new representation's
+  payload accounting and ordering.
+- Configuration and matcher tests cover reload timing, invalid settings,
+  consumed shortcuts, conditional fallthrough, and explicit unbinding.
+- Both-engine PTY fixtures prove identical Meta bytes. Native macOS checks
+  use Emacs or a byte-reporting program to verify Option-r, shifted keys,
+  arrows, a bound chord, and toggling the policy by reload. With Meta off,
+  verify Option-r composition and Option-e followed by e on a suitable layout.
+  Record the keyboard layout and distinguish synthetic input evidence from
+  physical typing and composition evidence.
+- Verify Alt-r and representative modified input on Linux. Headless matcher
+  tests alone do not prove native keyboard conversion or composition.
+- Run `mise run smoke:macos-menus` on macOS, `mise run check:scripts` for smoke
+  tooling changes, and `mise run verify` before implementation handoff. Run
+  the existing macOS quit smoke if shared native bridge changes affect it.
+  CI supplies platform evidence unavailable locally; report any remaining
+  native checks explicitly rather than treating a green unit suite as proof.
+
+Success means unbound Meta input works with either engine, ordinary macOS
+composition still works with the policy off, bound shortcuts do not leak,
+reload changes only later input, and actual AppKit shortcuts track the keymap.
+
+## Implementation findings
+
+The existing desktop had no platform text input handler. Ordinary native text
+uses a bounded `EntityInputHandler` which holds preedit until commit. Native
+cancellation uses the exact NSView's input context after releasing GPUI's borrow
+and skips newer active preedit. The direct `raw-window-handle` pin reuses version
+0.6.2 already in Cargo.lock.
+
+Native verification found that Cocoa selector bindings can swallow unbound
+Option characters. AppKit also handles active marked text before GPUI shortcuts,
+allowing a dead key to commit before Cmd-T or consume a bound Option chord.
+The approved local Option composition approach uses `UCKeyTranslate` with the
+selected input source's Unicode layout after the existing GPUI matcher. It owns
+only Option dead-key state and consumes those events before AppKit starts marked
+text. Input methods without Unicode layout data retain the native text path.
+No GPUI fork, native event swizzling, or second keybinding matcher is needed.
+
+Local Option state is canceled by commands, pending shortcut prefixes, focus or
+tab changes, policy changes, and a changed input source. Bare Escape and Backspace
+cancel an unfinished accent without sending that cancellation key to the PTY.
+Other control and special keys cancel the accent and retain terminal semantics.
+Translation failures clear state, consume the event, and report an input error.
+`UCKeyTranslate` can return nonzero state after committing text and can emit an
+old accent while starting a new one. Space probes with NoDeadKeys compare copied
+state against the same layout's zero-state output to detect unfinished accents.
+Probe output never enters the terminal. Native-layout tests serialize Carbon
+calls because the SDK marks `LMGetKbdType` as not thread safe.
+
+The desktop raw observer stops propagation for recognized Meta input. GPUI's
+unmatched chord replay bypasses that observer and can insert a reserved prefix
+as native text after timeout or mismatch. The terminal tracks GPUI's actual
+pending sequence and consumes replayed `on_key_down` events before they reach
+the input handler. Timeout and mismatch have different notification ordering;
+tracking preserves both, including partial three-key chords and nonprinting
+prefixes. GPUI collapses a matched fallback prefix to its last key, so tracking
+captures enabled bindings at resolution and uses GPUI's matcher to consume the
+complete prefix. Selection changes can enable a fallback while a sequence is
+pending. Timeout's pre-replay notification and wrapper action capture listeners
+freeze the current eligibility before any handler runs, including modifier-only
+mismatches. The snapshot survives actions that reload or remove bindings. Focus
+cancellation and accepted actions clear completed tracking. Ordinary native
+commits remain unchanged. Accepted replayed actions are skipped
+before accessing `NSApplication.currentEvent`.
+
+Startup and reload now install bindings and menus together. The macOS smoke
+reads real NSMenuItem equivalents for user bindings, a default, and a reload.
+The Linux input smoke uses XTest on an isolated Xvfb display with a US layout
+and raw PTYs for both engines. It covers modified characters, an Alt arrow,
+shortcut consumption, conditional fallthrough, and explicit unbinding.
+
+Local automated checks do not establish physical-keyboard behavior. Record
+native synthetic and physical typing evidence separately, and require the Linux
+smoke on Linux CI before claiming that platform's native path is verified.
+
+## Open questions
+
+No product decisions remain. Complete native verification and independent PR
+review before marking the delivery ready.
+
+[issue-55]: https://github.com/jimeh/huterm/issues/55
+[issue-57]: https://github.com/jimeh/huterm/issues/57

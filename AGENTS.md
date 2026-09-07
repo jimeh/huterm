@@ -78,6 +78,15 @@ runs the same checks plus an Xvfb smoke on Linux x86_64. Linux development
 requires the XKB packages documented in
 [the development guide](docs/agents/development.md).
 
+For desktop behavior, run the relevant automated smoke tests before using
+computer use. Discover them with `mise tasks`; native input coverage lives in
+`smoke:macos-input` and `smoke:linux-input`, with separate macOS menu and Quit
+smokes. Extend these tests when new behavior needs coverage. Use computer use
+for uncovered behavior, visual checks, and investigation, then turn useful
+manual reproductions into automated regression checks where practical. Physical
+device behavior and unsupported IMEs may still require manual testing; state
+those coverage limits explicitly.
+
 The pre-commit hook runs staged-path formatting and Markdown checks, then
 triggers whole-workspace Clippy or workflow checks only for relevant staged
 inputs. Install it with `mise run setup`. Keep its representative warm path
@@ -127,10 +136,11 @@ the real `KeyBinding` matcher as well as terminal-input reservation.
 Validate `when` with `KeyBindingContextPredicate::parse` before building a
 `KeyBinding`; `KeyBinding::new` unwraps its predicate parse. Reserved
 keystrokes derive from the compiled keymap and compare modifiers plus `key`,
-never `key_char`, so `alt-r` stays reserved when macOS reports `®`. A binding
-with `when` reserves only its chord prefixes; its final key must reach the
-shell when the predicate is false, or `ctrl-c` with `when = "selection"` would
-swallow interrupts. Per-scope
+never `key_char`, so `alt-r` stays reserved when macOS reports `®`. Multi-key
+bindings reserve only their first stroke; GPUI owns pending sequences and matched
+final strokes. Later strokes typed alone must reach terminal input. A conditional
+single-key binding reserves nothing, or `ctrl-c` with `when = "selection"` would
+swallow interrupts when the predicate is false. Per-scope
 wrapper actions (`InvokeApp`, `InvokeWindow`, `InvokeTerminal`) route catalog
 commands; anything that needs a window, such as about and open_settings, must
 be Window scope because global action handlers receive only `App`. Runtime
@@ -398,3 +408,60 @@ Local builds retain warm native artifacts. The pinned CI cache action prunes
 path dependencies inside the repository, so CI rebuilds the vendored sys crate.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
+
+GPUI's macOS `key_char` resolves Option dead keys separately, and AppKit handles
+marked text before GPUI shortcuts. Keep Option-only composition in caller-owned
+`UCKeyTranslate` state after GPUI dispatch; never create native marked text for
+Option dead keys. Use the selected input source's Unicode layout and leave
+input methods without one on the native text path. Cancel local Option state on
+commands, pending shortcut prefixes, focus/tab/policy changes, and layout changes.
+GPUI replays unmatched chord prefixes through `on_key_down` and then its input
+handler, bypassing raw keystroke observers. Track the actual pending sequence and
+consume replay keys before they become text, including nonprinting strokes.
+Timeout announces no pending input before replay; mismatch announces it after.
+A replayed fallback action reports only its matched prefix's last key. Capture
+GPUI's enabled fallback bindings when it resolves a sequence, not when the
+prefix starts: selection can change conditional eligibility without changing
+focus. Capture at timeout's pre-replay notification or the first wrapper action's
+capture phase, then freeze through all replay actions, including keymap reloads.
+Use GPUI's matcher to consume whole prefixes, including repeated keys. Public
+keystroke interceptors omit modifier-only mismatches, so do not rely on them for
+this capture. Ignore menu actions while GPUI still holds a pending sequence.
+The later pending notification clears completed actions. Put shorter fallback
+bindings before longer chords in config:
+a newer short binding makes GPUI discard the longer pending match.
+Mirror GPUI's cancellation on focus change;
+window deactivation alone leaves its pending sequence alive. Native commits must
+never be classified by their text. Accepted replay actions still skip the current
+native event lookup.
+`UCKeyTranslate` can emit text while starting another dead key, and completed
+state can remain nonzero. Probe Space with NoDeadKeys on copied state and compare
+against zero-state output; never send probe text to the PTY or decode state bits.
+Serialize all native layout tests with their shared mutex. Parallel Carbon calls
+caused SIGSEGV; the SDK marks `LMGetKbdType` as not thread safe. Production calls
+stay on the main thread.
+Route other printable input through `EntityInputHandler`. Consume recognized raw
+Meta/Control/special chords even when their input queue is full, or AppKit can
+insert a second interpretation. Cancel native preedit on the exact NSView outside
+GPUI's update borrow, and skip deferred cancellation when the active view already
+has newer preedit. Bindings and menu installation share one operation;
+`smoke:macos-menus` reads actual NSMenuItem shortcuts.
+Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
+does not exercise the server's XKB modifier state. The smoke explicitly unbinds
+Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.
+
+GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
+ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
+never participates and cannot detect conditional bindings moving ahead of defaults.
+
+Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
+Without it, GNU timeout puts the reader outside the terminal foreground process
+group, so accepted terminal input never reaches the fixture reader.
+
+Native input smoke events must enter NSApplication through `postEvent:atStart:`;
+calling NSView.keyDown: directly does not establish `currentEvent` for Option
+composition. Use printable Option prefixes and held printable suffixes in replay
+regressions: control-only prefixes can pass even when replay suppression breaks.
+Conditional fallback tests must change selection after the prefix starts and
+before resolution; GPUI may dispatch a conditional short binding immediately
+when that condition was already true at prefix start.

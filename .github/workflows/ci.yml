@@ -62,6 +62,12 @@ jobs:
       - name: Verify Rust and both terminal engines
         run: mise run verify:platform
 
+      - name: Verify native menu shortcuts
+        run: mise run smoke:macos-menus
+
+      - name: Verify native input through both engines
+        run: mise run smoke:macos-input
+
       - name: Verify cancellable native Quit
         run: mise run smoke:macos-quit
 
@@ -83,7 +89,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev \
-            mesa-vulkan-drivers twm xvfb
+            mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
 
       - name: Install build tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -108,6 +114,9 @@ jobs:
 
       - name: Smoke GPUI window under Xvfb
         run: mise run smoke:linux
+
+      - name: Verify X11 terminal input
+        run: mise run smoke:linux-input
 
       - name: Verify scroll performance budgets
         run: mise run bench:scroll

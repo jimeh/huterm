@@ -2,6 +2,10 @@
 
 #[cfg(target_os = "macos")]
 #[path = "../src/native_quit.rs"]
+#[expect(
+    dead_code,
+    reason = "quit smoke uses only the termination part of the native bridge"
+)]
 mod native_quit;
 
 #[cfg(target_os = "macos")]

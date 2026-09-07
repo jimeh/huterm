@@ -67,30 +67,29 @@ pub(crate) struct EffectiveBinding {
     pub(crate) origin: Origin,
 }
 
-/// Keystrokes claimed by effective bindings, compared by modifiers and key.
+/// Independently reserved strokes, compared by modifiers and key.
 ///
-/// Conditional bindings claim only their chord prefixes; their final keystroke
-/// is consumed by GPUI when the predicate matches and reaches the terminal
-/// otherwise.
+/// Multi-key bindings reserve only their first stroke. GPUI owns pending
+/// sequences and matched final strokes. Conditional single-key bindings reserve
+/// nothing, so their stroke reaches the terminal when the predicate is false.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ReservedKeys(HashSet<(Modifiers, String)>);
 
 impl ReservedKeys {
-    /// Reports whether `keystroke` belongs to a binding. `key_char` is
+    /// Reports whether `keystroke` is independently reserved. `key_char` is
     /// ignored so `alt-r` stays reserved when macOS reports `®`.
     pub(crate) fn is_reserved(&self, keystroke: &Keystroke) -> bool {
         self.0
             .contains(&(keystroke.modifiers, keystroke.key.clone()))
     }
 
-    /// Claims a binding's keystrokes. A binding without `when` claims every
-    /// keystroke. A conditional binding claims only its chord prefixes: GPUI
-    /// holds those pending while the predicate matches, but the final
-    /// keystroke must reach the shell when it does not, or `ctrl-c` bound
-    /// with `when = "selection"` would swallow interrupts.
+    /// A later chord stroke is unbound when typed alone. Reserve only the
+    /// starting stroke, except for conditional single-key bindings: reserving
+    /// `ctrl-c` with `when = "selection"` would swallow shell interrupts.
     fn claim(&mut self, keystrokes: &[Keystroke], conditional: bool) {
-        let claimed = keystrokes.len() - usize::from(conditional);
-        for keystroke in &keystrokes[..claimed] {
+        if (!conditional || keystrokes.len() > 1)
+            && let Some(keystroke) = keystrokes.first()
+        {
             self.0.insert((keystroke.modifiers, keystroke.key.clone()));
         }
     }
@@ -823,12 +822,13 @@ mod tests {
             entry("shift-pageup", "unbind"),
         ];
         let compiled = compile(Platform::Linux, &user).unwrap();
-        for chord in ["ctrl-k", "ctrl-t", "alt-r"] {
+        for chord in ["ctrl-k", "alt-r"] {
             assert!(
                 compiled.reserved.is_reserved(&keystroke(chord)),
                 "{chord}"
             );
         }
+        assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-t")));
         assert!(!compiled.reserved.is_reserved(&keystroke("shift-pageup")));
         let mut typed = keystroke("alt-r");
         typed.key_char = Some("®".into());
@@ -836,7 +836,46 @@ mod tests {
     }
 
     #[test]
-    fn conditional_bindings_reserve_only_their_chord_prefixes() {
+    fn later_chord_strokes_are_unbound_without_their_prefix() {
+        for chord in ["alt-k alt-r", "alt-k alt-r alt-j"] {
+            let compiled =
+                compile(Platform::MacOs, &[entry(chord, "reload_config")])
+                    .unwrap();
+            let matcher = Keymap::new(compiled.bindings);
+            let context = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Terminal").unwrap(),
+            ];
+            let strokes =
+                chord.split_whitespace().map(keystroke).collect::<Vec<_>>();
+            let (bindings, pending) =
+                matcher.bindings_for_input(&strokes[..1], &context);
+            assert!(bindings.is_empty());
+            assert!(pending);
+            assert!(compiled.reserved.is_reserved(&strokes[0]));
+            for stroke in &strokes[1..] {
+                let (bindings, pending) = matcher
+                    .bindings_for_input(std::slice::from_ref(stroke), &context);
+                assert!(bindings.is_empty());
+                assert!(!pending);
+                assert!(
+                    !compiled.reserved.is_reserved(stroke),
+                    "standalone {} from {chord}",
+                    stroke.key
+                );
+            }
+            let (bindings, pending) =
+                matcher.bindings_for_input(&strokes, &context);
+            assert!(!pending);
+            assert_eq!(
+                bindings.iter().map(command_of).collect::<Vec<_>>(),
+                vec![ids::RELOAD_CONFIG]
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_bindings_reserve_only_multi_key_starting_strokes() {
         let user = [
             KeybindingEntry {
                 when: Some("selection".into()),
