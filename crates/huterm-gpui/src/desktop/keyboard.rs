@@ -4,6 +4,78 @@ use crate::keymap::Platform;
 use gpui::Keystroke;
 use huterm_protocol::{TerminalInput, TerminalKey};
 
+/// Keystrokes already held by GPUI's matcher, awaiting consumption or replay.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+pub(super) struct PendingShortcuts {
+    strokes: std::collections::VecDeque<Keystroke>,
+    action_observed: bool,
+    bindings: Vec<gpui::KeyBinding>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl PendingShortcuts {
+    pub(super) fn clear(&mut self) {
+        self.strokes.clear();
+        self.action_observed = false;
+        self.bindings.clear();
+    }
+
+    pub(super) fn update(
+        &mut self,
+        pending: Option<&[Keystroke]>,
+        bindings: Vec<gpui::KeyBinding>,
+    ) {
+        if let Some(pending) = pending {
+            self.strokes = pending.iter().cloned().collect();
+            self.bindings = bindings;
+            self.action_observed = false;
+        } else if self.action_observed {
+            self.clear();
+        }
+        // GPUI announces None before timeout replay, but after mismatch replay.
+        // Keep unmatched strokes until on_key_down consumes their replay.
+    }
+
+    pub(super) fn observe_action(
+        &mut self,
+        stroke: &Keystroke,
+        action: &dyn gpui::Action,
+    ) {
+        // GPUI collapses the longest matched fallback prefix to its final key.
+        // Use its captured bindings and matcher, not the key's position alone:
+        // a chord can contain that same key more than once.
+        let held = self.strokes.make_contiguous();
+        let consumed = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.action().partial_eq(action))
+            .filter_map(|binding| {
+                let prefix = held.get(..binding.keystrokes().len())?;
+                (prefix.last() == Some(stroke)
+                    && binding.match_keystrokes(prefix) == Some(false))
+                .then_some(prefix.len())
+            })
+            .max();
+        if let Some(consumed) = consumed {
+            self.strokes.drain(..consumed);
+        } else {
+            self.clear();
+        }
+        self.action_observed = true;
+    }
+
+    pub(super) fn consume_replay(&mut self, stroke: &Keystroke) -> bool {
+        if self.strokes.front() == Some(stroke) {
+            self.strokes.pop_front();
+            true
+        } else {
+            self.clear();
+            false
+        }
+    }
+}
+
 /// None defers printable macOS text to local or native composition.
 pub(super) fn translate(
     keystroke: &Keystroke,
@@ -60,6 +132,168 @@ mod tests {
     use crate::keymap;
     use gpui::{KeyContext, Modifiers as GpuiModifiers};
     use huterm_protocol::Modifiers;
+
+    fn prefix(keys: &[&str]) -> Vec<Keystroke> {
+        keys.iter()
+            .map(|key| Keystroke::parse(key).unwrap())
+            .collect()
+    }
+
+    fn reload_action() -> Box<dyn gpui::Action> {
+        crate::commands::invoke(huterm_protocol::ids::RELOAD_CONFIG)
+            .into_boxed()
+    }
+
+    fn fallback_bindings(chords: &[&str]) -> Vec<gpui::KeyBinding> {
+        use crate::config::KeybindingEntry;
+        let entries = chords
+            .iter()
+            .map(|chord| KeybindingEntry {
+                key: (*chord).into(),
+                command: "reload_config".into(),
+                args: None,
+                when: None,
+                description: None,
+            })
+            .collect::<Vec<_>>();
+        keymap::compile(Platform::MacOs, &entries).unwrap().bindings
+    }
+
+    #[test]
+    fn collapsed_fallback_actions_consume_the_whole_prefix_including_repeated_keys()
+     {
+        for (held_keys, short, long, final_index) in [
+            (
+                vec!["alt-j", "alt-f", "alt-d"],
+                "alt-j alt-f",
+                "alt-j alt-f alt-d alt-s",
+                1,
+            ),
+            (
+                vec!["alt-j", "alt-f", "alt-j", "alt-d"],
+                "alt-j alt-f alt-j",
+                "alt-j alt-f alt-j alt-d alt-s",
+                2,
+            ),
+        ] {
+            let held = prefix(&held_keys);
+            for timeout in [false, true] {
+                let mut pending = PendingShortcuts::default();
+                pending.update(
+                    Some(&held),
+                    fallback_bindings(&["alt-j", short, long]),
+                );
+                if timeout {
+                    pending.update(None, Vec::new());
+                }
+                pending.observe_action(
+                    &held[final_index],
+                    reload_action().as_ref(),
+                );
+                assert!(
+                    pending.consume_replay(&held[final_index + 1]),
+                    "{short}"
+                );
+                pending.update(None, Vec::new());
+                assert!(!pending.consume_replay(&held[0]));
+            }
+        }
+    }
+
+    #[test]
+    fn successive_fallback_actions_consume_only_their_own_prefixes() {
+        use crate::config::KeybindingEntry;
+        let held = prefix(&["alt-k", "alt-r", "alt-f", "alt-d"]);
+        let mut bindings = fallback_bindings(&[
+            "alt-k alt-r",
+            "alt-k alt-r alt-f alt-d alt-s",
+        ]);
+        bindings.extend(
+            keymap::compile(
+                Platform::MacOs,
+                &[KeybindingEntry {
+                    key: "alt-f".into(),
+                    command: "new_tab".into(),
+                    args: None,
+                    when: None,
+                    description: None,
+                }],
+            )
+            .unwrap()
+            .bindings,
+        );
+        let mut pending = PendingShortcuts::default();
+        pending.update(Some(&held), bindings);
+        pending.update(None, Vec::new());
+        pending.observe_action(&held[1], reload_action().as_ref());
+        pending.observe_action(
+            &held[2],
+            crate::commands::invoke(huterm_protocol::ids::NEW_TAB)
+                .into_boxed()
+                .as_ref(),
+        );
+        assert!(pending.consume_replay(&held[3]));
+        pending.update(None, Vec::new());
+        assert!(!pending.consume_replay(&held[0]));
+    }
+
+    #[test]
+    fn timeout_replays_are_consumed_before_native_text_insertion() {
+        let held = prefix(&["alt-k"]);
+        let mut pending = PendingShortcuts::default();
+        pending.update(Some(&held), fallback_bindings(&["alt-k"]));
+        pending.update(None, Vec::new());
+        assert!(pending.consume_replay(&held[0]));
+        assert!(!pending.consume_replay(&held[0]));
+    }
+
+    #[test]
+    fn mismatch_replays_include_partial_chords_and_nonprinting_strokes() {
+        let held = prefix(&["ctrl-k", "alt-f"]);
+        assert!(held[0].key_char.is_none());
+        let mut pending = PendingShortcuts::default();
+        pending.update(Some(&held), fallback_bindings(&["alt-k"]));
+        assert!(pending.consume_replay(&held[0]));
+        assert!(pending.consume_replay(&held[1]));
+        let ordinary = prefix(&["x"]);
+        assert!(!pending.consume_replay(&ordinary[0]));
+        pending.update(None, Vec::new());
+        assert!(!pending.consume_replay(&held[0]));
+        pending.update(Some(&held[..1]), fallback_bindings(&["alt-k"]));
+        pending.update(None, Vec::new());
+        assert!(pending.consume_replay(&held[0]));
+    }
+
+    #[test]
+    fn accepted_actions_and_focus_cancellation_cannot_swallow_later_typing() {
+        let held = prefix(&["alt-k", "alt-r"]);
+        let mut pending = PendingShortcuts::default();
+        pending.update(Some(&held), fallback_bindings(&["alt-k"]));
+        // A full chord may end in the same stroke as its first key.
+        pending.observe_action(&held[0], reload_action().as_ref());
+        pending.update(None, Vec::new());
+        assert!(!pending.consume_replay(&held[1]));
+        pending.update(Some(&held), fallback_bindings(&["alt-k"]));
+        pending.clear();
+        assert!(!pending.consume_replay(&held[0]));
+        assert!(!pending.consume_replay(&held[1]));
+    }
+
+    #[test]
+    fn replayed_fallback_actions_preserve_suppression_of_remaining_strokes() {
+        let held = prefix(&["alt-k", "alt-r"]);
+        let mut pending = PendingShortcuts::default();
+        for timeout in [false, true] {
+            pending.update(Some(&held), fallback_bindings(&["alt-k"]));
+            if timeout {
+                pending.update(None, Vec::new());
+            }
+            pending.observe_action(&held[0], reload_action().as_ref());
+            assert!(pending.consume_replay(&held[1]));
+            pending.update(None, Vec::new());
+            assert!(!pending.consume_replay(&held[0]));
+        }
+    }
 
     #[test]
     fn option_meta_uses_base_key_instead_of_composed_character() {

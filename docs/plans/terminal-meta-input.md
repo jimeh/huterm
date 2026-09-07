@@ -156,9 +156,17 @@ Probe output never enters the terminal. Native-layout tests serialize Carbon
 calls because the SDK marks `LMGetKbdType` as not thread safe.
 
 The desktop raw observer stops propagation for recognized Meta input. GPUI's
-unmatched chord replay goes directly to its input handler, so it cannot translate
-an old keystroke using a newer `NSApplication.currentEvent`. Accepted replayed
-actions are skipped before accessing the native event.
+unmatched chord replay bypasses that observer and can insert a reserved prefix
+as native text after timeout or mismatch. The terminal tracks GPUI's actual
+pending sequence and consumes replayed `on_key_down` events before they reach
+the input handler. Timeout and mismatch have different notification ordering;
+tracking preserves both, including partial three-key chords and nonprinting
+prefixes. GPUI collapses a matched fallback prefix to its last key, so tracking
+retains enabled binding snapshots and uses GPUI's matcher to consume the complete
+prefix. The snapshot survives actions that reload or remove bindings. Focus
+cancellation and accepted actions clear completed tracking. Ordinary native
+commits remain unchanged. Accepted replayed actions are skipped
+before accessing `NSApplication.currentEvent`.
 
 Startup and reload now install bindings and menus together. The macOS smoke
 reads real NSMenuItem equivalents for user bindings, a default, and a reload.

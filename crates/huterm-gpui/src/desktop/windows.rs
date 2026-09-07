@@ -472,45 +472,52 @@ pub(super) fn run() -> anyhow::Result<()> {
             maybe_exit(cx);
         })
         .detach();
-        cx.observe_keystrokes(|event, window, cx| {
-            let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
-            let consumed = event.action.is_some()
-                || reserved.is_reserved(&event.keystroke);
-            if let Some(root) = window.root::<WorkspaceView>().flatten() {
-                root.update(cx, |view, cx| {
-                    if view.busy
-                        || view.close.confirmation.is_some()
-                        || view.reorder.is_some()
-                    {
-                        return;
-                    }
-                    if let Some(tab) = view.active_view() {
-                        tab.update(cx, |tab, cx| {
-                            if consumed {
-                                tab.clear_option_composition();
-                                return;
-                            }
-                            if tab.handle_keystroke(
-                                &event.keystroke,
-                                &reserved,
-                                window,
-                            ) {
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                            tab.start_snapshot_if_needed(cx);
-                        });
-                    }
-                });
-            }
-        })
-        .detach();
+        cx.observe_keystrokes(observe_keystroke).detach();
         open_window(cx);
         cx.activate(true);
     });
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
+}
+
+fn observe_keystroke(
+    event: &gpui::KeystrokeEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
+    let consumed =
+        event.action.is_some() || reserved.is_reserved(&event.keystroke);
+    if let Some(root) = window.root::<WorkspaceView>().flatten() {
+        root.update(cx, |view, cx| {
+            let input_blocked = view.busy
+                || view.close.confirmation.is_some()
+                || view.reorder.is_some();
+            if let Some(tab) = view.active_view() {
+                tab.update(cx, |tab, cx| {
+                    #[cfg(target_os = "macos")]
+                    if let Some(action) = &event.action {
+                        tab.pending_shortcuts
+                            .observe_action(&event.keystroke, action.as_ref());
+                    }
+                    if consumed {
+                        tab.clear_option_composition();
+                        return;
+                    }
+                    if input_blocked {
+                        return;
+                    }
+                    if tab.handle_keystroke(&event.keystroke, &reserved, window)
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                    tab.start_snapshot_if_needed(cx);
+                });
+            }
+        });
+    }
 }
 
 fn request_quit(cx: &mut App) {

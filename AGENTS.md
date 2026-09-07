@@ -406,9 +406,20 @@ marked text before GPUI shortcuts. Keep Option-only composition in caller-owned
 Option dead keys. Use the selected input source's Unicode layout and leave
 input methods without one on the native text path. Cancel local Option state on
 commands, pending shortcut prefixes, focus/tab/policy changes, and layout changes.
-GPUI replays unmatched chord prefixes directly through its input handler; only
-replays with an accepted action reach raw keystroke observers, where they are
-skipped before reading the current native event.
+GPUI replays unmatched chord prefixes through `on_key_down` and then its input
+handler, bypassing raw keystroke observers. Track the actual pending sequence and
+consume replay keys before they become text, including nonprinting strokes.
+Timeout announces no pending input before replay; mismatch announces it after.
+A replayed fallback action reports only its matched prefix's last key. Capture
+GPUI's enabled fallback bindings with each pending sequence, then use their
+matcher to consume the whole prefix, including repeated keys. Keep that snapshot
+through actions that reload the keymap; the later pending notification clears
+completed actions. Put shorter fallback bindings before longer chords in config:
+a newer short binding makes GPUI discard the longer pending match.
+Mirror GPUI's cancellation on focus change;
+window deactivation alone leaves its pending sequence alive. Native commits must
+never be classified by their text. Accepted replay actions still skip the current
+native event lookup.
 `UCKeyTranslate` can emit text while starting another dead key, and completed
 state can remain nonzero. Probe Space with NoDeadKeys on copied state and compare
 against zero-state output; never send probe text to the PTY or decode state bits.

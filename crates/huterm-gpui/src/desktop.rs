@@ -185,6 +185,8 @@ struct TerminalView {
     #[cfg(target_os = "macos")]
     option_composition: crate::native_quit::OptionComposition,
     #[cfg(target_os = "macos")]
+    pending_shortcuts: keyboard::PendingShortcuts,
+    #[cfg(target_os = "macos")]
     native_window: gpui::AnyWindowHandle,
     mouse: MouseState,
     pending_resize: Option<(GridSize, CellSize)>,
@@ -238,6 +240,10 @@ impl TerminalView {
             });
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
+                // GPUI cancels pending shortcuts when focus changes. Window
+                // deactivation alone does not, so retain replay tracking there.
+                #[cfg(target_os = "macos")]
+                view.pending_shortcuts.clear();
                 view.clear_composition(cx);
                 view.blur_mouse(cx);
                 if view.enqueue_input(TerminalInput::Focus(false)) {
@@ -254,14 +260,8 @@ impl TerminalView {
                 }
             },
         );
-        let pending_input_subscription = cx.observe_pending_input(
-            window,
-            |view: &mut TerminalView, window, _| {
-                if view.visible && window.has_pending_keystrokes() {
-                    view.clear_option_composition();
-                }
-            },
-        );
+        let pending_input_subscription =
+            cx.observe_pending_input(window, Self::pending_input_changed);
         #[cfg(target_os = "macos")]
         let layout_subscription = {
             let view = cx.entity().downgrade();
@@ -280,6 +280,8 @@ impl TerminalView {
             ),
             #[cfg(target_os = "macos")]
             native_window: window.window_handle(),
+            #[cfg(target_os = "macos")]
+            pending_shortcuts: keyboard::PendingShortcuts::default(),
             mouse: MouseState::default(),
             pending_resize: None,
             snapshot: None,
@@ -515,6 +517,58 @@ impl TerminalView {
         }
     }
 
+    fn pending_input_changed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = cx;
+        if self.visible {
+            #[cfg(target_os = "macos")]
+            {
+                let pending = window.pending_input_keystrokes();
+                // Capture GPUI's enabled fallback bindings before an action can
+                // reload the keymap. Replay reports only a matched prefix's last key.
+                let bindings = pending.map_or_else(Vec::new, |strokes| {
+                    let mut bindings = Vec::<gpui::KeyBinding>::new();
+                    // Replay continues through suffixes after a fallback action.
+                    for start in 0..strokes.len() {
+                        for end in start + 1..=strokes.len() {
+                            for candidate in
+                                cx.all_bindings_for_input(&strokes[start..end])
+                            {
+                                if bindings.iter().any(|binding| {
+                                    binding
+                                        .action()
+                                        .partial_eq(candidate.action())
+                                }) {
+                                    continue;
+                                }
+                                bindings.extend(window.bindings_for_action_in(
+                                    candidate.action(),
+                                    &self.focus,
+                                ));
+                            }
+                        }
+                    }
+                    bindings
+                });
+                self.pending_shortcuts.update(pending, bindings);
+            }
+            if window.has_pending_keystrokes() {
+                self.clear_option_composition();
+            }
+        }
+    }
+
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            clippy::unused_self,
+            reason = "shared lifecycle callbacks cancel macOS-only composition"
+        )
+    )]
     fn clear_option_composition(&mut self) {
         #[cfg(target_os = "macos")]
         self.option_composition.clear();
@@ -1426,6 +1480,18 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             );
+        #[cfg(target_os = "macos")]
+        {
+            root = root.on_key_down(cx.listener(
+                |view, event: &gpui::KeyDownEvent, _, cx| {
+                    // GPUI sends unmatched chord replays here before dispatch_input,
+                    // which otherwise looks identical to a native text commit.
+                    if view.pending_shortcuts.consume_replay(&event.keystroke) {
+                        cx.stop_propagation();
+                    }
+                },
+            ));
+        }
         let displayed_offset = self.scroll.displayed();
         if self.scrollbar_visibility.opacity > 0.0
             && let Some(geometry) = self.scrollbar_geometry(window)
