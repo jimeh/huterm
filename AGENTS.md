@@ -124,6 +124,18 @@ rounding up to logical points makes Menlo 12's grid 14% too wide on Retina.
 GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.
 Bind reload as `cmd-<` / `ctrl-<`, not `cmd-shift-,` / `ctrl-shift-,`; test
 the real `KeyBinding` matcher as well as terminal-input reservation.
+Validate `when` with `KeyBindingContextPredicate::parse` before building a
+`KeyBinding`; `KeyBinding::new` unwraps its predicate parse. Reserved
+keystrokes derive from the compiled keymap and compare modifiers plus `key`,
+never `key_char`, so `alt-r` stays reserved when macOS reports `®`. Per-scope
+wrapper actions (`InvokeApp`, `InvokeWindow`, `InvokeTerminal`) route catalog
+commands; anything that needs a window, such as about and open_settings, must
+be Window scope because global action handlers receive only `App`. Runtime
+rename commands fill omitted tab/workspace targets on the UI thread and resolve
+the session under the Mux lock on the worker. Rebuild menus on reload so macOS
+shortcut display follows user bindings. GPUI's `Not` predicate checks every
+ancestor context, so `Terminal && !confirming` works across the Workspace and
+Terminal stack.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of Alacritty history. Let the runtime engine
 anchor its shared viewport across output and resize; never also compensate the

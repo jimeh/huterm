@@ -1,6 +1,7 @@
 # Command catalog and configurable keybindings plan
 
-Status: agreed; implementation not started.
+Status: implemented; the deviations that landed are recorded in place below.
+Remaining native verification is the manual QA in the implementation sequence.
 Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
 
 Issues: [#23: Create the command catalog and migrate existing actions][issue-23]
@@ -96,15 +97,18 @@ Initial commands:
 
 | Scope | Commands |
 | --- | --- |
-| Application | `new_window`, `quit`, `hide`, `hide_others`, `show_all`, `reload_config`, `open_settings`, `about` |
-| Window | `new_tab`, `close_tab`, `close_window`, `next_tab`, `previous_tab`, `select_tab { index }`, `toggle_fullscreen`, `minimize`, `zoom` |
+| Application | `new_window`, `quit`, `hide`, `hide_others`, `show_all`, `reload_config` |
+| Window | `open_settings`, `about`, `new_tab`, `close_tab`, `close_window`, `next_tab`, `previous_tab`, `select_tab { index }`, `toggle_fullscreen`, `minimize`, `zoom` |
 | Terminal | `copy`, `paste`, `scroll_page_up`, `scroll_page_down`, `scroll_to_bottom` |
 | Runtime | `rename_tab { name, tab? }`, `rename_workspace { name, workspace? }`, `rename_session { name, session? }` |
 
 `select_tab` takes an `index` integer from 1 to 9 and keeps the current meaning
 of 9 as the last tab. `toggle_fullscreen`, `minimize`, and `zoom` move from the
-terminal view to window scope. The renames map onto existing Mux operations and
-give the tests a real ID-targeted command; the rename UI remains deferred.
+terminal view to window scope. `open_settings` and `about` are window scope
+rather than application scope: both need a window for the prompt and status
+reporting, and global action handlers receive only `App`. The renames map onto
+existing Mux operations and give the tests a real ID-targeted command; the
+rename UI remains deferred.
 
 ### Runtime execution in `huterm-core`
 
@@ -113,6 +117,8 @@ Add `commands.rs` with
 It validates the invocation, requires a target ID for runtime commands, and
 maps Mux errors to `StaleTarget` or `Runtime`. Runtime commands run on the
 existing background structural owner, never on the GPUI thread.
+`CommandOutcome` (`Completed` or `Accepted`) lives in `huterm-protocol` beside
+`CommandError`, since both core and the GPUI client return it.
 
 ### GPUI dispatch
 
@@ -153,9 +159,11 @@ key = "cmd-w"
 command = "unbind"
 ```
 
-`unbind` is a reserved command ID that never appears in the catalog. Fields are
-`key`, `command`, optional `args`, optional `when`, and optional
-`description`; unknown fields are rejected like the rest of the config.
+`unbind` is a reserved command ID that never appears in the catalog. It rejects
+`args` and `when`, and unbinding a key with no earlier binding is a silent
+no-op so one config can serve both platforms. Fields are `key`, `command`,
+optional `args`, optional `when`, and optional `description`; unknown fields
+are rejected like the rest of the config.
 
 `args` is a table keyed by argument name. An array is rejected with a
 diagnostic naming the expected argument names, so a positional habit from other
@@ -177,8 +185,9 @@ GPUI `KeyBinding`s after parsing:
   `KeyBindingContextPredicate::parse` before any `KeyBinding` is built.
 - Arguments convert from TOML values to named `CommandArgument`s and pass
   catalog validation, including unknown names, missing required names, and
-  types. ID-kind arguments are rejected in config. Every diagnostic carries the
-  entry index and key.
+  types. ID-kind arguments (`tab`, `workspace`, `session`) are rejected in
+  config with a message saying the window supplies them. Every diagnostic
+  carries the 1-based entry index and key.
 - Precedence: defaults first, then user entries in file order. A later entry
   wins over an earlier one for the same key and predicate. `unbind` removes
   every earlier binding for that key, defaults included, regardless of

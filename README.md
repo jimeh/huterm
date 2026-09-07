@@ -233,6 +233,125 @@ there is no file watcher or remote CLI command.
 See [theme sources and licenses](crates/huterm-gpui/themes/README.md) for
 attribution and palette import details.
 
+### Keybindings
+
+Every shortcut runs a catalog command. Add `[[keybinding]]` entries to extend
+or replace the platform defaults:
+
+```toml
+[[keybinding]]
+key = "cmd-1"
+command = "select_tab"
+args = { index = 1 }
+when = "Terminal && !confirming"
+description = "Select the first tab"
+
+[[keybinding]]
+key = "shift-pageup"
+command = "unbind"
+```
+
+Fields: `key` (required), `command` (required), `args` (a table of named
+arguments; arrays are rejected), `when` (an optional context predicate), and
+`description` (an optional label for the settings UI and palette; blank text
+is rejected). Without `description`, the binding is labelled with the command
+title and its arguments, such as `Select Tab (index: 3)`. Unknown fields are
+rejected like the rest of the config.
+
+`unbind` is a reserved command that removes every earlier binding for the key,
+including defaults, regardless of `when`. It takes no `args` or `when`, and
+unbinding a key that has no binding does nothing.
+
+Precedence: the platform defaults apply first, then user entries in file
+order. A later entry wins over an earlier one for the same key and `when`;
+two user entries with the same key and `when` produce a conflict notice in the
+window status after reload, and the last one wins. Different `when` predicates
+for one key coexist, and the later entry is tried first.
+
+Bound chords never reach the shell; unbound ones do. Unbind `shift-pageup` to
+send it to a full-screen program, or bind `alt-r` to a command and the shell
+never sees the key or its typed character. Reload compiles the whole file: a
+bad entry keeps the last working bindings and shows the diagnostic with its
+entry number and key. At startup a bad entry falls back to the defaults with
+the same error shown in the status line.
+
+`key` uses GPUI keystroke syntax: modifiers `cmd`, `ctrl`, `alt`, `shift`, and
+`fn` joined with hyphens before the key name (`cmd-shift-w`, `ctrl-tab`,
+`f11`, `shift-pageup`). Separate the keystrokes of a multi-key chord with
+spaces: `ctrl-k ctrl-t`. Shifted punctuation is written as the resulting
+symbol, so Cmd+Shift+, is `cmd-<`.
+
+`when` uses GPUI's predicate language: context identifiers combined with `&&`,
+`||`, `!`, `==` and `!=` for `key == value` entries, and `>` to require a
+descendant context (`Workspace > Terminal`). Available contexts:
+
+| Context | Present when |
+| --- | --- |
+| `Terminal` | A terminal view has focus. |
+| `selection` | That terminal has selected text. |
+| `exited` | That terminal's root shell has exited. |
+| `Workspace` | Always, on the window's root. |
+| `confirming` | A close confirmation is open. |
+| `reordering` | A tab drag is in progress. |
+| `fullscreen` | The window is fullscreen. |
+
+`Palette` is reserved for the future command palette.
+
+Commands, their scope, and arguments:
+
+| Command | Scope | Arguments |
+| --- | --- | --- |
+| `new_window` | Application | |
+| `quit` | Application | |
+| `hide` | Application | |
+| `hide_others` | Application | |
+| `show_all` | Application | |
+| `reload_config` | Application | |
+| `open_settings` | Window | |
+| `about` | Window | |
+| `new_tab` | Window | |
+| `close_tab` | Window | |
+| `close_window` | Window | |
+| `next_tab` | Window | |
+| `previous_tab` | Window | |
+| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) |
+| `toggle_fullscreen` | Window | |
+| `minimize` | Window | |
+| `zoom` | Window | |
+| `copy` | Terminal | |
+| `paste` | Terminal | |
+| `scroll_page_up` | Terminal | |
+| `scroll_page_down` | Terminal | |
+| `scroll_to_bottom` | Terminal | |
+| `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
+| `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
+| `rename_session` | Runtime | `name`; `session` defaults to the window's session |
+
+Runtime commands execute in the core against canonical structure; the ID
+arguments cannot be written in config and are filled from the invoking window.
+
+Default bindings differ per platform:
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `new_window` | `cmd-n` | `ctrl-shift-n` |
+| `new_tab` | `cmd-t` | `ctrl-shift-t` |
+| `close_tab` | `cmd-w` | `ctrl-shift-w` |
+| `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
+| `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
+| `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
+| `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
+| `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
+| `scroll_to_bottom` | `shift-end` | `shift-end` |
+| `toggle_fullscreen` | `f11`, `ctrl-cmd-f` | `f11` |
+| `reload_config` | `cmd-<` | `ctrl-<` |
+| `open_settings` | `cmd-,` | |
+| `quit` | `cmd-q` | |
+| `minimize` | `cmd-m` | |
+| `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
+
+Commands without a default binding are available through menus or config.
+
 On Apple Silicon macOS, build the application bundle with:
 
 ```sh
@@ -261,8 +380,7 @@ restoration, and shared GUI/TUI access.
 - More complete grapheme handling, font fallback, and IME.
 - True color, text decorations, cursor styles, hyperlinks, clipboard support,
   search, selection, and configurable scrollback.
-- More terminal mouse protocols, configurable keybindings, and shell
-  integration.
+- More terminal mouse protocols and shell integration.
 - Configurable Alacritty and `libghostty-vt` terminal engines, with Alacritty
   selected by default.
 
