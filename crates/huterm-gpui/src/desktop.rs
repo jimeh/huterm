@@ -6,27 +6,28 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, DispatchPhase,
-    FocusHandle, Focusable, KeyBinding, Keystroke, Menu, MenuItem,
+    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
     Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::*,
-    px, size,
+    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
-    BufferPoint, BufferRange, CellSize, GridSize, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalKey,
-    TerminalSnapshot,
+    BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
+    CommandOutcome, CommandValue, GridSize, Modifiers, TabId, TerminalCommand,
+    TerminalEvent, TerminalInput, TerminalKey, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
+use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow, invoke};
 use crate::config::{self, Config, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
     Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
 };
+use crate::keymap::{self, CompiledKeymap, Platform, ReservedKeys};
 use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::{
@@ -43,140 +44,82 @@ const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
-actions!(
-    huterm,
-    [
-        NewWindow,
-        NewTab,
-        CloseTab,
-        CloseWindow,
-        NextTab,
-        PreviousTab,
-        Tab1,
-        Tab2,
-        Tab3,
-        Tab4,
-        Tab5,
-        Tab6,
-        Tab7,
-        Tab8,
-        Tab9,
-        About,
-        Copy,
-        Hide,
-        HideOthers,
-        Minimize,
-        Paste,
-        Quit,
-        ScrollPageDown,
-        ScrollPageUp,
-        ScrollToBottom,
-        Settings,
-        ReloadConfiguration,
-        ShowAll,
-        ToggleFullscreen,
-        Zoom
-    ]
-);
-
 mod windows;
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
 }
 
-fn install_bindings(cx: &mut App) {
-    let mut bindings = vec![
-        KeyBinding::new("shift-pageup", ScrollPageUp, None),
-        KeyBinding::new("shift-pagedown", ScrollPageDown, None),
-        KeyBinding::new("shift-end", ScrollToBottom, None),
-        KeyBinding::new("f11", ToggleFullscreen, None),
-    ];
-    if cfg!(target_os = "macos") {
-        bindings.extend([
-            KeyBinding::new("cmd-c", Copy, None),
-            KeyBinding::new("cmd-v", Paste, None),
-            KeyBinding::new("cmd-,", Settings, None),
-            reload_binding(true),
-            KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-m", Minimize, None),
-            KeyBinding::new("cmd-h", Hide, None),
-            KeyBinding::new("cmd-alt-h", HideOthers, None),
-        ]);
-    } else {
-        bindings.extend([
-            KeyBinding::new("ctrl-shift-c", Copy, None),
-            KeyBinding::new("ctrl-shift-v", Paste, None),
-            reload_binding(false),
-        ]);
+/// Compiles the platform defaults plus `config`'s entries, falling back to
+/// defaults alone (with the diagnostic) when the user entries fail.
+fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
+    let platform = Platform::current();
+    match keymap::compile(platform, &config.keybindings) {
+        Ok(compiled) => (compiled, None),
+        Err(error) => {
+            (keymap::compile_defaults(platform), Some(error.to_string()))
+        }
     }
-    bindings.extend(windows::tab_bindings(cfg!(target_os = "macos")));
-    cx.bind_keys(bindings);
 }
 
-fn reload_binding(is_macos: bool) -> KeyBinding {
-    // GPUI folds Shift+comma into '<' and clears Shift on both backends.
-    KeyBinding::new(
-        if is_macos { "cmd-<" } else { "ctrl-<" },
-        ReloadConfiguration,
-        None,
-    )
+/// Replaces GPUI's bindings with `compiled` and returns its reserved keys.
+fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
+    cx.clear_key_bindings();
+    cx.bind_keys(compiled.bindings);
+    Arc::new(compiled.reserved)
 }
 
 fn install_menus(cx: &mut App) {
     if !cfg!(target_os = "macos") {
         return;
     }
+    let item = |id| invoke(id).menu_item();
     cx.set_menus(vec![
         Menu {
             name: "Huterm".into(),
             items: vec![
-                MenuItem::action("About Huterm", About),
-                MenuItem::action("Settings...", Settings),
-                MenuItem::action("Reload Configuration", ReloadConfiguration),
+                item(ids::ABOUT),
+                item(ids::OPEN_SETTINGS),
+                item(ids::RELOAD_CONFIG),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Hide Huterm", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
+                item(ids::HIDE),
+                item(ids::HIDE_OTHERS),
+                item(ids::SHOW_ALL),
                 MenuItem::separator(),
-                MenuItem::action("Quit Huterm", Quit),
+                item(ids::QUIT),
             ],
         },
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("New Tab", NewTab),
-                MenuItem::action("Close Tab", CloseTab),
-                MenuItem::action("Close Window", CloseWindow),
+                item(ids::NEW_WINDOW),
+                item(ids::NEW_TAB),
+                item(ids::CLOSE_TAB),
+                item(ids::CLOSE_WINDOW),
             ],
         },
         Menu {
             name: "Edit".into(),
-            items: vec![
-                MenuItem::action("Copy", Copy),
-                MenuItem::action("Paste", Paste),
-            ],
+            items: vec![item(ids::COPY), item(ids::PASTE)],
         },
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action("Scroll Page Up", ScrollPageUp),
-                MenuItem::action("Scroll Page Down", ScrollPageDown),
-                MenuItem::action("Scroll to Bottom", ScrollToBottom),
+                item(ids::SCROLL_PAGE_UP),
+                item(ids::SCROLL_PAGE_DOWN),
+                item(ids::SCROLL_TO_BOTTOM),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Full Screen", ToggleFullscreen),
+                item(ids::TOGGLE_FULLSCREEN),
             ],
         },
         Menu {
             name: "Window".into(),
             items: vec![
-                MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Zoom", Zoom),
-                MenuItem::action("Next Tab", NextTab),
-                MenuItem::action("Previous Tab", PreviousTab),
+                item(ids::MINIMIZE),
+                item(ids::ZOOM),
+                item(ids::NEXT_TAB),
+                item(ids::PREVIOUS_TAB),
             ],
         },
     ]);
@@ -247,7 +190,6 @@ struct TerminalView {
     window_config: WindowConfig,
     sidebar_width: Pixels,
     theme: Theme,
-    config_path: PathBuf,
     status: Option<String>,
     selection: Option<Selection>,
     selected_text: Option<String>,
@@ -268,7 +210,6 @@ impl TerminalView {
     fn new(
         client: RuntimeClient,
         config: &Config,
-        config_path: PathBuf,
         font_family: String,
         metrics: GridMetrics,
         window: &mut Window,
@@ -326,7 +267,6 @@ impl TerminalView {
             window_config: config.window,
             sidebar_width: windows::SIDEBAR_WIDTH,
             theme,
-            config_path,
             status: None,
             title: String::new(),
             exited: false,
@@ -535,10 +475,14 @@ impl TerminalView {
         }
     }
 
-    fn handle_keystroke(&mut self, keystroke: &Keystroke) -> bool {
+    fn handle_keystroke(
+        &mut self,
+        keystroke: &Keystroke,
+        reserved: &ReservedKeys,
+    ) -> bool {
         if self.exited
             || keystroke.modifiers.platform
-            || reserved_keystroke(keystroke)
+            || reserved.is_reserved(keystroke)
         {
             return false;
         }
@@ -641,131 +585,81 @@ impl TerminalView {
         }
     }
 
-    fn page_up(
+    fn invoke_terminal(
         &mut self,
-        _: &ScrollPageUp,
-        _: &mut Window,
+        action: &InvokeTerminal,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         cx.stop_propagation();
-        if self.scroll.page(self.last_grid_size.rows, true) {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn page_down(
-        &mut self,
-        _: &ScrollPageDown,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        if self.scroll.page(self.last_grid_size.rows, false) {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn scroll_to_bottom(
-        &mut self,
-        _: &ScrollToBottom,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        if self.scroll.bottom() {
-            self.activate_scrollbar();
-            self.start_snapshot_if_needed(cx);
-            cx.notify();
-        }
-    }
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<'_, Self>) {
-        cx.stop_propagation();
-        if self.exited {
-            return;
-        }
-        if let Some(text) =
-            cx.read_from_clipboard().and_then(|item| item.text())
+        if let Err(error) = self.run_command(&action.0, window, cx)
+            && self.set_status(error.to_string())
         {
-            self.enqueue_input(TerminalInput::Paste(text));
-            self.scroll.bottom();
-            self.scroll.invalidate();
-            self.start_snapshot_if_needed(cx);
             cx.notify();
         }
     }
-    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<'_, Self>) {
-        cx.stop_propagation();
-        if let Some(text) = &self.selected_text {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        }
-    }
-    fn settings(
+
+    /// Runs a terminal-scope catalog command against this view.
+    ///
+    /// # Errors
+    /// Reports refused commands as [`CommandError::Unavailable`] and commands
+    /// this view does not own as [`CommandError::UnknownCommand`].
+    fn run_command(
         &mut self,
-        _: &Settings,
+        invocation: &CommandInvocation,
         _: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        match config::create_default(&self.config_path) {
-            Ok(()) => cx.open_with_system(&self.config_path),
-            Err(error) => {
-                self.set_status(format!("failed to open settings: {error}"));
-                cx.notify();
+    ) -> Result<CommandOutcome, CommandError> {
+        match invocation.id {
+            ids::COPY => {
+                if let Some(text) = &self.selected_text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        text.clone(),
+                    ));
+                }
             }
+            ids::PASTE => {
+                if self.exited {
+                    return Err(CommandError::Unavailable(
+                        "terminal has exited".to_owned(),
+                    ));
+                }
+                if let Some(text) =
+                    cx.read_from_clipboard().and_then(|item| item.text())
+                {
+                    self.enqueue_input(TerminalInput::Paste(text));
+                    self.scroll.bottom();
+                    self.scroll.invalidate();
+                    self.start_snapshot_if_needed(cx);
+                    cx.notify();
+                }
+            }
+            ids::SCROLL_PAGE_UP => {
+                self.scroll_command(cx, |scroll, rows| scroll.page(rows, true));
+            }
+            ids::SCROLL_PAGE_DOWN => {
+                self.scroll_command(cx, |scroll, rows| {
+                    scroll.page(rows, false)
+                });
+            }
+            ids::SCROLL_TO_BOTTOM => {
+                self.scroll_command(cx, |scroll, _| scroll.bottom());
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
         }
+        Ok(CommandOutcome::Completed)
     }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn about(
+
+    fn scroll_command(
         &mut self,
-        _: &About,
-        window: &mut Window,
         cx: &mut Context<'_, Self>,
+        apply: impl FnOnce(&mut ScrollController, u16) -> bool,
     ) {
-        cx.stop_propagation();
-        let detail = format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
-        let answer = window.prompt(
-            PromptLevel::Info,
-            "Huterm",
-            Some(&detail),
-            &["OK"],
-            cx,
-        );
-        cx.spawn(async move |_, _| {
-            let _ = answer.await;
-        })
-        .detach();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn toggle_fullscreen(
-        &mut self,
-        _: &ToggleFullscreen,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.toggle_fullscreen();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn minimize(
-        &mut self,
-        _: &Minimize,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.minimize_window();
-    }
-    #[expect(clippy::unused_self, reason = "GPUI actions receive the view")]
-    fn zoom(
-        &mut self,
-        _: &Zoom,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        window.zoom_window();
+        if apply(&mut self.scroll, self.last_grid_size.rows) {
+            self.activate_scrollbar();
+            self.start_snapshot_if_needed(cx);
+            cx.notify();
+        }
     }
 
     fn application_mouse(
@@ -1217,6 +1111,22 @@ impl TerminalView {
         }
         false
     }
+    /// Key context for binding predicates: `Terminal`, plus `selection`
+    /// while a range is selected and `exited` after the root shell exits.
+    fn key_context(&self) -> KeyContext {
+        let mut context = KeyContext::default();
+        context.add("Terminal");
+        // A mouse-down anchor is not a selection until the drag reaches
+        // another cell, so a plain click must not enable `selection`.
+        if self.selection.and_then(Selection::range).is_some() {
+            context.add("selection");
+        }
+        if self.exited {
+            context.add("exited");
+        }
+        context
+    }
+
     fn set_status(&mut self, status: String) -> bool {
         if self.status.as_ref() == Some(&status) {
             false
@@ -1377,18 +1287,9 @@ impl Render for TerminalView {
                     cx.notify();
                 }
             }))
-            .key_context("Huterm")
+            .key_context(self.key_context())
             .track_focus(&self.focus)
-            .on_action(cx.listener(Self::about))
-            .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::settings))
-            .on_action(cx.listener(Self::toggle_fullscreen))
-            .on_action(cx.listener(Self::minimize))
-            .on_action(cx.listener(Self::zoom))
-            .on_action(cx.listener(Self::page_up))
-            .on_action(cx.listener(Self::page_down))
-            .on_action(cx.listener(Self::scroll_to_bottom))
+            .on_action(cx.listener(Self::invoke_terminal))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -1762,103 +1663,6 @@ fn protocol_modifiers(modifiers: GpuiModifiers) -> Modifiers {
         shift: modifiers.shift,
     }
 }
-fn reserved_keystroke(keystroke: &Keystroke) -> bool {
-    reserved_chord(keystroke.modifiers, &keystroke.key)
-}
-fn reserved_chord(modifiers: GpuiModifiers, key: &str) -> bool {
-    reserved_chord_for_platform(cfg!(target_os = "macos"), modifiers, key)
-}
-fn reserved_chord_for_platform(
-    is_macos: bool,
-    modifiers: GpuiModifiers,
-    key: &str,
-) -> bool {
-    if tab_chord_for_platform(is_macos, modifiers, key) {
-        return true;
-    }
-    if exact_modifiers(modifiers, ModifierChord::Shift) {
-        return matches!(key, "pageup" | "pagedown" | "end");
-    }
-    if is_macos {
-        (exact_modifiers(modifiers, ModifierChord::Command)
-            && matches!(key, "c" | "v" | "," | "<" | "q" | "m" | "h"))
-            || (exact_modifiers(modifiers, ModifierChord::CommandAlt)
-                && key == "h")
-            || (exact_modifiers(modifiers, ModifierChord::CommandControl)
-                && key == "f")
-    } else {
-        (exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "c" | "v"))
-            || (exact_modifiers(modifiers, ModifierChord::Control)
-                && key == "<")
-    }
-}
-fn tab_chord_for_platform(
-    macos: bool,
-    modifiers: GpuiModifiers,
-    key: &str,
-) -> bool {
-    let digit =
-        matches!(key, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9");
-    if key == "tab"
-        && (exact_modifiers(modifiers, ModifierChord::Control)
-            || exact_modifiers(modifiers, ModifierChord::ControlShift))
-    {
-        return true;
-    }
-    if macos {
-        (exact_modifiers(modifiers, ModifierChord::Command)
-            && (digit || matches!(key, "n" | "t" | "w")))
-            || (exact_modifiers(modifiers, ModifierChord::CommandShift)
-                && key == "w")
-    } else {
-        (exact_modifiers(modifiers, ModifierChord::ControlShift)
-            && matches!(key, "n" | "t" | "w" | "q"))
-            || (exact_modifiers(modifiers, ModifierChord::Alt) && digit)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ModifierChord {
-    Alt,
-    CommandShift,
-    Shift,
-    Command,
-    CommandAlt,
-    CommandControl,
-    Control,
-    ControlShift,
-}
-fn exact_modifiers(modifiers: GpuiModifiers, chord: ModifierChord) -> bool {
-    let matches = match chord {
-        ModifierChord::Shift => modifiers.shift,
-        ModifierChord::Alt => modifiers.alt,
-        ModifierChord::CommandShift => modifiers.platform && modifiers.shift,
-        ModifierChord::Command => modifiers.platform,
-        ModifierChord::Control => modifiers.control,
-        ModifierChord::CommandAlt => modifiers.platform && modifiers.alt,
-        ModifierChord::CommandControl => {
-            modifiers.platform && modifiers.control
-        }
-        ModifierChord::ControlShift => modifiers.control && modifiers.shift,
-    };
-    let count = usize::from(modifiers.control)
-        + usize::from(modifiers.alt)
-        + usize::from(modifiers.shift)
-        + usize::from(modifiers.platform)
-        + usize::from(modifiers.function);
-    let expected_count = match chord {
-        ModifierChord::Shift
-        | ModifierChord::Alt
-        | ModifierChord::Command
-        | ModifierChord::Control => 1,
-        ModifierChord::CommandAlt
-        | ModifierChord::CommandShift
-        | ModifierChord::CommandControl
-        | ModifierChord::ControlShift => 2,
-    };
-    matches && count == expected_count
-}
 fn selection_request_is_current(
     current: Option<Selection>,
     requested: Selection,
@@ -2166,105 +1970,6 @@ mod tests {
         assert_eq!(edge_scroll_direction(400.0, 400.0), -1);
     }
     #[test]
-    fn application_shortcuts_are_reserved_but_plain_control_c_is_not() {
-        assert!(!reserved_chord(modifiers(&[TestModifier::Control]), "c"));
-        assert!(reserved_chord(modifiers(&[TestModifier::Shift]), "pageup"));
-
-        let clipboard = if cfg!(target_os = "macos") {
-            modifiers(&[TestModifier::Platform])
-        } else {
-            modifiers(&[TestModifier::Control, TestModifier::Shift])
-        };
-        assert!(reserved_chord(clipboard, "c"));
-        assert!(reserved_chord(clipboard, "v"));
-    }
-    #[test]
-    fn reload_binding_matches_gpui_shifted_punctuation() {
-        // Both native backends fold Shift+comma into '<' without Shift.
-        for (is_macos, modifier) in [
-            (true, TestModifier::Platform),
-            (false, TestModifier::Control),
-        ] {
-            let event = Keystroke {
-                modifiers: modifiers(&[modifier]),
-                key: "<".into(),
-                key_char: None,
-            };
-            assert_eq!(
-                reload_binding(is_macos)
-                    .match_keystrokes(std::slice::from_ref(&event)),
-                Some(false) // Complete match, not a pending chord prefix.
-            );
-            assert!(reserved_chord_for_platform(
-                is_macos,
-                event.modifiers,
-                &event.key
-            ));
-        }
-    }
-
-    #[test]
-    fn macos_shortcuts_require_exact_modifiers() {
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Platform]),
-            "<",
-        ));
-        let command = modifiers(&[TestModifier::Platform]);
-        assert!(reserved_chord_for_platform(true, command, "h"));
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
-            "h"
-        ));
-        assert!(reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Control, TestModifier::Platform]),
-            "f"
-        ));
-        assert!(!reserved_chord_for_platform(
-            true,
-            modifiers(&[TestModifier::Alt, TestModifier::Platform]),
-            "c"
-        ));
-        let mut with_function = command;
-        with_function.function = true;
-        assert!(!reserved_chord_for_platform(true, with_function, "c"));
-    }
-    #[test]
-    fn linux_shortcuts_require_exact_modifiers() {
-        assert!(reserved_chord_for_platform(
-            false,
-            modifiers(&[TestModifier::Control]),
-            "<",
-        ));
-        let clipboard =
-            modifiers(&[TestModifier::Control, TestModifier::Shift]);
-        assert!(reserved_chord_for_platform(false, clipboard, "c"));
-        assert!(reserved_chord_for_platform(false, clipboard, "v"));
-        assert!(!reserved_chord_for_platform(
-            false,
-            modifiers(&[
-                TestModifier::Control,
-                TestModifier::Alt,
-                TestModifier::Shift,
-            ]),
-            "c"
-        ));
-        assert!(!reserved_chord_for_platform(
-            false,
-            modifiers(&[
-                TestModifier::Control,
-                TestModifier::Shift,
-                TestModifier::Platform,
-            ]),
-            "c"
-        ));
-        let mut with_function = clipboard;
-        with_function.function = true;
-        assert!(!reserved_chord_for_platform(false, with_function, "c"));
-    }
-    #[test]
     fn stale_selection_replies_do_not_match_newer_selection() {
         let requested = selection(1, 2, 4);
         assert!(!selection_request_is_current(
@@ -2353,27 +2058,6 @@ mod tests {
         );
         assert!(locale_environment(true, true).is_empty());
         assert!(locale_environment(false, false).is_empty());
-    }
-
-    #[derive(Clone, Copy)]
-    enum TestModifier {
-        Control,
-        Alt,
-        Shift,
-        Platform,
-    }
-
-    fn modifiers(active: &[TestModifier]) -> GpuiModifiers {
-        let mut modifiers = GpuiModifiers::default();
-        for modifier in active {
-            match modifier {
-                TestModifier::Control => modifiers.control = true,
-                TestModifier::Alt => modifiers.alt = true,
-                TestModifier::Shift => modifiers.shift = true,
-                TestModifier::Platform => modifiers.platform = true,
-            }
-        }
-        modifiers
     }
 
     fn selection(generation: u64, anchor: u16, head: u16) -> Selection {

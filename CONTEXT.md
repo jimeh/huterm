@@ -53,3 +53,25 @@ fresh terminal processes when the previous runtime is no longer alive.
 
 **Reconnection**:
 Attaching to a surviving runtime and its existing terminal processes.
+
+**Command**:
+A catalog definition with a stable ID, a scope, and named typed arguments. The
+catalog is the single source for menus, shortcuts, and programmatic callers.
+
+**Command scope**:
+Who executes a command: Runtime (the core, against canonical structure),
+Application (the client without a window), Window (one client window), or
+Terminal (one terminal view).
+
+**Invocation**:
+A command plus named argument values. Omitted targets are filled from the
+invoking window's context, such as its active tab.
+
+**Keybinding**:
+A config entry binding a key to an invocation, with an optional `when`
+predicate over key contexts and an optional description.
+
+**Reserved key**:
+A keystroke kept from terminal input because an effective binding without
+`when` uses it, or because it starts a multi-key chord. A conditional binding's
+final key reaches the shell whenever its predicate does not match.

@@ -2,6 +2,8 @@
 
 #![deny(missing_docs)]
 
+mod commands;
+pub use commands::execute;
 mod engine;
 mod input;
 mod jobs;

@@ -3,11 +3,15 @@
 #![deny(missing_docs)]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod commands;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod keymap;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod mouse;
 #[cfg(target_os = "macos")]

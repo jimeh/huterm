@@ -1,12 +1,15 @@
 use super::*;
+use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
 #[cfg(target_os = "macos")]
 use crate::native_quit;
-use gpui::{Entity, Global, WeakEntity};
+use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_core::{
     CloseAssessment, CloseRequest, HierarchySnapshot, MuxError, OpenedTab,
 };
-use huterm_protocol::{AttachmentId, SessionId, WorkspaceId};
+use huterm_protocol::{
+    AttachmentId, CommandArgument, SessionId, WorkspaceId, validate,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -153,6 +156,49 @@ impl DesktopRuntime {
             });
     }
 
+    /// Runs a runtime-scope command on the structural worker.
+    fn execute(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Result<CommandOutcome, CommandError> {
+        let mut mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(CommandError::Unavailable(
+                "runtime is terminating".to_owned(),
+            ));
+        }
+        let mut invocation = invocation.clone();
+        if invocation.id == ids::RENAME_SESSION {
+            // The window knows its workspace; the session owning it is
+            // canonical runtime state, so resolve it under the same lock. A
+            // workspace that vanished since the window captured it is a
+            // stale target, not a missing one.
+            if invocation.session("session").is_none() {
+                let workspace = invocation.workspace("workspace").ok_or(
+                    CommandError::MissingArgument {
+                        command: ids::RENAME_SESSION,
+                        name: "session",
+                    },
+                )?;
+                let session = mux
+                    .workspace(workspace)
+                    .map(|workspace| workspace.session_id)
+                    .ok_or(CommandError::StaleTarget)?;
+                invocation.args.push(CommandArgument::new(
+                    "session",
+                    CommandValue::Session(session),
+                ));
+            }
+            invocation
+                .args
+                .retain(|argument| argument.name != "workspace");
+        }
+        huterm_core::execute(&mut mux, &invocation)
+    }
+
     fn reorder_tab(
         &self,
         workspace: WorkspaceId,
@@ -232,12 +278,132 @@ struct Desktop {
     config_path: PathBuf,
     config_error: Option<String>,
     windows: Vec<WeakEntity<WorkspaceView>>,
+    reserved: Arc<ReservedKeys>,
     reloading: bool,
     quitting: bool,
     pending_spawns: usize,
     quit_pending: bool,
 }
 impl Global for Desktop {}
+
+impl Desktop {
+    /// Runs a catalog command for a programmatic caller.
+    ///
+    /// Application commands run without a window. Window, runtime, and
+    /// terminal commands execute synchronously on `window`'s root view and
+    /// report [`CommandError::ClientRequired`] when it is absent or closed.
+    ///
+    /// # Errors
+    /// Reports catalog validation failures before any dispatch, then the
+    /// executing view's refusal or failure.
+    fn invoke(
+        cx: &mut App,
+        invocation: &CommandInvocation,
+        window: Option<AnyWindowHandle>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let spec = validate(invocation)?;
+        match route(spec.scope, window)? {
+            Route::Application => run_app_command(cx, invocation),
+            Route::Window(handle) => handle
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .downcast::<WorkspaceView>()
+                        .map_err(|_| CommandError::ClientRequired)?;
+                    view.update(cx, |view, cx| {
+                        view.run_command(invocation, window, cx)
+                    })
+                })
+                .map_err(|_| CommandError::ClientRequired)?,
+            Route::Terminal(handle) => handle
+                .update(cx, |root, window, cx| {
+                    let view = root
+                        .downcast::<WorkspaceView>()
+                        .map_err(|_| CommandError::ClientRequired)?;
+                    let terminal =
+                        view.read(cx).active_view().ok_or_else(|| {
+                            CommandError::Unavailable(
+                                "window has no active terminal".to_owned(),
+                            )
+                        })?;
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.run_command(invocation, window, cx)
+                    })
+                })
+                .map_err(|_| CommandError::ClientRequired)?,
+        }
+    }
+}
+
+/// Shows `message` in the active window's status line, if there is one.
+fn show_active_window_status(cx: &mut App, message: String) {
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    let _ = window.update(cx, |root, _, cx| {
+        if let Ok(view) = root.downcast::<WorkspaceView>() {
+            view.update(cx, |view, cx| {
+                view.status = Some(message);
+                cx.notify();
+            });
+        }
+    });
+}
+
+fn run_app_command(
+    cx: &mut App,
+    invocation: &CommandInvocation,
+) -> Result<CommandOutcome, CommandError> {
+    match invocation.id {
+        ids::NEW_WINDOW => {
+            open_window(cx);
+            Ok(CommandOutcome::Accepted)
+        }
+        ids::RELOAD_CONFIG => reload(cx),
+        ids::QUIT => {
+            // Global actions run while the dispatching window is borrowed.
+            // Route quit after that window has returned to App's window map.
+            cx.defer(request_quit);
+            Ok(CommandOutcome::Accepted)
+        }
+        ids::HIDE => {
+            cx.hide();
+            Ok(CommandOutcome::Completed)
+        }
+        ids::HIDE_OTHERS => {
+            cx.hide_other_apps();
+            Ok(CommandOutcome::Completed)
+        }
+        ids::SHOW_ALL => {
+            cx.unhide_other_apps();
+            Ok(CommandOutcome::Completed)
+        }
+        other => Err(CommandError::UnknownCommand(other)),
+    }
+}
+
+/// Binds the startup keymap and returns its reserved keys with the first
+/// diagnostic to show: a config error, a keymap error, or binding conflicts.
+///
+/// A broken binding never blocks startup: defaults apply and the diagnostic
+/// shows like any other non-fatal configuration error.
+fn install_startup_keymap(
+    cx: &mut App,
+    loaded: &config::LoadedConfig,
+) -> (Arc<ReservedKeys>, Option<String>) {
+    let (compiled, keymap_error) = compile_keymap(&loaded.config);
+    let conflicts =
+        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
+    let reserved = bind_keymap(cx, compiled);
+    let diagnostic = loaded
+        .error
+        .clone()
+        .or_else(|| {
+            keymap_error
+                .map(|error| format!("{}: {error}", loaded.path.display()))
+        })
+        .or(conflicts);
+    (reserved, diagnostic)
+}
 
 pub(super) fn run() -> anyhow::Result<()> {
     let loaded = config::load();
@@ -263,12 +429,14 @@ pub(super) fn run() -> anyhow::Result<()> {
         cx.activate(true);
     });
     application.run(move |cx| {
+        let (reserved, config_error) = install_startup_keymap(cx, &loaded);
         cx.set_global(Desktop {
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
+            config_error,
             config_path: loaded.path,
-            config_error: loaded.error,
             windows: Vec::new(),
+            reserved,
             reloading: false,
             quitting: false,
             pending_spawns: 0,
@@ -287,16 +455,17 @@ pub(super) fn run() -> anyhow::Result<()> {
             async {}
         })
         .detach();
-        install_bindings(cx);
         install_menus(cx);
-        cx.on_action(|_: &NewWindow, cx| open_window(cx));
-        cx.on_action(|_: &ReloadConfiguration, cx| reload(cx));
-        // Global actions run while the dispatching window is borrowed. Route
-        // quit after that window has returned to App's window map.
-        cx.on_action(|_: &Quit, cx| cx.defer(request_quit));
-        cx.on_action(|_: &Hide, cx| cx.hide());
-        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
-        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        cx.on_action(|action: &InvokeApp, cx| {
+            if let Err(error) = Desktop::invoke(cx, &action.0, None) {
+                let message =
+                    format!("Command `{}` failed: {error}", action.0.id);
+                eprintln!("Huterm {message}");
+                // Global action callbacks run while the dispatching window
+                // is borrowed, so update its status after it is returned.
+                cx.defer(move |cx| show_active_window_status(cx, message));
+            }
+        });
         cx.on_window_closed(|cx| {
             cx.global_mut::<Desktop>()
                 .windows
@@ -305,7 +474,9 @@ pub(super) fn run() -> anyhow::Result<()> {
         })
         .detach();
         cx.observe_keystrokes(|event, window, cx| {
-            if event.action.is_some() || reserved_keystroke(&event.keystroke) {
+            let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
+            if event.action.is_some() || reserved.is_reserved(&event.keystroke)
+            {
                 return;
             }
             if let Some(root) = window.root::<WorkspaceView>().flatten() {
@@ -318,7 +489,8 @@ pub(super) fn run() -> anyhow::Result<()> {
                     }
                     if let Some(tab) = view.active_view() {
                         tab.update(cx, |tab, cx| {
-                            if tab.handle_keystroke(&event.keystroke) {
+                            if tab.handle_keystroke(&event.keystroke, &reserved)
+                            {
                                 cx.notify();
                             }
                             tab.start_snapshot_if_needed(cx);
@@ -537,8 +709,8 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
             cx.global_mut::<Desktop>().windows.push(view.downgrade());
             view.update(cx, |view, cx| {
                 view.focus.focus(window);
-                if launch_shell {
-                    view.new_tab(window, cx);
+                if launch_shell && let Err(error) = view.new_tab(window, cx) {
+                    view.status = Some(error.to_string());
                 }
             });
             let pump_view = view.downgrade();
@@ -1066,31 +1238,26 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "publishes a spawned tab and cleans orphaned publication"
-    )]
-    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn new_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
-        if self.busy
-            || self.close.confirmation.is_some()
-            || cx.global::<Desktop>().quitting
+        self.check_available(false)?;
+        if cx.global::<Desktop>().quitting
             || cx.global::<Desktop>().quit_pending
         {
-            return;
+            return Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ));
         }
-        let command = match shell_command(
+        let command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             cx.global::<Desktop>().config.engine,
-        ) {
-            Ok(command) => command,
-            Err(error) => {
-                self.status = Some(error.to_string());
-                cx.notify();
-                return;
-            }
-        };
+        )
+        .map_err(|error| CommandError::Runtime(error.to_string()))?;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         self.busy = true;
@@ -1111,7 +1278,7 @@ impl WorkspaceView {
                     && cx.global::<Desktop>().quit_pending
                 {
                     cx.global_mut::<Desktop>().quit_pending = false;
-                    cx.defer(|cx| cx.dispatch_action(&Quit));
+                    cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
                 }
             });
             let mut result = Some(result);
@@ -1124,13 +1291,10 @@ impl WorkspaceView {
                                 view.attachment = Some(attachment);
                             }
                             view.workspace = Some(id);
-                            let config_path =
-                                cx.global::<Desktop>().config_path.clone();
                             let terminal = cx.new(|cx| {
                                 TerminalView::new(
                                     opened.client,
                                     &view.config,
-                                    config_path,
                                     view.family.clone(),
                                     view.metrics
                                         .at_scale(window.scale_factor()),
@@ -1175,8 +1339,148 @@ impl WorkspaceView {
         })
         .detach();
         cx.notify();
+        Ok(CommandOutcome::Accepted)
     }
 
+    /// Key context for binding predicates: `Workspace`, plus `confirming`,
+    /// `reordering`, and `fullscreen` while those states hold.
+    fn key_context(&self, window: &Window) -> KeyContext {
+        let mut context = KeyContext::default();
+        context.add("Workspace");
+        if self.close.confirmation.is_some() {
+            context.add("confirming");
+        }
+        if self.reorder.is_some() {
+            context.add("reordering");
+        }
+        if window.is_fullscreen() {
+            context.add("fullscreen");
+        }
+        context
+    }
+
+    /// Refuses commands while structural work, a close confirmation, or (when
+    /// `reordering` matters) a tab drag would race with them.
+    fn check_available(&self, reordering: bool) -> Result<(), CommandError> {
+        let reason = if self.busy {
+            "structural operation in progress"
+        } else if self.close.confirmation.is_some() {
+            "close confirmation pending"
+        } else if reordering && self.reorder.is_some() {
+            "tab reorder in progress"
+        } else {
+            return Ok(());
+        };
+        Err(CommandError::Unavailable(reason.to_owned()))
+    }
+
+    /// Runs a window- or runtime-scope catalog command against this window.
+    ///
+    /// Runtime commands take omitted targets from this window's active tab,
+    /// workspace, or session, then execute on the structural worker; their
+    /// later failure is reported through the window status.
+    ///
+    /// # Errors
+    /// Reports refused commands as [`CommandError::Unavailable`] and commands
+    /// this window does not own as [`CommandError::UnknownCommand`].
+    fn run_command(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        match invocation.id {
+            ids::NEW_TAB => self.new_tab(window, cx),
+            ids::CLOSE_TAB => {
+                let id = self.active.ok_or_else(|| {
+                    CommandError::Unavailable("window has no tab".to_owned())
+                })?;
+                self.request_close(CloseTarget::Tab(id), window, cx);
+                Ok(CommandOutcome::Accepted)
+            }
+            ids::CLOSE_WINDOW => {
+                self.request_close(CloseTarget::Window, window, cx);
+                Ok(CommandOutcome::Accepted)
+            }
+            ids::NEXT_TAB => self.navigate(true, window, cx),
+            ids::PREVIOUS_TAB => self.navigate(false, window, cx),
+            ids::SELECT_TAB => {
+                self.select_index(select_tab_slot(invocation)?, window, cx)
+            }
+            ids::TOGGLE_FULLSCREEN => {
+                window.toggle_fullscreen();
+                Ok(CommandOutcome::Completed)
+            }
+            ids::MINIMIZE => {
+                window.minimize_window();
+                Ok(CommandOutcome::Completed)
+            }
+            ids::ZOOM => {
+                window.zoom_window();
+                Ok(CommandOutcome::Completed)
+            }
+            ids::ABOUT => {
+                let detail =
+                    format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
+                let answer = window.prompt(
+                    PromptLevel::Info,
+                    "Huterm",
+                    Some(&detail),
+                    &["OK"],
+                    cx,
+                );
+                cx.spawn(async move |_, _| {
+                    let _ = answer.await;
+                })
+                .detach();
+                Ok(CommandOutcome::Completed)
+            }
+            ids::OPEN_SETTINGS => {
+                let config_path = cx.global::<Desktop>().config_path.clone();
+                config::create_default(&config_path).map_err(|error| {
+                    CommandError::Runtime(format!(
+                        "failed to open settings: {error}"
+                    ))
+                })?;
+                cx.open_with_system(&config_path);
+                Ok(CommandOutcome::Completed)
+            }
+            ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
+                let invocation = fill_rename_target(
+                    invocation,
+                    self.active,
+                    self.workspace,
+                )?;
+                Ok(run_on_runtime(invocation, cx))
+            }
+            other => Err(CommandError::UnknownCommand(other)),
+        }
+    }
+}
+
+/// Executes a filled runtime command on the structural worker and reports a
+/// later failure through the window status.
+fn run_on_runtime(
+    invocation: CommandInvocation,
+    cx: &mut Context<'_, WorkspaceView>,
+) -> CommandOutcome {
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    let task = cx
+        .background_executor()
+        .spawn(async move { runtime.execute(&invocation) });
+    cx.spawn(async move |view, cx| {
+        if let Err(error) = task.await {
+            let _ = view.update(cx, |view, cx| {
+                view.status = Some(format!("Command failed: {error}"));
+                cx.notify();
+            });
+        }
+    })
+    .detach();
+    CommandOutcome::Accepted
+}
+
+impl WorkspaceView {
     fn select(
         &mut self,
         id: TabId,
@@ -1209,13 +1513,12 @@ impl WorkspaceView {
         forward: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
-        if self.busy
-            || self.reorder.is_some()
-            || self.close.confirmation.is_some()
-            || self.tabs.is_empty()
-        {
-            return;
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(true)?;
+        if self.tabs.is_empty() {
+            return Err(CommandError::Unavailable(
+                "window has no tab".to_owned(),
+            ));
         }
         let index = self
             .tabs
@@ -1228,28 +1531,29 @@ impl WorkspaceView {
             (index + self.tabs.len() - 1) % self.tabs.len()
         };
         self.select(self.tabs[next].id, window, cx);
+        Ok(CommandOutcome::Completed)
     }
 
+    /// Selects the tab at zero-based `index`; slot 8 selects the last tab.
+    /// An empty slot completes without selecting anything.
     fn select_index(
         &mut self,
         index: usize,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
-        if self.busy
-            || self.reorder.is_some()
-            || self.close.confirmation.is_some()
-        {
-            return;
-        }
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(true)?;
         let tab = if index == 8 {
             self.tabs.last()
         } else {
             self.tabs.get(index)
         };
+        // A stray cmd-5 in a three-tab window is routine; other terminals
+        // ignore it too, so it is not a refusal worth reporting.
         if let Some(tab) = tab {
             self.select(tab.id, window, cx);
         }
+        Ok(CommandOutcome::Completed)
     }
 
     fn restore_window(&self) -> Option<WindowRestore> {
@@ -1439,7 +1743,7 @@ impl WorkspaceView {
                             view.close.pending,
                             Some(CloseTarget::Application)
                         ) {
-                            cx.defer(|cx| cx.dispatch_action(&Quit));
+                            cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
                         }
                         window.remove_window();
                     }
@@ -1469,9 +1773,11 @@ impl WorkspaceView {
     }
 }
 
-fn reload(cx: &mut App) {
+fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     if cx.global::<Desktop>().reloading {
-        return;
+        return Err(CommandError::Unavailable(
+            "configuration reload in progress".to_owned(),
+        ));
     }
     cx.global_mut::<Desktop>().reloading = true;
     let path = cx.global::<Desktop>().config_path.clone();
@@ -1483,14 +1789,28 @@ fn reload(cx: &mut App) {
         let _ = cx.update(|cx| {
             cx.global_mut::<Desktop>().reloading = false;
             let result = result.and_then(|config| {
-                resolve_metrics(&config, cx)
-                    .map(|(family, metrics)| (config, family, metrics))
-                    .map_err(|error| error.to_string())
+                let (family, metrics) = resolve_metrics(&config, cx)
+                    .map_err(|error| error.to_string())?;
+                let compiled =
+                    keymap::compile(Platform::current(), &config.keybindings)
+                        .map_err(|error| {
+                        format!("{}: {error}", path_for_status(cx))
+                    })?;
+                Ok((config, family, metrics, compiled))
             });
-            if let Ok((config, _, _)) = &result {
+            let mut keymap_status = None;
+            let result = result.map(|(config, family, metrics, compiled)| {
                 cx.global_mut::<Desktop>().config = config.clone();
                 cx.global_mut::<Desktop>().config_error = None;
-            }
+                if !compiled.conflicts.is_empty() {
+                    keymap_status = Some(compiled.conflicts.join("; "));
+                }
+                let reserved = bind_keymap(cx, compiled);
+                cx.global_mut::<Desktop>().reserved = reserved;
+                // macOS menus display shortcuts from the keymap at build time.
+                install_menus(cx);
+                (config, family, metrics)
+            });
             let windows = cx.global::<Desktop>().windows.clone();
             for window in windows {
                 let _ = window.update(cx, |view, cx| {
@@ -1519,6 +1839,7 @@ fn reload(cx: &mut App) {
                                     cx.notify();
                                 });
                             }
+                            view.status.clone_from(&keymap_status);
                         }
                         Err(error) => {
                             view.status =
@@ -1531,6 +1852,11 @@ fn reload(cx: &mut App) {
         });
     })
     .detach();
+    Ok(CommandOutcome::Accepted)
+}
+
+fn path_for_status(cx: &App) -> String {
+    cx.global::<Desktop>().config_path.display().to_string()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1625,6 +1951,7 @@ impl Render for WorkspaceView {
             .bg(background)
             .text_color(foreground)
             .text_size(px(13.0))
+            .key_context(self.key_context(window))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
@@ -1644,51 +1971,15 @@ impl Render for WorkspaceView {
                     }
                 },
             ))
-            .on_action(cx.listener(|view, _: &NewTab, window, cx| {
-                view.new_tab(window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &CloseTab, window, cx| {
-                if let Some(id) = view.active {
-                    view.request_close(CloseTarget::Tab(id), window, cx);
-                }
-            }))
-            .on_action(cx.listener(|view, _: &CloseWindow, window, cx| {
-                view.request_close(CloseTarget::Window, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &NextTab, window, cx| {
-                view.navigate(true, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &PreviousTab, window, cx| {
-                view.navigate(false, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab1, window, cx| {
-                view.select_index(0, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab2, window, cx| {
-                view.select_index(1, window, cx);
-            }));
-        root = root
-            .on_action(cx.listener(|view, _: &Tab3, window, cx| {
-                view.select_index(2, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab4, window, cx| {
-                view.select_index(3, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab5, window, cx| {
-                view.select_index(4, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab6, window, cx| {
-                view.select_index(5, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab7, window, cx| {
-                view.select_index(6, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab8, window, cx| {
-                view.select_index(7, window, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab9, window, cx| {
-                view.select_index(8, window, cx);
-            }));
+            .on_action(cx.listener(
+                |view, action: &InvokeWindow, window, cx| {
+                    if let Err(error) = view.run_command(&action.0, window, cx)
+                    {
+                        view.status = Some(error.to_string());
+                        cx.notify();
+                    }
+                },
+            ));
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
         // Register before terminal children so capture consumes drag movement
@@ -1948,9 +2239,12 @@ impl Render for WorkspaceView {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .on_click(
-                    cx.listener(|view, _, window, cx| view.new_tab(window, cx)),
-                )
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if let Err(error) = view.new_tab(window, cx) {
+                        view.status = Some(error.to_string());
+                        cx.notify();
+                    }
+                }))
                 .child("+"),
         );
         if vertical {
@@ -2145,35 +2439,6 @@ impl Render for WorkspaceView {
         }
         root
     }
-}
-
-pub(super) fn tab_bindings(macos: bool) -> Vec<KeyBinding> {
-    let modifier = if macos { "cmd" } else { "ctrl-shift" };
-    let mut bindings = vec![
-        KeyBinding::new(&format!("{modifier}-n"), NewWindow, None),
-        KeyBinding::new(&format!("{modifier}-t"), NewTab, None),
-        KeyBinding::new(&format!("{modifier}-w"), CloseTab, None),
-        KeyBinding::new(
-            if macos { "cmd-shift-w" } else { "ctrl-shift-q" },
-            CloseWindow,
-            None,
-        ),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-    ];
-    let modifier = if macos { "cmd" } else { "alt" };
-    bindings.extend([
-        KeyBinding::new(&format!("{modifier}-1"), Tab1, None),
-        KeyBinding::new(&format!("{modifier}-2"), Tab2, None),
-        KeyBinding::new(&format!("{modifier}-3"), Tab3, None),
-        KeyBinding::new(&format!("{modifier}-4"), Tab4, None),
-        KeyBinding::new(&format!("{modifier}-5"), Tab5, None),
-        KeyBinding::new(&format!("{modifier}-6"), Tab6, None),
-        KeyBinding::new(&format!("{modifier}-7"), Tab7, None),
-        KeyBinding::new(&format!("{modifier}-8"), Tab8, None),
-        KeyBinding::new(&format!("{modifier}-9"), Tab9, None),
-    ]);
-    bindings
 }
 
 #[cfg(test)]
@@ -2963,27 +3228,33 @@ mod tests {
     #[test]
     fn native_tab_shortcuts_match_actions_and_are_reserved_from_terminal_input()
     {
-        for macos in [true, false] {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let macos = platform == Platform::MacOs;
+            let compiled = keymap::compile(platform, &[]).unwrap();
             let prefix = if macos { "cmd" } else { "ctrl-shift" };
-            for chord in [
-                format!("{prefix}-n"),
-                format!("{prefix}-t"),
-                format!("{prefix}-w"),
-                "ctrl-tab".into(),
-                "ctrl-shift-tab".into(),
-                format!("{}-9", if macos { "cmd" } else { "alt" }),
+            for (chord, command) in [
+                (format!("{prefix}-n"), ids::NEW_WINDOW),
+                (format!("{prefix}-t"), ids::NEW_TAB),
+                (format!("{prefix}-w"), ids::CLOSE_TAB),
+                ("ctrl-tab".into(), ids::NEXT_TAB),
+                ("ctrl-shift-tab".into(), ids::PREVIOUS_TAB),
+                (
+                    format!("{}-9", if macos { "cmd" } else { "alt" }),
+                    ids::SELECT_TAB,
+                ),
             ] {
                 let key = Keystroke::parse(&chord).unwrap();
-                assert!(
-                    tab_bindings(macos).iter().any(|binding| binding
-                        .match_keystrokes(std::slice::from_ref(&key))
-                        == Some(false)),
-                    "{chord}"
-                );
-                assert!(
-                    reserved_chord_for_platform(macos, key.modifiers, &key.key),
-                    "{chord}"
-                );
+                let matched = compiled
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.match_keystrokes(std::slice::from_ref(&key))
+                            == Some(false)
+                    })
+                    .map(keymap::bound_command)
+                    .collect::<Vec<_>>();
+                assert_eq!(matched, vec![Some(command)], "{chord}");
+                assert!(compiled.reserved.is_reserved(&key), "{chord}");
             }
         }
     }
