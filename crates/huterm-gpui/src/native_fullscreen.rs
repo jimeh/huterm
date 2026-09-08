@@ -30,15 +30,24 @@ const RESIZABLE: usize = 1 << 3;
 
 pub(crate) enum Event {
     Native(NativeEvent),
+    NativeExitFailed(String),
     State(bool, bool),
     Complete(u64, bool),
     Failed(u64, String),
     Recover,
 }
 
+enum QueuedEvent {
+    Publish(Event),
+    NativeExit {
+        generation: u64,
+        native_generation: u64,
+    },
+}
+
 #[derive(Default)]
 struct Inbox {
-    events: RefCell<VecDeque<Event>>,
+    events: RefCell<VecDeque<QueuedEvent>>,
     screen_changed: Cell<bool>,
     native_transition: Cell<bool>,
     gate: OperationGate,
@@ -175,6 +184,36 @@ impl Adapter {
         }
     }
 
+    /// Exercise native-exit frame reconciliation with the CI regression's input.
+    pub fn probe_native_exit(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "native exit probe requires the fullscreen smoke"
+        );
+        ensure!(
+            self.0.saved.borrow().is_none(),
+            "probe requires a windowed window"
+        );
+        // SAFETY: The smoke invokes this outside an App update. Supply an
+        // offscreen native frame to the same constraint/setter used on exit.
+        unsafe {
+            let window = self.0.window.0;
+            let style: usize = msg_send![window, styleMask];
+            ensure!(style & NATIVE == 0, "probe requires a windowed window");
+            let screen: *mut Object = msg_send![window, screen];
+            let display = display(screen)?;
+            let mut frame: Bounds<f64> = msg_send![window, frame];
+            frame.origin.y = display.frame.origin.y + display.frame.size.height
+                - frame.size.height / 2.0;
+            let constrained = self.constrain_native_exit_frame(frame)?;
+            ensure!(
+                constrained != frame,
+                "probe frame must need reconciliation"
+            );
+            Ok(native_rect(constrained))
+        }
+    }
+
     pub fn new(window: &Window, cx: &gpui::App) -> anyhow::Result<Self> {
         // SAFETY: This constructor runs on GPUI's main thread. Validate before
         // retaining the exact NSWindow belonging to the provided NSView.
@@ -265,7 +304,108 @@ impl Adapter {
                 Ok(false) => {}
             }
         }
-        self.0.inbox.events.borrow_mut().drain(..).collect()
+        let queued: Vec<_> =
+            self.0.inbox.events.borrow_mut().drain(..).collect();
+        let mut events = Vec::new();
+        for event in queued {
+            match event {
+                QueuedEvent::Publish(event) => events.push(event),
+                QueuedEvent::NativeExit {
+                    generation,
+                    native_generation,
+                } => {
+                    let adapter = self.clone();
+                    self.0
+                        .executor
+                        .spawn(async move {
+                            if !adapter
+                                .0
+                                .inbox
+                                .gate
+                                .native_is_current(native_generation)
+                            {
+                                return;
+                            }
+                            // A timeout cancels mutation, but the actual exit must
+                            // still be observed unless a newer native event replaces it.
+                            let result = if adapter
+                                .0
+                                .inbox
+                                .gate
+                                .is_current(generation)
+                            {
+                                adapter.settle_native_exit()
+                            } else {
+                                Ok(())
+                            };
+                            if !adapter
+                                .0
+                                .inbox
+                                .gate
+                                .native_is_current(native_generation)
+                            {
+                                return;
+                            }
+                            adapter.emit(Event::Native(NativeEvent::DidExit));
+                            if let Err(error) = result {
+                                adapter.emit(Event::NativeExitFailed(
+                                    error.to_string(),
+                                ));
+                            }
+                        })
+                        .detach();
+                }
+            }
+        }
+        events
+    }
+
+    // AppKit 14 can finish a native Space exit with an offscreen frame. Apply
+    // its titled-window constraint before publishing DidExit, so a queued
+    // non-native entry cannot save geometry that AppKit later refuses to restore.
+    fn settle_native_exit(&self) -> anyhow::Result<()> {
+        if self.0.saved.borrow().is_some() {
+            // Existing non-native recovery owns its own frame and exit sequence.
+            return Ok(());
+        }
+        let window = self.0.window.0;
+        // SAFETY: A generation-checked foreground task owns the retained window.
+        // Setters run after the notification and outside GPUI update borrows.
+        unsafe {
+            let style: usize = msg_send![window, styleMask];
+            ensure!(
+                style & NATIVE == 0 && !self.0.inbox.native_transition.get(),
+                "native fullscreen interrupted frame reconciliation"
+            );
+            let frame: Bounds<f64> = msg_send![window, frame];
+            self.constrain_native_exit_frame(frame)?;
+        }
+        Ok(())
+    }
+
+    fn constrain_native_exit_frame(
+        &self,
+        frame: Bounds<f64>,
+    ) -> anyhow::Result<Bounds<f64>> {
+        let window = self.0.window.0;
+        // SAFETY: Called only on the foreground executor with a live retained
+        // window, outside GPUI update borrows. AppKit chooses its own constraint.
+        unsafe {
+            let screen: *mut Object = msg_send![window, screen];
+            ensure!(!screen.is_null(), "native exit display is unavailable");
+            let constrained: Bounds<f64> =
+                msg_send![window, constrainFrameRect: frame toScreen: screen];
+            if constrained != frame {
+                let _: () =
+                    msg_send![window, setFrame: constrained display: YES];
+                let actual: Bounds<f64> = msg_send![window, frame];
+                ensure!(
+                    actual == constrained,
+                    "native exit frame did not reach constrained bounds"
+                );
+            }
+            Ok(constrained)
+        }
     }
 
     pub fn cancel(&self, generation: u64) {
@@ -289,7 +429,11 @@ impl Adapter {
             .detach();
     }
     fn emit(&self, event: Event) {
-        self.0.inbox.events.borrow_mut().push_back(event);
+        self.0
+            .inbox
+            .events
+            .borrow_mut()
+            .push_back(QueuedEvent::Publish(event));
     }
     fn valid(&self, operation: Operation) -> bool {
         self.0.inbox.gate.valid(operation)
@@ -302,9 +446,6 @@ impl Adapter {
     pub fn begin(&self, operation: Operation) {
         if !self.valid(operation) {
             return;
-        }
-        if fullscreen_trace_enabled() {
-            eprintln!("FULLSCREEN_TRACE begin {operation:?}");
         }
         let result = match operation.effect {
             Effect::EnterNonNative => self.enter(),
@@ -373,13 +514,6 @@ impl Adapter {
             let content: Bounds<f64> =
                 msg_send![window, contentRectForFrameRect: frame];
             let responder: *mut Object = msg_send![window, firstResponder];
-            if fullscreen_trace_enabled() {
-                eprintln!(
-                    "FULLSCREEN_TRACE save frame={} content={} style={style} display={display:?}",
-                    native_rect(frame),
-                    native_rect(content),
-                );
-            }
             self.0.saved.replace(Some(Saved {
                 content,
                 display,
@@ -488,47 +622,10 @@ impl Adapter {
                 current.map(|display| display.id),
             )
             .context("no display available for fullscreen restoration")?;
-            if fullscreen_trace_enabled() {
-                let before: Bounds<f64> = msg_send![window, frame];
-                eprintln!(
-                    "FULLSCREEN_TRACE restore saved_content={} saved_display={:?} current={current:?} style={style} saved_style={} converted={} requested={} before={}",
-                    native_rect(state.content),
-                    state.display,
-                    state.style,
-                    native_rect(saved_frame),
-                    native_rect(frame),
-                    native_rect(before),
-                );
-            }
             let _: () = msg_send![window, setFrame: frame display: YES];
             let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null_mut::<Object>()];
             restore_responder(window, &state.responder)?;
             let actual: Bounds<f64> = msg_send![window, frame];
-            if fullscreen_trace_enabled() {
-                eprintln!(
-                    "FULLSCREEN_TRACE restored actual={}",
-                    native_rect(actual)
-                );
-                if actual != frame {
-                    let adapter = self.clone();
-                    self.0
-                        .executor
-                        .spawn(async move {
-                            // Diagnostic observation only; never retry or complete restoration.
-                            gpui::Timer::after(
-                                std::time::Duration::from_millis(25),
-                            )
-                            .await;
-                            if !adapter.0.inbox.gate.closing() {
-                                eprintln!(
-                                    "FULLSCREEN_TRACE later {:?}",
-                                    adapter.inspect()
-                                );
-                            }
-                        })
-                        .detach();
-                }
-            }
             ensure!(
                 actual == frame,
                 "window restoration did not reach saved bounds"
@@ -562,11 +659,6 @@ impl Adapter {
             ))
         }
     }
-}
-
-// Temporary PR #60 diagnostics, restricted to the fullscreen smoke.
-fn fullscreen_trace_enabled() -> bool {
-    std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
 }
 
 fn native_rect(rect: Bounds<f64>) -> String {
@@ -708,10 +800,16 @@ fn enqueue(observer: &Object, event: Option<NativeEvent>) {
                     event,
                     NativeEvent::WillEnter | NativeEvent::WillExit
                 ));
-                if inbox.native_transition.get() {
-                    inbox.gate.native_will();
-                }
-                inbox.events.borrow_mut().push_back(Event::Native(event));
+                inbox.gate.native_event(inbox.native_transition.get());
+                let queued = if matches!(event, NativeEvent::DidExit) {
+                    QueuedEvent::NativeExit {
+                        generation: inbox.gate.generation(),
+                        native_generation: inbox.gate.native_generation(),
+                    }
+                } else {
+                    QueuedEvent::Publish(Event::Native(event))
+                };
+                inbox.events.borrow_mut().push_back(queued);
             } else {
                 inbox.screen_changed.set(true);
             }

@@ -187,12 +187,17 @@ If a third toggle requests non-native mode, it exits native mode before entering
 non-native mode. Only one platform operation runs at a time.
 
 Every native and non-native entry or exit receives a five-second deadline from
-an injectable clock. On macOS, the matching did-enter or did-exit notification
-completes a native transition; the style-mask bit is only a consistency check.
-On Linux, reaching the expected GPUI state completes it. An immediate platform
-error or deadline expiry resets the desired mode to the latest recoverable mode
-and reports one window status error. A later OS state change after a timeout is
-adopted as an external change rather than replaying the failed request.
+an injectable clock. On macOS, the matching did-enter notification completes
+native entry. Native exit completes after did-exit and a foreground frame
+reconciliation through AppKit's `constrainFrameRect:toScreen:`. This prevents
+a queued non-native entry from saving an offscreen native-exit frame that
+AppKit would later constrain. The reconciliation is generation checked and
+leaves existing non-native saved recovery state to its own exit sequence. The
+style-mask bit is only a consistency check. On Linux, reaching the expected
+GPUI state completes it. An immediate platform error or deadline expiry resets
+the desired mode to the latest recoverable mode and reports one window status
+error. A later OS state change after a timeout is adopted as an external
+change rather than replaying the failed request.
 
 If a native will-enter event arrives while non-native saved state exists, that
 saved state and its presentation leases take precedence and must never be
@@ -675,12 +680,39 @@ fullscreen-cache checks strict. Windowed and Quit metadata may retain that
 parent-relative origin. Correcting GPUI's coordinate reporting is outside this
 delivery; durable restoration remains deferred.
 
-This host cannot compile or run AppKit. macOS CI must validate the adapter and
-native smoke; local reducer, operation-gate, display-recovery, and lease tests
-do not substitute for native execution. Physical display disconnects, Stage
-Manager, Separate Spaces, and Dock/menu-bar behavior on multiple displays remain
-manual checks. Objective-C exceptions are outside the pinned binding's error
-handling, as described in the contract above.
+The Linux host could not compile or run AppKit. macOS CI must validate the
+adapter and native smoke; local reducer, operation-gate, display-recovery, and
+lease tests do not substitute for native execution. Physical display
+disconnects, Stage Manager, Separate Spaces, and Dock/menu-bar behavior on
+multiple displays remain manual checks. Objective-C exceptions are outside the
+pinned binding's error handling, as described in the contract above.
+
+### macOS restoration diagnosis
+
+Diagnostic revision `9caab27` reproduced the macOS 14 CI failure after rapid
+native entry/exit followed by non-native entry. The adapter saved AppKit frame
+`556,832,808,584` on a `1920x1080` display. Exit requested that exact frame, but
+AppKit constrained it to `556,471,808,584`; it remained there in a later sample.
+The first non-native exit in that run restored its valid saved frame exactly.
+This evidence ruled out an immediate comparison alone as the failure's cause.
+
+Native exit now reconciles AppKit's constrained window frame before releasing
+queued operations. Non-native restoration remains exact and retains recovery
+ownership on failure. The smoke's final windowed-size check permits the same
+native Space origin changes as its earlier native restoration check; its
+non-native origin checks and exact Quit capture comparison remain unchanged.
+The smoke exercises the shared AppKit constraint/setter with an offscreen frame
+on newer hosts too. Actual native notification ordering remains covered by the
+full native transition sequence and macOS 14 CI.
+
+Local macOS 27 arm64 validation of the correction passed 29 focused fullscreen
+Rust tests, 54 script tests, `check`, `test`, and `verify`. The final fullscreen
+runner passed three consecutive times with both engines and isolated frame
+probes. Menu and Quit smokes passed. The input smoke passed on an unchanged retry
+after one event-7 timeout. The native-frame probe failed at its reconciliation
+check when frame adjustment was temporarily disabled, then passed after restore.
+The macOS 14 CI result remains the validation of the original native sequence;
+physical display and window-manager coverage limits above still apply.
 
 ## Alternatives considered
 
@@ -723,8 +755,9 @@ and permits exact restoration of the saved mask on exit.
 - The explicit non-native command is macOS-only; the config remains portable.
 - Any fullscreen toggle exits whichever mode is active.
 - Rapid toggles update desired state and never overlap platform operations.
-- macOS native completion comes from exact-window did notifications, not the
-  early style-mask change; later operations wait one more main-loop turn.
+- macOS native completion follows exact-window did notifications and native-exit
+  frame reconciliation, not the early style-mask change; later operations wait
+  one more main-loop turn.
 - Non-native fullscreen auto-hides the menu bar and Dock and fills
   `NSScreen.frame`.
 - A non-native window exits fullscreen when its display changes.

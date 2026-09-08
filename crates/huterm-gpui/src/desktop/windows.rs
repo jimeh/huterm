@@ -1620,6 +1620,12 @@ impl WorkspaceView {
                     Event::Native(event) => {
                         self.fullscreen.native_event(event, now);
                     }
+                    Event::NativeExitFailed(error) => {
+                        self.fullscreen.recover();
+                        self.status =
+                            Some(format!("Fullscreen failed: {error}"));
+                        cx.notify();
+                    }
                     Event::State(recovery, chrome) => {
                         self.fullscreen.non_native_state(recovery, chrome);
                     }

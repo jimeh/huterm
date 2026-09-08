@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRestored, assertTimeout, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
+import { assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -22,6 +22,15 @@ describe("fullscreen evidence checker", () => {
     for (const field of ["style", "content", "responder", "options"]) {
       expect(() => assertRestored(before, { ...before, [`w0.${field}`]: "wrong" }, true)).toThrow();
     }
+  });
+  test("Quit bounds allow native Space repositioning but reject lost windowed size", () => {
+    const original = "556,248,808,584";
+    const moved = "556,25,808,584";
+    expect(() => assertWindowedBounds(original, original)).not.toThrow();
+    expect(() => assertWindowedBounds(original, moved)).toThrow();
+    expect(() => assertWindowedBounds(original, moved, true)).not.toThrow();
+    expect(() => assertWindowedBounds(original, "0,0,1920,1080", true)).toThrow();
+    expect(() => assertWindowedBounds(original, undefined, true)).toThrow();
   });
   test("PTY evidence follows the grid published with its output", () => {
     const state = { "w0.grid": "106,47", "w0.text": "ACK:native:47 106" };

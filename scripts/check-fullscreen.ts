@@ -1,5 +1,5 @@
 /** Production fullscreen commands, native window observations, and PTY evidence. */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -22,6 +22,12 @@ export function assertRestored(before: State, after: State, native: boolean, all
     }
   }
   if (after["w0.mode"] !== "Windowed" || after["w0.pending"] !== "false") throw new Error("fullscreen did not finish exiting");
+}
+
+export function assertWindowedBounds(expected: string | undefined, actual: string | undefined, allowReposition = false): void {
+  if (!expected || !actual) throw new Error("missing windowed bounds evidence");
+  const comparable = (value: string) => allowReposition ? value.split(",").slice(2).join(",") : value;
+  if (comparable(expected) !== comparable(actual)) throw new Error(`Fullscreen lost windowed bounds: ${actual} != ${expected}`);
 }
 
 export function nativeFrameIsUsable(state: State): boolean {
@@ -68,7 +74,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
   }
 }
 
-async function check(executable: string, engine: string, noWm: boolean): Promise<void> {
+async function check(executable: string, engine: string, noWm: boolean, frameProbe = false): Promise<void> {
   const macos = process.platform === "darwin";
   const directory = await mkdtemp(join(tmpdir(), "huterm-fullscreen-"));
   const shell = join(directory, "shell");
@@ -87,7 +93,9 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
   const state = async (): Promise<State> => parseState(await readFile(join(directory, "state"), "utf8"));
   const command = async (text: string): Promise<string> => {
     const index = sequence++;
-    await writeFile(join(directory, `command-${index}`), text);
+    const filename = join(directory, `command-${index}`);
+    await writeFile(`${filename}.tmp`, text);
+    await rename(`${filename}.tmp`, filename);
     await waitFor(() => Bun.file(join(directory, `result-${index}`)).exists(), `command ${text}`);
     return readFile(join(directory, `result-${index}`), "utf8");
   };
@@ -161,7 +169,17 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
     }
     const original = await stable("Windowed");
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
-    if (noWm) {
+    if (frameProbe) {
+      const expected = await command("probe-native-exit");
+      if (expected.startsWith("error")) throw new Error(expected);
+      await waitFor(async () => {
+        const current = await state();
+        return current["w0.mode"] === "Windowed" && current["w0.pending"] === "false"
+          && current["w0.frame"] === expected && nativeFrameIsUsable(current)
+          && current["w0.restore"] === current["w0.window_bounds"];
+      }, "offscreen native exit reconciliation");
+      console.log(`FULLSCREEN_SMOKE ${engine} offscreen-native-frame-reconciled`);
+    } else if (noWm) {
       run(["xdotool", "key", "F11"]);
       await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "ignored EWMH timeout");
       await Bun.sleep(100);
@@ -236,16 +254,16 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
       console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
-    if (macos && engine === "alacritty") {
+    if (macos && engine === "alacritty" && !frameProbe) {
       await accepted("0 toggle_fullscreen");
       const released = await stable("Windowed");
       if (released["w0.options"] !== original["w0.options"]) throw new Error("final non-native lease was not released");
     }
-    if ((await state())["w0.mode"] === "Windowed" && !noWm) {
+    if ((await state())["w0.mode"] === "Windowed" && !noWm && !frameProbe) {
       await accepted("0 toggle_fullscreen"); await stable("Native");
     }
     const saved = (await state())["w0.restore"];
-    if (macos && saved !== original["w0.restore"]) throw new Error(`Fullscreen lost original windowed bounds: ${saved} != ${original["w0.restore"]}`);
+    if (macos) assertWindowedBounds(original["w0.restore"], saved, true);
     await accepted("0 quit");
     await waitFor(async () => app.exitCode !== null || (await state())["w0.confirming"] === "true", "Quit assessment");
     if (app.exitCode === null) await accepted("0 confirm_close");
@@ -281,6 +299,9 @@ if (import.meta.main) {
       for (const engine of ["alacritty", "ghostty"]) await check(executable, engine, false);
     } finally { wm.kill(); await wm.exited; process.stderr.write(await new Response(wm.stderr).text()); }
   } else if (process.platform === "darwin") {
-    for (const engine of ["alacritty", "ghostty"]) await check(executable, engine, false);
+    for (const engine of ["alacritty", "ghostty"]) {
+      await check(executable, engine, false);
+      await check(executable, engine, false, true);
+    }
   } else throw new Error("fullscreen smoke requires macOS or X11 Linux");
 }

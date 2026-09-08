@@ -49,6 +49,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     let result = if let Some(event) = native {
                         super::input_smoke::post_event(event)
                             .map(|()| "posted".to_owned())
+                    } else if command == "probe-native-exit" {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| adapter.probe_native_exit())
                     } else {
                         cx.update(|cx| execute(cx, &command))
                             .and_then(std::convert::identity)
@@ -69,6 +73,23 @@ pub(crate) fn run() -> anyhow::Result<()> {
         })
         .detach();
     })
+}
+
+#[cfg(target_os = "macos")]
+fn probe_adapter(
+    cx: &mut App,
+) -> anyhow::Result<crate::native_fullscreen::Adapter> {
+    let handle = cx.windows().first().copied().context("probe window")?;
+    handle.update(cx, |root, _, cx| {
+        let view = root
+            .downcast::<WorkspaceView>()
+            .ok()
+            .context("workspace root")?;
+        view.read(cx)
+            .native_fullscreen
+            .clone()
+            .context("native fullscreen adapter")
+    })?
 }
 
 fn publish(directory: &Path, name: &str, text: &str) {
@@ -156,6 +177,7 @@ fn read_state(cx: &mut App) -> String {
             let Ok(root) = root.downcast::<WorkspaceView>() else { return; };
             let view = root.read(cx);
             writeln!(output, "w{index}.default={:?}", view.config.window.macos_fullscreen_mode).unwrap();
+            writeln!(output, "w{index}.window_bounds={}", bounds(window.window_bounds())).unwrap();
             writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.status={}\nw{index}.confirming={}",
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),

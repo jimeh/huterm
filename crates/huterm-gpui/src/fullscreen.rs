@@ -17,6 +17,7 @@ pub(crate) mod native_policy {
     #[derive(Default)]
     pub(crate) struct OperationGate {
         generation: Cell<u64>,
+        native_generation: Cell<u64>,
         closing: Cell<bool>,
         operation: Cell<Option<Operation>>,
     }
@@ -31,9 +32,14 @@ pub(crate) mod native_policy {
             self.generation.set(operation.generation);
             self.operation.set(Some(operation));
         }
+        pub fn generation(&self) -> u64 {
+            self.generation.get()
+        }
+        pub fn is_current(&self, generation: u64) -> bool {
+            !self.closing.get() && self.generation.get() == generation
+        }
         pub fn valid(&self, operation: Operation) -> bool {
-            !self.closing.get()
-                && self.generation.get() == operation.generation
+            self.is_current(operation.generation)
                 && self.operation.get().is_some_and(|current| {
                     current.generation == operation.generation
                 })
@@ -47,12 +53,21 @@ pub(crate) mod native_policy {
             self.generation.set(self.generation.get().max(generation));
             self.operation.set(None);
         }
-        pub fn native_will(&self) {
-            self.cancel(self.generation.get() + 1);
+        pub fn native_event(&self, will: bool) {
+            self.native_generation.set(self.native_generation.get() + 1);
+            if will {
+                self.cancel(self.generation.get() + 1);
+            }
+        }
+        pub fn native_generation(&self) -> u64 {
+            self.native_generation.get()
+        }
+        pub fn native_is_current(&self, generation: u64) -> bool {
+            !self.closing.get() && self.native_generation.get() == generation
         }
         pub fn close(&self) {
             self.closing.set(true);
-            self.native_will();
+            self.native_event(true);
         }
         pub fn closing(&self) -> bool {
             self.closing.get()
@@ -275,7 +290,7 @@ pub(crate) mod native_policy {
             let gate = OperationGate::default();
             gate.reserve(op);
             assert!(gate.valid(op));
-            gate.native_will();
+            gate.native_event(true);
             assert!(!gate.valid(op));
             gate.reserve(op);
             assert!(!gate.valid(op));
@@ -311,6 +326,52 @@ pub(crate) mod native_policy {
             gate.reserve(late);
             assert!(!gate.valid(late));
         }
+        #[test]
+        fn native_exit_reconciliation_is_invalidated_by_new_work_and_close() {
+            let gate = OperationGate::default();
+            gate.native_event(true);
+            let exit = gate.generation();
+            assert!(gate.is_current(exit));
+            gate.native_event(true);
+            assert!(!gate.is_current(exit));
+            let next_exit = gate.generation();
+            gate.cancel(next_exit + 1);
+            assert!(!gate.is_current(next_exit));
+            let canceled = gate.generation();
+            gate.reserve(Operation {
+                generation: canceled + 1,
+                effect: Effect::EnterNonNative,
+                target: super::super::Mode::NonNative,
+                deadline: std::time::Instant::now(),
+            });
+            assert!(!gate.is_current(canceled));
+            let closing = gate.generation();
+            gate.close();
+            assert!(!gate.is_current(closing));
+            assert!(!gate.is_current(gate.generation()));
+        }
+
+        #[test]
+        fn timeout_cancels_frame_mutation_but_preserves_late_native_observation()
+         {
+            let gate = OperationGate::default();
+            gate.native_event(true);
+            gate.native_event(false);
+            let operation = gate.generation();
+            let notification = gate.native_generation();
+            gate.cancel(operation + 1);
+            assert!(!gate.is_current(operation));
+            assert!(gate.native_is_current(notification));
+            gate.native_event(true);
+            assert!(!gate.native_is_current(notification));
+            let next = gate.native_generation();
+            gate.native_event(false);
+            assert!(!gate.native_is_current(next));
+            let closing = gate.native_generation();
+            gate.close();
+            assert!(!gate.native_is_current(closing));
+        }
+
         fn rect(x: f64, y: f64, w: f64, h: f64) -> Bounds<f64> {
             Bounds::new(point(x, y), size(w, h))
         }
@@ -654,10 +715,9 @@ impl FullscreenController {
             if self.recovery {
                 self.desired = Mode::Windowed;
             }
-            if self
-                .pending
-                .is_none_or(|op| op.effect != Effect::ToggleNative)
-            {
+            if self.pending.is_none_or(|op| {
+                op.effect != Effect::ToggleNative || op.target != target
+            }) {
                 self.generation += 1;
                 if !self.recovery {
                     self.desired = target;
@@ -796,6 +856,27 @@ mod tests {
             MacosFullscreenMode::Native,
             macos,
         )
+    }
+
+    #[test]
+    fn newer_native_entry_supersedes_an_exit_awaiting_frame_reconciliation() {
+        let mut c = controller(true);
+        let now = Instant::now();
+        c.native_event(NativeEvent::WillEnter, now);
+        c.native_event(NativeEvent::DidEnter, now);
+        c.toggle(ToggleIntent::Native).unwrap();
+        assert!(c.next(now).is_none());
+        let exit = c.next(now).unwrap();
+        c.native_event(NativeEvent::WillExit, now);
+        // The adapter still holds DidExit while foreground reconciliation waits.
+        c.native_event(NativeEvent::WillEnter, now);
+        c.native_event(NativeEvent::DidEnter, now);
+        assert!(!c.is_pending());
+        assert_eq!(c.observed, Mode::Native);
+        c.complete(exit.generation, false);
+        assert_eq!(c.observed, Mode::Native);
+        assert!(c.next(now).is_none());
+        assert!(c.next(now).is_none());
     }
 
     #[test]

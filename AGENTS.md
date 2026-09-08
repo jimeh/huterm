@@ -516,3 +516,16 @@ native placement on physical displays. A late native screen-change notification
 can arrive during the next non-native entry. Record it without canceling from
 the callback; main-thread display identity and frame validation distinguishes
 notification noise from a real display change.
+
+AppKit 14 can deliver native did-exit with an offscreen window frame. A later
+`titled` frame setter constrains that frame, so saving it for non-native entry
+makes exact restoration impossible. Reconcile native exit through AppKit's
+`constrainFrameRect:toScreen:` on a generation-checked foreground turn before
+publishing DidExit. Skip this adjustment when non-native recovery already owns
+saved state. Never clamp a non-native saved target to disguise a failed restore.
+Fullscreen smoke commands must use temporary files and atomic rename. The app
+polls command paths while the writer runs; publishing the final path before the
+write completes can consume an empty command and report a spurious window-index
+error. Native notification freshness must survive operation timeout while still
+rejecting newer native events and close; keep its epoch separate from the
+mutation generation.
