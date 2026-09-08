@@ -430,7 +430,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/build-exec.sh"
+run = "bash -n scripts/build-exec.sh && bash -n scripts/zig-sdk-bin/xcrun"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"

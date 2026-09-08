@@ -476,3 +476,11 @@ keep each platform's smokes serial within their job.
 Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
 with the repository ruleset. These gates require every validation job and disable
 matrix fail-fast so each reports its own failure instead of cancelling its sibling.
+
+macOS SDK 26.5 can expose only arm64e in libSystem.tbd. Zig 0.15.2 cannot
+resolve arm64 system symbols against those stubs, even with Xcode 26 selected.
+The build wrapper selects installed stubs containing arm64-macos, or accepts
+HUTERM_ZIG_SDKROOT. Its scoped xcrun shim redirects only the SDK path query;
+Xcode and Metal tools remain selected normally. SDKROOT and Zig's --sysroot
+alone do not fix build-runner linking. Keep diagnostic Zig caches outside the
+verified native source tree.

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Zig 0.15.2 queries this exact path instead of honoring SDKROOT.
+set -euo pipefail
+if [ "$#" -eq 3 ] && [ "$1" = --sdk ] && [ "$2" = macosx ] && [ "$3" = --show-sdk-path ]; then
+  printf '%s\n' "$HUTERM_ZIG_SDKROOT"
+else
+  exec /usr/bin/xcrun "$@"
+fi
