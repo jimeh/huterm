@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRestored, assertTimeout, parseState } from "./check-fullscreen";
+import { assertRestored, assertTimeout, parseState, ptyMatchesGrid } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -22,5 +22,11 @@ describe("fullscreen evidence checker", () => {
     for (const field of ["style", "content", "responder", "options"]) {
       expect(() => assertRestored(before, { ...before, [`w0.${field}`]: "wrong" }, true)).toThrow();
     }
+  });
+  test("PTY evidence follows the grid published with its output", () => {
+    const state = { "w0.grid": "106,47", "w0.text": "ACK:native:47 106" };
+    expect(ptyMatchesGrid(state, "native")).toBe(true);
+    expect(ptyMatchesGrid({ ...state, "w0.grid": "100,32" }, "native")).toBe(false);
+    expect(ptyMatchesGrid(state, "restored")).toBe(false);
   });
 });

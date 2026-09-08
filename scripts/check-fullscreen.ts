@@ -29,6 +29,12 @@ export function assertTimeout(state: State, diagnostics: string): void {
   if (diagnostics.split("Fullscreen transition timed out").length - 1 !== 1) throw new Error("expected exactly one timeout diagnostic");
 }
 
+export function ptyMatchesGrid(state: State, word: string): boolean {
+  const [columns, rows] = state["w0.grid"]?.split(",") ?? [];
+  if (!columns || !rows) return false;
+  return new RegExp(`ACK:${word}:\\s*${rows}\\s+${columns}`).test(state["w0.text"] ?? "");
+}
+
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
   if (result.exitCode !== 0) throw new Error(`${args.join(" ")}: ${result.stderr.toString()}`);
@@ -73,6 +79,20 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
     }, `${index} ${mode}`);
     return state();
   };
+  const waitForRestored = async (before: State, native: boolean): Promise<State> => {
+    await waitFor(async () => {
+      const current = await state();
+      try {
+        assertRestored(before, current, native);
+        return true;
+      } catch {
+        return false;
+      }
+    }, "restored fullscreen geometry");
+    const current = await state();
+    assertRestored(before, current, native);
+    return current;
+  };
   const accepted = async (text: string) => {
     const result = await command(text);
     if (result.includes("Err") || result.startsWith("error")) throw new Error(`${text}: ${result}`);
@@ -87,10 +107,8 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
     }
   };
   const pty = async (word: string) => {
-    const current = await state();
-    const [columns, rows] = current["w0.grid"]!.split(",");
     await input(word);
-    await waitFor(async () => new RegExp(`ACK:${word}:\\s*${rows}\\s+${columns}`).test((await state())["w0.text"] ?? ""), `PTY ${word} ${rows}x${columns}`);
+    await waitFor(async () => ptyMatchesGrid(await state(), word), `PTY ${word}`);
   };
   const closeWindow = async (index: number, cancelFirst = false) => {
     const before = await state();
@@ -136,7 +154,8 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
       }
       await pty("native");
       await accepted("0 toggle_native_fullscreen");
-      assertRestored(original, await stable("Windowed"), macos);
+      await stable("Windowed");
+      await waitForRestored(original, macos);
       if (!macos) {
         const restoredGeometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
         if (restoredGeometry !== originalGeometry) throw new Error(`X11 geometry did not restore: ${originalGeometry} -> ${restoredGeometry}`);
@@ -161,7 +180,8 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
         await accepted(`native\t5\t${(1 << 18) | (1 << 17)}\tg\tg`);
         await waitFor(async () => (await state())["w0.tabs"] === "3", "real fullscreen key context");
         await accepted("0 toggle_native_fullscreen");
-        assertRestored(beforeSimple, await stable("Windowed"), true);
+        await stable("Windowed");
+        await waitForRestored(beforeSimple, true);
         await accepted(`native\t5\t${(1 << 18) | (1 << 17)}\tg\tg`);
         await Bun.sleep(100);
         if ((await state())["w0.tabs"] !== "3") throw new Error("fullscreen binding remained active after exit");

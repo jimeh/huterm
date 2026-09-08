@@ -508,3 +508,6 @@ Map its `HandleError` explicitly into anyhow; it does not implement
 Guard nil retained handles before invoking `objc` message macros. Adapter drop
 moves native resources into deferred cleanup and leaves nil placeholders behind;
 the Rust message dispatch path can dereference nil before Objective-C receives it.
+Fullscreen completion can precede the final frame and grid publication on macOS
+and X11. Smokes must wait for restored geometry and compare PTY dimensions with
+the grid published in the same snapshot.
