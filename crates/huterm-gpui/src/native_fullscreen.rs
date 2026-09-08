@@ -1,4 +1,4 @@
-//! AppKit mechanics for upstream GPUI's "simple fullscreen", called non-native
+//! `AppKit` mechanics for upstream GPUI's "simple fullscreen", called non-native
 //! fullscreen by Huterm. Replace these mechanics after a published GPUI upgrade
 //! passes docs/plans/fullscreen-modes.md, without keeping two lease owners.
 // Basic saved-frame/style and app-wide lease design follows GPUI at

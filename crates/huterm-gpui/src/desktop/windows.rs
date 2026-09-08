@@ -1618,13 +1618,13 @@ impl WorkspaceView {
                 use crate::native_fullscreen::Event;
                 match event {
                     Event::Native(event) => {
-                        self.fullscreen.native_event(event, now)
+                        self.fullscreen.native_event(event, now);
                     }
                     Event::State(recovery, chrome) => {
-                        self.fullscreen.non_native_state(recovery, chrome)
+                        self.fullscreen.non_native_state(recovery, chrome);
                     }
                     Event::Complete(generation, recovery) => {
-                        self.fullscreen.complete(generation, recovery)
+                        self.fullscreen.complete(generation, recovery);
                     }
                     Event::Failed(generation, error) => {
                         if self.fullscreen.fail(generation) {
@@ -1641,13 +1641,15 @@ impl WorkspaceView {
         }
         self.fullscreen
             .sample(window.is_fullscreen(), window.window_bounds());
-        if let Some(_generation) = self.fullscreen.expired(now) {
+        if let Some(generation) = self.fullscreen.expired(now) {
+            #[cfg(not(target_os = "macos"))]
+            let _ = generation;
             self.status = Some("Fullscreen transition timed out".to_owned());
             eprintln!("Fullscreen transition timed out");
             cx.notify();
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &self.native_fullscreen {
-                adapter.cancel(_generation);
+                adapter.cancel(generation);
             }
         }
         self.bounds = self.fullscreen.restorable_bounds();
