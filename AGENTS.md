@@ -57,8 +57,31 @@ Run `mise tasks` to discover the full task set.
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
-- `mise run package:macos` builds and verifies the Apple Silicon `Huterm.app`.
+- `mise run package:macos` builds and verifies the universal `Huterm.app`.
 - `mise run format` writes Rust formatting and refreshes action pins.
+
+Universal macOS packaging combines both architecture executables before signing.
+Verify each slice with a separate `lipo -verify_arch` call: the macOS 27 system
+tool rejects multiple requested architectures, while Xcode 26's tool accepts
+them. Cross-compilation and Rosetta tests do not replace native Intel UI QA.
+Release signing must finish before notarization. Submit a temporary ZIP, staple
+the accepted ticket to the app, verify without re-signing, and only then create
+the public ZIP. Re-signing after stapling invalidates the notarized artifact.
+Release checks must cover every Mach-O plus the app's exact Developer ID team,
+Hardened Runtime flag, secure timestamp, and approved entitlements.
+
+Release Please requires a scalar `package.version` in the root and every member
+manifest. Keep internal exact versions centralized in `workspace.dependencies`
+and annotate those lines with `# x-release-please-version`; the generic extra
+Cargo.toml updater advances them with the package versions. The release workflow
+must receive Release Please's exact SHA, tag, and version outputs, validate the
+matching draft, and publish only after remote asset names, sizes, and digests
+match. Keep the final release draft on every earlier failure.
+
+The macOS Info.plist carries the full protected-resource description set for
+Huterm and its child processes. The signature has only the seven established
+terminal-host entitlements. Do not add JIT, library-validation bypass, DYLD,
+application-group, or keychain-group exceptions without a demonstrated need.
 
 Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
 or require changes to `~/.rustfmt.toml`.

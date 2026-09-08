@@ -272,14 +272,11 @@ bun scripts/check-scroll-benchmark.ts "$report"
 '''
 
 [tasks."package:macos"]
-description = "Build and verify the Apple Silicon Huterm.app bundle"
+description = "Build and verify the universal macOS Huterm.app bundle"
 run = '''
+set -eu
 if [ "$(uname -s)" != Darwin ]; then
-  echo "macOS packaging requires an Apple Silicon macOS host" >&2
-  exit 1
-fi
-if [ "$(uname -m)" != arm64 ]; then
-  echo "Huterm.app packaging currently supports Apple Silicon only" >&2
+  echo "macOS packaging requires a macOS host" >&2
   exit 1
 fi
 cargo packager --release --formats app
@@ -324,15 +321,10 @@ if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1
 fi
-architecture="$(file "$executable")"
-case "$architecture" in
-  *arm64*) ;;
-  *)
-    echo "package verification failed: expected arm64 executable, got: $architecture" >&2
-    exit 1
-    ;;
-esac
-echo "verified $bundle ($identifier, version $version, arm64)"
+lipo "$executable" -verify_arch arm64
+lipo "$executable" -verify_arch x86_64
+bun scripts/release-macos.ts verify-package-config "$bundle"
+echo "verified $bundle ($identifier, version $version, arm64 + x86_64)"
 '''
 
 [tasks.license]
@@ -405,8 +397,24 @@ run = "HUTERM_BENCH_ENGINE=ghostty mise run bench:renderer"
 
 [tasks."package:build:macos"]
 hide = true
-depends = ["ghostty:prepare"]
-run = "bash scripts/build-exec.sh cargo build --release --locked --target aarch64-apple-darwin -p huterm"
+depends = ["ghostty:prepare", "package:targets:macos"]
+run = '''
+set -eu
+bash scripts/build-exec.sh cargo build --release --locked --target aarch64-apple-darwin -p huterm
+bash scripts/build-exec.sh cargo build --release --locked --target x86_64-apple-darwin -p huterm
+mkdir -p target/universal-apple-darwin/release
+lipo -create target/aarch64-apple-darwin/release/huterm target/x86_64-apple-darwin/release/huterm -output target/universal-apple-darwin/release/huterm
+lipo target/universal-apple-darwin/release/huterm -verify_arch arm64
+lipo target/universal-apple-darwin/release/huterm -verify_arch x86_64
+'''
+
+[tasks."package:targets:macos"]
+description = "Install both Rust targets for universal macOS packaging"
+run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin"
+
+[tasks."release:macos"]
+description = "Build, sign, notarize, and package the universal macOS release"
+run = "bun scripts/release-macos.ts build"
 
 [tasks."build:exec"]
 description = "Run a command with a compatible macOS SDK"
