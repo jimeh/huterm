@@ -8,7 +8,7 @@ use crate::config::MacosFullscreenMode;
 
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod native_policy {
-    use super::{Effect, Operation};
+    use super::Operation;
     use gpui::{Bounds, point, size};
     use std::cell::Cell;
     const DOCK: usize = 0b0011;
@@ -239,6 +239,7 @@ pub(crate) mod native_policy {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::fullscreen::Effect;
         #[test]
         fn individual_leases_release_once_across_close_rollback_and_ordinary_windows()
          {

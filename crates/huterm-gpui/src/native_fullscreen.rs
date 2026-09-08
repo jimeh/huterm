@@ -303,6 +303,9 @@ impl Adapter {
         if !self.valid(operation) {
             return;
         }
+        if fullscreen_trace_enabled() {
+            eprintln!("FULLSCREEN_TRACE begin {operation:?}");
+        }
         let result = match operation.effect {
             Effect::EnterNonNative => self.enter(),
             Effect::ExitNonNative => self.restore_style(),
@@ -370,6 +373,13 @@ impl Adapter {
             let content: Bounds<f64> =
                 msg_send![window, contentRectForFrameRect: frame];
             let responder: *mut Object = msg_send![window, firstResponder];
+            if fullscreen_trace_enabled() {
+                eprintln!(
+                    "FULLSCREEN_TRACE save frame={} content={} style={style} display={display:?}",
+                    native_rect(frame),
+                    native_rect(content),
+                );
+            }
             self.0.saved.replace(Some(Saved {
                 content,
                 display,
@@ -478,10 +488,47 @@ impl Adapter {
                 current.map(|display| display.id),
             )
             .context("no display available for fullscreen restoration")?;
+            if fullscreen_trace_enabled() {
+                let before: Bounds<f64> = msg_send![window, frame];
+                eprintln!(
+                    "FULLSCREEN_TRACE restore saved_content={} saved_display={:?} current={current:?} style={style} saved_style={} converted={} requested={} before={}",
+                    native_rect(state.content),
+                    state.display,
+                    state.style,
+                    native_rect(saved_frame),
+                    native_rect(frame),
+                    native_rect(before),
+                );
+            }
             let _: () = msg_send![window, setFrame: frame display: YES];
             let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null_mut::<Object>()];
             restore_responder(window, &state.responder)?;
             let actual: Bounds<f64> = msg_send![window, frame];
+            if fullscreen_trace_enabled() {
+                eprintln!(
+                    "FULLSCREEN_TRACE restored actual={}",
+                    native_rect(actual)
+                );
+                if actual != frame {
+                    let adapter = self.clone();
+                    self.0
+                        .executor
+                        .spawn(async move {
+                            // Diagnostic observation only; never retry or complete restoration.
+                            gpui::Timer::after(
+                                std::time::Duration::from_millis(25),
+                            )
+                            .await;
+                            if !adapter.0.inbox.gate.closing() {
+                                eprintln!(
+                                    "FULLSCREEN_TRACE later {:?}",
+                                    adapter.inspect()
+                                );
+                            }
+                        })
+                        .detach();
+                }
+            }
             ensure!(
                 actual == frame,
                 "window restoration did not reach saved bounds"
@@ -515,6 +562,11 @@ impl Adapter {
             ))
         }
     }
+}
+
+// Temporary PR #60 diagnostics, restricted to the fullscreen smoke.
+fn fullscreen_trace_enabled() -> bool {
+    std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
 }
 
 fn native_rect(rect: Bounds<f64>) -> String {
