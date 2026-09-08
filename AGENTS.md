@@ -505,3 +505,6 @@ GPUI's inherent `Window::window_handle` returns its own handle; qualify
 `HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.
 Map its `HandleError` explicitly into anyhow; it does not implement
 `std::error::Error` with the current dependency features.
+Guard nil retained handles before invoking `objc` message macros. Adapter drop
+moves native resources into deferred cleanup and leaves nil placeholders behind;
+the Rust message dispatch path can dereference nil before Objective-C receives it.

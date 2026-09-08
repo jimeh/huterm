@@ -52,6 +52,9 @@ thread_local! {
 struct Retained(*mut Object);
 impl Retained {
     unsafe fn retain(object: *mut Object) -> Self {
+        if object.is_null() {
+            return Self(object);
+        }
         // SAFETY: All callers pass a live main-thread AppKit object, or nil.
         unsafe {
             let _: *mut Object = msg_send![object, retain];
@@ -61,6 +64,9 @@ impl Retained {
 }
 impl Drop for Retained {
     fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
         // SAFETY: This !Send wrapper balances its retain on the AppKit thread.
         unsafe {
             let _: () = msg_send![self.0, release];
@@ -684,4 +690,17 @@ extern "C" fn screen_changed(observer: &Object, _: Sel, _: *mut Object) {
 }
 extern "C" fn screen_parameters(observer: &Object, _: Sel, _: *mut Object) {
     enqueue(observer, None);
+}
+
+#[cfg(test)]
+mod retained_tests {
+    use super::Retained;
+
+    #[test]
+    fn nil_retained_object_can_be_retained_and_dropped() {
+        // SAFETY: Nil is an explicitly supported empty retained handle.
+        let retained = unsafe { Retained::retain(std::ptr::null_mut()) };
+        drop(retained);
+        drop(Retained(std::ptr::null_mut()));
+    }
 }
