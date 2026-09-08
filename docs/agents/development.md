@@ -26,7 +26,7 @@ headless smoke test:
 ```sh
 sudo apt-get install --no-install-recommends \
   libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb \
-  xdotool x11-xkb-utils
+  xdotool x11-xkb-utils x11-utils openbox
 ```
 
 These packages are tracked by apt and can be removed with `sudo apt-get remove`
@@ -50,7 +50,9 @@ On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
 Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
 inherited. Linux launches `$SHELL` in the current working directory. The
 fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11`
-toggles native fullscreen. Closing a tab stops its terminal. Closing a shared
+toggles the configured fullscreen mode. Native is the default; macOS also
+supports `window.macos_fullscreen_mode = "non_native"` in the current Space.
+Closing a tab stops its terminal. Closing a shared
 session view detaches it; closing the final view terminates that session and
 its terminals. Explicit detachment preserves sessions without viewers. Huterm
 exits after the last window closes only when no sessions or pending spawns
@@ -121,6 +123,8 @@ process labels and directory inheritance are not implemented yet.
 | Pull request | `mise run license` and `mise run audit:scripts` on Ubuntu 24.04 | Cargo and scripting dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
+| Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
+| macOS fullscreen | `mise run smoke:macos-fullscreen` | AppKit modes, style/focus restoration, retained tabs, presentation leases, and PTY input/resize | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
 | macOS keyboard | `mise run smoke:macos-input` | Native input and composition through both engines | CI or implementer |
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |
@@ -144,6 +148,15 @@ Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
 correctness or native input behavior. Use Apple Silicon CI and the manual
 checklist in the initial plan for macOS evidence.
+
+The fullscreen smoke starts its own Openbox under an isolated Xvfb display.
+It checks `_NET_WM_STATE_FULLSCREEN` with `xprop` from `x11-utils`; bare Xvfb
+and the existing `twm` benchmarks do not prove EWMH fullscreen support. The
+automated Linux coverage is X11-only, matching the enabled GPUI backend.
+macOS CI has one virtual display. Physical multi-display entry, disconnect,
+Space transitions, and Dock/menu-bar behavior still require the manual checks
+in [the fullscreen plan](../plans/fullscreen-modes.md). Record Stage Manager
+and Displays Have Separate Spaces settings with that evidence.
 
 On Linux, the opt-in renderer and scroll benchmarks need `twm`, which ensures
 GPUI's window is exposed and painted under Xvfb:

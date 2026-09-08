@@ -476,6 +476,12 @@ pub mod ids {
     /// Toggles window fullscreen.
     pub const TOGGLE_FULLSCREEN: CommandId =
         CommandId::new("toggle_fullscreen");
+    /// Toggles platform-native fullscreen.
+    pub const TOGGLE_NATIVE_FULLSCREEN: CommandId =
+        CommandId::new("toggle_native_fullscreen");
+    /// Toggles current-Space fullscreen on macOS.
+    pub const TOGGLE_NON_NATIVE_FULLSCREEN: CommandId =
+        CommandId::new("toggle_non_native_fullscreen");
     /// Minimizes the window.
     pub const MINIMIZE: CommandId = CommandId::new("minimize");
     /// Zooms the window.
@@ -629,6 +635,20 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Toggle Fullscreen",
         "Enter or leave fullscreen for this window.",
+        &[],
+    ),
+    spec(
+        ids::TOGGLE_NATIVE_FULLSCREEN,
+        CommandScope::Window,
+        "Toggle Native Fullscreen",
+        "Enter native fullscreen or leave the current fullscreen mode.",
+        &[],
+    ),
+    spec(
+        ids::TOGGLE_NON_NATIVE_FULLSCREEN,
+        CommandScope::Window,
+        "Toggle Non-Native Fullscreen",
+        "Enter current-Space fullscreen on macOS or leave fullscreen.",
         &[],
     ),
     spec(

@@ -46,6 +46,7 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
 mod composition;
 mod keyboard;
+pub(crate) use windows::fullscreen_smoke;
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
@@ -204,6 +205,7 @@ struct TerminalView {
     font_size: Pixels,
     window_config: WindowConfig,
     sidebar_width: Pixels,
+    chrome_hidden: bool,
     theme: Theme,
     status: Option<String>,
     selection: Option<Selection>,
@@ -309,6 +311,7 @@ impl TerminalView {
             font_size: metrics.font_size,
             window_config: config.window,
             sidebar_width: windows::SIDEBAR_WIDTH,
+            chrome_hidden: false,
             theme,
             status: None,
             title: String::new(),
@@ -1126,7 +1129,7 @@ impl TerminalView {
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
         windows::ChromeLayout::with_sidebar(
             window.viewport_size(),
-            terminal_top(window),
+            terminal_top(self.chrome_hidden),
             self.window_config.tab_position,
             self.sidebar_width,
         )
@@ -1694,8 +1697,8 @@ fn titlebar_inset(macos: bool, fullscreen: bool) -> Pixels {
     }
 }
 
-fn terminal_top(window: &Window) -> Pixels {
-    titlebar_inset(cfg!(target_os = "macos"), window.is_fullscreen())
+fn terminal_top(chrome_hidden: bool) -> Pixels {
+    titlebar_inset(cfg!(target_os = "macos"), chrome_hidden)
 }
 
 fn shell_command(

@@ -9,11 +9,15 @@ mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod fullscreen;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod keymap;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod mouse;
+#[cfg(target_os = "macos")]
+mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -59,6 +63,13 @@ pub fn run_native_menu_smoke() {
 #[cfg(target_os = "macos")]
 pub fn run_native_input_smoke() -> anyhow::Result<()> {
     desktop::input_smoke::run()
+}
+
+/// Runs the production desktop with the fullscreen smoke command probe.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
+    desktop::fullscreen_smoke::run()
 }
 
 #[cfg(test)]

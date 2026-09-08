@@ -640,6 +640,43 @@ macOS Space, both modes restore usable focus and PTY geometry, retained tabs use
 the same presentation fact, and unsupported or ignored platform requests fail
 clearly.
 
+## Implementation evidence
+
+Local Linux validation on 2026-09-08 passed:
+
+- Clippy for all GPUI targets with locked dependencies and warnings denied,
+  through `mise run build:exec`;
+- `mise run build:exec -- cargo test -p huterm-protocol -p huterm-gpui --lib`,
+  with 189 GPUI tests and 7 protocol tests;
+- `mise run check:scripts`, including 48 script tests and TypeScript checking;
+- `mise run smoke:linux-fullscreen`, with both engines, actual EWMH fullscreen
+  and restored root geometry, PTY input and resize, unavailable non-native
+  commands, ignored-EWMH timeout, and assessed Quit capture; and
+- `mise run smoke:linux-input`, with exact input bytes for both engines.
+
+`mise run verify` also passed, covering workspace tests, formatting, Clippy,
+documentation, architecture, dependency policy, and workflow checks.
+
+The host lacked Openbox and X11 inspection/input tools. Sudo required a password,
+so these checks used Ubuntu packages extracted into a temporary tools directory,
+without installing system packages. CI installs the same prerequisites through
+apt.
+
+GPUI 0.2.2 stores raw X11 ConfigureNotify origins. Under Openbox, its cached
+windowed origin changed from root-relative to parent-relative after exiting
+fullscreen, while `xdotool` proved exact physical restoration. The Linux smoke
+therefore compares root geometry through X11 and keeps GPUI size, grid, and
+fullscreen-cache checks strict. Windowed and Quit metadata may retain that
+parent-relative origin. Correcting GPUI's coordinate reporting is outside this
+delivery; durable restoration remains deferred.
+
+This host cannot compile or run AppKit. macOS CI must validate the adapter and
+native smoke; local reducer, operation-gate, display-recovery, and lease tests
+do not substitute for native execution. Physical display disconnects, Stage
+Manager, Separate Spaces, and Dock/menu-bar behavior on multiple displays remain
+manual checks. Objective-C exceptions are outside the pinned binding's error
+handling, as described in the contract above.
+
 ## Alternatives considered
 
 **Upgrade to upstream GPUI now.** Upstream already has simple fullscreen, but

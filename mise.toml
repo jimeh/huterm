@@ -465,6 +465,33 @@ bash scripts/build-exec.sh cargo build --workspace --locked
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm
 '''
 
+[tasks."smoke:linux-fullscreen"]
+depends = ["ghostty:prepare"]
+description = "Verify X11 fullscreen, ignored EWMH requests, and PTY restoration"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux fullscreen smoke skipped: X11 requires Linux"
+  exit 0
+fi
+for tool in openbox xprop xdotool setxkbmap; do
+  command -v "$tool" >/dev/null || { echo "Fullscreen smoke requires $tool" >&2; exit 1; }
+done
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example fullscreen_smoke
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
+'''
+
+[tasks."smoke:macos-fullscreen"]
+depends = ["ghostty:prepare"]
+description = "Verify AppKit fullscreen modes, presentation leases, and PTY restoration"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native fullscreen smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example fullscreen_smoke
+bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
+'''
+
 [tasks."smoke:macos-input"]
 depends = ["ghostty:prepare"]
 description = "Verify native AppKit input and composition through both PTY engines"

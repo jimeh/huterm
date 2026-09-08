@@ -484,3 +484,15 @@ HUTERM_ZIG_SDKROOT. Its scoped xcrun shim redirects only the SDK path query;
 Xcode and Metal tools remain selected normally. SDKROOT and Zig's --sysroot
 alone do not fix build-runner linking. Keep diagnostic Zig caches outside the
 verified native source tree.
+
+GPUI 0.2.2's X11 ConfigureNotify handler stores raw event origins, including
+parent-relative coordinates after a reparenting window manager restores a
+window. Fullscreen smokes must compare actual root geometry through xdotool;
+GPUI's windowed and Quit metadata can retain the parent-relative origin even
+when physical restoration is exact. Keep size and fullscreen-cache checks
+strict. Do not interpret Linux WindowBounds::Windowed as absence of fullscreen;
+the X11 backend reports it even while its fullscreen flag is true.
+Fullscreen native observers own a separate event queue and operation gate.
+Invalidate deferred non-native work in the notification callback itself, then
+let the window pump reconcile mode. AppKit setters and presentation cleanup,
+including unexpected view release, run outside GPUI update borrows.

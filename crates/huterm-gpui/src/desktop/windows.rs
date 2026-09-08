@@ -1,9 +1,12 @@
+#[path = "fullscreen_smoke.rs"]
+pub(crate) mod fullscreen_smoke;
 #[cfg(target_os = "macos")]
 #[path = "input_smoke.rs"]
 pub(crate) mod input_smoke;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
+use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
 use crate::native_quit;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
@@ -605,9 +608,32 @@ fn maybe_exit(cx: &mut App) {
 }
 
 fn approved_quit(cx: &mut App) {
-    #[cfg(target_os = "macos")]
-    native_quit::allow_termination();
-    cx.quit();
+    cx.spawn(async move |cx| {
+        #[cfg(target_os = "macos")]
+        let mut adapters = Vec::new();
+        let _ = cx.update(|cx| {
+            for view in cx.global::<Desktop>().windows.clone() {
+                let _ = view.update(cx, |view, _| {
+                    view.fullscreen.close();
+                    #[cfg(target_os = "macos")]
+                    if let Some(adapter) = view.native_fullscreen.take() {
+                        adapter.close_gate();
+                        adapters.push(adapter);
+                    }
+                });
+            }
+        });
+        #[cfg(target_os = "macos")]
+        for adapter in adapters {
+            adapter.close();
+        }
+        let _ = cx.update(|cx| {
+            #[cfg(target_os = "macos")]
+            native_quit::allow_termination();
+            cx.quit();
+        });
+    })
+    .detach();
 }
 
 #[cfg(target_os = "macos")]
@@ -703,6 +729,17 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
             let view = cx.new(|cx| WorkspaceView {
                 attachment: None,
                 bounds: window.window_bounds(),
+                fullscreen: FullscreenController::new(
+                    window.window_bounds(),
+                    config.window.macos_fullscreen_mode,
+                    cfg!(target_os = "macos"),
+                ),
+                #[cfg(target_os = "macos")]
+                native_fullscreen: crate::native_fullscreen::Adapter::new(
+                    window, cx,
+                )
+                .inspect_err(|error| eprintln!("Fullscreen observer: {error}"))
+                .ok(),
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -745,7 +782,7 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
                     if pump_window
                         .update(cx, |_, window, cx| {
                             let _ = pump_view.update(cx, |view, cx| {
-                                view.bounds = window.window_bounds();
+                                view.refresh_fullscreen(window, cx);
                                 if view
                                     .advance_tab_scroll(Instant::now(), window)
                                 {
@@ -815,6 +852,9 @@ impl TabView {
 struct WorkspaceView {
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
+    fullscreen: FullscreenController,
+    #[cfg(target_os = "macos")]
+    native_fullscreen: Option<crate::native_fullscreen::Adapter>,
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
     active: Option<TabId>,
@@ -832,6 +872,16 @@ struct WorkspaceView {
     close: CloseState,
     exited_tabs: ExitQueue,
     status: Option<String>,
+}
+
+impl Drop for WorkspaceView {
+    fn drop(&mut self) {
+        self.fullscreen.close();
+        #[cfg(target_os = "macos")]
+        if let Some(adapter) = self.native_fullscreen.take() {
+            adapter.schedule_close();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1027,7 +1077,7 @@ impl WorkspaceView {
         let position = self.config.window.tab_position;
         let layout = ChromeLayout::with_sidebar(
             window.viewport_size(),
-            terminal_top(window),
+            terminal_top(self.fullscreen.chrome_hidden),
             position,
             self.sidebar_width,
         );
@@ -1366,7 +1416,7 @@ impl WorkspaceView {
 
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
     /// `reordering`, and `fullscreen` while those states hold.
-    fn key_context(&self, window: &Window) -> KeyContext {
+    fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
         if self.close.confirmation.is_some() {
@@ -1375,7 +1425,7 @@ impl WorkspaceView {
         if self.reorder.is_some() {
             context.add("reordering");
         }
-        if window.is_fullscreen() {
+        if self.fullscreen.fullscreen_context() {
             context.add("fullscreen");
         }
         context
@@ -1432,15 +1482,42 @@ impl WorkspaceView {
             ids::SELECT_TAB => {
                 self.select_index(select_tab_slot(invocation)?, window, cx)
             }
-            ids::TOGGLE_FULLSCREEN => {
-                window.toggle_fullscreen();
-                Ok(CommandOutcome::Completed)
+            ids::TOGGLE_FULLSCREEN
+            | ids::TOGGLE_NATIVE_FULLSCREEN
+            | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
+                #[cfg(target_os = "macos")]
+                self.native_fullscreen
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "native fullscreen adapter is unavailable"
+                                .to_owned(),
+                        )
+                    })?
+                    .preflight()
+                    .map_err(|error| {
+                        CommandError::Unavailable(error.to_string())
+                    })?;
+                let intent = match invocation.id {
+                    ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
+                    ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
+                        ToggleIntent::NonNative
+                    }
+                    _ => ToggleIntent::Default,
+                };
+                self.fullscreen.toggle(intent).map_err(|error| {
+                    CommandError::Unavailable(error.to_owned())
+                })?;
+                self.refresh_fullscreen(window, cx);
+                Ok(CommandOutcome::Accepted)
             }
             ids::MINIMIZE => {
+                self.check_presentation_available()?;
                 window.minimize_window();
                 Ok(CommandOutcome::Completed)
             }
             ids::ZOOM => {
+                self.check_presentation_available()?;
                 window.zoom_window();
                 Ok(CommandOutcome::Completed)
             }
@@ -1506,6 +1583,136 @@ fn run_on_runtime(
 }
 
 impl WorkspaceView {
+    fn check_presentation_available(&self) -> Result<(), CommandError> {
+        if self.fullscreen.can_resize_window() {
+            Ok(())
+        } else {
+            Err(CommandError::Unavailable(
+                "window owns non-native fullscreen presentation state"
+                    .to_owned(),
+            ))
+        }
+    }
+
+    fn refresh_fullscreen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let previous =
+            (self.fullscreen.chrome_hidden, self.fullscreen.observed);
+        let now = Instant::now();
+        #[cfg(target_os = "macos")]
+        if let Some(adapter) = &self.native_fullscreen {
+            for event in adapter.drain() {
+                use crate::native_fullscreen::Event;
+                match event {
+                    Event::Native(event) => {
+                        self.fullscreen.native_event(event, now)
+                    }
+                    Event::State(recovery, chrome) => {
+                        self.fullscreen.non_native_state(recovery, chrome)
+                    }
+                    Event::Complete(generation, recovery) => {
+                        self.fullscreen.complete(generation, recovery)
+                    }
+                    Event::Failed(generation, error) => {
+                        if self.fullscreen.fail(generation) {
+                            self.status =
+                                Some(format!("Fullscreen failed: {error}"));
+                            cx.notify();
+                        }
+                    }
+                    Event::Recover => self.fullscreen.recover(),
+                }
+            }
+        }
+        self.fullscreen
+            .sample(window.is_fullscreen(), window.window_bounds());
+        if let Some(_generation) = self.fullscreen.expired(now) {
+            self.status = Some("Fullscreen transition timed out".to_owned());
+            eprintln!("Fullscreen transition timed out");
+            cx.notify();
+            #[cfg(target_os = "macos")]
+            if let Some(adapter) = &self.native_fullscreen {
+                adapter.cancel(_generation);
+            }
+        }
+        self.bounds = self.fullscreen.restorable_bounds();
+        if previous != (self.fullscreen.chrome_hidden, self.fullscreen.observed)
+        {
+            for tab in &self.tabs {
+                tab.view.update(cx, |terminal, cx| {
+                    terminal.chrome_hidden = self.fullscreen.chrome_hidden;
+                    terminal.resize_if_needed(window);
+                    cx.notify();
+                });
+            }
+            cx.notify();
+        }
+        if let Some(operation) = self.fullscreen.next(now) {
+            match operation.effect {
+                Effect::ToggleNative => window.toggle_fullscreen(),
+                Effect::EnterNonNative | Effect::ExitNonNative => {
+                    #[cfg(target_os = "macos")]
+                    if let Some(adapter) = self.native_fullscreen.clone() {
+                        adapter.reserve(operation);
+                        cx.spawn(async move |_, cx| {
+                            adapter.begin(operation);
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1))
+                                .await;
+                            adapter.finish(operation);
+                        })
+                        .detach();
+                    } else {
+                        self.fullscreen.fail(operation.generation);
+                        self.status = Some(
+                            "Fullscreen native adapter is unavailable"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn remove_window(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        quit_after: bool,
+    ) {
+        self.fullscreen.close();
+        #[cfg(target_os = "macos")]
+        {
+            let adapter = self.native_fullscreen.take();
+            if let Some(adapter) = &adapter {
+                adapter.close_gate();
+            }
+            let handle = window.window_handle();
+            cx.spawn(async move |_, cx| {
+                if let Some(adapter) = adapter {
+                    adapter.close();
+                }
+                let _ = handle.update(cx, |_, window, cx| {
+                    window.remove_window();
+                    if quit_after {
+                        cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
+                    }
+                });
+            })
+            .detach();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            window.remove_window();
+            if quit_after {
+                cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
+            }
+        }
+    }
+
     fn select(
         &mut self,
         id: TabId,
@@ -1520,6 +1727,7 @@ impl WorkspaceView {
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
                 view.sidebar_width = self.sidebar_width;
+                view.chrome_hidden = self.fullscreen.chrome_hidden;
                 view.visible = tab.id == id;
                 if view.visible {
                     view.resize_if_needed(window);
@@ -1618,7 +1826,7 @@ impl WorkspaceView {
             CloseTarget::Application => CloseRequest::Application,
             CloseTarget::Window => {
                 let Some(attachment) = self.attachment else {
-                    window.remove_window();
+                    self.remove_window(window, cx, false);
                     return;
                 };
                 CloseRequest::Window(attachment)
@@ -1722,7 +1930,7 @@ impl WorkspaceView {
         self.close.current = Some(target);
         self.busy = true;
         let generation = self.close.generation;
-        self.bounds = window.window_bounds();
+        self.bounds = self.fullscreen.restorable_bounds();
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
             let mut records = capture_other_windows(cx, Some(cx.entity_id()));
@@ -1764,13 +1972,11 @@ impl WorkspaceView {
                 match target {
                     CloseTarget::Application => approved_quit(cx),
                     CloseTarget::Window => {
-                        if matches!(
+                        let quit_after = matches!(
                             view.close.pending,
                             Some(CloseTarget::Application)
-                        ) {
-                            cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
-                        }
-                        window.remove_window();
+                        );
+                        view.remove_window(window, cx, quit_after);
                     }
                     CloseTarget::Tab(id) => {
                         remove_tab(
@@ -1845,6 +2051,9 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.resizing_sidebar = false;
                             view.scroll_target = None;
                             view.config = config.clone();
+                            view.fullscreen.set_default(
+                                config.window.macos_fullscreen_mode,
+                            );
                             view.family.clone_from(family);
                             view.metrics = *metrics;
                             view.status = None;
@@ -1972,7 +2181,7 @@ impl Render for WorkspaceView {
         let position = self.config.window.tab_position;
         let layout = ChromeLayout::with_sidebar(
             window.viewport_size(),
-            terminal_top(window),
+            terminal_top(self.fullscreen.chrome_hidden),
             position,
             self.sidebar_width,
         );
@@ -2075,14 +2284,14 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
-        if terminal_top(window) > px(0.0) {
+        if terminal_top(self.fullscreen.chrome_hidden) > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(terminal_top(window))
+                    .h(terminal_top(self.fullscreen.chrome_hidden))
                     .pl(px(84.0))
                     .flex()
                     .items_center()
