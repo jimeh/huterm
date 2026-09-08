@@ -2,7 +2,7 @@
 // Codepoint mapping, intersection extents, dashes and curves adapted from
 // Ghostty's sprite/draw/box.zig; MIT, see the parent module.
 
-use super::{Canvas, Segment, Stroke};
+use super::{Canvas, Segment, ShapePath};
 use gpui::px;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -304,7 +304,7 @@ fn diagonal(canvas: &mut Canvas, cp: u32) {
             continue;
         }
         let (x0, x1) = if rising { (w + dx, -dx) } else { (-dx, w + dx) };
-        canvas.geometry.strokes.push(Stroke {
+        canvas.geometry.strokes.push(ShapePath {
             width: px(canvas.thickness / canvas.scale),
             start: canvas.point(x0, -dy),
             segments: vec![Segment::Line(canvas.point(x1, h + dy))],
@@ -324,7 +324,7 @@ fn arc(canvas: &mut Canvas, cp: u32) {
     let down = cp == 0x256d || cp == 0x256e;
     let sx = if right { 1.0 } else { -1.0 };
     let sy = if down { 1.0 } else { -1.0 };
-    canvas.geometry.strokes.push(Stroke {
+    canvas.geometry.strokes.push(ShapePath {
         width: px(t / canvas.scale),
         start: canvas.point(cx, if down { h } else { 0.0 }),
         segments: vec![

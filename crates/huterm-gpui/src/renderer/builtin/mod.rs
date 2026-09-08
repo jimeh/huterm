@@ -5,6 +5,8 @@
 
 mod block;
 mod box_drawing;
+mod geometric_shapes;
+mod powerline;
 
 use gpui::{
     Bounds, Hsla, PathBuilder, Pixels, Point, Size, Window, fill, point, px,
@@ -18,7 +20,7 @@ use super::GridMetrics;
 pub(super) fn character(text: &str) -> Option<char> {
     let mut chars = text.chars();
     let ch = chars.next()?;
-    (chars.next().is_none() && matches!(ch, '\u{2500}'..='\u{259f}'))
+    (chars.next().is_none() && matches!(ch, '\u{2500}'..='\u{259f}' | '\u{e0b0}'..='\u{e0bf}' | '\u{e0d2}' | '\u{e0d4}' | '\u{25e2}'..='\u{25e5}' | '\u{25f8}'..='\u{25fa}' | '\u{25ff}'))
         .then_some(ch)
 }
 
@@ -26,7 +28,8 @@ pub(super) fn character(text: &str) -> Option<char> {
 pub(super) struct Geometry {
     size: Size<Pixels>,
     rectangles: Vec<Rectangle>,
-    strokes: Vec<Stroke>,
+    strokes: Vec<ShapePath>,
+    fills: Vec<ShapePath>,
 }
 
 struct Rectangle {
@@ -34,7 +37,7 @@ struct Rectangle {
     opacity: f32,
 }
 
-struct Stroke {
+struct ShapePath {
     width: Pixels,
     start: Point<Pixels>,
     segments: Vec<Segment>,
@@ -86,6 +89,17 @@ impl Canvas {
         }
     }
 
+    fn polygon(&mut self, points: &[(f32, f32)]) {
+        self.geometry.fills.push(ShapePath {
+            width: px(0.0),
+            start: self.point(points[0].0, points[0].1),
+            segments: points[1..]
+                .iter()
+                .map(|&(x, y)| Segment::Line(self.point(x, y)))
+                .collect(),
+        });
+    }
+
     fn point(&self, x: f32, y: f32) -> Point<Pixels> {
         point(px(x / self.scale), px(y / self.scale))
     }
@@ -116,6 +130,12 @@ impl Geometry {
         match ch {
             '\u{2500}'..='\u{257f}' => box_drawing::draw(ch, &mut canvas),
             '\u{2580}'..='\u{259f}' => block::draw(ch, &mut canvas),
+            '\u{e0b0}'..='\u{e0bf}' | '\u{e0d2}' | '\u{e0d4}' => {
+                powerline::draw(ch, &mut canvas);
+            }
+            '\u{25e2}'..='\u{25e5}' | '\u{25f8}'..='\u{25fa}' | '\u{25ff}' => {
+                geometric_shapes::draw(ch, &mut canvas);
+            }
             _ => {}
         }
         canvas.geometry
@@ -143,8 +163,17 @@ impl Geometry {
                         tint,
                     ));
                 }
-                for stroke in &self.strokes {
-                    let mut builder = PathBuilder::stroke(stroke.width);
+                for (stroke, filled) in self
+                    .strokes
+                    .iter()
+                    .map(|s| (s, false))
+                    .chain(self.fills.iter().map(|s| (s, true)))
+                {
+                    let mut builder = if filled {
+                        PathBuilder::fill()
+                    } else {
+                        PathBuilder::stroke(stroke.width)
+                    };
                     builder.move_to(origin + stroke.start);
                     for segment in &stroke.segments {
                         match segment {
@@ -156,6 +185,9 @@ impl Geometry {
                                     origin + *b,
                                 ),
                         }
+                    }
+                    if filled {
+                        builder.close();
                     }
                     if let Ok(path) = builder.build() {
                         window.paint_path(path, color);

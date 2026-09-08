@@ -152,7 +152,7 @@ impl Render for Fixture {
                     },
                 )
                 .w(m.cell_width * 32.0)
-                .h(m.cell_height * 29.0)
+                .h(m.cell_height * 33.0)
                 .flex_shrink_0(),
             );
         }
@@ -164,8 +164,8 @@ fn check(panel: &mut Panel, window: &mut Window) {
     let renderer = &mut panel.renderer;
     assert_eq!(
         renderer.graphics.len(),
-        160,
-        "all 160 builtins must bypass font shaping"
+        186,
+        "all 186 builtins must bypass font shaping"
     );
     let first = Arc::clone(&renderer.graphics[&('▐', 1)]);
     // An unchanged snapshot reuses prepared geometry.
@@ -227,16 +227,16 @@ fn check(panel: &mut Panel, window: &mut Window) {
     renderer.prepare(Some(&panel.snapshot), window);
     renderer.set_selection(Some(BufferRange {
         start: BufferPoint {
-            rows_from_live_bottom: 2,
+            rows_from_live_bottom: 6,
             column: 0,
         },
         end: BufferPoint {
-            rows_from_live_bottom: 2,
+            rows_from_live_bottom: 6,
             column: 31,
         },
     }));
     println!(
-        "RENDERER_SMOKE prepared size={} scale={} builtin=160",
+        "RENDERER_SMOKE prepared size={} scale={} builtin=186",
         f32::from(renderer.metrics.font_size),
         renderer.metrics.scale_factor
     );
@@ -274,6 +274,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
         ]
         .map(str::to_owned),
     );
+    lines.extend(["\u{e0b0} \u{e0b1} \u{e0b2} \u{e0b3} \u{e0b4} \u{e0b5} \u{e0b6} \u{e0b7} \u{e0b8} \u{e0b9} \u{e0ba} \u{e0bb} \u{e0bc} \u{e0bd} \u{e0be} \u{e0bf}", "\u{e0d2} \u{e0d4} ◢ ◣ ◤ ◥ ◸ ◹ ◺ ◿", "██\u{e0b0}██\u{e0b4}██\u{e0b8}██\u{e0bc}██\u{e0d2}", "██\u{e0b1}██\u{e0b5}██◸██◿██\u{e0d4}"].map(str::to_owned));
     let rows = lines
         .into_iter()
         .enumerate()
@@ -312,31 +313,43 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
                     cells[column + 1].style.wide_spacer = true;
                 }
             }
-            if row == 24 {
-                for cell in &mut cells[10..] {
-                    cell.style.bold = true;
-                }
-            }
-            if row == 25 {
-                for cell in &mut cells[..10] {
-                    cell.style.dim = true;
-                }
-                for cell in &mut cells[16..] {
-                    cell.style.hidden = true;
-                }
-            }
+            style_row(row, &mut cells);
             Arc::new(TerminalRow { cells })
         })
         .collect();
     TerminalSnapshot {
         terminal_id: TerminalId::new(1),
         generation: 1,
-        size: GridSize::clamped(32, 29),
+        size: GridSize::clamped(32, 33),
         rows,
         cursor: None,
         modes: TerminalModes::default(),
         viewport: Viewport::default(),
         history_size: 0,
         cursor_color: None,
+    }
+}
+
+fn style_row(row: usize, cells: &mut [Cell]) {
+    if row >= 31 {
+        for (column, cell) in cells.iter_mut().enumerate() {
+            cell.foreground =
+                CellColor::Indexed(if column < 6 { 4 } else { 2 });
+            cell.background =
+                CellColor::Indexed(if column < 6 { 3 } else { 5 });
+        }
+    }
+    if row == 24 {
+        for cell in &mut cells[10..] {
+            cell.style.bold = true;
+        }
+    }
+    if row == 25 {
+        for cell in &mut cells[..10] {
+            cell.style.dim = true;
+        }
+        for cell in &mut cells[16..] {
+            cell.style.hidden = true;
+        }
     }
 }
