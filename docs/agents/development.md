@@ -138,7 +138,10 @@ repository's required check names; both require every validation job to pass.
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,
 focus, PTY geometry, and a settled on-screen frame; verify exact native position
-on physical displays. Non-native macOS and Linux restoration remain exact.
+on physical displays. AppKit can also deliver a late screen-change notification
+as the next non-native entry begins. The smoke accepts only the controller's
+exact recovered windowed state, then retries that entry once. Non-native macOS
+and Linux restoration remain exact.
 
 The pre-commit hook runs independent jobs in parallel. Markdown and Rust
 formatting receive only matching staged paths. Clippy compilation and the

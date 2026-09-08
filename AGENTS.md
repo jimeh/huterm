@@ -512,4 +512,6 @@ Fullscreen completion can precede the final frame and grid publication on macOS
 and X11. Smokes must wait for settled geometry and compare PTY dimensions with
 the grid published in the same snapshot. Hosted macOS native Spaces may choose
 a new on-screen origin; keep non-native and X11 geometry exact, and verify exact
-native placement on physical displays.
+native placement on physical displays. A late native screen-change notification
+can cancel the next non-native entry. Require exact windowed rollback before one
+bounded smoke retry.
