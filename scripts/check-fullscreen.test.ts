@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRestored, assertTimeout, nativeFrameIsUsable, nonNativeEntryOutcome, parseState, ptyMatchesGrid } from "./check-fullscreen";
+import { assertRestored, assertTimeout, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -36,23 +36,5 @@ describe("fullscreen evidence checker", () => {
     expect(() => assertRestored(before, moved, true, true)).not.toThrow();
     expect(nativeFrameIsUsable(moved)).toBe(true);
     expect(nativeFrameIsUsable({ ...moved, "w0.content": "556,832,808,584" })).toBe(false);
-  });
-  test("recognizes only completed non-native entry or exact display-change recovery", () => {
-    const entered = { "w0.mode": "NonNative", "w0.pending": "false" };
-    const recovered = {
-      "w0.mode": "Windowed",
-      "w0.pending": "false",
-      "w0.status": "Fullscreen failed: display changed during fullscreen entry",
-      "w0.simple": "false",
-      "w0.chrome": "false",
-    };
-    expect(nonNativeEntryOutcome(entered)).toBe("entered");
-    expect(nonNativeEntryOutcome(recovered)).toBe("display-change-recovered");
-    for (const state of [
-      { ...entered, "w0.pending": "true" },
-      { ...recovered, "w0.status": "Fullscreen transition timed out" },
-      { ...recovered, "w0.simple": "true" },
-      { ...recovered, "w0.chrome": "true" },
-    ]) expect(nonNativeEntryOutcome(state)).toBeUndefined();
   });
 });

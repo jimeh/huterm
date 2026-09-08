@@ -513,5 +513,6 @@ and X11. Smokes must wait for settled geometry and compare PTY dimensions with
 the grid published in the same snapshot. Hosted macOS native Spaces may choose
 a new on-screen origin; keep non-native and X11 geometry exact, and verify exact
 native placement on physical displays. A late native screen-change notification
-can cancel the next non-native entry. Require exact windowed rollback before one
-bounded smoke retry.
+can arrive during the next non-native entry. Record it without canceling from
+the callback; main-thread display identity and frame validation distinguishes
+notification noise from a real display change.

@@ -50,13 +50,6 @@ pub(crate) mod native_policy {
         pub fn native_will(&self) {
             self.cancel(self.generation.get() + 1);
         }
-        pub fn display_changed(&self) -> Option<u64> {
-            let operation = self.operation.get().filter(|operation| {
-                operation.effect == Effect::EnterNonNative
-            })?;
-            self.cancel(operation.generation + 1);
-            Some(operation.generation)
-        }
         pub fn close(&self) {
             self.closing.set(true);
             self.native_will();
@@ -132,16 +125,18 @@ pub(crate) mod native_policy {
         )
     }
 
-    pub(crate) fn needs_recovery(
+    pub(crate) fn screen_change_needs_recovery(
+        entry_complete: bool,
         original: Display,
         current: Option<Display>,
         frame: Bounds<f64>,
         displays: &[Display],
     ) -> bool {
-        !displays.iter().any(|display| display.id == original.id)
-            || current.is_none_or(|display| {
-                display.id != original.id || frame != display.frame
-            })
+        entry_complete
+            && (!displays.iter().any(|display| display.id == original.id)
+                || current.is_none_or(|display| {
+                    display.id != original.id || frame != display.frame
+                }))
     }
 
     #[derive(Default)]
@@ -279,7 +274,7 @@ pub(crate) mod native_policy {
             let gate = OperationGate::default();
             gate.reserve(op);
             assert!(gate.valid(op));
-            assert_eq!(gate.display_changed(), Some(1));
+            gate.native_will();
             assert!(!gate.valid(op));
             gate.reserve(op);
             assert!(!gate.valid(op));
@@ -289,7 +284,7 @@ pub(crate) mod native_policy {
             };
             gate.reserve(retry);
             assert!(gate.valid(retry));
-            gate.native_will();
+            gate.complete(retry);
             assert!(!gate.valid(retry));
             let exit = Operation {
                 generation: 5,
@@ -297,7 +292,6 @@ pub(crate) mod native_policy {
                 ..op
             };
             gate.reserve(exit);
-            assert_eq!(gate.display_changed(), None);
             assert!(gate.valid(exit));
             gate.complete(op);
             assert!(gate.valid(exit));
@@ -349,22 +343,46 @@ pub(crate) mod native_policy {
                 restore_frame(saved, original, &[other], Some(2)),
                 Some(rect(300., 190., 800., 600.))
             );
-            assert!(!needs_recovery(
+            assert!(!screen_change_needs_recovery(
+                true,
                 original,
                 Some(original),
                 original.frame,
                 &[original]
             ));
-            assert!(needs_recovery(
+            assert!(screen_change_needs_recovery(
+                true,
                 original,
                 Some(moved),
                 original.frame,
                 &[moved]
             ));
-            assert!(needs_recovery(
+            assert!(screen_change_needs_recovery(
+                true,
                 original,
                 Some(other),
                 other.frame,
+                &[other]
+            ));
+        }
+
+        #[test]
+        fn screen_change_during_entry_defers_to_completion_validation() {
+            let original = Display {
+                id: 1,
+                frame: rect(0., 0., 1000., 800.),
+                visible: rect(0., 0., 1000., 780.),
+            };
+            let other = Display {
+                id: 2,
+                frame: rect(1000., 0., 1000., 800.),
+                visible: rect(1000., 0., 1000., 780.),
+            };
+            assert!(!screen_change_needs_recovery(
+                false,
+                original,
+                Some(other),
+                rect(100., 100., 800., 600.),
                 &[other]
             ));
         }

@@ -19,8 +19,8 @@ use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::fullscreen::native_policy::{
-    Display, Leases, OperationGate, PresentationLease, needs_recovery,
-    restore_frame,
+    Display, Leases, OperationGate, PresentationLease, restore_frame,
+    screen_change_needs_recovery,
 };
 use crate::fullscreen::{Effect, NativeEvent, Operation};
 
@@ -497,11 +497,17 @@ impl Adapter {
         let Some(saved) = saved.as_ref() else {
             return Ok(false);
         };
+        // AppKit can emit this notification while an entry changes style.
+        // `fill_screen` validates that entry before its frame mutation.
+        if !saved.complete {
+            return Ok(false);
+        }
         // SAFETY: Main-thread read-only inspection of the retained window.
         unsafe {
             let screen: *mut Object = msg_send![self.0.window.0, screen];
             let frame: Bounds<f64> = msg_send![self.0.window.0, frame];
-            Ok(needs_recovery(
+            Ok(screen_change_needs_recovery(
+                true,
                 saved.display,
                 display(screen).ok(),
                 frame,
@@ -673,19 +679,6 @@ extern "C" fn did_exit(observer: &Object, _: Sel, _: *mut Object) {
     enqueue(observer, Some(NativeEvent::DidExit));
 }
 extern "C" fn screen_changed(observer: &Object, _: Sel, _: *mut Object) {
-    OBSERVERS.with(|observers| {
-        if let Some(inbox) = observers
-            .borrow()
-            .get(&(std::ptr::from_ref(observer) as usize))
-            && let Some(generation) = inbox.gate.display_changed()
-        {
-            inbox.events.borrow_mut().push_back(Event::Failed(
-                generation,
-                "display changed during fullscreen entry".to_owned(),
-            ));
-            inbox.events.borrow_mut().push_back(Event::Recover);
-        }
-    });
     enqueue(observer, None);
 }
 extern "C" fn screen_parameters(observer: &Object, _: Sel, _: *mut Object) {

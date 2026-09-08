@@ -1,5 +1,5 @@
 /** Production fullscreen commands, native window observations, and PTY evidence. */
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -40,16 +40,6 @@ export function nativeFrameIsUsable(state: State): boolean {
     && x >= screenX && y >= screenY
     && x + width <= screenX + screenWidth
     && y + height <= screenY + screenHeight;
-}
-
-export function nonNativeEntryOutcome(state: State): "entered" | "display-change-recovered" | undefined {
-  if (state["w0.pending"] !== "false") return undefined;
-  if (state["w0.mode"] === "NonNative") return "entered";
-  if (state["w0.mode"] === "Windowed"
-    && state["w0.status"] === "Fullscreen failed: display changed during fullscreen entry"
-    && state["w0.simple"] === "false"
-    && state["w0.chrome"] === "false") return "display-change-recovered";
-  return undefined;
 }
 
 export function assertTimeout(state: State, diagnostics: string): void {
@@ -95,22 +85,11 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
   const stdout = new Response(app.stdout).text();
   let sequence = 0;
   const state = async (): Promise<State> => parseState(await readFile(join(directory, "state"), "utf8"));
-  const command = async (text: string, waitForFreshState = false): Promise<string> => {
+  const command = async (text: string): Promise<string> => {
     const index = sequence++;
     await writeFile(join(directory, `command-${index}`), text);
-    const resultPath = join(directory, `result-${index}`);
-    const statePath = join(directory, "state");
-    await waitFor(() => Bun.file(resultPath).exists(), `command ${text}`);
-    if (waitForFreshState) {
-      await waitFor(async () => {
-        const [currentState, result] = await Promise.all([
-          stat(statePath, { bigint: true }),
-          stat(resultPath, { bigint: true }),
-        ]);
-        return currentState.mtimeNs > result.mtimeNs;
-      }, `state after command ${text}`);
-    }
-    return readFile(resultPath, "utf8");
+    await waitFor(() => Bun.file(join(directory, `result-${index}`)).exists(), `command ${text}`);
+    return readFile(join(directory, `result-${index}`), "utf8");
   };
   const stable = async (mode: string, index = 0): Promise<State> => {
     await waitFor(async () => {
@@ -140,24 +119,9 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
     assertRestored(before, current, native, allowReposition);
     return current;
   };
-  const accepted = async (text: string, waitForFreshState = false) => {
-    const result = await command(text, waitForFreshState);
+  const accepted = async (text: string) => {
+    const result = await command(text);
     if (result.includes("Err") || result.startsWith("error")) throw new Error(`${text}: ${result}`);
-  };
-  const enterNonNative = async (): Promise<{ outcome: "entered" | "display-change-recovered", state: State }> => {
-    await accepted("0 toggle_non_native_fullscreen", true);
-    let current: State = {};
-    let outcome: "entered" | "display-change-recovered" | undefined;
-    await waitFor(async () => {
-      current = await state();
-      outcome = nonNativeEntryOutcome(current);
-      if (outcome) return true;
-      if (current["w0.mode"] === "Windowed" && current["w0.pending"] === "false" && current["w0.status"]) {
-        throw new Error(`non-native entry failed: ${current["w0.status"]}`);
-      }
-      return false;
-    }, "non-native entry");
-    return { outcome: outcome!, state: current };
   };
   const input = async (text: string) => {
     if (macos) {
@@ -231,14 +195,8 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
         await accepted("0 new_tab");
         await waitFor(async () => (await state())["w0.tabs"] === "2" && (await state())["w0.ready"] === "true", "retained second tab");
         const beforeSimple = await state();
-        let entry = await enterNonNative();
-        if (entry.outcome === "display-change-recovered") {
-          assertRestored(beforeSimple, entry.state, true);
-          console.log(`FULLSCREEN_SMOKE ${engine} late-display-change-recovered retry`);
-          entry = await enterNonNative();
-          if (entry.outcome !== "entered") throw new Error("non-native entry was interrupted twice by display changes");
-        }
-        const simple = entry.state;
+        await accepted("0 toggle_non_native_fullscreen");
+        const simple = await stable("NonNative");
         if ((Number(simple["w0.style"]) & ((1 << 14) | 1 | 8)) !== 0) throw new Error("non-native mode kept native/title/resize bits");
         if (Number(simple["w0.style"]) !== (Number(beforeSimple["w0.style"]) & ~(1 | 8))) throw new Error("non-native mode discarded unrelated style bits");
         if (simple["w0.frame"] !== simple["w0.screen"] || simple["w0.retained"] !== "true") throw new Error("non-native frame/chrome mismatch");

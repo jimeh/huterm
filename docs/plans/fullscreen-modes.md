@@ -392,8 +392,11 @@ the saved frame and presentation state in place. This matches the least
 surprising recovery from an external window manager or display removal.
 
 Use the exact-window `NSWindowDidChangeScreenNotification` observer above as
-the trigger. If it arrives during deferred entry, cancel that generation and
-run the same rollback path before choosing fallback geometry.
+the trigger. Record notifications during deferred entry without treating their
+arrival as proof that the display changed. Before completing entry, validate
+the display identity and frame on the main thread; fail and roll back only on a
+real mismatch. This also keeps notification callbacks separate from borrowed
+saved state during AppKit setters.
 
 On an application screen-parameters event, resolve the current and saved
 display identities again and compare the active window frame with the current
