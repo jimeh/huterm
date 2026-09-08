@@ -1,3 +1,6 @@
+mod builtin;
+pub(crate) mod smoke;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -92,6 +95,7 @@ pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
+    graphics: HashMap<(char, u16), Arc<builtin::Geometry>>,
     metrics: GridMetrics,
     font_family: String,
     theme: Theme,
@@ -115,6 +119,7 @@ impl TerminalRenderer {
         }
         if self.font_family != font_family || self.metrics != metrics {
             self.layouts = GlyphLayoutCache::default();
+            self.graphics.clear();
         }
         self.snapshot = None;
         self.rows.clear();
@@ -138,6 +143,7 @@ impl TerminalRenderer {
             snapshot: None,
             rows: Vec::new(),
             layouts: GlyphLayoutCache::default(),
+            graphics: HashMap::new(),
             metrics,
             font_family,
             theme,
@@ -222,10 +228,10 @@ impl TerminalRenderer {
                     self.rows[row] = prepare_row(
                         &cells.cells,
                         &mut self.layouts,
+                        &mut self.graphics,
                         window,
                         &mut cache_activity,
-                        &self.font_family,
-                        self.metrics.font_size,
+                        (&self.font_family, self.metrics),
                         &self.theme,
                     );
                 }
@@ -398,8 +404,13 @@ struct PreparedBackground {
 
 struct PreparedGlyph {
     column: u16,
-    layout: Arc<LineLayout>,
+    content: GlyphContent,
     color: Hsla,
+}
+
+enum GlyphContent {
+    Font(Arc<LineLayout>),
+    Builtin(Arc<builtin::Geometry>),
 }
 
 struct PreparedDecoration {
@@ -411,12 +422,14 @@ struct PreparedDecoration {
 fn prepare_row(
     cells: &[Cell],
     layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
+    graphics: &mut HashMap<(char, u16), Arc<builtin::Geometry>>,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
-    font_family: &str,
-    font_size: Pixels,
+    font: (&str, GridMetrics),
     theme: &Theme,
 ) -> PreparedRow {
+    let (font_family, metrics) = font;
+    let font_size = metrics.font_size;
     let mut row = PreparedRow {
         backgrounds: prepare_backgrounds(cells, theme),
         underlines: prepare_decorations(cells, theme, |cell| {
@@ -436,6 +449,28 @@ fn prepare_row(
         {
             continue;
         }
+        if let Some(ch) = builtin::character(&cell.text) {
+            let columns = if cell.style.wide && column + 1 < cells.len() {
+                2
+            } else {
+                1
+            };
+            let mut hit = true;
+            let geometry = graphics.entry((ch, columns)).or_insert_with(|| {
+                hit = false;
+                Arc::new(builtin::Geometry::new(ch, metrics, columns))
+            });
+            cache_activity.record(hit);
+            row.glyphs.push(PreparedGlyph {
+                column: u16::try_from(column).unwrap_or(u16::MAX),
+                content: GlyphContent::Builtin(Arc::clone(geometry)),
+                color: rgb_color(display_foreground(
+                    resolve_color(cell.foreground, theme),
+                    cell.style.dim,
+                )),
+            });
+            continue;
+        }
         let variant = FontVariant {
             bold: cell.style.bold,
             italic: cell.style.italic,
@@ -450,7 +485,7 @@ fn prepare_row(
         cache_activity.record(hit);
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
-            layout,
+            content: GlyphContent::Font(layout),
             color: rgb_color(display_foreground(
                 resolve_color(cell.foreground, theme),
                 cell.style.dim,
@@ -537,7 +572,18 @@ fn paint_row(
             row_index,
             metrics,
         );
-        for run in &glyph.layout.runs {
+        let layout = match &glyph.content {
+            GlyphContent::Builtin(geometry) => {
+                geometry.paint(
+                    origin,
+                    foreground(glyph.column, glyph.color),
+                    window,
+                );
+                continue;
+            }
+            GlyphContent::Font(layout) => layout,
+        };
+        for run in &layout.runs {
             for shaped in &run.glyphs {
                 let glyph_origin = point(
                     origin.x + metrics.glyph_offset_x + shaped.position.x,
@@ -548,14 +594,14 @@ fn paint_row(
                         glyph_origin,
                         run.font_id,
                         shaped.id,
-                        glyph.layout.font_size,
+                        layout.font_size,
                     )
                 } else {
                     window.paint_glyph(
                         glyph_origin,
                         run.font_id,
                         shaped.id,
-                        glyph.layout.font_size,
+                        layout.font_size,
                         foreground(glyph.column, glyph.color),
                     )
                 };

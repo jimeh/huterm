@@ -59,7 +59,7 @@ binariesDir = "target/aarch64-apple-darwin/release"
 targetTriple = "aarch64-apple-darwin"
 beforePackagingCommand = "mise run package:build:macos"
 icons = ["assets/Huterm.icns"]
-resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }, { src = "third-party/terminal-graphics", target = "terminal-graphics" }]
 
 [[package.metadata.packager.binaries]]
 path = "huterm"

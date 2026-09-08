@@ -558,3 +558,25 @@ transition remains unresolved, before saving state or acquiring a lease. Keep
 this guard at effect dispatch so normal pending toggles can still change intent.
 A late native completion still reconciles normally; an unavailable adapter must
 not block explicit native fullscreen.
+
+Built-in terminal graphics live in `renderer/builtin`, grouped by Unicode
+range and pinned to the Ghostty reference recorded in
+`third-party/terminal-graphics/README.md`. Match standalone scalars only; leave
+combining sequences on the font path. Use physical-pixel cell geometry and
+invalidate the geometry cache when metrics change. Round dimensions again after
+converting logical points back to physical pixels: floating-point residue before
+`floor` can move stroke centers by one pixel at fractional scales.
+GPUI `paint_layer` controls
+scene ordering, not clipping; use `with_content_mask` for diagonal overshoot.
+Run `mise run smoke:renderer` for production preparation/paint coverage and
+inspect the held fixture when changing geometry. Keep its license notice in
+the packaged resources independently of the Ghostty VT engine notice.
+Use Bun's process timeout and output checks for portable smoke runners. CI's
+macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
+
+Linux Docker validation keeps the checkout read-only and syncs source into a
+worktree/architecture-scoped volume. Exclude host `target`, `.native`, and
+`node_modules` from that sync, and serialize runs sharing a workspace volume.
+Mise's Rust install points at `/root/.cargo/bin` in the image; changing
+`CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
+and Git downloads separately while retaining the image's Cargo home.

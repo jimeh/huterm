@@ -17,7 +17,8 @@ The upstream archive and Zig dependency evaluation include application-related
 sources that are not linked into the VT library. This notice set describes the
 VT build, not every optional application dependency. Zig may download additional
 lazy dependencies while evaluating the build; their hashes remain pinned in the
-upstream package manifests. No Ghostty renderer or font stack is linked.
+upstream package manifests. No native Ghostty renderer or font stack is linked.
+Huterm's Rust terminal graphics port has [separate notices](../terminal-graphics/README.md).
 
 The sys crate selects static linking and maps release builds to ReleaseFast.
 Huterm backports the CPU option into the pinned sys crate and forces a portable

@@ -72,6 +72,13 @@ pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
     desktop::fullscreen_smoke::run()
 }
 
+/// Runs the isolated native terminal graphics fixture.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_renderer_smoke() {
+    renderer::smoke::run();
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::APP_ID;
