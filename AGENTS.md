@@ -503,3 +503,5 @@ For display recovery, expand saved content to its restored titled frame before
 clamping to the visible display, or AppKit constrains the titlebar a second time.
 GPUI's inherent `Window::window_handle` returns its own handle; qualify
 `HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.
+Map its `HandleError` explicitly into anyhow; it does not implement
+`std::error::Error` with the current dependency features.

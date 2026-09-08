@@ -179,7 +179,11 @@ impl Adapter {
             ];
             ensure!(main == YES, "fullscreen adapter requires the main thread");
             let RawWindowHandle::AppKit(handle) =
-                HasWindowHandle::window_handle(window)?.as_raw()
+                HasWindowHandle::window_handle(window)
+                    .map_err(|error| {
+                        anyhow::anyhow!("native window handle: {error}")
+                    })?
+                    .as_raw()
             else {
                 anyhow::bail!("fullscreen requires AppKit");
             };
