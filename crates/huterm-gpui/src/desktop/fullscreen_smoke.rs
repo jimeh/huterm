@@ -39,7 +39,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     .await;
                 let state =
                     cx.update(read_state).expect("fullscreen smoke state");
-                publish(&directory, "state", &state);
+                publish(
+                    &directory,
+                    "state",
+                    &format!("command_sequence={sequence}\n{state}"),
+                );
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
                 ) {
@@ -49,6 +53,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     let result = if let Some(event) = native {
                         super::input_smoke::post_event(event)
                             .map(|()| "posted".to_owned())
+                    } else if command == "probe-display-refit" {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| adapter.probe_display_refit())
                     } else if command == "probe-native-exit" {
                         cx.update(probe_adapter)
                             .and_then(std::convert::identity)

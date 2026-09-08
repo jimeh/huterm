@@ -545,3 +545,9 @@ AppKit's Return and Tab characters. Normalize those two key equivalents after
 AppKit derives both shortcut display and activation from `keyEquivalent`.
 Keep the native menu smoke assertions for these characters when upgrading GPUI;
 remove the workaround once upstream converts them correctly.
+
+Keep the original non-native fullscreen restoration display frozen and track the
+last fitted display separately. Screen rearrangement can temporarily put the
+old window frame on another screen; compare the target display geometry before
+treating that as a transfer. Refit outside GPUI updates without changing focus,
+window ordering, shadow state or presentation leases.

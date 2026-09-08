@@ -19,8 +19,8 @@ use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::fullscreen::native_policy::{
-    Display, Leases, OperationGate, PresentationLease, restore_frame,
-    screen_change_needs_recovery,
+    Display, DisplayChange, Leases, OperationGate, PresentationLease,
+    display_change, restore_frame,
 };
 use crate::fullscreen::{Effect, NativeEvent, Operation};
 
@@ -49,6 +49,7 @@ enum QueuedEvent {
 struct Inbox {
     events: RefCell<VecDeque<QueuedEvent>>,
     screen_changed: Cell<bool>,
+    refit_scheduled: Cell<bool>,
     native_transition: Cell<bool>,
     gate: OperationGate,
 }
@@ -86,6 +87,7 @@ impl Drop for Retained {
 struct Saved {
     content: Bounds<f64>,
     display: Display,
+    fullscreen_display: Display,
     style: usize,
     shadow: objc::runtime::BOOL,
     responder: Retained,
@@ -220,6 +222,41 @@ impl Adapter {
         }
     }
 
+    /// Create the stale fullscreen frame produced by a display resize, then
+    /// exercise the production screen-parameters notification path.
+    pub fn probe_display_refit(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "display probe requires the fullscreen smoke"
+        );
+        ensure!(
+            self.0
+                .saved
+                .borrow()
+                .as_ref()
+                .is_some_and(|saved| saved.complete),
+            "display probe requires settled non-native fullscreen"
+        );
+        // SAFETY: The smoke runs this on the foreground executor outside GPUI
+        // borrows. It changes only its own window, not the host display mode.
+        unsafe {
+            let window = self.0.window.0;
+            let screen: *mut Object = msg_send![window, screen];
+            let mut frame = display(screen)?.frame;
+            frame.size.width -= 64.0;
+            frame.size.height -= 48.0;
+            let _: () = msg_send![window, setFrame: frame display: YES];
+            let center: *mut Object = msg_send![
+                Class::get("NSNotificationCenter")
+                    .context("NSNotificationCenter")?,
+                defaultCenter
+            ];
+            let name: *mut Object = msg_send![Class::get("NSString").context("NSString")?, stringWithUTF8String: c"NSApplicationDidChangeScreenParametersNotification".as_ptr()];
+            let _: () = msg_send![center, postNotificationName: name object: application()?];
+            Ok(native_rect(frame))
+        }
+    }
+
     /// Exercise native-exit frame reconciliation with the CI regression's input.
     pub fn probe_native_exit(&self) -> anyhow::Result<String> {
         ensure!(
@@ -333,12 +370,36 @@ impl Adapter {
 
     pub fn drain(&self) -> Vec<Event> {
         if self.0.inbox.screen_changed.replace(false)
-            && self.0.saved.borrow().is_some()
+            && !self.0.inbox.refit_scheduled.replace(true)
         {
-            match self.display_invalid() {
-                Ok(true) | Err(_) => self.emit(Event::Recover),
-                Ok(false) => {}
-            }
+            let adapter = self.clone();
+            let generation = self.0.inbox.gate.generation();
+            let native_generation = self.0.inbox.gate.native_generation();
+            self.0
+                .executor
+                .spawn(async move {
+                    adapter.0.inbox.refit_scheduled.set(false);
+                    if !adapter
+                        .0
+                        .inbox
+                        .gate
+                        .can_refit(generation, native_generation)
+                    {
+                        return;
+                    }
+                    if let Err(error) = adapter.reconcile_display() {
+                        eprintln!("fullscreen display refit failed: {error:#}");
+                        if adapter
+                            .0
+                            .inbox
+                            .gate
+                            .can_refit(generation, native_generation)
+                        {
+                            adapter.emit(Event::Recover);
+                        }
+                    }
+                })
+                .detach();
         }
         let queued: Vec<_> =
             self.0.inbox.events.borrow_mut().drain(..).collect();
@@ -553,6 +614,7 @@ impl Adapter {
             self.0.saved.replace(Some(Saved {
                 content,
                 display,
+                fullscreen_display: display,
                 style,
                 shadow: msg_send![window, hasShadow],
                 responder: Retained::retain(responder),
@@ -625,6 +687,7 @@ impl Adapter {
                 style & NATIVE == 0 && !self.0.inbox.native_transition.get(),
                 "native fullscreen must exit before recovery"
             );
+            saved.complete = false;
             let _: () = msg_send![self.0.window.0, setStyleMask: saved.style];
             let _: () = msg_send![self.0.window.0, setHasShadow: saved.shadow];
         }
@@ -678,28 +741,57 @@ impl Adapter {
         Ok(())
     }
 
-    fn display_invalid(&self) -> anyhow::Result<bool> {
-        let saved = self.0.saved.borrow();
-        let Some(saved) = saved.as_ref() else {
-            return Ok(false);
+    fn reconcile_display(&self) -> anyhow::Result<()> {
+        let mut saved = self.0.saved.borrow_mut();
+        let Some(saved) = saved.as_mut() else {
+            return Ok(());
         };
-        // AppKit can emit this notification while an entry changes style.
-        // `fill_screen` validates that entry before its frame mutation.
-        if !saved.complete {
-            return Ok(false);
+        if !saved.complete || self.0.inbox.native_transition.get() {
+            return Ok(());
         }
-        // SAFETY: Main-thread read-only inspection of the retained window.
+        let window = self.0.window.0;
+        // SAFETY: Deferred foreground turn, outside GPUI's window update.
+        // Notifications only mutate Inbox. Refitting changes geometry alone;
+        // the restoration anchor, responder, shadow and lease remain owned.
         unsafe {
-            let screen: *mut Object = msg_send![self.0.window.0, screen];
-            let frame: Bounds<f64> = msg_send![self.0.window.0, frame];
-            Ok(screen_change_needs_recovery(
+            let style: usize = msg_send![window, styleMask];
+            if style & NATIVE != 0 {
+                return Ok(());
+            }
+            let screen: *mut Object = msg_send![window, screen];
+            let frame: Bounds<f64> = msg_send![window, frame];
+            match display_change(
                 true,
-                saved.display,
+                saved.fullscreen_display,
                 display(screen).ok(),
                 frame,
                 &displays()?,
-            ))
+            ) {
+                DisplayChange::Unchanged => {}
+                DisplayChange::Recover => self.emit(Event::Recover),
+                DisplayChange::Refit(target) => {
+                    if frame != target.frame {
+                        let _: () = msg_send![window, setFrame: target.frame display: YES];
+                    }
+                    let actual: Bounds<f64> = msg_send![window, frame];
+                    if actual != target.frame
+                        && displays()?.iter().any(|display| {
+                            display.id == target.id
+                                && display.frame != target.frame
+                        })
+                    {
+                        self.0.inbox.screen_changed.set(true);
+                        return Ok(());
+                    }
+                    ensure!(
+                        actual == target.frame,
+                        "window did not refit its display"
+                    );
+                    saved.fullscreen_display = target;
+                }
+            }
         }
+        Ok(())
     }
 }
 

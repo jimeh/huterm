@@ -383,7 +383,7 @@ manager alongside GPUI's. Preserve the restore-bounds tests when replacing the
 controller's local saved-frame source with GPUI's reported restore value.
 
 Specifically verify preservation of unrelated style bits while fullscreen and
-exact mask restoration afterward, display-change exit and fallback geometry,
+exact mask restoration afterward, display refitting and fallback geometry,
 and interrupted-entry recovery. Upstream's saved-mask restoration does not by
 itself prove preservation of those bits during fullscreen. If the published
 implementation cannot meet a requirement, retain the corresponding local
@@ -392,24 +392,25 @@ mechanics; do not combine two owners of style/frame or presentation options.
 ### Display changes and unavailable displays
 
 Record `NSScreenNumber` from the screen's device description on entry and treat
-it as the display identity for this process. If a non-native window changes
-display while fullscreen, exit non-native mode rather than trying to transfer
-the saved frame and presentation state in place. This matches the least
-surprising recovery from an external window manager or display removal.
+it as the display identity for this process. Keep the original restoration
+anchor frozen, with a separate last-settled fullscreen display frame.
 
-Use the exact-window `NSWindowDidChangeScreenNotification` observer above as
-the trigger. Record notifications during deferred entry without treating their
-arrival as proof that the display changed. Before completing entry, validate
-the display identity and frame on the main thread; fail and roll back only on a
-real mismatch. This also keeps notification callbacks separate from borrowed
-saved state during AppKit setters.
+Coalesce exact-window screen-change and application screen-parameters
+notifications into a deferred foreground turn, outside GPUI's update borrow.
+Before completing entry, validate the display identity and frame; fail and roll
+back on a real mismatch. Once entry completes, refit to the same display's
+current full frame when its size or origin changes. A rearrangement can put the
+old window frame temporarily on another screen, so check the target display's
+geometry before interpreting the current screen as an intentional transfer.
 
-On an application screen-parameters event, resolve the current and saved
-display identities again and compare the active window frame with the current
-`NSScreen.frame`. Exit non-native mode if its display changed or its supposedly
-fullscreen frame no longer matches; otherwise leave it stable. This covers
-same-display resolution changes and coordinate reshuffles after another display
-is removed without forcing an exit for an irrelevant topology notification.
+If the target geometry is unchanged but the window moved to another display,
+exit non-native mode. Also exit when the target disappears. Ignore unrelated
+notifications. Scale and safe-area changes continue through the window's normal
+layout refresh. Refitting preserves the original restoration bounds, shadow
+state and presentation lease, and does not change focus or window ordering.
+Guard queued work against exit, native transitions and close; resolve the latest
+screen geometry when it runs. If AppKit cannot apply that geometry, recover to
+windowed mode.
 
 If the original display still exists and its full frame is unchanged, restore
 the saved content frame exactly. If the display's origin or size changed,
@@ -771,7 +772,8 @@ and permits exact restoration of the saved mask on exit.
   one more main-loop turn.
 - Non-native fullscreen auto-hides the menu bar and Dock and fills
   `NSScreen.frame`.
-- A non-native window exits fullscreen when its display changes.
+- A non-native window refits when its display changes size or origin. Transfer
+  to another display or removal of its target exits fullscreen.
 - Native state can never erase live non-native recovery state or its leases.
 - AppKit mutations run outside GPUI update borrows and every deferred operation
   is generation checked.

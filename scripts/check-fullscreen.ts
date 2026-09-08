@@ -234,6 +234,18 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         const topInset = Number(simple["w0.safe_area"]!.split(",")[0]);
         if (Number(simple["w0.tab_bounds"]!.split(",")[1]) !== topInset) throw new Error("tab bar overlaps the display safe area");
         if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + 32) throw new Error("terminal did not follow inset tab bar");
+        await accepted("probe-display-refit");
+        await waitFor(async () => {
+          const current = await state();
+          if (Number(current.command_sequence) < sequence) return false;
+          if (current["w0.mode"] === "Windowed" || current["w0.pending"] === "true") throw new Error("display resize exited non-native fullscreen");
+          return current["w0.frame"] === current["w0.screen"] && current["w0.shadow"] === "false" && current["w0.retained"] === "true";
+        }, "non-native display refit");
+        const refitted = await state();
+        for (const field of ["restore", "options", "responder", "insets"]) {
+          if (refitted[`w0.${field}`] !== simple[`w0.${field}`]) throw new Error(`display refit changed ${field}`);
+        }
+        await pty("refitted");
         for (const action of ["minimize", "zoom"]) if (!(await command(`0 ${action}`)).includes("Unavailable")) throw new Error(`${action} was allowed in non-native mode`);
         await accepted("0 previous_tab");
         await pty("simple");
@@ -267,7 +279,7 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         await closeWindow(1, true);
         if ((await state())["w0.options"] !== options) throw new Error("closing another window released surviving presentation leases");
       }
-      console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
+      console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
     if (macos && engine === "alacritty" && !frameProbe) {

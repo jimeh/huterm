@@ -65,6 +65,15 @@ pub(crate) mod native_policy {
         pub fn native_is_current(&self, generation: u64) -> bool {
             !self.closing.get() && self.native_generation.get() == generation
         }
+        pub fn can_refit(
+            &self,
+            generation: u64,
+            native_generation: u64,
+        ) -> bool {
+            self.is_current(generation)
+                && self.native_is_current(native_generation)
+                && self.operation.get().is_none()
+        }
         pub fn close(&self) {
             self.closing.set(true);
             self.native_event(true);
@@ -140,18 +149,40 @@ pub(crate) mod native_policy {
         )
     }
 
-    pub(crate) fn screen_change_needs_recovery(
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) enum DisplayChange {
+        Unchanged,
+        Refit(Display),
+        Recover,
+    }
+
+    pub(crate) fn display_change(
         entry_complete: bool,
-        original: Display,
+        active: Display,
         current: Option<Display>,
         frame: Bounds<f64>,
         displays: &[Display],
-    ) -> bool {
-        entry_complete
-            && (!displays.iter().any(|display| display.id == original.id)
-                || current.is_none_or(|display| {
-                    display.id != original.id || frame != display.frame
-                }))
+    ) -> DisplayChange {
+        if !entry_complete {
+            return DisplayChange::Unchanged;
+        }
+        let Some(target) =
+            displays.iter().find(|display| display.id == active.id)
+        else {
+            return DisplayChange::Recover;
+        };
+        // Rearrangement can temporarily put the old frame on another screen.
+        if target.frame != active.frame {
+            return DisplayChange::Refit(*target);
+        }
+        if current.is_none_or(|display| display.id != active.id) {
+            return DisplayChange::Recover;
+        }
+        if frame == target.frame {
+            DisplayChange::Unchanged
+        } else {
+            DisplayChange::Refit(*target)
+        }
     }
 
     #[derive(Default)]
@@ -280,6 +311,35 @@ pub(crate) mod native_policy {
             assert_eq!(leases.owners(), 0);
         }
         #[test]
+        fn deferred_refit_rejects_exit_native_transition_cancellation_and_close()
+         {
+            let gate = OperationGate::default();
+            assert!(gate.can_refit(0, 0));
+            let exit = Operation {
+                generation: 1,
+                effect: Effect::ExitNonNative,
+                target: super::super::Mode::Windowed,
+                deadline: std::time::Instant::now(),
+            };
+            gate.reserve(exit);
+            assert!(!gate.can_refit(0, 0));
+            assert!(!gate.can_refit(1, 0));
+            gate.complete(exit);
+            assert!(gate.can_refit(1, 0));
+            gate.native_event(false);
+            assert!(!gate.can_refit(1, 0));
+            assert!(gate.can_refit(1, 1));
+            gate.cancel(2);
+            assert!(!gate.can_refit(1, 1));
+            gate.native_event(true);
+            assert!(!gate.can_refit(2, 1));
+            gate.close();
+            assert!(
+                !gate.can_refit(gate.generation(), gate.native_generation())
+            );
+        }
+
+        #[test]
         fn deferred_operations_are_canceled_before_native_mutation() {
             let op = Operation {
                 generation: 1,
@@ -405,27 +465,130 @@ pub(crate) mod native_policy {
                 restore_frame(saved, original, &[other], Some(2)),
                 Some(rect(300., 190., 800., 600.))
             );
-            assert!(!screen_change_needs_recovery(
-                true,
-                original,
-                Some(original),
-                original.frame,
-                &[original]
-            ));
-            assert!(screen_change_needs_recovery(
-                true,
-                original,
-                Some(moved),
-                original.frame,
-                &[moved]
-            ));
-            assert!(screen_change_needs_recovery(
-                true,
-                original,
-                Some(other),
-                other.frame,
-                &[other]
-            ));
+            assert_eq!(
+                DisplayChange::Unchanged,
+                display_change(
+                    true,
+                    original,
+                    Some(original),
+                    original.frame,
+                    &[original]
+                )
+            );
+            assert_eq!(
+                DisplayChange::Refit(moved),
+                display_change(
+                    true,
+                    original,
+                    Some(moved),
+                    original.frame,
+                    &[moved]
+                )
+            );
+            assert_eq!(
+                DisplayChange::Recover,
+                display_change(
+                    true,
+                    original,
+                    Some(other),
+                    other.frame,
+                    &[other]
+                )
+            );
+        }
+
+        #[test]
+        fn same_display_resize_and_rearrangement_refit_without_losing_restore_anchor()
+         {
+            let original = Display {
+                id: 1,
+                frame: rect(0., 0., 1200., 900.),
+                visible: rect(0., 0., 1200., 880.),
+            };
+            let saved = rect(200., 100., 800., 600.);
+            let resized = Display {
+                frame: rect(-900., 100., 900., 700.),
+                visible: rect(-900., 100., 900., 680.),
+                ..original
+            };
+            let other = Display {
+                id: 2,
+                frame: original.frame,
+                visible: original.visible,
+            };
+            assert_eq!(
+                display_change(
+                    true,
+                    original,
+                    Some(other),
+                    original.frame,
+                    &[resized, other]
+                ),
+                DisplayChange::Refit(resized)
+            );
+            assert_eq!(
+                display_change(
+                    true,
+                    resized,
+                    Some(resized),
+                    resized.frame,
+                    &[resized, other]
+                ),
+                DisplayChange::Unchanged
+            );
+            assert_eq!(
+                restore_frame(saved, original, &[resized, other], Some(1)),
+                Some(rect(-800., 180., 800., 600.))
+            );
+        }
+
+        #[test]
+        fn display_transfer_and_removal_recover_but_unrelated_changes_do_nothing()
+         {
+            let active = Display {
+                id: 1,
+                frame: rect(0., 0., 1200., 900.),
+                visible: rect(0., 0., 1200., 880.),
+            };
+            let other = Display {
+                id: 2,
+                frame: rect(1200., 0., 900., 700.),
+                visible: rect(1200., 0., 900., 680.),
+            };
+            assert_eq!(
+                display_change(
+                    true,
+                    active,
+                    Some(active),
+                    active.frame,
+                    &[active, other]
+                ),
+                DisplayChange::Unchanged
+            );
+            assert_eq!(
+                display_change(
+                    true,
+                    active,
+                    Some(other),
+                    other.frame,
+                    &[active, other]
+                ),
+                DisplayChange::Recover
+            );
+            assert_eq!(
+                display_change(
+                    true,
+                    active,
+                    Some(other),
+                    other.frame,
+                    &[other]
+                ),
+                DisplayChange::Recover
+            );
+            assert_eq!(
+                display_change(true, active, None, active.frame, &[]),
+                DisplayChange::Recover
+            );
         }
 
         #[test]
@@ -440,13 +603,16 @@ pub(crate) mod native_policy {
                 frame: rect(1000., 0., 1000., 800.),
                 visible: rect(1000., 0., 1000., 780.),
             };
-            assert!(!screen_change_needs_recovery(
-                false,
-                original,
-                Some(other),
-                rect(100., 100., 800., 600.),
-                &[other]
-            ));
+            assert_eq!(
+                DisplayChange::Unchanged,
+                display_change(
+                    false,
+                    original,
+                    Some(other),
+                    rect(100., 100., 800., 600.),
+                    &[other]
+                )
+            );
         }
 
         #[test]
