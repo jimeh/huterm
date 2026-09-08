@@ -243,3 +243,29 @@ snapshot and fails the task.
 This proves synthetic AppKit event dispatch into real GPUI input and PTY bytes.
 It does not prove physical keyboard device behavior, arbitrary input-method
 preedit, alternate layouts, or hardware key-up ordering.
+
+## Built-in terminal graphics
+
+The GPUI renderer draws all Box Drawing and Block Elements characters,
+U+2500–U+259F, using cell geometry. These characters join across rows and
+columns independently of the selected font. Other characters and combining
+sequences use normal font shaping. Coverage and adaptation provenance are in
+[the terminal graphics notices](../../third-party/terminal-graphics/README.md).
+
+Run `mise run smoke:renderer` to exercise the production preparation and paint
+paths with all 160 characters, at font sizes 12, 16, and 20. The smoke checks
+font bypass, hidden text, combining-sequence fallback, geometry reuse, and
+invalidation after a display-scale change. It runs under Xvfb on Linux and
+natively on macOS. Geometry unit tests check block coverage, fractional display
+scales, odd cell dimensions, line junctions, dashes, and path construction.
+
+For visual inspection after building the smoke executable, run:
+
+```sh
+HUTERM_RENDERER_HOLD=1 target/debug/examples/renderer_smoke
+```
+
+The fixture shows stacked scrollbar blocks, connected borders, shades,
+selection colors, and ordinary text. Close it with the window close button or
+interrupt the process. A passing smoke proves that native preparation and
+painting ran; it does not replace checking the resulting pixels.

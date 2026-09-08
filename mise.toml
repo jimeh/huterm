@@ -315,6 +315,7 @@ if ! cmp -s assets/Huterm.icns "$packaged_icon"; then
   exit 1
 fi
 assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty license"
+assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
 if otool -L "$executable" | rg -q 'libghostty'; then
   echo "package verification failed: Ghostty must be statically linked" >&2
   exit 1
@@ -520,12 +521,14 @@ depends = ["verify:toolchain"]
 run = '''
 case "$(uname -s)" in
   Darwin)
+    mise run smoke:renderer
     mise run smoke:macos-menus
     mise run smoke:macos-input
     mise run smoke:macos-quit
     mise run smoke:macos-fullscreen
     ;;
   Linux)
+    mise run smoke:renderer
     mise run smoke:linux
     mise run smoke:linux-input
     mise run smoke:linux-fullscreen
@@ -538,3 +541,17 @@ esac
 description = "Run CI scroll budgets for both engines with one release build"
 depends = ["verify:toolchain"]
 run = ["mise run bench:scroll", "mise run bench:scroll:ghostty"]
+
+[tasks."smoke:renderer"]
+description = "Verify built-in terminal graphics through native GPUI preparation and paint"
+depends = ["ghostty:prepare"]
+run = '''
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example renderer_smoke
+if [ "$(uname -s)" = Linux ]; then
+  output="$(timeout 15s xvfb-run -a -s '-screen 0 1280x960x24 -noreset' target/debug/examples/renderer_smoke)"
+else
+  output="$(timeout 15s target/debug/examples/renderer_smoke)"
+fi
+printf '%s\n' "$output"
+printf '%s\n' "$output" | rg -q '^RENDERER_SMOKE passed$'
+'''
