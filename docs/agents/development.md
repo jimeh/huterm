@@ -49,9 +49,11 @@ mise run dev
 On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
 Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
 inherited. Linux launches `$SHELL` in the current working directory. The
-fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Ctrl-Cmd-F` or `F11`
-toggles the configured fullscreen mode. Native is the default; macOS also
-supports `window.macos_fullscreen_mode = "non_native"` in the current Space.
+fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Cmd-Enter` on macOS or
+`F11` toggles the configured fullscreen mode. macOS defaults to `non_native` in
+the current Space; `window.macos_fullscreen_mode = "native"` selects a separate
+Space. The green window button still uses native fullscreen. Linux always uses
+native fullscreen.
 Closing a tab stops its terminal. Closing a shared
 session view detaches it; closing the final view terminates that session and
 its terminals. Explicit detachment preserves sessions without viewers. Huterm

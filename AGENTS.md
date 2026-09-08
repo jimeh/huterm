@@ -538,3 +538,10 @@ Spaces already handle this. Carry those logical-point insets through ChromeLayou
 and every retained TerminalView. Keep safe-area padding separate from the titlebar
 inset, which also controls titlebar rendering. AppKit NSEdgeInsets field order is
 top/left/bottom/right, unlike GPUI's top/right/bottom/left.
+
+GPUI 0.2.2 passes literal `enter` and `tab` strings to NSMenuItem instead of
+AppKit's Return and Tab characters. Normalize those two key equivalents after
+`set_menus` at startup and reload; leave the configured GPUI keys unchanged.
+AppKit derives both shortcut display and activation from `keyEquivalent`.
+Keep the native menu smoke assertions for these characters when upgrading GPUI;
+remove the workaround once upstream converts them correctly.

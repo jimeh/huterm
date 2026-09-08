@@ -131,6 +131,10 @@ fn install_menus(cx: &mut App) {
             ],
         },
     ]);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::native_quit::normalize_menu_key_equivalents() {
+        eprintln!("Menu shortcut normalization failed: {error:#}");
+    }
 }
 
 fn resolve_metrics(

@@ -156,7 +156,7 @@ padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
 tab_position = "top" # top, bottom, left, or right
-macos_fullscreen_mode = "native" # native or non_native; ignored on Linux
+macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
@@ -164,10 +164,11 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-F11, and Ctrl-Cmd-F on macOS, toggle the configured fullscreen mode. The default
-is native fullscreen, which creates a separate macOS Space. Set
-`macos_fullscreen_mode = "non_native"` to fill the current display without
-creating a Space. Non-native mode auto-hides the Dock and menu bar and restores
+Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
+mode. macOS defaults to non-native fullscreen in the current Space. Set
+`macos_fullscreen_mode = "native"` to create a separate macOS Space instead.
+The green window button always uses AppKit's native fullscreen behavior.
+Non-native mode auto-hides the Dock and menu bar and restores
 the window's previous bounds on exit. Minimize and Zoom are unavailable while
 that window owns non-native presentation state.
 
@@ -403,7 +404,7 @@ Default bindings differ per platform:
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
-| `toggle_fullscreen` | `f11`, `ctrl-cmd-f` | `f11` |
+| `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
 | `reload_config` | `cmd-<` | `ctrl-<` |
 | `open_settings` | `cmd-,` | |
 | `quit` | `cmd-q` | |

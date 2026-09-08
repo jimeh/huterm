@@ -1,9 +1,12 @@
 /** Run the AppKit menu smoke in its own main-thread process. */
 export function checkNativeMenus(exitCode: number, output: string): void {
   const expected = [
+    "default-fullscreen-shortcut",
     "startup-user-shortcut",
     "untouched-default-shortcut",
+    "startup-special-shortcuts",
     "reloaded-user-shortcut",
+    "reloaded-special-shortcuts",
   ];
   const prefix = "NATIVE_MENUS_SMOKE ";
   const actual = output.split(/\r?\n/)

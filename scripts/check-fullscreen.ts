@@ -79,9 +79,9 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
   const directory = await mkdtemp(join(tmpdir(), "huterm-fullscreen-"));
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
-  const configText = (mode: string) => `[terminal]\nengine = "${engine}"\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n`;
+  const configText = (mode: string) => `[terminal]\nengine = "${engine}"\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
   await writeFile(shell, `#!/bin/sh\nprintf 'READY\\n'\nwhile IFS= read -r line; do printf 'ACK:%s:' "$line"; stty size; done\n`, { mode: 0o700 });
-  await writeFile(config, configText("native"));
+  await writeFile(config, macos ? configText("native").replace('macos_fullscreen_mode = "native"\n', "") : configText("native"));
   const app = Bun.spawn([executable], {
     env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_FULLSCREEN_SMOKE: directory, SHELL: shell },
     stdout: "pipe", stderr: "pipe",
@@ -186,7 +186,18 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
       assertTimeout(await state(), stderr);
       console.log("FULLSCREEN_SMOKE no-ewmh one-status-error pending-cleared");
     } else {
-      if (macos) await accepted("0 toggle_fullscreen");
+      if (macos) {
+        if (original["w0.default"] !== "NonNative") throw new Error("macOS did not default to non-native fullscreen");
+        await accepted(`native\t36\t${1 << 20}\t\r\t\r`);
+        await stable("NonNative");
+        await accepted("0 toggle_fullscreen");
+        await stable("Windowed");
+        await waitForRestored(original, true);
+        await writeFile(config, configText("native"));
+        await accepted("0 reload_config");
+        await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
+      }
+      if (macos) await accepted(`native\t36\t${1 << 20}\t\r\t\r`);
       else run(["xdotool", "key", "F11"]);
       const full = await stable("Native");
       if (full["w0.focused"] !== "true" || full["w0.retained"] !== "true") throw new Error("native mode lost focus or retained chrome");

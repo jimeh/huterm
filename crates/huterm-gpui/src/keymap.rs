@@ -458,23 +458,24 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             "Scroll down one page",
         ),
         default("shift-end", ids::SCROLL_TO_BOTTOM, "Scroll to live output"),
-        default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
     ];
     match platform {
         Platform::MacOs => entries.extend([
+            default("cmd-enter", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
+            default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("cmd-c", ids::COPY, "Copy the selection"),
             default("cmd-v", ids::PASTE, "Paste from the clipboard"),
             default("cmd-,", ids::OPEN_SETTINGS, "Open the configuration file"),
             // GPUI folds Shift+comma into '<' and clears Shift on both
             // backends, so the binding names the resulting symbol.
             default("cmd-<", ids::RELOAD_CONFIG, "Reload the configuration"),
-            default("ctrl-cmd-f", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("cmd-q", ids::QUIT, "Quit Huterm"),
             default("cmd-m", ids::MINIMIZE, "Minimize the window"),
             default("cmd-h", ids::HIDE, "Hide Huterm"),
             default("cmd-alt-h", ids::HIDE_OTHERS, "Hide other applications"),
         ]),
         Platform::Linux => entries.extend([
+            default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("ctrl-shift-c", ids::COPY, "Copy the selection"),
             default("ctrl-shift-v", ids::PASTE, "Paste from the clipboard"),
             default("ctrl-<", ids::RELOAD_CONFIG, "Reload the configuration"),
@@ -583,7 +584,7 @@ mod tests {
             "cmd-v",
             "cmd-h",
             "cmd-alt-h",
-            "ctrl-cmd-f",
+            "cmd-enter",
             "cmd-<",
             "cmd-9",
             "cmd-shift-w",

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { checkNativeMenus } from "./check-native-menus.ts";
 
-const markers = ["startup-user-shortcut", "untouched-default-shortcut", "reloaded-user-shortcut"];
+const markers = ["default-fullscreen-shortcut", "startup-user-shortcut", "untouched-default-shortcut", "startup-special-shortcuts", "reloaded-user-shortcut", "reloaded-special-shortcuts"];
 const log = (values: string[]) => values.map(value => `NATIVE_MENUS_SMOKE ${value}`).join("\n");
 
 test("native menu checker requires successful exit and all ordered assertions", () => {

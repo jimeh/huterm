@@ -23,7 +23,7 @@ size = 14.0
 
 [window]
 # Default fullscreen mode on macOS: "native" or "non_native". Linux ignores it.
-macos_fullscreen_mode = "native"
+macos_fullscreen_mode = "non_native"
 # Padding in logical points on each side of the terminal.
 padding_x = 4.0
 padding_y = 4.0
@@ -115,7 +115,7 @@ pub(super) struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            macos_fullscreen_mode: MacosFullscreenMode::Native,
+            macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
@@ -126,9 +126,9 @@ impl Default for WindowConfig {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 pub(super) enum MacosFullscreenMode {
-    #[default]
     #[serde(rename = "native")]
     Native,
+    #[default]
     #[serde(rename = "non_native")]
     NonNative,
 }
@@ -632,7 +632,7 @@ mod tests {
     fn fullscreen_mode_defaults_spelling_reload_and_startup_fallback() {
         assert_eq!(
             parse("").unwrap().window.macos_fullscreen_mode,
-            MacosFullscreenMode::Native
+            MacosFullscreenMode::NonNative
         );
         for (value, expected) in [
             ("native", MacosFullscreenMode::Native),
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(fallback.config.engine, TerminalEngineKind::Ghostty);
         assert_eq!(
             fallback.config.window.macos_fullscreen_mode,
-            MacosFullscreenMode::Native
+            MacosFullscreenMode::NonNative
         );
         fs::remove_dir_all(directory).unwrap();
     }
@@ -1056,7 +1056,7 @@ background = "#040506"
                 padding_y: 0.0,
                 padding_balance: false,
                 tab_position: TabPosition::Top,
-                macos_fullscreen_mode: MacosFullscreenMode::Native,
+                macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             }
         );
     }

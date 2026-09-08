@@ -17,6 +17,9 @@ pub(crate) fn run() {
 }
 
 fn check(cx: &mut App) -> anyhow::Result<()> {
+    bind_keymap(cx, keymap::compile(Platform::MacOs, &[])?);
+    shortcut("Toggle Fullscreen", "\r")?;
+    marker("default-fullscreen-shortcut");
     let mut config = Config {
         keybindings: vec![
             KeybindingEntry {
@@ -35,6 +38,9 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
                 args: None,
                 description: None,
             },
+            binding("cmd-enter", "toggle_fullscreen"),
+            binding("cmd-tab", "next_tab"),
+            binding("cmd-e", "unbind"),
         ],
         ..Config::default()
     };
@@ -50,14 +56,32 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     marker("startup-user-shortcut");
     shortcut("New Tab", "t")?;
     marker("untouched-default-shortcut");
+    shortcut("Toggle Fullscreen", "\r")?;
+    shortcut("Next Tab", "\t")?;
+    marker("startup-special-shortcuts");
 
     config.keybindings[1].key = "cmd-y".into();
+    config.keybindings[2].key = "cmd-f".into();
+    config.keybindings[3].key = "cmd-enter".into();
     let compiled = keymap::compile(Platform::MacOs, &config.keybindings)?;
     // Reload invokes this same function after configuration validation.
     bind_keymap(cx, compiled);
     shortcut("Reload Configuration", "y")?;
     marker("reloaded-user-shortcut");
+    shortcut("Toggle Fullscreen", "f")?;
+    shortcut("Next Tab", "\r")?;
+    marker("reloaded-special-shortcuts");
     Ok(())
+}
+
+fn binding(key: &str, command: &str) -> KeybindingEntry {
+    KeybindingEntry {
+        key: key.into(),
+        command: command.into(),
+        when: None,
+        args: None,
+        description: None,
+    }
 }
 
 fn shortcut(title: &str, key: &str) -> anyhow::Result<()> {

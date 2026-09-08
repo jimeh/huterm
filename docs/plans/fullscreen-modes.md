@@ -32,8 +32,8 @@ fullscreen. It does not switch directly between fullscreen modes. For example,
 `toggle_native_fullscreen` exits a window that is currently in non-native
 fullscreen.
 
-The existing `f11` binding on macOS and Linux, and `ctrl-cmd-f` on macOS,
-continue to invoke `toggle_fullscreen`. The View menu keeps its single standard
+The `cmd-enter` binding on macOS and `f11` on macOS and Linux invoke
+`toggle_fullscreen`. The View menu keeps its single standard
 Toggle Fullscreen item. The two explicit commands remain available to custom
 keybindings, programmatic callers, and the future command palette.
 
@@ -41,11 +41,12 @@ On macOS, this setting selects the mode used by `toggle_fullscreen`:
 
 ```toml
 [window]
-macos_fullscreen_mode = "native" # or "non_native"
+macos_fullscreen_mode = "non_native" # or "native"
 ```
 
-The default is `native`, preserving current behavior. The setting is accepted
-on every supported platform so one config file remains portable. Linux ignores
+The macOS default is `non_native`. The green window button retains AppKit's
+native fullscreen behavior. The setting is accepted on every supported platform
+so one config file remains portable. Linux ignores
 it and always uses native fullscreen for `toggle_fullscreen`, through GPUI's X11
 backend. Huterm currently enables X11 only; enabling Wayland is outside #40.
 An explicit `toggle_non_native_fullscreen` invocation
@@ -761,7 +762,7 @@ and permits exact restoration of the saved mask on exit.
   fullscreen; do not fork, patch, or upgrade GPUI for #40.
 - Replace local simple-mode mechanics when a published GPUI upgrade preserves
   the contract and passes the specified compatibility and runtime checks.
-- Native fullscreen remains the default on every platform.
+- Non-native fullscreen is the macOS default; Linux uses native fullscreen.
 - The explicit non-native command is macOS-only; the config remains portable.
 - Any fullscreen toggle exits whichever mode is active.
 - Rapid toggles update desired state and never overlap platform operations.
