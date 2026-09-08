@@ -16,7 +16,7 @@ use gpui::{Bounds, Window};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel, YES};
 use objc::{msg_send, sel, sel_impl};
-use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::fullscreen::native_policy::{
     Display, Leases, OperationGate, PresentationLease, needs_recovery,
@@ -179,7 +179,7 @@ impl Adapter {
             ];
             ensure!(main == YES, "fullscreen adapter requires the main thread");
             let RawWindowHandle::AppKit(handle) =
-                window.window_handle()?.as_raw()
+                HasWindowHandle::window_handle(window)?.as_raw()
             else {
                 anyhow::bail!("fullscreen requires AppKit");
             };
@@ -450,7 +450,7 @@ impl Adapter {
         );
         let window = self.0.window.0;
         // SAFETY: Deferred until after style/lease restoration. The pure helper
-        // computes a valid content rect in AppKit's global screen coordinates.
+        // clamps the titled frame, including its decoration above the content.
         unsafe {
             let style: usize = msg_send![window, styleMask];
             ensure!(
@@ -459,15 +459,15 @@ impl Adapter {
             );
             let screen: *mut Object = msg_send![window, screen];
             let current = display(screen).ok();
-            let content = restore_frame(
-                state.content,
+            let saved_frame: Bounds<f64> =
+                msg_send![window, frameRectForContentRect: state.content];
+            let frame = restore_frame(
+                saved_frame,
                 state.display,
                 &displays()?,
                 current.map(|display| display.id),
             )
             .context("no display available for fullscreen restoration")?;
-            let frame: Bounds<f64> =
-                msg_send![window, frameRectForContentRect: content];
             let _: () = msg_send![window, setFrame: frame display: YES];
             let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null_mut::<Object>()];
             restore_responder(window, &state.responder)?;

@@ -199,6 +199,7 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
       await accepted("0 toggle_fullscreen"); await stable("Native");
     }
     const saved = (await state())["w0.restore"];
+    if (macos && saved !== original["w0.restore"]) throw new Error(`Fullscreen lost original windowed bounds: ${saved} != ${original["w0.restore"]}`);
     await accepted("0 quit");
     await waitFor(async () => app.exitCode !== null || (await state())["w0.confirming"] === "true", "Quit assessment");
     if (app.exitCode === null) await accepted("0 confirm_close");

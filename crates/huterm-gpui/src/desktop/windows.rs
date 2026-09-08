@@ -1485,19 +1485,7 @@ impl WorkspaceView {
             ids::TOGGLE_FULLSCREEN
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
-                #[cfg(target_os = "macos")]
-                self.native_fullscreen
-                    .as_ref()
-                    .ok_or_else(|| {
-                        CommandError::Unavailable(
-                            "native fullscreen adapter is unavailable"
-                                .to_owned(),
-                        )
-                    })?
-                    .preflight()
-                    .map_err(|error| {
-                        CommandError::Unavailable(error.to_string())
-                    })?;
+                self.observe_fullscreen(window, cx);
                 let intent = match invocation.id {
                     ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
                     ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
@@ -1505,10 +1493,21 @@ impl WorkspaceView {
                     }
                     _ => ToggleIntent::Default,
                 };
-                self.fullscreen.toggle(intent).map_err(|error| {
-                    CommandError::Unavailable(error.to_owned())
-                })?;
-                self.refresh_fullscreen(window, cx);
+                self.fullscreen
+                    .toggle_checked(intent, || {
+                        #[cfg(target_os = "macos")]
+                        self.native_fullscreen
+                            .as_ref()
+                            .ok_or_else(|| {
+                                "non-native fullscreen adapter is unavailable"
+                                    .to_owned()
+                            })?
+                            .preflight()
+                            .map_err(|error| error.to_string())?;
+                        Ok(())
+                    })
+                    .map_err(CommandError::Unavailable)?;
+                self.advance_fullscreen(window, cx);
                 Ok(CommandOutcome::Accepted)
             }
             ids::MINIMIZE => {
@@ -1599,6 +1598,17 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.observe_fullscreen(window, cx);
+        self.advance_fullscreen(window, cx);
+    }
+
+    // Commands must reconcile queued native changes before choosing a target.
+    // Observation cannot dispatch effects for the preceding desired state.
+    fn observe_fullscreen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let previous =
             (self.fullscreen.chrome_hidden, self.fullscreen.observed);
         let now = Instant::now();
@@ -1626,6 +1636,8 @@ impl WorkspaceView {
                     Event::Recover => self.fullscreen.recover(),
                 }
             }
+        } else {
+            self.fullscreen.observe_native_flag(window.is_fullscreen());
         }
         self.fullscreen
             .sample(window.is_fullscreen(), window.window_bounds());
@@ -1650,7 +1662,16 @@ impl WorkspaceView {
             }
             cx.notify();
         }
-        if let Some(operation) = self.fullscreen.next(now) {
+    }
+
+    fn advance_fullscreen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = cx;
+        if let Some(operation) = self.fullscreen.next(Instant::now()) {
             match operation.effect {
                 Effect::ToggleNative => window.toggle_fullscreen(),
                 Effect::EnterNonNative | Effect::ExitNonNative => {

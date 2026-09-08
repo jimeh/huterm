@@ -79,6 +79,7 @@ pub(crate) mod native_policy {
         displays: &[Display],
         current: Option<u32>,
     ) -> Option<Bounds<f64>> {
+        // `saved` includes the restored window's titlebar and frame borders.
         if let Some(display) =
             displays.iter().find(|display| display.id == original.id)
         {
@@ -367,6 +368,57 @@ pub(crate) mod native_policy {
                 &[other]
             ));
         }
+
+        #[test]
+        fn moved_display_clamps_titled_frame_below_visible_top() {
+            let original = Display {
+                id: 1,
+                frame: rect(-1000., 0., 1000., 800.),
+                visible: rect(-1000., 0., 1000., 776.),
+            };
+            let moved = Display {
+                frame: rect(0., 0., 1000., 800.),
+                visible: rect(0., 0., 1000., 776.),
+                ..original
+            };
+            // 600 content points plus a 28-point titlebar. Clamping content
+            // first would put the expanded frame's top at 804 instead of 776.
+            let saved_frame = rect(-900., 176., 800., 628.);
+            let restored =
+                restore_frame(saved_frame, original, &[moved], Some(1))
+                    .unwrap();
+            assert_eq!(restored, rect(100., 148., 800., 628.));
+            assert_eq!(restored.size - size(0., 28.), size(800., 600.));
+            assert_eq!(
+                restore_frame(saved_frame, original, &[original], Some(1)),
+                Some(saved_frame)
+            );
+        }
+
+        #[test]
+        fn missing_or_shrunk_display_fits_frame_including_titlebar() {
+            let original = Display {
+                id: 1,
+                frame: rect(0., 0., 1000., 800.),
+                visible: rect(0., 0., 1000., 776.),
+            };
+            let smaller = Display {
+                id: 1,
+                frame: rect(0., 0., 700., 500.),
+                visible: rect(0., 0., 700., 476.),
+            };
+            let saved_frame = rect(100., 100., 800., 628.);
+            let shrunk =
+                restore_frame(saved_frame, original, &[smaller], Some(1))
+                    .unwrap();
+            assert_eq!(shrunk, smaller.visible);
+            assert_eq!(shrunk.size - size(0., 28.), size(700., 448.));
+            let replacement = Display { id: 2, ..smaller };
+            assert_eq!(
+                restore_frame(saved_frame, original, &[replacement], Some(2)),
+                Some(replacement.visible)
+            );
+        }
         #[test]
         fn leases_preserve_preexisting_bits_until_final_owner() {
             for original in [0, 1, 2, 5, 6, 9, 10, 1 << 10] {
@@ -484,19 +536,27 @@ impl FullscreenController {
         self.default = default;
     }
 
-    pub fn toggle(&mut self, intent: ToggleIntent) -> Result<(), &'static str> {
+    #[cfg(test)]
+    pub fn toggle(&mut self, intent: ToggleIntent) -> Result<(), String> {
+        self.toggle_checked(intent, || Ok(()))
+    }
+
+    pub fn toggle_checked(
+        &mut self,
+        intent: ToggleIntent,
+        non_native_preflight: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.closing {
-            return Err("window is closing");
+            return Err("window is closing".to_owned());
         }
         if matches!(intent, ToggleIntent::NonNative) && !self.macos {
-            return Err("non-native fullscreen is only available on macOS");
+            return Err(
+                "non-native fullscreen is only available on macOS".to_owned()
+            );
         }
-        if self.recovery_blocked {
-            self.recovery_blocked = false;
-            self.desired = Mode::Windowed;
-            return Ok(());
-        }
-        self.desired = if self.desired == Mode::Windowed {
+        let desired = if self.recovery_blocked {
+            Mode::Windowed
+        } else if self.desired == Mode::Windowed {
             match intent {
                 ToggleIntent::NonNative => Mode::NonNative,
                 ToggleIntent::Default
@@ -510,6 +570,17 @@ impl FullscreenController {
         } else {
             Mode::Windowed
         };
+        if self.recovery
+            || self.observed == Mode::NonNative
+            || desired == Mode::NonNative
+            || self
+                .pending
+                .is_some_and(|op| op.effect != Effect::ToggleNative)
+        {
+            non_native_preflight()?;
+        }
+        self.recovery_blocked = false;
+        self.desired = desired;
         Ok(())
     }
 
@@ -600,14 +671,7 @@ impl FullscreenController {
     pub fn sample(&mut self, native: bool, bounds: WindowBounds) {
         self.chrome_hidden = native || self.non_native_chrome;
         if !self.macos {
-            let mode = if native { Mode::Native } else { Mode::Windowed };
-            if self.pending.is_some_and(|op| op.target == mode) {
-                self.observed = mode;
-                self.pending = None;
-            } else if self.pending.is_none() && self.observed != mode {
-                self.observed = mode;
-                self.desired = mode;
-            }
+            self.observe_native_flag(native);
         }
         if !self.recovery && self.pending.is_none() {
             match bounds {
@@ -623,6 +687,19 @@ impl FullscreenController {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // X11, or macOS when observer installation failed. A working AppKit
+    // observer instead owns transition completion through Will/Did events.
+    pub fn observe_native_flag(&mut self, native: bool) {
+        let mode = if native { Mode::Native } else { Mode::Windowed };
+        if self.pending.is_some_and(|op| op.target == mode) {
+            self.observed = mode;
+            self.pending = None;
+        } else if self.pending.is_none() && self.observed != mode {
+            self.observed = mode;
+            self.desired = mode;
         }
     }
 
@@ -701,6 +778,160 @@ mod tests {
             macos,
         )
     }
+
+    #[test]
+    fn command_after_queued_native_entry_exits_after_completion() {
+        for completed in [false, true] {
+            let mut c = controller(true);
+            let now = Instant::now();
+            // The command observes the inbox before accepting a new intent.
+            c.native_event(NativeEvent::WillEnter, now);
+            if completed {
+                c.native_event(NativeEvent::DidEnter, now);
+            }
+            c.sample(completed, c.bounds);
+            c.toggle(ToggleIntent::Native).unwrap();
+            if !completed {
+                assert!(c.next(now).is_none());
+                c.native_event(NativeEvent::DidEnter, now);
+            }
+            assert!(c.next(now).is_none());
+            let exit =
+                c.next(now).expect("accepted command exits external entry");
+            assert_eq!(
+                (exit.effect, exit.target),
+                (Effect::ToggleNative, Mode::Windowed)
+            );
+        }
+    }
+
+    #[test]
+    fn command_after_new_linux_fullscreen_flag_exits() {
+        let mut c = controller(false);
+        c.sample(true, c.bounds);
+        c.toggle(ToggleIntent::Native).unwrap();
+        let exit = c
+            .next(Instant::now())
+            .expect("accepted command exits external entry");
+        assert_eq!(
+            (exit.effect, exit.target),
+            (Effect::ToggleNative, Mode::Windowed)
+        );
+    }
+
+    #[test]
+    fn native_toggle_survives_unavailable_non_native_adapter() {
+        let mut c = controller(true);
+        let now = Instant::now();
+        c.toggle_checked(
+            ToggleIntent::Default,
+            || Err("no adapter".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(c.next(now).unwrap().effect, Effect::ToggleNative);
+        // Without an observer, GPUI's native flag still completes the request.
+        c.observe_native_flag(true);
+        assert_eq!(c.observed, Mode::Native);
+        assert!(!c.is_pending());
+        c.toggle_checked(ToggleIntent::NonNative, || {
+            Err("no screen".to_owned())
+        })
+        .unwrap();
+        assert_eq!(c.next(now).unwrap().target, Mode::Windowed);
+        c.observe_native_flag(false);
+        assert_eq!(c.observed, Mode::Windowed);
+        c.toggle_checked(ToggleIntent::Native, || Err("no screen".to_owned()))
+            .unwrap();
+        assert_eq!(c.next(now).unwrap().target, Mode::Native);
+    }
+
+    #[test]
+    fn non_native_preflight_failure_preserves_entry_and_exit_intent() {
+        let mut c = controller(true);
+        let now = Instant::now();
+        c.set_default(MacosFullscreenMode::NonNative);
+        for intent in [ToggleIntent::Default, ToggleIntent::NonNative] {
+            assert!(
+                c.toggle_checked(intent, || Err("no screen".to_owned()))
+                    .is_err()
+            );
+            assert!(c.next(now).is_none());
+            assert_eq!(c.desired, Mode::Windowed);
+        }
+        c.toggle(ToggleIntent::Default).unwrap();
+        let entry = c.next(now).unwrap();
+        assert!(
+            c.toggle_checked(ToggleIntent::Native, || Err(
+                "no screen".to_owned()
+            ))
+            .is_err()
+        );
+        assert_eq!(c.desired, Mode::NonNative);
+        c.complete(entry.generation, true);
+        assert!(
+            c.toggle_checked(ToggleIntent::Native, || Err(
+                "no screen".to_owned()
+            ))
+            .is_err()
+        );
+        assert!(c.next(now).is_none());
+        c.toggle(ToggleIntent::Native).unwrap();
+        let exit = c.next(now).unwrap();
+        assert_eq!(exit.effect, Effect::ExitNonNative);
+        c.fail(exit.generation);
+        assert!(c.recovery_blocked);
+        assert!(
+            c.toggle_checked(ToggleIntent::Native, || Err(
+                "no screen".to_owned()
+            ))
+            .is_err()
+        );
+        assert!(
+            c.recovery_blocked,
+            "refusal must not enable an automatic recovery retry"
+        );
+        assert!(c.next(now).is_none());
+        c.toggle(ToggleIntent::Native).unwrap();
+        assert_eq!(c.next(now).unwrap().effect, Effect::ExitNonNative);
+    }
+
+    #[test]
+    fn fullscreen_context_tracks_completed_modes_through_entry_and_exit() {
+        let now = Instant::now();
+        let mut native = controller(true);
+        assert!(!native.fullscreen_context());
+        native.toggle(ToggleIntent::Native).unwrap();
+        native.next(now).unwrap();
+        native.native_event(NativeEvent::WillEnter, now);
+        native.sample(true, native.bounds);
+        assert!(!native.fullscreen_context());
+        native.native_event(NativeEvent::DidEnter, now);
+        assert!(native.fullscreen_context());
+        native.toggle(ToggleIntent::Native).unwrap();
+        native.next(now);
+        native.next(now).unwrap();
+        native.native_event(NativeEvent::WillExit, now);
+        assert!(native.fullscreen_context());
+        native.native_event(NativeEvent::DidExit, now);
+        assert!(!native.fullscreen_context());
+
+        let mut non_native = controller(true);
+        non_native.toggle(ToggleIntent::NonNative).unwrap();
+        let enter = non_native.next(now).unwrap();
+        non_native.non_native_state(true, true);
+        non_native.sample(false, non_native.bounds);
+        assert!(!non_native.fullscreen_context());
+        non_native.complete(enter.generation, true);
+        assert!(non_native.fullscreen_context());
+        non_native.toggle(ToggleIntent::Native).unwrap();
+        let exit = non_native.next(now).unwrap();
+        non_native.non_native_state(true, false);
+        non_native.sample(false, non_native.bounds);
+        assert!(non_native.fullscreen_context());
+        non_native.complete(exit.generation, false);
+        assert!(!non_native.fullscreen_context());
+    }
+
     #[test]
     fn failed_entry_retains_recovery_then_retryable_rollback() {
         let mut c = controller(true);

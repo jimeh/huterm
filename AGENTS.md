@@ -496,3 +496,10 @@ Fullscreen native observers own a separate event queue and operation gate.
 Invalidate deferred non-native work in the notification callback itself, then
 let the window pump reconcile mode. AppKit setters and presentation cleanup,
 including unexpected view release, run outside GPUI update borrows.
+Observe queued native notifications and the current fullscreen flag before
+accepting a toggle; dispatch effects only after that intent is accepted. Native
+fullscreen must remain available when the non-native adapter is unavailable.
+For display recovery, expand saved content to its restored titled frame before
+clamping to the visible display, or AppKit constrains the titlebar a second time.
+GPUI's inherent `Window::window_handle` returns its own handle; qualify
+`HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.
