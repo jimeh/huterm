@@ -40,6 +40,68 @@ Then install the pinned Rust and validation tools plus the local hook:
 mise run setup
 ```
 
+## Linux checks through Docker
+
+Docker can run the Linux checks from macOS or Linux. The runner defaults to
+Docker's native architecture and accepts `--arch amd64` or `--arch arm64`.
+Docker must already be running with a Linux engine; non-native architectures
+require working emulation in that engine.
+
+```sh
+mise run linux:test
+mise run linux:smoke
+mise run linux:test -- --arch amd64
+mise run linux:smoke -- --arch arm64
+mise run linux:exec -- mise run smoke:renderer
+mise run linux:exec -- --arch amd64 mise run build:exec -- \
+  cargo test -p huterm-gpui renderer::builtin --lib
+```
+
+`linux:test` runs the full Rust unit and PTY integration suite. `linux:smoke`
+runs the existing renderer, application, input, and fullscreen smokes under
+Xvfb with Mesa software Vulkan. `linux:exec` accepts a command and literal
+arguments, including a focused Cargo test or `mise run lint`. Before direct
+Cargo commands on a cold workspace, run `mise run linux:exec -- mise run
+ghostty:prepare`, using the same `--arch` selection for both invocations.
+These checks exercise Linux X11 rendering, not native Wayland or physical GPU
+behavior. Keep timing benchmarks on native hardware.
+
+The first invocation builds a local Ubuntu 24.04 image with pinned Mise, Rust,
+Bun, and Zig. The Ubuntu index digest and Mise archive checksums are in
+`scripts/linux/Dockerfile`; tool versions come from `mise.toml`, `mise.lock`,
+and `rust-toolchain.toml`. Apt packages resolve to Ubuntu's updates when the
+image is built. Image reuse depends on those files and the container
+entrypoint, so ordinary source edits do not rebuild the image. Images are
+local and are not published.
+
+The checkout is mounted read-only, then copied into a Docker volume before
+each run. This includes current uncommitted and untracked source files and
+removes obsolete copies. Host `.git`, `target`, `.native`, `node_modules`, and
+`.codegraph` directories are excluded. The copied workspace has no Git
+metadata. Linux build artifacts, native source preparation, and dependency
+caches stay in volumes scoped to the checkout's real path and architecture.
+The runner allows only one active run for each such pair.
+
+Containers are removed on completion or interruption; cache volumes remain. To
+remove only this worktree's caches for one architecture:
+
+```sh
+mise run linux:clean
+mise run linux:clean -- --arch amd64
+```
+
+Cleanup leaves cached images available for other worktrees. It fails if a
+volume is still in use. Interrupted processes are stopped and removed by
+container ID, so a name conflict cannot remove another run. A forced kill of
+the host runner can leave a container behind; inspect `docker ps -a` before
+removing it. The runner never prunes unrelated Docker resources.
+
+Compilation defaults to four Cargo jobs to limit memory use in desktop VMs.
+For a different limit, use `linux:exec` with `env CARGO_BUILD_JOBS=2` before
+the command. AMD64 execution on an ARM64 engine uses emulation and can be
+slower than native ARM64. Native x86_64 CI remains the architecture-specific
+check.
+
 The initial desktop client runs on macOS and Linux:
 
 ```sh

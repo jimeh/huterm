@@ -431,7 +431,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/build-exec.sh && bash -n scripts/zig-sdk-bin/xcrun"
+run = "bash -n scripts/build-exec.sh && bash -n scripts/zig-sdk-bin/xcrun && bash -n scripts/linux/entrypoint.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
@@ -555,3 +555,19 @@ fi
 printf '%s\n' "$output"
 printf '%s\n' "$output" | rg -q '^RENDERER_SMOKE passed$'
 '''
+
+[tasks."linux:test"]
+description = "Run Rust tests in Docker (native architecture by default)"
+run = "bun scripts/linux.ts test"
+
+[tasks."linux:smoke"]
+description = "Run Linux desktop smokes in Docker"
+run = "bun scripts/linux.ts smoke"
+
+[tasks."linux:exec"]
+description = "Run a command in the Linux test container"
+run = "bun scripts/linux.ts exec"
+
+[tasks."linux:clean"]
+description = "Remove this worktree's Linux cache volumes for the selected architecture"
+run = "bun scripts/linux.ts clean"

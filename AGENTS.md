@@ -571,3 +571,10 @@ scene ordering, not clipping; use `with_content_mask` for diagonal overshoot.
 Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.
+
+Linux Docker validation keeps the checkout read-only and syncs source into a
+worktree/architecture-scoped volume. Exclude host `target`, `.native`, and
+`node_modules` from that sync, and serialize runs sharing a workspace volume.
+Mise's Rust install points at `/root/.cargo/bin` in the image; changing
+`CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
+and Git downloads separately while retaining the image's Cargo home.
