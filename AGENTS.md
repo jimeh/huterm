@@ -465,3 +465,10 @@ regressions: control-only prefixes can pass even when replay suppression breaks.
 Conditional fallback tests must change selection after the prefix starts and
 before resolution; GPUI may dispatch a conditional short binding immediately
 when that condition was already true at prefix start.
+
+CI disables Mise auto-install so nested tasks retain each job's explicit tool
+selection. Its tool cache key hashes `mise.lock` and `rust-toolchain.toml` rather
+than task definitions. Keep Rust component/profile declarations aligned with the
+toolchain file and update the lock after changing tool versions. CI separates
+Clippy, tests, and desktop smokes to avoid Cargo target-directory lock contention;
+keep each platform's smokes serial within their job.
