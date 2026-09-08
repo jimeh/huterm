@@ -472,3 +472,7 @@ than task definitions. Keep Rust component/profile declarations aligned with the
 toolchain file and update the lock after changing tool versions. CI separates
 Clippy, tests, and desktop smokes to avoid Cargo target-directory lock contention;
 keep each platform's smokes serial within their job.
+
+Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
+with the repository ruleset. These gates require every validation job and disable
+matrix fail-fast so each reports its own failure instead of cancelling its sibling.

@@ -112,14 +112,24 @@ process labels and directory inheritance are not implemented yet.
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
-| Pull request | `mise run verify:platform` on `macos-14` and Ubuntu 24.04 | Apple Silicon and Linux builds/tests | CI |
+| Pull request | `mise run format:check` on Ubuntu 24.04 | Rust formatting | CI |
+| Pull request | `mise run check:scripts` on `macos-14` and Ubuntu 24.04 | TypeScript, Bash syntax, and scripting tests | CI |
+| Pull request | `mise run ci:lint` on `macos-14` and Ubuntu 24.04 | Clippy and protocol dependency boundary | CI |
+| Pull request | `mise run ci:test` on `macos-14` and Ubuntu 24.04 | Rust unit and PTY integration tests | CI |
+| Pull request | `mise run ci:smoke` on `macos-14` and Ubuntu 24.04 | Serial native desktop smokes for each platform | CI |
 | Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
-| Pull request | `mise run license` on Ubuntu 24.04 | Dependency policy and advisories | CI |
+| Pull request | `mise run license` and `mise run audit:scripts` on Ubuntu 24.04 | Cargo and scripting dependency policy and advisories | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
-| Scroll benchmark | `mise run bench:scroll` | Snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | Implementer |
+| macOS keyboard | `mise run smoke:macos-input` | Native input and composition through both engines | CI or implementer |
+| macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |
+| Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Both engines' snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
 | macOS package | `mise run package:macos` | Apple Silicon app metadata, icon, executable, and architecture | CI or implementer |
+
+CI runs these check groups as separate jobs with focused tool and Cargo caches.
+The final `Verify Linux x86_64` and `Verify macOS arm64` jobs preserve the
+repository's required check names; both require every validation job to pass.
 
 The pre-commit hook runs independent jobs in parallel. Markdown and Rust
 formatting receive only matching staged paths. Clippy compilation and the
