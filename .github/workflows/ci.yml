@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,30 +13,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Each job installs only its declared tools, including nested mise run calls.
+  MISE_AUTO_INSTALL: 'false'
+
 jobs:
-  policy:
-    name: Policy
+  format:
+    name: Format
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install policy tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          cache: true
-          install_args: actionlint markdownlint-cli2 pinact zizmor
-          minimum_release_age: 3d
-
-      - name: Verify repository policy
-        run: mise run verify:policy
-
-  verify:
-    name: Verify macOS arm64
-    runs-on: macos-14
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -43,39 +28,159 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install build tools with Mise
+      - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust bun zig cargo:cargo-packager
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust
           minimum_release_age: 3d
 
-      - name: Cache Cargo build artifacts
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Check Rust formatting
+        run: mise run format:check
+
+  policy:
+    name: Policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: actionlint markdownlint-cli2 pinact zizmor
+          minimum_release_age: 3d
+
+      - name: Verify repository policy
+        run: mise run verify:policy
+
+  scripts:
+    name: Scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: bun
+          minimum_release_age: 3d
+
+      - name: Check repository scripts
+        run: mise run check:scripts
+
+  dependencies:
+    name: Dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun cargo:cargo-deny
+          minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: dependencies
+
+      - name: Audit Cargo dependencies
+        run: mise run license
+
+      - name: Audit scripting dependencies
+        run: mise run audit:scripts
+
+  rust:
+    name: Rust ${{ matrix.check }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        check: [lint, test, smoke]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Install Linux smoke dependencies
+        if: runner.os == 'Linux' && matrix.check == 'smoke'
+        run: |
+          sudo apt-get install --no-install-recommends \
+            mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun zig
+          minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.check }}-debug
 
       - name: Check platform prerequisites
         run: mise run doctor
 
       - name: Confirm Apple Silicon runner
+        if: runner.os == 'macOS'
         run: test "$(uname -m)" = arm64
 
-      - name: Verify Rust and both terminal engines
-        run: mise run verify:platform
+      - name: Run Rust validation
+        run: mise run ci:${{ matrix.check }}
 
-      - name: Verify native menu shortcuts
-        run: mise run smoke:macos-menus
-
-      - name: Verify native input through both engines
-        run: mise run smoke:macos-input
-
-      - name: Verify cancellable native Quit
-        run: mise run smoke:macos-quit
-
-      - name: Build and verify Huterm.app with both engines
-        run: mise run package:macos
-
-  verify-linux:
-    name: Verify Linux x86_64
+  benchmarks:
+    name: Scroll benchmarks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -91,35 +196,76 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
 
-      - name: Install build tools with Mise
+      - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
-          install_args: rust bun zig cargo:cargo-deny
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun zig
           minimum_release_age: 3d
 
-      - name: Cache Cargo build artifacts
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: benchmarks-release
 
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify Rust and both terminal engines
-        run: mise run verify:platform
+      - name: Verify scroll budgets for both engines
+        run: mise run ci:benchmarks
 
-      - name: Audit dependencies
-        run: |
-          mise run license
-          mise run audit:scripts
+  package:
+    name: Package macOS arm64
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Smoke GPUI window under Xvfb
-        run: mise run smoke:linux
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun zig cargo:cargo-packager
+          minimum_release_age: 3d
 
-      - name: Verify X11 terminal input
-        run: mise run smoke:linux-input
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
 
-      - name: Verify scroll performance budgets
-        run: mise run bench:scroll
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: package-release
 
-      - name: Verify Ghostty scroll performance budgets
-        run: mise run bench:scroll:ghostty
+      - name: Check platform prerequisites
+        run: mise run doctor
+
+      - name: Build and verify Huterm.app with both engines
+        run: mise run package:macos
+
+  verify:
+    # Preserve the required check names configured in the repository ruleset.
+    # Both gates require every job because matrix results are aggregated by job ID.
+    name: Verify ${{ matrix.platform }}
+    needs: [format, policy, scripts, dependencies, rust, benchmarks, package]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [Linux x86_64, macOS arm64]
+    steps:
+      - name: Require all validation jobs to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"

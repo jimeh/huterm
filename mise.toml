@@ -117,8 +117,12 @@ hide = true
 depends = ["lint", "architecture"]
 
 [tasks.test]
-description = "Run workspace tests"
-depends = ["test:scripts", "ghostty:prepare"]
+description = "Run workspace and scripting tests"
+depends = ["test:scripts", "test:rust"]
+
+[tasks."test:rust"]
+description = "Run Rust unit and PTY integration tests"
+depends = ["ghostty:prepare"]
 run = "bash scripts/build-exec.sh cargo test --workspace --all-targets --locked"
 
 [tasks."test:scroll-checker"]
@@ -472,3 +476,36 @@ fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_input_smoke
 bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
 '''
+
+[tasks."ci:lint"]
+description = "Run CI Clippy and architecture checks"
+depends = ["verify:toolchain"]
+run = "mise run check:rust:analysis"
+
+[tasks."ci:test"]
+description = "Run CI Rust unit and PTY integration tests"
+depends = ["verify:toolchain"]
+run = "mise run test:rust"
+
+[tasks."ci:smoke"]
+description = "Run CI desktop smokes for the current platform"
+depends = ["verify:toolchain"]
+run = '''
+case "$(uname -s)" in
+  Darwin)
+    mise run smoke:macos-menus
+    mise run smoke:macos-input
+    mise run smoke:macos-quit
+    ;;
+  Linux)
+    mise run smoke:linux
+    mise run smoke:linux-input
+    ;;
+  *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
+esac
+'''
+
+[tasks."ci:benchmarks"]
+description = "Run CI scroll budgets for both engines with one release build"
+depends = ["verify:toolchain"]
+run = ["mise run bench:scroll", "mise run bench:scroll:ghostty"]
