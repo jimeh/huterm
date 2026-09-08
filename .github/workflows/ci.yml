@@ -251,3 +251,20 @@ jobs:
 
       - name: Build and verify Huterm.app with both engines
         run: mise run package:macos
+
+  verify:
+    # Preserve the required check names configured in the repository ruleset.
+    # Both gates require every job because matrix results are aggregated by job ID.
+    name: Verify ${{ matrix.platform }}
+    needs: [format, policy, scripts, dependencies, rust, benchmarks, package]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        platform: [Linux x86_64, macOS arm64]
+    steps:
+      - name: Require all validation jobs to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
