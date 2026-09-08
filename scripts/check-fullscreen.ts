@@ -193,6 +193,16 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         await accepted("0 toggle_fullscreen");
         await stable("Windowed");
         await waitForRestored(original, true);
+        await pty("beforetimeout");
+        await accepted("probe-native-pending");
+        await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "missing native completion timeout");
+        assertTimeout(await state(), stderr);
+        await accepted("0 toggle_non_native_fullscreen");
+        await waitFor(async () => Number((await state()).command_sequence) >= sequence && (await state())["w0.status"]?.startsWith("Fullscreen failed:") === true, "unresolved native transition rejection");
+        assertRestored(original, await state(), true);
+        await pty("timeout");
+        await accepted("probe-native-settled");
+        await stable("Windowed");
         await writeFile(config, configText("native"));
         await accepted("0 reload_config");
         await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
@@ -279,7 +289,7 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         await closeWindow(1, true);
         if ((await state())["w0.options"] !== options) throw new Error("closing another window released surviving presentation leases");
       }
-      console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
+      console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit native-timeout retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
     if (macos && engine === "alacritty" && !frameProbe) {

@@ -198,7 +198,10 @@ style-mask bit is only a consistency check. On Linux, reaching the expected
 GPUI state completes it. An immediate platform error or deadline expiry resets
 the desired mode to the latest recoverable mode and reports one window status
 error. A later OS state change after a timeout is adopted as an external
-change rather than replaying the failed request.
+change rather than replaying the failed request. If AppKit has not delivered a
+completion notification, reject non-native entry before acquiring presentation
+state. Timeout alone does not prove the native animation stopped, and recovery
+must not require a style mutation during that unresolved transition.
 
 If a native will-enter event arrives while non-native saved state exists, that
 saved state and its presentation leases take precedence and must never be

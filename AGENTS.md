@@ -551,3 +551,8 @@ last fitted display separately. Screen rearrangement can temporarily put the
 old window frame on another screen; compare the target display geometry before
 treating that as a transfer. Refit outside GPUI updates without changing focus,
 window ordering, shadow state or presentation leases.
+
+A native transition timeout cancels requested work without proving AppKit stopped
+animating. Reject non-native entry before saving state or acquiring a lease while
+the adapter's native transition remains unresolved; its rollback has the same
+transition guard. A late native completion still reconciles normally.

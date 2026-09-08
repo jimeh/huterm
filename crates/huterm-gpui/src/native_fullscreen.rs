@@ -222,6 +222,31 @@ impl Adapter {
         }
     }
 
+    /// Inject an incomplete native lifecycle without starting an OS animation.
+    pub fn probe_native_transition(
+        &self,
+        complete: bool,
+    ) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "native transition probe requires the fullscreen smoke"
+        );
+        // SAFETY: This adapter retains its main-thread observer. Inject at the
+        // observer queue boundary so AppKit itself does not begin suppressing
+        // keyboard input for a synthetic transition with no OS animation.
+        unsafe {
+            enqueue(
+                &*self.0.observer.0,
+                Some(if complete {
+                    NativeEvent::DidExit
+                } else {
+                    NativeEvent::WillEnter
+                }),
+            );
+        }
+        Ok("posted".to_owned())
+    }
+
     /// Create the stale fullscreen frame produced by a display resize, then
     /// exercise the production screen-parameters notification path.
     pub fn probe_display_refit(&self) -> anyhow::Result<String> {
@@ -598,6 +623,12 @@ impl Adapter {
         if self.0.saved.borrow().is_some() {
             return Ok(());
         }
+        // A timed-out native transition may still be animating. Reject before
+        // acquiring a lease or changing style; rollback cannot run either.
+        ensure!(
+            !self.0.inbox.native_transition.get(),
+            "native fullscreen transition has not completed"
+        );
         let window = self.0.window.0;
         // SAFETY: Main-thread retained window; getters and validated style and
         // presentation values follow AppKit's documented types. Notifications

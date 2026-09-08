@@ -53,6 +53,16 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     let result = if let Some(event) = native {
                         super::input_smoke::post_event(event)
                             .map(|()| "posted".to_owned())
+                    } else if command == "probe-native-pending"
+                        || command == "probe-native-settled"
+                    {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| {
+                                adapter.probe_native_transition(
+                                    command == "probe-native-settled",
+                                )
+                            })
                     } else if command == "probe-display-refit" {
                         cx.update(probe_adapter)
                             .and_then(std::convert::identity)
