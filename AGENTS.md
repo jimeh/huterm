@@ -571,6 +571,8 @@ scene ordering, not clipping; use `with_content_mask` for diagonal overshoot.
 Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.
+Use Bun's process timeout and output checks for portable smoke runners. CI's
+macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
 
 Linux Docker validation keeps the checkout read-only and syncs source into a
 worktree/architecture-scoped volume. Exclude host `target`, `.native`, and

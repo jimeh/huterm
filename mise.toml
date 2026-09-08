@@ -548,12 +548,10 @@ depends = ["ghostty:prepare"]
 run = '''
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example renderer_smoke
 if [ "$(uname -s)" = Linux ]; then
-  output="$(timeout 15s xvfb-run -a -s '-screen 0 1280x960x24 -noreset' target/debug/examples/renderer_smoke)"
+  xvfb-run -a -s '-screen 0 1280x960x24 -noreset' bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
 else
-  output="$(timeout 15s target/debug/examples/renderer_smoke)"
+  bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
 fi
-printf '%s\n' "$output"
-printf '%s\n' "$output" | rg -q '^RENDERER_SMOKE passed$'
 '''
 
 [tasks."linux:test"]
