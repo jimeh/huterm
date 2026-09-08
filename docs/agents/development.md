@@ -135,6 +135,11 @@ CI runs these check groups as separate jobs with focused tool and Cargo caches.
 The final `Verify Linux x86_64` and `Verify macOS arm64` jobs preserve the
 repository's required check names; both require every validation job to pass.
 
+The hosted macOS runner may choose a different on-screen window origin after
+leaving a native fullscreen Space. The smoke requires restored size, style,
+focus, PTY geometry, and a settled on-screen frame; verify exact native position
+on physical displays. Non-native macOS and Linux restoration remain exact.
+
 The pre-commit hook runs independent jobs in parallel. Markdown and Rust
 formatting receive only matching staged paths. Clippy compilation and the
 protocol boundary remain whole-workspace checks, but run only when staged Rust

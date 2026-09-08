@@ -577,7 +577,9 @@ in the production desktop smokes below rather than simulated unit tests.
 Drive a real production `WorkspaceView` and PTY through programmatic commands:
 
 - Native mode acquires AppKit's fullscreen style and later returns to the
-  original content bounds and focused terminal.
+  original content size and focused terminal. Hosted macOS runners may choose a
+  different on-screen origin after leaving the native Space, so CI verifies the
+  settled frame and physical macOS validation verifies exact position.
 - Non-native mode never acquires AppKit's fullscreen style, removes visible
   chrome, fills the current screen, keeps terminal input working, and restores
   style, content bounds, first responder, and PTY size.

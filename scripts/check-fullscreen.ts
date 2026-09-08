@@ -12,15 +12,34 @@ export function parseState(text: string): State {
   }));
 }
 
-export function assertRestored(before: State, after: State, native: boolean): void {
+export function assertRestored(before: State, after: State, native: boolean, allowReposition = false): void {
   for (const field of ["restore", "grid", "terminal", ...(native ? ["style", "content", "responder", "options"] : [])]) {
     if (!before[`w0.${field}`] || !after[`w0.${field}`]) throw new Error(`missing ${field} evidence`);
-    const comparable = (value: string) => field === "restore" && !native ? value.split(",").slice(2).join(",") : value;
+    const sizeOnly = (field === "restore" && !native) || (allowReposition && (field === "restore" || field === "content"));
+    const comparable = (value: string) => sizeOnly ? value.split(",").slice(2).join(",") : value;
     if (comparable(before[`w0.${field}`]!) !== comparable(after[`w0.${field}`]!)) {
       throw new Error(`${field} did not restore: ${before[`w0.${field}`]} -> ${after[`w0.${field}`]}`);
     }
   }
   if (after["w0.mode"] !== "Windowed" || after["w0.pending"] !== "false") throw new Error("fullscreen did not finish exiting");
+}
+
+export function nativeFrameIsUsable(state: State): boolean {
+  const values = (field: string): [number, number, number, number] | undefined => {
+    const parts = state[`w0.${field}`]?.split(",").map(Number);
+    if (parts?.length !== 4 || parts.some(Number.isNaN)) return undefined;
+    return parts as [number, number, number, number];
+  };
+  const content = values("content");
+  const screen = values("screen");
+  const restore = values("restore");
+  if (!content || !screen || !restore) return false;
+  const [x, y, width, height] = content;
+  const [screenX, screenY, screenWidth, screenHeight] = screen;
+  return width === restore[2] && height === restore[3]
+    && x >= screenX && y >= screenY
+    && x + width <= screenX + screenWidth
+    && y + height <= screenY + screenHeight;
 }
 
 export function assertTimeout(state: State, diagnostics: string): void {
@@ -79,18 +98,25 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
     }, `${index} ${mode}`);
     return state();
   };
-  const waitForRestored = async (before: State, native: boolean): Promise<State> => {
-    await waitFor(async () => {
+  const waitForRestored = async (before: State, native: boolean, allowReposition = false): Promise<State> => {
+    try {
+      await waitFor(async () => {
+        const current = await state();
+        try {
+          assertRestored(before, current, native, allowReposition);
+          return !allowReposition || nativeFrameIsUsable(current);
+        } catch {
+          return false;
+        }
+      }, "restored fullscreen geometry");
+    } catch (error) {
       const current = await state();
-      try {
-        assertRestored(before, current, native);
-        return true;
-      } catch {
-        return false;
-      }
-    }, "restored fullscreen geometry");
+      assertRestored(before, current, native, allowReposition);
+      if (allowReposition && !nativeFrameIsUsable(current)) throw new Error("native frame did not settle on screen", { cause: error });
+      throw error;
+    }
     const current = await state();
-    assertRestored(before, current, native);
+    assertRestored(before, current, native, allowReposition);
     return current;
   };
   const accepted = async (text: string) => {
@@ -155,7 +181,7 @@ async function check(executable: string, engine: string, noWm: boolean): Promise
       await pty("native");
       await accepted("0 toggle_native_fullscreen");
       await stable("Windowed");
-      await waitForRestored(original, macos);
+      await waitForRestored(original, macos, macos);
       if (!macos) {
         const restoredGeometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
         if (restoredGeometry !== originalGeometry) throw new Error(`X11 geometry did not restore: ${originalGeometry} -> ${restoredGeometry}`);
