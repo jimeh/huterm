@@ -17,9 +17,9 @@ describe("fullscreen evidence checker", () => {
     expect(() => assertTimeout({ ...state, "w0.pending": "true" }, "Fullscreen transition timed out")).toThrow();
   });
   test("native restoration includes exact style, responder and app options", () => {
-    const before = { "w0.mode": "Windowed", "w0.pending": "false", "w0.style": "123", "w0.content": "10,10,800,600", "w0.responder": "456", "w0.options": "0", "w0.restore": "10,10,800,600", "w0.grid": "100,32", "w0.terminal": "0,32,800,568" };
+    const before = { "w0.mode": "Windowed", "w0.pending": "false", "w0.style": "123", "w0.shadow": "true", "w0.insets": "0,0,0,0", "w0.content": "10,10,800,600", "w0.responder": "456", "w0.options": "0", "w0.restore": "10,10,800,600", "w0.grid": "100,32", "w0.terminal": "0,32,800,568" };
     expect(() => assertRestored(before, before, true)).not.toThrow();
-    for (const field of ["style", "content", "responder", "options"]) {
+    for (const field of ["style", "content", "responder", "options", "shadow", "insets"]) {
       expect(() => assertRestored(before, { ...before, [`w0.${field}`]: "wrong" }, true)).toThrow();
     }
   });
@@ -39,7 +39,7 @@ describe("fullscreen evidence checker", () => {
     expect(ptyMatchesGrid(state, "restored")).toBe(false);
   });
   test("hosted native fullscreen may settle at another usable origin", () => {
-    const before = { "w0.mode": "Windowed", "w0.pending": "false", "w0.style": "123", "w0.content": "556,248,808,584", "w0.screen": "0,0,1920,1080", "w0.responder": "456", "w0.options": "0", "w0.restore": "556,248,808,584", "w0.grid": "100,32", "w0.terminal": "0,64,808,520" };
+    const before = { "w0.mode": "Windowed", "w0.pending": "false", "w0.style": "123", "w0.shadow": "true", "w0.insets": "0,0,0,0", "w0.content": "556,248,808,584", "w0.screen": "0,0,1920,1080", "w0.responder": "456", "w0.options": "0", "w0.restore": "556,248,808,584", "w0.grid": "100,32", "w0.terminal": "0,64,808,520" };
     const moved = { ...before, "w0.content": "556,471,808,584", "w0.restore": "556,25,808,584" };
     expect(() => assertRestored(before, moved, true)).toThrow();
     expect(() => assertRestored(before, moved, true, true)).not.toThrow();

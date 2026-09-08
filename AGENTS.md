@@ -529,3 +529,12 @@ write completes can consume an empty command and report a spurious window-index
 error. Native notification freshness must survive operation timeout while still
 rejecting newer native events and close; keep its epoch separate from the
 mutation generation.
+
+AppKit's window shadow includes a thin outline in non-native fullscreen. Save
+and disable `hasShadow` on entry, and restore it with the saved style before
+validating exit. Keep the frame equal to the display rather than oversizing it.
+For custom fullscreen, read the current NSScreen's `safeAreaInsets`; native
+Spaces already handle this. Carry those logical-point insets through ChromeLayout
+and every retained TerminalView. Keep safe-area padding separate from the titlebar
+inset, which also controls titlebar rendering. AppKit NSEdgeInsets field order is
+top/left/bottom/right, unlike GPUI's top/right/bottom/left.

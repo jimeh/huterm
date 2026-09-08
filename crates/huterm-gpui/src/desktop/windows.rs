@@ -729,6 +729,7 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
             let view = cx.new(|cx| WorkspaceView {
                 attachment: None,
                 bounds: window.window_bounds(),
+                fullscreen_insets: gpui::Edges::default(),
                 fullscreen: FullscreenController::new(
                     window.window_bounds(),
                     config.window.macos_fullscreen_mode,
@@ -853,6 +854,7 @@ struct WorkspaceView {
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
     fullscreen: FullscreenController,
+    fullscreen_insets: gpui::Edges<Pixels>,
     #[cfg(target_os = "macos")]
     native_fullscreen: Option<crate::native_fullscreen::Adapter>,
     workspace: Option<WorkspaceId>,
@@ -1075,11 +1077,12 @@ fn remove_tab<T>(
 impl WorkspaceView {
     fn tab_strip(&self, window: &Window) -> TabStrip {
         let position = self.config.window.tab_position;
-        let layout = ChromeLayout::with_sidebar(
+        let layout = ChromeLayout::with_safe_area(
             window.viewport_size(),
             terminal_top(self.fullscreen.chrome_hidden),
             position,
             self.sidebar_width,
+            self.fullscreen_insets,
         );
         TabStrip::new(
             layout.tabs,
@@ -1609,8 +1612,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let previous =
-            (self.fullscreen.chrome_hidden, self.fullscreen.observed);
+        let previous = (
+            self.fullscreen.chrome_hidden,
+            self.fullscreen.observed,
+            self.fullscreen_insets,
+        );
         let now = Instant::now();
         #[cfg(target_os = "macos")]
         if let Some(adapter) = &self.native_fullscreen {
@@ -1658,12 +1664,29 @@ impl WorkspaceView {
                 adapter.cancel(generation);
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            self.fullscreen_insets = self
+                .native_fullscreen
+                .as_ref()
+                .filter(|_| self.fullscreen.chrome_hidden)
+                .map_or_else(
+                    gpui::Edges::default,
+                    crate::native_fullscreen::Adapter::safe_area,
+                );
+        }
         self.bounds = self.fullscreen.restorable_bounds();
-        if previous != (self.fullscreen.chrome_hidden, self.fullscreen.observed)
+        if previous
+            != (
+                self.fullscreen.chrome_hidden,
+                self.fullscreen.observed,
+                self.fullscreen_insets,
+            )
         {
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
                     terminal.chrome_hidden = self.fullscreen.chrome_hidden;
+                    terminal.fullscreen_insets = self.fullscreen_insets;
                     terminal.resize_if_needed(window);
                     cx.notify();
                 });
@@ -1757,6 +1780,7 @@ impl WorkspaceView {
             tab.view.update(cx, |view, cx| {
                 view.sidebar_width = self.sidebar_width;
                 view.chrome_hidden = self.fullscreen.chrome_hidden;
+                view.fullscreen_insets = self.fullscreen_insets;
                 view.visible = tab.id == id;
                 if view.visible {
                     view.resize_if_needed(window);
@@ -2158,18 +2182,39 @@ impl ChromeLayout {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn with_sidebar(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
         position: TabPosition,
         sidebar_width: Pixels,
     ) -> Self {
-        let top = titlebar.min(viewport.height);
+        Self::with_safe_area(
+            viewport,
+            titlebar,
+            position,
+            sidebar_width,
+            gpui::Edges::default(),
+        )
+    }
+
+    pub(super) fn with_safe_area(
+        viewport: gpui::Size<Pixels>,
+        titlebar: Pixels,
+        position: TabPosition,
+        sidebar_width: Pixels,
+        safe_area: gpui::Edges<Pixels>,
+    ) -> Self {
+        let left = safe_area.left.max(px(0.0)).min(viewport.width.max(px(0.0)));
+        let top = (titlebar + safe_area.top)
+            .max(px(0.0))
+            .min(viewport.height.max(px(0.0)));
         let available = size(
-            viewport.width.max(px(0.0)),
-            (viewport.height - top).max(px(0.0)),
+            (viewport.width - left - safe_area.right.max(px(0.0))).max(px(0.0)),
+            (viewport.height - top - safe_area.bottom.max(px(0.0)))
+                .max(px(0.0)),
         );
-        let mut terminal = Bounds::new(point(px(0.0), top), available);
+        let mut terminal = Bounds::new(point(left, top), available);
         let mut tabs = terminal;
         if position.vertical() {
             tabs.size.width = sidebar_width
@@ -2208,11 +2253,12 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let position = self.config.window.tab_position;
-        let layout = ChromeLayout::with_sidebar(
+        let layout = ChromeLayout::with_safe_area(
             window.viewport_size(),
             terminal_top(self.fullscreen.chrome_hidden),
             position,
             self.sidebar_width,
+            self.fullscreen_insets,
         );
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
@@ -2854,6 +2900,82 @@ mod tests {
     }
 
     #[test]
+    fn safe_area_keeps_tabs_and_terminal_below_notch_for_every_placement() {
+        for position in [
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Right,
+        ] {
+            let layout = ChromeLayout::with_safe_area(
+                size(px(800.0), px(600.0)),
+                px(0.0),
+                position,
+                SIDEBAR_WIDTH,
+                gpui::Edges {
+                    top: px(48.5),
+                    ..Default::default()
+                },
+            );
+            for bounds in [layout.tabs, layout.terminal] {
+                assert!(
+                    bounds.origin.y >= px(48.5),
+                    "{position:?}: {bounds:?}"
+                );
+                assert!(bounds.bottom() <= px(600.0));
+            }
+            let area = f32::from(layout.tabs.size.width)
+                * f32::from(layout.tabs.size.height)
+                + f32::from(layout.terminal.size.width)
+                    * f32::from(layout.terminal.size.height);
+            assert!((area - 800.0 * 551.5).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn safe_area_bounds_include_side_insets_and_clamp_small_windows() {
+        let insets = gpui::Edges {
+            top: px(48.5),
+            right: px(6.0),
+            bottom: px(8.0),
+            left: px(4.0),
+        };
+        for position in [
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Right,
+        ] {
+            for viewport in [size(px(800.0), px(600.0)), size(px(3.0), px(2.0))]
+            {
+                let layout = ChromeLayout::with_safe_area(
+                    viewport,
+                    px(0.0),
+                    position,
+                    SIDEBAR_WIDTH,
+                    insets,
+                );
+                for bounds in [layout.tabs, layout.terminal] {
+                    assert!(bounds.origin.x >= px(4.0).min(viewport.width));
+                    assert!(bounds.origin.y >= px(48.5).min(viewport.height));
+                    assert!(
+                        bounds.size.width >= px(0.0)
+                            && bounds.size.height >= px(0.0)
+                    );
+                    assert!(
+                        bounds.right()
+                            <= (viewport.width - px(6.0)).max(bounds.origin.x)
+                    );
+                    assert!(
+                        bounds.bottom()
+                            <= (viewport.height - px(8.0)).max(bounds.origin.y)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sidebar_resize_handle_never_overlaps_terminal_input() {
         for position in [TabPosition::Left, TabPosition::Right] {
             for (width, preferred) in
@@ -2969,58 +3091,65 @@ mod tests {
     fn application_mouse_coordinates_follow_all_tab_placements() {
         use crate::config::TabPosition;
         let cell = size(px(8.0), px(16.0));
-        for placement in [
-            TabPosition::Top,
-            TabPosition::Bottom,
-            TabPosition::Left,
-            TabPosition::Right,
-        ] {
-            let chrome = ChromeLayout::new(
-                size(px(800.0), px(600.0)),
-                px(32.0),
-                placement,
-            );
-            let layout = TerminalLayout::new(
-                chrome.terminal.size,
-                cell,
-                WindowConfig::default(),
-            );
-            let start = chrome.terminal.origin + layout.bounds.origin;
-            assert_eq!(
-                application_mouse_geometry(
-                    start,
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                ),
-                (true, MousePosition::default()),
-                "{placement:?}"
-            );
-            assert_eq!(
-                application_mouse_geometry(
-                    start + point(px(8.0), px(16.0)),
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                ),
-                (true, MousePosition { column: 1, row: 1 }),
-                "{placement:?}"
-            );
-            let tab_center = chrome.tabs.origin
-                + point(
-                    chrome.tabs.size.width / 2.0,
-                    chrome.tabs.size.height / 2.0,
+        for inset in [px(0.0), px(48.5)] {
+            for placement in [
+                TabPosition::Top,
+                TabPosition::Bottom,
+                TabPosition::Left,
+                TabPosition::Right,
+            ] {
+                let chrome = ChromeLayout::with_safe_area(
+                    size(px(800.0), px(600.0)),
+                    px(32.0),
+                    placement,
+                    SIDEBAR_WIDTH,
+                    gpui::Edges {
+                        top: inset,
+                        ..Default::default()
+                    },
                 );
-            assert!(
-                !application_mouse_geometry(
-                    tab_center,
-                    chrome.terminal.origin,
-                    layout,
-                    cell
-                )
-                .0,
-                "{placement:?}"
-            );
+                let layout = TerminalLayout::new(
+                    chrome.terminal.size,
+                    cell,
+                    WindowConfig::default(),
+                );
+                let start = chrome.terminal.origin + layout.bounds.origin;
+                assert_eq!(
+                    application_mouse_geometry(
+                        start,
+                        chrome.terminal.origin,
+                        layout,
+                        cell
+                    ),
+                    (true, MousePosition::default()),
+                    "{placement:?}"
+                );
+                assert_eq!(
+                    application_mouse_geometry(
+                        start + point(px(8.0), px(16.0)),
+                        chrome.terminal.origin,
+                        layout,
+                        cell
+                    ),
+                    (true, MousePosition { column: 1, row: 1 }),
+                    "{placement:?}"
+                );
+                let tab_center = chrome.tabs.origin
+                    + point(
+                        chrome.tabs.size.width / 2.0,
+                        chrome.tabs.size.height / 2.0,
+                    );
+                assert!(
+                    !application_mouse_geometry(
+                        tab_center,
+                        chrome.terminal.origin,
+                        layout,
+                        cell
+                    )
+                    .0,
+                    "{placement:?}"
+                );
+            }
         }
     }
 

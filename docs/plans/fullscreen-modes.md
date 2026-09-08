@@ -714,6 +714,16 @@ check when frame adjustment was temporarily disabled, then passed after restore.
 The macOS 14 CI result remains the validation of the original native sequence;
 physical display and window-manager coverage limits above still apply.
 
+Non-native fullscreen disables the saved window's shadow to remove AppKit's
+thin perimeter outline, then restores the original shadow setting with the
+window style on exit or rollback. It still uses the exact display frame.
+The current display's `safeAreaInsets` reserve an unobscured content area on
+notched displays. The root paints the reserved area with the theme background;
+tabs and terminals share the inset layout for rendering, input, and PTY sizing.
+Native fullscreen receives no additional safe-area inset because AppKit already
+positions its content. Automated smokes compare the reported display insets,
+retained layout, shadow restoration, and PTY dimensions.
+
 ## Alternatives considered
 
 **Upgrade to upstream GPUI now.** Upstream already has simple fullscreen, but

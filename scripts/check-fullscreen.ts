@@ -13,7 +13,7 @@ export function parseState(text: string): State {
 }
 
 export function assertRestored(before: State, after: State, native: boolean, allowReposition = false): void {
-  for (const field of ["restore", "grid", "terminal", ...(native ? ["style", "content", "responder", "options"] : [])]) {
+  for (const field of ["restore", "grid", "terminal", ...(native ? ["style", "content", "responder", "options", "shadow", "insets"] : [])]) {
     if (!before[`w0.${field}`] || !after[`w0.${field}`]) throw new Error(`missing ${field} evidence`);
     const sizeOnly = (field === "restore" && !native) || (allowReposition && (field === "restore" || field === "content"));
     const comparable = (value: string) => sizeOnly ? value.split(",").slice(2).join(",") : value;
@@ -218,6 +218,11 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         if ((Number(simple["w0.style"]) & ((1 << 14) | 1 | 8)) !== 0) throw new Error("non-native mode kept native/title/resize bits");
         if (Number(simple["w0.style"]) !== (Number(beforeSimple["w0.style"]) & ~(1 | 8))) throw new Error("non-native mode discarded unrelated style bits");
         if (simple["w0.frame"] !== simple["w0.screen"] || simple["w0.retained"] !== "true") throw new Error("non-native frame/chrome mismatch");
+        if (simple["w0.shadow"] !== "false") throw new Error("non-native fullscreen retained its shadow border");
+        if (simple["w0.insets"] !== simple["w0.safe_area"]) throw new Error("non-native fullscreen did not apply the display safe area");
+        const topInset = Number(simple["w0.safe_area"]!.split(",")[0]);
+        if (Number(simple["w0.tab_bounds"]!.split(",")[1]) !== topInset) throw new Error("tab bar overlaps the display safe area");
+        if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + 32) throw new Error("terminal did not follow inset tab bar");
         for (const action of ["minimize", "zoom"]) if (!(await command(`0 ${action}`)).includes("Unavailable")) throw new Error(`${action} was allowed in non-native mode`);
         await accepted("0 previous_tab");
         await pty("simple");

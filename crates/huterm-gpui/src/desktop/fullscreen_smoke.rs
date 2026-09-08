@@ -182,8 +182,15 @@ fn read_state(cx: &mut App) -> String {
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
                 view.tabs.len(), view.status.as_deref().unwrap_or(""), view.close.confirmation.is_some()).unwrap();
+            let insets = view.fullscreen_insets;
+            writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
+            writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();
             let mut consistent = true;
-            for tab in &view.tabs { consistent &= tab.view.read(cx).chrome_hidden == view.fullscreen.chrome_hidden; }
+            for tab in &view.tabs {
+                let terminal = tab.view.read(cx);
+                consistent &= terminal.chrome_hidden == view.fullscreen.chrome_hidden
+                    && terminal.fullscreen_insets == view.fullscreen_insets;
+            }
             writeln!(output, "w{index}.retained={consistent}").unwrap();
             if let Some(terminal) = view.active_view() {
                 let terminal = terminal.read(cx);

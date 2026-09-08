@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use anyhow::{Context as _, ensure};
 use gpui::{Bounds, Window};
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, YES};
+use objc::runtime::{Class, NO, Object, Sel, YES};
 use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -87,6 +87,7 @@ struct Saved {
     content: Bounds<f64>,
     display: Display,
     style: usize,
+    shadow: objc::runtime::BOOL,
     responder: Retained,
     lease: PresentationLease,
     complete: bool,
@@ -156,6 +157,34 @@ impl Adapter {
         Ok(())
     }
 
+    /// Custom fullscreen covers the screen's camera housing; native Spaces
+    /// already inset their content. Read on each refresh to follow screen changes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "AppKit points fit GPUI logical pixels"
+    )]
+    pub fn safe_area(&self) -> gpui::Edges<gpui::Pixels> {
+        if !self
+            .0
+            .saved
+            .borrow()
+            .as_ref()
+            .is_some_and(|saved| saved.complete)
+        {
+            return gpui::Edges::default();
+        }
+        // SAFETY: Read-only main-thread getters on the retained NSWindow and its
+        // NSScreen. NSEdgeInsets is four CGFloat values on supported 64-bit Macs.
+        unsafe {
+            let style: usize = msg_send![self.0.window.0, styleMask];
+            if style & NATIVE != 0 {
+                return gpui::Edges::default();
+            }
+            let screen: *mut Object = msg_send![self.0.window.0, screen];
+            screen_safe_area(screen).map(|value| gpui::px(*value as f32))
+        }
+    }
+
     pub fn inspect(&self) -> anyhow::Result<String> {
         // SAFETY: Smoke getters use the same exact retained native window.
         unsafe {
@@ -165,7 +194,9 @@ impl Adapter {
             let content: Bounds<f64> =
                 msg_send![window, contentRectForFrameRect: frame];
             let screen: *mut Object = msg_send![window, screen];
+            let safe_area = screen_safe_area(screen);
             let screen = display(screen)?;
+            let shadow: objc::runtime::BOOL = msg_send![window, hasShadow];
             let responder: *mut Object = msg_send![window, firstResponder];
             let options: usize = msg_send![application()?, presentationOptions];
             let simple = self
@@ -175,11 +206,16 @@ impl Adapter {
                 .as_ref()
                 .is_some_and(|saved| saved.complete);
             Ok(format!(
-                "style={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}",
+                "style={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
                 native_rect(frame),
                 native_rect(content),
                 native_rect(screen.frame),
-                responder as usize
+                responder as usize,
+                shadow == YES,
+                safe_area.top,
+                safe_area.right,
+                safe_area.bottom,
+                safe_area.left
             ))
         }
     }
@@ -518,6 +554,7 @@ impl Adapter {
                 content,
                 display,
                 style,
+                shadow: msg_send![window, hasShadow],
                 responder: Retained::retain(responder),
                 lease: PresentationLease::default(),
                 complete: false,
@@ -536,6 +573,8 @@ impl Adapter {
                     .map_err(anyhow::Error::msg)
             })?;
             let _: () = msg_send![app, setPresentationOptions: next];
+            // AppKit's shadow includes a thin outline even without a titlebar.
+            let _: () = msg_send![window, setHasShadow: NO];
             let _: () =
                 msg_send![window, setStyleMask: style & !(TITLED | RESIZABLE)];
         }
@@ -587,6 +626,7 @@ impl Adapter {
                 "native fullscreen must exit before recovery"
             );
             let _: () = msg_send![self.0.window.0, setStyleMask: saved.style];
+            let _: () = msg_send![self.0.window.0, setHasShadow: saved.shadow];
         }
         release_lease(saved)?;
         self.emit(Event::State(true, false));
@@ -630,6 +670,8 @@ impl Adapter {
                 actual == frame,
                 "window restoration did not reach saved bounds"
             );
+            let shadow: objc::runtime::BOOL = msg_send![window, hasShadow];
+            ensure!(shadow == state.shadow, "window shadow did not restore");
         }
         saved.take();
         self.emit(Event::State(false, false));
@@ -725,6 +767,37 @@ fn application() -> anyhow::Result<*mut Object> {
         ]
     };
     Ok(app)
+}
+
+// AppKit NSEdgeInsets uses top/left/bottom/right, unlike GPUI's edge order.
+#[repr(C)]
+struct NativeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+
+unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
+    if screen.is_null() {
+        return gpui::Edges::default();
+    }
+    // SAFETY: Callers supply NSScreen on the main thread. The selector was added
+    // in macOS 12; older systems have no display safe-area API.
+    unsafe {
+        let supported: objc::runtime::BOOL =
+            msg_send![screen, respondsToSelector: sel!(safeAreaInsets)];
+        if supported != YES {
+            return gpui::Edges::default();
+        }
+        let insets: NativeInsets = msg_send![screen, safeAreaInsets];
+        gpui::Edges {
+            top: insets.top,
+            right: insets.right,
+            bottom: insets.bottom,
+            left: insets.left,
+        }
+    }
 }
 
 unsafe fn display(screen: *mut Object) -> anyhow::Result<Display> {
