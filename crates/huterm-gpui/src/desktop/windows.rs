@@ -1704,7 +1704,19 @@ impl WorkspaceView {
         let _ = cx;
         if let Some(operation) = self.fullscreen.next(Instant::now()) {
             match operation.effect {
-                Effect::ToggleNative => window.toggle_fullscreen(),
+                Effect::ToggleNative => {
+                    #[cfg(target_os = "macos")]
+                    if let Some(adapter) = &self.native_fullscreen
+                        && let Err(error) = adapter.check_native_transition()
+                    {
+                        self.fullscreen.fail(operation.generation);
+                        self.status =
+                            Some(format!("Fullscreen failed: {error}"));
+                        cx.notify();
+                        return;
+                    }
+                    window.toggle_fullscreen();
+                }
                 Effect::EnterNonNative | Effect::ExitNonNative => {
                     #[cfg(target_os = "macos")]
                     if let Some(adapter) = self.native_fullscreen.clone() {

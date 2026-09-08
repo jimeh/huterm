@@ -149,6 +149,14 @@ impl Inner {
 pub(crate) struct Adapter(Rc<Inner>);
 
 impl Adapter {
+    pub fn check_native_transition(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self.0.inbox.native_transition.get(),
+            "native fullscreen transition has not completed"
+        );
+        Ok(())
+    }
+
     pub fn preflight(&self) -> anyhow::Result<()> {
         ensure!(!self.0.inbox.gate.closing(), "native window is closing");
         // SAFETY: Read-only main-thread inspection of the retained NSWindow.
@@ -625,10 +633,7 @@ impl Adapter {
         }
         // A timed-out native transition may still be animating. Reject before
         // acquiring a lease or changing style; rollback cannot run either.
-        ensure!(
-            !self.0.inbox.native_transition.get(),
-            "native fullscreen transition has not completed"
-        );
+        self.check_native_transition()?;
         let window = self.0.window.0;
         // SAFETY: Main-thread retained window; getters and validated style and
         // presentation values follow AppKit's documented types. Notifications

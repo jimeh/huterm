@@ -553,6 +553,8 @@ treating that as a transfer. Refit outside GPUI updates without changing focus,
 window ordering, shadow state or presentation leases.
 
 A native transition timeout cancels requested work without proving AppKit stopped
-animating. Reject non-native entry before saving state or acquiring a lease while
-the adapter's native transition remains unresolved; its rollback has the same
-transition guard. A late native completion still reconciles normally.
+animating. Reject native dispatch and non-native entry while the adapter's native
+transition remains unresolved, before saving state or acquiring a lease. Keep
+this guard at effect dispatch so normal pending toggles can still change intent.
+A late native completion still reconciles normally; an unavailable adapter must
+not block explicit native fullscreen.

@@ -194,18 +194,30 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         await stable("Windowed");
         await waitForRestored(original, true);
         await pty("beforetimeout");
+        await writeFile(config, configText("native"));
+        await accepted("0 reload_config");
+        await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
         await accepted("probe-native-pending");
         await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "missing native completion timeout");
         assertTimeout(await state(), stderr);
+        for (const action of ["toggle_native_fullscreen", "toggle_fullscreen"]) {
+          await accepted(`0 ${action}`);
+          await waitFor(async () => Number((await state()).command_sequence) >= sequence, "native retry observation");
+          const rejected = await state();
+          if (rejected["w0.pending"] !== "false") throw new Error(`${action} dispatched during an unresolved native transition`);
+          assertRestored(original, rejected, true);
+          if (rejected["w0.status"] !== "Fullscreen failed: native fullscreen transition has not completed") throw new Error(`${action} did not report unresolved native transition`);
+        }
         await accepted("0 toggle_non_native_fullscreen");
-        await waitFor(async () => Number((await state()).command_sequence) >= sequence && (await state())["w0.status"]?.startsWith("Fullscreen failed:") === true, "unresolved native transition rejection");
+        await waitFor(async () => {
+          const rejected = await state();
+          return Number(rejected.command_sequence) >= sequence && rejected["w0.pending"] === "false"
+            && rejected["w0.status"] === "Fullscreen failed: native fullscreen transition has not completed";
+        }, "unresolved native transition rejection");
         assertRestored(original, await state(), true);
         await pty("timeout");
         await accepted("probe-native-settled");
         await stable("Windowed");
-        await writeFile(config, configText("native"));
-        await accepted("0 reload_config");
-        await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
       }
       if (macos) await accepted(`native\t36\t${1 << 20}\t\r\t\r`);
       else run(["xdotool", "key", "F11"]);
