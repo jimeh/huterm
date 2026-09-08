@@ -2,6 +2,9 @@
 
 #[path = "input_smoke/native.rs"]
 mod native;
+pub(super) fn post_event(command: &str) -> anyhow::Result<()> {
+    native::post(command)
+}
 
 pub(crate) fn run() -> anyhow::Result<()> {
     if let Some(mode) = std::env::args().nth(1) {

@@ -22,6 +22,8 @@ family = "Menlo"
 size = 14.0
 
 [window]
+# Default fullscreen mode on macOS: "native" or "non_native". Linux ignores it.
+macos_fullscreen_mode = "non_native"
 # Padding in logical points on each side of the terminal.
 padding_x = 4.0
 padding_y = 4.0
@@ -103,6 +105,7 @@ pub(super) enum MacosOptionAsAlt {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct WindowConfig {
+    pub(super) macos_fullscreen_mode: MacosFullscreenMode,
     pub(super) padding_x: f32,
     pub(super) padding_y: f32,
     pub(super) padding_balance: bool,
@@ -112,12 +115,22 @@ pub(super) struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
             tab_position: TabPosition::Top,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+pub(super) enum MacosFullscreenMode {
+    #[serde(rename = "native")]
+    Native,
+    #[default]
+    #[serde(rename = "non_native")]
+    NonNative,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -616,6 +629,53 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_mode_defaults_spelling_reload_and_startup_fallback() {
+        assert_eq!(
+            parse("").unwrap().window.macos_fullscreen_mode,
+            MacosFullscreenMode::NonNative
+        );
+        for (value, expected) in [
+            ("native", MacosFullscreenMode::Native),
+            ("non_native", MacosFullscreenMode::NonNative),
+        ] {
+            assert_eq!(
+                parse(&format!("[window]\nmacos_fullscreen_mode = '{value}'"))
+                    .unwrap()
+                    .window
+                    .macos_fullscreen_mode,
+                expected
+            );
+        }
+        for value in ["nonnative", "NON_NATIVE", "simple", ""] {
+            assert!(
+                parse(&format!("[window]\nmacos_fullscreen_mode = '{value}'"))
+                    .is_err()
+            );
+        }
+        let directory = test_directory();
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(&path, "[window]\nmacos_fullscreen_mode = 'non_native'")
+            .unwrap();
+        let working = reload(&path).unwrap();
+        fs::write(&path, "[terminal]\nengine = 'ghostty'\n[window]\nmacos_fullscreen_mode = 'simple'").unwrap();
+        assert!(reload(&path).is_err());
+        assert_eq!(
+            working.window.macos_fullscreen_mode,
+            MacosFullscreenMode::NonNative
+        );
+        let fallback = load_path(path);
+        assert!(!fallback.fatal);
+        assert!(fallback.error.is_some());
+        assert_eq!(fallback.config.engine, TerminalEngineKind::Ghostty);
+        assert_eq!(
+            fallback.config.window.macos_fullscreen_mode,
+            MacosFullscreenMode::NonNative
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn option_policy_defaults_and_validation_are_explicit() {
         assert_eq!(
             parse("").unwrap().terminal.macos_option_as_alt,
@@ -996,6 +1056,7 @@ background = "#040506"
                 padding_y: 0.0,
                 padding_balance: false,
                 tab_position: TabPosition::Top,
+                macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             }
         );
     }

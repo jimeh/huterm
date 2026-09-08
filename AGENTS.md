@@ -484,3 +484,77 @@ HUTERM_ZIG_SDKROOT. Its scoped xcrun shim redirects only the SDK path query;
 Xcode and Metal tools remain selected normally. SDKROOT and Zig's --sysroot
 alone do not fix build-runner linking. Keep diagnostic Zig caches outside the
 verified native source tree.
+
+GPUI 0.2.2's X11 ConfigureNotify handler stores raw event origins, including
+parent-relative coordinates after a reparenting window manager restores a
+window. Fullscreen smokes must compare actual root geometry through xdotool;
+GPUI's windowed and Quit metadata can retain the parent-relative origin even
+when physical restoration is exact. Keep size and fullscreen-cache checks
+strict. Do not interpret Linux WindowBounds::Windowed as absence of fullscreen;
+the X11 backend reports it even while its fullscreen flag is true.
+Fullscreen native observers own a separate event queue and operation gate.
+Invalidate deferred non-native work in the notification callback itself, then
+let the window pump reconcile mode. AppKit setters and presentation cleanup,
+including unexpected view release, run outside GPUI update borrows.
+Observe queued native notifications and the current fullscreen flag before
+accepting a toggle; dispatch effects only after that intent is accepted. Native
+fullscreen must remain available when the non-native adapter is unavailable.
+For display recovery, expand saved content to its restored titled frame before
+clamping to the visible display, or AppKit constrains the titlebar a second time.
+GPUI's inherent `Window::window_handle` returns its own handle; qualify
+`HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.
+Map its `HandleError` explicitly into anyhow; it does not implement
+`std::error::Error` with the current dependency features.
+Guard nil retained handles before invoking `objc` message macros. Adapter drop
+moves native resources into deferred cleanup and leaves nil placeholders behind;
+the Rust message dispatch path can dereference nil before Objective-C receives it.
+Fullscreen completion can precede the final frame and grid publication on macOS
+and X11. Smokes must wait for settled geometry and compare PTY dimensions with
+the grid published in the same snapshot. Hosted macOS native Spaces may choose
+a new on-screen origin; keep non-native and X11 geometry exact, and verify exact
+native placement on physical displays. A late native screen-change notification
+can arrive during the next non-native entry. Record it without canceling from
+the callback; main-thread display identity and frame validation distinguishes
+notification noise from a real display change.
+
+AppKit 14 can deliver native did-exit with an offscreen window frame. A later
+`titled` frame setter constrains that frame, so saving it for non-native entry
+makes exact restoration impossible. Reconcile native exit through AppKit's
+`constrainFrameRect:toScreen:` on a generation-checked foreground turn before
+publishing DidExit. Skip this adjustment when non-native recovery already owns
+saved state. Never clamp a non-native saved target to disguise a failed restore.
+Fullscreen smoke commands must use temporary files and atomic rename. The app
+polls command paths while the writer runs; publishing the final path before the
+write completes can consume an empty command and report a spurious window-index
+error. Native notification freshness must survive operation timeout while still
+rejecting newer native events and close; keep its epoch separate from the
+mutation generation.
+
+AppKit's window shadow includes a thin outline in non-native fullscreen. Save
+and disable `hasShadow` on entry, and restore it with the saved style before
+validating exit. Keep the frame equal to the display rather than oversizing it.
+For custom fullscreen, read the current NSScreen's `safeAreaInsets`; native
+Spaces already handle this. Carry those logical-point insets through ChromeLayout
+and every retained TerminalView. Keep safe-area padding separate from the titlebar
+inset, which also controls titlebar rendering. AppKit NSEdgeInsets field order is
+top/left/bottom/right, unlike GPUI's top/right/bottom/left.
+
+GPUI 0.2.2 passes literal `enter` and `tab` strings to NSMenuItem instead of
+AppKit's Return and Tab characters. Normalize those two key equivalents after
+`set_menus` at startup and reload; leave the configured GPUI keys unchanged.
+AppKit derives both shortcut display and activation from `keyEquivalent`.
+Keep the native menu smoke assertions for these characters when upgrading GPUI;
+remove the workaround once upstream converts them correctly.
+
+Keep the original non-native fullscreen restoration display frozen and track the
+last fitted display separately. Screen rearrangement can temporarily put the
+old window frame on another screen; compare the target display geometry before
+treating that as a transfer. Refit outside GPUI updates without changing focus,
+window ordering, shadow state or presentation leases.
+
+A native transition timeout cancels requested work without proving AppKit stopped
+animating. Reject native dispatch and non-native entry while the adapter's native
+transition remains unresolved, before saving state or acquiring a lease. Keep
+this guard at effect dispatch so normal pending toggles can still change intent.
+A late native completion still reconciles normally; an unavailable adapter must
+not block explicit native fullscreen.

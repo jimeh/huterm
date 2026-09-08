@@ -228,6 +228,47 @@ pub(crate) struct MenuShortcut {
     pub(crate) modifiers: usize,
 }
 
+/// Repairs GPUI 0.2.2's missing Enter/Tab conversions after menu installation.
+/// `AppKit` uses the same key equivalent for display and keyboard activation.
+pub(crate) fn normalize_menu_key_equivalents() -> anyhow::Result<()> {
+    ensure!(is_main_thread()?, "menu updates require the main thread");
+    let application = application()?;
+    // SAFETY: AppKit owns the menu tree throughout this synchronous main-thread
+    // walk. Only the key equivalent changes; actions and modifiers stay intact.
+    unsafe {
+        let menu: *mut Object = msg_send![application, mainMenu];
+        ensure!(!menu.is_null(), "AppKit main menu is unavailable");
+        normalize_menu_keys(menu)
+    }
+}
+
+unsafe fn normalize_menu_keys(menu: *mut Object) -> anyhow::Result<()> {
+    // SAFETY: The caller supplies a live NSMenu on the AppKit thread. Counts
+    // bound item access, and setKeyEquivalent copies its NSString argument.
+    unsafe {
+        let count: usize = msg_send![menu, numberOfItems];
+        for index in 0..count {
+            let item: *mut Object = msg_send![menu, itemAtIndex: index];
+            ensure!(!item.is_null(), "AppKit returned a null menu item");
+            let key: *mut Object = msg_send![item, keyEquivalent];
+            let replacement = match native_string(key)?.as_str() {
+                "enter" => Some(c"\r"),
+                "tab" => Some(c"\t"),
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                let key: *mut Object = msg_send![Class::get("NSString").context("NSString")?, stringWithUTF8String: replacement.as_ptr()];
+                let _: () = msg_send![item, setKeyEquivalent: key];
+            }
+            let submenu: *mut Object = msg_send![item, submenu];
+            if !submenu.is_null() {
+                normalize_menu_keys(submenu)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads a uniquely named menu item from this process's `AppKit` menu tree.
 pub(crate) fn menu_shortcut(title: &str) -> anyhow::Result<MenuShortcut> {
     ensure!(

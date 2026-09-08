@@ -150,7 +150,8 @@ jobs:
         if: runner.os == 'Linux' && matrix.check == 'smoke'
         run: |
           sudo apt-get install --no-install-recommends \
-            mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
+            mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
+            x11-utils openbox
 
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0

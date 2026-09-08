@@ -156,12 +156,27 @@ padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
 tab_position = "top" # top, bottom, left, or right
+macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
+mode. macOS defaults to non-native fullscreen in the current Space. Set
+`macos_fullscreen_mode = "native"` to create a separate macOS Space instead.
+The green window button always uses AppKit's native fullscreen behavior.
+Non-native mode auto-hides the Dock and menu bar and restores
+the window's previous bounds on exit. Minimize and Zoom are unavailable while
+that window owns non-native presentation state.
+
+All fullscreen commands exit whichever mode is active. Rapid commands toggle
+the desired state and wait for each platform transition to finish. Reload
+changes future default toggles without changing an active mode. Linux always
+uses native X11 fullscreen and reports an error if the window manager ignores
+the request; the explicit non-native command is unavailable there.
 
 ### Option and Alt as Meta
 
@@ -337,7 +352,7 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation is open. |
 | `reordering` | A tab drag is in progress. |
-| `fullscreen` | The window is fullscreen. |
+| `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
 
 `Palette` is reserved for the future command palette.
 
@@ -360,6 +375,8 @@ Commands, their scope, and arguments:
 | `previous_tab` | Window | |
 | `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) |
 | `toggle_fullscreen` | Window | |
+| `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
+| `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `copy` | Terminal | |
@@ -387,7 +404,7 @@ Default bindings differ per platform:
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
-| `toggle_fullscreen` | `f11`, `ctrl-cmd-f` | `f11` |
+| `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
 | `reload_config` | `cmd-<` | `ctrl-<` |
 | `open_settings` | `cmd-,` | |
 | `quit` | `cmd-q` | |
