@@ -234,17 +234,10 @@ fn curved_and_diagonal_paths_build_at_small_and_large_sizes() {
                 let g =
                     Geometry::new(ch, metrics(width, width * 2.0, scale), 1);
                 for stroke in &g.strokes {
-                    let mut builder = PathBuilder::stroke(stroke.width);
-                    builder.move_to(stroke.start);
-                    for segment in &stroke.segments {
-                        match segment {
-                            Segment::Line(to) => builder.line_to(*to),
-                            Segment::Curve(to, a, b) => {
-                                builder.cubic_bezier_to(*to, *a, *b);
-                            }
-                        }
-                    }
-                    assert!(builder.build().is_ok(), "{ch} at {width}/{scale}");
+                    assert!(
+                        stroke.build(Point::default(), false).is_ok(),
+                        "{ch} at {width}/{scale}"
+                    );
                 }
             }
         }
@@ -271,16 +264,33 @@ fn fractional_scales_preserve_integer_stroke_centers() {
     }
 }
 
-// Winding coverage tests the filled polygons, including transparent holes,
-// independently of GPUI's tessellator. Curves are checked separately below.
-fn polygon_contains(g: &Geometry, x: f32, y: f32) -> bool {
-    g.fills.iter().any(|shape| {
-        let points: Vec<_> = std::iter::once(shape.start)
-            .chain(shape.segments.iter().map(|segment| match segment {
-                Segment::Line(to) => *to,
-                Segment::Curve(..) => panic!("polygon test received a curve"),
-            }))
-            .collect();
+// Sample filled outlines independently of GPUI. Cubic curves are flattened
+// finely enough that the test points remain well away from approximation error.
+fn fill_contains(geometry: &Geometry, x: f32, y: f32) -> bool {
+    geometry.fills.iter().any(|shape| {
+        let mut points = vec![shape.start];
+        let mut from = shape.start;
+        for segment in &shape.segments {
+            match *segment {
+                Segment::Line(to) => {
+                    points.push(to);
+                    from = to;
+                }
+                Segment::Curve(to, control_a, control_b) => {
+                    for step in 1..=64u16 {
+                        let t = f32::from(step) / 64.0;
+                        let u = 1.0 - t;
+                        points.push(
+                            from * (u * u * u)
+                                + control_a * (3.0 * u * u * t)
+                                + control_b * (3.0 * u * t * t)
+                                + to * (t * t * t),
+                        );
+                    }
+                    from = to;
+                }
+            }
+        }
         let mut winding = 0;
         for (a, b) in points
             .iter()
@@ -317,7 +327,7 @@ fn corner_triangles_fill_the_named_corner_and_keep_outlines_inside() {
             let m = metrics(10.0, 20.0, scale);
             let (w, h) = (f32::from(m.cell_width), f32::from(m.cell_height));
             let sample = |g: &Geometry, x, y| {
-                polygon_contains(
+                fill_contains(
                     g,
                     if right { w - x } else { x },
                     if bottom { h - y } else { y },
@@ -340,41 +350,155 @@ fn powerline_tips_and_split_separators_have_expected_orientation_and_gap() {
     for (ch, mirrored) in [('\u{e0b0}', false), ('\u{e0b2}', true)] {
         let g = Geometry::new(ch, m, 1);
         let x = |v| if mirrored { 10.0 - v } else { v };
-        assert!(polygon_contains(&g, x(0.1), 0.5));
-        assert!(polygon_contains(&g, x(9.8), 10.0));
-        assert!(!polygon_contains(&g, x(9.8), 0.5));
+        assert!(fill_contains(&g, x(0.1), 0.5));
+        assert!(fill_contains(&g, x(9.8), 10.0));
+        assert!(!fill_contains(&g, x(9.8), 0.5));
     }
     for ch in ['\u{e0d2}', '\u{e0d4}'] {
         let g = Geometry::new(ch, m, 1);
+        let x = if ch == '\u{e0d2}' { 1.0 } else { 9.0 };
+        assert!(fill_contains(&g, x, 8.0));
+        assert!(!fill_contains(&g, 10.0 - x, 8.0));
         for x in [0.1, 5.0, 9.9] {
-            assert!(polygon_contains(&g, x, 0.01));
-            assert!(polygon_contains(&g, x, 19.99));
-            assert!(!polygon_contains(&g, x, 10.0));
+            assert!(fill_contains(&g, x, 0.01));
+            assert!(fill_contains(&g, x, 19.99));
+            assert!(!fill_contains(&g, x, 10.0));
         }
     }
 }
 
 #[test]
-fn filled_paths_tessellate_at_tiny_wide_and_fractional_sizes() {
+fn powerline_and_triangle_paths_build_at_tiny_wide_and_fractional_sizes() {
     for scale in [1.0, 1.11, 1.5, 2.0] {
         for width in [1.0, 7.0, 20.0] {
             for columns in [1, 2] {
-                for ch in "\u{e0b0}\u{e0b2}\u{e0b4}\u{e0b5}\u{e0b6}\u{e0b7}\u{e0d2}\u{e0d4}◢◣◤◥◸◹◺◿".chars() {
+                for ch in "\u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3}\u{e0b4}\u{e0b5}\u{e0b6}\u{e0b7}\u{e0b8}\u{e0b9}\u{e0ba}\u{e0bb}\u{e0bc}\u{e0bd}\u{e0be}\u{e0bf}\u{e0d2}\u{e0d4}◢◣◤◥◸◹◺◿".chars() {
                     let g = Geometry::new(ch, metrics(width, 14.0, scale), columns);
-                    for shape in &g.fills {
-                        let mut builder = PathBuilder::fill();
-                        builder.move_to(shape.start);
-                        for segment in &shape.segments {
-                            match segment {
-                                Segment::Line(to) => builder.line_to(*to),
-                                Segment::Curve(to, a, b) => builder.cubic_bezier_to(*to, *a, *b),
-                            }
-                        }
-                        builder.close();
-                        assert!(builder.build().is_ok(), "{ch} width={width} scale={scale} columns={columns}");
+                    assert!(!g.fills.is_empty() || !g.strokes.is_empty(), "{ch} must have a path");
+                    for (shape, filled) in g.fills.iter().map(|shape| (shape, true)).chain(g.strokes.iter().map(|shape| (shape, false))) {
+                        assert!(shape.build(point(px(13.25), px(29.5)), filled).is_ok(), "{ch} width={width} scale={scale} columns={columns}");
                     }
                 }
             }
         }
     }
+}
+
+#[test]
+fn rounded_powerline_caps_preserve_orientation_and_hollow_interiors() {
+    for scale in [1.0, 1.25, 2.0] {
+        let m = metrics(8.0, 20.0, scale);
+        for (solid, hollow, left) in [
+            ('\u{e0b4}', '\u{e0b5}', false),
+            ('\u{e0b6}', '\u{e0b7}', true),
+        ] {
+            let filled = Geometry::new(solid, m, 1);
+            let outlined = Geometry::new(hollow, m, 1);
+            let x = |x| if left { 8.0 - x } else { x };
+            assert!(
+                fill_contains(&filled, x(0.2), 0.2),
+                "{solid} joining edge"
+            );
+            assert!(
+                !fill_contains(&filled, x(7.8), 0.2),
+                "{solid} curved corner"
+            );
+            assert!(fill_contains(&filled, x(2.0), 10.0));
+            assert!(
+                !fill_contains(&outlined, x(2.0), 10.0),
+                "{hollow} hollow center"
+            );
+            assert!(
+                fill_contains(&outlined, x(7.8), 10.0),
+                "{hollow} outer stroke"
+            );
+            assert!(
+                fill_contains(&outlined, x(0.2), 0.2),
+                "{hollow} top butt cap"
+            );
+            assert!(
+                fill_contains(&outlined, x(0.2), 19.8),
+                "{hollow} bottom butt cap"
+            );
+        }
+    }
+}
+
+#[test]
+fn tiny_outlines_become_solid_when_no_interior_fits() {
+    let m = GridMetrics::from_measurements(
+        px(12.0),
+        px(1.0),
+        px(1.0),
+        px(0.0),
+        1.0,
+    );
+    for (solid, outline) in [
+        ('◢', '◿'),
+        ('◣', '◺'),
+        ('◤', '◸'),
+        ('◥', '◹'),
+        ('\u{e0b4}', '\u{e0b5}'),
+        ('\u{e0b6}', '\u{e0b7}'),
+    ] {
+        let filled = Geometry::new(solid, m, 1);
+        let outlined = Geometry::new(outline, m, 1);
+        let mut covered = 0;
+        for x in [0.1, 0.3, 0.7, 0.9] {
+            for y in [0.15, 0.35, 0.65, 0.85] {
+                let expected = fill_contains(&filled, x, y);
+                covered += usize::from(expected);
+                assert_eq!(
+                    fill_contains(&outlined, x, y),
+                    expected,
+                    "{outline} at {x}/{y}"
+                );
+            }
+        }
+        assert!(covered > 0, "{solid} must remain visible");
+    }
+}
+
+#[test]
+fn wide_triangles_extend_through_the_second_column() {
+    for scale in [1.0, 1.11, 2.0] {
+        let m = metrics(8.0, 20.0, scale);
+        let w = f32::from(m.cell_width);
+        let h = f32::from(m.cell_height);
+        for ch in ['◢', '\u{e0b0}'] {
+            let narrow = Geometry::new(ch, m, 1);
+            let wide = Geometry::new(ch, m, 2);
+            assert!(!fill_contains(&narrow, w * 1.4, h * 0.6));
+            assert!(
+                fill_contains(&wide, w * 1.4, h * 0.6),
+                "{ch} second column"
+            );
+            assert!(!fill_contains(&wide, w * 2.1, h * 0.6));
+        }
+    }
+}
+
+#[test]
+fn path_build_propagates_tessellator_capacity_errors() {
+    // Production glyphs contain only a handful of segments. Exceed GPUI's
+    // u16 vertex capacity with a synthetic stroke to exercise its real error.
+    let shape = ShapePath {
+        width: px(1.0),
+        start: Point::default(),
+        segments: (1..30_000u16)
+            .map(|x| {
+                Segment::Line(point(
+                    px(f32::from(x)),
+                    px(f32::from(x % 2) * 10.0),
+                ))
+            })
+            .collect(),
+    };
+    let error = shape
+        .build(Point::default(), false)
+        .expect_err("vertex capacity must be enforced");
+    assert!(
+        error.to_string().contains("Too many vertices"),
+        "unexpected error: {error}"
+    );
 }

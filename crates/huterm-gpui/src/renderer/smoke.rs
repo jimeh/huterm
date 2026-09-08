@@ -164,9 +164,11 @@ fn check(panel: &mut Panel, window: &mut Window) {
     let renderer = &mut panel.renderer;
     assert_eq!(
         renderer.graphics.len(),
-        186,
-        "all 186 builtins must bypass font shaping"
+        190,
+        "186 standalone and four wide builtins must bypass font shaping"
     );
+    check_wide(panel);
+    let renderer = &mut panel.renderer;
     let first = Arc::clone(&renderer.graphics[&('▐', 1)]);
     // An unchanged snapshot reuses prepared geometry.
     renderer.prepare(Some(&panel.snapshot), window);
@@ -313,6 +315,9 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
                     cells[column + 1].style.wide_spacer = true;
                 }
             }
+            if row == 28 {
+                populate_wide(&mut cells);
+            }
             style_row(row, &mut cells);
             Arc::new(TerminalRow { cells })
         })
@@ -350,6 +355,48 @@ fn style_row(row: usize, cells: &mut [Cell]) {
         }
         for cell in &mut cells[16..] {
             cell.style.hidden = true;
+        }
+    }
+}
+
+fn check_wide(panel: &Panel) {
+    let renderer = &panel.renderer;
+    let glyphs = &renderer.rows[28].glyphs;
+    assert_eq!(glyphs.len(), 5, "wide spacer cells must not paint");
+    for (column, ch, columns) in [
+        (0, '▐', 2),
+        (3, '\u{e0b0}', 2),
+        (6, '◢', 2),
+        (9, '\u{e0b4}', 2),
+        (31, '\u{e0b0}', 1),
+    ] {
+        let glyph = glyphs
+            .iter()
+            .find(|glyph| glyph.column == column)
+            .expect("wide fixture glyph");
+        let GlyphContent::Builtin(geometry) = &glyph.content else {
+            panic!("wide builtins must bypass font shaping")
+        };
+        assert!(
+            Arc::ptr_eq(geometry, &renderer.graphics[&(ch, columns)]),
+            "wrong width at column {column}"
+        );
+    }
+}
+
+fn populate_wide(cells: &mut [Cell]) {
+    for (column, ch) in [
+        (0, '▐'),
+        (3, '\u{e0b0}'),
+        (6, '◢'),
+        (9, '\u{e0b4}'),
+        (31, '\u{e0b0}'),
+    ] {
+        cells[column].text = ch.to_string();
+        cells[column].style.wide = true;
+        if column < 31 {
+            cells[column + 1].text = "█".into();
+            cells[column + 1].style.wide_spacer = true;
         }
     }
 }

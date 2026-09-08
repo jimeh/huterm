@@ -43,6 +43,35 @@ struct ShapePath {
     segments: Vec<Segment>,
 }
 
+impl ShapePath {
+    fn build(
+        &self,
+        origin: Point<Pixels>,
+        filled: bool,
+    ) -> anyhow::Result<gpui::Path<Pixels>> {
+        let mut builder = if filled {
+            PathBuilder::fill()
+        } else {
+            PathBuilder::stroke(self.width)
+        };
+        builder.move_to(origin + self.start);
+        for segment in &self.segments {
+            match segment {
+                Segment::Line(to) => builder.line_to(origin + *to),
+                Segment::Curve(to, a, b) => builder.cubic_bezier_to(
+                    origin + *to,
+                    origin + *a,
+                    origin + *b,
+                ),
+            }
+        }
+        if filled {
+            builder.close();
+        }
+        builder.build()
+    }
+}
+
 enum Segment {
     Line(Point<Pixels>),
     Curve(Point<Pixels>, Point<Pixels>, Point<Pixels>),
@@ -169,27 +198,7 @@ impl Geometry {
                     .map(|s| (s, false))
                     .chain(self.fills.iter().map(|s| (s, true)))
                 {
-                    let mut builder = if filled {
-                        PathBuilder::fill()
-                    } else {
-                        PathBuilder::stroke(stroke.width)
-                    };
-                    builder.move_to(origin + stroke.start);
-                    for segment in &stroke.segments {
-                        match segment {
-                            Segment::Line(to) => builder.line_to(origin + *to),
-                            Segment::Curve(to, a, b) => builder
-                                .cubic_bezier_to(
-                                    origin + *to,
-                                    origin + *a,
-                                    origin + *b,
-                                ),
-                        }
-                    }
-                    if filled {
-                        builder.close();
-                    }
-                    if let Ok(path) = builder.build() {
+                    if let Ok(path) = stroke.build(origin, filled) {
                         window.paint_path(path, color);
                     }
                 }

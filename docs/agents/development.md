@@ -256,10 +256,13 @@ sequences use normal font shaping. Coverage and adaptation provenance are in
 
 Run `mise run smoke:renderer` to exercise the production preparation and paint
 paths with all 186 characters, at font sizes 12, 16, and 20. The smoke checks
-font bypass, hidden text, combining-sequence fallback, geometry reuse, and
-invalidation after a display-scale change. It runs under Xvfb on Linux and
-natively on macOS. Geometry unit tests check block coverage, fractional display
-scales, odd cell dimensions, line junctions, dashes, and path construction.
+font bypass, hidden text, combining-sequence fallback, geometry reuse, wide
+glyphs and spacers, final-column width clamping, and display-scale
+invalidation. It runs under Xvfb on Linux and natively on macOS. Geometry unit
+tests check block coverage, fractional display scales, odd cell dimensions,
+line junctions, dashes, shape orientation, hollow interiors, and tiny-cell
+fallback. Path tests use the production builder, including a synthetic stroke
+that exceeds GPUI's vertex capacity to verify error propagation.
 
 For visual inspection after building the smoke executable, run:
 
