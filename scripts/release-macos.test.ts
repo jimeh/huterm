@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   assetNames,
   prepareSchemaAssets,
   schemaAssets,
   verifyLocalAssets,
+  isDispatchedBranchBuild,
   parseDeveloperIdentity,
   parseSimplePlist,
   privacyUsageDescriptions,
@@ -24,6 +25,46 @@ import {
 
 const repoRoot = resolve(import.meta.dir, "..");
 const inputs = { sha: "a".repeat(40), tag: "v0.1.0", version: "0.1.0" };
+
+test("branch verification requires the exact manually dispatched branch commit", () => {
+  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", inputs.sha)).toBe(true);
+  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", "b".repeat(40))).toBe(false);
+  expect(isDispatchedBranchBuild(inputs.sha, "push", "refs/heads/fix-release", inputs.sha)).toBe(false);
+  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha)).toBe(false);
+  expect(isDispatchedBranchBuild(inputs.sha, undefined, undefined, undefined)).toBe(false);
+});
+
+test("pre-checkout guard permits exact branch verification but keeps publishing on main", async () => {
+  const workflow = Bun.YAML.parse(await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
+    jobs: { release: { steps: { name?: string; run?: string }[] } };
+  };
+  const script = workflow.jobs.release.steps.find(step => step.name === "Validate source selection")!.run!;
+  const directory = await mkdtemp(join(tmpdir(), "huterm-release-guard-"));
+  try {
+    const gh = join(directory, "gh");
+    await writeFile(gh, '#!/bin/bash\nprintf "%s\\n" "$TEST_MAIN_STATUS"\n');
+    await chmod(gh, 0o755);
+    for (const [publish, event, ref, sha, status, expected] of [
+      ["false", "workflow_dispatch", "refs/heads/fix", inputs.sha, "behind", 0],
+      ["true", "workflow_dispatch", "refs/heads/fix", inputs.sha, "behind", 1],
+      ["false", "push", "refs/heads/fix", inputs.sha, "behind", 1],
+      ["false", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "behind", 1],
+      ["false", "workflow_dispatch", "refs/heads/fix", "b".repeat(40), "behind", 1],
+      ["true", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 0],
+      ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 0],
+      ["false", "workflow_dispatch", "refs/heads/fix", "invalid", "ahead", 1],
+    ] as const) {
+      const result = Bun.spawnSync(["bash", "-c", script], { env: {
+        ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,
+        GITHUB_EVENT_NAME: event, GITHUB_REF: ref, GITHUB_SHA: inputs.sha,
+        RELEASE_SHA: sha, GITHUB_REPOSITORY: "fixture/huterm", TEST_MAIN_STATUS: status,
+      } });
+      expect(result.exitCode, `${publish} ${event} ${ref} ${sha}: ${result.stderr}`).toBe(expected);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("build inputs require a full SHA and stable version without a tag", () => {
   expect(validateBuildInputs(inputs.sha, inputs.version)).toEqual({ sha: inputs.sha, version: inputs.version });

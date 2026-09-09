@@ -78,11 +78,13 @@ must receive Release Please's exact SHA, tag, and version outputs, validate the
 matching draft, and publish only after remote asset names, sizes, and digests
 match. Keep the final release draft on every earlier failure.
 Manual verification is non-publishing by default. It validates a SHA and version
-from `main`, exercises signing through Gatekeeper, and uploads only an Actions
+from `main` or the exact branch commit selected by manual dispatch, exercises
+signing through Gatekeeper, and uploads only an Actions
 artifact. It must not require or inspect a tag or GitHub Release. Manual recovery
 requires an explicit publish choice and retains the full draft-release guards.
 Validate a selected SHA against `main` before checkout or any target-controlled
-code runs, then revalidate the checkout and Cargo metadata afterward.
+code runs, allowing only the exact dispatched branch commit for manual
+non-publishing verification. Revalidate the checkout and Cargo metadata afterward.
 
 Draft release listings require push access even though the API accepts read-only
 tokens. Use a contents-write bot token for draft validation; keep the job token
@@ -403,6 +405,13 @@ Keep verified native source inputs in `.native/ghostty`, outside Cargo's
 `target` directory. The pinned rust-cache action recursively removes non-Cargo
 files under `target` before saving, leaving incomplete native source trees on
 restore. Preserve source hash checks; never repair mismatches silently.
+Keep Cargo's Git discovery ceiling at `.native/ghostty`. The extracted source
+has no repository, and Ghostty otherwise discovers Huterm's enclosing release
+tag and panics because it does not match Ghostty's version. The ceiling preserves
+Git discovery from Huterm's root and uses Ghostty's archive-version fallback.
+Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
+Git. Commit hooks export repository and index paths that override a fixture's
+working directory and can redirect its commits into the caller's worktree.
 
 Run Xvfb with `-noreset` in desktop harnesses. A last-client disconnect otherwise
 resets the server and sends another SIGUSR1 to xvfb-run, which can interrupt its

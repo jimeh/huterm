@@ -40,7 +40,7 @@ on:
         default: false
         type: boolean
       sha:
-        description: Exact commit SHA to build from origin/main
+        description: Exact SHA from main, or selected branch HEAD when not publishing
         required: true
         type: string
       tag:
@@ -74,11 +74,18 @@ jobs:
       - name: Validate source selection
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "release SHA must be 40 lowercase hexadecimal characters" >&2
             exit 1
+          fi
+
+          # Manual verification may build the exact branch commit chosen at dispatch.
+          if [[ "$RELEASE_PUBLISH" == false && "$GITHUB_EVENT_NAME" == workflow_dispatch &&
+                "$GITHUB_REF" == refs/heads/* && "$RELEASE_SHA" == "$GITHUB_SHA" ]]; then
+            exit 0
           fi
 
           source_status="$(gh api \

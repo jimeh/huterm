@@ -66,15 +66,17 @@ The local `mise run package:macos` task remains an unsigned package check.
 ## Manual verification
 
 Run the `Release` workflow manually with `publish` unchecked to exercise the
-credential-backed package path. Enter an exact 40-character SHA from `main` and
-the matching Cargo version; leave the tag empty. The workflow validates the
+credential-backed package path. Select the branch to run from and enter its
+exact 40-character HEAD SHA, or a SHA from `main`, plus the matching Cargo
+version; leave the tag empty. The workflow validates the
 source, builds and signs both architectures, notarizes and staples the app, runs
 Gatekeeper, and uploads the ZIP, both schemas, and `SHA256SUMS` as an Actions
 artifact retained for seven days.
 
-The workflow rejects a SHA outside `main` before checkout or any repository code
-runs. It verifies the checkout and Cargo versions again before exposing the
-signing and notarization credentials.
+Before checkout, the workflow requires the SHA to be on `main` or to match the
+exact branch commit selected by a manual, non-publishing dispatch. It verifies
+the checkout and Cargo versions again before exposing the signing and
+notarization credentials. Publishing always requires ancestry on `main`.
 
 Verification mode does not inspect, create, update, or publish a GitHub Release
 or tag. It does submit the app to Apple's notarization service and creates the
