@@ -318,10 +318,6 @@ if ! cmp -s assets/Huterm.icns "$packaged_icon"; then
 fi
 assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty license"
 assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
-if otool -L "$executable" | rg -q 'libghostty'; then
-  echo "package verification failed: Ghostty must be statically linked" >&2
-  exit 1
-fi
 if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1

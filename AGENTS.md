@@ -61,6 +61,9 @@ Run `mise tasks` to discover the full task set.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Universal macOS packaging combines both architecture executables before signing.
+Keep static Ghostty linkage inspection in the Bun package verifier, where an
+`otool` failure aborts verification. An `if otool ... | rg ...` shell condition
+silently passed on release runners without `rg`, bypassing the linkage check.
 Verify each slice with a separate `lipo -verify_arch` call: the macOS 27 system
 tool rejects multiple requested architectures, while Xcode 26's tool accepts
 them. Cross-compilation and Rosetta tests do not replace native Intel UI QA.

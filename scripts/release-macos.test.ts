@@ -26,6 +26,41 @@ import {
 const repoRoot = resolve(import.meta.dir, "..");
 const inputs = { sha: "a".repeat(40), tag: "v0.1.0", version: "0.1.0" };
 
+test("package verification checks static linkage without rg and rejects failed inspection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-linkage-"));
+  try {
+    const plutil = join(directory, "plutil");
+    await writeFile(plutil, '#!/bin/bash\ncase "${@: -1}" in\n  *.entitlements) printf "%s" "$TEST_ENTITLEMENTS" ;;\n  *) printf "%s" "$TEST_PRIVACY" ;;\nesac\n');
+    await chmod(plutil, 0o755);
+    const otool = join(directory, "otool");
+    await writeFile(otool, '#!/bin/bash\nprintf "%s" "$TEST_LINKAGE"\nexit "$TEST_OTOOL_EXIT"\n');
+    await chmod(otool, 0o755);
+    for (const [linkage, code, expected] of [
+      ["huterm:\n /usr/lib/libSystem.B.dylib\n", "0", 0],
+      ["huterm:\n @rpath/libghostty-vt.dylib\n", "0", 1],
+      ["", "1", 1],
+    ] as const) {
+      const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", "fixture.app"], { env: {
+        ...process.env, PATH: directory, TEST_LINKAGE: linkage, TEST_OTOOL_EXIT: code,
+        TEST_PRIVACY: JSON.stringify(privacyUsageDescriptions),
+        TEST_ENTITLEMENTS: JSON.stringify(Object.fromEntries(releaseEntitlements.map(key => [key, true]))),
+      } });
+      expect(result.exitCode, result.stderr.toString()).toBe(expected);
+      if (linkage.includes("libghostty")) expect(result.stderr.toString()).toContain("Ghostty must be statically linked");
+      if (code === "1") expect(result.stderr.toString()).toContain("otool exited with status 1");
+    }
+    await rm(otool);
+    const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", "fixture.app"], { env: {
+      ...process.env, PATH: directory, TEST_PRIVACY: JSON.stringify(privacyUsageDescriptions),
+      TEST_ENTITLEMENTS: JSON.stringify(Object.fromEntries(releaseEntitlements.map(key => [key, true]))),
+    } });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("otool");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("branch verification requires the exact manually dispatched branch commit", () => {
   expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", inputs.sha)).toBe(true);
   expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", "b".repeat(40))).toBe(false);

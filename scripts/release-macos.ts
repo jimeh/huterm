@@ -319,6 +319,8 @@ async function readPlist(plistPath: string): Promise<JsonObject> {
 async function verifyPackageConfiguration(bundlePath: string): Promise<void> {
   validatePrivacyDescriptions(await readPlist(join(bundlePath, "Contents/Info.plist")));
   validateEntitlements(await readPlist(entitlementPath));
+  const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
+  if (linkage.stdout.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
 }
 
 function currentBuildInputs(): BuildInputs {
@@ -693,7 +695,7 @@ async function main(): Promise<void> {
       const bundle = Bun.argv[3];
       if (!bundle) throw new Error("verify-package-config requires an app bundle path");
       await verifyPackageConfiguration(resolve(repoRoot, bundle));
-      console.log("verified macOS privacy descriptions and release entitlements");
+      console.log("verified macOS privacy descriptions, release entitlements, and static Ghostty linkage");
       break;
     }
     case "build":
