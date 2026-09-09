@@ -670,3 +670,7 @@ Set Git's discovery ceiling to the parent of each vendor command's working
 directory. Scratch patch verification under `.native/vendor` otherwise discovers
 Huterm's repository and `git apply` silently skips paths outside that subdirectory.
 Private session repositories still resolve their own `.git` directory normally.
+Read vendor regular files through one no-follow descriptor and compare its
+identity with the tree entry before hashing. Archive extraction must consume the
+same buffer that passed checksum verification; checking a path and reopening it
+allows a concurrent replacement to bypass the checksum.

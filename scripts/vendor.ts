@@ -1,6 +1,6 @@
 /** Reproduce patched registry crates without modifying the build inputs. */
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -46,20 +46,39 @@ export function readSources(file: string): Source[] {
   return data.sources;
 }
 
-function checkedArchive(file: string, source: Source): string {
-  if (hash(readFileSync(file)) !== source.sha256) throw new Error(`archive checksum mismatch: ${file}`);
-  return file;
+function readRegularFile(file: string, expected?: Stats) {
+  // Reject symlink/FIFO replacements and inspect the descriptor we actually read.
+  const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || (expected && (info.dev !== expected.dev || info.ino !== expected.ino))) {
+      throw new Error(`vendor file changed or is not regular: ${file}`);
+    }
+    return { info, bytes: readFileSync(descriptor) };
+  } finally { closeSync(descriptor); }
+}
+
+function checkedArchive(file: string, source: Source): Buffer {
+  const { bytes } = readRegularFile(file);
+  if (hash(bytes) !== source.sha256) throw new Error(`archive checksum mismatch: ${file}`);
+  return bytes;
 }
 
 export async function archiveFor(source: Source, cache: string, cargoHome = process.env.CARGO_HOME ?? join(homedir(), ".cargo")): Promise<string> {
   mkdirSync(cache, { recursive: true });
   const destination = join(cache, `${source.sha256}.crate`);
-  if (lstatSync(destination, { throwIfNoEntry: false })) return checkedArchive(destination, source);
+  if (lstatSync(destination, { throwIfNoEntry: false })) {
+    checkedArchive(destination, source);
+    return destination;
+  }
   const registry = join(cargoHome, "registry/cache");
   for (const registryName of existsSync(registry) ? readdirSync(registry, { withFileTypes: true }) : []) {
     if (!registryName.isDirectory()) continue;
     const candidate = join(registry, registryName.name, `${id(source)}.crate`);
-    if (lstatSync(candidate, { throwIfNoEntry: false })) return checkedArchive(candidate, source);
+    if (lstatSync(candidate, { throwIfNoEntry: false })) {
+      checkedArchive(candidate, source);
+      return candidate;
+    }
   }
   const response = await fetch(source.url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) throw new Error(`archive download failed: HTTP ${response.status} for ${id(source)}`);
@@ -86,7 +105,10 @@ export function treeEntries(root: string): Map<string, string> {
       const info = lstatSync(file);
       if (info.isDirectory()) visit(file, `${key}/`);
       else if (info.isSymbolicLink()) entries.set(key, `link:${readlinkSync(file)}`);
-      else if (info.isFile()) entries.set(key, `file:${info.mode & 0o111 ? "x" : "-"}:${hash(readFileSync(file))}`);
+      else if (info.isFile()) {
+        const opened = readRegularFile(file, info);
+        entries.set(key, `file:${opened.info.mode & 0o111 ? "x" : "-"}:${hash(opened.bytes)}`);
+      }
       else throw new Error(`unsupported vendor entry: ${file}`);
     }
   }
@@ -119,7 +141,7 @@ export function differences(expected: Map<string, string>, actual: Map<string, s
 export async function extract(source: Source, archive: string, destination: string): Promise<void> {
   const stage = mkdtempSync(join(tmpdir(), "huterm-vendor-unpack-"));
   try {
-    await new Bun.Archive(readFileSync(checkedArchive(archive, source))).extract(stage);
+    await new Bun.Archive(checkedArchive(archive, source)).extract(stage);
     const children = readdirSync(stage);
     if (children.length !== 1 || children[0] !== id(source)) throw new Error(`unexpected archive root for ${id(source)}`);
     const original = join(stage, id(source));

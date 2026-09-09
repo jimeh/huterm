@@ -38,6 +38,68 @@ async function refresh(f: Awaited<ReturnType<typeof fixture>>) {
   return patch!;
 }
 
+for (const replacement of ["symlink", "regular file"] as const) {
+  test(`tree hashing rejects a regular file replaced by a ${replacement} before opening`, () => {
+    const root = temporary();
+    const tree = join(root, "tree");
+    const file = join(tree, "file");
+    const outside = join(root, "outside");
+    put(file, "original");
+    put(outside, "replacement");
+    const original = fs.lstatSync;
+    let replaced = false;
+    const stat = spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+      const result = original(...args);
+      if (args[0] === file && !replaced) {
+        replaced = true;
+        if (replacement === "symlink") {
+          rmSync(file);
+          symlinkSync(outside, file);
+        } else fs.renameSync(outside, file);
+      }
+      return result;
+    }) as typeof fs.lstatSync);
+    try {
+      expect(() => treeEntries(tree)).toThrow(replacement === "symlink" ? "ELOOP" : "vendor file changed");
+      expect(replaced).toBe(true);
+    } finally { stat.mockRestore(); }
+  });
+}
+
+test("archive verification rejects symlinks and non-regular files", async () => {
+  const f = await fixture();
+  const link = join(f.root, "link.crate");
+  symlinkSync(f.archive, link);
+  await expect(extract(f.source, link, temporary())).rejects.toThrow();
+  await expect(extract(f.source, f.root, temporary())).rejects.toThrow("not regular");
+  const fifo = join(f.root, "fifo.crate");
+  expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+  await expect(extract(f.source, fifo, temporary())).rejects.toThrow("not regular");
+});
+
+test("extraction uses the verified bytes when the archive path is replaced after reading", async () => {
+  const f = await fixture();
+  const replacement = await fixture({ "build.rs": "unverified replacement\n" });
+  const bytes = readFileSync(replacement.archive);
+  const destination = temporary();
+  const original = fs.readFileSync;
+  let replaced = false;
+  const read = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+    const result = original(...args);
+    // The first read belongs to archive verification, whether by path or descriptor.
+    if (!replaced) {
+      replaced = true;
+      rmSync(f.archive);
+      writeFileSync(f.archive, bytes);
+    }
+    return result;
+  }) as typeof fs.readFileSync);
+  try { await extract(f.source, f.archive, destination); }
+  finally { read.mockRestore(); }
+  expect(replaced).toBe(true);
+  expect(readFileSync(join(destination, "build.rs"), "utf8")).toBe("original\n");
+});
+
 test("patch generation reproduces edits, additions, deletions, binary data, and executable files", async () => {
   const f = await fixture();
   put(join(f.vendor, "build.rs"), "patched\n");
