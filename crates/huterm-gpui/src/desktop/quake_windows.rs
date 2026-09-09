@@ -644,10 +644,10 @@ fn step(
     {
         state.request(false, false);
     }
-    if now.duration_since(state.last_display_check) >= Duration::from_secs(1)
-        && state.stage == Stage::Idle
-        && !state.regular
-    {
+    let refresh_display = now.duration_since(state.last_display_check)
+        >= Duration::from_secs(1)
+        || matches!(state.stage, Stage::Windowed | Stage::SettleVisible);
+    if refresh_display && !state.regular {
         state.last_display_check = now;
         match platform.displays() {
             Ok(displays) => {
@@ -659,7 +659,11 @@ fn step(
                 {
                     state.display = display.clone();
                     state.target = state.profile.geometry(display);
-                    state.request(state.transition.visible(), false);
+                    // Presentation leases can change the work area mid-transition.
+                    // Preserve active progress and its original failure deadline.
+                    if state.stage == Stage::Idle {
+                        state.request(state.transition.visible(), false);
+                    }
                 }
             }
             Err(error) => {

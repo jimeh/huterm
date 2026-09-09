@@ -792,3 +792,8 @@ callbacks restart the display link when the window returns.
 Reassert macOS quake geometry during settling after changing presentation options.
 AppKit can move the frame after its initial write. Keep X11 fullscreen geometry
 under the window manager and retain the native-transition gate.
+
+Refresh the selected display work area before and while settling quake geometry.
+Fullscreen presentation hides the menu bar and dock, so cached visibleFrame can
+become wrong when its lease is released. Update active targets without restarting
+progress or renewing the transition deadline.
