@@ -797,3 +797,12 @@ Refresh the selected display work area before and while settling quake geometry.
 Fullscreen presentation hides the menu bar and dock, so cached visibleFrame can
 become wrong when its lease is released. Update active targets without restarting
 progress or renewing the transition deadline.
+
+Carbon non-exclusive RegisterEventHotKey can succeed while delivering no events
+because another application owns the shortcut. Keep the global-hotkey patch using
+kEventHotKeyExclusive so startup/reload conflicts fail and cannot create a falsely
+usable keepalive registration.
+
+Keep workflow scanning scoped to the root `.github` directory. Published vendor
+archives can contain upstream workflows that Huterm does not execute. Preserve
+those files for archive verification instead of rewriting their action pins.

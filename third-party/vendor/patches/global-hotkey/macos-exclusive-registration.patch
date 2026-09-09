@@ -1,0 +1,13 @@
+diff --git a/src/platform_impl/macos/mod.rs b/src/platform_impl/macos/mod.rs
+index dd1f618d8ccc80e9b7e5d9ac77fa81a14fda774b..5f775ca5a049a17eee21d5a2f5da45199196bc0f 100644
+--- a/src/platform_impl/macos/mod.rs
++++ b/src/platform_impl/macos/mod.rs
+@@ -118,7 +118,7 @@ impl GlobalHotKeyManager {
+                     mods,
+                     hotkey_id,
+                     GetApplicationEventTarget(),
+-                    0,
++                    1, // kEventHotKeyExclusive: fail instead of silently sharing a shortcut.
+                     &mut hotkey_ref,
+                 );
+ 

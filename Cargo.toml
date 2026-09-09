@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-gpui", "crates/huterm-protocol"]
-exclude = ["third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-0.2.2"]
+exclude = ["third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-0.2.2"]
 resolver = "2"
 
 [workspace.package]
@@ -73,5 +73,6 @@ main = true
 workspace = true
 
 [patch.crates-io]
+global-hotkey = { path = "third-party/vendor/global-hotkey-0.8.0" }
 gpui = { path = "third-party/vendor/gpui-0.2.2" }
 libghostty-vt-sys = { path = "third-party/vendor/libghostty-vt-sys-0.2.1" }

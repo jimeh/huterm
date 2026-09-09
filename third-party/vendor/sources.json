@@ -73,6 +73,24 @@
           "description": "Include the MIT license supplied with the reviewed binding notice."
         }
       ]
+    },
+    {
+      "name": "global-hotkey",
+      "version": "0.8.0",
+      "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.8.0.crate",
+      "sha256": "8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e",
+      "upstream": {
+        "repository": "https://github.com/tauri-apps/global-hotkey",
+        "revision": "2a620bf3852008b568f6d36c2baedcc3dd0822f2",
+        "path": ""
+      },
+      "patches": [
+        {
+          "name": "macos-exclusive-registration",
+          "file": "patches/global-hotkey/macos-exclusive-registration.patch",
+          "description": "Use exclusive Carbon hotkey registration so conflicting macOS grabs fail instead of succeeding without event delivery."
+        }
+      ]
     }
   ]
 }

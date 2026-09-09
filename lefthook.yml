@@ -15,6 +15,7 @@ pre-commit:
       glob: "**/*.md"
       exclude:
         - "third-party/vendor/gpui-0.2.2/**"
+        - "third-party/vendor/global-hotkey-0.8.0/**"
       run: mise run lint:docs:files {staged_files}
 
     - name: workflows

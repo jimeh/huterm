@@ -334,7 +334,7 @@ run = "cargo deny --locked check"
 
 [tasks."ci:workflows"]
 description = "Validate and secure GitHub Actions workflows"
-run = ["actionlint", "zizmor --offline .", "pinact run --check --verify-comment"]
+run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-comment"]
 
 [tasks."verify:toolchain"]
 description = "Materialize the pinned Rust toolchain before parallel checks"
