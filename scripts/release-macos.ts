@@ -319,6 +319,8 @@ async function readPlist(plistPath: string): Promise<JsonObject> {
 async function verifyPackageConfiguration(bundlePath: string): Promise<void> {
   validatePrivacyDescriptions(await readPlist(join(bundlePath, "Contents/Info.plist")));
   validateEntitlements(await readPlist(entitlementPath));
+  const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
+  if (linkage.stdout.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
 }
 
 function currentBuildInputs(): BuildInputs {
@@ -345,10 +347,16 @@ async function assetList(releaseId: number): Promise<unknown> {
   return JSON.parse(stdout);
 }
 
-async function validateRepositorySource(inputs: BuildInputs): Promise<void> {
+export function isDispatchedBranchBuild(sha: string, event: string | undefined, ref: string | undefined, dispatchSha: string | undefined): boolean {
+  return event === "workflow_dispatch" && ref?.startsWith("refs/heads/") === true && sha === dispatchSha;
+}
+
+async function validateRepositorySource(inputs: BuildInputs, allowDispatchedBranch = false): Promise<void> {
   const head = (await runCaptured("git", ["rev-parse", "HEAD"])).stdout.trim();
   if (head !== inputs.sha) throw new Error(`checkout ${head} does not match release SHA ${inputs.sha}`);
-  await runCaptured("git", ["merge-base", "--is-ancestor", inputs.sha, "refs/remotes/origin/main"]);
+  if (!allowDispatchedBranch) {
+    await runCaptured("git", ["merge-base", "--is-ancestor", inputs.sha, "refs/remotes/origin/main"]);
+  }
   const metadata = JSON.parse((await runCaptured("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"])).stdout);
   validateWorkspaceVersions(metadata, inputs.version);
 }
@@ -363,7 +371,7 @@ async function validateRepositoryRelease(inputs: ReleaseInputs, expectedId?: num
 
 async function validateBuildCommand(): Promise<void> {
   const inputs = currentBuildInputs();
-  await validateRepositorySource(inputs);
+  await validateRepositorySource(inputs, isDispatchedBranchBuild(inputs.sha, process.env.GITHUB_EVENT_NAME, process.env.GITHUB_REF, process.env.GITHUB_SHA));
   console.log(`validated build ${inputs.version} at ${inputs.sha}`);
 }
 
@@ -687,7 +695,7 @@ async function main(): Promise<void> {
       const bundle = Bun.argv[3];
       if (!bundle) throw new Error("verify-package-config requires an app bundle path");
       await verifyPackageConfiguration(resolve(repoRoot, bundle));
-      console.log("verified macOS privacy descriptions and release entitlements");
+      console.log("verified macOS privacy descriptions, release entitlements, and static Ghostty linkage");
       break;
     }
     case "build":
