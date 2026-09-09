@@ -40,6 +40,8 @@ padding_y = 4.0
 padding_balance = false
 # Tab placement: top, bottom, left, or right.
 tab_position = "top"
+always_show_tab_bar = false
+auto_hide_tab_bar_in_fullscreen = false
 
 [theme]
 name = "huterm-dark"
@@ -331,6 +333,27 @@ mod tests {
         let result = parse_at(source, &directory.join("config.toml"));
         fs::remove_dir(directory).expect("remove empty config directory");
         result
+    }
+
+    #[test]
+    fn tab_bar_visibility_defaults_and_overrides() {
+        let config = parse(DEFAULT_CONFIG).unwrap();
+        assert!(!config.window.always_show_tab_bar);
+        assert!(!config.window.auto_hide_tab_bar_in_fullscreen);
+        let config = parse(
+            &DEFAULT_CONFIG
+                .replace(
+                    "always_show_tab_bar = false",
+                    "always_show_tab_bar = true",
+                )
+                .replace(
+                    "auto_hide_tab_bar_in_fullscreen = false",
+                    "auto_hide_tab_bar_in_fullscreen = true",
+                ),
+        )
+        .unwrap();
+        assert!(config.window.always_show_tab_bar);
+        assert!(config.window.auto_hide_tab_bar_in_fullscreen);
     }
 
     #[test]
@@ -761,6 +784,8 @@ background = "#040506"
                 padding_y: 0.0,
                 padding_balance: false,
                 tab_position: TabPosition::Top,
+                always_show_tab_bar: false,
+                auto_hide_tab_bar_in_fullscreen: false,
                 macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             }
         );

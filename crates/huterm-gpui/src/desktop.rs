@@ -208,6 +208,7 @@ struct TerminalView {
     link_max_lookup: Duration,
     link_max_latency: Duration,
     pending_resize: Option<(GridSize, CellSize)>,
+    resize_requests: u64,
     snapshot: Option<Arc<TerminalSnapshot>>,
     renderer: Rc<RefCell<TerminalRenderer>>,
     focus: FocusHandle,
@@ -220,6 +221,8 @@ struct TerminalView {
     font_size: Pixels,
     window_config: WindowConfig,
     sidebar_width: Pixels,
+    tab_presentation: windows::tab_visibility::Presentation,
+    tab_overlay: Option<Bounds<Pixels>>,
     chrome_hidden: bool,
     fullscreen_insets: gpui::Edges<Pixels>,
     theme: Theme,
@@ -315,6 +318,7 @@ impl TerminalView {
             link_max_lookup: Duration::ZERO,
             link_max_latency: Duration::ZERO,
             pending_resize: None,
+            resize_requests: 0,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
                 font_family.clone(),
@@ -338,6 +342,8 @@ impl TerminalView {
             font_size: metrics.font_size,
             window_config: config.window,
             sidebar_width: windows::SIDEBAR_WIDTH,
+            tab_presentation: windows::tab_visibility::Presentation::Hidden,
+            tab_overlay: None,
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
             theme,
@@ -715,7 +721,11 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || self
+                .tab_overlay
+                .is_some_and(|bounds| bounds.contains(&event.position))
+        {
             return;
         }
         self.links.invalidate();
@@ -895,6 +905,9 @@ impl TerminalView {
     ) {
         let point = self.link_cell(position, window);
         let enabled = self.effective_link_modifiers(modifiers, window)
+            && !self
+                .tab_overlay
+                .is_some_and(|bounds| bounds.contains(&position))
             && !self.external_drag
             && !self.selecting
             && !self.scrollbar_dragging
@@ -914,7 +927,10 @@ impl TerminalView {
     }
 
     fn can_drop_paths(&self, window: &Window) -> bool {
-        self.visible
+        !self
+            .tab_overlay
+            .is_some_and(|bounds| bounds.contains(&window.mouse_position()))
+            && self.visible
             && !self.exited
             && self.focus.is_focused(window)
             && self
@@ -989,7 +1005,11 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || self
+                .tab_overlay
+                .is_some_and(|bounds| bounds.contains(&event.position))
+        {
             return;
         }
         self.external_drag = false;
@@ -1082,7 +1102,13 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || overlay_blocks_pointer(
+                self.tab_overlay,
+                event.position,
+                self.owns_pointer_gesture(),
+            )
+        {
             return;
         }
         if self.external_drag && cx.has_active_drag() {
@@ -1161,7 +1187,13 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || overlay_blocks_pointer(
+                self.tab_overlay,
+                event.position,
+                self.owns_pointer_gesture(),
+            )
+        {
             return;
         }
         if self.external_drag {
@@ -1332,6 +1364,20 @@ impl TerminalView {
             .set_selection(self.selection.and_then(Selection::range));
     }
 
+    fn owns_pointer_gesture(&self) -> bool {
+        self.selecting
+            || self.scrollbar_dragging
+            || self.external_drag
+            || self.links.owns_press()
+            || [
+                ProtocolMouseButton::Left,
+                ProtocolMouseButton::Middle,
+                ProtocolMouseButton::Right,
+            ]
+            .into_iter()
+            .any(|button| self.mouse.held(button))
+    }
+
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
         windows::ChromeLayout::with_safe_area(
             window.viewport_size(),
@@ -1340,6 +1386,7 @@ impl TerminalView {
             self.sidebar_width,
             self.fullscreen_insets,
         )
+        .present(self.tab_presentation, self.window_config.tab_position, 0.0)
         .terminal
     }
     fn viewport(&self, window: &Window) -> gpui::Size<Pixels> {
@@ -1388,6 +1435,7 @@ impl TerminalView {
         self.links.invalidate();
         self.last_grid_size = size;
         self.last_cell_size = Some(cell);
+        self.resize_requests += 1;
         match self.client.resize(size, cell) {
             Ok(()) => self.pending_resize = None,
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
@@ -1602,6 +1650,16 @@ impl ScrollBenchmark {
             diagnostics.maximum_queued,
         );
     }
+}
+
+fn overlay_blocks_pointer(
+    overlay: Option<Bounds<Pixels>>,
+    pointer: gpui::Point<Pixels>,
+    owns_gesture: bool,
+) -> bool {
+    // The release can precede the window refresh that hides an overlay after
+    // a terminal press. Existing terminal ownership wins during that interval.
+    !owns_gesture && overlay.is_some_and(|bounds| bounds.contains(&pointer))
 }
 
 fn benchmark_environment(name: &str) -> String {
@@ -2241,6 +2299,23 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_gesture_retains_motion_and_release_under_an_overlay() {
+        let overlay = Some(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(800.0), px(32.0)),
+        ));
+        let on_bar = point(px(100.0), px(12.0));
+        assert!(overlay_blocks_pointer(overlay, on_bar, false));
+        assert!(!overlay_blocks_pointer(overlay, on_bar, true));
+        assert!(!overlay_blocks_pointer(
+            overlay,
+            point(px(100.0), px(100.0)),
+            false
+        ));
+        assert!(!overlay_blocks_pointer(None, on_bar, false));
+    }
 
     #[test]
     fn benchmark_starts_from_attached_window_scale_without_a_render() {

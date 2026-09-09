@@ -1762,6 +1762,14 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
+        "always_show_tab_bar": {
+          "default": false,
+          "type": "boolean"
+        },
+        "auto_hide_tab_bar_in_fullscreen": {
+          "default": false,
+          "type": "boolean"
+        },
         "macos_fullscreen_mode": {
           "allOf": [
             {

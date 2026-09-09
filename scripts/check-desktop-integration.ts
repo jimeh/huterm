@@ -426,6 +426,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       "temporary tab removed",
     );
 
+    // Removing the second tab grows the grid. Engines may pull history into
+    // the visible rows, and the old screen pointer no longer names row zero.
+    await display(`\x1b[2J\x1b[H${url}`);
+    await mouse(5, 2, 0);
+    await modifiers(command);
+    await hover(url);
+
     await writeFile(
       config,
       `[terminal]\nengine="${engine}"\nclose_on_exit=false\nlinks=false\n`,

@@ -15,6 +15,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
     super::run_with_startup(move |cx| {
         let quit_directory = directory.clone();
         cx.on_app_quit(move |cx| {
+            #[cfg(target_os = "macos")]
+            super::input_smoke::post_event("cursor-restore")
+                .expect("restore smoke cursor");
             let runtime = &cx.global::<Desktop>().runtime;
             if let Some(snapshot) = runtime.restore.lock().unwrap().as_ref() {
                 let mut output = String::new();
@@ -200,6 +203,7 @@ fn read_state(cx: &mut App) -> String {
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
                 view.tabs.len(), view.status.as_deref().unwrap_or(""), view.close.confirmation.is_some()).unwrap();
+            writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}", view.presentation(), view.reveal.progress).unwrap();
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
             writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();
@@ -207,11 +211,13 @@ fn read_state(cx: &mut App) -> String {
             for tab in &view.tabs {
                 let terminal = tab.view.read(cx);
                 consistent &= terminal.chrome_hidden == view.fullscreen.chrome_hidden
-                    && terminal.fullscreen_insets == view.fullscreen_insets;
+                    && terminal.fullscreen_insets == view.fullscreen_insets
+                    && terminal.tab_presentation == view.presentation();
             }
             writeln!(output, "w{index}.retained={consistent}").unwrap();
             if let Some(terminal) = view.active_view() {
                 let terminal = terminal.read(cx);
+                writeln!(output, "w{index}.resize_requests={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.owns_pointer_gesture()).unwrap();
                 let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();
                 writeln!(output, "w{index}.ready={}\nw{index}.focused={}\nw{index}.grid={},{}\nw{index}.terminal={}\nw{index}.text={}", text.contains("READY"), terminal.focus.is_focused(window), terminal.last_grid_size.columns, terminal.last_grid_size.rows, rect(terminal.content_bounds(window)), text.replace('\n', " ")).unwrap();
             }

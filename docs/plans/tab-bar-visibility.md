@@ -1,7 +1,7 @@
 # Tab-bar visibility and fullscreen reveal
 
-Status: agreed direction, implementation plan written on 2026-09-09.
-Product implementation has not started.
+Status: implemented on 2026-09-09. Linux unit and production smoke validation
+passed for both engines. macOS CI and physical display validation remain pending.
 
 ## Outcome
 
@@ -175,6 +175,27 @@ state any unverified hardware cases.
 Run `mise run check` during implementation and `mise run verify` before broad
 handoff. This plan itself requires only
 `mise run lint:docs:files -- docs/plans/tab-bar-visibility.md`.
+
+## Implementation evidence and remaining native checks
+
+The implementation uses a 2-point edge target, a 150 ms slide, and a 300 ms
+hide delay. Shared layout keeps the terminal bounds independent of overlay
+progress. A clipped opaque backing and terminal event guards isolate overlay
+input while preserving releases owned by an existing terminal gesture.
+
+The fullscreen smoke now checks all four placements, one-to-two-to-one tab
+transitions, a revealed new-tab button click, terminal focus, raw-PTY pointer
+isolation, and unchanged resize-request counts across reveal and dismissal.
+Linux also checks wheel isolation. These checks run for both engines; macOS
+uses the existing native mouse-event seam in both fullscreen modes.
+
+Linux validation cannot establish macOS menu-bar coexistence, physical notch
+activation, animation quality, or movement between physical displays. Synthetic
+macOS mouse events do not move the physical cursor sampled by AppKit. The smoke
+centers the physical cursor on the tested display and restores it on exit, so
+the synthetic content events do not conflict with physical edge detection.
+Physical notch and display traversal checks remain necessary before claiming
+hardware coverage.
 
 ## Unresolved questions
 
