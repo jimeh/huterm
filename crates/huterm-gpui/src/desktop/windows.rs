@@ -1515,6 +1515,7 @@ impl WorkspaceView {
                                 view: terminal,
                             });
                             view.select(tab_id, window, cx);
+                            view.reveal_tab_activity(window, cx);
                             view.status =
                                 cx.global::<Desktop>().config_error.clone();
                         }
@@ -1945,9 +1946,19 @@ impl WorkspaceView {
     ) {
         let changed = self.active != Some(id);
         self.select(id, window, cx);
-        if changed && self.presentation() == Presentation::Overlay {
+        if changed {
+            self.reveal_tab_activity(window, cx);
+        }
+    }
+
+    fn reveal_tab_activity(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.presentation() == Presentation::Overlay {
             self.refresh_tab_visibility(window, cx);
-            self.reveal.reveal_for_command(Instant::now());
+            self.reveal.reveal_for_activity(Instant::now());
         }
     }
 
@@ -2197,6 +2208,7 @@ impl WorkspaceView {
                         );
                         if let Some(active) = view.active {
                             view.select(active, window, cx);
+                            view.reveal_tab_activity(window, cx);
                         }
                         if view.resume_close(window, cx) {
                             return;

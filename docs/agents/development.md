@@ -159,8 +159,9 @@ Fullscreen auto-hide overrides `always_show_tab_bar` and reserves no bar space,
 regardless of tab count. It slides over the terminal without changing the grid,
 and hides after the pointer leaves. Tab dragging and sidebar resizing keep it
 open. A top bar can be revealed from the macOS notch-height region and appears
-below the notch. Tab-switch commands also reveal the fullscreen overlay for
-one second before the normal dismissal delay; repeated switches restart the hold.
+below the notch. Tab-switch commands, successful tab creation, and tab closure
+also reveal the fullscreen overlay for one second before the normal dismissal
+delay. Repeated activity restarts the hold.
 Both settings default to `false` and take effect on config reload.
 
 Set `[window].tab_position` to `top`, `bottom`, `left`, or `right`. Top is the

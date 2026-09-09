@@ -32,12 +32,12 @@ pub(super) struct Reveal {
     pub(super) progress: f32,
     last: Option<Instant>,
     leave: Option<Instant>,
-    command_until: Option<Instant>,
+    activity_until: Option<Instant>,
 }
 
 impl Reveal {
-    pub(super) fn reveal_for_command(&mut self, now: Instant) {
-        self.command_until = Some(now + Duration::from_secs(1));
+    pub(super) fn reveal_for_activity(&mut self, now: Instant) {
+        self.activity_until = Some(now + Duration::from_secs(1));
         self.last = Some(now);
     }
 
@@ -56,7 +56,7 @@ impl Reveal {
             now.saturating_duration_since(last).as_secs_f32()
         });
         let show =
-            if hover || self.command_until.is_some_and(|until| now < until) {
+            if hover || self.activity_until.is_some_and(|until| now < until) {
                 self.leave = None;
                 true
             } else {
@@ -96,13 +96,13 @@ mod tests {
         }
     }
     #[test]
-    fn command_reveal_restarts_hold_and_respects_cancellation() {
+    fn activity_reveal_restarts_hold_and_respects_cancellation() {
         let now = Instant::now();
         let mut reveal = Reveal::default();
-        reveal.reveal_for_command(now);
+        reveal.reveal_for_activity(now);
         reveal.advance(now + Duration::from_millis(150), false, true);
         assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
-        reveal.reveal_for_command(now + Duration::from_millis(900));
+        reveal.reveal_for_activity(now + Duration::from_millis(900));
         reveal.advance(now + Duration::from_millis(1500), false, true);
         assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
         reveal.advance(now + Duration::from_millis(1900), false, true);
@@ -110,7 +110,7 @@ mod tests {
         assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
         reveal.advance(now + Duration::from_millis(2400), false, true);
         assert!(reveal.progress.abs() < f32::EPSILON);
-        reveal.reveal_for_command(now + Duration::from_millis(2500));
+        reveal.reveal_for_activity(now + Duration::from_millis(2500));
         reveal.advance(now + Duration::from_millis(2650), false, true);
         assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
         reveal.advance(now + Duration::from_millis(2700), false, false);

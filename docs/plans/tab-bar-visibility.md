@@ -63,8 +63,9 @@ without a notch; select its exact width during native verification.
 - Do not reveal over an existing terminal drag or application mouse gesture.
   Preserve delivery of its release before allowing a reveal.
 - Tab-switch commands reveal the fullscreen overlay after an actual tab change.
-  Hold for one second, restarting on repeated switches, then use normal dismissal.
-  Pointer selection, tab creation, and no-op selection do not start this hold.
+  Successful tab creation and closure also reveal it while tabs remain. Hold for
+  one second, restarting on repeated activity, then use normal dismissal.
+  Pointer selection and no-op selection do not start this hold.
 - Preserve terminal keyboard focus. Bar pointer input, including wheel events,
   must not reach the terminal behind it. Hidden bar bounds must not intercept
   ordinary terminal input beyond the activation region.
