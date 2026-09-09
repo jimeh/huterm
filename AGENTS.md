@@ -666,3 +666,7 @@ published files or alter line endings.
 Disable automatic Git maintenance in private vendor session repositories. On
 Git 2.55, detached maintenance recreated a deleted GPUI session directory after
 finish, leaving metadata without state.json and blocking subsequent commands.
+Set Git's discovery ceiling to the parent of each vendor command's working
+directory. Scratch patch verification under `.native/vendor` otherwise discovers
+Huterm's repository and `git apply` silently skips paths outside that subdirectory.
+Private session repositories still resolve their own `.git` directory normally.

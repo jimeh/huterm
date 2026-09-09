@@ -388,3 +388,16 @@ sessionTest("interrupted cleanup cannot leave a broken active session", async ()
   expect(treeEntries(f.vendor)).toEqual(desired);
   await reproduce(f.source, f.root, f.archive);
 });
+
+sessionTest("patch verification works inside a parent Git checkout", async () => {
+  const f = await series();
+  const { git } = await import("./vendor");
+  git(f.root, ["init", "--quiet", "--template="]);
+  const indexBefore = git(f.root, ["ls-files", "--stage"]);
+  await action(f, "start");
+  put(join(f.vendor, "build.rs"), "nested checkout fix\n");
+  await expect(action(f, "finish")).resolves.toBeUndefined();
+  expect(contents(f)[1]).toContain("nested checkout fix");
+  expect(git(f.root, ["ls-files", "--stage"])).toBe(indexBefore);
+  await reproduce(f.source, f.root, f.archive);
+});

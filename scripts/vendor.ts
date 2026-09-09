@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export type Source = {
   name: string;
@@ -97,6 +97,8 @@ export function treeEntries(root: string): Map<string, string> {
 export function gitBytes(cwd: string, args: string[], diff = false) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  // Scratch trees may be inside Huterm: never discover its ancestor repository.
+  env.GIT_CEILING_DIRECTORIES = dirname(resolve(cwd));
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_CONFIG_GLOBAL = "/dev/null";
   env.GIT_EDITOR = "true";
