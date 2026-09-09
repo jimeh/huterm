@@ -788,3 +788,7 @@ the retained view with the window in deferred native cleanup.
 AppKit returns no NSScreen for a fully offscreen window during quake slides.
 GPUI display-link and maximization getters must handle nil; screen and occlusion
 callbacks restart the display link when the window returns.
+
+Reassert macOS quake geometry during settling after changing presentation options.
+AppKit can move the frame after its initial write. Keep X11 fullscreen geometry
+under the window manager and retain the native-transition gate.

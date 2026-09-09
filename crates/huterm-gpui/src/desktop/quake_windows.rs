@@ -824,10 +824,12 @@ fn step(
                 }
                 Ok(false) => {
                     // A window manager may apply initial placement when mapping,
-                    // after the frame set while the window was hidden. Reassert
-                    // the endpoint only after the mapped window is observable.
+                    // after the frame set while the window was hidden. AppKit
+                    // can also move the frame when presentation options change.
+                    // Reassert the endpoint after those native changes; only
+                    // X11 delegates fullscreen geometry to the window manager.
                     if !regular
-                        && !expected
+                        && (!expected || cfg!(target_os = "macos"))
                         && native.visible().unwrap_or(false)
                     {
                         Some(NativeEffect::for_state(
