@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/jimeh/huterm/compare/v0.1.1...v0.2.0) (2026-09-09)
+
+
+### Features
+
+* publish generated config and theme schemas ([#68](https://github.com/jimeh/huterm/issues/68)) ([67a4eef](https://github.com/jimeh/huterm/commit/67a4eef579ff2ec9d857fb89a18fbd319ba33683))
+
+
+### Bug Fixes
+
+* unblock tagged releases and allow branch verification builds ([#71](https://github.com/jimeh/huterm/issues/71)) ([62683b5](https://github.com/jimeh/huterm/commit/62683b504fb3a515fe02c29c110275d2cebff21e))
+
 ## [0.1.1](https://github.com/jimeh/huterm/compare/v0.1.0...v0.1.1) (2026-09-09)
 
 
