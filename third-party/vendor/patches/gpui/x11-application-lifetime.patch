@@ -1,0 +1,16 @@
+diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
+index ba71d16acc4abd4050affbe6781bb15608bc2230..920bf26a48b3e7d8da8448e6307341de053e8db9 100644
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -256,9 +256,8 @@ impl X11ClientStatePtr {
+         }
+         state.cursor_styles.remove(&x_window);
+ 
+-        if state.windows.is_empty() {
+-            state.common.signal.stop();
+-        }
++        // The application decides whether its final window closes the process.
++        // Global shortcuts may need this loop before opening another window.
+     }
+ 
+     pub fn update_ime_position(&self, bounds: Bounds<Pixels>) {

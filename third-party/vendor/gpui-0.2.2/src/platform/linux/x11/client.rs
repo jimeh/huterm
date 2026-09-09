@@ -256,9 +256,8 @@ impl X11ClientStatePtr {
         }
         state.cursor_styles.remove(&x_window);
 
-        if state.windows.is_empty() {
-            state.common.signal.stop();
-        }
+        // The application decides whether its final window closes the process.
+        // Global shortcuts may need this loop before opening another window.
     }
 
     pub fn update_ime_position(&self, bounds: Bounds<Pixels>) {

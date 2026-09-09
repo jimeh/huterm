@@ -6,7 +6,8 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI has separate file-drop and explicit-float
-patches; the sys crate has separate CPU, build-script watch-path, and license patches.
+patches, plus hidden-window creation, X11 native-handle, and application-lifetime
+fixes. The sys crate has separate CPU, build-script watch-path, and license patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -205,3 +206,15 @@ platforms' desktop integration smokes when removing it.
 fallback will become an error. Explicit types preserve the existing behavior.
 Remove this patch when the selected upstream release supplies explicit types or
 otherwise removes the `float_literal_f32_fallback` warnings at this call site.
+
+GPUI 0.2.2 called `map_window()` even for `WindowOptions { show: false }`.
+The hidden-window patch gates that call on `show` and propagates mapping errors.
+The X11 handle patch implements `HasWindowHandle` for live XCB windows instead
+of panicking. Quake uses that handle to address the exact window. The native
+quake smoke checks an untouched hidden GPUI window before any hide operation,
+then summons a real profile through the OS shortcut and reads its native state.
+GPUI's X11 window destruction also stopped the event loop when its last window
+closed. The application-lifetime patch leaves that decision to Huterm's existing
+close/quit coordinator. The native smoke proves that active global registrations
+retain a zero-window process, and that final-window close without registrations
+still exits it.

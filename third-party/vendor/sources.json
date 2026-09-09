@@ -22,6 +22,21 @@
           "name": "explicit-f32-literals",
           "file": "patches/gpui/explicit-f32-literals.patch",
           "description": "Make grid track float types explicit instead of relying on deprecated f32 literal fallback."
+        },
+        {
+          "name": "hidden-window-creation",
+          "file": "patches/gpui/hidden-window-creation.patch",
+          "description": "Honor WindowOptions.show before mapping a newly created native window."
+        },
+        {
+          "name": "x11-window-handle",
+          "file": "patches/gpui/x11-window-handle.patch",
+          "description": "Expose the live Xcb window handle instead of panicking in HasWindowHandle."
+        },
+        {
+          "name": "x11-application-lifetime",
+          "file": "patches/gpui/x11-application-lifetime.patch",
+          "description": "Keep the X11 loop alive after its last window closes so the application owns zero-window lifetime and explicit Quit."
         }
       ]
     },

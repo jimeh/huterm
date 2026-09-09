@@ -745,3 +745,25 @@ next refresh hides it; overlay hit bounds alone must never discard that release.
 GPUI's macOS window-hover flag reports activation and can retain the last mouse
 position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
 display membership so leaving for another display dismisses the overlay.
+
+Quake native effects run after returning from GPUI's App/window update borrow;
+AppKit frame, style, and visibility changes can synchronously reenter GPUI.
+Keep a generation check before every effect, and wait for native Space exit
+before restoring style or applying quake geometry. Quake fullscreen shares the
+existing application presentation lease pool. Hide only the associated window,
+never the whole application. GPUI 0.2.2 needs the tracked hidden-window and
+X11-handle vendor patches: `show: false` otherwise maps on X11, and its native
+handle method otherwise panics. Run the quake native smoke to verify both.
+Openbox may place a remapped window after its unmapped geometry was configured.
+Quake must observe mapping and reassert the final EWMH frame until it settles,
+including `animation = "none"` and zero-duration transitions.
+GPUI's X11 `drop_window` also stopped the platform loop on the last native
+window, bypassing Huterm's zero-window keepalive. Keep the tracked application-
+lifetime patch until upstream permits explicit ownership. Pair zero-window global
+summon coverage with ordinary final-window exit coverage when changing it.
+
+Quake profile definitions and portable validation live in `huterm-config`;
+keep desktop geometry and animation behavior in `huterm-gpui`. The global
+keybinding schema restricts the shared command catalog to quake commands.
+Extend shared schema fixtures and the desktop global compiler parity check
+together; native key support and OS registration remain runtime checks.

@@ -1,0 +1,15 @@
+diff --git a/src/window.rs b/src/window.rs
+index 6d74a0e11f7a7ecde003f48b084f4720bd03230e..73575f45c1329d1f93b441fc1fb3474723a7b90d 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1202,7 +1202,9 @@ impl Window {
+             platform_window.set_app_id(&app_id);
+         }
+ 
+-        platform_window.map_window().unwrap();
++        if show {
++            platform_window.map_window()?;
++        }
+ 
+         Ok(Window {
+             handle,

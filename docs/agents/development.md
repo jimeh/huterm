@@ -26,7 +26,7 @@ headless smoke test:
 ```sh
 sudo apt-get install --no-install-recommends \
   libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb \
-  xdotool x11-xkb-utils x11-utils openbox
+  xdotool x11-xkb-utils x11-utils openbox xcompmgr
 ```
 
 These packages are tracked by apt and can be removed with `sudo apt-get remove`
@@ -204,6 +204,8 @@ process labels and directory inheritance are not implemented yet.
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
 | Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
 | macOS fullscreen | `mise run smoke:macos-fullscreen` | AppKit modes, style/focus restoration, retained tabs, presentation leases, and PTY input/resize | CI or implementer |
+| Linux quake | `mise run smoke:linux-quake` | Native XTest shortcuts, external focus, composited fade pixels, animations, OS grab rollback, and PTY lifecycle | CI or implementer |
+| macOS quake | `mise run smoke:macos-quake` | Native session shortcuts, external AppKit focus, alpha/geometry, Space exit, and PTY lifecycle; requires event-posting permission | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
 | macOS keyboard | `mise run smoke:macos-input` | Native input and composition through both engines | CI or implementer |
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |

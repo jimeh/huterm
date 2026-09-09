@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod quake;
+
 #[cfg(feature = "schema")]
 pub mod schema;
 
@@ -291,6 +293,10 @@ pub struct RawConfig {
     pub themes: BTreeMap<String, ThemeDefinition>,
     #[serde(default)]
     pub keybinding: Vec<RawKeybinding>,
+    #[serde(default)]
+    pub quake: quake::Config,
+    #[serde(default)]
+    pub global_keybinding: Vec<RawKeybinding>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -416,6 +422,7 @@ pub enum ConfigError {
     Theme(String),
     Engine(String),
     Keybinding(String),
+    Quake(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -429,7 +436,8 @@ impl fmt::Display for ConfigError {
             Self::Invalid(message) => formatter.write_str(message),
             Self::Theme(message)
             | Self::Engine(message)
-            | Self::Keybinding(message) => formatter.write_str(message),
+            | Self::Keybinding(message)
+            | Self::Quake(message) => formatter.write_str(message),
         }
     }
 }
@@ -454,6 +462,7 @@ impl RawConfig {
     /// # Errors
     /// Returns an error when the input violates the configuration contract.
     pub fn validate_values(&self) -> Result<(), ConfigError> {
+        self.quake.validate().map_err(ConfigError::Quake)?;
         if self.font.family.trim().is_empty() {
             return Err(ConfigError::Invalid("font.family must not be empty"));
         }

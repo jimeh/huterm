@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 ripgrep rsync procps locales xz-utils unzip zsh \
     libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers \
     fontconfig fonts-dejavu-core xvfb xauth xdotool x11-xkb-utils \
-    x11-utils openbox twm \
+    x11-utils openbox xcompmgr twm \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8
 

@@ -47,7 +47,7 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 mod composition;
 mod keyboard;
 mod links;
-pub(crate) use windows::{fullscreen_smoke, integration_smoke};
+pub(crate) use windows::{fullscreen_smoke, integration_smoke, quake_smoke};
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;

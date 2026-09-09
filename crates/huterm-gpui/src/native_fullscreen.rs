@@ -447,6 +447,13 @@ impl Adapter {
         }
     }
 
+    /// Quake owns frame and style effects while associated. Native transition
+    /// flags are updated directly by callbacks, but ordinary effects are not run.
+    pub fn discard_quake_events(&self) {
+        self.0.inbox.events.borrow_mut().clear();
+        self.0.inbox.screen_changed.set(false);
+    }
+
     pub fn drain(&self) -> Vec<Event> {
         if self.0.inbox.screen_changed.replace(false)
             && !self.0.inbox.refit_scheduled.replace(true)
@@ -952,7 +959,7 @@ struct NativeInsets {
     right: f64,
 }
 
-unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
+pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
     if screen.is_null() {
         return gpui::Edges::default();
     }
@@ -1092,5 +1099,38 @@ mod retained_tests {
         let retained = unsafe { Retained::retain(std::ptr::null_mut()) };
         drop(retained);
         drop(Retained(std::ptr::null_mut()));
+    }
+}
+
+/// Quake and ordinary non-native fullscreen share one presentation lease pool.
+/// The caller owns frame/style transitions; this owner changes only app options.
+#[derive(Default)]
+pub(crate) struct QuakeLease(RefCell<PresentationLease>);
+impl QuakeLease {
+    pub fn set(&self, held: bool) -> anyhow::Result<()> {
+        // SAFETY: Called only by the main-thread quake adapter, outside GPUI
+        // borrows. The shared lease reducer validates AppKit's option set.
+        unsafe {
+            let app = application()?;
+            let options: usize = msg_send![app, presentationOptions];
+            let next = LEASES
+                .with(|leases| {
+                    if held {
+                        self.0
+                            .borrow_mut()
+                            .acquire(&mut leases.borrow_mut(), options)
+                    } else {
+                        self.0
+                            .borrow_mut()
+                            .release(&mut leases.borrow_mut(), options)
+                    }
+                })
+                .map_err(anyhow::Error::msg)?;
+            let _: () = msg_send![app, setPresentationOptions: next];
+        }
+        Ok(())
+    }
+    pub fn held(&self) -> bool {
+        self.0.borrow().held()
     }
 }

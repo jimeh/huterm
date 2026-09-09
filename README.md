@@ -158,6 +158,10 @@ The schema validates settings and command-specific keybinding arguments. For
 example, `select_tab` requires an integer `args.index` from 1 through 9, while
 `copy` rejects that argument. Huterm still checks keystroke and `when` syntax,
 platform restrictions, theme files, and inheritance cycles at runtime.
+Quake profiles share the same schema, including geometry and animation limits.
+Global shortcuts offer only the three quake commands and accept a text `profile`
+argument. Profile existence, display availability, shortcut conflicts, and OS
+registration are checked at runtime.
 Taplo completes command names and diagnoses arguments for the selected command.
 Command-specific argument completion depends on the editor; Taplo 0.10.0 does
 not currently offer it.
@@ -334,6 +338,61 @@ attribution and palette import details.
 
 ### Keybindings
 
+Quake windows are retained terminal windows summoned by profile name. Global
+shortcuts are opt-in and work while another application has focus:
+
+```toml
+[quake.profiles.default]
+edge = "top"                # top, bottom, left, right
+width = 1.0                 # fraction of work area, greater than 0 through 1
+height = 0.5
+fullscreen = false          # use the full display frame, overriding width/height
+display = "active"          # active, pointer, primary, or id:<platform identifier>
+hide_on_focus_loss = true
+animation = "auto"
+animation_ms = 150          # 0 through 1000; zero is immediate
+
+[[global_keybinding]]
+key = "ctrl-alt-t"
+command = "toggle_quake"
+# args = { profile = "default" }
+```
+
+The built-in `default` profile exists without configuration. Add named tables,
+such as `[quake.profiles.logs]`, for independent windows. `show_quake`,
+`hide_quake`, and `toggle_quake` accept an optional `profile` argument and also
+work in ordinary `[[keybinding]]` entries. A hidden window keeps its tabs, shell,
+scrollback, and selection. Toggling a visible but unfocused window raises it;
+toggling the focused window hides it and returns focus to the previous external
+application. Auto-hide does not take focus back from the application you chose.
+
+`toggle_fullscreen` switches an associated window between quake and regular
+framed presentation. Regular presentation suspends auto-hide and retains user
+placement. Explicit `toggle_native_fullscreen` and `toggle_non_native_fullscreen`
+commands report unavailable for associated windows. Removing a named profile on
+reload converts its window to a visible ordinary window without closing jobs.
+Closing its final tab clears the association; the next summon creates a new shell.
+Registered shortcuts keep Huterm available when all windows are closed. Quit
+still assesses and closes every visible or hidden terminal.
+
+Partial profiles are frameless and use the work area; the tab bar remains.
+Their size is clamped to a usable minimum without exceeding the work area.
+`auto` fades fullscreen profiles and fades/slides partial profiles from their
+anchored edge. Other values are `none`, `fade`, `slide_top`, `slide_bottom`,
+`slide_left`, `slide_right`, and the corresponding `fade_slide_*` values.
+Fullscreen quake uses the current Space on macOS and EWMH fullscreen on X11.
+Without an X11 compositor, fades are disabled with a diagnostic; slides remain.
+A failed native transition restores an opaque regular window and reports the error.
+
+The initial display is retained until the window closes or moves in regular
+presentation. Missing displays fall back to the primary display. Explicit IDs use
+CoreGraphics display UUIDs on macOS and RandR monitor names on X11. Global
+bindings use one stroke, no `when`, and only the three quake commands. They must
+not conflict with a local binding's first stroke. Unsupported keys and OS grab
+conflicts are reported; a rejected reload retains the previous configuration and
+registered shortcuts. Native X11 sessions and macOS are supported; Wayland and
+XWayland global shortcuts are unavailable.
+
 Every shortcut runs a catalog command. Add `[[keybinding]]` entries to extend
 or replace the platform defaults:
 
@@ -431,6 +490,7 @@ Commands, their scope, and arguments:
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
 | `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) |
+| `show_quake`, `hide_quake`, `toggle_quake` | Application | Optional `profile` string; defaults to `default`. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |

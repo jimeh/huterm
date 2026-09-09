@@ -1,6 +1,6 @@
 # Quake profiles and global hotkeys
 
-Status: proposed implementation plan for [issue #41][issue-41].
+Status: implementation for [issue #41][issue-41]; native macOS CI validation pending.
 
 Deliver one PR for the embedded quake workflow. A configured global shortcut
 summons a named terminal window from another application. Hiding it preserves
@@ -9,8 +9,8 @@ next shortcut. Repeated activation reuses the same window.
 
 Frameless quake presentation, auto-hide on focus loss, temporary regular-window
 presentation, retained display choice, and animation variants are agreed behavior.
-Configuration spelling and numeric defaults below remain implementation proposals.
-Resolve native feasibility first. Keep #24's palette in a separate PR.
+Configuration spelling and numeric defaults below are implemented.
+Keep #24's palette in a separate PR.
 
 ## Scope and current foundations
 
@@ -345,20 +345,42 @@ Run `mise run license` for dependency changes and `mise run vendor:check` for
 vendored changes. Run `mise run verify` before implementation handoff and bind
 CI/review evidence to the final PR head.
 
-For this plan-only change, run selected-file Markdown lint and `git diff --check`.
-No application test run is needed until implementation changes behavior.
+Run `mise run verify` and the platform's native quake smoke before handoff.
 
-## Open questions and implementation gates
+## Implementation decisions and validation boundaries
 
-- Verify native registration and focus APIs before committing to a dependency or
-  claiming support for a particular desktop environment.
-- Numeric defaults remain proposed: 50%-height top geometry and 150 ms duration.
-  Global shortcuts remain opt-in. Auto-hide on blur and automatic fade/fullscreen
-  versus edge-slide-plus-fade/partial defaults are agreed behavior.
-- Finalize explicit native/non-native fullscreen command behavior for associated
-  windows while preserving the agreed `toggle_fullscreen` presentation toggle.
-- Resolve platform-stable display selector spelling and fallback diagnostics
-  from the native probe before finalizing the serialized configuration.
+- Defaults are top-edge, full work-area width, half work-area height, and 150 ms.
+  Global shortcuts remain opt-in. Profile fractions are finite values in `(0, 1]`;
+  animation duration is 0 through 1000 ms.
+- Global registration uses pinned `global-hotkey` 0.8.0. Callback admission is
+  bounded, releases update held-key state before admission, and a coalesced
+  asynchronous wake dispatches work on GPUI. Registration replacement acquires
+  new grabs before retiring old ones and tracks failed rollback ownership.
+  Modifier-free supported keys are accepted. There is no default global grab.
+- Display selectors are `active`, `pointer`, `primary`, and `id:<identifier>`.
+  Native identifiers are CoreGraphics UUIDs and RandR monitor names. Profiles
+  retain the initially selected display; missing displays fall back to primary.
+- The profile-associated window owns a single quake presentation reducer. Its
+  ordinary fullscreen controller is suspended while associated. The existing
+  macOS observer still reports native Space transitions, and quake shares its
+  application presentation lease pool. Explicit native/non-native commands are
+  unavailable while associated; the ordinary toggle switches presentation.
+- Reentrant AppKit effects run outside GPUI update borrows. Every effect checks
+  the request generation. Recovery and profile removal wait for native Space
+  exit before restoring frame/style. X11 visible endpoints reassert placement
+  after mapping because the window manager may override unmapped geometry.
+- Three narrow GPUI vendor patches preserve hidden creation, expose the exact
+  live XCB window handle, and leave zero-window application lifetime to Huterm.
+  Archive-plus-patch reproduction covers each patch.
+- `smoke:linux-quake` and `smoke:macos-quake` run in the platform CI smoke job.
+  They drive native shortcuts from a separate focus witness, verify retained
+  PTYs, exercise 22 partial/fullscreen animation combinations and lifecycle
+  boundaries, and check real OS grab conflicts. Linux observes composed pixels
+  during fade under Xcompmgr. macOS observes native alpha and drives real AppKit
+  Space entry/exit; its witness requires session event-posting permission.
+- Physical multi-monitor layouts, Stage Manager, and user-specific Spaces
+  arrangements remain manual QA limits. They do not excuse missing native CI
+  coverage. Current local evidence is Linux X11; macOS execution remains a CI gate.
 
 [issue-41]: https://github.com/jimeh/huterm/issues/41
 [epic-8]: https://github.com/jimeh/huterm/issues/8

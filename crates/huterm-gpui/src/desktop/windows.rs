@@ -5,6 +5,10 @@ pub(crate) mod fullscreen_smoke;
 pub(crate) mod input_smoke;
 #[path = "integration_smoke.rs"]
 pub(crate) mod integration_smoke;
+#[path = "quake_smoke.rs"]
+pub(crate) mod quake_smoke;
+#[path = "quake_windows.rs"]
+mod quake_windows;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
@@ -283,6 +287,7 @@ struct RestoreSnapshot {
 }
 
 struct Desktop {
+    quake: quake_windows::Registry,
     runtime: Arc<DesktopRuntime>,
     config: Config,
     config_path: PathBuf,
@@ -379,6 +384,9 @@ fn run_app_command(
             open_window(cx);
             Ok(CommandOutcome::Accepted)
         }
+        ids::SHOW_QUAKE | ids::HIDE_QUAKE | ids::TOGGLE_QUAKE => {
+            quake_windows::invoke(cx, invocation)
+        }
         ids::RELOAD_CONFIG => reload(cx),
         ids::QUIT => {
             // Global actions run while the dispatching window is borrowed.
@@ -458,6 +466,7 @@ pub(super) fn run_with_startup(
     application.run(move |cx| {
         let (reserved, config_error) = install_startup_keymap(cx, &loaded);
         cx.set_global(Desktop {
+            quake: quake_windows::Registry::default(),
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
             config_error,
@@ -471,7 +480,9 @@ pub(super) fn run_with_startup(
             external_drag_window: None,
         });
         install_native_quit(cx);
+        quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
+            quake_windows::shutdown(cx);
             // AppKit terminate: does not return from Application::run. GPUI
             // allows only 100 ms for quit futures, so this terminal hook must
             // finish synchronous cleanup before returning its empty future.
@@ -597,6 +608,9 @@ fn capture_other_windows(
 }
 
 fn maybe_exit(cx: &mut App) {
+    if quake_windows::keep_alive(cx) {
+        return;
+    }
     if !cx.windows().is_empty() || cx.global::<Desktop>().pending_spawns != 0 {
         return;
     }
@@ -613,6 +627,7 @@ fn maybe_exit(cx: &mut App) {
         if task.await {
             let _ = cx.update(|cx| {
                 if cx.windows().is_empty()
+                    && !quake_windows::keep_alive(cx)
                     && cx.global::<Desktop>().pending_spawns == 0
                 {
                     approved_quit(cx);
@@ -625,9 +640,12 @@ fn maybe_exit(cx: &mut App) {
 
 fn approved_quit(cx: &mut App) {
     cx.spawn(async move |cx| {
+        let mut quake_presentations = Vec::new();
         #[cfg(target_os = "macos")]
         let mut adapters = Vec::new();
         let _ = cx.update(|cx| {
+            quake_presentations = quake_windows::take_for_quit(cx);
+            quake_windows::shutdown(cx);
             for view in cx.global::<Desktop>().windows.clone() {
                 let _ = view.update(cx, |view, _| {
                     view.fullscreen.close();
@@ -639,6 +657,9 @@ fn approved_quit(cx: &mut App) {
                 });
             }
         });
+        for state in quake_presentations {
+            state.cleanup();
+        }
         #[cfg(target_os = "macos")]
         for adapter in adapters {
             adapter.close();
@@ -706,11 +727,19 @@ fn open_window(cx: &mut App) {
     open_window_inner(cx, true);
 }
 
+fn open_window_inner(cx: &mut App, launch_shell: bool) {
+    open_window_with_profile(cx, launch_shell, None);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "native window creation installs lifecycle and event pump"
 )]
-fn open_window_inner(cx: &mut App, launch_shell: bool) {
+fn open_window_with_profile(
+    cx: &mut App,
+    launch_shell: bool,
+    profile: Option<(String, crate::quake::Profile, crate::quake::Display)>,
+) {
     if !can_open_window(
         launch_shell,
         cx.global::<Desktop>().quitting,
@@ -731,6 +760,8 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
         Bounds::centered(None, initial_window_size(&config, metrics), cx);
     let result = cx.open_window(
         WindowOptions {
+            show: profile.is_none(),
+            focus: profile.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
                 title: Some("Huterm".into()),
@@ -746,7 +777,14 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
             if scaled_metrics != metrics {
                 window.resize(initial_window_size(&config, scaled_metrics));
             }
+            let profile_requested = profile.is_some();
+            let quake = profile.and_then(|(name, profile, display)| {
+                quake_windows::attach(name, profile, display, window, cx)
+                    .inspect_err(|error| eprintln!("Quake creation: {error}"))
+                    .ok()
+            });
             let view = cx.new(|cx| WorkspaceView {
+                quake,
                 attachment: None,
                 bounds: window.window_bounds(),
                 fullscreen_insets: gpui::Edges::default(),
@@ -791,10 +829,20 @@ fn open_window_inner(cx: &mut App, launch_shell: bool) {
             cx.global_mut::<Desktop>().windows.push(view.downgrade());
             view.update(cx, |view, cx| {
                 view.focus.focus(window);
-                if launch_shell && let Err(error) = view.new_tab(window, cx) {
+                if launch_shell
+                    && (!profile_requested || view.quake.is_some())
+                    && let Err(error) = view.new_tab(window, cx)
+                {
                     view.status = Some(error.to_string());
                 }
             });
+            if profile_requested && view.read(cx).quake.is_none() {
+                let handle = window.window_handle();
+                cx.defer(move |cx| {
+                    let _ = handle
+                        .update(cx, |_, window, _| window.remove_window());
+                });
+            }
             let pump_view = view.downgrade();
             let pump_window = window.window_handle();
             cx.spawn(async move |cx| {
@@ -874,6 +922,7 @@ impl TabView {
 }
 
 struct WorkspaceView {
+    quake: Option<quake_windows::Presentation>,
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
     fullscreen: FullscreenController,
@@ -1104,7 +1153,7 @@ impl WorkspaceView {
         Presentation::resolve(
             self.tabs.len(),
             self.config.window.always_show_tab_bar,
-            self.fullscreen.chrome_hidden,
+            self.fullscreen_context(),
             self.config.window.auto_hide_tab_bar_in_fullscreen,
         )
     }
@@ -1112,7 +1161,7 @@ impl WorkspaceView {
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
         ChromeLayout::with_safe_area(
             window.viewport_size(),
-            terminal_top(self.fullscreen.chrome_hidden),
+            terminal_top(self.chrome_hidden()),
             self.config.window.tab_position,
             self.sidebar_width,
             self.fullscreen_insets,
@@ -1126,6 +1175,7 @@ impl WorkspaceView {
 
     fn sync_tab_layout(&self, window: &Window, cx: &mut Context<'_, Self>) {
         let presentation = self.presentation();
+        let chrome_hidden = self.chrome_hidden();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
             .then(|| {
@@ -1136,12 +1186,12 @@ impl WorkspaceView {
             tab.view.update(cx, |terminal, cx| {
                 let changed = terminal.tab_presentation != presentation
                     || terminal.sidebar_width != self.sidebar_width
-                    || terminal.chrome_hidden != self.fullscreen.chrome_hidden
+                    || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
-                terminal.chrome_hidden = self.fullscreen.chrome_hidden;
+                terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 if changed {
                     terminal.resize_if_needed(window);
@@ -1159,7 +1209,7 @@ impl WorkspaceView {
         let position = self.config.window.tab_position;
         let context = (
             position,
-            self.fullscreen.chrome_hidden,
+            self.fullscreen_context(),
             self.config.window.auto_hide_tab_bar_in_fullscreen,
         );
         if self.reveal_context != Some(context) {
@@ -1444,6 +1494,10 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "asynchronous tab creation owns publication and orphan cleanup"
+    )]
     fn new_tab(
         &mut self,
         window: &mut Window,
@@ -1516,12 +1570,45 @@ impl WorkspaceView {
                             });
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
+                            if let Some(state) = &view.quake {
+                                let desktop = cx.global_mut::<Desktop>();
+                                if desktop
+                                    .quake
+                                    .failed_spawn
+                                    .as_ref()
+                                    .is_some_and(|(name, _)| {
+                                        name == &state.name
+                                    })
+                                    && let Some((_, message)) =
+                                        desktop.quake.failed_spawn.take()
+                                    && desktop.config_error.as_deref()
+                                        == Some(message.as_str())
+                                {
+                                    desktop.config_error = None;
+                                }
+                            }
                             view.status =
                                 cx.global::<Desktop>().config_error.clone();
                         }
                         Err(error) => {
                             view.status =
                                 Some(format!("Cannot open tab: {error}"));
+                            if view.quake.is_some() && view.tabs.is_empty() {
+                                cx.global_mut::<Desktop>()
+                                    .config_error
+                                    .clone_from(&view.status);
+                                if let Some(state) = &view.quake {
+                                    cx.global_mut::<Desktop>()
+                                        .quake
+                                        .failed_spawn = Some((
+                                        state.name.clone(),
+                                        view.status.clone().unwrap_or_default(),
+                                    ));
+                                }
+                                eprintln!("Cannot start quake shell: {error}");
+                                view.remove_window(window, cx, false);
+                                return;
+                            }
                         }
                     }
                 }
@@ -1560,7 +1647,10 @@ impl WorkspaceView {
         if self.reorder.is_some() {
             context.add("reordering");
         }
-        if self.fullscreen.fullscreen_context() {
+        if self.quake.as_ref().map_or_else(
+            || self.fullscreen.fullscreen_context(),
+            quake_windows::Presentation::fullscreen_context,
+        ) {
             context.add("fullscreen");
         }
         context
@@ -1590,6 +1680,10 @@ impl WorkspaceView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this window does not own as [`CommandError::UnknownCommand`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive window command routing"
+    )]
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -1620,6 +1714,12 @@ impl WorkspaceView {
             ids::TOGGLE_FULLSCREEN
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
+                if self.quake.is_some() {
+                    if invocation.id != ids::TOGGLE_FULLSCREEN {
+                        return Err(CommandError::Unavailable("quake profile windows use toggle_fullscreen to switch presentation".into()));
+                    }
+                    return quake_windows::toggle(self, window, cx);
+                }
                 self.observe_fullscreen(window, cx);
                 let intent = match invocation.id {
                     ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
@@ -1733,6 +1833,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.quake.is_some() {
+            #[cfg(target_os = "macos")]
+            if let Some(adapter) = &self.native_fullscreen {
+                adapter.discard_quake_events();
+            }
+            return;
+        }
         self.observe_fullscreen(window, cx);
         self.advance_fullscreen(window, cx);
     }
@@ -1807,7 +1914,9 @@ impl WorkspaceView {
                     crate::native_fullscreen::Adapter::safe_area,
                 );
         }
-        self.bounds = self.fullscreen.restorable_bounds();
+        if self.quake.is_none() {
+            self.bounds = self.fullscreen.restorable_bounds();
+        }
         if previous
             != (
                 self.fullscreen.chrome_hidden,
@@ -1879,6 +1988,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
         quit_after: bool,
     ) {
+        quake_windows::close(self, cx);
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
         {
@@ -1923,9 +2033,10 @@ impl WorkspaceView {
         self.active = Some(id);
         self.sync_tab_layout(window, cx);
         self.reveal_active(window);
+        let visible = self.quake_visible();
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
-                view.visible = tab.id == id;
+                view.visible = visible && tab.id == id;
                 if view.visible {
                     view.resize_if_needed(window);
                     view.focus.focus(window);
@@ -2151,7 +2262,9 @@ impl WorkspaceView {
         self.close.current = Some(target);
         self.busy = true;
         let generation = self.close.generation;
-        self.bounds = self.fullscreen.restorable_bounds();
+        if self.quake.is_none() {
+            self.bounds = self.fullscreen.restorable_bounds();
+        }
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
             let mut records = capture_other_windows(cx, Some(cx.entity_id()));
@@ -2249,12 +2362,14 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                         .map_err(|error| {
                         format!("{}: {error}", path_for_status(cx))
                     })?;
+                quake_windows::replace_registrations(cx, &config, &compiled)?;
                 Ok((config, family, metrics, compiled))
             });
             let mut keymap_status = None;
             let result = result.map(|(config, family, metrics, compiled)| {
                 cx.global_mut::<Desktop>().config = config.clone();
                 cx.global_mut::<Desktop>().config_error = None;
+                quake_windows::reconcile(cx);
                 if !compiled.conflicts.is_empty() {
                     keymap_status = Some(compiled.conflicts.join("; "));
                 }
@@ -2262,6 +2377,9 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 cx.global_mut::<Desktop>().reserved = reserved;
                 (config, family, metrics)
             });
+            if let Err(error) = &result {
+                eprintln!("Config reload failed: {error}");
+            }
             let windows = cx.global::<Desktop>().windows.clone();
             for window in windows {
                 let _ = window.update(cx, |view, cx| {
@@ -2575,14 +2693,14 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
-        if terminal_top(self.fullscreen.chrome_hidden) > px(0.0) {
+        if terminal_top(self.chrome_hidden()) > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(terminal_top(self.fullscreen.chrome_hidden))
+                    .h(terminal_top(self.chrome_hidden()))
                     .pl(px(84.0))
                     .flex()
                     .items_center()

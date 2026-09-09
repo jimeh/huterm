@@ -313,7 +313,13 @@ impl rwh::HasDisplayHandle for RawWindow {
 
 impl rwh::HasWindowHandle for X11Window {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        if self.0.state.borrow().destroyed {
+            return Err(rwh::HandleError::Unavailable);
+        }
+        let id = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
+        let handle = rwh::XcbWindowHandle::new(id);
+        // SAFETY: This X11Window owns the live Xcb window for the borrow's lifetime.
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
     }
 }
 impl rwh::HasDisplayHandle for X11Window {

@@ -3,6 +3,223 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "Animation": {
+      "enum": [
+        "auto",
+        "none",
+        "fade",
+        "slide_top",
+        "slide_bottom",
+        "slide_left",
+        "slide_right",
+        "fade_slide_top",
+        "fade_slide_bottom",
+        "fade_slide_left",
+        "fade_slide_right"
+      ],
+      "type": "string"
+    },
+    "Config": {
+      "additionalProperties": false,
+      "description": "Named quake windows. The built-in default profile remains available when omitted. Profile references and display identifiers are resolved at runtime.",
+      "properties": {
+        "profiles": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Profile"
+          },
+          "propertyNames": {
+            "pattern": "\\S"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "Edge": {
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "GlobalKeybinding": {
+      "allOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "command": {
+              "enum": [
+                "show_quake",
+                "hide_quake",
+                "toggle_quake"
+              ],
+              "type": "string"
+            },
+            "description": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "key": {
+              "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
+              "pattern": "^\\S+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "show_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show a named quake window, defaulting to default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "show_quake",
+                "description": "Show a named quake window, defaulting to default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
+                "pattern": "^\\S+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "hide_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Hide a named quake window and retain its jobs.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "hide_quake",
+                "description": "Hide a named quake window and retain its jobs.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
+                "pattern": "^\\S+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show or hide a named quake window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_quake",
+                "description": "Show or hide a named quake window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime.",
+                "pattern": "^\\S+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
     "LinkModifiers": {
       "description": "Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime.",
       "enum": [
@@ -87,6 +304,66 @@
       ],
       "type": "string"
     },
+    "Profile": {
+      "additionalProperties": false,
+      "properties": {
+        "animation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Animation"
+            }
+          ],
+          "default": "auto"
+        },
+        "animation_ms": {
+          "default": 150,
+          "description": "Animation duration in milliseconds, from 0 to 1000.",
+          "format": "uint16",
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "display": {
+          "default": "active",
+          "description": "Active, pointer, primary, or id:<platform display identifier>. Display availability is checked at runtime.",
+          "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
+          "type": "string"
+        },
+        "edge": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Edge"
+            }
+          ],
+          "default": "top"
+        },
+        "fullscreen": {
+          "default": false,
+          "type": "boolean"
+        },
+        "height": {
+          "default": 0.5,
+          "description": "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "maximum": 1,
+          "type": "number"
+        },
+        "hide_on_focus_loss": {
+          "default": true,
+          "type": "boolean"
+        },
+        "width": {
+          "default": 1.0,
+          "description": "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "maximum": 1,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "RawFont": {
       "additionalProperties": false,
       "properties": {
@@ -116,6 +393,9 @@
             },
             "command": {
               "enum": [
+                "show_quake",
+                "hide_quake",
+                "toggle_quake",
                 "new_window",
                 "quit",
                 "hide",
@@ -162,6 +442,159 @@
             "command"
           ],
           "type": "object"
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "show_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show a named quake window, defaulting to default.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "show_quake",
+                "description": "Show a named quake window, defaulting to default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "hide_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Hide a named quake window and retain its jobs.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "hide_quake",
+                "description": "Hide a named quake window and retain its jobs.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_quake"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show or hide a named quake window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_quake",
+                "description": "Show or hide a named quake window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
         },
         {
           "if": {
@@ -1816,12 +2249,26 @@
         }
       ]
     },
+    "global_keybinding": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/GlobalKeybinding"
+      },
+      "type": "array"
+    },
     "keybinding": {
       "default": [],
       "items": {
         "$ref": "#/definitions/RawKeybinding"
       },
       "type": "array"
+    },
+    "quake": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Config"
+        }
+      ]
     },
     "terminal": {
       "allOf": [
