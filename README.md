@@ -442,17 +442,29 @@ Default bindings differ per platform:
 
 Commands without a default binding are available through menus or config.
 
-On Apple Silicon macOS, build the application bundle with:
+On macOS, build a universal application bundle with:
 
 ```sh
 mise run package:macos
 ```
+
+The package task installs both Rust targets, builds both terminal engines for
+arm64 and x86_64, and combines the executables into
+`target/release/bundle/Huterm.app`. It also checks the packaged macOS privacy
+descriptions and release entitlements, but does not sign or notarize local
+packages. Intel hardware validation remains pending.
 
 Use `mise tasks` to discover all commands. `mise run check` is the fast local
 gate, while `mise run verify` also runs tests, the dependency-license policy,
 and GitHub Actions checks. See the
 [development guide](docs/agents/development.md) for platform prerequisites,
 limits, and the validation ladder.
+
+Release Please creates draft GitHub releases. The release workflow signs,
+notarizes, staples, verifies, and publishes the universal app only after its
+uploaded ZIP and checksum match the local artifacts. See the
+[release guide](docs/agents/releases.md) for the required repository variables,
+secrets, recovery workflow, and remaining manual checks.
 
 ## Planned features
 

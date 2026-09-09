@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish the existing draft release after verification
+        required: true
+        type: boolean
+      sha:
+        description: Exact commit SHA to build from origin/main
+        required: true
+        type: string
+      tag:
+        description: Exact tag associated with the draft release
+        required: true
+        type: string
+      version:
+        description: Exact release version without the v prefix
+        required: true
+        type: string
+    secrets:
+      RELEASE_BOT_PRIVATE_KEY:
+        description: Private key for the release bot GitHub App
+        required: true
+      MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64:
+        description: Base64-encoded Developer ID Application identity
+        required: true
+      MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD:
+        description: Password for the Developer ID PKCS#12 identity
+        required: true
+      APPLE_NOTARIZATION_KEY_P8_BASE64:
+        description: Base64-encoded App Store Connect API private key
+        required: true
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish an existing matching draft release
+        required: true
+        default: false
+        type: boolean
+      sha:
+        description: Exact commit SHA to build from origin/main
+        required: true
+        type: string
+      tag:
+        description: Exact tag associated with the draft, required when publishing
+        required: false
+        type: string
+      version:
+        description: Exact release version without the v prefix
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.publish && inputs.tag || inputs.sha }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: Build and verify signed macOS package
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      RELEASE_SHA: ${{ inputs.sha }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_DIST_DIR: ${{ github.workspace }}/dist
+    steps:
+      - name: Validate source selection
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release SHA must be 40 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+
+          source_status="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_SHA}...main" \
+            --jq .status)"
+          case "$source_status" in
+            ahead | identical) ;;
+            *)
+              echo "release SHA must be an ancestor of main, comparison status: $source_status" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.sha }}
+
+      - name: Install release tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          # Release builds do not restore mutable tool or compiler caches.
+          cache: false
+          install_args: rust bun zig cargo:cargo-packager
+          minimum_release_age: 3d
+
+      - name: Check platform prerequisites
+        run: mise run doctor
+
+      - id: draft
+        name: Validate exact draft release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun scripts/release-macos.ts validate-release
+
+      - name: Validate verification build
+        if: ${{ !inputs.publish }}
+        run: bun scripts/release-macos.ts validate-build
+
+      - name: Build, sign, and notarize universal app
+        env:
+          MACOS_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARIZATION_ISSUER_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY_P8_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARIZATION_KEY_ID }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+          MACOS_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: mise run release:macos
+
+      - name: Upload verified package artifact
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Huterm-${{ inputs.version }}-macOS-universal-verified
+          path: |
+            dist/Huterm-${{ inputs.version }}-macOS-universal.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - id: app-token
+        name: Create fresh release bot token
+        if: inputs.publish
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Upload and verify draft assets
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: bun scripts/release-macos.ts upload-assets
+
+      - name: Publish verified release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        # GitHub Releases has no OIDC trusted-publishing exchange.
+        run: bun scripts/release-macos.ts publish # zizmor: ignore[use-trusted-publishing]
+
+      - name: Clean temporary signing state
+        if: always()
+        run: bun scripts/release-macos.ts cleanup

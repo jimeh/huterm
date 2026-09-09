@@ -193,7 +193,7 @@ process labels and directory inheritance are not implemented yet.
 | macOS keyboard | `mise run smoke:macos-input` | Native input and composition through both engines | CI or implementer |
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |
 | Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Both engines' snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
-| macOS package | `mise run package:macos` | Apple Silicon app metadata, icon, executable, and architecture | CI or implementer |
+| macOS package | `mise run package:macos` | Universal app metadata, icon, executable, and both architectures | CI or implementer |
 
 CI runs these check groups as separate jobs with focused tool and Cargo caches.
 The final `Verify Linux x86_64` and `Verify macOS arm64` jobs preserve the
@@ -250,9 +250,16 @@ GPUI window scale. CPU preparation and paint encoding do not prove GPU
 presentation. These durations use a monotonic wall clock and include scheduler
 preemption, not just per-thread CPU execution.
 
-On Apple Silicon macOS, `mise run package:macos` creates
+On macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
-version, Developer Tools category, icon, executable, and arm64 architecture.
+version, Developer Tools category, icon, executable, and arm64/x86_64 slices.
+The task installs both Rust targets, builds each with both terminal engines,
+and uses `lipo` to assemble the universal executable before packaging. It also
+checks the packaged privacy descriptions and the entitlements used by release
+signing. Local packages remain unsigned. The GitHub release path is documented
+in the [release guide](releases.md).
+The macOS CI job cross-compiles the Intel slice on Apple Silicon; this does not
+replace native Intel UI and hardware validation, which remains pending.
 
 ## Terminal engines
 

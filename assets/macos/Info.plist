@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppBundlesUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files inside other applications.</string>
+	<key>NSAppDataUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files in other applications' data containers.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Huterm or a program running within it would like to control other applications using Apple events.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your media library.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Huterm or a program running within it would like to capture system audio.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Huterm or a program running within it would like to use Bluetooth.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Huterm or a program running within it would like to read and modify your calendars.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your calendars.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Huterm or a program running within it would like to add events to your calendars.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Huterm or a program running within it would like to use the camera.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your contacts.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files in your Desktop folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files in your Downloads folder.</string>
+	<key>NSFileProviderDomainUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files managed by file providers.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Huterm or a program running within it would like to access devices on your local network.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your location when Huterm is not active.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your location.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your location while Huterm is in use.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Huterm or a program running within it would like to use your microphone.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Huterm or a program running within it would like to access motion data.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files on network volumes.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Huterm or a program running within it would like to add items to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your photo library.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Huterm or a program running within it would like to read and modify your reminders.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Huterm or a program running within it would like to access your reminders.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Huterm or a program running within it would like to access files on removable volumes.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Huterm or a program running within it would like to use speech recognition.</string>
+	<key>NSSystemAdministrationUsageDescription</key>
+	<string>Huterm or a program running within it would like to modify system configuration.</string>
+</dict>
+</plist>

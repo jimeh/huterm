@@ -107,20 +107,19 @@ mod package_tests {
         assert_eq!(packager["outDir"].as_str(), Some("target/release/bundle"));
         assert_eq!(
             packager["binariesDir"].as_str(),
-            Some("target/aarch64-apple-darwin/release")
+            Some("target/universal-apple-darwin/release")
         );
         assert_eq!(
             packager["targetTriple"].as_str(),
-            Some("aarch64-apple-darwin")
+            Some("universal-apple-darwin")
         );
         assert_eq!(
             packager["beforePackagingCommand"].as_str(),
             Some("mise run package:build:macos")
         );
         assert!(packager.get("version").is_none());
-        assert_eq!(package["version"]["workspace"].as_bool(), Some(true));
         assert_eq!(
-            manifest["workspace"]["package"]["version"].as_str(),
+            package["version"].as_str(),
             Some(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(packager["icons"][0].as_str(), Some("assets/Huterm.icns"));
