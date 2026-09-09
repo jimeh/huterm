@@ -155,9 +155,11 @@ it reserves space beside the terminal.
 
 Set `[window].auto_hide_tab_bar_in_fullscreen = true` to reveal the bar only
 when the pointer reaches its attached edge in fullscreen, even with one tab.
-It slides over the terminal without changing the grid, and hides after the
-pointer leaves. Tab dragging and sidebar resizing keep it open. A top bar can
-be revealed from the macOS notch-height region and appears below the notch.
+Fullscreen auto-hide overrides `always_show_tab_bar` and reserves no bar space,
+regardless of tab count. It slides over the terminal without changing the grid,
+and hides after the pointer leaves. Tab dragging and sidebar resizing keep it
+open. A top bar can be revealed from the macOS notch-height region and appears
+below the notch.
 Both settings default to `false` and take effect on config reload.
 
 Set `[window].tab_position` to `top`, `bottom`, `left`, or `right`. Top is the

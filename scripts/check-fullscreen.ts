@@ -81,13 +81,17 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
   const config = join(directory, "config.toml");
   const rawBytes = join(directory, "mouse-bytes");
   const rawReady = join(directory, "mouse-ready");
+  const rawStop = join(directory, "mouse-stop");
+  const rawStopped = join(directory, "mouse-stopped");
+  let rawRecording = false;
+  let rawRound = 0;
   const rawRecorder = join(directory, "mouse-recorder.ts");
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  await writeFile(rawRecorder, `import { openSync, writeSync, writeFileSync } from "node:fs";
+  await writeFile(rawRecorder, `import { existsSync, openSync, writeSync, writeFileSync } from "node:fs";
 const fd = openSync(${JSON.stringify(rawBytes)}, "w");
 process.stdout.write("\\x1b[?1003h\\x1b[?1006hMOUSE_READY");
 writeFileSync(${JSON.stringify(rawReady)}, "ready");
-setTimeout(() => process.exit(0), 3000);
+setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
 for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
 `);
   const configText = (mode: string) => `[terminal]\nengine = "${engine}"\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
@@ -98,7 +102,8 @@ while IFS= read -r line; do
     stty raw -echo
     ${quote(process.execPath)} ${quote(rawRecorder)}
     printf '\\033[?1003l\\033[?1006l'
-    stty sane
+    stty sane || exit 1
+    printf stopped > ${quote(rawStopped)}
   else
     printf 'ACK:%s:' "$line"; stty size
   fi
@@ -272,7 +277,8 @@ done
         await closeTab();
         await move(centerX, topInset + 1);
         await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "reveal after tab close");
-        await rm(rawReady, { force: true });
+        await Promise.all([rawReady, rawStop, rawStopped].map(file => rm(file, { force: true })));
+        rawRecording = true;
         await input("RAW");
         await waitFor(async () => await Bun.file(rawReady).exists() && await Bun.file(rawBytes).exists(), "raw mouse recorder");
         await waitFor(async () => (await state())["w0.text"]?.includes("MOUSE_READY") === true, "application mouse mode");
@@ -294,7 +300,11 @@ done
           return /\x1b\[<\d+;\d+;\d+m/.test(suffix) && (await state())["w0.pointer_owned"] === "false";
         }, "terminal drag release crosses overlay");
         await move(centerX, centerY);
-        await Bun.sleep(3_000);
+        await writeFile(rawStop, "stop");
+        await waitFor(() => Bun.file(rawStopped).exists(), "raw recorder exit and shell cleanup");
+        rawRecording = false;
+        // This shell ACK follows mouse-mode teardown in the same PTY stream.
+        await pty(`rawcleanup${++rawRound}`);
       } else await move(centerX, centerY);
       await waitFor(async () => (await state())["w0.tab_reveal"] === "0", `${position} overlay dismissal`);
       const dismissed = await state();
@@ -479,6 +489,11 @@ done
     try { process.stderr.write(`FULLSCREEN_SMOKE last state\n${await readFile(join(directory, "state"), "utf8")}\n`); } catch {}
     throw error;
   } finally {
+    if (rawRecording && app.exitCode === null) {
+      await writeFile(rawStop, "stop");
+      await waitFor(async () => app.exitCode !== null || await Bun.file(rawStopped).exists(), "raw recorder failure cleanup", 3_000)
+        .catch(error => process.stderr.write(`Recorder cleanup before app teardown: ${error}\n`));
+    }
     if (macos && app.exitCode === null) {
       try { await accepted("native\tcursor-restore"); } catch (error) { process.stderr.write(`Cannot restore smoke cursor: ${error}\n`); }
     }
