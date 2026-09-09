@@ -173,7 +173,7 @@ bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --examp
 workload="$(pwd)/target/release/examples/render_workload"
 set +e
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
-  twm >/dev/null 2>&1 &
+  LC_ALL=C twm -f scripts/linux/benchmark.twmrc &
   wm_pid=$!
   SHELL="$1" HUTERM_RENDER_STATS=1 HUTERM_RENDER_BENCH=1 \
     timeout --signal=TERM 8s "$2"
@@ -210,7 +210,7 @@ export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
 report="$(mktemp)"
-revision="$(git rev-parse HEAD)"
+revision="${HUTERM_SOURCE_REVISION:-$(git rev-parse HEAD)}"
 if [ "$platform" = Darwin ]; then
   hardware="$(sysctl -n hw.model)"
 else
@@ -227,7 +227,7 @@ trap cleanup EXIT
 if [ "$platform" = Linux ]; then
   set +e
   xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
-    twm >/dev/null 2>&1 &
+    LC_ALL=C twm -f scripts/linux/benchmark.twmrc &
     wm_pid=$!
     SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
       HUTERM_SCROLL_HARDWARE="$5" \

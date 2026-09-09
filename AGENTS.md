@@ -636,3 +636,12 @@ field set to one; GPUI routes by buttonNumber rather than NSEvent type.
 Bound the native XDND fixture by idle time, resetting its deadline after
 selection-handshake progress and serviced actions. A valid drag can exceed ten
 seconds overall while each individual phase stays within its timeout.
+
+The local Linux runner omits Git metadata because linked worktrees reference
+paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
+benchmark metadata must use that value before falling back to Git.
+
+Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
+run twm with `LC_ALL=C`. Default manual placement can grab the X server and
+block Huterm startup, producing zero samples; missing host fontsets can also
+leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.

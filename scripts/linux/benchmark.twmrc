@@ -1,0 +1,9 @@
+# Headless windows must never wait for an interactive placement click.
+RandomPlacement
+NoGrabServer
+# Use X server core fonts rather than host-specific font patterns.
+TitleFont "fixed"
+ResizeFont "fixed"
+MenuFont "fixed"
+IconFont "fixed"
+IconManagerFont "fixed"
