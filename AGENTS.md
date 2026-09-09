@@ -710,3 +710,17 @@ Read vendor regular files through one no-follow descriptor and compare its
 identity with the tree entry before hashing. Archive extraction must consume the
 same buffer that passed checksum verification; checking a path and reopening it
 allows a concurrent replacement to bypass the checksum.
+
+Configuration schemas are generated from `huterm-config` with its `schema`
+feature; that crate must remain independent of GPUI and terminal engines.
+`mise run schema:generate` updates both committed files; `schema:check` compares
+bytes without writing. Keep selected/named theme projections and catalog-derived
+keybinding constraints aligned with application parsing through the shared
+`schemas/fixtures.json` cases. Do not stamp release versions into schema files;
+release packaging verifies their bytes against the selected checkout.
+Taplo 0.10.0 skips properties beside a schema's `allOf` during completion.
+Keep common keybinding fields in its first member, with command constraints in
+later `if`/`then` members. This preserves command completion and specific argument
+diagnostics; it does not provide command-specific argument completion.
+Make Bun test tasks that import packages depend directly on `scripts:install`.
+A sibling typecheck's install dependency does not order parallel test startup.

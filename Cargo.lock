@@ -2497,6 +2497,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "huterm-config"
+version = "0.1.1"
+dependencies = [
+ "huterm-protocol",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml 1.1.5+spec-1.1.0",
+]
+
+[[package]]
 name = "huterm-core"
 version = "0.1.1"
 dependencies = [
@@ -2519,11 +2530,12 @@ dependencies = [
  "anyhow",
  "async-channel 2.5.0",
  "gpui",
+ "huterm-config",
  "huterm-core",
  "huterm-protocol",
  "objc",
  "raw-window-handle",
- "serde",
+ "serde_json",
  "toml 1.1.5+spec-1.1.0",
 ]
 

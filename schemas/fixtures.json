@@ -1,0 +1,446 @@
+[
+  {
+    "name": "empty config",
+    "toml": "",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "engine alacritty",
+    "toml": "[terminal]\nengine = \"alacritty\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "engine ghostty",
+    "toml": "[terminal]\nengine = \"ghostty\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "engine unknown",
+    "toml": "[terminal]\nengine = \"unknown\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font size 6",
+    "toml": "[font]\nsize = 6",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font size 96",
+    "toml": "[font]\nsize = 96",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "font size 5",
+    "toml": "[font]\nsize = 5",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "font size 97",
+    "toml": "[font]\nsize = 97",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "blank font",
+    "toml": "[font]\nfamily = \"  \"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "padding 0",
+    "toml": "[window]\npadding_x = 0",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "padding 256",
+    "toml": "[window]\npadding_x = 256",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "padding -1",
+    "toml": "[window]\npadding_x = -1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "padding 257",
+    "toml": "[window]\npadding_x = 257",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "selected theme name",
+    "toml": "[theme]\nname = \"huterm-dark\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "inline inheritance",
+    "toml": "[themes.mine]\nextends = \"huterm-dark\"\nforeground = \"#ABCDEF\"\n[theme]\nname = \"mine\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "color #ABCDEF",
+    "toml": "[theme]\nbackground = \"#ABCDEF\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "color #abcd",
+    "toml": "[theme]\nbackground = \"#abcd\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "color #abcdefg",
+    "toml": "[theme]\nbackground = \"#abcdefg\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "color abcdef",
+    "toml": "[theme]\nbackground = \"abcdef\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "color #gggggg",
+    "toml": "[theme]\nbackground = \"#gggggg\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy palette 15",
+    "toml": "[theme]\nansi = [\"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\"]",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy palette 16",
+    "toml": "[theme]\nansi = [\"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\"]",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "legacy palette 17",
+    "toml": "[theme]\nansi = [\"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\"]",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "named ansi overrides",
+    "toml": "[theme]\nansi_red = \"#123456\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "selected extends rejected",
+    "toml": "[theme]\nextends = \"huterm-dark\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "named name rejected",
+    "toml": "[themes.mine]\nname = \"huterm-dark\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid inline name",
+    "toml": "[themes.\"../oops\"]",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown config field",
+    "toml": "typo = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown terminal field",
+    "toml": "[terminal]\ntypo = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "standalone wrapper",
+    "toml": "[theme]\nextends = \"huterm-dark\"\nforeground = \"#123456\"",
+    "valid": true,
+    "theme": true
+  },
+  {
+    "name": "standalone missing wrapper",
+    "toml": "foreground = \"#123456\"",
+    "valid": false,
+    "theme": true
+  },
+  {
+    "name": "standalone name",
+    "toml": "[theme]\nname = \"huterm-dark\"",
+    "valid": false,
+    "theme": true
+  },
+  {
+    "name": "link modifiers alt-shift",
+    "toml": "[terminal]\nlink_modifiers = \"alt-shift\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "link modifiers alt-alt",
+    "toml": "[terminal]\nlink_modifiers = \"alt-alt\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "link modifiers ",
+    "toml": "[terminal]\nlink_modifiers = \"\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "link modifiers meta",
+    "toml": "[terminal]\nlink_modifiers = \"meta\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 1 }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = 9 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 9 }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = 0 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 0 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = 10 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 10 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = \"1\" }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = \"1\" }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = true }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = true }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = {}",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab { index = 1, typo = 2 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 1, typo = 2 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab args omitted",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "copy ",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"copy\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "copy \nargs = {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"copy\"\nargs = {}",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "copy \nargs = { typo = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"copy\"\nargs = { typo = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unbind ",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "unbind \nargs = {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"\nargs = {}",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "unbind \nargs = { typo = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"\nargs = { typo = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown ",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unknown\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown \nargs = {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unknown\"\nargs = {}",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown \nargs = { typo = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unknown\"\nargs = { typo = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unbind when",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"unbind\"\nwhen = \"Terminal\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "blank description",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"copy\"\ndescription = \" \"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "runtime identity",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = { tab = 1, name = \"mine\" }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "blank key",
+    "toml": "[[keybinding]]\nkey = \" \"\ncommand = \"copy\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "color trailing newline",
+    "toml": "[theme]\nforeground = \"#abcdef\\n\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "theme name trailing newline",
+    "toml": "[theme]\nname = \"huterm-dark\\n\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "rename_tab { name = \"Renamed\" }",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = { name = \"Renamed\" }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "rename_tab { name = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = { name = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "rename_tab { index = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = { index = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "rename_tab {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = {}",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid argument container [1]",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = [1]",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid argument container \"text\"",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = \"text\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid argument container 1",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = 1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid argument container { index = 1.5 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 1.5 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "runtime identity workspace",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_workspace\"\nargs = { name = \"name\", workspace = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "runtime identity session",
+    "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_session\"\nargs = { name = \"name\", session = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "keybinding unknown field",
+    "toml": "[[keybinding]]\nkey = \"cmd-c\"\ncommand = \"copy\"\ntypo = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "invalid parent theme name",
+    "toml": "[themes.mine]\nextends = \"../oops\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "unknown theme field",
+    "toml": "[theme]\ntypo = \"#abcdef\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy invalid palette color",
+    "toml": "[theme]\nansi = [\"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#gggggg\"]",
+    "valid": false,
+    "theme": false
+  }
+]

@@ -147,10 +147,34 @@ Huterm reads `$HUTERM_CONFIG_FILE` when set, otherwise
 Settings command creates a documented default file without replacing an
 existing one, then opens it in the system editor.
 
+Add this header to `config.toml` to associate its schema in Taplo or the
+Even Better TOML editor extension. Newly created default configs include it:
+
+```toml
+#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
+```
+
+The schema validates settings and command-specific keybinding arguments. For
+example, `select_tab` requires an integer `args.index` from 1 through 9, while
+`copy` rejects that argument. Huterm still checks keystroke and `when` syntax,
+platform restrictions, theme files, and inheritance cycles at runtime.
+Taplo completes command names and diagnoses arguments for the selected command.
+Command-specific argument completion depends on the editor; Taplo 0.10.0 does
+not currently offer it.
+
+`latest/download` follows the newest published release and may describe settings
+missing from an older installation. To match an installed version, use
+`https://github.com/jimeh/huterm/releases/download/vX.Y.Z/huterm.schema.json`.
+For development, point the directive at the absolute local path to
+`schemas/huterm.schema.json`. Release URLs become available after the first
+release containing these assets is published.
+
 Terminal padding defaults to 4 logical points on each side. Add or adjust the
 `[window]` section to change it:
 
 ```toml
+#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
+
 [window]
 padding_x = 4.0
 padding_y = 4.0
@@ -267,6 +291,8 @@ background = "#181825"
 Or place it in `themes/my-mocha.toml` next to your config file:
 
 ```toml
+#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm-theme.schema.json
+
 [theme]
 extends = "catppuccin-mocha"
 background = "#181825"

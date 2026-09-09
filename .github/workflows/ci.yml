@@ -85,8 +85,14 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun
+          install_args: bun rust
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Check schema generation on this platform
+        run: mise run schema:check
 
       - name: Check repository scripts
         run: mise run check:scripts

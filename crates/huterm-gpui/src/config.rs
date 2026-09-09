@@ -1,13 +1,18 @@
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::themes::{self, ThemeDefinition};
-use huterm_protocol::{Rgb, TerminalEngineKind};
-use serde::Deserialize;
+use crate::themes;
+pub(super) use huterm_config::{
+    ConfigError, FontConfig, KeybindingEntry, LinkModifiers,
+    MacosFullscreenMode, MacosOptionAsAlt, RawConfig, TabPosition,
+    TerminalConfig, Theme, WindowConfig, keybinding_diagnostic,
+};
+use huterm_protocol::TerminalEngineKind;
 
-pub(super) const DEFAULT_CONFIG: &str = r##"[terminal]
+pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
+
+[terminal]
 # Changes apply to newly created terminals. Both engines are included in every build.
 engine = "alacritty"
 # Close tabs quietly when their root shell exits.
@@ -69,171 +74,6 @@ pub(super) struct Config {
     pub(super) keybindings: Vec<KeybindingEntry>,
 }
 
-/// One `[[keybinding]]` entry as written in the configuration file.
-///
-/// Only structure is validated here; keystroke, predicate, command, and
-/// argument semantics belong to the keymap compiler.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct KeybindingEntry {
-    pub(super) key: String,
-    pub(super) command: String,
-    pub(super) args: Option<toml::Table>,
-    pub(super) when: Option<String>,
-    pub(super) description: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct TerminalConfig {
-    pub(super) close_on_exit: bool,
-    pub(super) links: bool,
-    pub(super) link_modifiers: LinkModifiers,
-    pub(super) macos_option_as_alt: MacosOptionAsAlt,
-}
-
-impl Default for TerminalConfig {
-    fn default() -> Self {
-        Self {
-            close_on_exit: true,
-            links: true,
-            link_modifiers: LinkModifiers::default(),
-            macos_option_as_alt: MacosOptionAsAlt::Off,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(try_from = "String")]
-pub(super) struct LinkModifiers(u8);
-
-impl Default for LinkModifiers {
-    fn default() -> Self {
-        Self(if cfg!(target_os = "macos") { 1 } else { 2 })
-    }
-}
-impl TryFrom<String> for LinkModifiers {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value, cfg!(target_os = "macos"))
-    }
-}
-impl LinkModifiers {
-    pub(super) fn parse(
-        value: &str,
-        macos: bool,
-    ) -> Result<Self, &'static str> {
-        let mut bits = 0;
-        for token in value.split('-') {
-            let bit = match token {
-                "cmd" => 1,
-                "ctrl" => 2,
-                "alt" => 4,
-                "shift" => 8,
-                _ => {
-                    return Err(
-                        "terminal.link_modifiers must contain only cmd, ctrl, alt, or shift",
-                    );
-                }
-            };
-            if bits & bit != 0 {
-                return Err(
-                    "terminal.link_modifiers cannot contain duplicate modifiers",
-                );
-            }
-            bits |= bit;
-        }
-        if macos && bits & 2 != 0 {
-            return Err(
-                "terminal.link_modifiers cannot use ctrl on macOS: GPUI converts Control-left into Right and removes Control",
-            );
-        }
-        Ok(Self(bits))
-    }
-    pub(super) fn matches(
-        self,
-        modifiers: gpui::Modifiers,
-        mouse_reporting: bool,
-    ) -> bool {
-        let actual = u8::from(modifiers.platform)
-            | (u8::from(modifiers.control) << 1)
-            | (u8::from(modifiers.alt) << 2)
-            | (u8::from(modifiers.shift) << 3);
-        !modifiers.function
-            && actual == (self.0 | if mouse_reporting { 8 } else { 0 })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum MacosOptionAsAlt {
-    #[default]
-    Off,
-    Both,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct WindowConfig {
-    pub(super) macos_fullscreen_mode: MacosFullscreenMode,
-    pub(super) padding_x: f32,
-    pub(super) padding_y: f32,
-    pub(super) padding_balance: bool,
-    pub(super) tab_position: TabPosition,
-}
-
-impl Default for WindowConfig {
-    fn default() -> Self {
-        Self {
-            macos_fullscreen_mode: MacosFullscreenMode::NonNative,
-            padding_x: 4.0,
-            padding_y: 4.0,
-            padding_balance: false,
-            tab_position: TabPosition::Top,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-pub(super) enum MacosFullscreenMode {
-    #[serde(rename = "native")]
-    Native,
-    #[default]
-    #[serde(rename = "non_native")]
-    NonNative,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum TabPosition {
-    #[default]
-    Top,
-    Bottom,
-    Left,
-    Right,
-}
-
-impl TabPosition {
-    pub(super) fn vertical(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct FontConfig {
-    pub(super) family: String,
-    pub(super) size: f32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Theme {
-    pub(super) foreground: Rgb,
-    pub(super) background: Rgb,
-    pub(super) cursor: Rgb,
-    pub(super) selection: Rgb,
-    pub(super) selection_foreground: Option<Rgb>,
-    pub(super) ansi: [Rgb; 16],
-}
-
 #[derive(Debug)]
 pub(super) struct LoadedConfig {
     pub(super) config: Config,
@@ -244,80 +84,13 @@ pub(super) struct LoadedConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let family = if cfg!(target_os = "macos") {
-            "Menlo"
-        } else {
-            "monospace"
-        };
         Self {
             engine: TerminalEngineKind::Alacritty,
-            font: FontConfig {
-                family: family.into(),
-                size: 14.0,
-            },
+            font: FontConfig::default(),
             theme: Theme::default(),
             window: WindowConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: Vec::new(),
-        }
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            foreground: rgb(0x00c5_c8c6),
-            background: rgb(0x001d_1f21),
-            cursor: rgb(0x00ff_ffff),
-            selection: rgb(0x0026_4f78),
-            selection_foreground: None,
-            ansi: [
-                rgb(0x001d_1f21),
-                rgb(0x00cc_6666),
-                rgb(0x00b5_bd68),
-                rgb(0x00f0_c674),
-                rgb(0x0081_a2be),
-                rgb(0x00b2_94bb),
-                rgb(0x008a_beb7),
-                rgb(0x00c5_c8c6),
-                rgb(0x0066_6666),
-                rgb(0x00d5_4e53),
-                rgb(0x00b9_ca4a),
-                rgb(0x00e7_c547),
-                rgb(0x007a_a6da),
-                rgb(0x00c3_97d8),
-                rgb(0x0070_c0b1),
-                rgb(0x00ea_eaea),
-            ],
-        }
-    }
-}
-
-impl Theme {
-    pub(super) fn indexed(&self, index: u8) -> Rgb {
-        if let Some(color) = self.ansi.get(usize::from(index)) {
-            return *color;
-        }
-        if index >= 232 {
-            let level = 8_u8.saturating_add((index - 232).saturating_mul(10));
-            return Rgb {
-                red: level,
-                green: level,
-                blue: level,
-            };
-        }
-        let value = index - 16;
-        let channel = |component: u8| {
-            if component == 0 {
-                0
-            } else {
-                55 + component * 40
-            }
-        };
-        Rgb {
-            red: channel(value / 36),
-            green: channel((value / 6) % 6),
-            blue: channel(value % 6),
         }
     }
 }
@@ -458,19 +231,7 @@ fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
     let engine = parse_engine(&raw.terminal.engine)?;
-    if raw.font.family.trim().is_empty() {
-        return Err(ConfigError::Invalid("font.family must not be empty"));
-    }
-    if !raw.font.size.is_finite() || !(6.0..=96.0).contains(&raw.font.size) {
-        return Err(ConfigError::Invalid("font.size must be between 6 and 96"));
-    }
-    for padding in [raw.window.padding_x, raw.window.padding_y] {
-        if !padding.is_finite() || !(0.0..=256.0).contains(&padding) {
-            return Err(ConfigError::Invalid(
-                "window padding must be between 0 and 256 points",
-            ));
-        }
-    }
+    raw.validate_values()?;
     let directory = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -500,179 +261,6 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     })
 }
 
-/// Formats a keybinding diagnostic with its 1-based file position and key.
-pub(super) fn keybinding_diagnostic(
-    index: usize,
-    key: &str,
-    message: impl fmt::Display,
-) -> String {
-    format!("keybinding {index} ({key:?}): {message}")
-}
-
-pub(super) fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
-    let Some(hex) = value.strip_prefix('#') else {
-        return Err(ConfigError::Color(value.into()));
-    };
-    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(ConfigError::Color(value.into()));
-    }
-    let value = u32::from_str_radix(hex, 16)
-        .map_err(|_| ConfigError::Color(value.into()))?;
-    Ok(rgb(value))
-}
-
-const fn rgb(value: u32) -> Rgb {
-    Rgb {
-        red: ((value >> 16) & 0xff) as u8,
-        green: ((value >> 8) & 0xff) as u8,
-        blue: (value & 0xff) as u8,
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawConfig {
-    #[serde(default)]
-    terminal: RawTerminal,
-    #[serde(default)]
-    font: RawFont,
-    #[serde(default)]
-    window: WindowConfig,
-    #[serde(default)]
-    theme: ThemeDefinition,
-    #[serde(default)]
-    themes: BTreeMap<String, ThemeDefinition>,
-    #[serde(default)]
-    keybinding: Vec<RawKeybinding>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawKeybinding {
-    key: String,
-    command: String,
-    args: Option<toml::Value>,
-    when: Option<String>,
-    description: Option<String>,
-}
-
-impl RawKeybinding {
-    fn validate(self, index: usize) -> Result<KeybindingEntry, ConfigError> {
-        let diagnostic = |message: String| {
-            ConfigError::Keybinding(keybinding_diagnostic(
-                index, &self.key, message,
-            ))
-        };
-        let args = match self.args {
-            None => None,
-            Some(toml::Value::Table(table)) => Some(table),
-            Some(toml::Value::Array(_)) => {
-                let names = huterm_protocol::lookup(&self.command)
-                    .map(|spec| {
-                        spec.args
-                            .iter()
-                            .map(|argument| argument.name)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let expected = if names.is_empty() {
-                    "no arguments".to_owned()
-                } else {
-                    format!("named arguments {}", names.join(", "))
-                };
-                return Err(diagnostic(format!(
-                    "args must be a table, not an array; `{}` takes {expected}",
-                    self.command
-                )));
-            }
-            Some(other) => {
-                return Err(diagnostic(format!(
-                    "args must be a table of named arguments, not {}",
-                    other.type_str()
-                )));
-            }
-        };
-        if self
-            .description
-            .as_deref()
-            .is_some_and(|description| description.trim().is_empty())
-        {
-            return Err(diagnostic("description must not be blank".to_owned()));
-        }
-        Ok(KeybindingEntry {
-            key: self.key,
-            command: self.command,
-            args,
-            when: self.when,
-            description: self.description,
-        })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawTerminal {
-    engine: String,
-    links: bool,
-    link_modifiers: LinkModifiers,
-    close_on_exit: bool,
-    macos_option_as_alt: MacosOptionAsAlt,
-}
-impl Default for RawTerminal {
-    fn default() -> Self {
-        Self {
-            engine: "alacritty".into(),
-            links: true,
-            link_modifiers: LinkModifiers::default(),
-            close_on_exit: TerminalConfig::default().close_on_exit,
-            macos_option_as_alt: MacosOptionAsAlt::Off,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawFont {
-    family: String,
-    size: f32,
-}
-
-impl Default for RawFont {
-    fn default() -> Self {
-        let font = Config::default().font;
-        Self {
-            family: font.family,
-            size: font.size,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(super) enum ConfigError {
-    Toml(toml::de::Error),
-    Color(String),
-    Invalid(&'static str),
-    Theme(String),
-    Engine(String),
-    Keybinding(String),
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Toml(error) => error.fmt(formatter),
-            Self::Color(value) => write!(
-                formatter,
-                "invalid RGB color {value:?}; expected #rrggbb"
-            ),
-            Self::Invalid(message) => formatter.write_str(message),
-            Self::Theme(message)
-            | Self::Engine(message)
-            | Self::Keybinding(message) => formatter.write_str(message),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(super) enum ConfigFileError {
     Io(std::io::Error),
@@ -693,6 +281,48 @@ mod tests {
     use super::*;
 
     static TEST_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    fn rgb(value: u32) -> huterm_protocol::Rgb {
+        let [_, red, green, blue] = value.to_be_bytes();
+        huterm_protocol::Rgb { red, green, blue }
+    }
+
+    #[test]
+    fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/fixtures.json"
+        ))
+        .unwrap();
+        let fixtures = fixtures.as_array().unwrap();
+        assert_eq!(fixtures.len(), 74);
+        for fixture in fixtures {
+            let source = fixture["toml"].as_str().unwrap();
+            let expected = fixture["valid"].as_bool().unwrap();
+            let name = fixture["name"].as_str().unwrap();
+            let result = if fixture["theme"].as_bool() == Some(true) {
+                let directory = test_directory();
+                fs::create_dir_all(directory.join("themes")).unwrap();
+                fs::write(directory.join("themes/fixture.toml"), source)
+                    .unwrap();
+                let result = parse_at(
+                    "[theme]\nname = 'fixture'",
+                    &directory.join("config.toml"),
+                );
+                fs::remove_dir_all(directory).unwrap();
+                result
+            } else {
+                parse(source)
+            };
+            let accepted = result.is_ok_and(|config| {
+                crate::keymap::compile(
+                    crate::keymap::Platform::current(),
+                    &config.keybindings,
+                )
+                .is_ok()
+            });
+            assert_eq!(accepted, expected, "{name}: {source}");
+        }
+    }
 
     fn parse(source: &str) -> Result<Config, ConfigError> {
         // Keep bundled-theme tests independent of the crate's themes directory.
@@ -1329,5 +959,24 @@ mod link_config_tests {
             )
             .is_err()
         );
+    }
+}
+
+/// Matches native modifiers without exposing GPUI through portable config.
+pub(super) trait LinkModifiersExt {
+    fn matches(self, modifiers: gpui::Modifiers, mouse_reporting: bool)
+    -> bool;
+}
+impl LinkModifiersExt for LinkModifiers {
+    fn matches(
+        self,
+        modifiers: gpui::Modifiers,
+        mouse_reporting: bool,
+    ) -> bool {
+        let actual = u8::from(modifiers.platform)
+            | (u8::from(modifiers.control) << 1)
+            | (u8::from(modifiers.alt) << 2)
+            | (u8::from(modifiers.shift) << 3);
+        !modifiers.function && self.matches_bits(actual, mouse_reporting)
     }
 }

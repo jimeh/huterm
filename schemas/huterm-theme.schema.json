@@ -1,0 +1,120 @@
+{
+  "$id": "https://github.com/jimeh/huterm/releases/latest/download/huterm-theme.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ThemeDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "ansi": {
+          "items": {
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 16,
+          "type": "array"
+        },
+        "ansi_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "cursor": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "extends": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "selection": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "selection_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "theme": {
+      "$ref": "#/definitions/ThemeDefinition"
+    }
+  },
+  "required": [
+    "theme"
+  ],
+  "title": "Huterm standalone theme",
+  "type": "object"
+}
