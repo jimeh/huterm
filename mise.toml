@@ -598,12 +598,7 @@ if [ "$(uname -s)" != Linux ]; then
   exit 1
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke --example xdnd_source
-xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
-  openbox >/dev/null 2>&1 &
-  wm_pid=$!
-  trap '\''kill "$wm_pid" >/dev/null 2>&1 || true'\'' EXIT
-  bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
-'
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
 '''
 
 [tasks."smoke:manual-integration"]

@@ -43,7 +43,9 @@ source of truth. All published files are retained; Cargo's `.cargo-ok` extractio
 marker is omitted.
 
 Huterm's patch is restricted to X11 native file-drop sequencing and complete
-URI-list decoding. Native selection conversion uses a temporary requestor
+URI-list decoding. Type negotiation selects `text/uri-list` wherever it appears
+in inline offers or `XdndTypeList`; text-only offers are refused. Native
+selection conversion uses a temporary requestor
 window per drag. Late replies from canceled drags cannot be mistaken for a
 new drag in the same Huterm window. No synthetic Pending/Submit event reaches
 terminal mouse handlers before a valid Entered event. Invalid or truncated

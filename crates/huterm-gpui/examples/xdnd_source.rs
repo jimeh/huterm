@@ -154,7 +154,28 @@ mod source {
             let uri_data = c_long::try_from(uri)?;
             let copy_data = c_long::try_from(copy)?;
             XSetSelectionOwner(display, selection, source, 0);
-            send("XdndEnter", [source_data, 5 << 24, uri_data, 0, 0]);
+            let plain = atom("text/plain");
+            let plain_data = c_long::try_from(plain)?;
+            let types = match mode.as_str() {
+                "uri-inline" => [source_data, 5 << 24, plain_data, uri_data, 0],
+                "uri-property" => {
+                    let offered = [plain, atom("UTF8_STRING"), uri];
+                    XChangeProperty(
+                        display,
+                        source,
+                        atom("XdndTypeList"),
+                        atom("ATOM"),
+                        32,
+                        0,
+                        offered.as_ptr().cast(),
+                        c_int::try_from(offered.len())?,
+                    );
+                    [source_data, (5 << 24) | 1, 0, 0, 0]
+                }
+                "text-only" => [source_data, 5 << 24, plain_data, 0, 0],
+                _ => [source_data, 5 << 24, uri_data, 0, 0],
+            };
+            send("XdndEnter", types);
             send("XdndPosition", [source_data, 0, 0, 0, copy_data]);
             let started = Instant::now();
             let mut request: Option<(Request, Instant)> = None;
@@ -218,6 +239,20 @@ mod source {
                             directory.join("requested"),
                             "requested",
                         )?;
+                    } else if event.client.kind == 33
+                        && event.client.message == atom("XdndStatus")
+                    {
+                        if mode == "text-only" {
+                            anyhow::ensure!(
+                                event.client.data[1] & 1 == 0,
+                                "text-only drag accepted"
+                            );
+                            std::fs::write(directory.join("ready"), "refused")?;
+                        } else if mode.starts_with("uri-")
+                            && event.client.data[1] & 1 == 0
+                        {
+                            std::fs::write(directory.join("ready"), "refused")?;
+                        }
                     } else if event.client.kind == 33
                         && event.client.message == atom("XdndFinished")
                     {

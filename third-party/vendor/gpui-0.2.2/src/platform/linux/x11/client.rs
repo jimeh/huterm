@@ -801,11 +801,11 @@ impl X11Client {
                     state.xdnd_state.other_window = atom;
                     state.xdnd_state.destination = event.window;
                     state.xdnd_state.drag_type = if (arg1 & 0x1) == 0x1 {
-                        xdnd_get_supported_atom(&state.xcb_connection, &state.atoms, atom)
+                        xdnd_get_uri_list_atom(&state.xcb_connection, &state.atoms, atom)
                     } else {
                         [arg2, arg3, arg4]
                             .into_iter()
-                            .find(|atom| xdnd_is_atom_supported(*atom, &state.atoms))
+                            .find(|atom| *atom == state.atoms.TextUriList)
                             .unwrap_or(0)
                     };
                 } else if event.type_ == state.atoms.XdndLeave {
@@ -2063,16 +2063,7 @@ fn check_gtk_frame_extents_supported(
     supported_atom_ids.contains(&atoms._GTK_FRAME_EXTENTS)
 }
 
-fn xdnd_is_atom_supported(atom: u32, atoms: &XcbAtoms) -> bool {
-    atom == atoms.TEXT
-        || atom == atoms.STRING
-        || atom == atoms.UTF8_STRING
-        || atom == atoms.TEXT_PLAIN
-        || atom == atoms.TEXT_PLAIN_UTF8
-        || atom == atoms.TextUriList
-}
-
-fn xdnd_get_supported_atom(
+fn xdnd_get_uri_list_atom(
     xcb_connection: &XCBConnection,
     supported_atoms: &XcbAtoms,
     target: xproto::Window,
@@ -2092,7 +2083,7 @@ fn xdnd_get_supported_atom(
         && let Some(atoms) = reply.value32()
     {
         for atom in atoms {
-            if xdnd_is_atom_supported(atom, supported_atoms) {
+            if atom == supported_atoms.TextUriList {
                 return atom;
             }
         }

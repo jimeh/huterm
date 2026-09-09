@@ -878,10 +878,11 @@ impl TerminalView {
             && self.focus.is_focused(window)
             && self.link_modifiers.matches(
                 modifiers,
-                self.snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot.modes.mouse_tracking
-                        != huterm_protocol::MouseTracking::Disabled
-                }),
+                !self.exited
+                    && self.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.modes.mouse_tracking
+                            != huterm_protocol::MouseTracking::Disabled
+                    }),
             )
     }
 
@@ -1168,7 +1169,14 @@ impl TerminalView {
             self.cancel_mouse();
             return;
         }
-        if event.button == MouseButton::Left && self.links.owns_press() {
+        // AppKit can remap a Control-left release to Right and erase Control.
+        // A separately held Right button still owns its own release.
+        let remapped_link_release = cfg!(target_os = "macos")
+            && event.button == MouseButton::Right
+            && !self.mouse.held(ProtocolMouseButton::Right);
+        if self.links.owns_press()
+            && (event.button == MouseButton::Left || remapped_link_release)
+        {
             self.update_link_pointer(
                 event.position,
                 event.modifiers,
@@ -1176,8 +1184,8 @@ impl TerminalView {
                 cx,
             );
             let point = self.link_cell(event.position, window);
-            let enabled =
-                self.effective_link_modifiers(event.modifiers, window);
+            let enabled = !remapped_link_release
+                && self.effective_link_modifiers(event.modifiers, window);
             let (_, destination) = self.links.release(point, enabled);
             if let Some(destination) = destination {
                 (self.open_link)(&destination, cx);

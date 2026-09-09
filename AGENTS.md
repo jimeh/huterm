@@ -609,3 +609,16 @@ before remove_window. Closing a different window must not cancel the drag.
 Huterm tab reordering uses its own capture state, not GPUI's active drag. Keep
 native two-window coverage: close a Ready destination without Exited, then prove
 that a different payload and ordinary input reach the surviving terminal.
+
+Link-owned macOS Left presses can receive a Right release when Control changes
+mid-gesture. Preserve separately held Right ownership; consume an unmatched
+remapped release as cancellation because GPUI erased its Control modifier.
+Retained exited history uses the base link chord even if its final snapshot
+still has application mouse tracking enabled.
+
+X11 file-drop type negotiation must find text/uri-list in inline offers and
+XdndTypeList even when text/plain appears first. Start Openbox with --sm-disable
+and wait for _NET_SUPPORTING_WM_CHECK before launching integration fixtures.
+Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
+Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
+keep reporting enabled through the entire native drag assertion.

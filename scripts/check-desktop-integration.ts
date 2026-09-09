@@ -57,7 +57,7 @@ async function check(executable: string, engine: string) {
 const fd=openSync(${JSON.stringify(bytes)},"a");
 let sequence=0;
 let flood=0;
-const stream=setInterval(()=>{const start=${JSON.stringify(directory)}+"/flood";if(existsSync(start)){unlinkSync(start);flood=500;}if(flood>0){process.stdout.write("\\x1b[10;1Hhttps://noise.test/"+(--flood));if(flood===0)writeFileSync(${JSON.stringify(directory)}+"/flood-done", "done");}},2);
+const stream=setInterval(()=>{const start=${JSON.stringify(directory)}+"/flood";if(existsSync(start)){unlinkSync(start);flood=500;}if(flood>0){process.stdout.write("\\x1b[10;1Hhttps://noise.test/"+(--flood)+"\\x1b[K");if(flood===0)writeFileSync(${JSON.stringify(directory)}+"/flood-done", "done");}},2);
 const timer=setInterval(()=>{ const file=${JSON.stringify(directory)}+"/output-"+sequence; if(existsSync(file)){ const value=readFileSync(file); process.stdout.write(value); unlinkSync(file); sequence++; } },5);
 process.stdout.write("READY");
 const deadline=setTimeout(()=>process.exit(2),120000);
@@ -100,6 +100,32 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
         return [line.slice(0, i), line.slice(i + 1)];
       }),
     );
+  }
+  async function discoverWindow() {
+    try {
+      return run([
+        "xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid),
+      ]).split(/\s+/)[0]!;
+    } catch (error) {
+      const lastState = await state();
+      process.stderr.write(`DESKTOP_INTEGRATION discovery pid=${app.pid} exit=${app.exitCode} signal=${app.signalCode}\nlast state=${JSON.stringify(lastState)}\n`);
+      const inspect = (args: string[]) => {
+        const result = Bun.spawnSync(args, {
+          stdout: "pipe", stderr: "pipe", timeout: 1000,
+        });
+        process.stderr.write(`${args.join(" ")} exit=${result.exitCode}\n${result.stdout}${result.stderr}\n`);
+        return result.stdout.toString().trim();
+      };
+      const windows = inspect(["xdotool", "search", "--pid", String(app.pid)]);
+      const ids = windows.split(/\s+/)
+        .filter((id) => /^\d+$/.test(id)).slice(0, 8);
+      for (const id of ids) {
+        inspect(["xwininfo", "-id", id, "-stats", "-tree"]);
+        inspect(["xprop", "-id", id, "_NET_WM_PID", "WM_STATE", "_NET_WM_STATE"]);
+      }
+      inspect(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK", "_NET_CLIENT_LIST", "_NET_ACTIVE_WINDOW"]);
+      throw error;
+    }
   }
   async function commandFile(value: string) {
     const index = sequence++;
@@ -209,14 +235,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       "ready terminal",
     );
     if (!macos) {
-      windowId = run([
-        "xdotool",
-        "search",
-        "--sync",
-        "--onlyvisible",
-        "--pid",
-        String(app.pid),
-      ]).split(/\s+/)[0]!;
+      windowId = await discoverWindow();
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
     await modifiers(0);
@@ -258,7 +277,11 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await waitFor(async () => {
       const current = await state();
       return (
-        current.text?.includes("https://noise.test/0") === true &&
+        // This ASCII fixture has one character per flattened snapshot cell.
+        current.text?.slice(
+          9 * Number(current.snapshot_columns),
+          10 * Number(current.snapshot_columns),
+        ).trim() === "https://noise.test/0" &&
         current.requests === current.completions
       );
     }, "final streamed snapshot and lookup completion");
@@ -283,6 +306,27 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await mouse(2, 2, 0);
     await opened(2);
     await raw("held-link-survives-unrelated-output");
+    if (macos) {
+      await modifiers(command);
+      await hover(url);
+      await mouse(1, 2, 0);
+      assert((await state()).owned === "true", "Cmd-left did not own link press");
+      await mouse(3, 2, 0);
+      await mouse(4, 2, 0);
+      assert((await state()).owned === "true", "independent Right release consumed link press");
+      await modifiers(command | (1 << 18));
+      await mouse(2, 2, 0);
+      await modifiers(0);
+      await mouse(1, 2, 0);
+      await mouse(6, 5, 0);
+      await mouse(2, 5, 0);
+      await waitFor(async () => {
+        const released = await state();
+        return released.owned === "false" && released.selection === "false";
+      }, "Control-remapped link release and following selection to finish");
+      await raw("Control-remapped-link-release-cancels-and-next-selection-finishes");
+      await opened(2);
+    }
     await modifiers(command);
     await hover(url);
     await mouse(1, 2, 0);
@@ -443,6 +487,11 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
           () => Bun.file(join(dragDirectory, "ready")).exists(),
           "native selection reply",
         );
+        if (mode.startsWith("uri-"))
+          assert(
+            await Bun.file(join(dragDirectory, "requested")).exists(),
+            `${mode}: URI offered after text was refused without selection conversion`,
+          );
         if (delivery && mode !== "early")
           await waitFor(
             async () => (await state()).external_drag === "true",
@@ -525,6 +574,19 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await drop("exit");
     await raw("native-drag-cancel-silent");
     if (!macos) {
+      for (const mode of ["uri-inline", "uri-property"]) {
+        await drop("enter", mode);
+        await raw(`native-${mode}-pending-silent`, "", false);
+        await drop("drop");
+        await raw(`native-${mode}-URI-after-text`, `\x1b[200~${escaped}\x1b[201~`);
+      }
+      await drop("enter", "text-only", undefined, false);
+      await drop("exit");
+      assert(
+        !(await Bun.file(join(dragDirectory, "requested")).exists()),
+        "text-only drag requested a conversion",
+      );
+      await raw("native-text-only-refused");
       for (const [label, payload] of [
         ["mixed", "file:///tmp/good\r\nhttps://bad.test/"],
         ["malformed", "file:///tmp/good\r\nfile:///tmp/%Q0"],
@@ -566,7 +628,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       );
     }
     await display(
-      "\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[2J\x1b[Hhttps://history.test/",
+      "\x1b[?1003h\x1b[?1006h\x1b[?2004l\x1b[2J\x1b[Hhttps://history.test/",
     );
     await modifiers(0);
     if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");
@@ -575,6 +637,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       async () => (await state()).exited === "true",
       "retained exited history",
     );
+    assert((await state()).mouse === "AllMotion", "retained history did not preserve active application mouse mode");
     await mouse(5, 2, 0);
     await modifiers(command);
     await hover("https://history.test/");
@@ -642,18 +705,12 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     }
     await commandFile("activate_window");
     if (!macos) {
-      windowId = run([
-        "xdotool",
-        "search",
-        "--sync",
-        "--onlyvisible",
-        "--pid",
-        String(app.pid),
-      ]).split(/\s+/)[0]!;
+      windowId = await discoverWindow();
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
     outputSequence = 0;
     await mouse(5, 2, 2);
+    await raw("surviving-window-pointer-settled-before-mouse-mode");
     await display("\x1b[?1003h\x1b[?1006h\x1b[?2004h");
     paths.splice(0, paths.length, join(directory, "second-payload"));
     await writeFile(paths[0]!, "");
@@ -690,9 +747,30 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   }
 }
 if (import.meta.main) {
-  for (const engine of ["alacritty", "ghostty"])
-    await check(
-      resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"),
-      engine,
-    );
+  const wm = macos ? undefined : Bun.spawn(["openbox", "--sm-disable"], {
+    stdout: "ignore", stderr: "pipe",
+  });
+  const wmErrors = wm ? new Response(wm.stderr).text() : Promise.resolve("");
+  try {
+    if (wm)
+      await waitFor(async () => {
+        assert(wm.exitCode === null, `Openbox exited ${wm.exitCode}`);
+        return run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"])
+          .includes("window id");
+      }, "Openbox EWMH readiness");
+    for (const engine of ["alacritty", "ghostty"])
+      await check(
+        resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"), engine,
+      );
+  } finally {
+    if (wm) {
+      if (wm.exitCode === null) wm.kill("SIGTERM");
+      const force = setTimeout(() => {
+        if (wm.exitCode === null) wm.kill("SIGKILL");
+      }, 1000);
+      await wm.exited;
+      clearTimeout(force);
+      process.stderr.write(await wmErrors);
+    }
+  }
 }
