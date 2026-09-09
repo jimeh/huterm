@@ -17,6 +17,11 @@
           "name": "x11-file-drop",
           "file": "patches/gpui/x11-file-drop.patch",
           "description": "Validate complete X11 URI lists, prefer URI offers, and isolate stale selection replies per drag."
+        },
+        {
+          "name": "explicit-f32-literals",
+          "file": "patches/gpui/explicit-f32-literals.patch",
+          "description": "Make grid track float types explicit instead of relying on deprecated f32 literal fallback."
         }
       ]
     },

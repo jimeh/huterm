@@ -5,8 +5,8 @@
 [sources.json](sources.json) pins each published crate archive by URL and SHA-256,
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
-Keep each coherent fix together. The GPUI file-drop correction is one coupled
-fix; the sys crate has separate CPU, build-script watch-path, and license patches.
+Keep each coherent fix together. GPUI has separate file-drop and explicit-float
+patches; the sys crate has separate CPU, build-script watch-path, and license patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -197,3 +197,11 @@ Keep upstream formatting in this directory. Remove the Cargo patch and vendored
 crate once a reviewed published GPUI release supplies equivalent native
 sequencing, whole-payload validation, and stale-reply isolation. Rerun both
 platforms' desktop integration smokes when removing it.
+
+## GPUI explicit float literals
+
+`explicit-f32-literals` adds `f32` suffixes to the two grid-track literals in
+`src/taffy.rs`. Rust already infers these values as `f32`, but warns that this
+fallback will become an error. Explicit types preserve the existing behavior.
+Remove this patch when the selected upstream release supplies explicit types or
+otherwise removes the `float_literal_f32_fallback` warnings at this call site.

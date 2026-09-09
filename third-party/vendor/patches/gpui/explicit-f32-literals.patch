@@ -1,0 +1,13 @@
+diff --git a/src/taffy.rs b/src/taffy.rs
+index 29b4ce644f7b6e4221b72ac8dacc43b558b3eb8e..edd78480823e98035d89644496758c67e6b0071e 100644
+--- a/src/taffy.rs
++++ b/src/taffy.rs
+@@ -309,7 +309,7 @@ impl ToTaffy<taffy::style::Style> for Style {
+             unit: &Option<u16>,
+         ) -> Vec<taffy::GridTemplateComponent<T>> {
+             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
+-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
++            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+                 .unwrap_or_default()
+         }
+ 
