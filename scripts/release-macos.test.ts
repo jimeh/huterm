@@ -124,3 +124,31 @@ test("release-please can update explicit package versions and centralized exact 
     expect(manifest).not.toMatch(/^version\.workspace = true$/m);
   }
 });
+
+test("release workflows use the documented repository credential names", async () => {
+  const releasePleaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release-please.yml"), "utf8");
+  const releaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const releaseGuide = await readFile(resolve(repoRoot, "docs/agents/releases.md"), "utf8");
+  const variables = [
+    "RELEASE_BOT_CLIENT_ID",
+    "APPLE_TEAM_ID",
+    "APPLE_NOTARIZATION_KEY_ID",
+    "APPLE_NOTARIZATION_ISSUER_ID",
+  ];
+  const secrets = [
+    "RELEASE_BOT_PRIVATE_KEY",
+    "MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64",
+    "MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD",
+    "APPLE_NOTARIZATION_KEY_P8_BASE64",
+  ];
+
+  for (const variable of variables) {
+    expect(releaseGuide).toContain(`\`${variable}\``);
+    expect(releaseWorkflow).toContain(`vars.${variable}`);
+  }
+  for (const secret of secrets) {
+    expect(releaseGuide).toContain(`\`${secret}\``);
+    expect(releaseWorkflow).toContain(`secrets.${secret}`);
+    expect(releasePleaseWorkflow).toContain(`secrets.${secret}`);
+  }
+});

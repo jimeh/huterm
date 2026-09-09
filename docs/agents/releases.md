@@ -16,18 +16,20 @@ Install a GitHub App on the repository with read/write access to Contents,
 Issues, and Pull requests. Add these GitHub Actions variables:
 
 - `RELEASE_BOT_CLIENT_ID`: client ID of the installed GitHub App.
-- `MACOS_TEAM_ID`: ten-character Apple Developer team ID.
-- `MACOS_NOTARY_KEY_ID`: ten-character App Store Connect API key ID.
-- `MACOS_NOTARY_ISSUER_ID`: App Store Connect API issuer UUID.
+- `APPLE_TEAM_ID`: ten-character Apple Developer team ID.
+- `APPLE_NOTARIZATION_KEY_ID`: ten-character App Store Connect API key ID.
+- `APPLE_NOTARIZATION_ISSUER_ID`: App Store Connect API issuer UUID.
 
 Add these GitHub Actions secrets:
 
 - `RELEASE_BOT_PRIVATE_KEY`: PEM private key downloaded for the GitHub App.
-- `MACOS_SIGN_P12`: base64-encoded Developer ID Application PKCS#12 file.
-- `MACOS_SIGN_PASSWORD`: password for the PKCS#12 file.
-- `MACOS_NOTARY_KEY`: base64-encoded App Store Connect API `.p8` file.
+- `MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`: base64-encoded Developer ID
+  Application PKCS#12 file.
+- `MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD`: password for the PKCS#12 file.
+- `APPLE_NOTARIZATION_KEY_P8_BASE64`: base64-encoded App Store Connect API `.p8`
+  file.
 
-The Developer ID certificate must belong to `MACOS_TEAM_ID`. The App Store
+The Developer ID certificate must belong to `APPLE_TEAM_ID`. The App Store
 Connect key must match the configured key and issuer IDs and have permission to
 submit notarization requests. Keep all four secret values out of the repository
 and workflow logs.
