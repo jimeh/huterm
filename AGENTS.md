@@ -767,3 +767,7 @@ keep desktop geometry and animation behavior in `huterm-gpui`. The global
 keybinding schema restricts the shared command catalog to quake commands.
 Extend shared schema fixtures and the desktop global compiler parity check
 together; native key support and OS registration remain runtime checks.
+
+Guard null placeholders before invoking `objc` message macros in retained-handle
+destructors. Moving an AppKit owner into deferred cleanup leaves a null sentinel;
+the Rust macro dereferences its receiver even though Objective-C permits nil.

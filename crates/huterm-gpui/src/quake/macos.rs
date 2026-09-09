@@ -44,6 +44,9 @@ impl Retained {
 }
 impl Drop for Retained {
     fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
         // SAFETY: Balanced retain; this type is deliberately not Send.
         unsafe {
             let _: () = msg_send![self.0, release];
@@ -466,5 +469,16 @@ fn from_native(frame: Bounds<f64>, top: f64) -> Rect {
         y: top - frame.origin.y - frame.size.height,
         width: frame.size.width,
         height: frame.size.height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Retained;
+
+    #[test]
+    fn moved_retained_handle_is_safe_to_drop() {
+        // Inner leaves this sentinel when moving the native owner into cleanup.
+        drop(Retained(std::ptr::null_mut()));
     }
 }

@@ -27,8 +27,13 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 async function checkHidden(executable: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-hidden-"));
   const app = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1"}, stdout: "pipe", stderr: "pipe"});
+  let diagnostics = "";
+  const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   try {
-    await waitFor(() => Bun.file(join(directory, "ready")).exists(), "unmapped window creation");
+    await waitFor(async () => {
+      if (app.exitCode !== null) throw new Error(`hidden probe exited ${app.exitCode}: ${diagnostics}`);
+      return Bun.file(join(directory, "ready")).exists();
+    }, "unmapped window creation");
     if (process.platform === "darwin") {
       if ((await readFile(join(directory,"ready"),"utf8")).trim() !== "visible=false") throw new Error("show=false exposed an AppKit window before any hide call");
     } else {
@@ -41,9 +46,13 @@ async function checkHidden(executable: string): Promise<void> {
     await waitFor(async () => app.exitCode !== null, "hidden probe shutdown");
     if (await app.exited !== 0) throw new Error("hidden probe failed");
     console.log("QUAKE_HIDDEN_CREATION native-map-state=IsUnMapped before-any-hide=passed");
+  } catch (error) {
+    console.error(`Hidden-window probe ${directory}: ${diagnostics}`);
+    throw error;
   } finally {
     if (app.exitCode === null) app.kill();
     await app.exited;
+    await errors;
     await rm(directory, {recursive: true, force: true});
   }
 }
