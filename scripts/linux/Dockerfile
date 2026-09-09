@@ -4,7 +4,7 @@ ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates clang cmake curl git pkg-config \
-    python3 ripgrep rsync procps locales xz-utils unzip \
+    python3 ripgrep rsync procps locales xz-utils unzip zsh \
     libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers \
     fontconfig fonts-dejavu-core xvfb xauth xdotool x11-xkb-utils \
     x11-utils openbox twm \

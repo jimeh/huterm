@@ -3,6 +3,8 @@ pub(crate) mod fullscreen_smoke;
 #[cfg(target_os = "macos")]
 #[path = "input_smoke.rs"]
 pub(crate) mod input_smoke;
+#[path = "integration_smoke.rs"]
+pub(crate) mod integration_smoke;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
@@ -289,10 +291,21 @@ struct Desktop {
     quitting: bool,
     pending_spawns: usize,
     quit_pending: bool,
+    external_drag_window: Option<gpui::WindowId>,
 }
 impl Global for Desktop {}
 
 impl Desktop {
+    fn stop_window_drag(window: &mut Window, cx: &mut App) {
+        let desktop = cx.global_mut::<Self>();
+        if desktop.external_drag_window
+            == Some(window.window_handle().window_id())
+        {
+            desktop.external_drag_window = None;
+            cx.stop_active_drag(window);
+        }
+    }
+
     /// Runs a catalog command for a programmatic caller.
     ///
     /// Application commands run without a window. Window, runtime, and
@@ -453,6 +466,7 @@ pub(super) fn run_with_startup(
             quitting: false,
             pending_spawns: 0,
             quit_pending: false,
+            external_drag_window: None,
         });
         install_native_quit(cx);
         cx.on_app_quit(move |cx| {
@@ -1760,6 +1774,7 @@ impl WorkspaceView {
                     adapter.close();
                 }
                 let _ = handle.update(cx, |_, window, cx| {
+                    Desktop::stop_window_drag(window, cx);
                     window.remove_window();
                     if quit_after {
                         cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -1770,6 +1785,7 @@ impl WorkspaceView {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            Desktop::stop_window_drag(window, cx);
             window.remove_window();
             if quit_after {
                 cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -2135,6 +2151,10 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                     view.font_size = metrics.font_size;
                                     view.metrics = metrics;
                                     view.window_config = config.window;
+                                    view.links.disable();
+                                    view.links_enabled = config.terminal.links;
+                                    view.link_modifiers =
+                                        config.terminal.link_modifiers;
                                     if view.option_as_alt
                                         != config.terminal.macos_option_as_alt
                                     {
@@ -2282,6 +2302,12 @@ impl Render for WorkspaceView {
             .text_size(px(13.0))
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
+            .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
+                // GPUI owns one app-wide drag. Closing another window must
+                // not cancel the external payload delivered to this one.
+                cx.global_mut::<Desktop>().external_drag_window =
+                    Some(window.window_handle().window_id());
+            })
             .on_key_down(cx.listener(
                 |view, event: &gpui::KeyDownEvent, window, cx| {
                     if view.reorder.is_some() && event.keystroke.key == "escape"

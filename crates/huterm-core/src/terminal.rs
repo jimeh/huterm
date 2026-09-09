@@ -128,7 +128,7 @@ impl RuntimeClient {
     ///
     /// Returns an error when the terminal has stopped.
     pub fn request_snapshot(&self) -> Result<SnapshotRequest, RuntimeError> {
-        self.snapshot_request(None)
+        self.snapshot_request(None, None)
     }
 
     /// Moves the shared viewport and reads it atomically on the runtime owner.
@@ -139,16 +139,36 @@ impl RuntimeClient {
         &self,
         scroll: ScrollCommand,
     ) -> Result<SnapshotRequest, RuntimeError> {
-        self.snapshot_request(Some(scroll))
+        self.snapshot_request(Some(scroll), None)
+    }
+
+    /// Requests a snapshot and optional link lookup in one engine-owner operation.
+    ///
+    /// # Errors
+    /// Returns an error when the terminal has stopped. Lookup failures remain
+    /// nonfatal outcomes in the successful snapshot reply.
+    pub fn request_snapshot_with_link(
+        &self,
+        scroll: Option<ScrollCommand>,
+        point: Option<huterm_protocol::MousePosition>,
+    ) -> Result<SnapshotRequest, RuntimeError> {
+        self.snapshot_request(scroll, point)
     }
 
     fn snapshot_request(
         &self,
         scroll: Option<ScrollCommand>,
+        point: Option<huterm_protocol::MousePosition>,
     ) -> Result<SnapshotRequest, RuntimeError> {
         let (reply, receiver) = async_channel::bounded(1);
         self.controls
-            .send(RuntimeControl::Snapshot { scroll, reply })
+            .send(RuntimeControl::Snapshot {
+                scroll,
+                point,
+                reply,
+                #[cfg(test)]
+                fail_lookup: false,
+            })
             .map_err(|_| RuntimeError::Stopped)?;
         Ok(SnapshotRequest { receiver })
     }
@@ -266,6 +286,10 @@ pub struct SnapshotRequest {
 pub struct SnapshotReply {
     /// Immutable terminal snapshot.
     pub snapshot: TerminalSnapshot,
+    /// Optional link outcome resolved against this exact snapshot.
+    pub link: Option<huterm_protocol::LinkLookup>,
+    /// Elapsed owner-thread time spent on optional link inspection.
+    pub lookup_duration: Duration,
     /// Expected viewport computed from the command and runtime state before it runs.
     pub requested_viewport: huterm_protocol::Viewport,
     /// Monotonic wall-clock duration of snapshot construction, including any
@@ -538,6 +562,9 @@ enum RuntimeControl {
     PtyEof,
     Snapshot {
         scroll: Option<ScrollCommand>,
+        point: Option<huterm_protocol::MousePosition>,
+        #[cfg(test)]
+        fail_lookup: bool,
         reply: async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
     },
     Selection {
@@ -696,7 +723,13 @@ fn run_terminal(
                 break;
             }
             match control {
-                RuntimeControl::Snapshot { scroll, reply } => {
+                RuntimeControl::Snapshot {
+                    scroll,
+                    point,
+                    reply,
+                    #[cfg(test)]
+                    fail_lookup,
+                } => {
                     let started = Instant::now();
                     let result = (|| {
                         let requested_viewport =
@@ -705,10 +738,21 @@ fn run_terminal(
                             engine.scroll(scroll)?;
                         }
                         let snapshot = engine.snapshot()?;
+                        let snapshot_duration = started.elapsed();
+                        let lookup_started = Instant::now();
+                        let link = point.map(|point| {
+                            #[cfg(test)]
+                            if fail_lookup {
+                                return huterm_protocol::LinkLookup::Unavailable;
+                            }
+                            engine.lookup_link(&snapshot, point)
+                        });
                         Ok(SnapshotReply {
+                            link,
+                            lookup_duration: lookup_started.elapsed(),
                             snapshot,
                             requested_viewport,
-                            snapshot_duration: started.elapsed(),
+                            snapshot_duration,
                             completed_at: Instant::now(),
                         })
                     })();
@@ -1399,6 +1443,80 @@ mod tests {
             context.lifecycle.assess(|| panic!()),
             crate::jobs::JobState::Unknown
         );
+    }
+
+    #[test]
+    fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
+        for kind in [
+            huterm_protocol::TerminalEngineKind::Alacritty,
+            huterm_protocol::TerminalEngineKind::Ghostty,
+        ] {
+            let mut command = command(
+                "stty -echo; printf 'https://x.test READY'; read line; printf ' ACK:%s' \"$line\"",
+            );
+            command.engine = kind;
+            let runtime =
+                TerminalRuntime::spawn(TerminalId::new(99), &command).unwrap();
+            let client = runtime.client();
+            wait_for_text(&client, "READY");
+            let (reply, receiver) = async_channel::bounded(1);
+            client
+                .controls
+                .send(RuntimeControl::Snapshot {
+                    scroll: None,
+                    point: Some(huterm_protocol::MousePosition::default()),
+                    fail_lookup: true,
+                    reply,
+                })
+                .unwrap();
+            let failed = SnapshotRequest { receiver }.recv_blocking().unwrap();
+            assert_eq!(
+                failed.link,
+                Some(huterm_protocol::LinkLookup::Unavailable)
+            );
+            assert!(!client.closing.load(Ordering::Acquire));
+            assert!(
+                failed
+                    .snapshot
+                    .cells()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .contains("READY")
+            );
+            let valid = client
+                .request_snapshot_with_link(
+                    None,
+                    Some(huterm_protocol::MousePosition::default()),
+                )
+                .unwrap()
+                .recv_blocking()
+                .unwrap();
+            assert!(matches!(
+                valid.link,
+                Some(huterm_protocol::LinkLookup::Match(_))
+            ));
+            client
+                .send_input(TerminalInput::Text("alive\n".into()))
+                .unwrap();
+            wait_for_text(&client, "ACK:alive");
+            assert!(wait_for_exit(&client).success);
+            let history = client
+                .request_snapshot_with_link(
+                    None,
+                    Some(huterm_protocol::MousePosition::default()),
+                )
+                .unwrap()
+                .recv_blocking()
+                .unwrap();
+            assert!(matches!(
+                history.link,
+                Some(huterm_protocol::LinkLookup::Match(_))
+            ));
+            while let Some(event) = client.try_recv_event().unwrap() {
+                assert!(!matches!(event, TerminalEvent::Failed { .. }));
+            }
+            runtime.shutdown().unwrap();
+        }
     }
 
     #[test]

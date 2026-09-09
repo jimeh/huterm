@@ -118,6 +118,9 @@ jobs:
         with:
           key: dependencies
 
+      - name: Verify patched vendor sources
+        run: mise run vendor:check
+
       - name: Audit Cargo dependencies
         run: mise run license
 
@@ -144,7 +147,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
-            libxkbcommon-dev libxkbcommon-x11-dev
+            libxkbcommon-dev libxkbcommon-x11-dev zsh
 
       - name: Install Linux smoke dependencies
         if: runner.os == 'Linux' && matrix.check == 'smoke'

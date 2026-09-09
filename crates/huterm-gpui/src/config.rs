@@ -16,6 +16,10 @@ close_on_exit = true
 # Send Option character chords as terminal Meta: "off" or "both".
 # Reload applies this to existing terminals. Linux always uses Alt as Meta.
 macos_option_as_alt = "off"
+# Hold Cmd on macOS or Ctrl on Linux to open HTTP/HTTPS links.
+# Also hold Shift when terminal applications request mouse reporting.
+links = true
+# link_modifiers = "cmd" # Linux default: "ctrl"
 
 [font]
 family = "Menlo"
@@ -82,6 +86,8 @@ pub(super) struct KeybindingEntry {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct TerminalConfig {
     pub(super) close_on_exit: bool,
+    pub(super) links: bool,
+    pub(super) link_modifiers: LinkModifiers,
     pub(super) macos_option_as_alt: MacosOptionAsAlt,
 }
 
@@ -89,8 +95,71 @@ impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             close_on_exit: true,
+            links: true,
+            link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "String")]
+pub(super) struct LinkModifiers(u8);
+
+impl Default for LinkModifiers {
+    fn default() -> Self {
+        Self(if cfg!(target_os = "macos") { 1 } else { 2 })
+    }
+}
+impl TryFrom<String> for LinkModifiers {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value, cfg!(target_os = "macos"))
+    }
+}
+impl LinkModifiers {
+    pub(super) fn parse(
+        value: &str,
+        macos: bool,
+    ) -> Result<Self, &'static str> {
+        let mut bits = 0;
+        for token in value.split('-') {
+            let bit = match token {
+                "cmd" => 1,
+                "ctrl" => 2,
+                "alt" => 4,
+                "shift" => 8,
+                _ => {
+                    return Err(
+                        "terminal.link_modifiers must contain only cmd, ctrl, alt, or shift",
+                    );
+                }
+            };
+            if bits & bit != 0 {
+                return Err(
+                    "terminal.link_modifiers cannot contain duplicate modifiers",
+                );
+            }
+            bits |= bit;
+        }
+        if macos && bits & 2 != 0 {
+            return Err(
+                "terminal.link_modifiers cannot use ctrl on macOS: GPUI converts Control-left into Right and removes Control",
+            );
+        }
+        Ok(Self(bits))
+    }
+    pub(super) fn matches(
+        self,
+        modifiers: gpui::Modifiers,
+        mouse_reporting: bool,
+    ) -> bool {
+        let actual = u8::from(modifiers.platform)
+            | (u8::from(modifiers.control) << 1)
+            | (u8::from(modifiers.alt) << 2)
+            | (u8::from(modifiers.shift) << 3);
+        !modifiers.function
+            && actual == (self.0 | if mouse_reporting { 8 } else { 0 })
     }
 }
 
@@ -418,6 +487,8 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         window: raw.window,
         terminal: TerminalConfig {
             close_on_exit: raw.terminal.close_on_exit,
+            links: raw.terminal.links,
+            link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
         },
         font: FontConfig {
@@ -542,6 +613,8 @@ impl RawKeybinding {
 #[serde(default, deny_unknown_fields)]
 struct RawTerminal {
     engine: String,
+    links: bool,
+    link_modifiers: LinkModifiers,
     close_on_exit: bool,
     macos_option_as_alt: MacosOptionAsAlt,
 }
@@ -549,6 +622,8 @@ impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: "alacritty".into(),
+            links: true,
+            link_modifiers: LinkModifiers::default(),
             close_on_exit: TerminalConfig::default().close_on_exit,
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
@@ -1194,5 +1269,65 @@ background = "#040506"
             "huterm-config-test-{}-{sequence}",
             std::process::id()
         ))
+    }
+}
+
+#[cfg(test)]
+mod link_config_tests {
+    use super::*;
+    #[test]
+    fn link_modifier_combinations_match_exactly_and_add_mouse_shift() {
+        let cmd = LinkModifiers::parse("cmd", true).unwrap();
+        let mut modifiers = gpui::Modifiers {
+            platform: true,
+            ..gpui::Modifiers::default()
+        };
+        assert!(cmd.matches(modifiers, false));
+        assert!(!cmd.matches(modifiers, true));
+        modifiers.shift = true;
+        assert!(cmd.matches(modifiers, true));
+        assert!(!cmd.matches(modifiers, false));
+        let configured = LinkModifiers::parse("cmd-shift", true).unwrap();
+        assert!(configured.matches(modifiers, true));
+        assert!(configured.matches(modifiers, false));
+        modifiers.alt = true;
+        assert!(!configured.matches(modifiers, true));
+        assert!(LinkModifiers::parse("ctrl", false).unwrap().matches(
+            gpui::Modifiers {
+                control: true,
+                ..gpui::Modifiers::default()
+            },
+            false
+        ));
+    }
+    #[test]
+    fn link_config_rejects_mac_control_duplicates_empty_and_keys() {
+        for value in ["ctrl", "cmd-ctrl"] {
+            assert!(
+                LinkModifiers::parse(value, true)
+                    .unwrap_err()
+                    .contains("Control-left")
+            );
+        }
+        for value in ["", "cmd-cmd", "cmd-r", "fn", "cmd-", "command"] {
+            assert!(LinkModifiers::parse(value, false).is_err(), "{value}");
+        }
+        let good = parse_at(
+            "[terminal]\nlinks=false\nlink_modifiers='alt-shift'",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert!(!good.terminal.links);
+        assert_eq!(
+            good.terminal.link_modifiers,
+            LinkModifiers::parse("alt-shift", false).unwrap()
+        );
+        assert!(
+            parse_at(
+                "[terminal]\nlink_modifiers='cmd-cmd'",
+                Path::new("config.toml")
+            )
+            .is_err()
+        );
     }
 }

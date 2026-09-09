@@ -173,7 +173,7 @@ bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --examp
 workload="$(pwd)/target/release/examples/render_workload"
 set +e
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
-  twm >/dev/null 2>&1 &
+  LC_ALL=C twm -f scripts/linux/benchmark.twmrc &
   wm_pid=$!
   SHELL="$1" HUTERM_RENDER_STATS=1 HUTERM_RENDER_BENCH=1 \
     timeout --signal=TERM 8s "$2"
@@ -210,7 +210,7 @@ export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
 report="$(mktemp)"
-revision="$(git rev-parse HEAD)"
+revision="${HUTERM_SOURCE_REVISION:-$(git rev-parse HEAD)}"
 if [ "$platform" = Darwin ]; then
   hardware="$(sysctl -n hw.model)"
 else
@@ -227,7 +227,7 @@ trap cleanup EXIT
 if [ "$platform" = Linux ]; then
   set +e
   xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
-    twm >/dev/null 2>&1 &
+    LC_ALL=C twm -f scripts/linux/benchmark.twmrc &
     wm_pid=$!
     SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
       HUTERM_SCROLL_HARDWARE="$5" \
@@ -349,7 +349,7 @@ run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
 
 [tasks."verify:parallel"]
 hide = true
-depends = ["check", "test", "license", "audit:scripts", "ci:workflows"]
+depends = ["check", "test", "license", "audit:scripts", "ci:workflows", "vendor:check"]
 
 [tasks."verify:platform:parallel"]
 hide = true
@@ -524,6 +524,7 @@ case "$(uname -s)" in
     mise run smoke:renderer
     mise run smoke:macos-menus
     mise run smoke:macos-input
+    mise run smoke:macos-integration
     mise run smoke:macos-quit
     mise run smoke:macos-fullscreen
     ;;
@@ -531,6 +532,7 @@ case "$(uname -s)" in
     mise run smoke:renderer
     mise run smoke:linux
     mise run smoke:linux-input
+    mise run smoke:linux-integration
     mise run smoke:linux-fullscreen
     ;;
   *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
@@ -538,9 +540,9 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll budgets for both engines with one release build"
+description = "Run CI scroll and link lookup budgets for both engines"
 depends = ["verify:toolchain"]
-run = ["mise run bench:scroll", "mise run bench:scroll:ghostty"]
+run = ["mise run bench:scroll", "mise run bench:scroll:ghostty", "mise run bench:links"]
 
 [tasks."smoke:renderer"]
 description = "Verify built-in terminal graphics through native GPUI preparation and paint"
@@ -569,3 +571,65 @@ run = "bun scripts/linux.ts exec"
 [tasks."linux:clean"]
 description = "Remove this worktree's Linux cache volumes for the selected architecture"
 run = "bun scripts/linux.ts clean"
+
+[tasks."bench:links"]
+depends = ["ghostty:prepare"]
+description = "Measure bounded owner-thread URL and OSC8 lookup for both engines"
+run = "bash scripts/build-exec.sh cargo test --release --locked -p huterm-core bounded_link_lookup_elapsed_time -- --ignored --nocapture"
+
+[tasks."smoke:macos-integration"]
+depends = ["ghostty:prepare"]
+description = "Verify AppKit terminal links and native file-drop paste for both engines"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "AppKit integration smoke requires macOS" >&2
+  exit 1
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke
+bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
+'''
+
+[tasks."smoke:linux-integration"]
+depends = ["ghostty:prepare"]
+description = "Verify X11 links and native XDND file-drop paste for both engines"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "X11 integration smoke requires Linux" >&2
+  exit 1
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke --example xdnd_source
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
+'''
+
+[tasks."smoke:manual-integration"]
+description = "Launch a safe raw-PTY recorder for Finder or file-manager QA (engine argument)"
+depends = ["ghostty:prepare"]
+run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke && bun scripts/manual-desktop-integration.ts"
+
+[tasks."vendor:check"]
+description = "Verify vendored crates match their pinned archives and patches"
+run = "bun scripts/vendor.ts check"
+
+[tasks."vendor:start"]
+description = "Start a targeted vendor edit session: <crate> <patch>"
+run = "bun scripts/vendor.ts start"
+
+[tasks."vendor:finish"]
+description = "Fold tested vendor edits into the selected patch and replay later patches: <crate>"
+run = "bun scripts/vendor.ts finish"
+
+[tasks."vendor:continue"]
+description = "Resume a vendor session after resolving a replay conflict: <crate>"
+run = "bun scripts/vendor.ts continue"
+
+[tasks."vendor:status"]
+description = "Show active vendor edit sessions, optionally for one crate"
+run = "bun scripts/vendor.ts status"
+
+[tasks."vendor:cancel"]
+description = "Cancel a vendor session, retaining source edits and recovery state: <crate>"
+run = "bun scripts/vendor.ts cancel"
+
+[tasks."vendor:reopen"]
+description = "Return a vendor session to editing, preserving source and replay work: <crate>"
+run = "bun scripts/vendor.ts reopen"

@@ -163,6 +163,22 @@ continuous frame delivery; sustained presentation latency needs a native host.
 Xvfb runs with `-noreset` so a last-client disconnect cannot send a second
 readiness signal during the wrapper's temporary-directory cleanup.
 
+`mise run bench:links` measures on-demand lookup on the runtime owner thread
+for both engines. It includes short and long wrapped URLs, repeated prefixes,
+unmatched punctuation, long OSC 8 labels/destinations, and scan-limit rejection.
+The release gate is p95 at most 5 ms per fixture over 100 samples. Initial
+macOS and Linux arm64 measurements peaked below 0.8 ms p95; the gate leaves room
+for scheduler and host variation. CI runs it alongside the existing scroll gates.
+
+`smoke:macos-integration` and `smoke:linux-integration` enforce at most one
+snapshot/lookup in flight and one pending intent, no idle retries after output
+settles, and completed hover latency at most 200 ms. They drive continuous URL
+output and verify a raw PTY input acknowledgment. These elapsed-time limits
+catch stalls; they do not establish a frame-time guarantee. Native file-drop
+protocol checks complement separate Finder/file-manager QA. Use
+`smoke:manual-integration -- alacritty` or `-- ghostty` for a raw recorder that
+never executes dropped paths.
+
 A local Linux comparison on an AMD Ryzen 5 5600GT used a flat Alacritty
 baseline at
 `d1fbff3` and this implementation, with the same alternating fixture. Median

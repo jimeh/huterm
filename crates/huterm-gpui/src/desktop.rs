@@ -46,7 +46,8 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
 mod composition;
 mod keyboard;
-pub(crate) use windows::fullscreen_smoke;
+mod links;
+pub(crate) use windows::{fullscreen_smoke, integration_smoke};
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
@@ -196,6 +197,16 @@ struct TerminalView {
     #[cfg(target_os = "macos")]
     native_window: gpui::AnyWindowHandle,
     mouse: MouseState,
+    external_drag: bool,
+    links: links::Links,
+    links_enabled: bool,
+    link_modifiers: config::LinkModifiers,
+    link_diagnostic_at: Option<Instant>,
+    open_link: fn(&str, &mut App),
+    link_requests: u64,
+    link_completions: u64,
+    link_max_lookup: Duration,
+    link_max_latency: Duration,
     pending_resize: Option<(GridSize, CellSize)>,
     snapshot: Option<Arc<TerminalSnapshot>>,
     renderer: Rc<RefCell<TerminalRenderer>>,
@@ -229,6 +240,7 @@ struct TerminalView {
 }
 
 impl TerminalView {
+    #[allow(clippy::too_many_lines)]
     fn new(
         client: RuntimeClient,
         config: &Config,
@@ -292,6 +304,16 @@ impl TerminalView {
             #[cfg(target_os = "macos")]
             pending_shortcuts: keyboard::PendingShortcuts::default(),
             mouse: MouseState::default(),
+            external_drag: false,
+            links: links::Links::default(),
+            links_enabled: config.terminal.links,
+            link_modifiers: config.terminal.link_modifiers,
+            link_diagnostic_at: None,
+            open_link: |destination, cx| cx.open_url(destination),
+            link_requests: 0,
+            link_completions: 0,
+            link_max_lookup: Duration::ZERO,
+            link_max_latency: Duration::ZERO,
             pending_resize: None,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
@@ -364,9 +386,12 @@ impl TerminalView {
         else {
             return;
         };
-        let requested = self.scroll.submitted_scroll().map_or_else(
-            || self.client.request_snapshot(),
-            |scroll| self.client.request_scrolled_snapshot(scroll),
+        let link_intent = self.links.intent();
+        let link_started = Instant::now();
+        self.link_requests += u64::from(link_intent.is_some());
+        let requested = self.client.request_snapshot_with_link(
+            self.scroll.submitted_scroll(),
+            link_intent.map(|intent| intent.point),
         );
         let request = match requested {
             Ok(request) => request,
@@ -409,12 +434,23 @@ impl TerminalView {
             let _ = view.update(cx, |view, cx| {
                 match result {
                     Ok(reply) => {
+                        if link_intent.is_some() {
+                            view.link_completions += 1;
+                            view.link_max_lookup = view.link_max_lookup.max(reply.lookup_duration);
+                            view.link_max_latency = view.link_max_latency.max(link_started.elapsed());
+                        }
                         view.renderer.borrow_mut().complete_scroll_snapshot(
                             reply.snapshot_duration,
                             reply.requested_viewport.bottom_offset,
                             reply.snapshot.viewport.bottom_offset,
                             reply.completed_at.elapsed(),
                         );
+                        if matches!(reply.link, Some(huterm_protocol::LinkLookup::Unavailable | huterm_protocol::LinkLookup::ScanLimit))
+                            && view.link_diagnostic_at.is_none_or(|previous| previous.elapsed() >= Duration::from_secs(5)) {
+                            view.link_diagnostic_at = Some(Instant::now());
+                            eprintln!("Link lookup unavailable or exceeded its bounded scan; terminal remains usable");
+                        }
+                        view.links.publish(link_intent, reply.link);
                         view.apply_snapshot(reply.snapshot);
                     }
                     Err(error) => {
@@ -682,6 +718,7 @@ impl TerminalView {
         if !self.visible {
             return;
         }
+        self.links.invalidate();
         let (application, cell) =
             self.application_mouse(event.position, event.modifiers, window);
         if self.mouse.wheel_route(application) {
@@ -808,11 +845,113 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
         apply: impl FnOnce(&mut ScrollController, u16) -> bool,
     ) {
+        self.links.invalidate();
         if apply(&mut self.scroll, self.last_grid_size.rows) {
             self.activate_scrollbar();
             self.start_snapshot_if_needed(cx);
             cx.notify();
         }
+    }
+
+    fn link_cell(
+        &self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> Option<MousePosition> {
+        let (inside, cell) = application_mouse_geometry(
+            position,
+            self.content_bounds(window).origin,
+            self.terminal_layout(window),
+            size(self.metrics.cell_width, self.metrics.cell_height),
+        );
+        inside.then_some(cell)
+    }
+
+    fn effective_link_modifiers(
+        &self,
+        modifiers: GpuiModifiers,
+        window: &Window,
+    ) -> bool {
+        self.links_enabled
+            && self.visible
+            && window.is_window_active()
+            && self.focus.is_focused(window)
+            && self.link_modifiers.matches(
+                modifiers,
+                !self.exited
+                    && self.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.modes.mouse_tracking
+                            != huterm_protocol::MouseTracking::Disabled
+                    }),
+            )
+    }
+
+    fn update_link_pointer(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        modifiers: GpuiModifiers,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let point = self.link_cell(position, window);
+        let enabled = self.effective_link_modifiers(modifiers, window)
+            && !self.external_drag
+            && !self.selecting
+            && !self.scrollbar_dragging
+            && !self.mouse.held(ProtocolMouseButton::Left);
+        let was_hovered = self.links.hover().is_some();
+        if self.links.update(
+            point,
+            enabled,
+            (f32::from(position.x), f32::from(position.y)),
+        ) {
+            self.scroll.invalidate();
+            self.start_snapshot_if_needed(cx);
+        }
+        if was_hovered != self.links.hover().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn can_drop_paths(&self, window: &Window) -> bool {
+        self.visible
+            && !self.exited
+            && self.focus.is_focused(window)
+            && self
+                .content_bounds(window)
+                .contains(&window.mouse_position())
+    }
+
+    fn drop_paths(
+        &mut self,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.external_drag = false;
+        self.blur_mouse(cx);
+        if !self.can_drop_paths(window) {
+            return;
+        }
+        match crate::file_drop::format_paths(
+            paths.paths(),
+            PENDING_INPUT_BYTE_CAPACITY,
+        ) {
+            Ok(text) => {
+                let (accepted, _) =
+                    self.admit_input(TerminalInput::Paste(text), false, false);
+                if accepted {
+                    self.focus.focus(window);
+                    self.scroll.bottom();
+                    self.scroll.invalidate();
+                    self.start_snapshot_if_needed(cx);
+                }
+            }
+            Err(error) => {
+                self.set_status(error.to_owned());
+            }
+        }
+        cx.notify();
     }
 
     fn application_mouse(
@@ -853,6 +992,7 @@ impl TerminalView {
         if !self.visible {
             return;
         }
+        self.external_drag = false;
         self.focus.focus(window);
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
@@ -860,6 +1000,25 @@ impl TerminalView {
         let (application, cell) =
             self.application_mouse(event.position, event.modifiers, window);
         if self.mouse.held(button) {
+            return;
+        }
+        self.update_link_pointer(event.position, event.modifiers, window, cx);
+        if event.button == MouseButton::Left
+            && self.link_cell(event.position, window).is_some()
+            && self
+                .scrollbar_at(
+                    event.position - self.content_bounds(window).origin,
+                    window,
+                )
+                .is_none()
+            && self.links.press(
+                cell,
+                (f32::from(event.position.x), f32::from(event.position.y)),
+            )
+        {
+            self.clear_selection();
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         self.input_queue.boundary();
@@ -924,6 +1083,15 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         if !self.visible {
+            return;
+        }
+        if self.external_drag && cx.has_active_drag() {
+            return;
+        }
+        self.external_drag = false;
+        self.update_link_pointer(event.position, event.modifiers, window, cx);
+        if self.links.owns_press() {
+            cx.notify();
             return;
         }
         let position = event.position - self.content_bounds(window).origin;
@@ -994,6 +1162,38 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         if !self.visible {
+            return;
+        }
+        if self.external_drag {
+            self.external_drag = false;
+            self.cancel_mouse();
+            return;
+        }
+        // AppKit can remap a Control-left release to Right and erase Control.
+        // A separately held Right button still owns its own release.
+        let remapped_link_release = cfg!(target_os = "macos")
+            && event.button == MouseButton::Right
+            && !self.mouse.held(ProtocolMouseButton::Right);
+        if self.links.owns_press()
+            && (event.button == MouseButton::Left || remapped_link_release)
+        {
+            self.update_link_pointer(
+                event.position,
+                event.modifiers,
+                window,
+                cx,
+            );
+            let point = self.link_cell(event.position, window);
+            let enabled = !remapped_link_release
+                && self.effective_link_modifiers(event.modifiers, window);
+            let (_, destination) = self.links.release(point, enabled);
+            if let Some(destination) = destination {
+                (self.open_link)(&destination, cx);
+            }
+            self.scroll.invalidate();
+            self.start_snapshot_if_needed(cx);
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         let Some(button) = protocol_mouse_button(event.button) else {
@@ -1170,6 +1370,7 @@ impl TerminalView {
             .replace(viewport)
             .is_some_and(|previous| previous != viewport)
         {
+            self.links.invalidate();
             self.resize_visibility.activate(Instant::now());
         }
         let size = self.terminal_layout(window).grid;
@@ -1184,6 +1385,7 @@ impl TerminalView {
         if size == self.last_grid_size && self.last_cell_size == Some(cell) {
             return;
         }
+        self.links.invalidate();
         self.last_grid_size = size;
         self.last_cell_size = Some(cell);
         match self.client.resize(size, cell) {
@@ -1231,11 +1433,13 @@ impl TerminalView {
         self.clear_composition(cx);
         self.blur_mouse(cx);
         self.mouse.forget_released_buttons();
+        self.links.forget_press();
         self.scrollbar_hovering = false;
         self.visible = false;
     }
 
     fn blur_mouse(&mut self, cx: &mut Context<'_, Self>) {
+        self.links.disable();
         self.cancel_mouse();
         self.finish_selection(cx);
         self.scrollbar_dragging = false;
@@ -1421,6 +1625,12 @@ impl Render for TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.resize_if_needed(window);
+        self.update_link_pointer(
+            window.mouse_position(),
+            window.modifiers(),
+            window,
+            cx,
+        );
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.display_scale = window.scale_factor();
         }
@@ -1437,6 +1647,10 @@ impl Render for TerminalView {
         #[cfg(target_os = "macos")]
         let input_focus = self.focus.clone();
         let layout = self.terminal_layout(window);
+        let hovered_link = self.links.hover().cloned();
+        let link_metrics = self.metrics;
+        let underline = color(self.theme.foreground);
+        let paint_link = hovered_link.clone();
         let mut root = div()
             .id("terminal")
             .on_hover(cx.listener(|view, hovering, _, cx| {
@@ -1449,6 +1663,44 @@ impl Render for TerminalView {
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::invoke_terminal))
+            .capture_key_down(cx.listener(
+                |view, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape"
+                        && view.links.cancel_press()
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                },
+            ))
+            .on_modifiers_changed(cx.listener(
+                |view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    view.update_link_pointer(
+                        window.mouse_position(),
+                        event.modifiers,
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                },
+            ))
+            .on_drag_move::<gpui::ExternalPaths>(cx.listener(
+                |view, _, _, cx| {
+                    view.external_drag = true;
+                    view.blur_mouse(cx);
+                    view.links.forget_press();
+                },
+            ))
+            .can_drop({
+                let view = cx.entity().downgrade();
+                move |value, window, cx| {
+                    value.is::<gpui::ExternalPaths>()
+                        && view.upgrade().is_some_and(|view| {
+                            view.read(cx).can_drop_paths(window)
+                        })
+                }
+            })
+            .on_drop(cx.listener(Self::drop_paths))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -1491,6 +1743,39 @@ impl Render for TerminalView {
                                 paint_renderer
                                     .borrow_mut()
                                     .paint(bounds, window);
+                                if let Some(link) = &paint_link {
+                                    for cell in &link.cells {
+                                        let origin = bounds.origin
+                                            + point(
+                                                link_metrics.cell_width
+                                                    * f32::from(
+                                                        u16::try_from(
+                                                            cell.position
+                                                                .column,
+                                                        )
+                                                        .unwrap_or(u16::MAX),
+                                                    ),
+                                                link_metrics.cell_height
+                                                    * (f32::from(
+                                                        u16::try_from(
+                                                            cell.position.row,
+                                                        )
+                                                        .unwrap_or(u16::MAX),
+                                                    ) + 1.0)
+                                                    - px(1.0),
+                                            );
+                                        window.paint_quad(gpui::fill(
+                                            Bounds::new(
+                                                origin,
+                                                size(
+                                                    link_metrics.cell_width,
+                                                    px(1.0),
+                                                ),
+                                            ),
+                                            underline,
+                                        ));
+                                    }
+                                }
                             },
                         );
                         window.on_mouse_event(
@@ -1537,6 +1822,21 @@ impl Render for TerminalView {
                         }
                     },
                 ));
+        }
+        if let Some(link) = hovered_link {
+            root = root.cursor(gpui::CursorStyle::PointingHand).child(
+                div()
+                    .absolute()
+                    .left(px(4.0))
+                    .bottom(px(4.0))
+                    .w((self.viewport(window).width - px(8.0)).max(px(0.0)))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .bg(color(self.theme.background))
+                    .text_color(color(self.theme.foreground))
+                    .child(link.destination),
+            );
         }
         let displayed_offset = self.scroll.displayed();
         if self.scrollbar_visibility.opacity > 0.0

@@ -580,3 +580,100 @@ worktree/architecture-scoped volume. Exclude host `target`, `.native`, and
 Mise's Rust install points at `/root/.cargo/bin` in the image; changing
 `CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
 and Git downloads separately while retaining the image's Cargo home.
+
+Terminal link lookup runs only on the terminal owner thread, paired with its
+snapshot. Keep the scan limits (32 KiB text/destination, 128 rows, 16,384 cells,
+2 MiB explicit-link comparison work) and preserve viewport/damage state. The
+Ghostty native OSC 8 parser uses a fixed 2,048-byte capture: parameters plus URI
+may occupy 2,046 bytes; larger sequences are discarded, not truncated.
+
+The vendored GPUI X11 patch resolves native file-URI lists as a whole before
+emitting any FileDrop event. Each conversion owns a fresh requestor window;
+sources may use CurrentTime=0, so timestamps cannot identify stale replies.
+Destroy the requestor on
+leave, replacement, failure, completed drop, and destination close. Preserve raw
+URI path spelling through percent decoding: URL normalization changes symlink
+`..` semantics. External drag entry retires link press ownership and releases
+accepted application mouse gestures before synthetic file-drop motion.
+
+A path-imported vendor test module still gets traversed by cargo fmt even when
+its crate is excluded from the workspace. Keep rustfmt::skip on that module
+import so focused production-helper tests preserve upstream vendor formatting.
+
+GPUI keeps ExternalPaths in an application-wide active drag, and destroying its
+native destination window does not clear it. Track the current destination from
+WorkspaceView's typed drag capture, including chrome and confirmation overlays.
+At actual assessed window removal, clear that window's drag with
+App::stop_active_drag; do this after macOS's deferred fullscreen cleanup, just
+before remove_window. Closing a different window must not cancel the drag.
+Huterm tab reordering uses its own capture state, not GPUI's active drag. Keep
+native two-window coverage: close a Ready destination without Exited, then prove
+that a different payload and ordinary input reach the surviving terminal.
+
+Link-owned macOS Left presses can receive a Right release when Control changes
+mid-gesture. Preserve separately held Right ownership; consume an unmatched
+remapped release as cancellation because GPUI erased its Control modifier.
+Retained exited history uses the base link chord even if its final snapshot
+still has application mouse tracking enabled.
+
+X11 file-drop type negotiation must find text/uri-list in inline offers and
+XdndTypeList even when text/plain appears first. Start Openbox with --sm-disable
+and wait for its --startup command before launching integration fixtures.
+Openbox publishes _NET_SUPPORTING_WM_CHECK before completing startup.
+Poll visible windows without xdotool --sync, with a bounded deadline and app/WM
+liveness checks; an empty search is pending, but process or X11 errors must fail.
+Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
+Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
+keep reporting enabled through the entire native drag assertion.
+
+Integration fixture native-command acknowledgments mean NSEvents were queued,
+not dispatched. Assert observed state transitions after each press/release;
+check independent Right release and link ownership in the same published state.
+Publish polled command and value files through temporary-file rename, including
+XDND actions and finished status, so readers never observe partial contents.
+
+AppKit's mouseEventWithType constructor leaves buttonNumber at zero for Right
+events. Rebuild fixture Right events from their CGEvent with the button-number
+field set to one; GPUI routes by buttonNumber rather than NSEvent type.
+
+Bound the native XDND fixture by idle time, resetting its deadline after
+selection-handshake progress and serviced actions. A valid drag can exceed ten
+seconds overall while each individual phase stays within its timeout.
+
+The local Linux runner omits Git metadata because linked worktrees reference
+paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
+benchmark metadata must use that value before falling back to Git.
+
+Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
+run twm with `LC_ALL=C`. Default manual placement can grab the X server and
+block Huterm startup, producing zero samples; missing host fontsets can also
+leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.
+
+Patched registry crates use ordered named patches in
+`third-party/vendor/sources.json` against checksum-pinned release archives. Agents
+own patch maintenance for authorized fixes; follow
+`third-party/vendor/README.md` without asking the user to operate the workflow.
+Run `vendor:status`, then `mise run vendor:start -- <crate> <patch>` before edits.
+Edit and test the fully applied vendor tree normally, then run `vendor:finish`.
+Resolve replay conflicts in the printed private workspace and use `vendor:continue`.
+Use `vendor:reopen` for more build-tree edits after finish starts. Only explicitly
+adopt pre-existing edits after reviewing their scope; never absorb unexplained
+source drift or edit recipe files during an active session. Review patch ownership,
+run `vendor:check` and the affected behavioral checks, and finish every session
+before handoff or commit. Commit source and patches together when authorized.
+GPUI 0.2.2 was packaged from a dirty checkout, so its Git revision alone is not
+an exact source baseline. Normal builds use the vendored tree directly.
+Private Git snapshots must force-add ignored package files and disable attributes
+that transform bytes or omit archive entries; otherwise the patch recipe can lose
+published files or alter line endings.
+Disable automatic Git maintenance in private vendor session repositories. On
+Git 2.55, detached maintenance recreated a deleted GPUI session directory after
+finish, leaving metadata without state.json and blocking subsequent commands.
+Set Git's discovery ceiling to the parent of each vendor command's working
+directory. Scratch patch verification under `.native/vendor` otherwise discovers
+Huterm's repository and `git apply` silently skips paths outside that subdirectory.
+Private session repositories still resolve their own `.git` directory normally.
+Read vendor regular files through one no-follow descriptor and compare its
+identity with the tree entry before hashing. Archive extraction must consume the
+same buffer that passed checksum verification; checking a path and reopening it
+allows a concurrent replacement to bypass the checksum.

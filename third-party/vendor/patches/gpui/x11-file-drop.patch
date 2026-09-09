@@ -1,0 +1,479 @@
+diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
+index fa9d0181c095819823553da9e7f6be27598aea78..ba71d16acc4abd4050affbe6781bb15608bc2230 100644
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -1,3 +1,7 @@
++#[path = "xdnd_payload.rs"]
++mod xdnd_payload;
++use xdnd_payload::{MAX_URI_LIST_BYTES, Transfer, parse_uri_list};
++
+ use crate::{Capslock, xcb_flush};
+ use anyhow::{Context as _, anyhow};
+ use ashpd::WindowIdentifier;
+@@ -144,7 +148,9 @@ impl From<xim::ClientError> for EventHandlerError {
+ pub struct Xdnd {
+     other_window: xproto::Window,
+     drag_type: u32,
+-    retrieved: bool,
++    destination: xproto::Window,
++    transfer: Transfer,
++    drop_pending: bool,
+     position: Point<Pixels>,
+ }
+ 
+@@ -231,6 +237,9 @@ impl X11ClientStatePtr {
+             return;
+         };
+         let mut state = client.0.borrow_mut();
++        if state.xdnd_state.destination == x_window {
++            reset_xdnd(&mut state);
++        }
+ 
+         if let Some(window_ref) = state.windows.remove(&x_window)
+             && let Some(RefreshState::PeriodicRefresh {
+@@ -778,29 +787,41 @@ impl X11Client {
+                 }
+ 
+                 if event.type_ == state.atoms.XdndEnter {
++                    let previous = state
++                        .xdnd_state
++                        .transfer
++                        .ready()
++                        .then_some(state.xdnd_state.destination);
++                    reset_xdnd(&mut state);
++                    drop(state);
++                    if let Some(previous) = previous.and_then(|id| self.get_window(id)) {
++                        previous.handle_input(PlatformInput::FileDrop(FileDropEvent::Exited));
++                    }
++                    let mut state = self.0.borrow_mut();
+                     state.xdnd_state.other_window = atom;
+-                    if (arg1 & 0x1) == 0x1 {
+-                        state.xdnd_state.drag_type = xdnd_get_supported_atom(
+-                            &state.xcb_connection,
+-                            &state.atoms,
+-                            state.xdnd_state.other_window,
+-                        );
++                    state.xdnd_state.destination = event.window;
++                    state.xdnd_state.drag_type = if (arg1 & 0x1) == 0x1 {
++                        xdnd_get_uri_list_atom(&state.xcb_connection, &state.atoms, atom)
+                     } else {
+-                        if let Some(atom) = [arg2, arg3, arg4]
++                        [arg2, arg3, arg4]
+                             .into_iter()
+-                            .find(|atom| xdnd_is_atom_supported(*atom, &state.atoms))
+-                        {
+-                            state.xdnd_state.drag_type = atom;
+-                        }
+-                    }
++                            .find(|atom| *atom == state.atoms.TextUriList)
++                            .unwrap_or(0)
++                    };
+                 } else if event.type_ == state.atoms.XdndLeave {
+-                    let position = state.xdnd_state.position;
++                    if !xdnd_source_matches(&state, atom, event.window) {
++                        return Some(());
++                    }
++                    let entered = state.xdnd_state.transfer.ready();
++                    reset_xdnd(&mut state);
+                     drop(state);
+-                    window
+-                        .handle_input(PlatformInput::FileDrop(FileDropEvent::Pending { position }));
+-                    window.handle_input(PlatformInput::FileDrop(FileDropEvent::Exited {}));
+-                    self.0.borrow_mut().xdnd_state = Xdnd::default();
++                    if entered {
++                        window.handle_input(PlatformInput::FileDrop(FileDropEvent::Exited));
++                    }
+                 } else if event.type_ == state.atoms.XdndPosition {
++                    if !xdnd_source_matches(&state, atom, event.window) {
++                        return Some(());
++                    }
+                     if let Ok(pos) = get_reply(
+                         || "Failed to query pointer position",
+                         state.xcb_connection.query_pointer(event.window),
+@@ -808,75 +829,116 @@ impl X11Client {
+                         state.xdnd_state.position =
+                             Point::new(Pixels(pos.win_x as f32), Pixels(pos.win_y as f32));
+                     }
+-                    if !state.xdnd_state.retrieved {
+-                        check_reply(
+-                            || "Failed to convert selection for drag and drop",
+-                            state.xcb_connection.convert_selection(
+-                                event.window,
+-                                state.atoms.XdndSelection,
+-                                state.xdnd_state.drag_type,
+-                                state.atoms.XDND_DATA,
+-                                arg3,
+-                            ),
+-                        )
+-                        .log_err();
++                    if matches!(state.xdnd_state.transfer, Transfer::Idle) {
++                        request_xdnd_data(&mut state, arg3);
+                     }
+                     xdnd_send_status(
+                         &state.xcb_connection,
+                         &state.atoms,
+                         event.window,
+-                        state.xdnd_state.other_window,
++                        atom,
+                         arg4,
++                        !matches!(state.xdnd_state.transfer, Transfer::Rejected),
+                     );
+                     let position = state.xdnd_state.position;
++                    let entered = state.xdnd_state.transfer.ready();
+                     drop(state);
+-                    window
+-                        .handle_input(PlatformInput::FileDrop(FileDropEvent::Pending { position }));
++                    if entered {
++                        window.handle_input(PlatformInput::FileDrop(FileDropEvent::Pending {
++                            position,
++                        }));
++                    }
+                 } else if event.type_ == state.atoms.XdndDrop {
++                    if !xdnd_source_matches(&state, atom, event.window) {
++                        return Some(());
++                    }
++                    if matches!(state.xdnd_state.transfer, Transfer::Requested(_)) {
++                        state.xdnd_state.drop_pending = true;
++                        return Some(());
++                    }
++                    let entered = state.xdnd_state.transfer.ready();
+                     xdnd_send_finished(
+                         &state.xcb_connection,
+                         &state.atoms,
+                         event.window,
+-                        state.xdnd_state.other_window,
++                        atom,
++                        entered,
+                     );
+                     let position = state.xdnd_state.position;
++                    reset_xdnd(&mut state);
+                     drop(state);
+-                    window
+-                        .handle_input(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+-                    self.0.borrow_mut().xdnd_state = Xdnd::default();
++                    if entered {
++                        window.handle_input(PlatformInput::FileDrop(FileDropEvent::Submit {
++                            position,
++                        }));
++                    }
+                 }
+             }
+             Event::SelectionNotify(event) => {
+-                let window = self.get_window(event.requestor)?;
+                 let mut state = self.0.borrow_mut();
+-                let reply = get_reply(
+-                    || "Failed to get XDND_DATA",
+-                    state.xcb_connection.get_property(
+-                        false,
+-                        event.requestor,
+-                        state.atoms.XDND_DATA,
+-                        AtomEnum::ANY,
+-                        0,
+-                        1024,
+-                    ),
+-                )
+-                .log_err();
+-                let Some(reply) = reply else {
++                if !state.xdnd_state.transfer.accepts_reply(event.requestor)
++                    || event.selection != state.atoms.XdndSelection
++                    || event.target != state.xdnd_state.drag_type
++                    || (event.property != 0 && event.property != state.atoms.XDND_DATA)
++                {
++                    return Some(());
++                }
++                let destination = state.xdnd_state.destination;
++                let source = state.xdnd_state.other_window;
++                let position = state.xdnd_state.position;
++                let pending = state.xdnd_state.drop_pending;
++                let paths = (event.property != 0)
++                    .then(|| {
++                        get_reply(
++                            || "Failed to get complete XDND_DATA",
++                            state.xcb_connection.get_property(
++                                true,
++                                event.requestor,
++                                state.atoms.XDND_DATA,
++                                AtomEnum::ANY,
++                                0,
++                                (MAX_URI_LIST_BYTES / 4) as u32,
++                            ),
++                        )
++                        .log_err()
++                        .and_then(|reply| {
++                            (reply.format == 8 && reply.type_ == state.atoms.TextUriList)
++                                .then(|| parse_uri_list(&reply.value, reply.bytes_after))
++                                .flatten()
++                        })
++                    })
++                    .flatten();
++                if paths.is_some() {
++                    state.xdnd_state.transfer = Transfer::Ready(event.requestor);
++                } else {
++                    reset_xdnd_requestor(&mut state);
++                    state.xdnd_state.transfer = Transfer::Rejected;
++                }
++                if pending {
++                    xdnd_send_finished(
++                        &state.xcb_connection,
++                        &state.atoms,
++                        destination,
++                        source,
++                        paths.is_some(),
++                    );
++                    reset_xdnd(&mut state);
++                }
++                drop(state);
++                let Some(window) = self.get_window(destination) else {
++                    reset_xdnd(&mut self.0.borrow_mut());
+                     return Some(());
+                 };
+-                if let Ok(file_list) = str::from_utf8(&reply.value) {
+-                    let paths: SmallVec<[_; 2]> = file_list
+-                        .lines()
+-                        .filter_map(|path| Url::parse(path).log_err())
+-                        .filter_map(|url| url.to_file_path().log_err())
+-                        .collect();
+-                    let input = PlatformInput::FileDrop(FileDropEvent::Entered {
+-                        position: state.xdnd_state.position,
+-                        paths: crate::ExternalPaths(paths),
+-                    });
+-                    drop(state);
+-                    window.handle_input(input);
+-                    self.0.borrow_mut().xdnd_state.retrieved = true;
++                if let Some(paths) = paths {
++                    window.handle_input(PlatformInput::FileDrop(FileDropEvent::Entered {
++                        position,
++                        paths: crate::ExternalPaths(paths.into_iter().collect()),
++                    }));
++                    if pending {
++                        window.handle_input(PlatformInput::FileDrop(FileDropEvent::Submit {
++                            position,
++                        }));
++                    }
+                 }
+             }
+             Event::ConfigureNotify(event) => {
+@@ -2001,16 +2063,7 @@ fn check_gtk_frame_extents_supported(
+     supported_atom_ids.contains(&atoms._GTK_FRAME_EXTENTS)
+ }
+ 
+-fn xdnd_is_atom_supported(atom: u32, atoms: &XcbAtoms) -> bool {
+-    atom == atoms.TEXT
+-        || atom == atoms.STRING
+-        || atom == atoms.UTF8_STRING
+-        || atom == atoms.TEXT_PLAIN
+-        || atom == atoms.TEXT_PLAIN_UTF8
+-        || atom == atoms.TextUriList
+-}
+-
+-fn xdnd_get_supported_atom(
++fn xdnd_get_uri_list_atom(
+     xcb_connection: &XCBConnection,
+     supported_atoms: &XcbAtoms,
+     target: xproto::Window,
+@@ -2030,7 +2083,7 @@ fn xdnd_get_supported_atom(
+         && let Some(atoms) = reply.value32()
+     {
+         for atom in atoms {
+-            if xdnd_is_atom_supported(atom, supported_atoms) {
++            if atom == supported_atoms.TextUriList {
+                 return atom;
+             }
+         }
+@@ -2038,17 +2091,87 @@ fn xdnd_get_supported_atom(
+     0
+ }
+ 
++fn xdnd_source_matches(state: &X11ClientState, source: u32, destination: u32) -> bool {
++    source != 0
++        && state.xdnd_state.other_window == source
++        && state.xdnd_state.destination == destination
++}
++
++fn reset_xdnd_requestor(state: &mut X11ClientState) {
++    if let Some(requestor) = state.xdnd_state.transfer.requestor() {
++        state.xcb_connection.destroy_window(requestor).log_err();
++    }
++    state.xdnd_state.transfer = Transfer::Idle;
++}
++
++fn reset_xdnd(state: &mut X11ClientState) {
++    reset_xdnd_requestor(state);
++    state.xdnd_state = Xdnd::default();
++}
++
++fn request_xdnd_data(state: &mut X11ClientState, time: u32) {
++    // A fresh unmapped requestor isolates late replies even when drag sources
++    // use CurrentTime=0. No server-global atoms accumulate across drags.
++    let result = (|| -> anyhow::Result<()> {
++        anyhow::ensure!(
++            state.xdnd_state.drag_type == state.atoms.TextUriList,
++            "unsupported native drop type"
++        );
++        let requestor = state.xcb_connection.generate_id()?;
++        state
++            .xcb_connection
++            .create_window(
++                0,
++                requestor,
++                state.xdnd_state.destination,
++                0,
++                0,
++                1,
++                1,
++                0,
++                xproto::WindowClass::INPUT_ONLY,
++                0,
++                &xproto::CreateWindowAux::new(),
++            )?
++            .check()?;
++        state.xdnd_state.transfer = Transfer::Requested(requestor);
++        state
++            .xcb_connection
++            .convert_selection(
++                requestor,
++                state.atoms.XdndSelection,
++                state.xdnd_state.drag_type,
++                state.atoms.XDND_DATA,
++                time,
++            )?
++            .check()?;
++        state.xcb_connection.flush()?;
++        Ok(())
++    })();
++    if result.log_err().is_none() {
++        reset_xdnd_requestor(state);
++        state.xdnd_state.transfer = Transfer::Rejected;
++    }
++}
++
+ fn xdnd_send_finished(
+     xcb_connection: &XCBConnection,
+     atoms: &XcbAtoms,
+     source: xproto::Window,
+     target: xproto::Window,
++    accepted: bool,
+ ) {
+     let message = ClientMessageEvent {
+         format: 32,
+         window: target,
+         type_: atoms.XdndFinished,
+-        data: ClientMessageData::from([source, 1, atoms.XdndActionCopy, 0, 0]),
++        data: ClientMessageData::from([
++            source,
++            u32::from(accepted),
++            if accepted { atoms.XdndActionCopy } else { 0 },
++            0,
++            0,
++        ]),
+         sequence: 0,
+         response_type: xproto::CLIENT_MESSAGE_EVENT,
+     };
+@@ -2066,12 +2189,19 @@ fn xdnd_send_status(
+     source: xproto::Window,
+     target: xproto::Window,
+     action: u32,
++    accepted: bool,
+ ) {
+     let message = ClientMessageEvent {
+         format: 32,
+         window: target,
+         type_: atoms.XdndStatus,
+-        data: ClientMessageData::from([source, 1, 0, 0, action]),
++        data: ClientMessageData::from([
++            source,
++            u32::from(accepted),
++            0,
++            0,
++            if accepted { action } else { 0 },
++        ]),
+         sequence: 0,
+         response_type: xproto::CLIENT_MESSAGE_EVENT,
+     };
+diff --git b/src/platform/linux/x11/xdnd_payload.rs b/src/platform/linux/x11/xdnd_payload.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..02631a895505ebc0f09c9c6a0898929d3ae2740e
+--- /dev/null
++++ b/src/platform/linux/x11/xdnd_payload.rs
+@@ -0,0 +1,81 @@
++//! Bounded native file-URI decoding without path normalization.
++use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
++
++pub(super) const MAX_URI_LIST_BYTES: usize = 1024 * 1024;
++
++#[derive(Debug, Default)]
++pub(super) enum Transfer {
++    #[default]
++    Idle,
++    Requested(u32),
++    Ready(u32),
++    Rejected,
++}
++
++impl Transfer {
++    pub(super) fn requestor(&self) -> Option<u32> {
++        match *self {
++            Self::Requested(window) | Self::Ready(window) => Some(window),
++            Self::Idle | Self::Rejected => None,
++        }
++    }
++
++    pub(super) fn accepts_reply(&self, requestor: u32) -> bool {
++        matches!(*self, Self::Requested(window) if window == requestor)
++    }
++
++    pub(super) fn ready(&self) -> bool {
++        matches!(self, Self::Ready(_))
++    }
++}
++
++pub(super) fn parse_uri_list(bytes: &[u8], bytes_after: u32) -> Option<Vec<PathBuf>> {
++    if bytes_after != 0 || bytes.len() > MAX_URI_LIST_BYTES {
++        return None;
++    }
++    let list = std::str::from_utf8(bytes).ok()?;
++    let paths = list
++        .lines()
++        .filter(|line| !line.is_empty() && !line.starts_with('#'))
++        .map(parse_file_uri)
++        .collect::<Option<Vec<_>>>()?;
++    (!paths.is_empty()).then_some(paths)
++}
++
++fn parse_file_uri(uri: &str) -> Option<PathBuf> {
++    // Url::to_file_path normalizes dot segments. Decode the original path so
++    // /symlink/../name keeps the exact meaning supplied by the drag source.
++    if !uri.get(..5)?.eq_ignore_ascii_case("file:")
++        || uri.chars().any(|character| {
++            character.is_whitespace()
++                || character.is_control()
++                || matches!(character, '?' | '#' | '\\')
++        })
++    {
++        return None;
++    }
++    let mut path = &uri[5..];
++    if let Some(authority_and_path) = path.strip_prefix("//") {
++        let slash = authority_and_path.find('/')?;
++        let authority = &authority_and_path[..slash];
++        if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
++            return None;
++        }
++        path = &authority_and_path[slash..];
++    }
++    if !path.starts_with('/') {
++        return None;
++    }
++    let mut decoded = Vec::with_capacity(path.len());
++    let mut bytes = path.as_bytes().iter().copied();
++    while let Some(byte) = bytes.next() {
++        if byte == b'%' {
++            let high = char::from(bytes.next()?).to_digit(16)?;
++            let low = char::from(bytes.next()?).to_digit(16)?;
++            decoded.push(u8::try_from(high * 16 + low).ok()?);
++        } else {
++            decoded.push(byte);
++        }
++    }
++    Some(PathBuf::from(OsString::from_vec(decoded)))
++}

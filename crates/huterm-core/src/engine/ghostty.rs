@@ -535,6 +535,109 @@ impl EscapeHint {
     }
 }
 
+impl super::links::LinkBuffer for TerminalEngine {
+    fn total_rows(&self) -> Result<usize, huterm_protocol::LinkLookup> {
+        self.terminal
+            .total_rows()
+            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+    }
+
+    fn wrapped(&self, row: usize) -> Result<bool, huterm_protocol::LinkLookup> {
+        let row = u32::try_from(row)
+            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)?;
+        self.terminal
+            .grid_ref(Point::Screen(PointCoordinate { x: 0, y: row }))
+            .and_then(|reference| reference.row())
+            .and_then(libghostty_vt::screen::Row::is_wrapped)
+            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+    }
+
+    fn cell(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<super::links::TextCell, huterm_protocol::LinkLookup> {
+        use super::links::TextCell;
+        use huterm_protocol::LinkLookup;
+        let error = |error| match error {
+            libghostty_vt::Error::OutOfSpace { .. } => LinkLookup::ScanLimit,
+            _ => LinkLookup::Unavailable,
+        };
+        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
+        let reference = self
+            .terminal
+            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
+            .map_err(error)?;
+        let cell = reference.cell().map_err(error)?;
+        let mut text = String::new();
+        if !matches!(
+            cell.wide().map_err(error)?,
+            libghostty_vt::screen::CellWide::SpacerTail
+                | libghostty_vt::screen::CellWide::SpacerHead
+        ) {
+            let mut graphemes = ['\0'; 256];
+            let count = reference.graphemes(&mut graphemes).map_err(error)?;
+            if count == 0 {
+                text.push(' ');
+            } else {
+                text.extend(&graphemes[..count]);
+            }
+        }
+        Ok(TextCell { text })
+    }
+
+    fn hyperlink(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<Option<String>, huterm_protocol::LinkLookup> {
+        use huterm_protocol::LinkLookup;
+        let error = |error| match error {
+            libghostty_vt::Error::OutOfSpace { .. } => LinkLookup::ScanLimit,
+            _ => LinkLookup::Unavailable,
+        };
+        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
+        let reference = self
+            .terminal
+            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
+            .map_err(error)?;
+        if !reference
+            .cell()
+            .map_err(error)?
+            .has_hyperlink()
+            .map_err(error)?
+        {
+            return Ok(None);
+        }
+        let mut bytes = vec![0; super::links::MAX_LINK_BYTES];
+        let count = reference.hyperlink_uri(&mut bytes).map_err(error)?;
+        bytes.truncate(count);
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| LinkLookup::Unavailable)
+    }
+
+    fn same_hyperlink(
+        &self,
+        row: usize,
+        column: u16,
+        destination: &str,
+        scratch: &mut [u8],
+    ) -> Result<bool, huterm_protocol::LinkLookup> {
+        use huterm_protocol::LinkLookup;
+        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
+        let reference = self
+            .terminal
+            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
+            .map_err(|_| LinkLookup::Unavailable)?;
+        match reference.hyperlink_uri(scratch) {
+            Ok(count) => Ok(scratch[..count] == *destination.as_bytes()),
+            Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(false),
+            Err(_) => Err(LinkLookup::Unavailable),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

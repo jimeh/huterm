@@ -16,6 +16,7 @@ async-channel.workspace = true
 huterm-protocol.workspace = true
 portable-pty.workspace = true
 thiserror.workspace = true
+url = "=2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 filedescriptor.workspace = true

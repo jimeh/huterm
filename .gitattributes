@@ -1,0 +1,2 @@
+# Unified diffs contain significant whitespace on otherwise blank context lines.
+third-party/vendor/patches/**/*.patch -whitespace

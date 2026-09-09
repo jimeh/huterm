@@ -30,6 +30,12 @@ if (args[0] === 'start') {
 }
 `);
   chmodSync(docker, 0o755);
+  const git = join(directory, "git");
+  writeFileSync(git, `#!/usr/bin/env bun
+if (process.env.GIT_TEST_FAIL) { console.error("missing repository"); process.exit(128); }
+console.log("0123456789abcdef0123456789abcdef01234567");
+`);
+  chmodSync(git, 0o755);
   const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, DOCKER_TEST_LOG: log, ...overrides };
   return {
     env,
@@ -66,6 +72,7 @@ describe("Linux container runner", () => {
     expect(result.exitCode).toBe(0);
     const create = f.calls().find((args) => args[0] === "create")!;
     expect(create[create.indexOf("--platform") + 1]).toBe("linux/amd64");
+    expect(create).toContain("HUTERM_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567");
     expect(create.slice(-5)).toEqual(["printf", "%s", "a b", "$(literal)", "--help"]);
     expect(create.some((arg) => arg.endsWith("target=/source,readonly"))).toBe(true);
     expect(f.calls().at(-1)).toEqual(["rm", "--force", "owned-container-id"]);
@@ -77,6 +84,14 @@ describe("Linux container runner", () => {
     const create = f.calls().find((args) => args[0] === "create")!;
     expect(create[create.indexOf("--platform") + 1]).toBe("linux/amd64");
     expect(f.calls().at(-1)).toEqual(["rm", "--force", "owned-container-id"]);
+  });
+
+  test("source revision failure prevents creating a container", () => {
+    const f = fixture({ GIT_TEST_FAIL: "1" });
+    const result = f.run("test");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("cannot resolve source revision: missing repository");
+    expect(f.calls().some((args) => args[0] === "create" || args[0] === "volume")).toBe(false);
   });
 
   test("build failures propagate without creating a container", () => {

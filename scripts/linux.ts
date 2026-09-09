@@ -80,6 +80,9 @@ async function main(args: string[]): Promise<number> {
     return 0;
   }
 
+  const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  if (revision.exitCode !== 0) throw new Error(`cannot resolve source revision: ${revision.stderr.toString().trim()}`);
+
   const inputs = [
     ["scripts/linux/Dockerfile", "Dockerfile"],
     ["scripts/linux/entrypoint.sh", "entrypoint.sh"],
@@ -125,6 +128,7 @@ async function main(args: string[]): Promise<number> {
     // workspace. Only remove a container after this invocation created it.
     container = capture([
       "create", "--init", "--interactive", "--name", names.name, "--platform", `linux/${arch}`,
+      "--env", `HUTERM_SOURCE_REVISION=${revision.stdout.toString().trim()}`,
       "--mount", `type=bind,source=${root},target=/source,readonly`,
       "--mount", `type=volume,source=${names.volumes[0]},target=/workspace`,
       "--mount", `type=volume,source=${names.volumes[1]},target=/cache`,
