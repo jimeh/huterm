@@ -180,6 +180,8 @@ padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
 tab_position = "top" # top, bottom, left, or right
+always_show_tab_bar = false
+auto_hide_tab_bar_in_fullscreen = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 ```
 

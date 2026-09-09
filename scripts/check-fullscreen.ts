@@ -202,6 +202,24 @@ done
       await accepted("0 new_tab");
       await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "2" && s["w0.ready"] === "true" && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "two tabs reserve chrome");
       if ((await state())["w0.terminal"] === one["w0.terminal"]) throw new Error("second tab did not reserve space");
+      if (position === "left") {
+        const [barX, barY, barWidth] = (await state())["w0.tab_bounds"]!.split(",").map(Number) as [number, number, number];
+        const grabX = barX + barWidth - 3; const grabY = barY + 100;
+        if (macos) {
+          await accepted(`native\tmouse\t5\t${grabX}\t${grabY}\t0`);
+          await accepted(`native\tmouse\t1\t${grabX}\t${grabY}\t0`);
+          await accepted(`native\tmouse\t6\t260\t${grabY}\t0`);
+          await accepted(`native\tmouse\t2\t260\t${grabY}\t0`);
+        } else {
+          const focused = run(["xdotool", "getwindowfocus"]);
+          run(["xdotool", "mousemove", "--window", focused, String(grabX), String(grabY), "mousedown", "1", "mousemove", "--window", focused, "260", String(grabY), "mouseup", "1"]);
+        }
+        await waitFor(async () => Math.abs(Number((await state())["w0.tab_bounds"]!.split(",")[2]) - 260) < 1, "preferred sidebar width");
+        await accepted("0 new_tab");
+        await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "3" && s["w0.ready"] === "true"; }, "new tab with resized sidebar");
+        if ((await state())["w0.resize_requests"] !== "1") throw new Error("new tab resized against a stale sidebar width");
+        await closeTab();
+      }
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
     }
@@ -249,6 +267,7 @@ done
         } else run(["xdotool", "click", "1"]);
         await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) === Number(beforeAdd["w0.tabs"]) + 1 && s["w0.ready"] === "true"; }, "revealed new-tab button");
         const added = await state();
+        if (added["w0.resize_requests"] !== "1") throw new Error("new fullscreen tab received an intermediate grid resize");
         if (added["w0.tab_presentation"] !== "Overlay" || added["w0.terminal"] !== hidden["w0.terminal"] || added["w0.focused"] !== "true") throw new Error("overlay new tab changed geometry or lost focus");
         await closeTab();
         await move(centerX, topInset + 1);

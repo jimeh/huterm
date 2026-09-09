@@ -107,7 +107,7 @@ fn position_cursor(center: bool) -> anyhow::Result<()> {
                     - frame.origin.y
                     - frame.size.height / 2.0,
             )
-        } else if let Some(saved) = SAVED_CURSOR.with(|saved| saved.take()) {
+        } else if let Some(saved) = SAVED_CURSOR.with(std::cell::Cell::take) {
             saved
         } else {
             return Ok(());

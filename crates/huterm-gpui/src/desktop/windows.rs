@@ -1134,9 +1134,16 @@ impl WorkspaceView {
             });
         for tab in &self.tabs {
             tab.view.update(cx, |terminal, cx| {
+                let changed = terminal.tab_presentation != presentation
+                    || terminal.sidebar_width != self.sidebar_width
+                    || terminal.chrome_hidden != self.fullscreen.chrome_hidden
+                    || terminal.fullscreen_insets != self.fullscreen_insets;
                 terminal.tab_overlay = overlay;
-                if terminal.tab_presentation != presentation {
-                    terminal.tab_presentation = presentation;
+                terminal.tab_presentation = presentation;
+                terminal.sidebar_width = self.sidebar_width;
+                terminal.chrome_hidden = self.fullscreen.chrome_hidden;
+                terminal.fullscreen_insets = self.fullscreen_insets;
+                if changed {
                     terminal.resize_if_needed(window);
                     cx.notify();
                 }
@@ -1917,9 +1924,6 @@ impl WorkspaceView {
         self.reveal_active(window);
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
-                view.sidebar_width = self.sidebar_width;
-                view.chrome_hidden = self.fullscreen.chrome_hidden;
-                view.fullscreen_insets = self.fullscreen_insets;
                 view.visible = tab.id == id;
                 if view.visible {
                     view.resize_if_needed(window);

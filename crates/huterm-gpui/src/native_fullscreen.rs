@@ -213,7 +213,7 @@ impl Adapter {
         }
     }
 
-    /// AppKit screen coordinates include the camera-housing region outside a
+    /// `AppKit` screen coordinates include the camera-housing region outside a
     /// native fullscreen content view. Both getters use logical screen points.
     pub fn pointer_in_top_edge(&self) -> bool {
         // SAFETY: Read-only AppKit queries run on the main thread against the
