@@ -4,7 +4,14 @@
 use anyhow::{Context as _, ensure};
 use objc::runtime::{Class, NO, Object};
 use objc::{msg_send, sel, sel_impl};
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
+
+const CG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSetIntegerValueField(event: *mut c_void, field: u32, value: i64);
+}
 
 pub(super) fn post(command: &str) -> anyhow::Result<()> {
     let fields: Vec<_> = command.split('\t').collect();
@@ -76,6 +83,28 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
             clickCount: 1_isize pressure: 1.0_f32];
         ensure!(!event.is_null(), "mouse NSEvent construction failed");
+        let event = if matches!(kind, 3 | 4 | 7) {
+            // The convenience constructor leaves buttonNumber at zero even
+            // for Right events. GPUI routes by that number, not the event type.
+            let cg_event: *mut c_void = msg_send![event, CGEvent];
+            ensure!(!cg_event.is_null(), "mouse CGEvent construction failed");
+            CGEventSetIntegerValueField(
+                cg_event,
+                CG_MOUSE_EVENT_BUTTON_NUMBER,
+                1,
+            );
+            let right_event: *mut Object = msg_send![
+                Class::get("NSEvent").context("NSEvent")?,
+                eventWithCGEvent: cg_event
+            ];
+            ensure!(
+                !right_event.is_null(),
+                "right NSEvent construction failed"
+            );
+            right_event
+        } else {
+            event
+        };
         let _: () = msg_send![app, postEvent: event atStart: NO];
     }
     Ok(())

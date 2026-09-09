@@ -629,6 +629,10 @@ check independent Right release and link ownership in the same published state.
 Publish polled command and value files through temporary-file rename, including
 XDND actions and finished status, so readers never observe partial contents.
 
+AppKit's mouseEventWithType constructor leaves buttonNumber at zero for Right
+events. Rebuild fixture Right events from their CGEvent with the button-number
+field set to one; GPUI routes by buttonNumber rather than NSEvent type.
+
 Bound the native XDND fixture by idle time, resetting its deadline after
 selection-handshake progress and serviced actions. A valid drag can exceed ten
 seconds overall while each individual phase stays within its timeout.
