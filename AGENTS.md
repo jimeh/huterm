@@ -806,3 +806,7 @@ usable keepalive registration.
 Keep workflow scanning scoped to the root `.github` directory. Published vendor
 archives can contain upstream workflows that Huterm does not execute. Preserve
 those files for archive verification instead of rewriting their action pins.
+
+Quake close/Quit cancellation fixtures need a live child, not just an idle shell.
+macOS correctly closes idle shells without confirmation. Keep the fixture child
+alive through the matrix and require the prompt plus a post-cancel shell ACK.

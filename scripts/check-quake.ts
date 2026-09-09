@@ -67,7 +67,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-"));
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
-  await writeFile(shell, `#!/bin/sh\nprintf 'READY:%s\\n' "$$"\nwhile IFS= read -r line; do\ncase "$line" in\nexit) exit 0;;\n*) printf 'ACK:%s:%s:' "$line" "$$"; stty size; printf '%s:%s\\n' "$$" "$line" >> ${quote(join(directory, "acks"))};;\nesac\ndone\n`, { mode: 0o700 });
+  await writeFile(shell, `#!/bin/sh\nset -m\nsleep 600 &\njob=$!\ntrap 'kill "$job" 2>/dev/null; wait "$job" 2>/dev/null' 0\ntrap 'exit 0' HUP TERM\nprintf 'READY:%s JOB:%s\\n' "$$" "$job"\nwhile IFS= read -r line; do\ncase "$line" in\nexit) exit 0;;\n*) printf 'ACK:%s:%s:' "$line" "$$"; stty size; printf '%s:%s\\n' "$$" "$line" >> ${quote(join(directory, "acks"))};;\nesac\ndone\n`, { mode: 0o700 });
   const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\nengine = "${engine}"\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
   await writeFile(config, configText());
   const app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_QUAKE_SMOKE: directory, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
@@ -273,8 +273,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await focusWitness();
     await waitFor(async () => (await current())?.visible === "false", "auto-hide on external focus");
     await command("app quit");
-    await waitFor(async () => app.exitCode !== null || Object.entries(await state()).some(([key,value]) => key.endsWith(".confirming") && value === "true"), "quit assessment");
-    if (app.exitCode === null) {
+    await waitFor(async () => Object.entries(await state()).some(([key,value]) => key.endsWith(".confirming") && value === "true"), "live-child quit assessment");
+    {
       const assessed = await state();
       const confirming = Object.keys(assessed).find(key => key.endsWith(".confirming") && assessed[key] === "true")!;
       const target = assessed[confirming.replace("confirming", "profile")]!;
