@@ -148,6 +148,8 @@ jobs:
           name: Huterm-${{ inputs.version }}-macOS-universal-verified
           path: |
             dist/Huterm-${{ inputs.version }}-macOS-universal.zip
+            dist/huterm.schema.json
+            dist/huterm-theme.schema.json
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7

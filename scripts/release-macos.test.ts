@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  assetNames,
+  prepareSchemaAssets,
+  schemaAssets,
+  verifyLocalAssets,
   parseDeveloperIdentity,
   parseSimplePlist,
   privacyUsageDescriptions,
@@ -122,10 +127,10 @@ test("release-please can update explicit package versions and centralized exact 
   expect(rootVersion).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   expect(rootManifest).toContain('[package]\nname = "huterm"');
   expect(rootManifest).not.toMatch(/^version\.workspace = true$/m);
-  for (const dependency of ["huterm-core", "huterm-gpui", "huterm-protocol"]) {
+  for (const dependency of ["huterm-config", "huterm-core", "huterm-gpui", "huterm-protocol"]) {
     expect(rootManifest).toContain(`${dependency} = { path = "crates/${dependency}", version = "=${rootVersion}" } # x-release-please-version`);
   }
-  for (const manifestPath of ["crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-protocol/Cargo.toml"]) {
+  for (const manifestPath of ["crates/huterm-config/Cargo.toml", "crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-protocol/Cargo.toml"]) {
     const manifest = await readFile(resolve(repoRoot, manifestPath), "utf8");
     expect(manifest).toContain(`version = "${rootVersion}"`);
     expect(manifest).not.toMatch(/^version\.workspace = true$/m);
@@ -175,4 +180,51 @@ test("manual verification signs without requiring or publishing a GitHub release
   expect(releaseWorkflow).toContain("uses: actions/upload-artifact@");
   expect(releaseWorkflow).toContain("retention-days: 7");
   expect(releaseWorkflow).toContain("if: inputs.publish");
+});
+
+
+test("release assets copy committed schemas and verify every payload before publication", async () => {
+  const dist = await mkdtemp(resolve(tmpdir(), "huterm-schema-release-"));
+  const names = assetNames(inputs.version);
+  try {
+    await writeFile(resolve(dist, names.archive), "signed archive fixture");
+    await prepareSchemaAssets(dist, inputs.version);
+    const local = await verifyLocalAssets(inputs, dist);
+    expect(local.map(asset => asset.name).sort()).toEqual([...names.payloads, names.checksums].sort());
+    const checksums = await readFile(resolve(dist, names.checksums), "utf8");
+    for (const name of names.payloads) expect(checksums).toContain(`  ${name}\n`);
+    for (const name of schemaAssets) {
+      expect(await readFile(resolve(dist, name))).toEqual(await readFile(resolve(repoRoot, "schemas", name)));
+      await rm(resolve(dist, name));
+      await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("missing or unexpected");
+      await prepareSchemaAssets(dist, inputs.version);
+      await writeFile(resolve(dist, name), "altered schema");
+      // Even a matching checksum cannot authorize bytes absent from the checkout.
+      const altered = new Bun.CryptoHasher("sha256").update("altered schema").digest("hex");
+      await writeFile(resolve(dist, names.checksums), checksums.replace(new RegExp(`[a-f0-9]{64}  ${name.replaceAll(".", "\\.")}`), `${altered}  ${name}`));
+      await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("does not match the release checkout");
+      await prepareSchemaAssets(dist, inputs.version);
+    }
+    await writeFile(resolve(dist, "extra"), "extra");
+    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("missing or unexpected");
+    await rm(resolve(dist, "extra"));
+    await writeFile(resolve(dist, names.checksums), "incorrect checksum");
+    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("SHA256SUMS");
+    await prepareSchemaAssets(dist, inputs.version);
+    await writeFile(resolve(dist, names.archive), "");
+    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("empty");
+  } finally { await rm(dist, { recursive: true, force: true }); }
+});
+
+test("remote schema failures block the exact release inventory", async () => {
+  const local = [...assetNames(inputs.version).payloads, "SHA256SUMS"].map(name => ({ name, path: name, size: 10, digest: "a".repeat(64) }));
+  const remote = local.map(asset => ({ ...asset, state: "uploaded", digest: `sha256:${asset.digest}` }));
+  for (const name of schemaAssets) {
+    expect(() => validateReleaseAssets(remote.filter(asset => asset.name !== name), local)).toThrow("names");
+    for (const change of [{ size: 9 }, { state: "new" }, { digest: `sha256:${"b".repeat(64)}` }]) {
+      expect(() => validateReleaseAssets(remote.map(asset => asset.name === name ? { ...asset, ...change } : asset), local)).toThrow();
+    }
+  }
+  const workflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  for (const name of schemaAssets) expect(workflow).toContain(`dist/${name}`);
 });

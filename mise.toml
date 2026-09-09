@@ -78,7 +78,7 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 depends = ["ghostty:prepare"]
 description = "Run Clippy with warnings denied"
-run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --locked -- -D warnings"
+run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --features huterm-config/schema --locked -- -D warnings"
 
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
@@ -102,11 +102,16 @@ if [ -n "$dependencies" ]; then
   echo "$dependencies" >&2
   exit 1
 fi
+config_dependencies="$(cargo tree --locked -p huterm-config --features schema --prefix none --edges normal,build)"
+if echo "$config_dependencies" | rg '^(gpui|huterm-core|alacritty_terminal|libghostty-vt|portable-pty)( |-)'; then
+  echo "huterm-config must remain independent of desktop and terminal engines" >&2
+  exit 1
+fi
 '''
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts"]
+depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, and architecture checks"
@@ -641,3 +646,16 @@ run = "bun scripts/vendor.ts cancel"
 [tasks."vendor:reopen"]
 description = "Return a vendor session to editing, preserving source and replay work: <crate>"
 run = "bun scripts/vendor.ts reopen"
+
+[tasks."schema:generate"]
+description = "Generate committed config and theme schemas without native dependencies"
+run = "cargo run --locked -p huterm-config --features schema --bin huterm-schema -- --write"
+
+[tasks."schema:check"]
+description = "Check committed config and theme schema bytes without rewriting files"
+run = "cargo run --locked -p huterm-config --features schema --bin huterm-schema -- --check"
+
+[tasks."smoke:schema-editor"]
+description = "Verify command completion and argument diagnostics with installed Taplo"
+depends = ["schema:check"]
+run = "bun scripts/smoke-schema-editor.ts"

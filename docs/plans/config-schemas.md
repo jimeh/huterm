@@ -1,6 +1,6 @@
 # Configuration schemas and release assets
 
-Status: agreed direction, implementation pending. Written on 2026-09-09 for
+Status: implemented, local verification complete. Written on 2026-09-09 for
 [issue #33](https://github.com/jimeh/huterm/issues/33).
 
 ## Outcome
@@ -47,7 +47,8 @@ portable enums, and reusable structural validation into `huterm-config`.
 Keep filesystem resolution and desktop integration in their existing owners
 unless moving a helper is necessary to share a validation rule.
 
-Separate selected-theme input from named theme definitions where their accepted
+Generate separate selected-theme and named-definition contracts from the shared
+deserialized `ThemeDefinition`, preserving existing runtime diagnostics. Their accepted
 fields differ. Selected `[theme]` permits `name` and color overrides, but rejects
 `extends`. Entries in `[themes.<name>]` and standalone theme files use `extends`
 and reject `name`. Standalone files retain their `[theme]` wrapper.
@@ -107,9 +108,12 @@ select the schema bytes associated with that application release.
 ### 3. Generate command-specific keybinding arguments
 
 Read [the command catalog](../../crates/huterm-protocol/src/command.rs) to
-generate a `oneOf` alternative per command. Each alternative fixes `command`
-with `const`, constrains its `args` properties and required arguments, and
-rejects unknown arguments. Reuse shared keybinding fields without allowing
+generate an `if`/`then` constraint per command. Each condition fixes `command`
+with `const`; its matching branch constrains `args` properties and required
+arguments and rejects unknown arguments. The common derived object and a
+catalog-generated command enum are the first `allOf` member. This preserves
+command-name completion in Taplo while producing argument-specific diagnostics.
+Reuse shared keybinding fields without allowing
 unknown fields through schema composition.
 
 Map catalog booleans, text, and bounded integers to schema types and limits.
@@ -247,6 +251,10 @@ coverage. No release publication is authorized by this plan document.
 
 ## Unresolved questions
 
-None blocking implementation. Confirm the proposed schema composition against
-the TOML editor during implementation; completion quality is an acceptance
-requirement, not an assumption about `oneOf` support.
+The user accepted the measured editor limitation on 2026-09-09. Taplo
+0.10.0 completes command names and reports the required `index` or `name`
+argument when switching commands, but does not complete command-specific
+argument fields. Tombi 1.1.0 also failed that argument-completion probe.
+Conditional constraints improve diagnostics over the original `oneOf` without
+weakening validation. `mise run smoke:schema-editor` exercises installed Taplo;
+it is optional and reports its version.

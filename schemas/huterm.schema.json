@@ -1,0 +1,1847 @@
+{
+  "$id": "https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "LinkModifiers": {
+      "description": "Modifiers joined with hyphens, without duplicates. Defaults to cmd on macOS and ctrl on Linux. macOS rejects ctrl; this platform restriction is checked at runtime.",
+      "enum": [
+        "cmd",
+        "cmd-ctrl",
+        "cmd-ctrl-alt",
+        "cmd-ctrl-alt-shift",
+        "cmd-ctrl-shift",
+        "cmd-ctrl-shift-alt",
+        "cmd-alt",
+        "cmd-alt-ctrl",
+        "cmd-alt-ctrl-shift",
+        "cmd-alt-shift",
+        "cmd-alt-shift-ctrl",
+        "cmd-shift",
+        "cmd-shift-ctrl",
+        "cmd-shift-ctrl-alt",
+        "cmd-shift-alt",
+        "cmd-shift-alt-ctrl",
+        "ctrl",
+        "ctrl-cmd",
+        "ctrl-cmd-alt",
+        "ctrl-cmd-alt-shift",
+        "ctrl-cmd-shift",
+        "ctrl-cmd-shift-alt",
+        "ctrl-alt",
+        "ctrl-alt-cmd",
+        "ctrl-alt-cmd-shift",
+        "ctrl-alt-shift",
+        "ctrl-alt-shift-cmd",
+        "ctrl-shift",
+        "ctrl-shift-cmd",
+        "ctrl-shift-cmd-alt",
+        "ctrl-shift-alt",
+        "ctrl-shift-alt-cmd",
+        "alt",
+        "alt-cmd",
+        "alt-cmd-ctrl",
+        "alt-cmd-ctrl-shift",
+        "alt-cmd-shift",
+        "alt-cmd-shift-ctrl",
+        "alt-ctrl",
+        "alt-ctrl-cmd",
+        "alt-ctrl-cmd-shift",
+        "alt-ctrl-shift",
+        "alt-ctrl-shift-cmd",
+        "alt-shift",
+        "alt-shift-cmd",
+        "alt-shift-cmd-ctrl",
+        "alt-shift-ctrl",
+        "alt-shift-ctrl-cmd",
+        "shift",
+        "shift-cmd",
+        "shift-cmd-ctrl",
+        "shift-cmd-ctrl-alt",
+        "shift-cmd-alt",
+        "shift-cmd-alt-ctrl",
+        "shift-ctrl",
+        "shift-ctrl-cmd",
+        "shift-ctrl-cmd-alt",
+        "shift-ctrl-alt",
+        "shift-ctrl-alt-cmd",
+        "shift-alt",
+        "shift-alt-cmd",
+        "shift-alt-cmd-ctrl",
+        "shift-alt-ctrl",
+        "shift-alt-ctrl-cmd"
+      ],
+      "type": "string"
+    },
+    "MacosFullscreenMode": {
+      "enum": [
+        "native",
+        "non_native"
+      ],
+      "type": "string"
+    },
+    "MacosOptionAsAlt": {
+      "enum": [
+        "off",
+        "both"
+      ],
+      "type": "string"
+    },
+    "RawFont": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "description": "Font family. Defaults to Menlo on macOS and monospace on Linux.",
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "size": {
+          "default": 14.0,
+          "format": "float",
+          "maximum": 96,
+          "minimum": 6,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "RawKeybinding": {
+      "allOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "command": {
+              "enum": [
+                "new_window",
+                "quit",
+                "hide",
+                "hide_others",
+                "show_all",
+                "reload_config",
+                "open_settings",
+                "about",
+                "new_tab",
+                "close_tab",
+                "close_window",
+                "next_tab",
+                "previous_tab",
+                "select_tab",
+                "toggle_fullscreen",
+                "toggle_native_fullscreen",
+                "toggle_non_native_fullscreen",
+                "minimize",
+                "zoom",
+                "copy",
+                "paste",
+                "scroll_page_up",
+                "scroll_page_down",
+                "scroll_to_bottom",
+                "rename_tab",
+                "rename_workspace",
+                "rename_session",
+                "unbind"
+              ],
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "when": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "new_window"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open a new window with its own session and workspace.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "new_window",
+                "description": "Open a new window with its own session and workspace.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "quit"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Quit after assessing every open terminal.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "quit",
+                "description": "Quit after assessing every open terminal.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "hide"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Hide the application.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "hide",
+                "description": "Hide the application.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "hide_others"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Hide every other application.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "hide_others",
+                "description": "Hide every other application.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "show_all"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show every application window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "show_all",
+                "description": "Show every application window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "reload_config"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Reload the configuration file, keeping the last working settings on error.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "reload_config",
+                "description": "Reload the configuration file, keeping the last working settings on error.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_settings"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open the configuration file for editing.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_settings",
+                "description": "Open the configuration file for editing.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "about"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show application version and license information.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "about",
+                "description": "Show application version and license information.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "new_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open a new terminal tab in this window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "new_tab",
+                "description": "Open a new terminal tab in this window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "close_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Close the active tab after assessing its processes.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "close_tab",
+                "description": "Close the active tab after assessing its processes.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "close_window"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Close this window after assessing its terminals.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "close_window",
+                "description": "Close this window after assessing its terminals.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "next_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Activate the tab after the active one.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "next_tab",
+                "description": "Activate the tab after the active one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "previous_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Activate the tab before the active one.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "previous_tab",
+                "description": "Activate the tab before the active one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "select_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Activate a tab by position; 9 selects the last tab.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "index": {
+                    "maximum": 9,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "index"
+                ],
+                "type": "object"
+              },
+              "command": {
+                "const": "select_tab",
+                "description": "Activate a tab by position; 9 selects the last tab.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command",
+              "args"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_fullscreen"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Enter or leave fullscreen for this window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_fullscreen",
+                "description": "Enter or leave fullscreen for this window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_native_fullscreen"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Enter native fullscreen or leave the current fullscreen mode.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_native_fullscreen",
+                "description": "Enter native fullscreen or leave the current fullscreen mode.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_non_native_fullscreen"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Enter current-Space fullscreen on macOS or leave fullscreen.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_non_native_fullscreen",
+                "description": "Enter current-Space fullscreen on macOS or leave fullscreen.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "minimize"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Minimize this window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "minimize",
+                "description": "Minimize this window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "zoom"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Zoom this window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "zoom",
+                "description": "Zoom this window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "copy"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Copy the terminal selection to the clipboard.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "copy",
+                "description": "Copy the terminal selection to the clipboard.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "paste"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Paste the clipboard into the terminal.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "paste",
+                "description": "Paste the clipboard into the terminal.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "scroll_page_up"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Scroll the terminal one page toward history.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "scroll_page_up",
+                "description": "Scroll the terminal one page toward history.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "scroll_page_down"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Scroll the terminal one page toward live output.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "scroll_page_down",
+                "description": "Scroll the terminal one page toward live output.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "scroll_to_bottom"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Scroll the terminal to live output.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "scroll_to_bottom",
+                "description": "Scroll the terminal to live output.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "rename_tab"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Set a custom name for a tab.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              },
+              "command": {
+                "const": "rename_tab",
+                "description": "Set a custom name for a tab.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command",
+              "args"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "rename_workspace"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Set a custom name for a workspace.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              },
+              "command": {
+                "const": "rename_workspace",
+                "description": "Set a custom name for a workspace.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command",
+              "args"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "rename_session"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Set a custom name for a session.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              },
+              "command": {
+                "const": "rename_session",
+                "description": "Set a custom name for a session.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command",
+              "args"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "unbind"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Remove earlier bindings for this key.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "type": "object"
+              },
+              "command": {
+                "const": "unbind",
+                "description": "Remove earlier bindings for this key.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "RawTerminal": {
+      "additionalProperties": false,
+      "properties": {
+        "close_on_exit": {
+          "default": true,
+          "type": "boolean"
+        },
+        "engine": {
+          "default": "alacritty",
+          "description": "Terminal engine. Both ship in every build; reload changes newly created terminals only.",
+          "enum": [
+            "alacritty",
+            "ghostty"
+          ],
+          "type": "string"
+        },
+        "link_modifiers": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LinkModifiers"
+            }
+          ]
+        },
+        "links": {
+          "default": true,
+          "type": "boolean"
+        },
+        "macos_option_as_alt": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MacosOptionAsAlt"
+            }
+          ],
+          "default": "off"
+        }
+      },
+      "type": "object"
+    },
+    "SelectedTheme": {
+      "additionalProperties": false,
+      "properties": {
+        "ansi": {
+          "items": {
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 16,
+          "type": "array"
+        },
+        "ansi_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "cursor": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Bundled, inline, or adjacent theme name. Existence is checked at runtime.",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "selection": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "selection_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TabPosition": {
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "ThemeDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "ansi": {
+          "items": {
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 16,
+          "type": "array"
+        },
+        "ansi_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_black": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_blue": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_bright_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_cyan": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_green": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_magenta": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_red": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_white": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "ansi_yellow": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "cursor": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "extends": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "selection": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "selection_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "WindowConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "macos_fullscreen_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MacosFullscreenMode"
+            }
+          ],
+          "default": "non_native"
+        },
+        "padding_balance": {
+          "default": false,
+          "type": "boolean"
+        },
+        "padding_x": {
+          "default": 4.0,
+          "format": "float",
+          "maximum": 256,
+          "minimum": 0,
+          "type": "number"
+        },
+        "padding_y": {
+          "default": 4.0,
+          "format": "float",
+          "maximum": 256,
+          "minimum": 0,
+          "type": "number"
+        },
+        "tab_position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabPosition"
+            }
+          ],
+          "default": "top"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "font": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RawFont"
+        }
+      ]
+    },
+    "keybinding": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/RawKeybinding"
+      },
+      "type": "array"
+    },
+    "terminal": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RawTerminal"
+        }
+      ]
+    },
+    "theme": {
+      "$ref": "#/definitions/SelectedTheme"
+    },
+    "themes": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ThemeDefinition"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "type": "object"
+    },
+    "window": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WindowConfig"
+        }
+      ]
+    }
+  },
+  "title": "Huterm configuration",
+  "type": "object"
+}

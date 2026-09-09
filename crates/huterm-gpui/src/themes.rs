@@ -2,95 +2,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use serde::Deserialize;
+use huterm_config::{ThemeDefinition, ThemeFile};
 
-use crate::config::{ConfigError, Theme, parse_color};
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct ThemeDefinition {
-    pub(super) name: Option<String>,
-    extends: Option<String>,
-    foreground: Option<String>,
-    background: Option<String>,
-    cursor: Option<String>,
-    selection: Option<String>,
-    selection_foreground: Option<String>,
-    ansi: Option<Vec<String>>,
-    ansi_black: Option<String>,
-    ansi_red: Option<String>,
-    ansi_green: Option<String>,
-    ansi_yellow: Option<String>,
-    ansi_blue: Option<String>,
-    ansi_magenta: Option<String>,
-    ansi_cyan: Option<String>,
-    ansi_white: Option<String>,
-    ansi_bright_black: Option<String>,
-    ansi_bright_red: Option<String>,
-    ansi_bright_green: Option<String>,
-    ansi_bright_yellow: Option<String>,
-    ansi_bright_blue: Option<String>,
-    ansi_bright_magenta: Option<String>,
-    ansi_bright_cyan: Option<String>,
-    ansi_bright_white: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ThemeFile {
-    theme: ThemeDefinition,
-}
-
-impl ThemeDefinition {
-    fn apply(&self, mut theme: Theme) -> Result<Theme, ConfigError> {
-        if let Some(value) = &self.selection_foreground {
-            theme.selection_foreground = Some(parse_color(value)?);
-        }
-        for (target, value) in [
-            (&mut theme.foreground, &self.foreground),
-            (&mut theme.background, &self.background),
-            (&mut theme.cursor, &self.cursor),
-            (&mut theme.selection, &self.selection),
-        ] {
-            if let Some(value) = value {
-                *target = parse_color(value)?;
-            }
-        }
-        if let Some(ansi) = &self.ansi {
-            if ansi.len() != 16 {
-                return Err(ConfigError::Invalid(
-                    "theme.ansi must contain 16 colors",
-                ));
-            }
-            for (target, value) in theme.ansi.iter_mut().zip(ansi) {
-                *target = parse_color(value)?;
-            }
-        }
-        for (target, value) in theme.ansi.iter_mut().zip([
-            &self.ansi_black,
-            &self.ansi_red,
-            &self.ansi_green,
-            &self.ansi_yellow,
-            &self.ansi_blue,
-            &self.ansi_magenta,
-            &self.ansi_cyan,
-            &self.ansi_white,
-            &self.ansi_bright_black,
-            &self.ansi_bright_red,
-            &self.ansi_bright_green,
-            &self.ansi_bright_yellow,
-            &self.ansi_bright_blue,
-            &self.ansi_bright_magenta,
-            &self.ansi_bright_cyan,
-            &self.ansi_bright_white,
-        ]) {
-            if let Some(value) = value {
-                *target = parse_color(value)?;
-            }
-        }
-        Ok(theme)
-    }
-}
+use crate::config::{ConfigError, Theme};
 
 pub(super) fn resolve(
     selected: &ThemeDefinition,

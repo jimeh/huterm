@@ -41,15 +41,17 @@ The release workflow does the following on an Apple Silicon macOS runner:
 1. Checks out the exact Release Please SHA with full tag history.
 2. Confirms that the checkout, tag, draft release target, and Cargo package
    versions match that SHA and version, and that `origin/main` contains the SHA.
-3. Builds the existing universal `Huterm.app` with arm64 and x86_64 slices.
+3. Checks schema generation against the committed bytes, then builds the
+   universal `Huterm.app` with arm64 and x86_64 slices.
 4. Imports the Developer ID identity into a temporary keychain.
 5. Signs each Mach-O and the app with a secure timestamp and Hardened Runtime,
    then checks the authority, team, runtime flag, timestamp, and entitlements.
 6. Submits a temporary ZIP to Apple's notary service, staples the accepted
    ticket to the app, validates the ticket, and runs Gatekeeper assessment.
 7. Creates `Huterm-<version>-macOS-universal.zip` from the stapled app and
-   writes `SHA256SUMS`.
-8. Uploads both files to the draft, checks the exact remote names, sizes, and
+   copies the committed `huterm.schema.json` and `huterm-theme.schema.json`,
+   and writes `SHA256SUMS` for all three payloads.
+8. Uploads all four files to the draft, checks the exact remote names, sizes, and
    SHA-256 digests, then publishes the release.
 
 Any failure before the final publish call leaves the GitHub Release as a draft.
@@ -67,8 +69,8 @@ Run the `Release` workflow manually with `publish` unchecked to exercise the
 credential-backed package path. Enter an exact 40-character SHA from `main` and
 the matching Cargo version; leave the tag empty. The workflow validates the
 source, builds and signs both architectures, notarizes and staples the app, runs
-Gatekeeper, and uploads the ZIP and `SHA256SUMS` as an Actions artifact retained
-for seven days.
+Gatekeeper, and uploads the ZIP, both schemas, and `SHA256SUMS` as an Actions
+artifact retained for seven days.
 
 The workflow rejects a SHA outside `main` before checkout or any repository code
 runs. It verifies the checkout and Cargo versions again before exposing the

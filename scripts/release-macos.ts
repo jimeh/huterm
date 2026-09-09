@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -543,27 +543,40 @@ async function sha256(filePath: string): Promise<string> {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-function assetNames(version: string): { archive: string; checksums: string } {
-  return { archive: `Huterm-${version}-macOS-universal.zip`, checksums: "SHA256SUMS" };
+export const schemaAssets = ["huterm.schema.json", "huterm-theme.schema.json"] as const;
+
+export function assetNames(version: string): { archive: string; checksums: string; payloads: string[] } {
+  const archive = `Huterm-${version}-macOS-universal.zip`;
+  return { archive, checksums: "SHA256SUMS", payloads: [archive, ...schemaAssets] };
 }
 
-async function verifyLocalAssets(inputs: BuildInputs): Promise<LocalAsset[]> {
-  const dist = requiredEnv("RELEASE_DIST_DIR");
+export async function prepareSchemaAssets(dist: string, version: string, source = join(repoRoot, "schemas")): Promise<void> {
+  for (const name of schemaAssets) await copyFile(join(source, name), join(dist, name));
+  const names = assetNames(version);
+  const lines = await Promise.all(names.payloads.map(async name => `${await sha256(join(dist, name))}  ${name}\n`));
+  await writeFile(join(dist, names.checksums), lines.join(""));
+}
+
+export async function verifyLocalAssets(inputs: BuildInputs, dist = requiredEnv("RELEASE_DIST_DIR"), source = join(repoRoot, "schemas")): Promise<LocalAsset[]> {
   const names = assetNames(inputs.version);
-  const archivePath = join(dist, names.archive);
-  const checksumsPath = join(dist, names.checksums);
-  const archiveDigest = await sha256(archivePath);
-  const checksumText = await readFile(checksumsPath, "utf8");
-  if (checksumText !== `${archiveDigest}  ${names.archive}\n`) throw new Error("SHA256SUMS does not match the release archive");
   const files = (await readdir(dist)).sort();
-  const expected = [names.archive, names.checksums].sort();
-  if (files.join("\n") !== expected.join("\n")) throw new Error(`release directory contains unexpected files: ${files.join(", ")}`);
+  const expected = [...names.payloads, names.checksums].sort();
+  if (files.join("\n") !== expected.join("\n")) throw new Error(`release directory contains missing or unexpected files: ${files.join(", ")}`);
   const assets: LocalAsset[] = [];
   for (const name of expected) {
     const path = join(dist, name);
     const size = (await stat(path)).size;
     if (size <= 0) throw new Error(`${name} is empty`);
     assets.push({ name, path, size, digest: await sha256(path) });
+  }
+  for (const name of schemaAssets) {
+    if (!(await readFile(join(source, name))).equals(await readFile(join(dist, name)))) {
+      throw new Error(`${name} does not match the release checkout`);
+    }
+  }
+  const checksums = await Promise.all(names.payloads.map(async name => `${await sha256(join(dist, name))}  ${name}\n`));
+  if (await readFile(join(dist, names.checksums), "utf8") !== checksums.join("")) {
+    throw new Error("SHA256SUMS does not match the release payloads");
   }
   return assets;
 }
@@ -585,6 +598,7 @@ async function buildRelease(): Promise<void> {
   const tempRoot = keychainPaths().tempRoot;
   const notarizationZip = join(tempRoot, "notarization.zip");
 
+  await runInherited("mise", ["run", "schema:check"]);
   await rm(dist, { force: true, recursive: true });
   await mkdir(dist, { recursive: true });
   await runInherited("mise", ["run", "package:macos"]);
@@ -614,10 +628,9 @@ async function buildRelease(): Promise<void> {
       assessGatekeeper: () => runInherited("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]),
       createFinalArchive: () => zipApp(finalArchive),
     });
-    const digest = await sha256(finalArchive);
-    await writeFile(join(dist, names.checksums), `${digest}  ${names.archive}\n`);
+    await prepareSchemaAssets(dist, inputs.version);
     await verifyLocalAssets(inputs);
-    console.log(`prepared ${names.archive} and ${names.checksums}`);
+    console.log(`prepared ${[...names.payloads, names.checksums].join(", ")}`);
   } finally {
     await cleanupSigning();
   }

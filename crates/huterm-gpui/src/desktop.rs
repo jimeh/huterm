@@ -21,7 +21,7 @@ use huterm_protocol::{
 
 use crate::APP_ID;
 use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow, invoke};
-use crate::config::{self, Config, Theme, WindowConfig};
+use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
