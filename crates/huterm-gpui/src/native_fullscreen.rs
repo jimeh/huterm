@@ -195,6 +195,52 @@ impl Adapter {
         }
     }
 
+    /// GPUI's macOS hover flag only reports activation, including when the
+    /// cursor has left this fullscreen window for another display.
+    pub fn pointer_on_display(&self) -> bool {
+        // SAFETY: Main-thread, read-only AppKit getters on the retained window.
+        unsafe {
+            let screen: *mut Object = msg_send![self.0.window.0, screen];
+            if screen.is_null() {
+                return false;
+            }
+            let Some(event) = Class::get("NSEvent") else {
+                return false;
+            };
+            let pointer: gpui::Point<f64> = msg_send![event, mouseLocation];
+            let frame: Bounds<f64> = msg_send![screen, frame];
+            frame.contains(&pointer)
+        }
+    }
+
+    /// `AppKit` screen coordinates include the camera-housing region outside a
+    /// native fullscreen content view. Both getters use logical screen points.
+    pub fn pointer_in_top_edge(&self) -> bool {
+        // SAFETY: Read-only AppKit queries run on the main thread against the
+        // retained NSWindow. NSEvent mouseLocation is an NSPoint of two CGFloat.
+        unsafe {
+            let key: objc::runtime::BOOL =
+                msg_send![self.0.window.0, isKeyWindow];
+            if key != YES {
+                return false;
+            }
+            let screen: *mut Object = msg_send![self.0.window.0, screen];
+            if screen.is_null() {
+                return false;
+            }
+            let Some(event) = Class::get("NSEvent") else {
+                return false;
+            };
+            let pointer: gpui::Point<f64> = msg_send![event, mouseLocation];
+            let frame: Bounds<f64> = msg_send![screen, frame];
+            let depth = screen_safe_area(screen).top.max(2.0);
+            pointer.x >= frame.origin.x
+                && pointer.x < frame.right()
+                && pointer.y >= frame.bottom() - depth
+                && pointer.y <= frame.bottom()
+        }
+    }
+
     pub fn inspect(&self) -> anyhow::Result<String> {
         // SAFETY: Smoke getters use the same exact retained native window.
         unsafe {

@@ -79,9 +79,38 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
   const directory = await mkdtemp(join(tmpdir(), "huterm-fullscreen-"));
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
+  const rawBytes = join(directory, "mouse-bytes");
+  const rawReady = join(directory, "mouse-ready");
+  const rawStop = join(directory, "mouse-stop");
+  const rawStopped = join(directory, "mouse-stopped");
+  let rawRecording = false;
+  let rawRound = 0;
+  const rawRecorder = join(directory, "mouse-recorder.ts");
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  await writeFile(rawRecorder, `import { existsSync, openSync, writeSync, writeFileSync } from "node:fs";
+const fd = openSync(${JSON.stringify(rawBytes)}, "w");
+process.stdout.write("\\x1b[?1003h\\x1b[?1006hMOUSE_READY");
+writeFileSync(${JSON.stringify(rawReady)}, "ready");
+setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
+for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
+`);
   const configText = (mode: string) => `[terminal]\nengine = "${engine}"\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
-  await writeFile(shell, `#!/bin/sh\nprintf 'READY\\n'\nwhile IFS= read -r line; do printf 'ACK:%s:' "$line"; stty size; done\n`, { mode: 0o700 });
-  await writeFile(config, macos ? configText("native").replace('macos_fullscreen_mode = "native"\n', "") : configText("native"));
+  await writeFile(shell, `#!/bin/sh
+printf 'READY\\n'
+while IFS= read -r line; do
+  if [ "$line" = RAW ]; then
+    stty raw -echo
+    ${quote(process.execPath)} ${quote(rawRecorder)}
+    printf '\\033[?1003l\\033[?1006l'
+    stty sane || exit 1
+    printf stopped > ${quote(rawStopped)}
+  else
+    printf 'ACK:%s:' "$line"; stty size
+  fi
+done
+`, { mode: 0o700 });
+  const initialConfig = macos ? configText("native").replace('macos_fullscreen_mode = "native"\n', "") : configText("native");
+  await writeFile(config, initialConfig);
   const app = Bun.spawn([executable], {
     env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_FULLSCREEN_SMOKE: directory, SHELL: shell },
     stdout: "pipe", stderr: "pipe",
@@ -160,13 +189,171 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
     }
     await waitFor(async () => Number((await state()).windows) === Number(before.windows) - 1, "window removal");
   };
+  const closeTab = async () => {
+    const before = Number((await state())["w0.tabs"]);
+    await accepted("0 close_tab");
+    await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) < before || s["w0.confirming"] === "true"; }, "tab close assessment");
+    if ((await state())["w0.confirming"] === "true") await accepted("0 confirm_close");
+    await waitFor(async () => Number((await state())["w0.tabs"]) === before - 1, "tab removal");
+  };
+  const checkReserved = async () => {
+    const baseline = await state();
+    for (const position of ["top", "left", "bottom", "right"]) {
+      await writeFile(config, initialConfig.replace("[window]", `[window]\ntab_position = "${position}"`));
+      await accepted("0 reload_config");
+      await waitFor(async () => (await state()).reloading === "false", "reserved config reload");
+      const one = await state();
+      if (one["w0.tab_presentation"] !== "Hidden") throw new Error("single tab was not hidden by default");
+      await accepted("0 new_tab");
+      await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "2" && s["w0.ready"] === "true" && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "two tabs reserve chrome");
+      if ((await state())["w0.terminal"] === one["w0.terminal"]) throw new Error("second tab did not reserve space");
+      if (position === "left") {
+        const [barX, barY, barWidth] = (await state())["w0.tab_bounds"]!.split(",").map(Number) as [number, number, number];
+        const grabX = barX + barWidth - 3; const grabY = barY + 100;
+        if (macos) {
+          await accepted(`native\tmouse\t5\t${grabX}\t${grabY}\t0`);
+          await accepted(`native\tmouse\t1\t${grabX}\t${grabY}\t0`);
+          await accepted(`native\tmouse\t6\t260\t${grabY}\t0`);
+          await accepted(`native\tmouse\t2\t260\t${grabY}\t0`);
+        } else {
+          const focused = run(["xdotool", "getwindowfocus"]);
+          run(["xdotool", "mousemove", "--window", focused, String(grabX), String(grabY), "mousedown", "1", "mousemove", "--window", focused, "260", String(grabY), "mouseup", "1"]);
+        }
+        await waitFor(async () => Math.abs(Number((await state())["w0.tab_bounds"]!.split(",")[2]) - 260) < 1, "preferred sidebar width");
+        await accepted("0 new_tab");
+        await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "3" && s["w0.ready"] === "true"; }, "new tab with resized sidebar");
+        if ((await state())["w0.resize_requests"] !== "1") throw new Error("new tab resized against a stale sidebar width");
+        await closeTab();
+      }
+      await closeTab();
+      await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
+    }
+    await writeFile(config, initialConfig.replace("[window]", "[window]\nalways_show_tab_bar = true"));
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "always-show reserves a single tab");
+    await writeFile(config, initialConfig);
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden" && s["w0.retained"] === "true" && s["w0.grid"] === baseline["w0.grid"] && s["w0.terminal"] === baseline["w0.terminal"]; }, "original config restored");
+    console.log(`TAB_VISIBILITY_SMOKE ${engine} reserved-one-two-one all-positions`);
+  };
+  const move = async (x: number, y: number) => {
+    if (macos) await accepted(`native\tmouse\t5\t${x}\t${y}\t0`);
+    else run(["xdotool", "mousemove", String(Math.round(x)), String(Math.round(y))]);
+  };
+  const pointerInput = async (x: number, y: number) => {
+    if (macos) {
+      await accepted(`native\tmouse\t3\t${x}\t${y}\t0`);
+      await accepted(`native\tmouse\t4\t${x}\t${y}\t0`);
+    } else run(["xdotool", "click", "2", "click", "4"]);
+  };
+  const checkOverlay = async () => {
+    for (const position of ["top", "bottom", "left", "right"]) {
+      const current = await state();
+      const [width, height] = current["w0.viewport"]!.split(",").map(Number) as [number, number];
+      const topInset = Number(current["w0.insets"]!.split(",")[0]);
+      const centerX = width / 2; const centerY = height / 2;
+      const source = configText("native").replace("[window]", `[window]\ntab_position = "${position}"\nauto_hide_tab_bar_in_fullscreen = true`);
+      await move(centerX, centerY);
+      await writeFile(config, source);
+      await accepted("0 reload_config");
+      await waitFor(async () => { const s = await state(); return s.reloading === "false" && s["w0.tab_presentation"] === "Overlay" && s["w0.tab_reveal"] === "0"; }, "hidden fullscreen overlay");
+      const retainedBaseline = await state();
+      await accepted("0 new_tab");
+      await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) === Number(current["w0.tabs"]) + 1 && s["w0.ready"] === "true"; }, "command-switch tab ready");
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "new tab reveals overlay without hover");
+      const commandBaseline = await state();
+      if (commandBaseline["w0.resize_requests"] !== "1" || commandBaseline["w0.focused"] !== "true") throw new Error("new tab reveal resized terminal or lost focus");
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "0", "new tab reveal expires");
+      for (const action of ["previous_tab", "next_tab"]) {
+        await accepted(`0 ${action}`);
+        await waitFor(async () => (await state())["w0.tab_reveal"] === "1", `${action} reveals overlay without hover`);
+        const shown = await state();
+        if (shown["w0.terminal"] !== commandBaseline["w0.terminal"] || shown["w0.grid"] !== commandBaseline["w0.grid"] || shown["w0.focused"] !== "true") throw new Error("command reveal changed geometry or focus");
+        await waitFor(async () => (await state())["w0.tab_reveal"] === "0", `${action} reveal expires`);
+      }
+      if ((await state())["w0.resize_requests"] !== commandBaseline["w0.resize_requests"]) throw new Error("command reveal resized the terminal");
+      await closeTab();
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "closed tab reveals overlay without hover");
+      const closed = await state();
+      for (const field of ["terminal", "grid", "resize_requests"]) {
+        if (closed[`w0.${field}`] !== retainedBaseline[`w0.${field}`]) throw new Error(`close changed retained terminal ${field}`);
+      }
+      if (closed["w0.focused"] !== "true") throw new Error("close reveal lost terminal focus");
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "0", "closed tab reveal expires");
+      const hidden = await state();
+      for (const field of ["terminal", "grid", "resize_requests"]) {
+        if (closed[`w0.${field}`] !== hidden[`w0.${field}`]) throw new Error(`close reveal changed ${field}`);
+      }
+      if (hidden["w0.focused"] !== "true") throw new Error("close reveal lost terminal focus");
+      const [x, y] = position === "top" ? [centerX, topInset + 1] : position === "bottom" ? [centerX, height - 1] : position === "left" ? [1, centerY] : [width - 1, centerY];
+      await move(x!, y!);
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "1", `${position} edge reveal`);
+      if (position === "top") {
+        const beforeAdd = await state();
+        const [barX, barY, barWidth] = beforeAdd["w0.tab_bounds"]!.split(",").map(Number) as [number, number, number];
+        const addX = barX + barWidth + 14; const addY = barY + 14;
+        await move(addX, addY);
+        if (macos) {
+          await accepted(`native\tmouse\t1\t${addX}\t${addY}\t0`);
+          await accepted(`native\tmouse\t2\t${addX}\t${addY}\t0`);
+        } else run(["xdotool", "click", "1"]);
+        await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) === Number(beforeAdd["w0.tabs"]) + 1 && s["w0.ready"] === "true"; }, "revealed new-tab button");
+        const added = await state();
+        if (added["w0.resize_requests"] !== "1") throw new Error("new fullscreen tab received an intermediate grid resize");
+        if (added["w0.tab_presentation"] !== "Overlay" || added["w0.terminal"] !== hidden["w0.terminal"] || added["w0.focused"] !== "true") throw new Error("overlay new tab changed geometry or lost focus");
+        await closeTab();
+        await move(centerX, topInset + 1);
+        await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "reveal after tab close");
+        await Promise.all([rawReady, rawStop, rawStopped].map(file => rm(file, { force: true })));
+        rawRecording = true;
+        await input("RAW");
+        await waitFor(async () => await Bun.file(rawReady).exists() && await Bun.file(rawBytes).exists(), "raw mouse recorder");
+        await waitFor(async () => (await state())["w0.text"]?.includes("MOUSE_READY") === true, "application mouse mode");
+        await move(centerX + 10, topInset + 12);
+        await pointerInput(centerX + 10, topInset + 12);
+        await Bun.sleep(150);
+        if ((await Bun.file(rawBytes).arrayBuffer()).byteLength !== 0) throw new Error("overlay leaked pointer or wheel input to PTY");
+        await move(centerX, centerY);
+        await pointerInput(centerX, centerY);
+        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength > 0, "terminal outside overlay receives mouse input");
+        const beforeDrag = (await Bun.file(rawBytes).arrayBuffer()).byteLength;
+        if (macos) {
+          await accepted(`native\tmouse\t3\t${centerX}\t${centerY}\t0`);
+          await accepted(`native\tmouse\t7\t${centerX}\t${topInset + 12}\t0`);
+          await accepted(`native\tmouse\t4\t${centerX}\t${topInset + 12}\t0`);
+        } else run(["xdotool", "mousedown", "2", "mousemove", String(centerX), String(topInset + 12), "mouseup", "2"]);
+        await waitFor(async () => {
+          const suffix = Buffer.from(await Bun.file(rawBytes).arrayBuffer()).subarray(beforeDrag).toString();
+          return /\x1b\[<\d+;\d+;\d+m/.test(suffix) && (await state())["w0.pointer_owned"] === "false";
+        }, "terminal drag release crosses overlay");
+        await move(centerX, centerY);
+        await writeFile(rawStop, "stop");
+        await waitFor(() => Bun.file(rawStopped).exists(), "raw recorder exit and shell cleanup");
+        rawRecording = false;
+        // This shell ACK follows mouse-mode teardown in the same PTY stream.
+        await pty(`rawcleanup${++rawRound}`);
+      } else await move(centerX, centerY);
+      await waitFor(async () => (await state())["w0.tab_reveal"] === "0", `${position} overlay dismissal`);
+      const dismissed = await state();
+      for (const field of ["terminal", "grid", "resize_requests"]) {
+        if (hidden[`w0.${field}`] !== dismissed[`w0.${field}`]) throw new Error(`${position} overlay changed ${field}`);
+      }
+      if (dismissed["w0.focused"] !== "true") throw new Error("overlay stole terminal focus");
+    }
+    await writeFile(config, configText("native"));
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === (s["w0.tabs"] === "1" ? "Hidden" : "Reserved"); }, "restore default visibility");
+    console.log(`TAB_VISIBILITY_SMOKE ${engine} ${(await state())["w0.mode"]} all-edges no-resize-requests overlay-input-isolation new-tab-click gesture-release focus`);
+  };
   try {
     await waitFor(async () => await Bun.file(join(directory, "state")).exists() && (await state())["w0.ready"] === "true", "terminal readiness");
     let windowId = "";
+    if (macos) await accepted("native\tcursor-center");
     if (!macos) {
       windowId = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/)[0]!;
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
+    if (!noWm && !frameProbe) await checkReserved();
     const original = await stable("Windowed");
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
     if (frameProbe) {
@@ -230,6 +417,8 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
         if (!run(["xdotool", "getwindowgeometry", "--shell", windowId]).includes("WIDTH=1280\nHEIGHT=800")) throw new Error("native window does not fill Xvfb");
       }
       await pty("native");
+      await checkOverlay();
+
       await accepted("0 toggle_native_fullscreen");
       await stable("Windowed");
       await waitForRestored(original, macos, macos);
@@ -268,6 +457,7 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
           if (refitted[`w0.${field}`] !== simple[`w0.${field}`]) throw new Error(`display refit changed ${field}`);
         }
         await pty("refitted");
+        await checkOverlay();
         for (const action of ["minimize", "zoom"]) if (!(await command(`0 ${action}`)).includes("Unavailable")) throw new Error(`${action} was allowed in non-native mode`);
         await accepted("0 previous_tab");
         await pty("simple");
@@ -326,6 +516,14 @@ async function check(executable: string, engine: string, noWm: boolean, framePro
     try { process.stderr.write(`FULLSCREEN_SMOKE last state\n${await readFile(join(directory, "state"), "utf8")}\n`); } catch {}
     throw error;
   } finally {
+    if (rawRecording && app.exitCode === null) {
+      await writeFile(rawStop, "stop");
+      await waitFor(async () => app.exitCode !== null || await Bun.file(rawStopped).exists(), "raw recorder failure cleanup", 3_000)
+        .catch(error => process.stderr.write(`Recorder cleanup before app teardown: ${error}\n`));
+    }
+    if (macos && app.exitCode === null) {
+      try { await accepted("native\tcursor-restore"); } catch (error) { process.stderr.write(`Cannot restore smoke cursor: ${error}\n`); }
+    }
     if (app.exitCode === null) app.kill("SIGTERM");
     const force = setTimeout(() => { if (app.exitCode === null) app.kill("SIGKILL"); }, 1_000);
     await app.exited;

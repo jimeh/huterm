@@ -11,9 +11,13 @@ const CG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventSetIntegerValueField(event: *mut c_void, field: u32, value: i64);
+    fn CGWarpMouseCursorPosition(point: gpui::Point<f64>) -> i32;
 }
 
 pub(super) fn post(command: &str) -> anyhow::Result<()> {
+    if matches!(command, "cursor-center" | "cursor-restore") {
+        return position_cursor(command == "cursor-center");
+    }
     let fields: Vec<_> = command.split('\t').collect();
     if fields[0] == "mouse" && matches!(fields.len(), 4 | 5) {
         return post_mouse(&fields);
@@ -56,6 +60,73 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
             keyCode: key];
         ensure!(!event.is_null(), "NSEvent construction failed");
         let _: () = msg_send![app, postEvent: event atStart: NO];
+    }
+    Ok(())
+}
+
+thread_local! {
+    static SAVED_CURSOR: std::cell::Cell<Option<gpui::Point<f64>>> = const { std::cell::Cell::new(None) };
+}
+
+fn position_cursor(center: bool) -> anyhow::Result<()> {
+    // SAFETY: The smoke calls this on AppKit's main thread. CoreGraphics uses
+    // a global top-left origin; AppKit's origin is the primary display's bottom.
+    unsafe {
+        let mut primary_top = None;
+        let target = if center {
+            let app: *mut Object = msg_send![
+                Class::get("NSApplication").context("NSApplication")?,
+                sharedApplication
+            ];
+            let window: *mut Object = msg_send![app, keyWindow];
+            ensure!(!window.is_null(), "no window for cursor positioning");
+            let screen: *mut Object = msg_send![window, screen];
+            ensure!(!screen.is_null(), "window has no screen");
+            let screens: *mut Object =
+                msg_send![Class::get("NSScreen").context("NSScreen")?, screens];
+            let primary: *mut Object =
+                msg_send![screens, objectAtIndex: 0_usize];
+            let primary_frame: gpui::Bounds<f64> = msg_send![primary, frame];
+            primary_top = Some(primary_frame.bottom());
+            let current: gpui::Point<f64> = msg_send![
+                Class::get("NSEvent").context("NSEvent")?,
+                mouseLocation
+            ];
+            SAVED_CURSOR.with(|saved| {
+                if saved.get().is_none() {
+                    saved.set(Some(gpui::point(
+                        current.x,
+                        primary_frame.bottom() - current.y,
+                    )));
+                }
+            });
+            let frame: gpui::Bounds<f64> = msg_send![screen, frame];
+            gpui::point(
+                frame.origin.x + frame.size.width / 2.0,
+                primary_frame.bottom()
+                    - frame.origin.y
+                    - frame.size.height / 2.0,
+            )
+        } else if let Some(saved) = SAVED_CURSOR.with(std::cell::Cell::take) {
+            saved
+        } else {
+            return Ok(());
+        };
+        ensure!(
+            CGWarpMouseCursorPosition(target) == 0,
+            "cannot position the physical smoke cursor"
+        );
+        if let Some(top) = primary_top {
+            let actual: gpui::Point<f64> = msg_send![
+                Class::get("NSEvent").context("NSEvent")?,
+                mouseLocation
+            ];
+            ensure!(
+                (actual.x - target.x).abs() < 1.0
+                    && (top - actual.y - target.y).abs() < 1.0,
+                "physical smoke cursor did not reach the display center"
+            );
+        }
     }
     Ok(())
 }

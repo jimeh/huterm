@@ -442,5 +442,23 @@
     "toml": "[theme]\nansi = [\"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#abcdef\", \"#gggggg\"]",
     "valid": false,
     "theme": false
+  },
+  {
+    "name": "tab visibility enabled",
+    "toml": "[window]\nalways_show_tab_bar = true\nauto_hide_tab_bar_in_fullscreen = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "always-show requires a boolean",
+    "toml": "[window]\nalways_show_tab_bar = \"true\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "fullscreen auto-hide requires a boolean",
+    "toml": "[window]\nauto_hide_tab_bar_in_fullscreen = 1",
+    "valid": false,
+    "theme": false
   }
 ]

@@ -736,3 +736,12 @@ later `if`/`then` members. This preserves command completion and specific argume
 diagnostics; it does not provide command-specific argument completion.
 Make Bun test tasks that import packages depend directly on `scripts:install`.
 A sibling typecheck's install dependency does not order parallel test startup.
+
+Advance tab-overlay animation in the window refresh pump with `cx.notify()`;
+call GPUI's `request_animation_frame` only while rendering. Despite its wording,
+the GPUI 0.2.2 method requires a current view and panics from a timer callback.
+Terminal gestures retain move/release ownership beneath an overlay until the
+next refresh hides it; overlay hit bounds alone must never discard that release.
+GPUI's macOS window-hover flag reports activation and can retain the last mouse
+position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
+display membership so leaving for another display dismisses the overlay.

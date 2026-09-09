@@ -116,6 +116,8 @@ pub struct WindowConfig {
     pub padding_y: f32,
     pub padding_balance: bool,
     pub tab_position: TabPosition,
+    pub always_show_tab_bar: bool,
+    pub auto_hide_tab_bar_in_fullscreen: bool,
 }
 
 impl Default for WindowConfig {
@@ -126,6 +128,8 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             tab_position: TabPosition::Top,
+            always_show_tab_bar: false,
+            auto_hide_tab_bar_in_fullscreen: false,
         }
     }
 }
