@@ -84,6 +84,10 @@ requires an explicit publish choice and retains the full draft-release guards.
 Validate a selected SHA against `main` before checkout or any target-controlled
 code runs, then revalidate the checkout and Cargo metadata afterward.
 
+Draft release listings require push access even though the API accepts read-only
+tokens. Use a contents-write bot token for draft validation; keep the job token
+read-only and mint a fresh publishing token after the build.
+
 The macOS Info.plist carries the full protected-resource description set for
 Huterm and its child processes. The signature has only the seven established
 terminal-host entitlements. Do not add JIT, library-validation bypass, DYLD,

@@ -110,11 +110,21 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
+      - id: draft-token
+        name: Create draft validation token
+        if: inputs.publish
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          # GitHub hides draft releases from callers without push access.
+          permission-contents: write
+
       - id: draft
         name: Validate exact draft release
         if: inputs.publish
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.draft-token.outputs.token }}
         run: bun scripts/release-macos.ts validate-release
 
       - name: Validate verification build
