@@ -77,6 +77,10 @@ Cargo.toml updater advances them with the package versions. The release workflow
 must receive Release Please's exact SHA, tag, and version outputs, validate the
 matching draft, and publish only after remote asset names, sizes, and digests
 match. Keep the final release draft on every earlier failure.
+Manual verification is non-publishing by default. It validates a SHA and version
+from `main`, exercises signing through Gatekeeper, and uploads only an Actions
+artifact. It must not require or inspect a tag or GitHub Release. Manual recovery
+requires an explicit publish choice and retains the full draft-release guards.
 
 The macOS Info.plist carries the full protected-resource description set for
 Huterm and its child processes. The signature has only the seven established

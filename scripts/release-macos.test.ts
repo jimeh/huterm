@@ -7,6 +7,7 @@ import {
   privacyUsageDescriptions,
   releaseEntitlements,
   runMacReleasePipeline,
+  validateBuildInputs,
   validateDraftRelease,
   validateEntitlements,
   validatePrivacyDescriptions,
@@ -18,6 +19,12 @@ import {
 
 const repoRoot = resolve(import.meta.dir, "..");
 const inputs = { sha: "a".repeat(40), tag: "v0.1.0", version: "0.1.0" };
+
+test("build inputs require a full SHA and stable version without a tag", () => {
+  expect(validateBuildInputs(inputs.sha, inputs.version)).toEqual({ sha: inputs.sha, version: inputs.version });
+  expect(() => validateBuildInputs("abc", inputs.version)).toThrow("invalid release SHA");
+  expect(() => validateBuildInputs(inputs.sha, "0.1.0-beta.1")).toThrow("invalid release version");
+});
 
 test("release inputs bind a full SHA, stable version, and matching tag", () => {
   expect(validateReleaseInputs(inputs.sha, inputs.tag, inputs.version)).toEqual(inputs);
@@ -151,4 +158,16 @@ test("release workflows use the documented repository credential names", async (
     expect(releaseWorkflow).toContain(`secrets.${secret}`);
     expect(releasePleaseWorkflow).toContain(`secrets.${secret}`);
   }
+});
+
+test("manual verification signs without requiring or publishing a GitHub release", async () => {
+  const releaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+
+  expect(releaseWorkflow).toContain("publish:");
+  expect(releaseWorkflow).toContain("default: false");
+  expect(releaseWorkflow).toContain("run: bun scripts/release-macos.ts validate-build");
+  expect(releaseWorkflow).toContain("if: ${{ !inputs.publish }}");
+  expect(releaseWorkflow).toContain("uses: actions/upload-artifact@");
+  expect(releaseWorkflow).toContain("retention-days: 7");
+  expect(releaseWorkflow).toContain("if: inputs.publish");
 });

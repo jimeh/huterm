@@ -3,8 +3,12 @@ name: Release
 on:
   workflow_call:
     inputs:
+      publish:
+        description: Publish the existing draft release after verification
+        required: true
+        type: boolean
       sha:
-        description: Exact commit SHA associated with the draft release
+        description: Exact commit SHA to build from origin/main
         required: true
         type: string
       tag:
@@ -30,13 +34,18 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      publish:
+        description: Publish an existing matching draft release
+        required: true
+        default: false
+        type: boolean
       sha:
-        description: Exact commit SHA associated with the draft release
+        description: Exact commit SHA to build from origin/main
         required: true
         type: string
       tag:
-        description: Exact tag associated with the draft release
-        required: true
+        description: Exact tag associated with the draft, required when publishing
+        required: false
         type: string
       version:
         description: Exact release version without the v prefix
@@ -44,18 +53,18 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.publish && inputs.tag || inputs.sha }}
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   release:
-    name: Sign, notarize, and publish
+    name: Build and verify signed macOS package
     runs-on: macos-15
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
     env:
       RELEASE_SHA: ${{ inputs.sha }}
       RELEASE_TAG: ${{ inputs.tag }}
@@ -82,9 +91,14 @@ jobs:
 
       - id: draft
         name: Validate exact draft release
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun scripts/release-macos.ts validate-release
+
+      - name: Validate verification build
+        if: ${{ !inputs.publish }}
+        run: bun scripts/release-macos.ts validate-build
 
       - name: Build, sign, and notarize universal app
         env:
@@ -96,8 +110,21 @@ jobs:
           MACOS_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: mise run release:macos
 
+      - name: Upload verified package artifact
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Huterm-${{ inputs.version }}-macOS-universal-verified
+          path: |
+            dist/Huterm-${{ inputs.version }}-macOS-universal.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - id: app-token
         name: Create fresh release bot token
+        if: inputs.publish
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
@@ -105,12 +132,14 @@ jobs:
           permission-contents: write
 
       - name: Upload and verify draft assets
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_ID: ${{ steps.draft.outputs.release_id }}
         run: bun scripts/release-macos.ts upload-assets
 
       - name: Publish verified release
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_ID: ${{ steps.draft.outputs.release_id }}

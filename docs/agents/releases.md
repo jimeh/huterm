@@ -61,13 +61,26 @@ The public ZIP is created after stapling. Re-signing the app after notarization
 would invalidate the ticket, so the post-staple path only verifies signatures.
 The local `mise run package:macos` task remains an unsigned package check.
 
+## Manual verification
+
+Run the `Release` workflow manually with `publish` unchecked to exercise the
+credential-backed package path. Enter an exact 40-character SHA from `main` and
+the matching Cargo version; leave the tag empty. The workflow validates the
+source, builds and signs both architectures, notarizes and staples the app, runs
+Gatekeeper, and uploads the ZIP and `SHA256SUMS` as an Actions artifact retained
+for seven days.
+
+Verification mode does not inspect, create, update, or publish a GitHub Release
+or tag. It does submit the app to Apple's notarization service and creates the
+temporary Actions artifact.
+
 ## Manual recovery
 
-Use the `Release` workflow's manual dispatch only for an existing draft release.
-Enter the exact 40-character SHA, `v`-prefixed tag, and version from that draft.
-The workflow revalidates the release and rebuilds the artifacts. It replaces the
-two expected assets when they already exist, but refuses to publish if the draft
-contains any unexpected asset.
+To recover an existing draft release, run the same workflow with `publish`
+checked. Enter the exact 40-character SHA, `v`-prefixed tag, and version from
+that draft. The workflow revalidates the release and rebuilds the artifacts. It
+replaces the two expected assets when they already exist, but refuses to publish
+if the draft contains any unexpected asset.
 
 ## Privacy and hardware checks
 

@@ -59,10 +59,13 @@ interface ReleaseRecord {
   target_commitish: string;
 }
 
-interface ReleaseInputs {
+interface BuildInputs {
   sha: string;
-  tag: string;
   version: string;
+}
+
+interface ReleaseInputs extends BuildInputs {
+  tag: string;
 }
 
 interface ReleaseAsset {
@@ -118,16 +121,21 @@ function objectValue(value: unknown, label: string): JsonObject {
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is required for a production release`);
+  if (!value) throw new Error(`${name} is required`);
   return value;
 }
 
-export function validateReleaseInputs(sha: string, tag: string, version: string): ReleaseInputs {
+export function validateBuildInputs(sha: string, version: string): BuildInputs {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`invalid release SHA: ${sha}`);
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
   if (!semver.test(version)) throw new Error(`invalid release version: ${version}`);
+  return { sha, version };
+}
+
+export function validateReleaseInputs(sha: string, tag: string, version: string): ReleaseInputs {
+  const build = validateBuildInputs(sha, version);
   if (tag !== `v${version}`) throw new Error(`release tag ${tag} does not match version ${version}`);
-  return { sha, tag, version };
+  return { ...build, tag };
 }
 
 function releaseRecords(value: unknown): ReleaseRecord[] {
@@ -313,7 +321,11 @@ async function verifyPackageConfiguration(bundlePath: string): Promise<void> {
   validateEntitlements(await readPlist(entitlementPath));
 }
 
-function currentInputs(): ReleaseInputs {
+function currentBuildInputs(): BuildInputs {
+  return validateBuildInputs(requiredEnv("RELEASE_SHA"), requiredEnv("RELEASE_VERSION"));
+}
+
+function currentReleaseInputs(): ReleaseInputs {
   return validateReleaseInputs(requiredEnv("RELEASE_SHA"), requiredEnv("RELEASE_TAG"), requiredEnv("RELEASE_VERSION"));
 }
 
@@ -333,20 +345,30 @@ async function assetList(releaseId: number): Promise<unknown> {
   return JSON.parse(stdout);
 }
 
-async function validateRepositoryRelease(inputs: ReleaseInputs, expectedId?: number): Promise<ReleaseRecord> {
-  const release = validateDraftRelease(await releaseList(), inputs, expectedId);
+async function validateRepositorySource(inputs: BuildInputs): Promise<void> {
   const head = (await runCaptured("git", ["rev-parse", "HEAD"])).stdout.trim();
   if (head !== inputs.sha) throw new Error(`checkout ${head} does not match release SHA ${inputs.sha}`);
-  const tagSha = (await runCaptured("git", ["rev-parse", `${inputs.tag}^{commit}`])).stdout.trim();
-  if (tagSha !== inputs.sha) throw new Error(`${inputs.tag} points at ${tagSha}, expected ${inputs.sha}`);
   await runCaptured("git", ["merge-base", "--is-ancestor", inputs.sha, "refs/remotes/origin/main"]);
   const metadata = JSON.parse((await runCaptured("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"])).stdout);
   validateWorkspaceVersions(metadata, inputs.version);
+}
+
+async function validateRepositoryRelease(inputs: ReleaseInputs, expectedId?: number): Promise<ReleaseRecord> {
+  const release = validateDraftRelease(await releaseList(), inputs, expectedId);
+  await validateRepositorySource(inputs);
+  const tagSha = (await runCaptured("git", ["rev-parse", `${inputs.tag}^{commit}`])).stdout.trim();
+  if (tagSha !== inputs.sha) throw new Error(`${inputs.tag} points at ${tagSha}, expected ${inputs.sha}`);
   return release;
 }
 
+async function validateBuildCommand(): Promise<void> {
+  const inputs = currentBuildInputs();
+  await validateRepositorySource(inputs);
+  console.log(`validated build ${inputs.version} at ${inputs.sha}`);
+}
+
 async function validateReleaseCommand(): Promise<void> {
-  const release = await validateRepositoryRelease(currentInputs());
+  const release = await validateRepositoryRelease(currentReleaseInputs());
   const outputPath = requiredEnv("GITHUB_OUTPUT");
   await appendFile(outputPath, `release_id=${release.id}\n`);
   console.log(`validated draft ${release.tag_name} at ${release.target_commitish}`);
@@ -525,7 +547,7 @@ function assetNames(version: string): { archive: string; checksums: string } {
   return { archive: `Huterm-${version}-macOS-universal.zip`, checksums: "SHA256SUMS" };
 }
 
-async function verifyLocalAssets(inputs: ReleaseInputs): Promise<LocalAsset[]> {
+async function verifyLocalAssets(inputs: BuildInputs): Promise<LocalAsset[]> {
   const dist = requiredEnv("RELEASE_DIST_DIR");
   const names = assetNames(inputs.version);
   const archivePath = join(dist, names.archive);
@@ -548,7 +570,7 @@ async function verifyLocalAssets(inputs: ReleaseInputs): Promise<LocalAsset[]> {
 
 async function buildRelease(): Promise<void> {
   if (process.platform !== "darwin") throw new Error("macOS releases require a macOS host");
-  const inputs = currentInputs();
+  const inputs = currentBuildInputs();
   const teamId = requiredEnv("MACOS_TEAM_ID");
   const issuerId = requiredEnv("MACOS_NOTARY_ISSUER_ID");
   const keyId = requiredEnv("MACOS_NOTARY_KEY_ID");
@@ -602,7 +624,7 @@ async function buildRelease(): Promise<void> {
 }
 
 async function uploadAssets(): Promise<void> {
-  const inputs = currentInputs();
+  const inputs = currentReleaseInputs();
   const releaseId = Number(requiredEnv("RELEASE_ID"));
   if (!Number.isSafeInteger(releaseId)) throw new Error("RELEASE_ID must be an integer");
   await validateRepositoryRelease(inputs, releaseId);
@@ -623,7 +645,7 @@ async function uploadAssets(): Promise<void> {
 }
 
 async function publishRelease(): Promise<void> {
-  const inputs = currentInputs();
+  const inputs = currentReleaseInputs();
   const releaseId = Number(requiredEnv("RELEASE_ID"));
   if (!Number.isSafeInteger(releaseId)) throw new Error("RELEASE_ID must be an integer");
   await validateRepositoryRelease(inputs, releaseId);
@@ -642,6 +664,9 @@ async function publishRelease(): Promise<void> {
 async function main(): Promise<void> {
   const command = Bun.argv[2];
   switch (command) {
+    case "validate-build":
+      await validateBuildCommand();
+      break;
     case "validate-release":
       await validateReleaseCommand();
       break;
@@ -665,7 +690,7 @@ async function main(): Promise<void> {
       await cleanupSigning();
       break;
     default:
-      throw new Error("expected validate-release, verify-package-config, build, upload-assets, publish, or cleanup");
+      throw new Error("expected validate-build, validate-release, verify-package-config, build, upload-assets, publish, or cleanup");
   }
 }
 

@@ -53,6 +53,7 @@ jobs:
     # GitHub Actions still requires ./ syntax for local reusable workflows.
     uses: ./.github/workflows/release.yml # zizmor: ignore[self-repository]
     with:
+      publish: true
       sha: ${{ needs.release-please.outputs.sha }}
       tag: ${{ needs.release-please.outputs.tag }}
       version: ${{ needs.release-please.outputs.version }}
