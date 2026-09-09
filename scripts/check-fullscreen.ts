@@ -257,6 +257,7 @@ done
       await writeFile(config, source);
       await accepted("0 reload_config");
       await waitFor(async () => { const s = await state(); return s.reloading === "false" && s["w0.tab_presentation"] === "Overlay" && s["w0.tab_reveal"] === "0"; }, "hidden fullscreen overlay");
+      const retainedBaseline = await state();
       await accepted("0 new_tab");
       await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) === Number(current["w0.tabs"]) + 1 && s["w0.ready"] === "true"; }, "command-switch tab ready");
       await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "new tab reveals overlay without hover");
@@ -274,6 +275,10 @@ done
       await closeTab();
       await waitFor(async () => (await state())["w0.tab_reveal"] === "1", "closed tab reveals overlay without hover");
       const closed = await state();
+      for (const field of ["terminal", "grid", "resize_requests"]) {
+        if (closed[`w0.${field}`] !== retainedBaseline[`w0.${field}`]) throw new Error(`close changed retained terminal ${field}`);
+      }
+      if (closed["w0.focused"] !== "true") throw new Error("close reveal lost terminal focus");
       await waitFor(async () => (await state())["w0.tab_reveal"] === "0", "closed tab reveal expires");
       const hidden = await state();
       for (const field of ["terminal", "grid", "resize_requests"]) {
