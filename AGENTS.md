@@ -775,3 +775,12 @@ the Rust macro dereferences its receiver even though Objective-C permits nil.
 Global shortcut keepalive requires a dispatchable binding whose native grab is
 still owned. Grabs left by failed rollback remain tracked for cleanup but must
 not keep a zero-window application alive by themselves.
+
+Publish file-driven smoke commands with a temporary file and atomic rename.
+A polling native process can read a newly created command before writeFile has
+filled it, consuming an empty or partial command.
+
+Restore the retained GPUI NSView as AppKit firstResponder after quake style
+changes and activation. setStyleMask can replace it while GPUI focus remains
+true: raw Return still reaches the shell, but printable text is lost. Release
+the retained view with the window in deferred native cleanup.

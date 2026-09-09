@@ -59,6 +59,7 @@ pub(crate) struct Platform {
 }
 struct Inner {
     native: Retained,
+    view: Retained,
     style: usize,
     shadow: BOOL,
     collection: usize,
@@ -70,11 +71,14 @@ impl Drop for Inner {
         let lease = std::mem::take(&mut self.lease);
         let native =
             std::mem::replace(&mut self.native, Retained(std::ptr::null_mut()));
+        let view =
+            std::mem::replace(&mut self.view, Retained(std::ptr::null_mut()));
         self.executor
             .spawn(async move {
                 if let Err(error) = lease.set(false) {
                     eprintln!("Quake presentation cleanup: {error}");
                 }
+                drop(view);
                 drop(native);
             })
             .detach();
@@ -123,6 +127,7 @@ impl Platform {
             ensure!(!native.is_null(), "quake NSWindow unavailable");
             Ok(Window(Rc::new(Inner {
                 native: Retained::new(native),
+                view: Retained::new(view),
                 style: msg_send![native, styleMask],
                 shadow: msg_send![native, hasShadow],
                 collection: msg_send![native, collectionBehavior],
@@ -406,6 +411,15 @@ impl Window {
                 msg_send![native,setLevel:if enabled {3isize} else {0isize}];
             let _: () = msg_send![native,setCollectionBehavior:if enabled {(self.0.collection & !(0x2 | (1 << 7))) | 0x1 | (1 << 8)} else {self.0.collection}];
         }
+        self.restore_input_responder()
+    }
+    fn restore_input_responder(&self) -> anyhow::Result<()> {
+        // SAFETY: The retained GPUI NSView is this window's text-input owner.
+        // AppKit may reset firstResponder when the window style changes.
+        let restored: BOOL = unsafe {
+            msg_send![self.0.native.0, makeFirstResponder: self.0.view.0]
+        };
+        ensure!(restored == YES, "cannot restore quake input responder");
         Ok(())
     }
     pub fn opacity(&self, value: f64) -> anyhow::Result<()> {
@@ -424,7 +438,7 @@ impl Window {
             let _: () = msg_send![app,activateIgnoringOtherApps:YES];
             let _: () = msg_send![self.0.native.0,makeKeyAndOrderFront:std::ptr::null_mut::<Object>()];
         }
-        Ok(())
+        self.restore_input_responder()
     }
     pub fn hide(&self) -> anyhow::Result<()> {
         self.0.lease.set(false)?;

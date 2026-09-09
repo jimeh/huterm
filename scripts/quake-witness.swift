@@ -59,12 +59,21 @@ final class Witness: NSObject, NSApplicationDelegate {
         case "text":
             guard CGPreflightPostEventAccess() else { try postKey(0, true, []); return }
             guard parts.count == 2 else { throw NSError(domain: "QuakeWitness", code: 4) }
-            let characters = Array(parts[1].utf16)
-            for down in [true, false] {
-                guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { throw NSError(domain: "QuakeWitness", code: 5) }
-                event.flags = []
-                event.keyboardSetUnicodeString(stringLength: characters.count, unicodeString: characters)
-                event.post(tap: .cghidEventTap)
+            // Send physical US-layout keystrokes, like the global shortcut probe.
+            // One event containing a whole Unicode token does not model typing.
+            let keyCodes: [Character: CGKeyCode] = [
+                "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3,
+                "g": 5, "h": 4, "i": 34, "j": 38, "k": 40, "l": 37,
+                "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15,
+                "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
+                "y": 16, "z": 6, "-": 27,
+            ]
+            for character in parts[1] {
+                guard let code = keyCodes[character] else {
+                    throw NSError(domain: "QuakeWitness", code: 5, userInfo: [NSLocalizedDescriptionKey: "unsupported physical typing fixture character: \(character)"])
+                }
+                try postKey(code, true, [])
+                try postKey(code, false, [])
             }
         case "quit": NSApp.terminate(nil)
         default: throw NSError(domain: "QuakeWitness", code: 6, userInfo: [NSLocalizedDescriptionKey: "unknown witness command"])

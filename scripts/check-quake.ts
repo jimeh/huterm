@@ -1,5 +1,5 @@
 /** Exercise production quake commands through real global shortcuts. */
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseState, type State } from "./check-fullscreen";
@@ -15,6 +15,11 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${label}`);
     await Bun.sleep(25);
   }
+}
+async function publishCommand(file: string, text: string): Promise<void> {
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, text);
+  await rename(temporary, file);
 }
 function profile(state: State, name: string): State | undefined {
   const entry = Object.entries(state).find(([key, value]) => key.endsWith(".profile") && value === name);
@@ -73,7 +78,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   let witnessSequence = 0;
   const native = async (text: string) => {
     const id = witnessSequence++;
-    await writeFile(join(directory,`witness-command-${id}`),text);
+    await publishCommand(join(directory,`witness-command-${id}`),text);
     await waitFor(() => Bun.file(join(directory,`witness-result-${id}`)).exists(), `native ${text}`);
     const result = await readFile(join(directory,`witness-result-${id}`),"utf8");
     if (result.startsWith("error")) throw new Error(result);
@@ -103,7 +108,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   let sequence = 0;
   const command = async (text: string) => {
     const id = sequence++;
-    await writeFile(join(directory, `command-${id}`), text);
+    await publishCommand(join(directory, `command-${id}`), text);
     await waitFor(() => Bun.file(join(directory, `result-${id}`)).exists(), text);
     const result = await readFile(join(directory, `result-${id}`), "utf8");
     if (result.includes("Err") || result.startsWith("error")) throw new Error(`${text}: ${result}`);
@@ -316,9 +321,9 @@ async function checkOrdinaryExit(executable: string, conflict = false): Promise<
     await waitFor(async () => await Bun.file(join(directory,"state")).exists() && !!profile(await state(),"ordinary")?.text?.includes("ORDINARY_READY"),"ordinary window without registrations");
     if (conflict && !(await state()).config_error?.includes("cannot register")) throw new Error("startup grab conflict did not report its failure");
     if ((await state()).keepalive !== "false") throw new Error("ordinary startup acquired a global shortcut");
-    await writeFile(join(directory,"command-0"),"ordinary close_window");
+    await publishCommand(join(directory,"command-0"),"ordinary close_window");
     await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true","ordinary final-window assessment");
-    if (app.exitCode === null) await writeFile(join(directory,"command-1"),"ordinary confirm_close");
+    if (app.exitCode === null) await publishCommand(join(directory,"command-1"),"ordinary confirm_close");
     await waitFor(async () => app.exitCode !== null,"ordinary final-window application exit");
     if (await app.exited !== 0) throw new Error(`ordinary close exited ${app.exitCode}`);
     passed = true;
