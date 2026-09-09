@@ -257,6 +257,18 @@ done
       await writeFile(config, source);
       await accepted("0 reload_config");
       await waitFor(async () => { const s = await state(); return s.reloading === "false" && s["w0.tab_presentation"] === "Overlay" && s["w0.tab_reveal"] === "0"; }, "hidden fullscreen overlay");
+      await accepted("0 new_tab");
+      await waitFor(async () => { const s = await state(); return Number(s["w0.tabs"]) === Number(current["w0.tabs"]) + 1 && s["w0.ready"] === "true"; }, "command-switch tab ready");
+      const commandBaseline = await state();
+      for (const action of ["previous_tab", "next_tab"]) {
+        await accepted(`0 ${action}`);
+        await waitFor(async () => (await state())["w0.tab_reveal"] === "1", `${action} reveals overlay without hover`);
+        const shown = await state();
+        if (shown["w0.terminal"] !== commandBaseline["w0.terminal"] || shown["w0.grid"] !== commandBaseline["w0.grid"] || shown["w0.focused"] !== "true") throw new Error("command reveal changed geometry or focus");
+        await waitFor(async () => (await state())["w0.tab_reveal"] === "0", `${action} reveal expires`);
+      }
+      if ((await state())["w0.resize_requests"] !== commandBaseline["w0.resize_requests"]) throw new Error("command reveal resized the terminal");
+      await closeTab();
       const hidden = await state();
       const [x, y] = position === "top" ? [centerX, topInset + 1] : position === "bottom" ? [centerX, height - 1] : position === "left" ? [1, centerY] : [width - 1, centerY];
       await move(x!, y!);

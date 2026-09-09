@@ -32,9 +32,15 @@ pub(super) struct Reveal {
     pub(super) progress: f32,
     last: Option<Instant>,
     leave: Option<Instant>,
+    command_until: Option<Instant>,
 }
 
 impl Reveal {
+    pub(super) fn reveal_for_command(&mut self, now: Instant) {
+        self.command_until = Some(now + Duration::from_secs(1));
+        self.last = Some(now);
+    }
+
     pub(super) fn advance(
         &mut self,
         now: Instant,
@@ -49,14 +55,15 @@ impl Reveal {
         let elapsed = self.last.replace(now).map_or(0.0, |last| {
             now.saturating_duration_since(last).as_secs_f32()
         });
-        let show = if hover {
-            self.leave = None;
-            true
-        } else {
-            now.saturating_duration_since(*self.leave.get_or_insert(now))
-                < Duration::from_millis(300)
-                && self.progress > 0.0
-        };
+        let show =
+            if hover || self.command_until.is_some_and(|until| now < until) {
+                self.leave = None;
+                true
+            } else {
+                now.saturating_duration_since(*self.leave.get_or_insert(now))
+                    < Duration::from_millis(300)
+                    && self.progress > 0.0
+            };
         let delta = elapsed / 0.15;
         self.progress =
             (self.progress + if show { delta } else { -delta }).clamp(0.0, 1.0);
@@ -88,6 +95,29 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn command_reveal_restarts_hold_and_respects_cancellation() {
+        let now = Instant::now();
+        let mut reveal = Reveal::default();
+        reveal.reveal_for_command(now);
+        reveal.advance(now + Duration::from_millis(150), false, true);
+        assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
+        reveal.reveal_for_command(now + Duration::from_millis(900));
+        reveal.advance(now + Duration::from_millis(1500), false, true);
+        assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
+        reveal.advance(now + Duration::from_millis(1900), false, true);
+        reveal.advance(now + Duration::from_millis(2199), false, true);
+        assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
+        reveal.advance(now + Duration::from_millis(2400), false, true);
+        assert!(reveal.progress.abs() < f32::EPSILON);
+        reveal.reveal_for_command(now + Duration::from_millis(2500));
+        reveal.advance(now + Duration::from_millis(2650), false, true);
+        assert!((reveal.progress - 1.0).abs() < f32::EPSILON);
+        reveal.advance(now + Duration::from_millis(2700), false, false);
+        reveal.advance(now + Duration::from_millis(2800), false, true);
+        assert!(reveal.progress.abs() < f32::EPSILON);
+    }
+
     #[test]
     fn reveal_delays_dismissal_and_reverses_without_jumping() {
         let now = Instant::now();

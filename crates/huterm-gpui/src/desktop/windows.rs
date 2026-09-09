@@ -1937,6 +1937,20 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    fn select_from_command(
+        &mut self,
+        id: TabId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let changed = self.active != Some(id);
+        self.select(id, window, cx);
+        if changed && self.presentation() == Presentation::Overlay {
+            self.refresh_tab_visibility(window, cx);
+            self.reveal.reveal_for_command(Instant::now());
+        }
+    }
+
     fn navigate(
         &mut self,
         forward: bool,
@@ -1959,7 +1973,7 @@ impl WorkspaceView {
         } else {
             (index + self.tabs.len() - 1) % self.tabs.len()
         };
-        self.select(self.tabs[next].id, window, cx);
+        self.select_from_command(self.tabs[next].id, window, cx);
         Ok(CommandOutcome::Completed)
     }
 
@@ -1980,7 +1994,7 @@ impl WorkspaceView {
         // A stray cmd-5 in a three-tab window is routine; other terminals
         // ignore it too, so it is not a refusal worth reporting.
         if let Some(tab) = tab {
-            self.select(tab.id, window, cx);
+            self.select_from_command(tab.id, window, cx);
         }
         Ok(CommandOutcome::Completed)
     }
