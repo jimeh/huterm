@@ -162,9 +162,14 @@ test("release workflows use the documented repository credential names", async (
 
 test("manual verification signs without requiring or publishing a GitHub release", async () => {
   const releaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const sourceValidation = releaseWorkflow.indexOf("name: Validate source selection");
+  const checkout = releaseWorkflow.indexOf("name: Check out exact release commit");
 
   expect(releaseWorkflow).toContain("publish:");
   expect(releaseWorkflow).toContain("default: false");
+  expect(sourceValidation).toBeGreaterThan(0);
+  expect(checkout).toBeGreaterThan(sourceValidation);
+  expect(releaseWorkflow).toContain('compare/${RELEASE_SHA}...main');
   expect(releaseWorkflow).toContain("run: bun scripts/release-macos.ts validate-build");
   expect(releaseWorkflow).toContain("if: ${{ !inputs.publish }}");
   expect(releaseWorkflow).toContain("uses: actions/upload-artifact@");

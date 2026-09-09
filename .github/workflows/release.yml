@@ -71,6 +71,27 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_DIST_DIR: ${{ github.workspace }}/dist
     steps:
+      - name: Validate source selection
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release SHA must be 40 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+
+          source_status="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_SHA}...main" \
+            --jq .status)"
+          case "$source_status" in
+            ahead | identical) ;;
+            *)
+              echo "release SHA must be an ancestor of main, comparison status: $source_status" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Check out exact release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

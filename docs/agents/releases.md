@@ -70,6 +70,10 @@ source, builds and signs both architectures, notarizes and staples the app, runs
 Gatekeeper, and uploads the ZIP and `SHA256SUMS` as an Actions artifact retained
 for seven days.
 
+The workflow rejects a SHA outside `main` before checkout or any repository code
+runs. It verifies the checkout and Cargo versions again before exposing the
+signing and notarization credentials.
+
 Verification mode does not inspect, create, update, or publish a GitHub Release
 or tag. It does submit the app to Apple's notarization service and creates the
 temporary Actions artifact.
