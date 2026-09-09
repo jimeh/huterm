@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/jimeh/huterm/compare/v0.1.0...v0.1.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* authenticate draft release validation with push access ([#66](https://github.com/jimeh/huterm/issues/66)) ([ddfa486](https://github.com/jimeh/huterm/commit/ddfa48686d7b79888ecf694c8cb9086b17f3773c))
+
 ## 0.1.0 (2026-09-09)
 
 
