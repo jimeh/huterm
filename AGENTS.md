@@ -771,3 +771,7 @@ together; native key support and OS registration remain runtime checks.
 Guard null placeholders before invoking `objc` message macros in retained-handle
 destructors. Moving an AppKit owner into deferred cleanup leaves a null sentinel;
 the Rust macro dereferences its receiver even though Objective-C permits nil.
+
+Global shortcut keepalive requires a dispatchable binding whose native grab is
+still owned. Grabs left by failed rollback remain tracked for cleanup but must
+not keep a zero-window application alive by themselves.

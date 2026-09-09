@@ -203,6 +203,12 @@ impl RegistrationBackend for GlobalHotKeyManager {
 #[derive(Default)]
 struct OwnedKeys(HashMap<u32, HotKey>);
 impl OwnedKeys {
+    fn has_bindings(&self, bindings: &[Binding]) -> bool {
+        bindings
+            .iter()
+            .any(|binding| self.0.contains_key(&binding.key.id()))
+    }
+
     fn reconcile(
         &mut self,
         backend: &impl RegistrationBackend,
@@ -317,7 +323,7 @@ impl Registrations {
         result
     }
     pub fn has_bindings(&self) -> bool {
-        !self.owned.0.is_empty()
+        self.owned.has_bindings(&self.bindings)
     }
     pub fn drain(&self) -> Vec<CommandInvocation> {
         self.events
@@ -400,6 +406,32 @@ mod tests {
         HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code)
     }
     #[test]
+    fn failed_initial_registration_with_stray_grab_does_not_keep_alive() {
+        let first = key(Code::KeyA);
+        let second = key(Code::KeyB);
+        let next = HashMap::from([(first.id(), first), (second.id(), second)]);
+        let mut order = next.values().copied();
+        let stray = order.next().unwrap();
+        let rejected = order.next().unwrap();
+        let backend = Fake::default();
+        backend.fail_register.borrow_mut().insert(rejected.id());
+        backend.fail_unregister.borrow_mut().insert(stray.id());
+        let mut owned = OwnedKeys::default();
+        let error = owned.reconcile(&backend, &next).unwrap_err();
+        assert!(error.contains("rollback failed"));
+        assert_eq!(owned.0, HashMap::from([(stray.id(), stray)]));
+        assert_eq!(owned.0, *backend.keys.borrow());
+        assert!(
+            !owned.has_bindings(&[]),
+            "stray grabs cannot dispatch commands"
+        );
+        let unavailable = Binding {
+            key: rejected,
+            invocation: CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new()),
+        };
+        assert!(!owned.has_bindings(&[unavailable]));
+    }
+    #[test]
     fn failed_replacement_keeps_previous_registration_and_tracks_failed_rollback()
      {
         let old = key(Code::KeyA);
@@ -419,6 +451,14 @@ mod tests {
         assert!(
             owned.0.contains_key(&new.id()),
             "failed rollback grab must remain owned for cleanup"
+        );
+        let previous = Binding {
+            key: old,
+            invocation: CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new()),
+        };
+        assert!(
+            owned.has_bindings(&[previous]),
+            "the previous shortcut still dispatches"
         );
         backend.fail_unregister.borrow_mut().clear();
         owned
