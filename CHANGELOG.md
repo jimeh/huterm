@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/jimeh/huterm/compare/v0.2.0...v0.3.0) (2026-09-09)
+
+
+### Features
+
+* hide single-tab bars and reveal fullscreen overlays ([#69](https://github.com/jimeh/huterm/issues/69)) ([e0ffad2](https://github.com/jimeh/huterm/commit/e0ffad204a98eb2551efccd43e15d6e153f5900c))
+
 ## [0.2.0](https://github.com/jimeh/huterm/compare/v0.1.1...v0.2.0) (2026-09-09)
 
 
