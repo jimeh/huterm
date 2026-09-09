@@ -9,6 +9,8 @@ mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod file_drop;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod fullscreen;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
@@ -77,6 +79,13 @@ pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run_renderer_smoke() {
     renderer::smoke::run();
+}
+
+/// Runs the isolated native links and file-drop verification executable.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_integration_smoke() -> anyhow::Result<()> {
+    desktop::integration_smoke::run()
 }
 
 #[cfg(test)]

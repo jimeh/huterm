@@ -13,6 +13,8 @@ pre-commit:
 
     - name: markdown
       glob: "**/*.md"
+      exclude:
+        - "third-party/vendor/gpui-0.2.2/**"
       run: mise run lint:docs:files {staged_files}
 
     - name: workflows

@@ -178,6 +178,35 @@ changes future default toggles without changing an active mode. Linux always
 uses native X11 fullscreen and reports an error if the window manager ignores
 the request; the explicit non-native command is unavailable there.
 
+### Links and file drops
+
+Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
+it with the system handler. Hover shows the destination. OSC 8 labels use their
+explicit destination; plain URLs can cross soft-wrapped rows. When a terminal
+application captures the mouse, add Shift to the configured modifier chord.
+Moving away, scrolling, changing the target, or pressing Escape cancels a click.
+Retained exited history supports links too.
+
+```toml
+[terminal]
+links = true
+link_modifiers = "cmd" # macOS default; Linux defaults to "ctrl"
+```
+
+Modifier names are `cmd`, `ctrl`, `alt`, and `shift`, joined by `-` in any
+nonempty combination. macOS rejects Ctrl because AppKit uses
+Control-click for the context menu. Reload applies both settings to open tabs.
+Only HTTP(S) destinations open. Oversized or unavailable lookups show no link.
+Ghostty's pinned OSC 8 parser accepts at most 2,046 combined URI and parameter
+bytes and discards larger sequences; Alacritty has a larger native limit.
+
+Drop files or folders onto a live terminal to paste their absolute paths in
+source order, escaped for bash/zsh and followed by a space. Huterm preserves
+symlink spelling, sends one paste, and never adds Enter. Bracketed paste follows
+the application's current mode. An invalid, non-UTF-8, control-containing, or
+oversized path rejects the whole drop. Exited terminals and confirmation dialogs
+do not accept file drops.
+
 ### Option and Alt as Meta
 
 On macOS, set this to use either Option key for terminal Meta chords in Emacs,

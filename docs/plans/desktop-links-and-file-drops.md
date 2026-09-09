@@ -375,3 +375,24 @@ unsupported filenames are proposed product defaults for review. Scan limits
 and numerical performance budgets must be settled from measurements before
 the implementation is accepted. Native Wayland verification depends on an
 available compositor environment.
+
+## Approved implementation amendment
+
+During implementation, native X11 inspection found that GPUI 0.2.2 emits a
+synthetic drag movement before it has decoded the file list. Its URI-list
+reader also silently drops invalid items and ignores native payload truncation.
+A terminal-only handler cannot identify that first event or recover discarded
+items. Jim approved vendoring GPUI 0.2.2 with a focused X11 fix on 2026-09-09.
+
+The patch orders Entered before Pending/Submit, rejects malformed or truncated
+native URI lists as a whole, and handles cancellation and selection-reply races.
+Each conversion uses a temporary requestor window so a late reply cannot become
+a new drag in the same destination window. Keep the GPUI version and public API
+unchanged, retain upstream files and licensing, and document the small patch and
+its removal condition in `third-party/vendor/README.md`. The existing non-goal
+of adding an engine dependency patch remains unchanged.
+
+Native X11 source tests must cover first-event mouse silence, invalid and
+oversized payload rejection, early Drop, and stale replies after cancellation
+and a new drag. Verify macOS compilation and native smokes with the same pinned
+GPUI source, then compare ordinary output/scrolling against the clean baseline.

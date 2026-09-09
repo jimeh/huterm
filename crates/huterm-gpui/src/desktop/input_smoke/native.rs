@@ -8,13 +8,13 @@ use std::ffi::CString;
 
 pub(super) fn post(command: &str) -> anyhow::Result<()> {
     let fields: Vec<_> = command.split('\t').collect();
+    if fields[0] == "mouse" && matches!(fields.len(), 4 | 5) {
+        return post_mouse(&fields);
+    }
     ensure!(
         fields.len() == 4,
         "expected keycode, flags, characters, plain characters"
     );
-    if fields[0] == "mouse" {
-        return post_mouse(&fields);
-    }
     let key: u16 = fields[0].parse()?;
     let flags: usize = fields[1].parse()?;
     let characters = CString::new(fields[2])?;
@@ -57,6 +57,7 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
     let kind: usize = fields[1].parse()?;
     let x: f64 = fields[2].parse()?;
     let y: f64 = fields[3].parse()?;
+    let flags: usize = fields.get(4).map_or(Ok(0), |value| value.parse())?;
     // SAFETY: Main-thread AppKit objects; the queue retains the event.
     unsafe {
         let app: *mut Object = msg_send![
@@ -71,7 +72,7 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
         let event: *mut Object = msg_send![Class::get("NSEvent").context("NSEvent")?,
             mouseEventWithType: kind
             location: gpui::point(if x < 1.0 { x * bounds.size.width } else { x }, bounds.size.height - y)
-            modifierFlags: 0_usize timestamp: 0.0_f64 windowNumber: number
+            modifierFlags: flags timestamp: 0.0_f64 windowNumber: number
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
             clickCount: 1_isize pressure: 1.0_f32];
         ensure!(!event.is_null(), "mouse NSEvent construction failed");

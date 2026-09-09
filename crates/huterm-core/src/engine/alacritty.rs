@@ -388,6 +388,94 @@ fn cursor_shape(shape: AlacrittyCursorShape) -> CursorShape {
     }
 }
 
+impl super::links::LinkBuffer for TerminalEngine {
+    fn total_rows(&self) -> Result<usize, huterm_protocol::LinkLookup> {
+        Ok(self.term.history_size() + self.term.screen_lines())
+    }
+
+    fn wrapped(&self, row: usize) -> Result<bool, huterm_protocol::LinkLookup> {
+        let line = i32::try_from(row)
+            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)?
+            - i32::try_from(self.term.history_size())
+                .map_err(|_| huterm_protocol::LinkLookup::Unavailable)?;
+        Ok(
+            self.term.grid()[Line(line)][Column(self.term.columns() - 1)]
+                .flags
+                .contains(Flags::WRAPLINE),
+        )
+    }
+
+    fn cell(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<super::links::TextCell, huterm_protocol::LinkLookup> {
+        use super::links::{MAX_LINK_BYTES, TextCell};
+        use huterm_protocol::LinkLookup;
+        if row >= self.term.history_size() + self.term.screen_lines()
+            || usize::from(column) >= self.term.columns()
+        {
+            return Err(LinkLookup::Unavailable);
+        }
+        let line = i32::try_from(row).map_err(|_| LinkLookup::Unavailable)?
+            - i32::try_from(self.term.history_size())
+                .map_err(|_| LinkLookup::Unavailable)?;
+        let cell = &self.term.grid()[Line(line)][Column(usize::from(column))];
+        let mut text = String::new();
+        if !cell.flags.intersects(
+            Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+        ) {
+            text.push(cell.c);
+            if let Some(combining) = cell.zerowidth() {
+                for character in combining {
+                    if text.len() + character.len_utf8() > MAX_LINK_BYTES {
+                        return Err(LinkLookup::ScanLimit);
+                    }
+                    text.push(*character);
+                }
+            }
+        }
+        Ok(TextCell { text })
+    }
+
+    fn hyperlink(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<Option<String>, huterm_protocol::LinkLookup> {
+        use huterm_protocol::LinkLookup;
+        let line = i32::try_from(row).map_err(|_| LinkLookup::Unavailable)?
+            - i32::try_from(self.term.history_size())
+                .map_err(|_| LinkLookup::Unavailable)?;
+        self.term.grid()[Line(line)][Column(usize::from(column))]
+            .hyperlink()
+            .map(|link| {
+                if link.uri().len() > super::links::MAX_LINK_BYTES {
+                    Err(LinkLookup::ScanLimit)
+                } else {
+                    Ok(link.uri().to_owned())
+                }
+            })
+            .transpose()
+    }
+
+    fn same_hyperlink(
+        &self,
+        row: usize,
+        column: u16,
+        destination: &str,
+        _: &mut [u8],
+    ) -> Result<bool, huterm_protocol::LinkLookup> {
+        use huterm_protocol::LinkLookup;
+        let line = i32::try_from(row).map_err(|_| LinkLookup::Unavailable)?
+            - i32::try_from(self.term.history_size())
+                .map_err(|_| LinkLookup::Unavailable)?;
+        Ok(self.term.grid()[Line(line)][Column(usize::from(column))]
+            .hyperlink()
+            .is_some_and(|link| link.uri() == destination))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

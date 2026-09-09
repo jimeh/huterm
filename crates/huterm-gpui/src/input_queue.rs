@@ -140,6 +140,61 @@ mod tests {
     }
 
     #[test]
+    fn file_drop_paste_admission_is_atomic_at_full_and_closed_boundaries() {
+        let mut queue = InputQueue::default();
+        let paste = crate::file_drop::format_paths(
+            &["/tmp/a b".into()],
+            PENDING_INPUT_BYTE_CAPACITY,
+        )
+        .unwrap();
+        queue
+            .enqueue(
+                TerminalInput::Text("x".repeat(PENDING_INPUT_BYTE_CAPACITY)),
+                false,
+                |_| Err(RuntimeError::Busy),
+            )
+            .unwrap();
+        assert_eq!(
+            queue
+                .enqueue(
+                    TerminalInput::Paste(paste.clone()),
+                    false,
+                    |_| panic!("full drop reached runtime")
+                )
+                .unwrap(),
+            Admission::Full
+        );
+        assert_eq!(queue.inputs.len(), 1);
+        let mut sent = Vec::new();
+        queue
+            .retry(|input| {
+                sent.push(input);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            queue
+                .enqueue(TerminalInput::Paste(paste.clone()), false, |input| {
+                    sent.push(input);
+                    Ok(())
+                })
+                .unwrap(),
+            Admission::Accepted
+        );
+        assert_eq!(sent.last(), Some(&TerminalInput::Paste(paste.clone())));
+        queue.close();
+        assert_eq!(
+            queue
+                .enqueue(TerminalInput::Paste(paste), false, |_| panic!(
+                    "closed drop reached runtime"
+                ))
+                .unwrap(),
+            Admission::Closed
+        );
+    }
+
+    #[test]
     fn meta_prefix_counts_toward_queue_capacity() {
         let mut queue = InputQueue::default();
         let full = TerminalInput::Character {

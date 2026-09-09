@@ -580,3 +580,32 @@ worktree/architecture-scoped volume. Exclude host `target`, `.native`, and
 Mise's Rust install points at `/root/.cargo/bin` in the image; changing
 `CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
 and Git downloads separately while retaining the image's Cargo home.
+
+Terminal link lookup runs only on the terminal owner thread, paired with its
+snapshot. Keep the scan limits (32 KiB text/destination, 128 rows, 16,384 cells,
+2 MiB explicit-link comparison work) and preserve viewport/damage state. The
+Ghostty native OSC 8 parser uses a fixed 2,048-byte capture: parameters plus URI
+may occupy 2,046 bytes; larger sequences are discarded, not truncated.
+
+The vendored GPUI X11 patch resolves native file-URI lists as a whole before
+emitting any FileDrop event. Each conversion owns a fresh requestor window;
+sources may use CurrentTime=0, so timestamps cannot identify stale replies.
+Destroy the requestor on
+leave, replacement, failure, completed drop, and destination close. Preserve raw
+URI path spelling through percent decoding: URL normalization changes symlink
+`..` semantics. External drag entry retires link press ownership and releases
+accepted application mouse gestures before synthetic file-drop motion.
+
+A path-imported vendor test module still gets traversed by cargo fmt even when
+its crate is excluded from the workspace. Keep rustfmt::skip on that module
+import so focused production-helper tests preserve upstream vendor formatting.
+
+GPUI keeps ExternalPaths in an application-wide active drag, and destroying its
+native destination window does not clear it. Track the current destination from
+WorkspaceView's typed drag capture, including chrome and confirmation overlays.
+At actual assessed window removal, clear that window's drag with
+App::stop_active_drag; do this after macOS's deferred fullscreen cleanup, just
+before remove_window. Closing a different window must not cancel the drag.
+Huterm tab reordering uses its own capture state, not GPUI's active drag. Keep
+native two-window coverage: close a Ready destination without Exited, then prove
+that a different payload and ordinary input reach the surviving terminal.

@@ -1,4 +1,6 @@
-# libghostty-vt-sys CPU backport
+# Vendored dependencies
+
+## libghostty-vt-sys CPU backport
 
 `libghostty-vt-sys-0.2.1` contains the published registry crate with the
 12-line CPU-target fix from upstream commit
@@ -30,3 +32,25 @@ Remove this directory and the Cargo patch when a reviewed published release
 provides this CPU fix and is compatible with the selected native revision and
 Zig toolchain. Update binding, native-source, and license pins together if that
 release requires an API change. Keep the forced baseline CPU contract.
+
+## GPUI X11 native file-drop correction
+
+`gpui-0.2.2` contains the published Apache-2.0 registry crate. The archive's
+SHA-256 is `979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`.
+Its published VCS metadata names `69e2130295c2649963eb639fc70b4f2ee8ea1624` and
+marks that upstream checkout dirty. The registry archive is the reproducible
+source of truth. All published files are retained; Cargo's `.cargo-ok` extraction
+marker is omitted.
+
+Huterm's patch is restricted to X11 native file-drop sequencing and complete
+URI-list decoding. Native selection conversion uses a temporary requestor
+window per drag. Late replies from canceled drags cannot be mistaken for a
+new drag in the same Huterm window. No synthetic Pending/Submit event reaches
+terminal mouse handlers before a valid Entered event. Invalid or truncated
+native lists are refused as a whole. App-specific path quoting, paste admission,
+and status feedback remain in Huterm.
+
+Keep upstream formatting in this directory. Remove the Cargo patch and vendored
+crate once a reviewed published GPUI release supplies equivalent native
+sequencing, whole-payload validation, and stale-reply isolation. Rerun both
+platforms' desktop integration smokes when removing it.

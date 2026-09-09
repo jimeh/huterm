@@ -589,3 +589,45 @@ mod tests {
         assert_eq!(BufferRange::ordered(right, left).start, left);
     }
 }
+
+/// Origin of an activatable terminal hyperlink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkSource {
+    /// A detected HTTP or HTTPS URL in terminal text.
+    PlainText,
+    /// An explicit OSC 8 destination.
+    Osc8,
+}
+
+/// One visible cell belonging to a link, retained for activation validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkCell {
+    /// Cell position in the paired snapshot's viewport.
+    pub position: MousePosition,
+    /// Visible text, including combining characters and empty wide spacers.
+    pub text: String,
+}
+
+/// Complete destination and visible identity resolved from canonical state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalLink {
+    /// Validated HTTP or HTTPS destination, without truncation.
+    pub destination: String,
+    /// Whether the destination came from OSC 8 or plain text.
+    pub source: LinkSource,
+    /// Ordered visible cells belonging to this link.
+    pub cells: Vec<LinkCell>,
+}
+
+/// Nonfatal outcome of an optional snapshot-paired link lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkLookup {
+    /// A complete activatable target.
+    Match(TerminalLink),
+    /// The requested cell has no supported destination.
+    NoMatch,
+    /// A bounded scan could not prove a complete destination.
+    ScanLimit,
+    /// Buffer inspection failed; the paired snapshot remains usable.
+    Unavailable,
+}
