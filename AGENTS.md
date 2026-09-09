@@ -722,3 +722,5 @@ Taplo 0.10.0 skips properties beside a schema's `allOf` during completion.
 Keep common keybinding fields in its first member, with command constraints in
 later `if`/`then` members. This preserves command completion and specific argument
 diagnostics; it does not provide command-specific argument completion.
+Make Bun test tasks that import packages depend directly on `scripts:install`.
+A sibling typecheck's install dependency does not order parallel test startup.
