@@ -645,3 +645,24 @@ Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
 run twm with `LC_ALL=C`. Default manual placement can grab the X server and
 block Huterm startup, producing zero samples; missing host fontsets can also
 leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.
+
+Patched registry crates use ordered named patches in
+`third-party/vendor/sources.json` against checksum-pinned release archives. Agents
+own patch maintenance for authorized fixes; follow
+`third-party/vendor/README.md` without asking the user to operate the workflow.
+Run `vendor:status`, then `mise run vendor:start -- <crate> <patch>` before edits.
+Edit and test the fully applied vendor tree normally, then run `vendor:finish`.
+Resolve replay conflicts in the printed private workspace and use `vendor:continue`.
+Use `vendor:reopen` for more build-tree edits after finish starts. Only explicitly
+adopt pre-existing edits after reviewing their scope; never absorb unexplained
+source drift or edit recipe files during an active session. Review patch ownership,
+run `vendor:check` and the affected behavioral checks, and finish every session
+before handoff or commit. Commit source and patches together when authorized.
+GPUI 0.2.2 was packaged from a dirty checkout, so its Git revision alone is not
+an exact source baseline. Normal builds use the vendored tree directly.
+Private Git snapshots must force-add ignored package files and disable attributes
+that transform bytes or omit archive entries; otherwise the patch recipe can lose
+published files or alter line endings.
+Disable automatic Git maintenance in private vendor session repositories. On
+Git 2.55, detached maintenance recreated a deleted GPUI session directory after
+finish, leaving metadata without state.json and blocking subsequent commands.

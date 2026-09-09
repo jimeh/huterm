@@ -349,7 +349,7 @@ run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
 
 [tasks."verify:parallel"]
 hide = true
-depends = ["check", "test", "license", "audit:scripts", "ci:workflows"]
+depends = ["check", "test", "license", "audit:scripts", "ci:workflows", "vendor:check"]
 
 [tasks."verify:platform:parallel"]
 hide = true
@@ -605,3 +605,31 @@ xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-desktop-integr
 description = "Launch a safe raw-PTY recorder for Finder or file-manager QA (engine argument)"
 depends = ["ghostty:prepare"]
 run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke && bun scripts/manual-desktop-integration.ts"
+
+[tasks."vendor:check"]
+description = "Verify vendored crates match their pinned archives and patches"
+run = "bun scripts/vendor.ts check"
+
+[tasks."vendor:start"]
+description = "Start a targeted vendor edit session: <crate> <patch>"
+run = "bun scripts/vendor.ts start"
+
+[tasks."vendor:finish"]
+description = "Fold tested vendor edits into the selected patch and replay later patches: <crate>"
+run = "bun scripts/vendor.ts finish"
+
+[tasks."vendor:continue"]
+description = "Resume a vendor session after resolving a replay conflict: <crate>"
+run = "bun scripts/vendor.ts continue"
+
+[tasks."vendor:status"]
+description = "Show active vendor edit sessions, optionally for one crate"
+run = "bun scripts/vendor.ts status"
+
+[tasks."vendor:cancel"]
+description = "Cancel a vendor session, retaining source edits and recovery state: <crate>"
+run = "bun scripts/vendor.ts cancel"
+
+[tasks."vendor:reopen"]
+description = "Return a vendor session to editing, preserving source and replay work: <crate>"
+run = "bun scripts/vendor.ts reopen"

@@ -28,3 +28,7 @@ pre-commit:
     - name: scripts
       glob: "{scripts/*.ts,scripts/*.sh,package.json,bun.lock,bunfig.toml,tsconfig.json}"
       run: mise run check:scripts
+
+    - name: vendor
+      glob: "{third-party/vendor/**,scripts/vendor*.ts}"
+      run: mise run vendor:check

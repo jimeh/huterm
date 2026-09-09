@@ -1,0 +1,53 @@
+{
+  "schema": 2,
+  "sources": [
+    {
+      "name": "gpui",
+      "version": "0.2.2",
+      "url": "https://static.crates.io/crates/gpui/gpui-0.2.2.crate",
+      "sha256": "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707",
+      "upstream": {
+        "repository": "https://github.com/zed-industries/zed",
+        "revision": "69e2130295c2649963eb639fc70b4f2ee8ea1624",
+        "path": "crates/gpui",
+        "dirty": true
+      },
+      "patches": [
+        {
+          "name": "x11-file-drop",
+          "file": "patches/gpui/x11-file-drop.patch",
+          "description": "Validate complete X11 URI lists, prefer URI offers, and isolate stale selection replies per drag."
+        }
+      ]
+    },
+    {
+      "name": "libghostty-vt-sys",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/libghostty-vt-sys/libghostty-vt-sys-0.2.1.crate",
+      "sha256": "865fed12a8b2bba3507b3bccd0bef439e06ef1100e652fe6b71d132c41ee8db0",
+      "upstream": {
+        "repository": "https://github.com/Uzaaft/libghostty-rs",
+        "revision": "46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0",
+        "path": "crates/libghostty-vt-sys"
+      },
+      "patches": [
+        {
+          "name": "cpu-target",
+          "file": "patches/libghostty-vt-sys/cpu-target.patch",
+          "description": "Backport configurable CPU targeting.",
+          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/f720ad74a66e333181986fd5008f34c0a788a119"
+        },
+        {
+          "name": "build-script-watch-path",
+          "file": "patches/libghostty-vt-sys/build-script-watch-path.patch",
+          "description": "Watch the crate-relative build script."
+        },
+        {
+          "name": "license",
+          "file": "patches/libghostty-vt-sys/license.patch",
+          "description": "Include the MIT license supplied with the reviewed binding notice."
+        }
+      ]
+    }
+  ]
+}

@@ -118,6 +118,9 @@ jobs:
         with:
           key: dependencies
 
+      - name: Verify patched vendor sources
+        run: mise run vendor:check
+
       - name: Audit Cargo dependencies
         run: mise run license
 
