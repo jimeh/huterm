@@ -41,7 +41,43 @@ function assert(value: unknown, label: string): asserts value {
   if (!value) throw new Error(label);
 }
 
-async function check(executable: string, engine: string) {
+type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
+function assertRunning(child: X11Process, name: string) {
+  assert(child.exitCode === null && child.signalCode === null,
+    `${name} exited: pid=${child.pid} exit=${child.exitCode} signal=${child.signalCode}`);
+}
+
+export async function discoverX11Window(app: X11Process, wm: X11Process, timeout = 10000): Promise<string> {
+  const deadline = performance.now() + timeout;
+  while (performance.now() < deadline) {
+    assertRunning(wm, "Openbox");
+    assertRunning(app, "Huterm");
+    const probe = Bun.spawn(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid)], {
+      stdout: "pipe", stderr: "pipe",
+      timeout: Math.max(1, Math.min(1000, Math.ceil(deadline - performance.now()))),
+      killSignal: "SIGKILL",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited,
+    ]);
+    assertRunning(wm, "Openbox");
+    assertRunning(app, "Huterm");
+    if (code === 0) {
+      const id = stdout.trim().split(/\s+/)[0]!;
+      assert(/^\d+$/.test(id), `xdotool returned an invalid window ID: ${stdout}`);
+      return id;
+    }
+    // A probe killed by the overall deadline is a window timeout, not an X11 error.
+    if (probe.signalCode && performance.now() >= deadline) break;
+    // No matches is a normal observation while the window manager maps a client.
+    assert(code === 1 && !probe.signalCode && !stderr.trim(),
+      `xdotool window search failed: exit=${code} signal=${probe.signalCode} ${stderr.trim()}`);
+    await Bun.sleep(20);
+  }
+  throw new Error(`timed out waiting for visible Huterm X11 window: pid=${app.pid} (${timeout} ms)`);
+}
+
+async function check(executable: string, engine: string, wm?: X11Process) {
   const directory = await mkdtemp(join(tmpdir(), "huterm-integration-"));
   const config = join(directory, "config.toml");
   const bytes = join(directory, "bytes");
@@ -114,12 +150,12 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   }
   async function discoverWindow() {
     try {
-      return run([
-        "xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid),
-      ]).split(/\s+/)[0]!;
+      assert(wm, "X11 window discovery requires Openbox");
+      return await discoverX11Window(app, wm);
     } catch (error) {
       const lastState = await state();
       process.stderr.write(`DESKTOP_INTEGRATION discovery pid=${app.pid} exit=${app.exitCode} signal=${app.signalCode}\nlast state=${JSON.stringify(lastState)}\n`);
+      if (wm) process.stderr.write(`Openbox pid=${wm.pid} exit=${wm.exitCode} signal=${wm.signalCode}\n`);
       const inspect = (args: string[]) => {
         const result = Bun.spawnSync(args, {
           stdout: "pipe", stderr: "pipe", timeout: 1000,
@@ -242,7 +278,11 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   }
   try {
     await waitFor(
-      async () => (await state()).text?.includes("READY") ?? false,
+      async () => {
+        assertRunning(app, "Huterm");
+        if (wm) assertRunning(wm, "Openbox");
+        return (await state()).text?.includes("READY") ?? false;
+      },
       "ready terminal",
     );
     if (!macos) {
@@ -777,31 +817,43 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     else await rm(directory, { recursive: true, force: true });
   }
 }
-if (import.meta.main) {
-  const wm = macos ? undefined : Bun.spawn(["openbox", "--sm-disable"], {
-    stdout: "ignore", stderr: "pipe",
-  });
-  const wmErrors = wm ? new Response(wm.stderr).text() : Promise.resolve("");
+export async function withOpenbox(check: (wm: X11Process) => Promise<void>, timeout = 10000) {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-openbox-"));
+  const ready = join(directory, "ready");
+  let wm: ReturnType<typeof Bun.spawn<"ignore", "ignore", "pipe">> | undefined;
+  let wmErrors = Promise.resolve("");
   try {
-    if (wm)
-      await waitFor(async () => {
-        assert(wm.exitCode === null, `Openbox exited ${wm.exitCode}`);
-        return run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"])
-          .includes("window id");
-      }, "Openbox EWMH readiness");
-    for (const engine of ["alacritty", "ghostty"])
-      await check(
-        resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"), engine,
-      );
+    // Openbox publishes EWMH during screen_annex, before window management starts.
+    // Its startup command runs only after initialization and window_manage_all.
+    wm = Bun.spawn(["openbox", "--sm-disable", "--startup", `touch ${quote(ready)}`], {
+      stdin: "ignore", stdout: "ignore", stderr: "pipe",
+    });
+    wmErrors = new Response(wm.stderr).text();
+    const manager = wm;
+    await waitFor(async () => {
+      assertRunning(manager, "Openbox");
+      return Bun.file(ready).exists();
+    }, "Openbox startup completion", timeout);
+    await check(wm);
   } finally {
     if (wm) {
-      if (wm.exitCode === null) wm.kill("SIGTERM");
+      const manager = wm;
+      if (manager.exitCode === null) manager.kill("SIGTERM");
       const force = setTimeout(() => {
-        if (wm.exitCode === null) wm.kill("SIGKILL");
+        if (manager.exitCode === null) manager.kill("SIGKILL");
       }, 1000);
-      await wm.exited;
+      await manager.exited;
       clearTimeout(force);
       process.stderr.write(await wmErrors);
     }
+    await rm(directory, { recursive: true, force: true });
   }
+}
+if (import.meta.main) {
+  const checks = async (wm?: X11Process) => {
+    for (const engine of ["alacritty", "ghostty"])
+      await check(resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"), engine, wm);
+  };
+  if (macos) await checks();
+  else await withOpenbox(checks);
 }

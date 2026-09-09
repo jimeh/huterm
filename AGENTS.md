@@ -618,7 +618,10 @@ still has application mouse tracking enabled.
 
 X11 file-drop type negotiation must find text/uri-list in inline offers and
 XdndTypeList even when text/plain appears first. Start Openbox with --sm-disable
-and wait for _NET_SUPPORTING_WM_CHECK before launching integration fixtures.
+and wait for its --startup command before launching integration fixtures.
+Openbox publishes _NET_SUPPORTING_WM_CHECK before completing startup.
+Poll visible windows without xdotool --sync, with a bounded deadline and app/WM
+liveness checks; an empty search is pending, but process or X11 errors must fail.
 Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
 Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
 keep reporting enabled through the entire native drag assertion.
