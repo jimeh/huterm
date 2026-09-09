@@ -784,3 +784,7 @@ Restore the retained GPUI NSView as AppKit firstResponder after quake style
 changes and activation. setStyleMask can replace it while GPUI focus remains
 true: raw Return still reaches the shell, but printable text is lost. Release
 the retained view with the window in deferred native cleanup.
+
+AppKit returns no NSScreen for a fully offscreen window during quake slides.
+GPUI display-link and maximization getters must handle nil; screen and occlusion
+callbacks restart the display link when the window returns.

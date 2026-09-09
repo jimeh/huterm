@@ -138,6 +138,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await waitFor(async () => (await current())?.active === "true" && (await current())?.stage === "Idle", "second summon");
     const second = (await current())!;
     if (second.native_id !== first.native_id || !second.text?.includes(`READY:${identity}`)) throw new Error("summon replaced the window or shell");
+    await input("second-summon");
+    await waitFor(async () => (await current())?.text?.includes(`ACK:second-summon:${identity}:`) ?? false, "PTY ACK after hide and resummon");
     if (engine === "alacritty") {
       const reload = async (settings: string, extra = "") => {
         await writeFile(config, configText(settings, extra));

@@ -6,8 +6,9 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI has separate file-drop and explicit-float
-patches, plus hidden-window creation, X11 native-handle, and application-lifetime
-fixes. The sys crate has separate CPU, build-script watch-path, and license patches.
+patches, plus hidden-window creation, X11 native-handle, application-lifetime,
+and macOS offscreen-display fixes. The sys crate has separate CPU, build-script
+watch-path, and license patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -218,3 +219,9 @@ closed. The application-lifetime patch leaves that decision to Huterm's existing
 close/quit coordinator. The native smoke proves that active global registrations
 retain a zero-window process, and that final-window close without registrations
 still exits it.
+
+GPUI's macOS display-link setup dereferenced `NSWindow.screen` while an animated
+window was fully offscreen. AppKit returns nil in that state. The offscreen-display
+patch stops the link until a screen or visibility callback restarts it, and treats
+an offscreen window as not maximized. The native quake smoke exercises slide-out,
+resummon, and a fresh shell ACK.

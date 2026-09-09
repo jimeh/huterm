@@ -37,6 +37,11 @@
           "name": "x11-application-lifetime",
           "file": "patches/gpui/x11-application-lifetime.patch",
           "description": "Keep the X11 loop alive after its last window closes so the application owns zero-window lifetime and explicit Quit."
+        },
+        {
+          "name": "macos-offscreen-display-link",
+          "file": "patches/gpui/macos-offscreen-display-link.patch",
+          "description": "Stop the display link while an offscreen macOS window has no NSScreen and restart it when a screen is assigned."
         }
       ]
     },
