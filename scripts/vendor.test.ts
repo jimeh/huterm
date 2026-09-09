@@ -227,7 +227,7 @@ const action = (f: Awaited<ReturnType<typeof series>>, mode: string) => runSessi
 // These tests use real archives and Git merge machinery; the source tree is the oracle.
 // Process and filesystem overhead can exceed Bun's five-second default on Linux.
 const sessionTest = (name: string, action: () => Promise<void>) => test(name, action, 30_000);
-test("a session folds repeated build-tree edits into the target and retains later changes", async () => {
+sessionTest("a session folds repeated build-tree edits into the target and retains later changes", async () => {
   const f = await series();
   const patches = contents(f);
   const before = treeEntries(f.vendor);
