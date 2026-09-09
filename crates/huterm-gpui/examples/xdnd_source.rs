@@ -4,7 +4,7 @@
 #[cfg(target_os = "linux")]
 mod source {
     use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -100,6 +100,15 @@ mod source {
         fn XFlush(display: *mut c_void) -> c_int;
         fn XCloseDisplay(display: *mut c_void) -> c_int;
     }
+    fn publish(
+        directory: &Path,
+        name: &str,
+        value: &str,
+    ) -> std::io::Result<()> {
+        let temporary = directory.join(format!("{name}.tmp"));
+        std::fs::write(&temporary, value)?;
+        std::fs::rename(temporary, directory.join(name))
+    }
     #[allow(clippy::too_many_lines)]
     pub fn run() -> anyhow::Result<()> {
         let args: Vec<_> = std::env::args().collect();
@@ -177,14 +186,14 @@ mod source {
             };
             send("XdndEnter", types);
             send("XdndPosition", [source_data, 0, 0, 0, copy_data]);
-            let started = Instant::now();
+            let mut last_activity = Instant::now();
             let mut request: Option<(Request, Instant)> = None;
             let mut sequence = 0;
             let mut stale: Option<Request> = None;
             loop {
                 anyhow::ensure!(
-                    started.elapsed() < Duration::from_secs(10),
-                    "native XDND source timed out"
+                    last_activity.elapsed() < Duration::from_secs(10),
+                    "native XDND source timed out after 10 seconds idle"
                 );
                 while XPending(display) > 0 {
                     let mut event = Event { padding: [0; 24] };
@@ -225,20 +234,15 @@ mod source {
                                     &raw mut notification,
                                 );
                                 XFlush(display);
-                                std::fs::write(
-                                    directory.join("stale-sent"),
-                                    "sent",
-                                )?;
+                                publish(&directory, "stale-sent", "sent")?;
                             }
                             request = Some((incoming, Instant::now()));
                             if mode == "early" {
                                 send("XdndDrop", [source_data, 0, 0, 0, 0]);
                             }
                         }
-                        std::fs::write(
-                            directory.join("requested"),
-                            "requested",
-                        )?;
+                        publish(&directory, "requested", "requested")?;
+                        last_activity = Instant::now();
                     } else if event.client.kind == 33
                         && event.client.message == atom("XdndStatus")
                     {
@@ -247,18 +251,21 @@ mod source {
                                 event.client.data[1] & 1 == 0,
                                 "text-only drag accepted"
                             );
-                            std::fs::write(directory.join("ready"), "refused")?;
+                            publish(&directory, "ready", "refused")?;
+                            last_activity = Instant::now();
                         } else if mode.starts_with("uri-")
                             && event.client.data[1] & 1 == 0
                         {
-                            std::fs::write(directory.join("ready"), "refused")?;
+                            publish(&directory, "ready", "refused")?;
+                            last_activity = Instant::now();
                         }
                     } else if event.client.kind == 33
                         && event.client.message == atom("XdndFinished")
                     {
-                        std::fs::write(
-                            directory.join("finished"),
-                            format!("{}", event.client.data[1] & 1),
+                        publish(
+                            &directory,
+                            "finished",
+                            &format!("{}", event.client.data[1] & 1),
                         )?;
                         XCloseDisplay(display);
                         return Ok(());
@@ -301,7 +308,8 @@ mod source {
                     );
                     XFlush(display);
                     request = None;
-                    std::fs::write(directory.join("ready"), "ready")?;
+                    publish(&directory, "ready", "ready")?;
+                    last_activity = Instant::now();
                 }
                 if let Ok(action) = std::fs::read_to_string(
                     directory.join(format!("action-{sequence}")),
@@ -316,20 +324,21 @@ mod source {
                         }
                         "exit" => {
                             send("XdndLeave", [source_data, 0, 0, 0, 0]);
-                            std::fs::write(
-                                directory.join(format!("done-{sequence}")),
+                            publish(
+                                &directory,
+                                &format!("done-{sequence}"),
                                 "done",
                             )?;
                             XCloseDisplay(display);
                             return Ok(());
                         }
-                        _ => anyhow::bail!("unknown native XDND action"),
+                        _ => anyhow::bail!(
+                            "unknown native XDND action: {action:?}"
+                        ),
                     }
-                    std::fs::write(
-                        directory.join(format!("done-{sequence}")),
-                        "done",
-                    )?;
+                    publish(&directory, &format!("done-{sequence}"), "done")?;
                     sequence += 1;
+                    last_activity = Instant::now();
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }

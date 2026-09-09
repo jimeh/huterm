@@ -622,3 +622,13 @@ and wait for _NET_SUPPORTING_WM_CHECK before launching integration fixtures.
 Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
 Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
 keep reporting enabled through the entire native drag assertion.
+
+Integration fixture native-command acknowledgments mean NSEvents were queued,
+not dispatched. Assert observed state transitions after each press/release;
+check independent Right release and link ownership in the same published state.
+Publish polled command and value files through temporary-file rename, including
+XDND actions and finished status, so readers never observe partial contents.
+
+Bound the native XDND fixture by idle time, resetting its deadline after
+selection-handshake progress and serviced actions. A valid drag can exceed ten
+seconds overall while each individual phase stays within its timeout.

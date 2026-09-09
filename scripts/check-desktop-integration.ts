@@ -101,6 +101,17 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       }),
     );
   }
+  async function waitForState(
+    predicate: (current: Record<string, string>) => boolean,
+    label: string,
+  ) {
+    let current: Record<string, string> = {};
+    await waitFor(async () => {
+      current = await state();
+      return predicate(current);
+    }, label);
+    return current;
+  }
   async function discoverWindow() {
     try {
       return run([
@@ -310,20 +321,35 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       await modifiers(command);
       await hover(url);
       await mouse(1, 2, 0);
-      assert((await state()).owned === "true", "Cmd-left did not own link press");
+      await waitForState(
+        (current) => current.owned === "true", "Cmd-left link press ownership",
+      );
       await mouse(3, 2, 0);
+      await waitForState(
+        (current) => current.held_right === "true", "native Right press",
+      );
       await mouse(4, 2, 0);
-      assert((await state()).owned === "true", "independent Right release consumed link press");
+      const rightReleased = await waitForState(
+        (current) => current.held_right === "false", "native Right release",
+      );
+      assert(
+        rightReleased.owned === "true",
+        "independent Right release consumed link press",
+      );
       await modifiers(command | (1 << 18));
+      await hover("");
       await mouse(2, 2, 0);
       await modifiers(0);
       await mouse(1, 2, 0);
+      await waitForState(
+        (current) => current.selection === "true", "following selection start",
+      );
       await mouse(6, 5, 0);
       await mouse(2, 5, 0);
-      await waitFor(async () => {
-        const released = await state();
-        return released.owned === "false" && released.selection === "false";
-      }, "Control-remapped link release and following selection to finish");
+      await waitForState(
+        (current) => current.owned === "false" && current.selection === "false",
+        "Control-remapped link release and following selection to finish",
+      );
       await raw("Control-remapped-link-release-cancels-and-next-selection-finishes");
       await opened(2);
     }
@@ -449,6 +475,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     let drag: ReturnType<typeof Bun.spawn> | undefined;
     let dragDirectory = "";
     let dragSequence = 0;
+    async function dragAction(value: string) {
+      const index = dragSequence++;
+      const target = join(dragDirectory, `action-${index}`);
+      await writeFile(`${target}.tmp`, value);
+      await rename(`${target}.tmp`, target);
+      return index;
+    }
     async function drop(
       phase: string,
       mode = "",
@@ -498,8 +531,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
             "native ExternalPaths delivery",
           );
       } else if (drag && drag.exitCode === null) {
-        const index = dragSequence++;
-        await writeFile(join(dragDirectory, `action-${index}`), phase);
+        const index = await dragAction(phase);
         await waitFor(
           () => Bun.file(join(dragDirectory, `done-${index}`)).exists(),
           `native XDND ${phase}`,
@@ -593,8 +625,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
         ["oversized", `file:///tmp/${"a".repeat(1024 * 1024)}`],
       ]) {
         await drop("enter", "", payload, false);
-        const index = dragSequence++;
-        await writeFile(join(dragDirectory, `action-${index}`), "drop");
+        await dragAction("drop");
         await waitFor(
           () => Bun.file(join(dragDirectory, "finished")).exists(),
           `${label} refusal`,
