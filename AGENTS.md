@@ -530,6 +530,8 @@ Its Cargo cache retains workspace crates, and its additional `.native/ghostty`
 cache key hashes the pinned Rust, Cargo, and Ghostty inputs explicitly. Do not
 restore rust-cache's automatic Rust environment hash: hosted images can carry
 different unrelated toolchains between runs, preventing valid cache restores.
+Keep `cache-on-failure` enabled so transient native smoke failures do not discard
+a successful compilation before the requested rerun.
 Keep the aggregate `ci:smoke:build` targets aligned with the binaries consumed
 by `ci:smoke:run`.
 

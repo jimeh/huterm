@@ -222,7 +222,9 @@ for local use; the workflow invokes its build and run subtasks directly so a
 slow cache restore, native preparation, compile, or test is visible on its own.
 The smoke cache key hashes the repository's pinned Rust, Cargo, and Ghostty
 inputs explicitly; it does not vary with unrelated Rust versions preinstalled
-on a hosted runner image.
+on a hosted runner image. Because native smoke execution can fail transiently
+after compilation succeeds, the job still saves its build cache on failure so
+the requested rerun does not compile from scratch.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,

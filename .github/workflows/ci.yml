@@ -163,6 +163,7 @@ jobs:
           # Avoid keys drifting with unrelated Rust versions on hosted images.
           add-rust-environment-hash-key: false
           key: smoke-debug-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml', 'scripts/ghostty-source.json') }}
+          cache-on-failure: true
           cache-workspace-crates: true
           cache-directories: .native/ghostty
 
