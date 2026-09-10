@@ -1,0 +1,62 @@
+diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
+index 3d6027195e1375f38a9b2bc43fd67ab1159f60d7..a8b56d6bb9a873ee504ecf7e4e8b665daae36762 100644
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -53,6 +53,7 @@ use std::{
+ use util::ResultExt;
+ 
+ const WINDOW_STATE_IVAR: &str = "windowState";
++const ALLOWS_OFFSCREEN_FRAME_IVAR: &str = "gpuiAllowsOffscreenFrame";
+ 
+ static mut WINDOW_CLASS: *const Class = ptr::null();
+ static mut PANEL_CLASS: *const Class = ptr::null();
+@@ -281,6 +282,20 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
+     unsafe {
+         let mut decl = ClassDecl::new(name, superclass).unwrap();
+         decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
++        // Objective-C initializes this opt-in to NO for every new window.
++        decl.add_ivar::<BOOL>(ALLOWS_OFFSCREEN_FRAME_IVAR);
++        decl.add_method(
++            sel!(gpuiAllowsOffscreenFrame),
++            allows_offscreen_frame as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(setGpuiAllowsOffscreenFrame:),
++            set_allows_offscreen_frame as extern "C" fn(&mut Object, Sel, BOOL),
++        );
++        decl.add_method(
++            sel!(constrainFrameRect:toScreen:),
++            constrain_frame_rect as extern "C" fn(&Object, Sel, NSRect, id) -> NSRect,
++        );
+         decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(&Object, Sel));
+ 
+         decl.add_method(
+@@ -1575,6 +1590,28 @@ impl rwh::HasDisplayHandle for MacWindow {
+     }
+ }
+ 
++extern "C" fn allows_offscreen_frame(this: &Object, _: Sel) -> BOOL {
++    unsafe { *this.get_ivar(ALLOWS_OFFSCREEN_FRAME_IVAR) }
++}
++
++extern "C" fn set_allows_offscreen_frame(this: &mut Object, _: Sel, enabled: BOOL) {
++    unsafe { this.set_ivar(ALLOWS_OFFSCREEN_FRAME_IVAR, enabled) };
++}
++
++extern "C" fn constrain_frame_rect(this: &Object, _: Sel, frame: NSRect, screen: id) -> NSRect {
++    unsafe {
++        if *this.get_ivar::<BOOL>(ALLOWS_OFFSCREEN_FRAME_IVAR) == YES {
++            frame
++        } else {
++            // Preserve NSPanel's behavior too; do not derive this from a possible
++            // dynamic subclass, whose superclass could dispatch back here.
++            let is_panel: BOOL = msg_send![this, isKindOfClass: class!(NSPanel)];
++            let superclass = if is_panel == YES { class!(NSPanel) } else { class!(NSWindow) };
++            msg_send![super(this, superclass), constrainFrameRect: frame toScreen: screen]
++        }
++    }
++}
++
+ fn get_scale_factor(native_window: id) -> f32 {
+     // NSWindow retains its backing scale while fully offscreen, when screen is nil.
+     // A synthetic screen fallback can resize the drawable at a different scale

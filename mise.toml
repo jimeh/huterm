@@ -328,7 +328,7 @@ run = "cargo deny --locked check"
 
 [tasks."ci:workflows"]
 description = "Validate and secure GitHub Actions workflows"
-run = ["actionlint", "zizmor --offline .", "pinact run --check --verify-comment"]
+run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-comment"]
 
 [tasks."verify:toolchain"]
 description = "Materialize the pinned Rust toolchain before parallel checks"
@@ -493,6 +493,34 @@ bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example fullscr
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
 '''
 
+[tasks."smoke:linux-quake"]
+depends = ["ghostty:prepare"]
+description = "Verify global X11 quake shortcuts, focus, animation, and retained PTYs"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux quake smoke skipped: X11 requires Linux"
+  exit 0
+fi
+for tool in openbox xcompmgr xprop xdotool xwininfo xmessage stdbuf; do
+  command -v "$tool" >/dev/null || { echo "Quake smoke requires $tool" >&2; exit 1; }
+done
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke --example quake_monitor
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-quake.ts target/debug/examples/quake_smoke
+'''
+
+[tasks."smoke:macos-quake"]
+depends = ["ghostty:prepare"]
+description = "Verify global AppKit quake shortcuts, external focus, animation, and retained PTYs"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native quake smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke
+xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
+bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
+'''
+
 [tasks."smoke:macos-fullscreen"]
 depends = ["ghostty:prepare"]
 description = "Verify AppKit fullscreen modes, presentation leases, and PTY restoration"
@@ -539,6 +567,7 @@ case "$(uname -s)" in
     mise run smoke:macos-integration
     mise run smoke:macos-quit
     mise run smoke:macos-fullscreen
+    mise run smoke:macos-quake
     ;;
   Linux)
     mise run smoke:renderer
@@ -546,6 +575,7 @@ case "$(uname -s)" in
     mise run smoke:linux-input
     mise run smoke:linux-integration
     mise run smoke:linux-fullscreen
+    mise run smoke:linux-quake
     ;;
   *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
 esac

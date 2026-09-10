@@ -529,6 +529,16 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       await rename(`${target}.tmp`, target);
       return index;
     }
+    async function finishNativeDrag() {
+      const child = drag;
+      assert(child, "native XDND source missing");
+      await waitFor(
+        async () => child.exitCode !== null || child.signalCode !== null,
+        "native XDND source process exit",
+      );
+      assert(await child.exited === 0, "native XDND source failed");
+      drag = undefined;
+    }
     async function drop(
       phase: string,
       mode = "",
@@ -594,6 +604,8 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
           );
         }
       }
+      if (!macos && drag && (phase === "drop" || phase === "exit"))
+        await finishNativeDrag();
     }
     await display(`\x1b[2J\x1b[H${url}`);
     await mouse(5, 2, 0);
@@ -681,6 +693,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
           (await readFile(join(dragDirectory, "finished"), "utf8")) === "0",
           `${label} native payload was accepted`,
         );
+        await finishNativeDrag();
         await raw(`native-${label}-whole-drop-refused`);
       }
       await drop("enter", "early");
@@ -692,6 +705,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
         (await readFile(join(dragDirectory, "finished"), "utf8")) === "1",
         "early valid drop refused",
       );
+      await finishNativeDrag();
       await raw("native-drop-before-selection", `\x1b[200~${escaped}\x1b[201~`);
       await drop("enter", "stale");
       assert(

@@ -35,3 +35,9 @@ test("schemas contain only local references and no JSON null suggestions", async
     expect(document).not.toMatch(/"null"/);
   }
 });
+test("invalid quake settings and global profile arguments identify their fields", () => {
+  expect(config({ quake: { profiles: { default: { width: 0 } } } })).toBe(false);
+  expect(config.errors?.some(error => error.instancePath === "/quake/profiles/default/width" && error.keyword === "exclusiveMinimum")).toBe(true);
+  expect(config({ global_keybinding: [{ key: "ctrl-shift-f12", command: "toggle_quake", args: { profile: 2 } }] })).toBe(false);
+  expect(config.errors?.some(error => error.instancePath === "/global_keybinding/0/args/profile" && error.keyword === "type")).toBe(true);
+});

@@ -1,0 +1,19 @@
+diff --git a/src/platform/linux/x11/window.rs b/src/platform/linux/x11/window.rs
+index fe197a670177689ce776b6b55d439483c43921e0..5bf099b5008e9fc3d380a4612c3e8f268c9d0191 100644
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -313,7 +313,13 @@ impl rwh::HasDisplayHandle for RawWindow {
+ 
+ impl rwh::HasWindowHandle for X11Window {
+     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+-        unimplemented!()
++        if self.0.state.borrow().destroyed {
++            return Err(rwh::HandleError::Unavailable);
++        }
++        let id = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
++        let handle = rwh::XcbWindowHandle::new(id);
++        // SAFETY: This X11Window owns the live Xcb window for the borrow's lifetime.
++        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+     }
+ }
+ impl rwh::HasDisplayHandle for X11Window {

@@ -23,6 +23,8 @@ mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod quake;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
@@ -72,6 +74,13 @@ pub fn run_native_input_smoke() -> anyhow::Result<()> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
     desktop::fullscreen_smoke::run()
+}
+
+/// Runs the production quake workflow with native-smoke observations.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_quake_smoke() -> anyhow::Result<()> {
+    desktop::quake_smoke::run()
 }
 
 /// Runs the isolated native terminal graphics fixture.

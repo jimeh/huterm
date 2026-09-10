@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 type Message = {
   id?: number;
   method?: string;
-  params?: { uri?: string; diagnostics?: { message: string }[]; items?: unknown[] };
+  params?: { uri?: string; diagnostics?: { message: string; range?: { start: { line: number; character: number } } }[]; items?: unknown[] };
   result?: unknown;
   error?: unknown;
 };
@@ -89,6 +89,21 @@ try {
     console.log(`${command}: required ${argument} diagnostic; ${labels.length} command completions`);
     console.log(`${command}: argument completions ${JSON.stringify(await completions(uri, 4, 9))}`);
   }
+  const globalUri = pathToFileURL(join(directory, "global.toml")).href;
+  const globalDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === globalUri && (message.params.diagnostics?.some(item => item.message.includes("string")) ?? false), "global profile type diagnostic");
+  send({ method: "textDocument/didOpen", params: { textDocument: { uri: globalUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[[global_keybinding]]\nkey = "ctrl-shift-f12"\ncommand = "toggle_quake"\nargs = { profile = 2 }\n` } } });
+  await globalDiagnostic;
+  const globalLabels = await completions(globalUri, 3, 13);
+  requireLabels(globalLabels, ["show_quake", "hide_quake", "toggle_quake"]);
+  if (globalLabels.length !== 3) throw new Error(`Global commands include unsupported completions: ${JSON.stringify(globalLabels)}`);
+  console.log("global shortcuts: only the three quake commands complete; profile type diagnosed");
+  const quakeUri = pathToFileURL(join(directory, "quake.toml")).href;
+  const quakeDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === quakeUri && (message.params.diagnostics?.some(item => item.range?.start.line === 2 && item.range.start.character === 8 && item.message.includes("0 is less than or equal to the minimum of 0")) ?? false), "quake width boundary diagnostic");
+  send({ method: "textDocument/didOpen", params: { textDocument: { uri: quakeUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[quake.profiles.default]\nwidth = 0\nposition = "center"\nanimation = "slide"\n` } } });
+  await quakeDiagnostic;
+  requireLabels(await completions(quakeUri, 3, 13), ["top", "bottom", "left", "right", "center"]);
+  requireLabels(await completions(quakeUri, 4, 14), ["auto", "none", "fade", "slide", "slide_top", "slide_bottom", "slide_left", "slide_right"]);
+  console.log("quake profiles: position and animation values complete; width boundary diagnosed");
   const engineUri = pathToFileURL(join(directory, "engine.toml")).href;
   const diagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === engineUri && (message.params.diagnostics?.length ?? 0) > 0, "engine enum diagnostic");
   send({ method: "textDocument/didOpen", params: { textDocument: { uri: engineUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[terminal]\nengine = "unknown"\n` } } });

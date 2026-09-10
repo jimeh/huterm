@@ -35,9 +35,15 @@ fn modifier_combinations(
     }
 }
 
-fn keybindings(base: &Value) -> Value {
+fn keybindings(base: &Value, global: bool) -> Value {
     let mut alternatives = Vec::new();
-    for command in catalog() {
+    for command in catalog().iter().filter(|spec| {
+        !global
+            || matches!(
+                spec.id.as_str(),
+                "show_quake" | "hide_quake" | "toggle_quake"
+            )
+    }) {
         let mut properties = Map::new();
         let mut required = Vec::new();
         for arg in command.args {
@@ -57,31 +63,60 @@ fn keybindings(base: &Value) -> Value {
             }
         }
         let mut alternative =
-            binding(base, command.id.as_str(), command.description, true);
+            binding(base, command.id.as_str(), command.description, !global);
         alternative["properties"]["args"] = json!({"type":"object", "additionalProperties":false, "properties":properties, "required":required});
         if !required.is_empty() {
             alternative["required"] = json!(["key", "command", "args"]);
         }
         alternatives.push(json!({"if":{"properties":{"command":{"const":command.id.as_str()}},"required":["command"]},"then":alternative}));
     }
-    let mut unbind = binding(
-        base,
-        "unbind",
-        "Remove earlier bindings for this key.",
-        false,
-    );
-    unbind["properties"]["args"] =
-        json!({"type":"object", "additionalProperties":false});
-    alternatives.push(json!({"if":{"properties":{"command":{"const":"unbind"}},"required":["command"]},"then":unbind}));
+    if !global {
+        let mut unbind = binding(
+            base,
+            "unbind",
+            "Remove earlier bindings for this key.",
+            false,
+        );
+        unbind["properties"]["args"] =
+            json!({"type":"object", "additionalProperties":false});
+        alternatives.push(json!({"if":{"properties":{"command":{"const":"unbind"}},"required":["command"]},"then":unbind}));
+    }
     let mut common = base.clone();
-    let mut commands: Vec<_> =
-        catalog().iter().map(|spec| spec.id.as_str()).collect();
-    commands.push("unbind");
+    let mut commands: Vec<_> = catalog()
+        .iter()
+        .filter(|spec| {
+            !global
+                || matches!(
+                    spec.id.as_str(),
+                    "show_quake" | "hide_quake" | "toggle_quake"
+                )
+        })
+        .map(|spec| spec.id.as_str())
+        .collect();
+    if !global {
+        commands.push("unbind");
+    }
     common["properties"]["command"]["enum"] = json!(commands);
+    if global {
+        for alternative in &mut alternatives {
+            global_fields(&mut alternative["then"]);
+        }
+        global_fields(&mut common);
+    }
     // Taplo skips root properties beside allOf. Keep the derived fields in
     // the first member so ordinary field and command completion remain usable.
     alternatives.insert(0, common);
     json!({"allOf": alternatives})
+}
+fn global_fields(schema: &mut Value) {
+    schema["properties"]
+        .as_object_mut()
+        .map(|fields| fields.remove("when"));
+    schema["properties"]["key"]["pattern"] = json!("^\\S+$");
+    schema["properties"]["key"]["description"] = json!(
+        "One global keystroke in GPUI syntax. Native key support, duplicate grabs, local conflicts, and OS registration are checked at runtime."
+    );
+    schema["properties"]["description"]["pattern"] = json!("\\S");
 }
 fn binding(
     base: &Value,
@@ -123,8 +158,12 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
         clean(schema);
         constrain_theme(&mut schema["definitions"]["ThemeDefinition"]);
     }
-    config["definitions"]["RawKeybinding"] =
-        keybindings(&config["definitions"]["RawKeybinding"]);
+    let binding_base = config["definitions"]["RawKeybinding"].clone();
+    config["definitions"]["RawKeybinding"] = keybindings(&binding_base, false);
+    config["definitions"]["GlobalKeybinding"] =
+        keybindings(&binding_base, true);
+    config["properties"]["global_keybinding"]["items"] =
+        json!({"$ref":"#/definitions/GlobalKeybinding"});
     config["title"] = json!("Huterm configuration");
     theme["title"] = json!("Huterm standalone theme");
     let mut selected = config["definitions"]["ThemeDefinition"].clone();
@@ -139,6 +178,28 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     config["properties"]["themes"]["propertyNames"] =
         json!({"pattern":"^[A-Za-z0-9_-]+$"});
     let definitions = &mut config["definitions"];
+    definitions["Config"]["properties"]["profiles"]["propertyNames"] =
+        json!({"pattern":"\\S"});
+    definitions["Config"]["description"] = json!(
+        "Named quake windows. The built-in default profile remains available when omitted. Profile references and display identifiers are resolved at runtime."
+    );
+    for name in ["width", "height"] {
+        definitions["Profile"]["properties"][name]["exclusiveMinimum"] =
+            json!(0);
+        definitions["Profile"]["properties"][name]["maximum"] = json!(1);
+        definitions["Profile"]["properties"][name]["description"] = json!(
+            "Fraction of the display work area, greater than zero and at most one. Fullscreen uses the full display frame."
+        );
+    }
+    definitions["Profile"]["properties"]["animation_ms"]["maximum"] =
+        json!(1000);
+    definitions["Profile"]["properties"]["animation_ms"]["description"] =
+        json!("Animation duration in milliseconds, from 0 to 1000.");
+    definitions["Profile"]["properties"]["display"]["pattern"] =
+        json!("^(active|pointer|primary|id:.*\\S.*)$");
+    definitions["Profile"]["properties"]["display"]["description"] = json!(
+        "Active, pointer, primary, or id:<platform display identifier>. Display availability is checked at runtime."
+    );
     definitions["RawFont"]["properties"]["family"]["pattern"] = json!("\\S");
     definitions["RawFont"]["properties"]["family"]["description"] = json!(
         "Font family. Defaults to Menlo on macOS and monospace on Linux."

@@ -460,5 +460,185 @@
     "toml": "[window]\nauto_hide_tab_bar_in_fullscreen = 1",
     "valid": false,
     "theme": false
+  },
+  {
+    "name": "quake defaults",
+    "toml": "[quake.profiles.default]",
+    "valid": true
+  },
+  {
+    "name": "quake full profile",
+    "toml": "[quake.profiles.work]\nposition=\"right\"\ndisplay=\"id:42\"\nwidth=0.75\nheight=1.0\nfullscreen=true\nhide_on_focus_loss=false\nanimation=\"fade_slide_left\"\nanimation_ms=1000",
+    "valid": true
+  },
+  {
+    "name": "quake width zero",
+    "toml": "[quake.profiles.default]\nwidth=0",
+    "valid": false
+  },
+  {
+    "name": "quake height too large",
+    "toml": "[quake.profiles.default]\nheight=1.01",
+    "valid": false
+  },
+  {
+    "name": "quake negative fraction",
+    "toml": "[quake.profiles.default]\nwidth=-0.1",
+    "valid": false
+  },
+  {
+    "name": "quake duration zero",
+    "toml": "[quake.profiles.default]\nanimation_ms=0",
+    "valid": true
+  },
+  {
+    "name": "quake duration too large",
+    "toml": "[quake.profiles.default]\nanimation_ms=1001",
+    "valid": false
+  },
+  {
+    "name": "quake negative duration",
+    "toml": "[quake.profiles.default]\nanimation_ms=-1",
+    "valid": false
+  },
+  {
+    "name": "quake invalid position",
+    "toml": "[quake.profiles.default]\nposition=\"diagonal\"",
+    "valid": false
+  },
+  {
+    "name": "quake invalid animation",
+    "toml": "[quake.profiles.default]\nanimation=\"float\"",
+    "valid": false
+  },
+  {
+    "name": "quake invalid display",
+    "toml": "[quake.profiles.default]\ndisplay=\"2\"",
+    "valid": false
+  },
+  {
+    "name": "quake blank display identifier",
+    "toml": "[quake.profiles.default]\ndisplay=\"id: \"",
+    "valid": false
+  },
+  {
+    "name": "quake pointer display",
+    "toml": "[quake.profiles.default]\ndisplay=\"pointer\"",
+    "valid": true
+  },
+  {
+    "name": "quake primary display",
+    "toml": "[quake.profiles.default]\ndisplay=\"primary\"",
+    "valid": true
+  },
+  {
+    "name": "quake blank profile name",
+    "toml": "[quake.profiles.\" \"]",
+    "valid": false
+  },
+  {
+    "name": "quake unknown property",
+    "toml": "[quake.profiles.default]\nunknown=true",
+    "valid": false
+  },
+  {
+    "name": "quake unknown table property",
+    "toml": "[quake]\nunknown=true",
+    "valid": false
+  },
+  {
+    "name": "global show default",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"show_quake\"",
+    "valid": true
+  },
+  {
+    "name": "global hide named",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"hide_quake\"\nargs={profile=\"work\"}\n[quake.profiles.work]",
+    "valid": true
+  },
+  {
+    "name": "global toggle description",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\ndescription=\"Toggle the quake window\"",
+    "valid": true
+  },
+  {
+    "name": "global cannot unbind",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"unbind\"",
+    "valid": false
+  },
+  {
+    "name": "global cannot run local command",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"new_tab\"",
+    "valid": false
+  },
+  {
+    "name": "global cannot have predicate",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\nwhen=\"Terminal\"",
+    "valid": false
+  },
+  {
+    "name": "global rejects chord",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-k ctrl-q\"\ncommand=\"toggle_quake\"",
+    "valid": false
+  },
+  {
+    "name": "global rejects blank key",
+    "toml": "[[global_keybinding]]\nkey=\" \"\ncommand=\"toggle_quake\"",
+    "valid": false
+  },
+  {
+    "name": "global rejects invalid profile type",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\nargs={profile=2}",
+    "valid": false
+  },
+  {
+    "name": "global rejects unknown argument",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\nargs={other=\"work\"}",
+    "valid": false
+  },
+  {
+    "name": "global rejects blank description",
+    "toml": "[[global_keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\ndescription=\" \"",
+    "valid": false
+  },
+  {
+    "name": "local quake command",
+    "toml": "[[keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"toggle_quake\"\nargs={profile=\"default\"}",
+    "valid": true
+  },
+  {
+    "name": "local quake rejects profile type",
+    "toml": "[[keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"show_quake\"\nargs={profile=2}",
+    "valid": false
+  },
+  {
+    "name": "quake top position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"top\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake bottom position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"bottom\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake left position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"left\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake right position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"right\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake center position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"center\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake rejects removed edge property",
+    "toml": "[quake.profiles.default]\nedge=\"top\"",
+    "valid": false
   }
 ]

@@ -53,6 +53,7 @@ use std::{
 use util::ResultExt;
 
 const WINDOW_STATE_IVAR: &str = "windowState";
+const ALLOWS_OFFSCREEN_FRAME_IVAR: &str = "gpuiAllowsOffscreenFrame";
 
 static mut WINDOW_CLASS: *const Class = ptr::null();
 static mut PANEL_CLASS: *const Class = ptr::null();
@@ -281,6 +282,20 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
     unsafe {
         let mut decl = ClassDecl::new(name, superclass).unwrap();
         decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+        // Objective-C initializes this opt-in to NO for every new window.
+        decl.add_ivar::<BOOL>(ALLOWS_OFFSCREEN_FRAME_IVAR);
+        decl.add_method(
+            sel!(gpuiAllowsOffscreenFrame),
+            allows_offscreen_frame as extern "C" fn(&Object, Sel) -> BOOL,
+        );
+        decl.add_method(
+            sel!(setGpuiAllowsOffscreenFrame:),
+            set_allows_offscreen_frame as extern "C" fn(&mut Object, Sel, BOOL),
+        );
+        decl.add_method(
+            sel!(constrainFrameRect:toScreen:),
+            constrain_frame_rect as extern "C" fn(&Object, Sel, NSRect, id) -> NSRect,
+        );
         decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(&Object, Sel));
 
         decl.add_method(
@@ -484,7 +499,11 @@ impl MacWindowState {
                 return;
             }
         }
-        let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
+        let screen = unsafe { self.native_window.screen() };
+        if screen.is_null() {
+            return;
+        }
+        let display_id = unsafe { display_id_for_screen(screen) };
         if let Some(mut display_link) =
             DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
         {
@@ -500,7 +519,11 @@ impl MacWindowState {
     fn is_maximized(&self) -> bool {
         unsafe {
             let bounds = self.bounds();
-            let screen_size = self.native_window.screen().visibleFrame().into();
+            let screen = self.native_window.screen();
+            if screen.is_null() {
+                return false;
+            }
+            let screen_size = screen.visibleFrame().into();
             bounds.size == screen_size
         }
     }
@@ -1567,22 +1590,34 @@ impl rwh::HasDisplayHandle for MacWindow {
     }
 }
 
-fn get_scale_factor(native_window: id) -> f32 {
-    let factor = unsafe {
-        let screen: id = msg_send![native_window, screen];
-        if screen.is_null() {
-            return 2.0;
-        }
-        NSScreen::backingScaleFactor(screen) as f32
-    };
+extern "C" fn allows_offscreen_frame(this: &Object, _: Sel) -> BOOL {
+    unsafe { *this.get_ivar(ALLOWS_OFFSCREEN_FRAME_IVAR) }
+}
 
-    // We are not certain what triggers this, but it seems that sometimes
-    // this method would return 0 (https://github.com/zed-industries/zed/issues/6412)
-    // It seems most likely that this would happen if the window has no screen
-    // (if it is off-screen), though we'd expect to see viewDidChangeBackingProperties before
-    // it was rendered for real.
-    // Regardless, attempt to avoid the issue here.
-    if factor == 0.0 { 2. } else { factor }
+extern "C" fn set_allows_offscreen_frame(this: &mut Object, _: Sel, enabled: BOOL) {
+    unsafe { this.set_ivar(ALLOWS_OFFSCREEN_FRAME_IVAR, enabled) };
+}
+
+extern "C" fn constrain_frame_rect(this: &Object, _: Sel, frame: NSRect, screen: id) -> NSRect {
+    unsafe {
+        if *this.get_ivar::<BOOL>(ALLOWS_OFFSCREEN_FRAME_IVAR) == YES {
+            frame
+        } else {
+            // Preserve NSPanel's behavior too; do not derive this from a possible
+            // dynamic subclass, whose superclass could dispatch back here.
+            let is_panel: BOOL = msg_send![this, isKindOfClass: class!(NSPanel)];
+            let superclass = if is_panel == YES { class!(NSPanel) } else { class!(NSWindow) };
+            msg_send![super(this, superclass), constrainFrameRect: frame toScreen: screen]
+        }
+    }
+}
+
+fn get_scale_factor(native_window: id) -> f32 {
+    // NSWindow retains its backing scale while fully offscreen, when screen is nil.
+    // A synthetic screen fallback can resize the drawable at a different scale
+    // from the scene after the window moves back onto the same display.
+    let factor = unsafe { NSWindow::backingScaleFactor(native_window) as f32 };
+    if factor.is_finite() && factor > 0.0 { factor } else { 2.0 }
 }
 
 unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {

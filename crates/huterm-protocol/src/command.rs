@@ -449,7 +449,13 @@ pub mod ids {
     pub const NEW_WINDOW: CommandId = CommandId::new("new_window");
     /// Quits the application after assessed close.
     pub const QUIT: CommandId = CommandId::new("quit");
-    /// Hides the application.
+    /// Show a named quake profile's window.
+    pub const SHOW_QUAKE: CommandId = CommandId::new("show_quake");
+    /// Hide a named quake profile's window without closing its terminals.
+    pub const HIDE_QUAKE: CommandId = CommandId::new("hide_quake");
+    /// Toggle a named quake profile's window.
+    pub const TOGGLE_QUAKE: CommandId = CommandId::new("toggle_quake");
+    /// Hide the application.
     pub const HIDE: CommandId = CommandId::new("hide");
     /// Hides other applications.
     pub const HIDE_OTHERS: CommandId = CommandId::new("hide_others");
@@ -526,7 +532,34 @@ const NAME: ArgumentSpec = ArgumentSpec {
     required: true,
 };
 
+const PROFILE: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "profile",
+    kind: ArgumentKind::Text,
+    required: false,
+}];
+
 const CATALOG: &[CommandSpec] = &[
+    spec(
+        ids::SHOW_QUAKE,
+        CommandScope::Application,
+        "Show Quake",
+        "Show a named quake window, defaulting to default.",
+        PROFILE,
+    ),
+    spec(
+        ids::HIDE_QUAKE,
+        CommandScope::Application,
+        "Hide Quake",
+        "Hide a named quake window and retain its jobs.",
+        PROFILE,
+    ),
+    spec(
+        ids::TOGGLE_QUAKE,
+        CommandScope::Application,
+        "Toggle Quake",
+        "Show or hide a named quake window.",
+        PROFILE,
+    ),
     spec(
         ids::NEW_WINDOW,
         CommandScope::Application,

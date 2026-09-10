@@ -1202,7 +1202,9 @@ impl Window {
             platform_window.set_app_id(&app_id);
         }
 
-        platform_window.map_window().unwrap();
+        if show {
+            platform_window.map_window()?;
+        }
 
         Ok(Window {
             handle,

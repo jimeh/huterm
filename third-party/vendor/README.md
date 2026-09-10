@@ -6,7 +6,9 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI has separate file-drop and explicit-float
-patches; the sys crate has separate CPU, build-script watch-path, and license patches.
+patches, plus hidden-window creation, X11 native-handle, application-lifetime,
+and macOS offscreen-display and per-window frame-constraint fixes. The sys crate
+has separate CPU, build-script watch-path, and license patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -205,3 +207,46 @@ platforms' desktop integration smokes when removing it.
 fallback will become an error. Explicit types preserve the existing behavior.
 Remove this patch when the selected upstream release supplies explicit types or
 otherwise removes the `float_literal_f32_fallback` warnings at this call site.
+
+GPUI 0.2.2 called `map_window()` even for `WindowOptions { show: false }`.
+The hidden-window patch gates that call on `show` and propagates mapping errors.
+The X11 handle patch implements `HasWindowHandle` for live XCB windows instead
+of panicking. Quake uses that handle to address the exact window. The native
+quake smoke checks an untouched hidden GPUI window before any hide operation,
+then summons a real profile through the OS shortcut and reads its native state.
+GPUI's X11 window destruction also stopped the event loop when its last window
+closed. The application-lifetime patch leaves that decision to Huterm's existing
+close/quit coordinator. The native smoke proves that active global registrations
+retain a zero-window process, and that final-window close without registrations
+still exits it.
+
+GPUI's macOS display-link setup dereferenced `NSWindow.screen` while an animated
+window was fully offscreen. AppKit returns nil in that state. The offscreen-display
+patch stops the link until a screen or visibility callback restarts it, and treats
+an offscreen window as not maximized. It reads backing scale from NSWindow, which
+retains the real scale without a screen. A synthetic offscreen scale can resize
+Metal's drawable at 2x while GPUI returns to 1x after moving onscreen. The native
+quake smoke checks retained resize, drawable/viewport agreement, and PTY geometry.
+
+The `macos-offscreen-frame` patch adds a per-window `gpuiAllowsOffscreenFrame` opt-in
+and `setGpuiAllowsOffscreenFrame:` setter. It defaults to false. Only opted-in windows
+bypass `constrainFrameRect:toScreen:`; other windows retain AppKit constraints.
+Huterm enables it throughout quake presentation and disables it on regular
+conversion and retained-window cleanup. AppKit clamps intermediate top-edge
+animation frames even with a zero borderless style mask. The native smoke checks
+actual slide intermediates and restored constraints on regular conversion.
+
+## macOS exclusive global shortcuts
+
+`global-hotkey-0.8.0` is the published Apache-2.0 OR MIT crate, with one Carbon
+registration flag changed to `kEventHotKeyExclusive`. Carbon's default permits
+several applications to register the same shortcut and can accept registrations
+that receive no events. Exclusive registration lets Huterm report conflicts and
+retain the previous working configuration instead of claiming an unusable grab.
+
+The archive SHA-256 is
+`8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e`; its upstream
+revision is `2a620bf3852008b568f6d36c2baedcc3dd0822f2`. All other published files
+are unchanged. Remove this patch when a reviewed release exposes exclusive
+registration and Huterm selects it. The native quake smoke holds the shortcut
+in a separate process and checks startup and reload rejection.

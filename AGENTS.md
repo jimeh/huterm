@@ -752,3 +752,102 @@ next refresh hides it; overlay hit bounds alone must never discard that release.
 GPUI's macOS window-hover flag reports activation and can retain the last mouse
 position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
 display membership so leaving for another display dismisses the overlay.
+
+Quake native effects run after returning from GPUI's App/window update borrow;
+AppKit frame, style, and visibility changes can synchronously reenter GPUI.
+Keep a generation check before every effect, and wait for native Space exit
+before restoring style or applying quake geometry. Quake fullscreen shares the
+existing application presentation lease pool. Hide only the associated window,
+never the whole application. GPUI 0.2.2 needs the tracked hidden-window and
+X11-handle vendor patches: `show: false` otherwise maps on X11, and its native
+handle method otherwise panics. Run the quake native smoke to verify both.
+Openbox may place a remapped window after its unmapped geometry was configured.
+Quake must observe mapping and reassert the final EWMH frame until it settles,
+including `animation = "none"` and zero-duration transitions.
+GPUI's X11 `drop_window` also stopped the platform loop on the last native
+window, bypassing Huterm's zero-window keepalive. Keep the tracked application-
+lifetime patch until upstream permits explicit ownership. Pair zero-window global
+summon coverage with ordinary final-window exit coverage when changing it.
+
+Quake profile definitions and portable validation live in `huterm-config`;
+keep desktop geometry and animation behavior in `huterm-gpui`. The global
+keybinding schema restricts the shared command catalog to quake commands.
+Extend shared schema fixtures and the desktop global compiler parity check
+together; native key support and OS registration remain runtime checks.
+
+Guard null placeholders before invoking `objc` message macros in retained-handle
+destructors. Moving an AppKit owner into deferred cleanup leaves a null sentinel;
+the Rust macro dereferences its receiver even though Objective-C permits nil.
+
+Global shortcut keepalive requires a dispatchable binding whose native grab is
+still owned. Grabs left by failed rollback remain tracked for cleanup but must
+not keep a zero-window application alive by themselves.
+
+Publish file-driven smoke commands with a temporary file and atomic rename.
+A polling native process can read a newly created command before writeFile has
+filled it, consuming an empty or partial command.
+
+Restore the retained GPUI NSView as AppKit firstResponder after quake style
+changes and activation. setStyleMask can replace it while GPUI focus remains
+true: raw Return still reaches the shell, but printable text is lost. Release
+the retained view with the window in deferred native cleanup.
+
+AppKit returns no NSScreen for a fully offscreen window during quake slides.
+GPUI display-link and maximization getters must handle nil; screen and occlusion
+callbacks restart the display link when the window returns.
+
+Reassert macOS quake geometry during settling after changing presentation options.
+AppKit can move the frame after its initial write. Keep X11 fullscreen geometry
+under the window manager and retain the native-transition gate.
+
+Refresh the selected display work area before and while settling quake geometry.
+Fullscreen presentation hides the menu bar and dock, so cached visibleFrame can
+become wrong when its lease is released. Update active targets without restarting
+progress or renewing the transition deadline.
+
+Carbon non-exclusive RegisterEventHotKey can succeed while delivering no events
+because another application owns the shortcut. Keep the global-hotkey patch using
+kEventHotKeyExclusive so startup/reload conflicts fail and cannot create a falsely
+usable keepalive registration.
+
+Keep workflow scanning scoped to the root `.github` directory. Published vendor
+archives can contain upstream workflows that Huterm does not execute. Preserve
+those files for archive verification instead of rewriting their action pins.
+
+Quake close/Quit cancellation fixtures need a live child, not just an idle shell.
+macOS correctly closes idle shells without confirmation. Keep the fixture child
+alive through the matrix and require the prompt plus a post-cancel shell ACK.
+
+Keep quake titlebar visibility separate from fullscreen tab policy: partial quake
+windows are frameless but retain the configured tab bar. Resolve tab presentation
+from actual quake fullscreen state, share layout synchronization with ordinary
+windows, and suppress overlay reveal while the quake window is hidden.
+
+Lefthook's `**/*.md` glob skips root Markdown files. Include `*.md` explicitly
+so staged README and agent-guide edits receive the same checks as nested docs.
+Quake work-area refits must preserve focus; only explicit summons request it.
+After initial activation succeeds, later app switches cannot invalidate a visible
+transition. A failed return-focus attempt must not undo a successful native hide.
+
+The XDND source publishes terminal acknowledgements before closing Xlib and
+exiting. Await successful process exit and clear its fixture handle after
+drop/leave; otherwise a follow-up action can target a source already exiting.
+
+The AppKit witness publishes readiness before its first state snapshot. Wait for
+that snapshot or a command acknowledgement before reading its activation state.
+
+AppKit clamps intermediate top-edge frames even for borderless windows. Quake
+opts only its own native window into unconstrained frames, retaining that flag
+while hidden and restoring default constraints on regular conversion and cleanup.
+Read backing scale from NSWindow while offscreen: NSScreen can be nil, and a
+synthetic 2x fallback can resize Metal's drawable at a different scale from GPUI
+after an on-screen move. Keep retained half/quarter/half resize coverage tied to
+native view and drawable dimensions, GPUI viewport/scale, and PTY rows/columns.
+
+RandR can return monitors with no primary flag. Missing retained monitors and
+regular-to-quake conversion must fall back to the first remaining monitor.
+For withdrawn X11 windows, merge ABOVE/STICKY into `_NET_WM_STATE` before mapping;
+window managers ignore state client messages until they manage the window.
+Unchanged visible quake summons only activate the window. Preserve fullscreen
+leases and native state; re-enter the transition path for changed profile or
+target geometry. Fullscreen geometry ignores work-area-only changes.

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,6 +75,8 @@ pub(super) struct Config {
     pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
     pub(super) keybindings: Vec<KeybindingEntry>,
+    pub(super) quake: huterm_config::quake::Config,
+    pub(super) global_keybindings: Vec<KeybindingEntry>,
 }
 
 #[derive(Debug)]
@@ -93,6 +96,13 @@ impl Default for Config {
             window: WindowConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: Vec::new(),
+            quake: crate::quake::Config {
+                profiles: BTreeMap::from([(
+                    "default".into(),
+                    crate::quake::Profile::default(),
+                )]),
+            },
+            global_keybindings: Vec::new(),
         }
     }
 }
@@ -260,6 +270,13 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         },
         theme,
         keybindings,
+        quake: raw.quake.validated().map_err(ConfigError::Quake)?,
+        global_keybindings: raw
+            .global_keybinding
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| entry.validate(index + 1))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -296,7 +313,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 77);
+        assert_eq!(fixtures.len(), 113);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -320,7 +337,14 @@ mod tests {
                     crate::keymap::Platform::current(),
                     &config.keybindings,
                 )
-                .is_ok()
+                .is_ok_and(|local| {
+                    crate::quake::hotkeys::compile(
+                        &config.global_keybindings,
+                        &config.quake,
+                        &local,
+                    )
+                    .is_ok()
+                })
             });
             assert_eq!(accepted, expected, "{name}: {source}");
         }
