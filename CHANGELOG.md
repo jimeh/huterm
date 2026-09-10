@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/jimeh/huterm/compare/v0.3.0...v0.4.0) (2026-09-10)
+
+
+### Features
+
+* add named quake windows and global shortcuts ([#73](https://github.com/jimeh/huterm/issues/73)) ([cba68d6](https://github.com/jimeh/huterm/commit/cba68d634e8d6477a735a15dc925bdb70db13c63))
+* adopt the new Huterm app icon ([#74](https://github.com/jimeh/huterm/issues/74)) ([561f054](https://github.com/jimeh/huterm/commit/561f0545feeab7bed17a1e4bc910472f50d09137))
+
 ## [0.3.0](https://github.com/jimeh/huterm/compare/v0.2.0...v0.3.0) (2026-09-09)
 
 
