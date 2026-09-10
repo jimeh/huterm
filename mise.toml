@@ -454,6 +454,10 @@ description = "Build and verify native Linux AppImage and tarball artifacts"
 depends = ["ghostty:prepare", "icons:check"]
 run = "bun scripts/package-linux.ts build"
 
+[tasks."package:linux:container"]
+description = "Build Linux packages in Ubuntu 22.04 and export them to host dist/"
+run = "bun scripts/linux.ts package"
+
 [tasks."package:linux:verify"]
 description = "Verify existing native Linux AppImage and tarball artifacts without network access"
 run = '''

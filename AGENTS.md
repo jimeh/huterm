@@ -58,6 +58,8 @@ Run `mise tasks` to discover the full task set.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
 - `mise run package:macos` builds and verifies the universal `Huterm.app`.
+- `mise run package:linux:container` builds verified Linux packages in the
+  pinned Ubuntu 22.04 container and exports them to host `dist/`.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Universal macOS packaging combines both architecture executables before signing.

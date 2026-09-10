@@ -50,6 +50,7 @@ require working emulation in that engine.
 ```sh
 mise run linux:test
 mise run linux:smoke
+mise run package:linux:container
 mise run linux:test -- --arch amd64
 mise run linux:smoke -- --arch arm64
 mise run linux:exec -- mise run package:linux
@@ -66,6 +67,13 @@ Cargo commands on a cold workspace, run `mise run linux:exec -- mise run
 ghostty:prepare`, using the same `--arch` selection for both invocations.
 These checks exercise Linux X11 rendering, not native Wayland or physical GPU
 behavior. Keep timing benchmarks on native hardware.
+
+`package:linux:container` builds and verifies the native-architecture AppImage
+and tarball in the pinned Ubuntu 22.04 image, then replaces only the matching
+`dist/linux/<architecture>` directory in the host checkout. The export runs as
+the invoking host user, so the resulting artifacts are not owned by root. Pass
+`-- --arch amd64` or `-- --arch arm64` to select an architecture; a non-native
+selection requires working Docker emulation.
 
 The first invocation builds a local Ubuntu 22.04 image with pinned Mise, Rust,
 Bun, and Zig. The Ubuntu index digest and Mise archive checksums are in

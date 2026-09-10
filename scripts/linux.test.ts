@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { architecture, argumentsFor, cacheNames } from "./linux";
@@ -14,7 +14,8 @@ function fixture(overrides: Record<string, string> = {}) {
   writeFileSync(log, "");
   const docker = join(directory, "docker");
   writeFileSync(docker, `#!/usr/bin/env bun
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 const args = process.argv.slice(2);
 appendFileSync(process.env.DOCKER_TEST_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === 'info') console.log(process.env.DOCKER_TEST_PLATFORM || 'linux/aarch64');
@@ -28,6 +29,16 @@ if (args[0] === 'start') {
   if (process.env.DOCKER_TEST_HOLD) { console.log('STARTED'); await new Promise(() => setInterval(() => {}, 1000)); }
   process.exit(Number(process.env.DOCKER_TEST_EXIT || 0));
 }
+if (args[0] === 'run') {
+  if (process.env.DOCKER_TEST_EXPORT_EXIT) process.exit(Number(process.env.DOCKER_TEST_EXPORT_EXIT));
+  const mount = args.find(arg => arg.startsWith('type=bind,') && arg.endsWith(',target=/output'));
+  const output = /(?:^|,)source=([^,]+)/.exec(mount || '')?.[1];
+  if (!output) { console.error('missing output mount'); process.exit(2); }
+  const packageArch = args.at(-1)?.includes('/aarch64/') ? 'aarch64' : 'x86_64';
+  mkdirSync(join(output, 'package-evidence'), { recursive: true });
+  writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.AppImage\`), 'appimage');
+  writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.tar.gz\`), 'tarball');
+}
 `);
   chmodSync(docker, 0o755);
   const git = join(directory, "git");
@@ -37,9 +48,11 @@ if (process.argv.includes("--format=%ct")) console.log("1700000000");
 else console.log("0123456789abcdef0123456789abcdef01234567");
 `);
   chmodSync(git, 0o755);
-  const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, DOCKER_TEST_LOG: log, ...overrides };
+  const output = join(directory, "host-dist");
+  const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, DOCKER_TEST_LOG: log, HUTERM_LINUX_DIST_DIR: output, ...overrides };
   return {
     env,
+    output,
     calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
     run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "linux.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
   };
@@ -55,6 +68,7 @@ describe("Linux container runner", () => {
 
   test("arguments default to native and preserve the custom command verbatim", () => {
     expect(argumentsFor(["test"])).toEqual({ mode: "test", arch: "native", command: ["mise", "run", "test:rust"] });
+    expect(argumentsFor(["package"])).toEqual({ mode: "package", arch: "native", command: ["mise", "run", "package:linux"] });
     expect(argumentsFor(["exec", "--arch=ARM64", "--", "printf", "%s", "a b", "$(literal)", "--help"]).command).toEqual(["printf", "%s", "a b", "$(literal)", "--help"]);
     for (const args of [["exec"], ["test", "--arch"], ["test", "--bogus"], ["test", "extra"], ["clean", "extra"]]) {
       expect(() => argumentsFor(args)).toThrow();
@@ -86,6 +100,43 @@ describe("Linux container runner", () => {
     const create = f.calls().find((args) => args[0] === "create")!;
     expect(create[create.indexOf("--platform") + 1]).toBe("linux/amd64");
     expect(f.calls().at(-1)).toEqual(["rm", "--force", "owned-container-id"]);
+  });
+
+  test("package exports verified artifacts from the workspace volume to host dist", () => {
+    const f = fixture({ DOCKER_TEST_PLATFORM: "linux/x86_64" });
+    const result = f.run("package");
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(join(f.output, "linux/x86_64/Huterm-0.4.0-Linux-x86_64.AppImage"), "utf8")).toBe("appimage");
+    expect(readFileSync(join(f.output, "linux/x86_64/Huterm-0.4.0-Linux-x86_64.tar.gz"), "utf8")).toBe("tarball");
+    const calls = f.calls();
+    const create = calls.find(args => args[0] === "create")!;
+    expect(create.slice(-3)).toEqual(["mise", "run", "package:linux"]);
+    const exportCall = calls.find(args => args[0] === "run")!;
+    expect(exportCall).toContain("--entrypoint");
+    expect(exportCall.some(arg => arg.endsWith("target=/workspace,readonly"))).toBe(true);
+    expect(exportCall.some(arg => arg.endsWith("target=/output"))).toBe(true);
+    expect(calls.findIndex(args => args[0] === "start")).toBeLessThan(calls.findIndex(args => args[0] === "run"));
+  });
+
+  test("package exports an explicit arm64 build to the aarch64 package directory", () => {
+    const f = fixture({ DOCKER_TEST_PLATFORM: "linux/x86_64" });
+    const result = f.run("package", "--arch", "arm64");
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(join(f.output, "linux/aarch64/Huterm-0.4.0-Linux-aarch64.AppImage"), "utf8")).toBe("appimage");
+    expect(readFileSync(join(f.output, "linux/aarch64/Huterm-0.4.0-Linux-aarch64.tar.gz"), "utf8")).toBe("tarball");
+    const create = f.calls().find(args => args[0] === "create")!;
+    expect(create[create.indexOf("--platform") + 1]).toBe("linux/arm64");
+  });
+
+  test("package export failure preserves existing host artifacts", () => {
+    const f = fixture({ DOCKER_TEST_PLATFORM: "linux/x86_64", DOCKER_TEST_EXPORT_EXIT: "23" });
+    const existing = join(f.output, "linux/x86_64/existing.txt");
+    mkdirSync(join(f.output, "linux/x86_64"), { recursive: true });
+    writeFileSync(existing, "keep");
+    const result = f.run("package");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("docker run failed");
+    expect(readFileSync(existing, "utf8")).toBe("keep");
   });
 
   test("source revision failure prevents creating a container", () => {
