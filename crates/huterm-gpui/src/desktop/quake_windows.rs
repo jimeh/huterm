@@ -61,6 +61,8 @@ impl SmokeJournal {
             progress: draft.progress,
             stage: draft.stage,
             frame: draft.frame,
+            target_frame: draft.target_frame,
+            display_frame: draft.display_frame,
             opacity: draft.opacity,
             scheduler_gap_us: draft.scheduler_gap.as_micros(),
         });
@@ -75,6 +77,8 @@ pub(super) struct SmokeObservation {
     pub progress: f64,
     pub stage: &'static str,
     pub frame: Rect,
+    pub target_frame: Rect,
+    pub display_frame: Rect,
     pub opacity: f64,
     pub scheduler_gap_us: u128,
 }
@@ -86,6 +90,8 @@ struct SmokeObservationDraft {
     progress: f64,
     stage: &'static str,
     frame: Rect,
+    target_frame: Rect,
+    display_frame: Rect,
     opacity: f64,
     scheduler_gap: Duration,
 }
@@ -268,6 +274,8 @@ impl NativeEffect {
                 progress,
                 stage: resulting_stage.name(),
                 frame,
+                target_frame: state.target,
+                display_frame: state.display.frame,
                 opacity,
                 scheduler_gap,
             });

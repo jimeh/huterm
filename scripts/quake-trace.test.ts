@@ -4,7 +4,16 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { analyzeFade, analyzeReversal, analyzeSlide, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
 
-const observation = (progress: number, desired = false, frame: [number, number, number, number] = [0, -400 * (1 - progress), 800, 400], gap = 16_000, monotonic = 0): QuakeObservation => ({
+type Frame = [number, number, number, number];
+const targetFrame: Frame = [0, 0, 800, 400];
+const displayFrame: Frame = [0, 0, 800, 800];
+const topFrame = (progress: number, target = targetFrame, display = displayFrame): Frame => [
+  target[0],
+  target[1] + (display[1] - target[3] - target[1]) * (1 - progress),
+  target[2],
+  target[3],
+];
+const observation = (progress: number, desired = false, frame: Frame = topFrame(progress), gap = 16_000, monotonic = 0, target = targetFrame, display = displayFrame): QuakeObservation => ({
   monotonic_us: monotonic,
   profile: "default",
   generation: 7,
@@ -12,6 +21,8 @@ const observation = (progress: number, desired = false, frame: [number, number, 
   progress,
   stage: progress === Number(desired) ? (desired ? "SettleVisible" : "SettleHidden") : "Animate",
   frame,
+  target_frame: target,
+  display_frame: display,
   opacity: progress,
   scheduler_gap_us: gap,
 });
@@ -28,21 +39,59 @@ test("a scheduler-skipped history is inconclusive when its endpoint is correct",
 });
 
 test("wrong-axis movement fails immediately", () => {
-  expect(() => analyzeSlide([observation(0.5, false, [20, -200, 800, 400]), observation(0, false, undefined, undefined, 1)], false, expectation)).toThrow("wrong axis");
+  expect(() => analyzeSlide([observation(0.5, false, [20, -200, 800, 400]), observation(0, false, undefined, undefined, 1)], false, expectation)).toThrow("fixed trajectory");
 });
 
 test("wrong-direction movement fails immediately", () => {
-  expect(() => analyzeSlide([observation(0.5, false, [0, 200, 800, 400]), observation(0, false, [0, 400, 800, 400], undefined, 1)], false, expectation)).toThrow("wrong direction");
+  expect(() => analyzeSlide([observation(0.5, false, [0, 200, 800, 400]), observation(0, false, [0, 400, 800, 400], undefined, 1)], false, expectation)).toThrow("fixed trajectory");
 });
 
 test("under-travel that disagrees with progress fails immediately", () => {
   const history = [observation(0.75), observation(0.5, false, [0, -120, 800, 400], undefined, 1), observation(0, false, undefined, undefined, 2)];
-  expect(() => analyzeSlide(history, false, expectation)).toThrow("does not match progress");
+  expect(() => analyzeSlide(history, false, expectation)).toThrow("fixed trajectory");
 });
 
-test("a hidden endpoint that leaves the window partly visible fails immediately", () => {
-  const history = [observation(0.5, false, [0, -100, 800, 400]), observation(0, false, [0, -200, 800, 400], undefined, 1)];
-  expect(() => analyzeSlide(history, false, expectation)).toThrow("hidden endpoint is not fully outside");
+test("excessive self-consistent travel fails against traced display geometry", () => {
+  const history = [observation(0.5, false, [0, -300, 800, 400]), observation(0, false, [0, -600, 800, 400], undefined, 1)];
+  expect(() => analyzeSlide(history, false, expectation)).toThrow("fixed trajectory");
+});
+
+test("a work-area inset cannot leave the hidden endpoint partly visible", () => {
+  const insetTarget: Frame = [0, 25, 800, 400];
+  const screen: Frame = [0, 0, 800, 600];
+  const endpoint: Frame = [0, 25, 800, 400];
+  const history = [
+    observation(0.5, false, [0, -175, 800, 400], undefined, 0, insetTarget, screen),
+    observation(0, false, [0, -375, 800, 400], undefined, 1, insetTarget, screen),
+  ];
+  expect(() => analyzeSlide(history, false, { ...expectation, endpoint })).toThrow("fixed trajectory");
+});
+
+test("fractional target geometry accepts rounded native endpoint readback", () => {
+  const fractionalTarget: Frame = [0.25, 25.25, 800.4, 400.4];
+  const screen: Frame = [0, 0, 1000, 800];
+  const endpoint: Frame = [0, 25, 800, 400];
+  const history = [
+    observation(0.5, false, topFrame(0.5, fractionalTarget, screen), undefined, 0, fractionalTarget, screen),
+    observation(0, false, topFrame(0, fractionalTarget, screen), undefined, 1, fractionalTarget, screen),
+  ];
+  expect(analyzeSlide(history, false, { ...expectation, endpoint }).status).toBe("passed");
+});
+
+test("target and display geometry must remain stable within a generation", () => {
+  const changedTarget = { ...observation(0), target_frame: [0, 1, 800, 400] as Frame };
+  expect(() => analyzeSlide([observation(0.5), changedTarget], false, expectation)).toThrow("target frame changed");
+  const changedDisplay = { ...observation(0), display_frame: [0, 0, 800, 799] as Frame };
+  expect(() => analyzeSlide([observation(0.5), changedDisplay], false, expectation)).toThrow("display frame changed");
+});
+
+test("traced target must agree with native endpoint readback", () => {
+  const wrongTarget: Frame = [0, 10, 800, 400];
+  const history = [
+    observation(0.5, false, topFrame(0.5, wrongTarget), undefined, 0, wrongTarget),
+    observation(0, false, topFrame(0, wrongTarget), undefined, 1, wrongTarget),
+  ];
+  expect(() => analyzeSlide(history, false, expectation)).toThrow("target disagrees");
 });
 
 test("non-monotonic progress and target changes fail immediately", () => {
@@ -68,6 +117,12 @@ test("a discontinuous reversal fails immediately", () => {
   const hiding = [observation(0.7), observation(0.45, false, undefined, undefined, 1)];
   const showing = [observation(0.75, true, undefined, 10_000, 11_000), observation(1, true, undefined, undefined, 11_001)];
   expect(() => analyzeReversal(hiding, showing, expectation, 1000)).toThrow("reversal progress jumped");
+});
+
+test("a frame-only reversal discontinuity fails with continuous progress", () => {
+  const hiding = [observation(0.7), observation(0.45, false, undefined, undefined, 1)];
+  const showing = [observation(0.47, true, [0, -180, 800, 400], 20_000, 20_001), observation(1, true, undefined, undefined, 20_002)];
+  expect(() => analyzeReversal(hiding, showing, expectation, 1000)).toThrow("fixed trajectory");
 });
 
 test("reversal continuity allows progress explained by the retarget sample gap", () => {

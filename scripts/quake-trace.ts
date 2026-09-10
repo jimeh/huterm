@@ -8,6 +8,8 @@ export type QuakeObservation = {
   progress: number;
   stage: string;
   frame: [number, number, number, number];
+  target_frame: [number, number, number, number];
+  display_frame: [number, number, number, number];
   opacity: number;
   scheduler_gap_us: number;
 };
@@ -34,12 +36,26 @@ export function isIntermediateObservation(observation: QuakeObservation): boolea
     && observation.progress < INTERMEDIATE_PROGRESS_MAX;
 }
 
-function validateCommon(observations: QuakeObservation[], desired: boolean): void {
+function validateFrame(name: string, frame: number[]): void {
+  if (frame.length !== 4 || frame.some(value => !Number.isFinite(value))) throw new Error(`animation trace has an invalid ${name}`);
+}
+
+function framesMatch(left: number[], right: number[], tolerance: number): boolean {
+  return left.every((value, index) => near(value, right[index]!, tolerance));
+}
+
+function validateCommon(observations: QuakeObservation[], desired: boolean, requireEndpoint = true): void {
   if (observations.length === 0) throw new Error("animation trace is empty");
   const target = desired ? 1 : 0;
+  const first = observations[0]!;
   for (const [index, observation] of observations.entries()) {
     if (observation.desired !== desired) throw new Error("animation trace changed target");
-    if (observation.frame.length !== 4 || observation.frame.some(value => !Number.isFinite(value))) throw new Error("animation trace has an invalid frame");
+    if (observation.generation !== first.generation) throw new Error("animation trace changed generation");
+    validateFrame("frame", observation.frame);
+    validateFrame("target frame", observation.target_frame);
+    validateFrame("display frame", observation.display_frame);
+    if (!framesMatch(observation.target_frame, first.target_frame, 0.001)) throw new Error("animation target frame changed within a generation");
+    if (!framesMatch(observation.display_frame, first.display_frame, 0.001)) throw new Error("animation display frame changed within a generation");
     if (![observation.progress, observation.opacity, observation.monotonic_us, observation.scheduler_gap_us].every(Number.isFinite)) throw new Error("animation trace has a non-finite value");
     if (index > 0) {
       const previous = observations[index - 1]!;
@@ -47,7 +63,7 @@ function validateCommon(observations: QuakeObservation[], desired: boolean): voi
       if (desired ? observation.progress + 0.001 < previous.progress : observation.progress - 0.001 > previous.progress) throw new Error("animation progress moved away from its target");
     }
   }
-  if (!near(observations.at(-1)!.progress, target, 0.001)) throw new Error(`animation trace did not reach progress ${target}`);
+  if (requireEndpoint && !near(observations.at(-1)!.progress, target, 0.001)) throw new Error(`animation trace did not reach progress ${target}`);
 }
 
 export function observationsForLatestGeneration(observations: QuakeObservation[], profile: string, desired: boolean): QuakeObservation[] {
@@ -56,39 +72,35 @@ export function observationsForLatestGeneration(observations: QuakeObservation[]
   return generation === undefined ? [] : matching.filter(observation => observation.generation === generation);
 }
 
-export function analyzeSlide(observations: QuakeObservation[], desired: boolean, expectation: SlideExpectation): TraceVerdict {
-  validateCommon(observations, desired);
-  const axis = expectation.edge === "left" || expectation.edge === "right" ? 0 : 1;
-  const orthogonal = axis === 0 ? 1 : 0;
-  const direction = expectation.edge === "top" || expectation.edge === "left" ? -1 : 1;
-  const trajectorySample = observations.find(observation => observation.progress < 0.999);
-  if (!trajectorySample) return { status: "inconclusive", reason: skippedReason(observations) };
-  const hiddenAxis = expectation.endpoint[axis]
-    + (trajectorySample.frame[axis] - expectation.endpoint[axis]) / (1 - trajectorySample.progress);
-  const hiddenDisplacement = hiddenAxis - expectation.endpoint[axis];
-  const extent = axis === 0 ? expectation.endpoint[2] : expectation.endpoint[3];
-  if (hiddenDisplacement * direction <= 0) {
-    throw new Error(`native slide moved in the wrong direction: ${expectation.endpoint} -> ${hiddenAxis}`);
+function hiddenFrame(target: [number, number, number, number], display: [number, number, number, number], edge: SlideExpectation["edge"]): [number, number, number, number] {
+  const hidden: [number, number, number, number] = [...target];
+  switch (edge) {
+    case "top": hidden[1] = display[1] - target[3]; break;
+    case "bottom": hidden[1] = display[1] + display[3]; break;
+    case "left": hidden[0] = display[0] - target[2]; break;
+    case "right": hidden[0] = display[0] + display[2]; break;
   }
-  if (hiddenDisplacement * direction < extent - 2) {
-    throw new Error(`native slide hidden endpoint is not fully outside: ${expectation.endpoint} -> ${hiddenAxis}`);
-  }
+  return hidden;
+}
+
+function validateSlideTrajectory(observations: QuakeObservation[], desired: boolean, expectation: SlideExpectation, requireEndpoint: boolean): void {
+  validateCommon(observations, desired, requireEndpoint);
+  const target = observations[0]!.target_frame;
+  const display = observations[0]!.display_frame;
+  if (!framesMatch(target, expectation.endpoint, 2)) throw new Error(`animation target disagrees with native endpoint: ${target} -> ${expectation.endpoint}`);
+  const hidden = hiddenFrame(target, display, expectation.edge);
   for (const observation of observations) {
-    const moved = observation.frame;
-    if (!near(moved[orthogonal], expectation.endpoint[orthogonal]) || !near(moved[2], expectation.endpoint[2]) || !near(moved[3], expectation.endpoint[3])) {
-      throw new Error(`native slide changed the wrong axis or size: ${expectation.endpoint} -> ${moved}`);
-    }
-    const displacement = moved[axis] - expectation.endpoint[axis];
-    if (observation.progress < 0.999 && displacement * direction <= 0) {
-      throw new Error(`native slide moved in the wrong direction: ${expectation.endpoint} -> ${moved}`);
-    }
-    const expectedAxis = expectation.endpoint[axis] + hiddenDisplacement * (1 - observation.progress);
-    if (!near(moved[axis], expectedAxis)) {
-      throw new Error(`native slide frame does not match progress: expected ${expectedAxis}, observed ${moved[axis]}`);
+    const expected = target.map((value, index) => value + (hidden[index]! - value) * (1 - observation.progress));
+    if (!framesMatch(observation.frame, expected, 2)) {
+      throw new Error(`native slide frame does not match fixed trajectory: expected ${expected}, observed ${observation.frame}`);
     }
     if (expectation.fade && !near(observation.opacity, observation.progress, 0.03)) throw new Error(`native fade disagrees with progress: ${observation.opacity}/${observation.progress}`);
     if (!expectation.fade && !near(observation.opacity, 1, 0.001)) throw new Error(`slide changed opacity: ${observation.opacity}`);
   }
+}
+
+export function analyzeSlide(observations: QuakeObservation[], desired: boolean, expectation: SlideExpectation): TraceVerdict {
+  validateSlideTrajectory(observations, desired, expectation, true);
   const intermediate = observations.find(isIntermediateObservation);
   return intermediate
     ? { status: "passed", intermediate }
@@ -97,8 +109,10 @@ export function analyzeSlide(observations: QuakeObservation[], desired: boolean,
 
 export function analyzeFade(observations: QuakeObservation[], desired: boolean, endpoint: [number, number, number, number]): TraceVerdict {
   validateCommon(observations, desired);
+  const target = observations[0]!.target_frame;
+  if (!framesMatch(target, endpoint, 2)) throw new Error(`animation target disagrees with native endpoint: ${target} -> ${endpoint}`);
   for (const observation of observations) {
-    if (observation.frame.some((value, index) => !near(value, endpoint[index]!))) throw new Error(`native fade moved frame: ${endpoint} -> ${observation.frame}`);
+    if (!framesMatch(observation.frame, target, 2)) throw new Error(`native fade moved frame: ${target} -> ${observation.frame}`);
     if (!near(observation.opacity, observation.progress, 0.03)) throw new Error(`native fade disagrees with progress: ${observation.opacity}/${observation.progress}`);
   }
   const intermediate = observations.find(isIntermediateObservation);
@@ -109,17 +123,17 @@ export function analyzeFade(observations: QuakeObservation[], desired: boolean, 
 
 export function analyzeReversal(hiding: QuakeObservation[], showing: QuakeObservation[], expectation: SlideExpectation, durationMs: number): TraceVerdict {
   if (hiding.length === 0) throw new Error("reversal hide trace is empty");
+  validateSlideTrajectory(hiding, false, expectation, false);
   const before = hiding.at(-1)!;
   if (!isIntermediateObservation(before)) return { status: "inconclusive", reason: skippedReason(hiding) };
   const result = analyzeSlide(showing, true, expectation);
   const after = showing[0]!;
+  if (!framesMatch(before.target_frame, after.target_frame, 0.001)) throw new Error("reversal target frame changed across retarget");
+  if (!framesMatch(before.display_frame, after.display_frame, 0.001)) throw new Error("reversal display frame changed across retarget");
   if (after.monotonic_us < before.monotonic_us) throw new Error("reversal trace time moved backwards");
   const retargetGapUs = after.monotonic_us - before.monotonic_us;
   const allowedProgress = retargetGapUs / (durationMs * 1000) + 0.03;
   if (Math.abs(after.progress - before.progress) > allowedProgress) throw new Error(`reversal progress jumped: ${before.progress} -> ${after.progress}`);
-  const allowedPixels = Math.max(expectation.endpoint[2], expectation.endpoint[3]) * allowedProgress + 2;
-  if (after.frame.some((value, index) => Math.abs(value - before.frame[index]!) > (index < 2 ? allowedPixels : 2))) throw new Error(`reversal frame jumped: ${before.frame} -> ${after.frame}`);
-  if (Math.abs(after.opacity - before.opacity) > allowedProgress + 0.03) throw new Error(`reversal opacity jumped: ${before.opacity} -> ${after.opacity}`);
   return result;
 }
 

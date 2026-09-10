@@ -64,7 +64,7 @@ fn append_trace(
     for observation in observations {
         writeln!(
             batch,
-            "{{\"monotonic_us\":{},\"profile\":\"{}\",\"generation\":{},\"desired\":{},\"progress\":{},\"stage\":\"{}\",\"frame\":[{},{},{},{}],\"opacity\":{},\"scheduler_gap_us\":{}}}",
+            "{{\"monotonic_us\":{},\"profile\":\"{}\",\"generation\":{},\"desired\":{},\"progress\":{},\"stage\":\"{}\",\"frame\":[{},{},{},{}],\"target_frame\":[{},{},{},{}],\"display_frame\":[{},{},{},{}],\"opacity\":{},\"scheduler_gap_us\":{}}}",
             observation.monotonic_us,
             json_string(&observation.profile),
             observation.generation,
@@ -75,6 +75,14 @@ fn append_trace(
             observation.frame.y,
             observation.frame.width,
             observation.frame.height,
+            observation.target_frame.x,
+            observation.target_frame.y,
+            observation.target_frame.width,
+            observation.target_frame.height,
+            observation.display_frame.x,
+            observation.display_frame.y,
+            observation.display_frame.width,
+            observation.display_frame.height,
             observation.opacity,
             observation.scheduler_gap_us,
         )
