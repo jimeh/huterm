@@ -810,3 +810,8 @@ those files for archive verification instead of rewriting their action pins.
 Quake close/Quit cancellation fixtures need a live child, not just an idle shell.
 macOS correctly closes idle shells without confirmation. Keep the fixture child
 alive through the matrix and require the prompt plus a post-cancel shell ACK.
+
+Keep quake titlebar visibility separate from fullscreen tab policy: partial quake
+windows are frameless but retain the configured tab bar. Resolve tab presentation
+from actual quake fullscreen state, share layout synchronization with ordinary
+windows, and suppress overlay reveal while the quake window is hidden.

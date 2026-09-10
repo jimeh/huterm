@@ -1182,12 +1182,14 @@ impl WorkspaceView {
                 let layout = self.chrome_layout(window);
                 layout.tabs.intersect(&layout.terminal)
             });
+        let mut changed_any = false;
         for tab in &self.tabs {
             tab.view.update(cx, |terminal, cx| {
                 let changed = terminal.tab_presentation != presentation
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets;
+                changed_any |= changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
@@ -1198,6 +1200,9 @@ impl WorkspaceView {
                     cx.notify();
                 }
             });
+        }
+        if changed_any {
+            cx.notify();
         }
     }
 
@@ -1218,6 +1223,7 @@ impl WorkspaceView {
             cx.notify();
         }
         let enabled = self.presentation() == Presentation::Overlay
+            && self.quake_visible()
             && window.is_window_active()
             && self.close.confirmation.is_none();
         let gesture = self
@@ -1647,10 +1653,7 @@ impl WorkspaceView {
         if self.reorder.is_some() {
             context.add("reordering");
         }
-        if self.quake.as_ref().map_or_else(
-            || self.fullscreen.fullscreen_context(),
-            quake_windows::Presentation::fullscreen_context,
-        ) {
+        if self.fullscreen_context() {
             context.add("fullscreen");
         }
         context

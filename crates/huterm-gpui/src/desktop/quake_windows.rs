@@ -967,6 +967,12 @@ impl WorkspaceView {
             .as_ref()
             .map_or(self.fullscreen.chrome_hidden, Presentation::chrome_hidden)
     }
+    pub(super) fn fullscreen_context(&self) -> bool {
+        self.quake.as_ref().map_or_else(
+            || self.fullscreen.fullscreen_context(),
+            Presentation::fullscreen_context,
+        )
+    }
     pub(super) fn quake_visible(&self) -> bool {
         self.quake.as_ref().is_none_or(Presentation::visible)
     }
@@ -976,7 +982,6 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let visible = self.quake_visible();
-        let chrome = self.chrome_hidden();
         #[cfg(target_os = "macos")]
         {
             self.fullscreen_insets = self
@@ -987,16 +992,13 @@ impl WorkspaceView {
                     state.native.safe_area()
                 });
         }
+        self.sync_tab_layout(window, cx);
         let mut changed_any = false;
         for tab in &self.tabs {
             let active = visible && Some(tab.id) == self.active;
             tab.view.update(cx, |terminal, cx| {
-                let changed = terminal.visible != active
-                    || terminal.chrome_hidden != chrome
-                    || terminal.fullscreen_insets != self.fullscreen_insets;
+                let changed = terminal.visible != active;
                 changed_any |= changed;
-                terminal.fullscreen_insets = self.fullscreen_insets;
-                terminal.chrome_hidden = chrome;
                 if terminal.visible && !active {
                     terminal.hide(cx);
                 }
