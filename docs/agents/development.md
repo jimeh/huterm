@@ -220,6 +220,9 @@ verified Ghostty source tree before separately timing source preparation,
 compilation, and execution. `mise run ci:smoke` composes the same three phases
 for local use; the workflow invokes its build and run subtasks directly so a
 slow cache restore, native preparation, compile, or test is visible on its own.
+The smoke cache key hashes the repository's pinned Rust, Cargo, and Ghostty
+inputs explicitly; it does not vary with unrelated Rust versions preinstalled
+on a hosted runner image.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,
