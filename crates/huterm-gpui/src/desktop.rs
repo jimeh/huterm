@@ -27,7 +27,9 @@ use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
     Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
 };
-use crate::keymap::{self, CompiledKeymap, Platform, ReservedKeys};
+use crate::keymap::{
+    self, CompiledKeymap, InstalledKeymap, Platform, ReservedKeys,
+};
 use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::{
@@ -47,7 +49,10 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 mod composition;
 mod keyboard;
 mod links;
-pub(crate) use windows::{fullscreen_smoke, integration_smoke, quake_smoke};
+pub(crate) mod palette;
+pub(crate) use windows::{
+    fullscreen_smoke, integration_smoke, palette_smoke, quake_smoke,
+};
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
@@ -72,12 +77,15 @@ fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
     }
 }
 
-/// Replaces GPUI's bindings and menu shortcuts together, returning reserved keys.
-fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
+/// Replaces command, component, menu, and discovery bindings together.
+fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> InstalledKeymap {
+    let (bindings, installed) = compiled.install_parts();
     cx.clear_key_bindings();
-    cx.bind_keys(compiled.bindings);
+    cx.bind_keys(bindings);
+    cx.bind_keys(palette::bindings());
+    cx.bind_keys(crate::ui::text_field::bindings());
     install_menus(cx);
-    Arc::new(compiled.reserved)
+    installed
 }
 
 fn install_menus(cx: &mut App) {
@@ -120,6 +128,8 @@ fn install_menus(cx: &mut App) {
         Menu {
             name: "View".into(),
             items: vec![
+                item(ids::OPEN_COMMAND_PALETTE),
+                MenuItem::separator(),
                 item(ids::SCROLL_PAGE_UP),
                 item(ids::SCROLL_PAGE_DOWN),
                 item(ids::SCROLL_TO_BOTTOM),
@@ -808,6 +818,23 @@ impl TerminalView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this view does not own as [`CommandError::UnknownCommand`].
+    fn command_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+    ) -> Result<(), CommandError> {
+        match command {
+            ids::PASTE if self.exited => {
+                Err(CommandError::Unavailable("terminal has exited".to_owned()))
+            }
+            ids::COPY
+            | ids::PASTE
+            | ids::SCROLL_PAGE_UP
+            | ids::SCROLL_PAGE_DOWN
+            | ids::SCROLL_TO_BOTTOM => Ok(()),
+            other => Err(CommandError::UnknownCommand(other)),
+        }
+    }
+
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -815,6 +842,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.clear_option_composition();
+        self.command_availability(invocation.id)?;
         match invocation.id {
             ids::COPY => {
                 if let Some(text) = &self.selected_text {
@@ -824,11 +852,6 @@ impl TerminalView {
                 }
             }
             ids::PASTE => {
-                if self.exited {
-                    return Err(CommandError::Unavailable(
-                        "terminal has exited".to_owned(),
-                    ));
-                }
                 if let Some(text) =
                     cx.read_from_clipboard().and_then(|item| item.text())
                 {

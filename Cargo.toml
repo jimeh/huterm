@@ -24,6 +24,7 @@ nix = { version = "=0.29.0", features = ["fs", "process", "signal"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 toml = "=1.1.5"
+unicode-segmentation = "=1.13.3"
 
 [workspace.lints.rust]
 future_incompatible = { level = "deny", priority = -1 }

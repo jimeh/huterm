@@ -372,7 +372,7 @@ pub(super) fn install(cx: &mut App) {
         .map_err(|error| error.to_string())
         .and_then(|compiled| replace_registrations(cx, &config, &compiled));
     if let Err(error) = result {
-        report(cx, &error);
+        report(cx, &error, None);
     }
 }
 
@@ -415,7 +415,7 @@ fn start_pump(cx: &mut App) {
                                 journal.record(observation);
                             }
                             if let Some(warning) = outcome.warning {
-                                report(cx, &warning);
+                                report(cx, &warning, None);
                             }
                         });
                     }
@@ -430,7 +430,7 @@ fn start_pump(cx: &mut App) {
                         {
                             eprintln!("Quake recovery: {error}");
                         }
-                        let _ = cx.update(|cx| report(cx, &message));
+                        let _ = cx.update(|cx| report(cx, &message, None));
                     }
                 }
             }
@@ -493,16 +493,22 @@ fn platform(cx: &mut App) -> Result<native::Platform, String> {
         .clone()
         .ok_or_else(|| "native quake platform unavailable".into())
 }
-fn report(cx: &mut App, error: &str) {
+fn report(
+    cx: &mut App,
+    error: &str,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+) {
     let message = format!("Quake: {error}");
-    eprintln!("{message}");
-    cx.global_mut::<Desktop>().config_error = Some(message.clone());
-    cx.defer(move |cx| show_active_window_status(cx, message));
+    if reporter.is_none() {
+        cx.global_mut::<Desktop>().config_error = Some(message.clone());
+    }
+    report_deferred_failure(cx, reporter, message);
 }
 
 pub(super) fn invoke(
     cx: &mut App,
     invocation: &CommandInvocation,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) -> Result<CommandOutcome, CommandError> {
     let name = invocation.text("profile").unwrap_or("default").to_owned();
     if !cx
@@ -524,7 +530,7 @@ pub(super) fn invoke(
     let command = invocation.id;
     cx.defer(move |cx| {
         if let Err(error) = invoke_now(cx, &name, command) {
-            report(cx, &error);
+            report(cx, &error, reporter);
         }
     });
     Ok(CommandOutcome::Accepted)
@@ -614,6 +620,7 @@ fn invoke_now(
         cx,
         true,
         Some((name.to_owned(), config, display)),
+        None,
     );
     if !cx.global::<Desktop>().quake.windows.contains_key(name) {
         return Err(format!("could not create quake profile {name:?}"));
@@ -759,8 +766,8 @@ fn dispatch_hotkeys(cx: &mut App) {
         .map(hotkeys::Registrations::drain)
         .unwrap_or_default();
     for command in commands {
-        if let Err(error) = invoke(cx, &command) {
-            report(cx, &error.to_string());
+        if let Err(error) = invoke(cx, &command, None) {
+            report(cx, &error.to_string(), None);
         }
     }
 }

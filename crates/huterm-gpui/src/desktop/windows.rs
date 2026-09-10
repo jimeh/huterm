@@ -5,6 +5,8 @@ pub(crate) mod fullscreen_smoke;
 pub(crate) mod input_smoke;
 #[path = "integration_smoke.rs"]
 pub(crate) mod integration_smoke;
+#[path = "palette_smoke.rs"]
+pub(crate) mod palette_smoke;
 #[path = "quake_smoke.rs"]
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
@@ -12,6 +14,7 @@ mod quake_windows;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
+use super::palette::{CommandPalette, PaletteEvent, PaletteTarget};
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
@@ -25,7 +28,8 @@ use huterm_core::{
     CloseAssessment, CloseRequest, HierarchySnapshot, MuxError, OpenedTab,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, SessionId, WorkspaceId, validate,
+    AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
+    catalog, validate,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,6 +50,28 @@ struct DesktopRuntime {
 }
 
 impl DesktopRuntime {
+    fn palette_snapshot(
+        &self,
+        workspace: Option<WorkspaceId>,
+        tab: Option<TabId>,
+    ) -> Result<
+        Option<(huterm_core::SelectionTarget, HierarchySnapshot)>,
+        MuxError,
+    > {
+        let mux = self
+            .mux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = if let Some(tab) = tab {
+            mux.select_tab(tab)?
+        } else if let Some(workspace) = workspace {
+            mux.select_workspace(workspace)?
+        } else {
+            return Ok(None);
+        };
+        Ok(Some((target, mux.capture_hierarchy())))
+    }
+
     fn open_tab(
         &self,
         workspace: Option<WorkspaceId>,
@@ -298,7 +324,7 @@ struct Desktop {
     config_path: PathBuf,
     config_error: Option<String>,
     windows: Vec<WeakEntity<WorkspaceView>>,
-    reserved: Arc<ReservedKeys>,
+    keymap: InstalledKeymap,
     reloading: bool,
     quitting: bool,
     pending_spawns: usize,
@@ -336,7 +362,7 @@ impl Desktop {
     ) -> Result<CommandOutcome, CommandError> {
         let spec = validate(invocation)?;
         match route(spec.scope, window)? {
-            Route::Application => run_app_command(cx, invocation),
+            Route::Application => run_app_command(cx, invocation, None),
             Route::Window(handle) => handle
                 .update(cx, |root, window, cx| {
                     let view = root
@@ -382,17 +408,37 @@ fn show_active_window_status(cx: &mut App, message: String) {
     });
 }
 
+fn report_deferred_failure(
+    cx: &mut App,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+    message: String,
+) {
+    eprintln!("Huterm {message}");
+    cx.defer(move |cx| {
+        if let Some(reporter) = reporter {
+            let _ = reporter.update(cx, |view, cx| {
+                view.status = Some(message);
+                cx.notify();
+            });
+        } else {
+            show_active_window_status(cx, message);
+        }
+    });
+}
+
 fn run_app_command(
     cx: &mut App,
     invocation: &CommandInvocation,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) -> Result<CommandOutcome, CommandError> {
+    app_command_availability(cx, invocation.id)?;
     match invocation.id {
         ids::NEW_WINDOW => {
-            open_window(cx);
+            open_window_with_profile(cx, true, None, reporter);
             Ok(CommandOutcome::Accepted)
         }
         ids::SHOW_QUAKE | ids::HIDE_QUAKE | ids::TOGGLE_QUAKE => {
-            quake_windows::invoke(cx, invocation)
+            quake_windows::invoke(cx, invocation, reporter)
         }
         ids::RELOAD_CONFIG => reload(cx),
         ids::CHECK_FOR_UPDATES => check_for_updates(cx),
@@ -451,6 +497,37 @@ fn apply_update_config(cx: &App, config: &Config) {
     }
 }
 
+fn app_command_availability(
+    cx: &App,
+    command: huterm_protocol::CommandId,
+) -> Result<(), CommandError> {
+    let desktop = cx.global::<Desktop>();
+    match command {
+        ids::NEW_WINDOW if desktop.quitting || desktop.quit_pending => Err(
+            CommandError::Unavailable("application is quitting".to_owned()),
+        ),
+        ids::RELOAD_CONFIG if desktop.reloading => {
+            Err(CommandError::Unavailable(
+                "configuration reload in progress".to_owned(),
+            ))
+        }
+        ids::QUIT if desktop.quitting => Err(CommandError::Unavailable(
+            "application quit is already in progress".to_owned(),
+        )),
+        ids::NEW_WINDOW
+        | ids::SHOW_QUAKE
+        | ids::HIDE_QUAKE
+        | ids::TOGGLE_QUAKE
+        | ids::RELOAD_CONFIG
+        | ids::CHECK_FOR_UPDATES
+        | ids::QUIT
+        | ids::HIDE
+        | ids::HIDE_OTHERS
+        | ids::SHOW_ALL => Ok(()),
+        other => Err(CommandError::UnknownCommand(other)),
+    }
+}
+
 /// Binds the startup keymap and returns its reserved keys with the first
 /// diagnostic to show: a config error, a keymap error, or binding conflicts.
 ///
@@ -459,11 +536,11 @@ fn apply_update_config(cx: &App, config: &Config) {
 pub(super) fn install_startup_keymap(
     cx: &mut App,
     loaded: &config::LoadedConfig,
-) -> (Arc<ReservedKeys>, Option<String>) {
+) -> (InstalledKeymap, Option<String>) {
     let (compiled, keymap_error) = compile_keymap(&loaded.config);
     let conflicts =
         (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
-    let reserved = bind_keymap(cx, compiled);
+    let keymap = bind_keymap(cx, compiled);
     let diagnostic = loaded
         .error
         .clone()
@@ -472,7 +549,7 @@ pub(super) fn install_startup_keymap(
                 .map(|error| format!("{}: {error}", loaded.path.display()))
         })
         .or(conflicts);
-    (reserved, diagnostic)
+    (keymap, diagnostic)
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
@@ -505,7 +582,7 @@ pub(super) fn run_with_startup(
         cx.activate(true);
     });
     application.run(move |cx| {
-        let (reserved, config_error) = install_startup_keymap(cx, &loaded);
+        let (keymap, config_error) = install_startup_keymap(cx, &loaded);
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         let updater =
             native_updater::Updater::initialize(loaded.config.updates);
@@ -516,7 +593,7 @@ pub(super) fn run_with_startup(
             config_error,
             config_path: loaded.path,
             windows: Vec::new(),
-            reserved,
+            keymap,
             reloading: false,
             quitting: false,
             pending_spawns: 0,
@@ -572,14 +649,15 @@ fn observe_keystroke(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let reserved = Arc::clone(&cx.global::<Desktop>().reserved);
+    let reserved = Arc::clone(&cx.global::<Desktop>().keymap.reserved);
     let consumed =
         event.action.is_some() || reserved.is_reserved(&event.keystroke);
     if let Some(root) = window.root::<WorkspaceView>().flatten() {
         root.update(cx, |view, cx| {
             let input_blocked = view.busy
                 || view.close.confirmation.is_some()
-                || view.reorder.is_some();
+                || view.reorder.is_some()
+                || view.palette.is_some();
             if let Some(tab) = view.active_view() {
                 tab.update(cx, |tab, cx| {
                     #[cfg(target_os = "macos")]
@@ -774,7 +852,7 @@ fn open_window(cx: &mut App) {
 }
 
 fn open_window_inner(cx: &mut App, launch_shell: bool) {
-    open_window_with_profile(cx, launch_shell, None);
+    open_window_with_profile(cx, launch_shell, None, None);
 }
 
 #[expect(
@@ -785,6 +863,7 @@ fn open_window_with_profile(
     cx: &mut App,
     launch_shell: bool,
     profile: Option<(String, crate::quake::Profile, crate::quake::Display)>,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) {
     if !can_open_window(
         launch_shell,
@@ -797,7 +876,11 @@ fn open_window_with_profile(
     let (family, metrics) = match resolve_metrics(&config, cx) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("Cannot open window: {error}");
+            report_deferred_failure(
+                cx,
+                reporter,
+                format!("Cannot open window: {error}"),
+            );
             maybe_exit(cx);
             return;
         }
@@ -864,6 +947,8 @@ fn open_window_with_profile(
                 close: CloseState::default(),
                 exited_tabs: ExitQueue::default(),
                 status: cx.global::<Desktop>().config_error.clone(),
+                palette: None,
+                startup_reporter: reporter.clone(),
             });
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
@@ -944,7 +1029,11 @@ fn open_window_with_profile(
         },
     );
     if let Err(error) = result {
-        eprintln!("Cannot open window: {error}");
+        report_deferred_failure(
+            cx,
+            reporter,
+            format!("Cannot open window: {error}"),
+        );
         maybe_exit(cx);
     }
 }
@@ -994,6 +1083,8 @@ struct WorkspaceView {
     close: CloseState,
     exited_tabs: ExitQueue,
     status: Option<String>,
+    palette: Option<Entity<CommandPalette>>,
+    startup_reporter: Option<WeakEntity<WorkspaceView>>,
 }
 
 impl Drop for WorkspaceView {
@@ -1557,14 +1648,7 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
-        self.check_available(false)?;
-        if cx.global::<Desktop>().quitting
-            || cx.global::<Desktop>().quit_pending
-        {
-            return Err(CommandError::Unavailable(
-                "application is quitting".to_owned(),
-            ));
-        }
+        self.check_new_tab_available(cx)?;
         let command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             cx.global::<Desktop>().config.engine,
@@ -1599,6 +1683,7 @@ impl WorkspaceView {
                 if let Some(result) = result.take() {
                     match result {
                         Ok((_, id, opened, attachment)) => {
+                            view.startup_reporter = None;
                             if let Some(attachment) = attachment {
                                 view.attachment = Some(attachment);
                             }
@@ -1645,6 +1730,14 @@ impl WorkspaceView {
                         Err(error) => {
                             view.status =
                                 Some(format!("Cannot open tab: {error}"));
+                            if let Some(reporter) = view.startup_reporter.take()
+                            {
+                                report_deferred_failure(
+                                    cx,
+                                    Some(reporter),
+                                    view.status.clone().unwrap_or_default(),
+                                );
+                            }
                             if view.quake.is_some() && view.tabs.is_empty() {
                                 cx.global_mut::<Desktop>()
                                     .config_error
@@ -1688,6 +1781,271 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
+    fn open_palette(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.open_palette_request(None, window, cx)
+    }
+
+    fn open_palette_request(
+        &mut self,
+        request: Option<&CommandInvocation>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if let Some(palette) = &self.palette {
+            palette.read(cx).focus_handle(cx).focus(window);
+            return Ok(CommandOutcome::Completed);
+        }
+        self.check_available(true)?;
+        if cx.global::<Desktop>().quitting
+            || cx.global::<Desktop>().quit_pending
+        {
+            return Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ));
+        }
+
+        let terminal = self.active_view();
+        if let Some(terminal) = &terminal {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let target = PaletteTarget {
+            session: None,
+            workspace: self.workspace,
+            tab: self.active,
+            terminal: self
+                .tabs
+                .iter()
+                .find(|tab| Some(tab.id) == self.active)
+                .map(|tab| tab.record.terminal_id),
+            terminal_view: terminal.map(|terminal| terminal.downgrade()),
+            contexts: window.context_stack(),
+        };
+        let availability = self.palette_availability(&target, cx);
+        let foreground = color(self.config.theme.foreground);
+        let background = color(self.config.theme.background);
+        let keymap = cx.global::<Desktop>().keymap.clone();
+        let palette = cx.new(|cx| {
+            CommandPalette::new_with_request(
+                target,
+                keymap,
+                availability,
+                foreground,
+                background,
+                request,
+                cx,
+            )
+        });
+        cx.subscribe_in(&palette, window, Self::handle_palette_event)
+            .detach();
+        self.palette = Some(palette.clone());
+        palette.read(cx).focus_handle(cx).focus(window);
+
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let workspace = self.workspace;
+        let tab = self.active;
+        let live_titles = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.id, tab.title(cx)))
+            .collect();
+        let task = cx
+            .background_executor()
+            .spawn(async move { runtime.palette_snapshot(workspace, tab) });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view.update(cx, |view, cx| match result {
+                Ok(Some((target, hierarchy))) => {
+                    palette.update(cx, |palette, cx| {
+                        palette.set_hierarchy(
+                            target,
+                            &hierarchy,
+                            &live_titles,
+                            cx,
+                        );
+                    });
+                    let target = palette.read(cx).target.clone();
+                    let availability = view.palette_availability(&target, cx);
+                    palette.update(cx, |palette, _| {
+                        palette.set_availability(availability);
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => palette.update(cx, |palette, cx| {
+                    palette.set_error(
+                        format!("Cannot load command targets: {error}"),
+                        cx,
+                    );
+                }),
+            });
+        })
+        .detach();
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn handle_palette_event(
+        &mut self,
+        palette: &Entity<CommandPalette>,
+        event: &PaletteEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match event {
+            PaletteEvent::Cancel => {
+                let target = palette.read(cx).target.clone();
+                self.palette = None;
+                self.restore_palette_focus(&target, window, cx);
+                cx.notify();
+            }
+            PaletteEvent::Execute(invocation) => {
+                let target = palette.read(cx).target.clone();
+                if let Err(error) = self
+                    .command_availability(invocation.id, &target, cx)
+                    .and_then(|()| validate(invocation).map(|_| ()))
+                {
+                    palette.update(cx, |palette, cx| {
+                        palette.set_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+                self.palette = None;
+                self.restore_palette_focus(&target, window, cx);
+                let reporter = cx.entity().downgrade();
+                let result = match validate(invocation).map(|spec| spec.scope) {
+                    Ok(CommandScope::Application) => {
+                        run_app_command(cx, invocation, Some(reporter))
+                    }
+                    Ok(CommandScope::Window | CommandScope::Runtime) => {
+                        self.run_command(invocation, window, cx)
+                    }
+                    Ok(CommandScope::Terminal) => target
+                        .terminal_view
+                        .as_ref()
+                        .and_then(WeakEntity::upgrade)
+                        .ok_or(CommandError::StaleTarget)
+                        .and_then(|terminal| {
+                            terminal.update(cx, |terminal, cx| {
+                                terminal.run_command(invocation, window, cx)
+                            })
+                        }),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    self.palette = Some(palette.clone());
+                    palette.read(cx).focus_handle(cx).focus(window);
+                    palette.update(cx, |palette, cx| {
+                        palette.set_error(error.to_string(), cx);
+                    });
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    fn restore_palette_focus(
+        &self,
+        target: &PaletteTarget,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        if target.tab == self.active
+            && let Some(terminal) =
+                target.terminal_view.as_ref().and_then(WeakEntity::upgrade)
+            && terminal.read(cx).visible
+        {
+            terminal.read(cx).focus.focus(window);
+        } else if let Some(terminal) = self.active_view() {
+            terminal.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+        }
+    }
+
+    fn palette_availability(
+        &self,
+        target: &PaletteTarget,
+        cx: &App,
+    ) -> std::collections::HashMap<huterm_protocol::CommandId, String> {
+        catalog()
+            .iter()
+            .filter(|spec| spec.id != ids::OPEN_COMMAND_PALETTE)
+            .filter_map(|spec| {
+                self.command_availability(spec.id, target, cx)
+                    .err()
+                    .map(|error| (spec.id, error.to_string()))
+            })
+            .collect()
+    }
+
+    fn command_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+        target: &PaletteTarget,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        let spec = huterm_protocol::lookup(command.as_str())
+            .ok_or(CommandError::UnknownCommand(command))?;
+        match spec.scope {
+            CommandScope::Application => app_command_availability(cx, command),
+            CommandScope::Window => match command {
+                ids::NEW_TAB => self.check_new_tab_available(cx),
+                ids::CLOSE_TAB => self.active_tab_id().map(|_| ()),
+                ids::NEXT_TAB | ids::PREVIOUS_TAB => {
+                    self.check_navigation_available()
+                }
+                ids::SELECT_TAB => self.check_navigation_available(),
+                ids::OPEN_COMMAND_PALETTE => self.check_available(true),
+                ids::MINIMIZE | ids::ZOOM => {
+                    self.check_presentation_available()
+                }
+                ids::TOGGLE_FULLSCREEN
+                | ids::TOGGLE_NATIVE_FULLSCREEN
+                | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
+                    self.check_fullscreen_available(command)
+                }
+                ids::CLOSE_WINDOW | ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
+                other => Err(CommandError::UnknownCommand(other)),
+            },
+            CommandScope::Runtime => {
+                self.check_runtime_available(cx)?;
+                match command {
+                    ids::RENAME_TAB if target.tab.is_none() => Err(
+                        CommandError::Unavailable("window has no tab".into()),
+                    ),
+                    ids::RENAME_WORKSPACE if target.workspace.is_none() => {
+                        Err(CommandError::Unavailable(
+                            "window has no workspace".into(),
+                        ))
+                    }
+                    ids::RENAME_SESSION if target.session.is_none() => {
+                        Err(CommandError::Unavailable(
+                            "loading command target".into(),
+                        ))
+                    }
+                    _ => Ok(()),
+                }
+            }
+            CommandScope::Terminal => {
+                let terminal = target
+                    .terminal_view
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .ok_or(CommandError::Unavailable(
+                        "window has no active terminal".into(),
+                    ))?;
+                let terminal = terminal.read(cx);
+                if Some(terminal.client.terminal_id()) != target.terminal {
+                    return Err(CommandError::StaleTarget);
+                }
+                terminal.command_availability(command)
+            }
+        }
+    }
+
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
     /// `reordering`, and `fullscreen` while those states hold.
     fn key_context(&self, _window: &Window) -> KeyContext {
@@ -1701,6 +2059,9 @@ impl WorkspaceView {
         }
         if self.fullscreen_context() {
             context.add("fullscreen");
+        }
+        if self.palette.is_some() {
+            context.add("palette");
         }
         context
     }
@@ -1720,6 +2081,85 @@ impl WorkspaceView {
         Err(CommandError::Unavailable(reason.to_owned()))
     }
 
+    fn active_tab_id(&self) -> Result<TabId, CommandError> {
+        self.active.ok_or_else(|| {
+            CommandError::Unavailable("window has no tab".to_owned())
+        })
+    }
+
+    fn check_navigation_available(&self) -> Result<(), CommandError> {
+        self.check_available(true)?;
+        self.active_tab_id().map(|_| ())
+    }
+
+    fn check_new_tab_available(&self, cx: &App) -> Result<(), CommandError> {
+        self.check_available(false)?;
+        if cx.global::<Desktop>().quitting
+            || cx.global::<Desktop>().quit_pending
+        {
+            Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_runtime_available(&self, cx: &App) -> Result<(), CommandError> {
+        self.check_available(true)?;
+        if cx
+            .global::<Desktop>()
+            .runtime
+            .terminating
+            .load(Ordering::Acquire)
+        {
+            Err(CommandError::Unavailable(
+                "runtime is terminating".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_fullscreen_available(
+        &self,
+        command: huterm_protocol::CommandId,
+    ) -> Result<(), CommandError> {
+        if self.quake.is_some() {
+            return if command == ids::TOGGLE_FULLSCREEN {
+                if self.close.confirmation.is_some() {
+                    Err(CommandError::Unavailable(
+                        "a close confirmation is active".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            } else {
+                Err(CommandError::Unavailable("quake profile windows use toggle_fullscreen to switch presentation".into()))
+            };
+        }
+        let intent = match command {
+            ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
+            ids::TOGGLE_NON_NATIVE_FULLSCREEN => ToggleIntent::NonNative,
+            ids::TOGGLE_FULLSCREEN => ToggleIntent::Default,
+            other => return Err(CommandError::UnknownCommand(other)),
+        };
+        self.fullscreen
+            .check_toggle(intent, || {
+                #[cfg(target_os = "macos")]
+                self.native_fullscreen
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "non-native fullscreen adapter is unavailable"
+                            .to_owned()
+                    })?
+                    .preflight()
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .map_err(CommandError::Unavailable)
+    }
+
     /// Runs a window- or runtime-scope catalog command against this window.
     ///
     /// Runtime commands take omitted targets from this window's active tab,
@@ -1729,10 +2169,6 @@ impl WorkspaceView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this window does not own as [`CommandError::UnknownCommand`].
-    #[expect(
-        clippy::too_many_lines,
-        reason = "exhaustive window command routing"
-    )]
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -1745,9 +2181,7 @@ impl WorkspaceView {
         match invocation.id {
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::CLOSE_TAB => {
-                let id = self.active.ok_or_else(|| {
-                    CommandError::Unavailable("window has no tab".to_owned())
-                })?;
+                let id = self.active_tab_id()?;
                 self.request_close(CloseTarget::Tab(id), window, cx);
                 Ok(CommandOutcome::Accepted)
             }
@@ -1764,9 +2198,7 @@ impl WorkspaceView {
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
                 if self.quake.is_some() {
-                    if invocation.id != ids::TOGGLE_FULLSCREEN {
-                        return Err(CommandError::Unavailable("quake profile windows use toggle_fullscreen to switch presentation".into()));
-                    }
+                    self.check_fullscreen_available(invocation.id)?;
                     return quake_windows::toggle(self, window, cx);
                 }
                 self.observe_fullscreen(window, cx);
@@ -1777,19 +2209,9 @@ impl WorkspaceView {
                     }
                     _ => ToggleIntent::Default,
                 };
+                self.check_fullscreen_available(invocation.id)?;
                 self.fullscreen
-                    .toggle_checked(intent, || {
-                        #[cfg(target_os = "macos")]
-                        self.native_fullscreen
-                            .as_ref()
-                            .ok_or_else(|| {
-                                "non-native fullscreen adapter is unavailable"
-                                    .to_owned()
-                            })?
-                            .preflight()
-                            .map_err(|error| error.to_string())?;
-                        Ok(())
-                    })
+                    .toggle_checked(intent, || Ok(()))
                     .map_err(CommandError::Unavailable)?;
                 self.advance_fullscreen(window, cx);
                 Ok(CommandOutcome::Accepted)
@@ -1830,7 +2252,9 @@ impl WorkspaceView {
                 cx.open_with_system(&config_path);
                 Ok(CommandOutcome::Completed)
             }
+            ids::OPEN_COMMAND_PALETTE => self.open_palette(window, cx),
             ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
+                self.check_runtime_available(cx)?;
                 let invocation = fill_rename_target(
                     invocation,
                     self.active,
@@ -2128,12 +2552,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.check_available(true)?;
-        if self.tabs.is_empty() {
-            return Err(CommandError::Unavailable(
-                "window has no tab".to_owned(),
-            ));
-        }
+        self.check_navigation_available()?;
         let index = self
             .tabs
             .iter()
@@ -2424,8 +2843,8 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 if !compiled.conflicts.is_empty() {
                     keymap_status = Some(compiled.conflicts.join("; "));
                 }
-                let reserved = bind_keymap(cx, compiled);
-                cx.global_mut::<Desktop>().reserved = reserved;
+                let keymap = bind_keymap(cx, compiled);
+                cx.global_mut::<Desktop>().keymap = keymap;
                 maybe_exit(cx);
                 (config, family, metrics)
             });
@@ -3196,6 +3615,16 @@ impl Render for WorkspaceView {
                     ),
             );
         }
+        if let Some(palette) = &self.palette {
+            let target = palette.read(cx).target.clone();
+            let availability = self.palette_availability(&target, cx);
+            let keymap = cx.global::<Desktop>().keymap.clone();
+            palette.update(cx, |palette, _| {
+                palette.set_availability(availability);
+                palette.set_keymap(keymap);
+            });
+            root = root.child(palette.clone());
+        }
         root
     }
 }
@@ -3210,6 +3639,7 @@ pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
             !view.busy
                 && view.close.confirmation.is_none()
                 && view.reorder.is_none()
+                && view.palette.is_none()
         })
 }
 

@@ -368,6 +368,20 @@ attribution and palette import details.
 
 ### Keybindings
 
+Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux,
+or choose **View > Open Command Palette**. Type whitespace-separated terms to
+search command titles, stable IDs, and descriptions. Use Up and Down to choose
+a command, Enter to run it or edit its arguments, and Escape to return from
+arguments or close the palette. Unavailable commands remain in the list with
+their refusal reason.
+
+Arguments appear in catalog order. Text and bounded integers use the same
+single-line input; booleans toggle with Up and Down; session, workspace, and tab
+arguments use searchable pickers with their ancestry shown. Optional scalar
+arguments stay unset until edited, while optional identity arguments start on
+the session, workspace, or tab that was active when the palette opened. Palette
+input is modal within its window and is never sent to the terminal beneath it.
+
 Quake windows are retained terminal windows summoned by profile name. Global
 shortcuts are opt-in and work while another application has focus:
 
@@ -503,8 +517,9 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `confirming` | A close confirmation is open. |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
-
-`Palette` is reserved for the future command palette.
+| `palette` | The window owns an open command palette. |
+| `Palette` | The command-palette overlay has focus. |
+| `PaletteText` | The palette's text field has focus. |
 
 Commands, their scope, and arguments:
 
@@ -519,6 +534,7 @@ Commands, their scope, and arguments:
 | `check_for_updates` | Application | macOS packaged application only |
 | `open_settings` | Window | |
 | `about` | Window | |
+| `open_command_palette` | Window | |
 | `new_tab` | Window | |
 | `close_tab` | Window | |
 | `close_window` | Window | |
@@ -548,6 +564,7 @@ Default bindings differ per platform:
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `new_window` | `cmd-n` | `ctrl-shift-n` |
+| `open_command_palette` | `cmd-shift-p` | `ctrl-shift-p` |
 | `new_tab` | `cmd-t` | `ctrl-shift-t` |
 | `close_tab` | `cmd-w` | `ctrl-shift-w` |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |

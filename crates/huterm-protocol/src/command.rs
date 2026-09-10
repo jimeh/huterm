@@ -468,6 +468,9 @@ pub mod ids {
     pub const RELOAD_CONFIG: CommandId = CommandId::new("reload_config");
     /// Opens the configuration file for editing.
     pub const OPEN_SETTINGS: CommandId = CommandId::new("open_settings");
+    /// Opens the command palette in the current window.
+    pub const OPEN_COMMAND_PALETTE: CommandId =
+        CommandId::new("open_command_palette");
     /// Shows application information.
     pub const ABOUT: CommandId = CommandId::new("about");
     /// Opens a new tab in the window.
@@ -618,6 +621,13 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Open Settings",
         "Open the configuration file for editing.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_COMMAND_PALETTE,
+        CommandScope::Window,
+        "Open Command Palette",
+        "Search and run commands in this window.",
         &[],
     ),
     spec(
@@ -819,6 +829,15 @@ mod tests {
             validate(&CommandInvocation::new(bogus, Vec::new())),
             Err(CommandError::UnknownCommand(bogus))
         );
+    }
+
+    #[test]
+    fn open_command_palette_is_argument_free_and_window_scoped() {
+        let invocation =
+            CommandInvocation::new(ids::OPEN_COMMAND_PALETTE, Vec::new());
+        let spec = validate(&invocation).unwrap();
+        assert_eq!(spec.scope, CommandScope::Window);
+        assert!(spec.args.is_empty());
     }
 
     #[test]

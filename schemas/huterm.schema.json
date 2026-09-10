@@ -406,6 +406,7 @@
                 "show_all",
                 "reload_config",
                 "open_settings",
+                "open_command_palette",
                 "about",
                 "new_tab",
                 "close_tab",
@@ -952,6 +953,53 @@
               "command": {
                 "const": "open_settings",
                 "description": "Open the configuration file for editing.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_command_palette"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Search and run commands in this window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_command_palette",
+                "description": "Search and run commands in this window.",
                 "type": "string"
               },
               "description": {

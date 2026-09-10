@@ -32,6 +32,8 @@ mod renderer;
 mod scroll;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod themes;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod ui;
 
 /// Stable application identifier used by runtime diagnostics and packaging.
 pub const APP_ID: &str = "app.huterm.dev";
@@ -83,6 +85,13 @@ pub fn run_native_input_smoke() -> anyhow::Result<()> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
     desktop::fullscreen_smoke::run()
+}
+
+/// Runs the production desktop with the command-palette smoke probe.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_palette_smoke() -> anyhow::Result<()> {
+    desktop::palette_smoke::run()
 }
 
 /// Runs the production quake workflow with native-smoke observations.
