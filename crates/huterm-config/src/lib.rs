@@ -122,6 +122,23 @@ pub struct WindowConfig {
     pub auto_hide_tab_bar_in_fullscreen: bool,
 }
 
+/// Optional overrides for the platform updater.
+///
+/// Leaving either field unset preserves the updater's stored preference. On a
+/// fresh macOS profile, Sparkle asks about automatic checks on the second
+/// launch and uses a 24-hour interval.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Enables or disables scheduled checks without Sparkle's consent prompt.
+    pub automatic_checks: Option<bool>,
+    /// Overrides the scheduled-check interval in whole hours.
+    pub check_interval_hours: Option<u32>,
+}
+
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
@@ -287,6 +304,8 @@ pub struct RawConfig {
     pub font: RawFont,
     #[serde(default)]
     pub window: WindowConfig,
+    #[serde(default)]
+    pub updates: UpdateConfig,
     #[serde(default)]
     pub theme: ThemeDefinition,
     #[serde(default)]
@@ -480,7 +499,48 @@ impl RawConfig {
                 ));
             }
         }
+        if self.updates.check_interval_hours == Some(0) {
+            return Err(ConfigError::Invalid(
+                "updates.check_interval_hours must be at least 1",
+            ));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn update_settings_preserve_omitted_and_explicit_states() {
+        let omitted: RawConfig = toml::from_str("").expect("default config");
+        assert_eq!(omitted.updates.automatic_checks, None);
+        assert_eq!(omitted.updates.check_interval_hours, None);
+
+        for enabled in [false, true] {
+            let configured: RawConfig = toml::from_str(&format!(
+                "[updates]\nautomatic_checks = {enabled}\ncheck_interval_hours = 6"
+            ))
+            .expect("explicit updates");
+            assert_eq!(configured.updates.automatic_checks, Some(enabled));
+            assert_eq!(configured.updates.check_interval_hours, Some(6));
+            configured.validate_values().expect("valid updates");
+        }
+    }
+
+    #[test]
+    fn update_interval_requires_at_least_one_hour() {
+        let configured: RawConfig =
+            toml::from_str("[updates]\ncheck_interval_hours = 0")
+                .expect("syntactically valid updates");
+        assert_eq!(
+            configured
+                .validate_values()
+                .expect_err("zero interval must fail")
+                .to_string(),
+            "updates.check_interval_hours must be at least 1"
+        );
     }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

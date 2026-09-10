@@ -185,6 +185,23 @@ For development, point the directive at the absolute local path to
 `schemas/huterm.schema.json`. Release URLs become available after the first
 release containing these assets is published.
 
+Packaged macOS builds use Sparkle's standard update interface. **Check for
+Updates...** is always available from the Huterm application menu. Optional
+scheduled-check overrides live in the same config:
+
+```toml
+[updates]
+automatic_checks = true
+check_interval_hours = 24
+```
+
+Leave either setting absent to leave its persisted value under Sparkle's
+control. On a fresh profile, omitting both preserves Sparkle's normal consent
+prompt on the second launch and its 24-hour default interval. Explicit `true`
+or `false` enables or disables scheduled checks without prompting; setting an
+interval alone does not grant consent. Development binaries and Linux builds do
+not contact the production update feed.
+
 Terminal padding defaults to 4 logical points on each side. Add or adjust the
 `[window]` section to change it:
 
@@ -498,6 +515,7 @@ Commands, their scope, and arguments:
 | `hide_others` | Application | |
 | `show_all` | Application | |
 | `reload_config` | Application | |
+| `check_for_updates` | Application | macOS packaged application only |
 | `open_settings` | Window | |
 | `about` | Window | |
 | `new_tab` | Window | |

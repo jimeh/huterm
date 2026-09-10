@@ -52,6 +52,8 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     };
     let (_, error) = windows::install_startup_keymap(cx, &loaded);
     anyhow::ensure!(error.is_none(), "startup keymap: {error:?}");
+    unbound_menu_item("Check for Updates...")?;
+    marker("startup-update-command");
     shortcut("Reload Configuration", "r")?;
     marker("startup-user-shortcut");
     shortcut("New Tab", "t")?;
@@ -66,6 +68,8 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     let compiled = keymap::compile(Platform::MacOs, &config.keybindings)?;
     // Reload invokes this same function after configuration validation.
     bind_keymap(cx, compiled);
+    unbound_menu_item("Check for Updates...")?;
+    marker("reloaded-update-command");
     shortcut("Reload Configuration", "y")?;
     marker("reloaded-user-shortcut");
     shortcut("Toggle Fullscreen", "f")?;
@@ -93,6 +97,15 @@ fn shortcut(title: &str, key: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         actual == expected,
         "{title}: expected {expected:?}, got {actual:?}"
+    );
+    Ok(())
+}
+
+fn unbound_menu_item(title: &str) -> anyhow::Result<()> {
+    let actual = menu_shortcut(title)?;
+    anyhow::ensure!(
+        actual.key.is_empty() && actual.modifiers == 0,
+        "{title}: expected no shortcut, got {actual:?}"
     );
     Ok(())
 }

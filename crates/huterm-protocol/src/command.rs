@@ -449,6 +449,9 @@ pub mod ids {
     pub const NEW_WINDOW: CommandId = CommandId::new("new_window");
     /// Quits the application after assessed close.
     pub const QUIT: CommandId = CommandId::new("quit");
+    /// Opens or focuses the platform update checker.
+    pub const CHECK_FOR_UPDATES: CommandId =
+        CommandId::new("check_for_updates");
     /// Show a named quake profile's window.
     pub const SHOW_QUAKE: CommandId = CommandId::new("show_quake");
     /// Hide a named quake profile's window without closing its terminals.
@@ -572,6 +575,13 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Application,
         "Quit",
         "Quit after assessing every open terminal.",
+        &[],
+    ),
+    spec(
+        ids::CHECK_FOR_UPDATES,
+        CommandScope::Application,
+        "Check for Updates...",
+        "Open or focus the platform update checker.",
         &[],
     ),
     spec(

@@ -52,7 +52,7 @@ pub(crate) use windows::{fullscreen_smoke, integration_smoke, quake_smoke};
 pub(crate) mod menus_smoke;
 mod windows;
 #[cfg(target_os = "macos")]
-pub(crate) use windows::input_smoke;
+pub(crate) use windows::{input_smoke, updater_smoke};
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
@@ -88,6 +88,7 @@ fn install_menus(cx: &mut App) {
             name: "Huterm".into(),
             items: vec![
                 item(ids::ABOUT),
+                item(ids::CHECK_FOR_UPDATES),
                 item(ids::OPEN_SETTINGS),
                 item(ids::RELOAD_CONFIG),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),

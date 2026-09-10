@@ -4,6 +4,14 @@
 <dict>
 	<key>CFBundleIconName</key>
 	<string>Huterm</string>
+	<key>CFBundleVersion</key>
+	<string>0.4.0</string> <!-- x-release-please-version -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/jimeh/huterm/releases/latest/download/appcast.xml</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>NSAppBundlesUsageDescription</key>
 	<string>Huterm or a program running within it would like to access files inside other applications.</string>
 	<key>NSAppDataUsageDescription</key>

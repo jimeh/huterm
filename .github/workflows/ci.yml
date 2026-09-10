@@ -262,6 +262,10 @@ jobs:
         if: runner.os == 'macOS'
         run: HUTERM_CI_SMOKE_STEP=macos-menus mise run ci:smoke:run
 
+      - name: Smoke packaged macOS updater
+        if: runner.os == 'macOS'
+        run: HUTERM_CI_SMOKE_STEP=macos-updater mise run ci:smoke:run
+
       - name: Smoke Linux input
         if: runner.os == 'Linux'
         run: HUTERM_CI_SMOKE_STEP=linux-input mise run ci:smoke:run

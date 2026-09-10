@@ -1,0 +1,16 @@
+{
+  "version": "2.9.6",
+  "published_at": "2026-08-17T01:40:46Z",
+  "minimum_macos": "10.13",
+  "source": {
+    "name": "Sparkle-2.9.6.tar.xz",
+    "url": "https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz",
+    "sha256": "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192",
+    "tree_sha256": "a16cbba4b6e282a08a4dc92ace53885cdf14d5e6ac95656133042353fd1f62a9"
+  },
+  "framework": {
+    "identifier": "org.sparkle-project.Sparkle",
+    "license_sha256": "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
+  },
+  "license_url": "https://github.com/sparkle-project/Sparkle/blob/2.9.6/LICENSE"
+}

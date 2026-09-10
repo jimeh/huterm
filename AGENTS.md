@@ -81,6 +81,12 @@ the accepted ticket to the app, verify without re-signing, and only then create
 the public ZIP. Re-signing after stapling invalidates the notarized artifact.
 Release checks must cover every Mach-O plus the app's exact Developer ID team,
 Hardened Runtime flag, secure timestamp, and approved entitlements.
+Sparkle releases use the verified `.native/sparkle` distribution and remove
+only the package copy's unused XPC services. Sign Autoupdate and Updater inside
+out before `Sparkle.framework`, then sign Huterm. The protected publication job
+alone receives the EdDSA private key and attestation authority; the build job
+hands off the signed ZIP, schemas, and validated SPDX SBOM by exact Actions
+artifact ID and digest.
 
 Release Please requires a scalar `package.version` in the root and every member
 manifest. Keep internal exact versions centralized in `workspace.dependencies`
@@ -372,8 +378,9 @@ Quit captures every session plus window navigation and geometry before cleanup;
 retain the first capture through repeated shutdown. The native AppKit bridge
 adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
 until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
-native_quit.rs; run mise run smoke:macos-quit on macOS for real terminate/cancel/
-retry/allow coverage. An on_app_quit callback alone cannot cancel Dock Quit.
+native_quit.rs and native_updater.rs; run mise run smoke:macos-quit on macOS for
+real terminate, cancel, retry, and allow coverage. An on_app_quit callback alone
+cannot cancel Dock Quit.
 
 Allow no-PTY Quit confirmation hosts while quitting, including when a queued
 Application request outlives the final Window close. Only new shell windows
@@ -530,6 +537,9 @@ insert a second interpretation. Cancel native preedit on the exact NSView outsid
 GPUI's update borrow, and skip deferred cancellation when the active view already
 has newer preedit. Bindings and menu installation share one operation;
 `smoke:macos-menus` reads actual NSMenuItem shortcuts.
+`smoke:macos-updater` assembles a disposable app with a fixture-only Sparkle
+key and feed, isolates its user defaults, and exercises the production updater
+command without requiring production signing material.
 Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.

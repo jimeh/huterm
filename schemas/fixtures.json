@@ -640,5 +640,25 @@
     "name": "quake rejects removed edge property",
     "toml": "[quake.profiles.default]\nedge=\"top\"",
     "valid": false
+  },
+  {
+    "name": "updates omitted",
+    "toml": "",
+    "valid": true
+  },
+  {
+    "name": "updates explicit disabled and interval",
+    "toml": "[updates]\nautomatic_checks=false\ncheck_interval_hours=1",
+    "valid": true
+  },
+  {
+    "name": "updates interval below minimum",
+    "toml": "[updates]\ncheck_interval_hours=0",
+    "valid": false
+  },
+  {
+    "name": "updates automatic checks requires boolean",
+    "toml": "[updates]\nautomatic_checks=\"yes\"",
+    "valid": false
   }
 ]

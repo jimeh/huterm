@@ -400,6 +400,7 @@
                 "toggle_quake",
                 "new_window",
                 "quit",
+                "check_for_updates",
                 "hide",
                 "hide_others",
                 "show_all",
@@ -669,6 +670,53 @@
               "command": {
                 "const": "quit",
                 "description": "Quit after assessing every open terminal.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "check_for_updates"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open or focus the platform update checker.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "check_for_updates",
+                "description": "Open or focus the platform update checker.",
                 "type": "string"
               },
               "description": {
@@ -2194,6 +2242,23 @@
       },
       "type": "object"
     },
+    "UpdateConfig": {
+      "additionalProperties": false,
+      "description": "Optional overrides for the platform updater.\n\nLeaving either field unset preserves the updater's stored preference. On a\nfresh macOS profile, Sparkle asks about automatic checks on the second\nlaunch and uses a 24-hour interval.",
+      "properties": {
+        "automatic_checks": {
+          "description": "Enable or disable scheduled update checks without Sparkle's consent prompt. Omit to preserve Sparkle's stored choice; a fresh macOS profile asks on its second launch.",
+          "type": "boolean"
+        },
+        "check_interval_hours": {
+          "description": "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
@@ -2290,6 +2355,13 @@
         "pattern": "^[A-Za-z0-9_-]+$"
       },
       "type": "object"
+    },
+    "updates": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UpdateConfig"
+        }
+      ]
     },
     "window": {
       "allOf": [

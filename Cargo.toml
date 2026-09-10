@@ -59,11 +59,13 @@ binariesDir = "target/universal-apple-darwin/release"
 targetTriple = "universal-apple-darwin"
 beforePackagingCommand = "mise run package:build:macos"
 icons = ["assets/Huterm.icns", "assets/Huterm.png"]
-resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }, { src = "third-party/terminal-graphics", target = "terminal-graphics" }, { src = "assets/macos/Assets.car", target = "Assets.car" }]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }, { src = "third-party/sparkle/LICENSE", target = "Sparkle-LICENSE" }, { src = "third-party/terminal-graphics", target = "terminal-graphics" }, { src = "assets/macos/Assets.car", target = "Assets.car" }]
 
 [package.metadata.packager.macos]
 entitlements = "assets/macos/Huterm.entitlements"
 infoPlistPath = "assets/macos/Info.plist"
+minimumSystemVersion = "10.15.7"
+frameworks = [".native/sparkle/distribution/Sparkle.framework"]
 
 [[package.metadata.packager.binaries]]
 path = "huterm"
