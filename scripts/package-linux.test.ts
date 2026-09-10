@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -8,6 +9,7 @@ import {
   highestRequiredGlibc,
   normalizeLinuxArchitecture,
   normalizeTreeMetadata,
+  parseLdd,
   validateGlibcVersionInfo,
   validateDependencyPolicy,
   validatePackageManifest,
@@ -19,6 +21,15 @@ import {
 } from "./package-linux.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
+
+async function inspectRegularFile(file: string): Promise<{ bytes: Buffer; mode: number }> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await handle.stat();
+    expect(metadata.isFile()).toBe(true);
+    return { bytes: await handle.readFile(), mode: metadata.mode & 0o777 };
+  } finally { await handle.close(); }
+}
 
 describe("Linux package policy", () => {
   test("normalizes payload modes and timestamps", async () => {
@@ -88,9 +99,24 @@ describe("Linux package policy", () => {
     ].join("\n");
     expect(highestRequiredGlibc(table)).toEqual({ required: "2.35", weak: ["2.39"] });
     expect(() => highestRequiredGlibc(table.replace("GLIBC_2.35", "GLIBC_2.36"))).toThrow("exceeds 2.35");
-    expect(() => validateGlibcVersionInfo("Name: GLIBC_2.39  Flags: none", ["2.39"])).not.toThrow();
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_2.39  Flags: none", ["2.39"])).toThrow("GLIBC_2.39");
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_2.39  Flags: WEAK", [])).not.toThrow();
     expect(() => validateGlibcVersionInfo("Name: GLIBC_2.36  Flags: none", [])).toThrow("GLIBC_2.36");
-    expect(() => validateGlibcVersionInfo("Name: GLIBC_ABI_DT_RELR  Flags: none", [])).toThrow("GLIBC_ABI_DT_RELR");
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_ABI_DT_RELR  Flags: WEAK", [])).toThrow("GLIBC_ABI_DT_RELR");
+  });
+
+  test("parses complete ldd entries including the bare dynamic loader", () => {
+    const output = [
+      "linux-vdso.so.1 (0x00007ffe2edeb000)",
+      "libxkbcommon.so.0 => /tmp/Huterm/lib/huterm/libxkbcommon.so.0 (0x00007f2500000000)",
+      "libc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f2400000000)",
+      "/lib64/ld-linux-x86-64.so.2 (0x00007f2600000000)",
+    ].join("\n");
+    expect(parseLdd(output)).toEqual(new Map([
+      ["libxkbcommon.so.0", "/tmp/Huterm/lib/huterm/libxkbcommon.so.0"],
+      ["libc.so.6", "/usr/lib/x86_64-linux-gnu/libc.so.6"],
+      ["ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.2"],
+    ]));
   });
 
   test("rejects unknown complete ldd entries, including transitive libraries", () => {
@@ -121,11 +147,13 @@ describe("Linux package policy", () => {
       await chmod(source, 0o644);
       await withPrivateExecutableCopy(source, async executable => {
         expect(executable).not.toBe(source);
-        expect((await stat(executable)).mode & 0o777).toBe(0o700);
-        expect(await readFile(executable)).toEqual(bytes);
+        const inspected = await inspectRegularFile(executable);
+        expect(inspected.mode).toBe(0o700);
+        expect(inspected.bytes).toEqual(bytes);
       });
-      expect((await stat(source)).mode & 0o777).toBe(0o644);
-      expect(await readFile(source)).toEqual(bytes);
+      const inspected = await inspectRegularFile(source);
+      expect(inspected.mode).toBe(0o644);
+      expect(inspected.bytes).toEqual(bytes);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

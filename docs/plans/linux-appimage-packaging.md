@@ -380,15 +380,18 @@ Refactor the reusable release workflow into four responsibilities:
 2. The macOS job builds the signed, notarized, and stapled universal archive.
    It uploads that verified payload as an Actions artifact but does not upload
    to the GitHub Release or publish it.
-3. A native Linux matrix builds and verifies the x86_64 and aarch64 AppImage
-   and tarball pairs. Each matrix leg uploads its two verified payloads plus a
-   per-platform digest manifest as a uniquely named Actions artifact and
-   receives no release credential. Keep artifact overwrite disabled.
+3. Separate native Linux x86_64 and aarch64 jobs build and verify each AppImage
+   and tarball pair. Each job uploads its two verified payloads plus a
+   per-platform digest manifest as an immutable, attempt-qualified Actions
+   artifact, exposes that exact name to downstream jobs, and receives no
+   release credential.
 4. A final assembly job downloads every platform artifact, checks out the exact
    release SHA for the committed schemas, validates the complete expected file
    set, verifies every payload against the digest manifest produced by its
    platform builder, creates `SHA256SUMS`, and rechecks the final inventory.
-   Download every Actions artifact by its exact architecture-qualified name.
+   Download every Actions artifact by the exact producer output, allowing a
+   partial rerun to reuse an earlier successful producer without guessing the
+   assembly attempt number.
    In non-publishing mode the job uploads the complete set as one short-lived
    Actions artifact. In publishing mode it mints a fresh release token, uploads
    the exact set to the validated draft, verifies remote names, sizes, states,
@@ -482,9 +485,9 @@ native runner; do not enable binfmt in release jobs as a workaround.
 ### 5. Integrate the release asset set
 
 Separate shared release inventory and publication logic from macOS signing.
-Add the Linux matrix and final assembly job, then extend script and workflow
-tests for the eight-file release contract. Preserve non-publishing manual
-verification and draft retention on every failure.
+Add the explicit Linux architecture jobs and final assembly job, then extend
+script and workflow tests for the eight-file release contract. Preserve
+non-publishing manual verification and draft retention on every failure.
 
 ### 6. Document and validate compatibility
 

@@ -165,6 +165,8 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.name }}
     env:
       RELEASE_DIST_DIR: ${{ github.workspace }}/dist-macos
       RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
@@ -205,15 +207,21 @@ jobs:
             "$RELEASE_DIST_DIR/macos-SHA256SUMS" \
             "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.zip"
 
+      - id: artifact-name
+        name: Record macOS artifact name
+        env:
+          ARTIFACT_NAME: release-macos-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+        run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Upload verified macOS payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-macos-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact-name.outputs.name }}
           path: |
             dist-macos/Huterm-${{ inputs.version }}-macOS-universal.zip
             dist-macos/macos-SHA256SUMS
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
           overwrite: false
 
@@ -221,30 +229,23 @@ jobs:
         if: always()
         run: bun scripts/release-macos.ts cleanup
 
-  linux:
-    name: Build Linux ${{ matrix.arch }} package
+  linux_x86_64:
+    name: Build Linux x86_64 package
     needs: preflight
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.name }}
     env:
+      RELEASE_ARCH: x86_64
       RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-22.04
-            runner-machine: x86_64
-          - arch: aarch64
-            runner: ubuntu-22.04-arm
-            runner-machine: aarch64
     steps:
       - name: Confirm native runner architecture
         env:
-          EXPECTED_MACHINE: ${{ matrix.runner-machine }}
-          EXPECTED_RUNNER_ARCH: ${{ matrix.arch == 'x86_64' && 'X64' || 'ARM64' }}
+          EXPECTED_MACHINE: x86_64
+          EXPECTED_RUNNER_ARCH: X64
         run: |
           test "$(uname -m)" = "$EXPECTED_MACHINE"
           test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
@@ -289,20 +290,26 @@ jobs:
         run: |
           stage="$RUNNER_TEMP/huterm-linux-dist"
           mkdir -p "$stage"
-          cp "dist/linux/${{ matrix.arch }}/Huterm-$RELEASE_VERSION-Linux-${{ matrix.arch }}.AppImage" "$stage/"
-          cp "dist/linux/${{ matrix.arch }}/Huterm-$RELEASE_VERSION-Linux-${{ matrix.arch }}.tar.gz" "$stage/"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" "$stage/"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
           bun scripts/release.ts write-platform-manifest \
-            "$stage/linux-${{ matrix.arch }}-SHA256SUMS" \
-            "$stage/Huterm-$RELEASE_VERSION-Linux-${{ matrix.arch }}.AppImage" \
-            "$stage/Huterm-$RELEASE_VERSION-Linux-${{ matrix.arch }}.tar.gz"
+            "$stage/linux-$RELEASE_ARCH-SHA256SUMS" \
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" \
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
+
+      - id: artifact-name
+        name: Record Linux artifact name
+        env:
+          ARTIFACT_NAME: release-linux-x86_64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+        run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified Linux payloads
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-linux-${{ matrix.arch }}-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/huterm-linux-dist
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
           overwrite: false
 
@@ -310,13 +317,105 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-linux-evidence-${{ matrix.arch }}-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
-          path: dist/linux/${{ matrix.arch }}/package-evidence
+          name: release-linux-evidence-x86_64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          path: dist/linux/x86_64/package-evidence
+          if-no-files-found: ignore
+
+  linux_aarch64:
+    name: Build Linux aarch64 package
+    needs: preflight
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.name }}
+    env:
+      RELEASE_ARCH: aarch64
+      RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
+    steps:
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_MACHINE: aarch64
+          EXPECTED_RUNNER_ARCH: ARM64
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
+
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.validated_sha }}
+
+      - name: Install Linux build and package dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            appstream build-essential ca-certificates clang cmake curl \
+            desktop-file-utils file fontconfig fonts-dejavu-core git locales \
+            libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers openbox \
+            patchelf pax-utils pkg-config python3 ripgrep rsync xauth xcompmgr \
+            xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
+
+      - name: Install Linux release tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: false
+          install_args: rust bun zig
+          minimum_release_age: 3d
+
+      - name: Check platform prerequisites
+        run: mise run doctor
+
+      - name: Revalidate checked-out source and versions
+        run: bun scripts/release.ts validate-build
+
+      - name: Set reproducible source time
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_SHA")" >> "$GITHUB_ENV"
+
+      - name: Build and verify Linux artifacts
+        run: mise run package:linux
+
+      - name: Stage Linux payloads and digest
+        run: |
+          stage="$RUNNER_TEMP/huterm-linux-dist"
+          mkdir -p "$stage"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" "$stage/"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
+          bun scripts/release.ts write-platform-manifest \
+            "$stage/linux-$RELEASE_ARCH-SHA256SUMS" \
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" \
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
+
+      - id: artifact-name
+        name: Record Linux artifact name
+        env:
+          ARTIFACT_NAME: release-linux-aarch64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+        run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified Linux payloads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: ${{ runner.temp }}/huterm-linux-dist
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: false
+
+      - name: Upload Linux package evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux-evidence-aarch64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          path: dist/linux/aarch64/package-evidence
           if-no-files-found: ignore
 
   assemble:
     name: Assemble and verify release
-    needs: [preflight, macos, linux]
+    needs: [preflight, macos, linux_x86_64, linux_aarch64]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -347,19 +446,19 @@ jobs:
       - name: Download exact macOS payload
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-macos-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          name: ${{ needs.macos.outputs.artifact_name }}
           path: .release-incoming/macos
 
       - name: Download exact Linux x86_64 payloads
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-linux-x86_64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          name: ${{ needs.linux_x86_64.outputs.artifact_name }}
           path: .release-incoming/linux-x86_64
 
       - name: Download exact Linux aarch64 payloads
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-linux-aarch64-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
+          name: ${{ needs.linux_aarch64.outputs.artifact_name }}
           path: .release-incoming/linux-aarch64
 
       - name: Assemble exact release inventory

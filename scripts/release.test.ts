@@ -56,8 +56,8 @@ test("draft and remote asset validation reject widened release state", () => {
   expect(() => validateReleaseAssets(remote.map(asset => asset.name === "SHA256SUMS" ? { ...asset, digest: null } : asset), local)).toThrow("digest");
 });
 
-test("release workflow binds validated source, schemas, and rerun-safe artifact names", async () => {
-  type Step = { name?: string; id?: string; run?: string; uses?: string; with?: Record<string, unknown> };
+test("release workflow binds validated source, schemas, and producer-qualified artifact names", async () => {
+  type Step = { name?: string; id?: string; run?: string; uses?: string; env?: Record<string, unknown>; with?: Record<string, unknown> };
   type Job = { env?: Record<string, unknown>; outputs?: Record<string, unknown>; steps: Step[] };
   const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, Job> };
   const preflight = workflow.jobs.preflight!;
@@ -69,7 +69,7 @@ test("release workflow binds validated source, schemas, and rerun-safe artifact 
   expect(sourceIndex).toBeGreaterThan(schemaIndex);
 
   const validatedSha = "${{ needs.preflight.outputs.validated_sha }}";
-  for (const jobName of ["macos", "linux", "assemble"]) {
+  for (const jobName of ["macos", "linux_x86_64", "linux_aarch64", "assemble"]) {
     const job = workflow.jobs[jobName]!;
     expect(job.env?.RELEASE_SHA).toBe(validatedSha);
     expect(job.steps.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.ref).toBe(validatedSha);
@@ -81,17 +81,48 @@ test("release workflow binds validated source, schemas, and rerun-safe artifact 
   expect(releaseMutationJobs).toEqual(["assemble"]);
 
   const sha = "${{ needs.preflight.outputs.validated_sha }}";
-  const attempt = "${{ github.run_attempt }}";
   const actionName = (job: Job, stepName: string) => job.steps.find(step => step.name === stepName)?.with?.name;
-  expect(actionName(workflow.jobs.macos!, "Upload verified macOS payload")).toBe(`release-macos-${sha}-${attempt}`);
-  expect(actionName(workflow.jobs.assemble!, "Download exact macOS payload")).toBe(`release-macos-${sha}-${attempt}`);
-  expect(actionName(workflow.jobs.linux!, "Upload verified Linux payloads")).toBe(`release-linux-${"${{ matrix.arch }}"}-${sha}-${attempt}`);
-  expect(actionName(workflow.jobs.assemble!, "Download exact Linux x86_64 payloads")).toBe(`release-linux-x86_64-${sha}-${attempt}`);
-  expect(actionName(workflow.jobs.assemble!, "Download exact Linux aarch64 payloads")).toBe(`release-linux-aarch64-${sha}-${attempt}`);
-  for (const jobName of ["macos", "linux"]) {
+  const producers = [
+    ["macos", "release-macos"],
+    ["linux_x86_64", "release-linux-x86_64"],
+    ["linux_aarch64", "release-linux-aarch64"],
+  ] as const;
+  for (const [jobName, prefix] of producers) {
+    const job = workflow.jobs[jobName]!;
+    expect(job.outputs?.artifact_name).toBe("${{ steps.artifact-name.outputs.name }}");
+    expect(job.steps.find(step => step.id === "artifact-name")?.env?.ARTIFACT_NAME).toBe(`${prefix}-${sha}-${"${{ github.run_attempt }}"}`);
+    expect(actionName(job, `Upload verified ${jobName === "macos" ? "macOS" : "Linux"} payload${jobName === "macos" ? "" : "s"}`)).toBe("${{ steps.artifact-name.outputs.name }}");
+  }
+  const downloadExpressions = [
+    actionName(workflow.jobs.assemble!, "Download exact macOS payload"),
+    actionName(workflow.jobs.assemble!, "Download exact Linux x86_64 payloads"),
+    actionName(workflow.jobs.assemble!, "Download exact Linux aarch64 payloads"),
+  ];
+  expect(downloadExpressions).toEqual([
+    "${{ needs.macos.outputs.artifact_name }}",
+    "${{ needs.linux_x86_64.outputs.artifact_name }}",
+    "${{ needs.linux_aarch64.outputs.artifact_name }}",
+  ]);
+  for (const jobName of producers.map(([name]) => name)) {
     const upload = workflow.jobs[jobName]!.steps.find(step => step.name?.startsWith("Upload verified"))!;
     expect(upload.with?.overwrite).toBe(false);
+    expect(upload.with?.["retention-days"]).toBe(30);
   }
+
+  const mixedAttemptOutputs: Record<string, string> = {
+    macos: `release-macos-${inputs.sha}-1`,
+    linux_x86_64: `release-linux-x86_64-${inputs.sha}-1`,
+    linux_aarch64: `release-linux-aarch64-${inputs.sha}-2`,
+  };
+  const resolveNeedsOutput = (expression: unknown): string | undefined => {
+    const jobName = /^\$\{\{ needs\.([a-z0-9_]+)\.outputs\.artifact_name \}\}$/.exec(String(expression))?.[1];
+    return jobName ? mixedAttemptOutputs[jobName] : undefined;
+  };
+  expect(downloadExpressions.map(resolveNeedsOutput)).toEqual([
+    `release-macos-${inputs.sha}-1`,
+    `release-linux-x86_64-${inputs.sha}-1`,
+    `release-linux-aarch64-${inputs.sha}-2`,
+  ]);
 });
 
 test("assembly verifies platform digests and creates the exact eight-file release", async () => {

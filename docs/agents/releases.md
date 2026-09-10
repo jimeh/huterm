@@ -58,6 +58,18 @@ assembly:
    the exact eight-file asset set, verifies remote names, sizes, and GitHub
    SHA-256 digests, and only then publishes the draft.
 
+Each platform job publishes its immutable artifact under its own actual
+attempt-qualified name and exposes that name as a job output. Assembly downloads
+the names from its direct `needs` jobs, so a partial rerun can combine a retained
+successful producer from an earlier attempt with a newly successful producer.
+Producer artifacts use the same 30-day retention window as GitHub workflow
+reruns.
+This follows GitHub's contracts that [failed-job reruns include dependent jobs]
+and [job outputs are available to downstream jobs].
+
+[failed-job reruns include dependent jobs]: https://docs.github.com/en/rest/actions/workflow-runs#re-run-failed-jobs-from-a-workflow-run
+[job outputs are available to downstream jobs]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/pass-job-outputs
+
 The public asset set is:
 
 ```text

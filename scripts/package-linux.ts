@@ -92,13 +92,15 @@ export function highestRequiredGlibc(symbolTable: string): { required: string; w
   return { required: highest, weak: [...weak].sort(compareVersions) };
 }
 
-export function validateGlibcVersionInfo(versionInfo: string, weakVersions: string[]): void {
-  const weak = new Set(weakVersions);
-  const tags = new Set([...versionInfo.matchAll(/\bName:\s+(GLIBC_[A-Za-z0-9_.-]+)/g)].map(match => match[1]!));
-  for (const tag of tags) {
+export function validateGlibcVersionInfo(versionInfo: string, _objdumpWeakVersions: string[]): void {
+  for (const line of versionInfo.split(/\r?\n/)) {
+    const tag = /\bName:\s+(GLIBC_[A-Za-z0-9_.-]+)/.exec(line)?.[1];
+    if (!tag) continue;
     const version = /^GLIBC_(\d+(?:\.\d+)+)$/.exec(tag)?.[1];
     if (!version) throw new Error(`unsupported glibc version tag ${tag}`);
-    if (compareVersions(version, maximumGlibc) > 0 && !weak.has(version)) {
+    const flags = /\bFlags:\s+(\S+)/.exec(line)?.[1];
+    if (!flags) throw new Error(`missing readelf flags for glibc version tag ${tag}`);
+    if (compareVersions(version, maximumGlibc) > 0 && !flags.split(/[|,]/).includes("WEAK")) {
       throw new Error(`required ${tag} exceeds ${maximumGlibc}`);
     }
   }
@@ -264,7 +266,7 @@ function dynamicSoname(dynamic: string): string {
   return matches[0]!;
 }
 async function readDynamic(file: string): Promise<string> { return (await runCaptured("readelf", ["-dW", file])).stdout; }
-function parseLdd(output: string): Map<string, string> {
+export function parseLdd(output: string): Map<string, string> {
   const resolved = new Map<string, string>();
   for (const line of output.split(/\r?\n/)) {
     const match = /^\s*(\S+)\s+=>\s+(\/\S+)\s+\(/.exec(line);

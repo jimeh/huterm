@@ -18,7 +18,7 @@ documents both the Xcode settings and command-line installation paths in
 
 [apple-components]: https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components
 
-## Ubuntu 24.04 prerequisites
+## Ubuntu 22.04 prerequisites
 
 Install GPUI's X11 link libraries and the software Vulkan driver used by the
 headless smoke test:
@@ -67,7 +67,7 @@ ghostty:prepare`, using the same `--arch` selection for both invocations.
 These checks exercise Linux X11 rendering, not native Wayland or physical GPU
 behavior. Keep timing benchmarks on native hardware.
 
-The first invocation builds a local Ubuntu 24.04 image with pinned Mise, Rust,
+The first invocation builds a local Ubuntu 22.04 image with pinned Mise, Rust,
 Bun, and Zig. The Ubuntu index digest and Mise archive checksums are in
 `scripts/linux/Dockerfile`; tool versions come from `mise.toml`, `mise.lock`,
 and `rust-toolchain.toml`. Apt packages resolve to Ubuntu's updates when the
