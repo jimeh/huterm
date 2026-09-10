@@ -5,13 +5,23 @@
   "fill-specializations" : [
     {
       "value" : {
-        "automatic-gradient" : "srgb:0.19999,0.20000,0.20000,1.00000"
+        "automatic-gradient" : "srgb:0.05000,0.05000,0.05000,1.00000",
+        "orientation" : {
+          "start" : {
+            "x" : 0.5,
+            "y" : 1
+          },
+          "stop" : {
+            "x" : 0.5,
+            "y" : 0
+          }
+        }
       }
     },
     {
       "appearance" : "dark",
       "value" : {
-        "automatic-gradient" : "srgb:0.10000,0.10000,0.10000,1.00000"
+        "automatic-gradient" : "srgb:0.00000,0.00000,0.00000,1.00000"
       }
     }
   ],
@@ -92,24 +102,24 @@
           "fill-specializations" : [
             {
               "value" : {
-                "automatic-gradient" : "srgb:0.83217,0.98548,0.47333,1.00000"
+                "automatic-gradient" : "srgb:0.80042,0.94788,0.45527,1.00000"
               }
             },
             {
               "appearance" : "tinted",
               "value" : {
-                "automatic-gradient" : "srgb:1.00000,1.00000,1.00000,1.00000"
+                "automatic-gradient" : "srgb:0.74729,0.74729,0.74729,1.00000"
               }
             }
           ],
-          "image-name" : "prompt-large.svg",
-          "name" : "prompt-large"
+          "image-name" : "prompt-sharp.svg",
+          "name" : "prompt-sharp"
         },
         {
           "fill-specializations" : [
             {
               "value" : {
-                "automatic-gradient" : "extended-gray:1.00000,1.00000"
+                "automatic-gradient" : "srgb:1.00000,0.98785,0.97571,1.00000"
               }
             },
             {
@@ -119,8 +129,8 @@
               }
             }
           ],
-          "image-name" : "cursor-large.svg",
-          "name" : "cursor-large"
+          "image-name" : "cursor-sharp.svg",
+          "name" : "cursor-sharp"
         }
       ],
       "lighting" : "individual",
