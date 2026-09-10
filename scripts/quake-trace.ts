@@ -18,6 +18,11 @@ export type TraceVerdict =
   | { status: "passed"; intermediate: QuakeObservation }
   | { status: "inconclusive"; reason: string };
 
+export type FocusDuringShowEligibility =
+  | { status: "pending" }
+  | { status: "eligible"; intermediate: QuakeObservation }
+  | { status: "inconclusive"; reason: string };
+
 export type SlideExpectation = {
   endpoint: [number, number, number, number];
   edge: "top" | "bottom" | "left" | "right";
@@ -34,6 +39,14 @@ export function isIntermediateObservation(observation: QuakeObservation): boolea
   return observation.stage === "Animate"
     && observation.progress > INTERMEDIATE_PROGRESS_MIN
     && observation.progress < INTERMEDIATE_PROGRESS_MAX;
+}
+
+export function focusDuringShowEligibility(observations: QuakeObservation[], activationSeen: boolean): FocusDuringShowEligibility {
+  const latest = observations.at(-1);
+  if (!latest) return { status: "pending" };
+  if (activationSeen && isIntermediateObservation(latest)) return { status: "eligible", intermediate: latest };
+  if (near(latest.progress, 1, 0.001)) return { status: "inconclusive", reason: "scheduler reached the show endpoint before activation and animation overlapped" };
+  return { status: "pending" };
 }
 
 function validateFrame(name: string, frame: number[]): void {

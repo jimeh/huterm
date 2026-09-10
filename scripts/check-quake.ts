@@ -7,10 +7,12 @@ import {
   analyzeFade,
   analyzeReversal,
   analyzeSlide,
+  focusDuringShowEligibility,
   isIntermediateObservation,
   observationsForLatestGeneration,
   readQuakeTrace,
   retryInconclusiveOnce,
+  type FocusDuringShowEligibility,
   type QuakeObservation,
 } from "./quake-trace";
 
@@ -383,17 +385,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           const cursor = await traceCursor();
           await command("app show_quake");
           let showing: QuakeObservation[] = [];
+          const eligibility: { current: FocusDuringShowEligibility } = { current: { status: "pending" } };
           await waitFor(async () => {
             showing = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", true);
-            return showing.some(isIntermediateObservation)
-              || Math.abs((showing.at(-1)?.progress ?? -1) - 1) < 0.001;
-          }, "retained native show animation");
-          const intermediate = showing.findLast(isIntermediateObservation);
-          if (!intermediate) {
+            eligibility.current = focusDuringShowEligibility(showing, (await current())?.activation_seen === "true");
+            return eligibility.current.status !== "pending";
+          }, "overlapping activation and native show animation");
+          if (eligibility.current.status === "inconclusive") {
             await settled(true);
             const verdict = analyzeFade(await completedTrace(cursor, true), true, frame((await current())!));
-            if (verdict.status === "passed") throw new Error("completed show trace lost its retained intermediate observation");
-            return verdict;
+            return verdict.status === "inconclusive" ? verdict : eligibility.current;
           }
           await focusWitness();
           const witnessTarget = macos ? String(witness.pid) : witnessWindow;

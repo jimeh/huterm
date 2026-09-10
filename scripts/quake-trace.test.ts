@@ -2,7 +2,7 @@ import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { analyzeFade, analyzeReversal, analyzeSlide, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
+import { analyzeFade, analyzeReversal, analyzeSlide, focusDuringShowEligibility, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
 
 type Frame = [number, number, number, number];
 const targetFrame: Frame = [0, 0, 800, 400];
@@ -134,6 +134,19 @@ test("reversal continuity allows progress explained by the retarget sample gap",
 test("the shared intermediate window accepts progress between 0.7 and 0.8", () => {
   expect(isIntermediateObservation(observation(0.75, true))).toBeTrue();
   expect(analyzeFade([observation(0.75, true, expectation.endpoint), observation(1, true, expectation.endpoint, undefined, 1)], true, expectation.endpoint).status).toBe("passed");
+});
+
+test("focus during show waits for state-machine activation", () => {
+  expect(focusDuringShowEligibility([observation(0.5, true)], false)).toEqual({ status: "pending" });
+});
+
+test("focus during show is eligible while activation and animation overlap", () => {
+  const intermediate = observation(0.5, true);
+  expect(focusDuringShowEligibility([intermediate], true)).toEqual({ status: "eligible", intermediate });
+});
+
+test("focus during show is inconclusive when animation finishes before activation", () => {
+  expect(focusDuringShowEligibility([observation(0.5, true), observation(1, true)], true)).toMatchObject({ status: "inconclusive" });
 });
 
 test("latest-generation filtering excludes earlier attempts and other profiles", () => {

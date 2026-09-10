@@ -1333,12 +1333,13 @@ pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
         state.native.visible()?,
         state.native.active()?,
+        state.activation.seen,
         state.native.fullscreen()?,
         state.fullscreen_context(),
         frame.x,
