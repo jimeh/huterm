@@ -276,6 +276,31 @@ in the [release guide](releases.md).
 The macOS CI job cross-compiles the Intel slice on Apple Silicon; this does not
 replace native Intel UI and hardware validation, which remains pending.
 
+### Updating the app icon
+
+Edit `assets/Huterm.icon` in Icon Composer from Xcode 27, then run this macOS step:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer mise run icons:generate
+mise run icons:check
+```
+
+Use the path to your compatible Xcode installation, or omit `DEVELOPER_DIR` if
+it is already selected. Generation and manifest verification require Xcode 27
+provenance; support for another major version needs a reviewed script change.
+Include the source changes and all generated files:
+`assets/Huterm.icns`, `assets/Huterm.png`, `assets/macos/Assets.car`, and
+`assets/icons.json`. The PNG is a 1024-pixel render of the default appearance
+for Linux packaging. The asset catalog retains the layered macOS appearances;
+the ICNS supplies a static fallback.
+
+Normal builds consume these committed files. `icons:check` verifies source,
+generator, and output hashes on macOS and Linux without Apple tools. Changing
+the source or generation script requires regeneration. The manifest records
+the Xcode, Icon Composer, and macOS versions used, since Apple rendering can
+change between releases. `package:macos` also verifies the packaged icon
+metadata and exact resource bytes before release signing.
+
 ## Terminal engines
 
 Every build includes both engines; `mise run dev` starts the app. Set
