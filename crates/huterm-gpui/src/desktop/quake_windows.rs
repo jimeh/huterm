@@ -178,6 +178,7 @@ impl Activation {
 )]
 pub(super) struct Presentation {
     pub name: String,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
     profile: Profile,
@@ -266,6 +267,7 @@ enum NativeOp {
 }
 struct NativeEffect {
     native: native::Window,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     gate: Rc<Cell<u64>>,
     generation: u64,
     operations: Vec<NativeOp>,
@@ -275,10 +277,15 @@ struct NativeEffectOutcome {
     warning: Option<String>,
     observation: Option<SmokeObservationDraft>,
 }
+struct NativeEffectResult {
+    outcome: anyhow::Result<NativeEffectOutcome>,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+}
 impl NativeEffect {
     fn for_state(state: &Presentation, operations: Vec<NativeOp>) -> Self {
         Self {
             native: state.native.clone(),
+            reporter: state.reporter.clone(),
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
             operations,
@@ -311,43 +318,49 @@ impl NativeEffect {
         }
         effect
     }
-    fn run(self) -> anyhow::Result<NativeEffectOutcome> {
-        let mut warning = None;
-        for operation in self.operations {
-            if self.gate.get() != self.generation {
-                return Ok(NativeEffectOutcome {
-                    warning,
-                    observation: None,
-                });
-            }
-            match operation {
-                NativeOp::Frame(frame) => self.native.set_frame(frame)?,
-                NativeOp::Quake(enabled) => self.native.set_quake(enabled)?,
-                NativeOp::Fullscreen(enabled) => {
-                    self.native.set_fullscreen(enabled)?;
+    fn run(self) -> NativeEffectResult {
+        let reporter = self.reporter.clone();
+        let outcome = (|| {
+            let mut warning = None;
+            for operation in self.operations {
+                if self.gate.get() != self.generation {
+                    return Ok(NativeEffectOutcome {
+                        warning,
+                        observation: None,
+                    });
                 }
-                NativeOp::Opacity(value) => self.native.opacity(value)?,
-                NativeOp::Show => self.native.show()?,
-                NativeOp::Hide(target) => {
-                    let was_active = self.native.active()?;
-                    self.native.hide()?;
-                    if was_active
-                        && self.gate.get() == self.generation
-                        && let Some((platform, target)) = target
-                        && let Err(error) = platform.focus(&target)
-                    {
-                        warning = Some(format!(
-                            "focus restoration failed after hiding: {error}"
-                        ));
+                match operation {
+                    NativeOp::Frame(frame) => self.native.set_frame(frame)?,
+                    NativeOp::Quake(enabled) => {
+                        self.native.set_quake(enabled)?;
                     }
+                    NativeOp::Fullscreen(enabled) => {
+                        self.native.set_fullscreen(enabled)?;
+                    }
+                    NativeOp::Opacity(value) => self.native.opacity(value)?,
+                    NativeOp::Show => self.native.show()?,
+                    NativeOp::Hide(target) => {
+                        let was_active = self.native.active()?;
+                        self.native.hide()?;
+                        if was_active
+                            && self.gate.get() == self.generation
+                            && let Some((platform, target)) = target
+                            && let Err(error) = platform.focus(&target)
+                        {
+                            warning = Some(format!(
+                                "focus restoration failed after hiding: {error}"
+                            ));
+                        }
+                    }
+                    NativeOp::Failure(error) => return Err(error),
                 }
-                NativeOp::Failure(error) => return Err(error),
             }
-        }
-        Ok(NativeEffectOutcome {
-            warning,
-            observation: self.observation,
-        })
+            Ok(NativeEffectOutcome {
+                warning,
+                observation: self.observation,
+            })
+        })();
+        NativeEffectResult { outcome, reporter }
     }
 }
 
@@ -402,7 +415,8 @@ fn start_pump(cx: &mut App) {
                 break;
             };
             for (handle, effect) in effects {
-                match effect.run() {
+                let NativeEffectResult { outcome, reporter } = effect.run();
+                match outcome {
                     Ok(outcome) => {
                         let _ = cx.update(|cx| {
                             if let Some(observation) = outcome.observation
@@ -415,7 +429,7 @@ fn start_pump(cx: &mut App) {
                                 journal.record(observation);
                             }
                             if let Some(warning) = outcome.warning {
-                                report(cx, &warning, None);
+                                report(cx, &warning, reporter);
                             }
                         });
                     }
@@ -426,11 +440,11 @@ fn start_pump(cx: &mut App) {
                             .ok()
                             .flatten();
                         if let Some(effect) = recovery
-                            && let Err(error) = effect.run()
+                            && let Err(error) = effect.run().outcome
                         {
                             eprintln!("Quake recovery: {error}");
                         }
-                        let _ = cx.update(|cx| report(cx, &message, None));
+                        let _ = cx.update(|cx| report(cx, &message, reporter));
                     }
                 }
             }
@@ -529,7 +543,7 @@ pub(super) fn invoke(
     }
     let command = invocation.id;
     cx.defer(move |cx| {
-        if let Err(error) = invoke_now(cx, &name, command) {
+        if let Err(error) = invoke_now(cx, &name, command, reporter.clone()) {
             report(cx, &error, reporter);
         }
     });
@@ -539,6 +553,7 @@ fn invoke_now(
     cx: &mut App,
     name: &str,
     command: huterm_protocol::CommandId,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) -> Result<(), String> {
     let native = platform(cx)?;
     let config = cx
@@ -597,6 +612,7 @@ fn invoke_now(
                         state.target = state.profile.geometry(&state.display);
                     }
                 }
+                state.reporter.clone_from(&reporter);
                 state.request(show, !show && active);
                 if unchanged {
                     state.activation.observe(active);
@@ -620,7 +636,7 @@ fn invoke_now(
         cx,
         true,
         Some((name.to_owned(), config, display)),
-        None,
+        reporter,
     );
     if !cx.global::<Desktop>().quake.windows.contains_key(name) {
         return Err(format!("could not create quake profile {name:?}"));
@@ -632,6 +648,7 @@ pub(super) fn attach(
     name: String,
     profile: Profile,
     display: Display,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     window: &Window,
     cx: &mut App,
 ) -> Result<Presentation, String> {
@@ -667,6 +684,7 @@ pub(super) fn attach(
     start_pump(cx);
     Ok(Presentation {
         name,
+        reporter,
         generation: Rc::new(Cell::new(0)),
         native,
         profile,
@@ -1083,6 +1101,7 @@ fn step(
                 Ok(true) => {
                     state.stage = Stage::Idle;
                     state.recovering = false;
+                    state.reporter = None;
                     if regular {
                         view.bounds = window.window_bounds();
                     } else {
@@ -1137,6 +1156,7 @@ fn step(
         Stage::SettleHidden => match native.visible() {
             Ok(false) => {
                 state.stage = Stage::Idle;
+                state.reporter = None;
                 None
             }
             Ok(true) => None,

@@ -2,11 +2,68 @@
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
 
 const commandFlag = 1 << 20;
 const optionFlag = 1 << 19;
 const shiftFlag = 1 << 17;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
+type MacKeyEvent = {
+  code: number;
+  flags: number;
+  text: string;
+  plain: string;
+};
+
+const macKeyCodes: Record<string, number> = {
+  a: 0,
+  b: 11,
+  c: 8,
+  d: 2,
+  e: 14,
+  f: 3,
+  g: 5,
+  h: 4,
+  i: 34,
+  j: 38,
+  k: 40,
+  l: 37,
+  m: 46,
+  n: 45,
+  o: 31,
+  p: 35,
+  q: 12,
+  r: 15,
+  s: 1,
+  t: 17,
+  u: 32,
+  v: 9,
+  w: 13,
+  x: 7,
+  y: 16,
+  z: 6,
+  " ": 49,
+};
+
+export function macKeyEvents(text: string): MacKeyEvent[] {
+  return [...text].map((character) => {
+    const plain = character.toLowerCase();
+    const code = macKeyCodes[plain];
+    if (code === undefined) {
+      throw new Error(
+        `unsupported macOS palette smoke character ${JSON.stringify(character)}`,
+      );
+    }
+    return {
+      code,
+      flags: character === plain ? 0 : shiftFlag,
+      text: character,
+      plain,
+    };
+  });
+}
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, {
@@ -34,18 +91,52 @@ async function waitFor(
   }
 }
 
-async function checkPalette(executable: string, engine: string): Promise<void> {
+async function checkPalette(
+  executable: string,
+  engine: string,
+  wm?: X11Process,
+): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-palette-"));
   const ready = join(directory, "ready");
   const bytes = join(directory, "bytes");
   const shell = join(directory, "shell");
+  const recorder = join(directory, "recorder.ts");
+  const enableMouse = join(directory, "enable-mouse");
+  const mouseReady = join(directory, "mouse-ready");
   const config = join(directory, "config.toml");
+  await writeFile(
+    recorder,
+    `import { existsSync, openSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+const fd = openSync(${JSON.stringify(bytes)}, "a");
+const marker = Buffer.from("palettecancelproofx\\r");
+let tail = Buffer.alloc(0);
+let acknowledged = false;
+let mouseEnabled = false;
+const timer = setInterval(() => {
+  if (!mouseEnabled && existsSync(${JSON.stringify(enableMouse)})) {
+    mouseEnabled = true;
+    unlinkSync(${JSON.stringify(enableMouse)});
+    process.stdout.write("\\x1b[?1003h\\x1b[?1006h");
+    writeFileSync(${JSON.stringify(mouseReady)}, "ready");
+  }
+}, 5);
+for await (const chunk of Bun.stdin.stream()) {
+  writeSync(fd, chunk);
+  tail = Buffer.concat([tail, chunk]).subarray(-256);
+  if (!acknowledged && tail.includes(marker)) {
+    acknowledged = true;
+    process.stdout.write("\\r\\nACK:palettecancelproofx\\r\\n");
+  }
+}
+clearInterval(timer);
+`,
+  );
   await writeFile(
     shell,
     `#!/bin/sh
 stty raw -echo
 printf READY > ${quote(ready)}
-exec cat >> ${quote(bytes)}
+exec ${quote(process.execPath)} ${quote(recorder)}
 `,
     { mode: 0o700 },
   );
@@ -56,13 +147,6 @@ engine = "${engine}"
 close_on_exit = false
 `,
   );
-  const wm = process.platform === "linux"
-    ? Bun.spawn(["openbox", "--sm-disable"], { stdout: "pipe", stderr: "pipe" })
-    : undefined;
-  const wmDiagnostics = wm
-    ? Promise.all([new Response(wm.stdout).text(), new Response(wm.stderr).text()])
-    : Promise.resolve([]);
-  if (wm) await Bun.sleep(150);
   const app = Bun.spawn([executable], {
     env: {
       ...process.env,
@@ -126,8 +210,13 @@ close_on_exit = false
   }
 
   async function typeText(text: string): Promise<void> {
-    if (process.platform === "darwin") await nativeKey(0, 0, text);
-    else run(["xdotool", "type", "--clearmodifiers", "--delay", "8", text]);
+    if (process.platform === "darwin") {
+      for (const event of macKeyEvents(text)) {
+        await nativeKey(event.code, event.flags, event.text, event.plain);
+      }
+    } else {
+      run(["xdotool", "type", "--clearmodifiers", "--delay", "8", text]);
+    }
   }
 
   async function key(name: "enter" | "escape" | "select-all" | "backspace"): Promise<void> {
@@ -161,22 +250,52 @@ close_on_exit = false
     }
   }
 
+  async function clickOverlay(): Promise<void> {
+    if (process.platform === "darwin") {
+      await command("native\tmouse\t1\t0.05\t200");
+      await command("native\tmouse\t2\t0.05\t200");
+    } else {
+      run(["xdotool", "mousemove", "--window", windowId, "20", "200"]);
+      run(["xdotool", "click", "1"]);
+    }
+  }
+
+  async function assertOverlayBlocksMotion(): Promise<void> {
+    await writeFile(enableMouse, "enable");
+    await waitFor(() => Bun.file(mouseReady).exists(), "mouse tracking enable");
+    await state("mouse=AllMotion");
+    const before = await readFile(bytes).catch(() => Buffer.alloc(0));
+    if (process.platform === "darwin") {
+      await command("native\tmouse\t5\t0.5\t300");
+    } else {
+      run(["xdotool", "mousemove", "--window", windowId, "640", "400"]);
+    }
+    await Bun.sleep(100);
+    const after = await readFile(bytes).catch(() => Buffer.alloc(0));
+    if (!after.equals(before)) {
+      throw new Error(
+        `${engine}: overlay pointer motion reached terminal: before=${before.toString("hex")} after=${after.toString("hex")}`,
+      );
+    }
+  }
+
   try {
     await waitFor(() => Bun.file(ready).exists(), "PTY readiness");
     await state("w0.palette=false", "w0.terminal_focused=true");
     if (process.platform === "linux") {
-      const windows = run([
-        "xdotool",
-        "search",
-        "--sync",
-        "--onlyvisible",
-        "--pid",
-        String(app.pid),
-      ]).split(/\s+/);
-      if (windows.length !== 1 || !windows[0]) {
-        throw new Error(`expected one Huterm window: ${windows}`);
+      if (!wm) throw new Error("Linux palette smoke requires Openbox");
+      try {
+        windowId = await discoverX11Window(app, wm);
+      } catch (error) {
+        const probe = Bun.spawnSync(
+          ["xdotool", "search", "--pid", String(app.pid)],
+          { stdout: "pipe", stderr: "pipe", timeout: 1_000 },
+        );
+        throw new Error(
+          `${String(error)}; final xdotool search exit=${probe.exitCode} stdout=${probe.stdout.toString().trim()} stderr=${probe.stderr.toString().trim()}`,
+          { cause: error },
+        );
       }
-      windowId = windows[0];
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
 
@@ -187,6 +306,22 @@ close_on_exit = false
     }
     await shortcut("palette");
     await state("w0.palette=true", "w0.palette_focused=true");
+    const deniedWindow = await command("invoke-new-tab");
+    if (!deniedWindow.includes("command palette is open")) {
+      throw new Error(`window command escaped modal palette: ${deniedWindow}`);
+    }
+    const deniedRuntime = await command("invoke-rename-tab");
+    if (!deniedRuntime.includes("command palette is open")) {
+      throw new Error(`runtime command escaped modal palette: ${deniedRuntime}`);
+    }
+    await command("focus-terminal");
+    await state("w0.palette=true", "w0.terminal_focused=true");
+    await command("invoke-palette");
+    await state("w0.palette_focused=true");
+    await command("focus-terminal");
+    await clickOverlay();
+    await state("w0.palette_focused=true");
+    await assertOverlayBlocksMotion();
     if (process.platform === "darwin") {
       await command("native\tmarked\té");
       await state('input="é"');
@@ -218,6 +353,17 @@ close_on_exit = false
     await typeText("B");
     await terminalBytes("AeB");
 
+    await command("busy-on");
+    const backgroundRename = await command("invoke-rename-tab");
+    if (!backgroundRename.includes("Accepted")) {
+      throw new Error(`non-palette rename was refused while busy: ${backgroundRename}`);
+    }
+    await waitFor(
+      async () => (await command("core-state")).includes('name=Some("blocked")'),
+      "non-palette rename completion",
+    );
+    await command("busy-off");
+
     await command("open-explicit");
     await state("arguments command=rename_tab active=complete");
     await key("enter");
@@ -240,6 +386,13 @@ close_on_exit = false
     if (!canceled.includes('name=Some("explicit")')) {
       throw new Error(`${engine}: canceled rename changed core: ${canceled}`);
     }
+    await typeText("palettecancelproofx");
+    await key("enter");
+    await state(
+      "w0.palette=false",
+      "w0.terminal_focused=true",
+      "ACK:palettecancelproofx",
+    );
 
     await shortcut("palette");
     await command("busy-on");
@@ -283,8 +436,23 @@ close_on_exit = false
     );
     if (!reported.includes("windows=3")) throw new Error("failed window was not published");
 
+    await command("activate-first");
+    await command("clear-status");
+    await shortcut("palette");
+    await typeText("show quake");
+    await state("w0.palette_state=commands selected=show_quake");
+    await key("enter");
+    await state("arguments command=show_quake active=profile");
+    await key("enter");
+    await state(
+      "windows=3",
+      "w0.palette=false",
+      "w0.status=Some(\"Cannot open tab:",
+      "w1.status=None",
+    );
+
     console.log(
-      `PALETTE_SMOKE ${engine} native=${process.platform} isolation=AeB rename=renamed explicit=explicit stale=refused origin=window-0 accepted=new_window`,
+      `PALETTE_SMOKE ${engine} native=${process.platform} isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged rename=renamed external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
     );
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
@@ -308,13 +476,6 @@ close_on_exit = false
     for (const output of await diagnostics) {
       if (output) process.stderr.write(output);
     }
-    if (wm) {
-      wm.kill("SIGTERM");
-      await wm.exited;
-    }
-    for (const output of await wmDiagnostics) {
-      if (output) process.stderr.write(output);
-    }
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -326,8 +487,12 @@ if (import.meta.main) {
   if (!(["darwin", "linux"] as string[]).includes(process.platform)) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
-    for (const engine of ["alacritty", "ghostty"]) {
-      await checkPalette(executable, engine);
-    }
+    const checks = async (wm?: X11Process) => {
+      for (const engine of ["alacritty", "ghostty"]) {
+        await checkPalette(executable, engine, wm);
+      }
+    };
+    if (process.platform === "darwin") await checks();
+    else await withOpenbox(checks);
   }
 }

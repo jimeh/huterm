@@ -348,7 +348,8 @@ impl Desktop {
 
     /// Runs a catalog command for a programmatic caller.
     ///
-    /// Application commands run without a window. Window, runtime, and
+    /// Application commands do not require a window, but use a supplied
+    /// workspace as the reporter for deferred failures. Window, runtime, and
     /// terminal commands execute synchronously on `window`'s root view and
     /// report [`CommandError::ClientRequired`] when it is absent or closed.
     ///
@@ -362,7 +363,19 @@ impl Desktop {
     ) -> Result<CommandOutcome, CommandError> {
         let spec = validate(invocation)?;
         match route(spec.scope, window)? {
-            Route::Application => run_app_command(cx, invocation, None),
+            Route::Application => {
+                let reporter = window.and_then(|handle| {
+                    handle
+                        .update(cx, |root, _, _| {
+                            root.downcast::<WorkspaceView>()
+                                .ok()
+                                .map(|view| view.downgrade())
+                        })
+                        .ok()
+                        .flatten()
+                });
+                run_app_command(cx, invocation, reporter)
+            }
             Route::Window(handle) => handle
                 .update(cx, |root, window, cx| {
                     let view = root
@@ -908,9 +921,16 @@ fn open_window_with_profile(
             }
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
-                quake_windows::attach(name, profile, display, window, cx)
-                    .inspect_err(|error| eprintln!("Quake creation: {error}"))
-                    .ok()
+                quake_windows::attach(
+                    name,
+                    profile,
+                    display,
+                    reporter.clone(),
+                    window,
+                    cx,
+                )
+                .inspect_err(|error| eprintln!("Quake creation: {error}"))
+                .ok()
             });
             let view = cx.new(|cx| WorkspaceView {
                 quake,
@@ -1797,6 +1817,7 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         if let Some(palette) = &self.palette {
             palette.read(cx).focus_handle(cx).focus(window);
+            cx.notify();
             return Ok(CommandOutcome::Completed);
         }
         self.check_available(true)?;
@@ -2175,6 +2196,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.palette.is_some() && invocation.id != ids::OPEN_COMMAND_PALETTE
+        {
+            return Err(CommandError::Unavailable(
+                "command palette is open".to_owned(),
+            ));
+        }
         if let Some(tab) = self.active_view() {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
@@ -2254,7 +2281,6 @@ impl WorkspaceView {
             }
             ids::OPEN_COMMAND_PALETTE => self.open_palette(window, cx),
             ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
-                self.check_runtime_available(cx)?;
                 let invocation = fill_rename_target(
                     invocation,
                     self.active,
@@ -3131,6 +3157,8 @@ impl Render for WorkspaceView {
                                             window,
                                             cx,
                                         );
+                                        cx.stop_propagation();
+                                    } else if view.palette.is_some() {
                                         cx.stop_propagation();
                                     }
                                 });

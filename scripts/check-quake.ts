@@ -369,14 +369,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           }, "captured native target observes termination");
           const eligible = await state();
           if (eligible.current_focus_id !== quakeTarget || profile(eligible, "default")?.active !== "true") throw new Error(`external target termination moved focus before hide: front=${eligible.current_focus_id}, expected=${quakeTarget}, quake-active=${profile(eligible, "default")?.active}`);
-          await command("app hide_quake");
+          await command("ordinary hide_quake");
           await waitFor(async () => (await current())?.stage === "Idle", "hide after focus target exits");
           const hidden = (await current())!;
           if (hidden.visible !== "false" || hidden.regular !== "false" || hidden.active !== "false") {
             throw new Error(`failed focus return undid successful hide: ${JSON.stringify(hidden)}`);
           }
-          if (!(await state()).config_error?.includes("focus restoration failed")) throw new Error("failed focus restoration did not report a warning");
-          console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning`);
+          const warned = await state();
+          if (!profile(warned, "ordinary")?.status?.includes("focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
+          if (warned.config_error?.includes("focus restoration failed")) throw new Error("originated focus warning leaked into the global fallback");
+          console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning reporter=ordinary`);
         } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
         const focusDuringShow = await retryInconclusiveOnce(async attempt => {

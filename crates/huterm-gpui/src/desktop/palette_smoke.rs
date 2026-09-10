@@ -111,6 +111,26 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
         return Ok("quit requested".to_owned());
     }
     let handle = *cx.windows().first().context("palette smoke window")?;
+    let invocation = match command {
+        "invoke-new-tab" => Some(CommandInvocation::new(ids::NEW_TAB, vec![])),
+        "invoke-rename-tab" => Some(CommandInvocation::new(
+            ids::RENAME_TAB,
+            vec![CommandArgument::new(
+                "name",
+                CommandValue::Text("blocked".to_owned()),
+            )],
+        )),
+        "invoke-palette" => {
+            Some(CommandInvocation::new(ids::OPEN_COMMAND_PALETTE, vec![]))
+        }
+        _ => None,
+    };
+    if let Some(invocation) = invocation {
+        return Ok(format!(
+            "{:?}",
+            Desktop::invoke(cx, &invocation, Some(handle))
+        ));
+    }
     handle.update(cx, |root, window, cx| -> anyhow::Result<String> {
         let view = root
             .downcast::<WorkspaceView>()
@@ -130,6 +150,19 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 view.busy = false;
                 cx.notify();
                 Ok("idle".to_owned())
+            }
+            "clear-status" => {
+                view.status = None;
+                cx.notify();
+                Ok("status cleared".to_owned())
+            }
+            "focus-terminal" => {
+                view.active_view()
+                    .context("active terminal")?
+                    .read(cx)
+                    .focus
+                    .focus(window);
+                Ok("terminal focused".to_owned())
             }
             "open-explicit" => {
                 let tab = view.active.context("active tab")?;
@@ -219,9 +252,22 @@ fn read_state(cx: &mut App) -> String {
                         .replace('\n', " ")
                 })
                 .unwrap_or_default();
+            let terminal_mouse = terminal
+                .as_ref()
+                .map_or_else(
+                    || "None".to_owned(),
+                    |terminal| {
+                        terminal.read(cx).snapshot.as_ref().map_or_else(
+                            || "None".to_owned(),
+                            |snapshot| {
+                                format!("{:?}", snapshot.modes.mouse_tracking)
+                            },
+                        )
+                    },
+                );
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.tabs={} w{index}.busy={} w{index}.status={:?} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.tabs={} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
                 palette.is_some(),
                 view.tabs.len(),
                 view.busy,

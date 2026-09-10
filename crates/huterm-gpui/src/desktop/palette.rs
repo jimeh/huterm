@@ -991,6 +991,7 @@ impl Render for CommandPalette {
                 .border_color(foreground.opacity(0.25))
                 .child(message)
         });
+        let input_focus = self.focus_handle(cx);
         div()
             .absolute()
             .inset_0()
@@ -1004,7 +1005,10 @@ impl Render for CommandPalette {
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                input_focus.focus(window);
+                cx.stop_propagation();
+            })
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Middle, |_, _, cx| {
                 cx.stop_propagation();
