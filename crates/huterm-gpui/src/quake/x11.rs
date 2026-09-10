@@ -388,17 +388,36 @@ impl Window {
                 &[2, 0, u32::from(!enabled), 0, 0],
             )?
             .check()?;
-        self.platform.send(
-            self.id,
-            b"_NET_WM_STATE",
-            [
-                u32::from(enabled),
-                self.platform.atom(b"_NET_WM_STATE_ABOVE")?,
-                self.platform.atom(b"_NET_WM_STATE_STICKY")?,
-                2,
-                0,
-            ],
-        )?;
+        let atoms = [
+            self.platform.atom(b"_NET_WM_STATE_ABOVE")?,
+            self.platform.atom(b"_NET_WM_STATE_STICKY")?,
+        ];
+        if self.visible()? {
+            self.platform.send(
+                self.id,
+                b"_NET_WM_STATE",
+                [u32::from(enabled), atoms[0], atoms[1], 2, 0],
+            )?;
+        } else {
+            // Withdrawn windows are not managed yet. Seed the initial state
+            // property; the WM ignores client messages until after mapping.
+            let mut states =
+                self.platform.cardinals(self.id, b"_NET_WM_STATE")?;
+            states.retain(|atom| !atoms.contains(atom));
+            if enabled {
+                states.extend(atoms);
+            }
+            self.platform
+                .connection
+                .change_property32(
+                    PropMode::REPLACE,
+                    self.id,
+                    self.platform.atom(b"_NET_WM_STATE")?,
+                    AtomEnum::ATOM,
+                    &states,
+                )?
+                .check()?;
+        }
         self.platform.connection.flush()?;
         Ok(())
     }

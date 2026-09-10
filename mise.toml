@@ -501,10 +501,10 @@ if [ "$(uname -s)" != Linux ]; then
   echo "Linux quake smoke skipped: X11 requires Linux"
   exit 0
 fi
-for tool in openbox xcompmgr xprop xdotool xwininfo xmessage; do
+for tool in openbox xcompmgr xprop xdotool xwininfo xmessage stdbuf; do
   command -v "$tool" >/dev/null || { echo "Quake smoke requires $tool" >&2; exit 1; }
 done
-bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke --example quake_monitor
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-quake.ts target/debug/examples/quake_smoke
 '''
 

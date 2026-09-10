@@ -119,6 +119,15 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         && Number(value.terminal_top) === Number(value.safe_top) + (fullscreen ? 0 : 32);
     }, `${name} frameless ${fullscreen ? "overlay" : "reserved-tab"} terminal bounds`);
   };
+  const checkStackingState = async (value: State, regular: boolean) => {
+    if (macos) return;
+    await waitFor(async () => {
+      const properties = run(["xprop", "-id", value.native_id!, "_NET_WM_STATE", "_NET_WM_DESKTOP"]);
+      return properties.includes("_NET_WM_STATE_ABOVE") === !regular
+        && properties.includes("4294967295") === !regular
+        && (!regular || !properties.includes("_NET_WM_STATE_STICKY"));
+    }, `${regular ? "regular" : "quake"} X11 stacking and desktop state`);
+  };
   let sequence = 0;
   const command = async (text: string) => {
     const id = sequence++;
@@ -141,6 +150,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && value.active === "true" && !!value.text?.includes("READY:"); }, "global summon from external app");
     await checkLayout(false);
     const first = (await current())!;
+    await checkStackingState(first, false);
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
     let identity = first.text!.match(/READY:(\d+)/)?.[1];
     await input("first-summon");
@@ -152,6 +162,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await hotkey();
     await waitFor(async () => (await current())?.active === "true" && (await current())?.stage === "Idle", "second summon");
     const second = (await current())!;
+    await checkStackingState(second, false);
     if (second.native_id !== first.native_id || !second.text?.includes(`READY:${identity}`)) throw new Error("summon replaced the window or shell");
     await input("second-summon");
     await waitFor(async () => (await current())?.text?.includes(`ACK:second-summon:${identity}:`) ?? false, "PTY ACK after hide and resummon");
@@ -202,6 +213,77 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         console.log(`QUAKE_RESIZE ${engine} ${label} frame=${geometry} grid=${grid} scale=${value.gpui_scale} drawable=${value.drawable ?? "X11"} shell=${identity}`);
       }
       if (engine === "alacritty") {
+        if (!macos) {
+          const monitor = resolve(executable, "..", "quake_monitor");
+          let added = false;
+          try {
+            const monitors = run([monitor, "add"]);
+            added = true;
+            if (monitors.includes("primary=true")) throw new Error(`monitor fixture requires unmarked displays: ${monitors}`);
+            await reload('hide_on_focus_loss = false', '[quake.profiles.monitor]\ndisplay = "id:huterm-smoke-vanishing"\nanimation = "none"\nhide_on_focus_loss = false');
+            await command("app show_quake monitor");await settled(true, "monitor");
+            const before = profile(await state(), "monitor")!;
+            if (before.display !== "huterm-smoke-vanishing") throw new Error("monitor fixture did not attach to the removable display");
+            const remaining = run([monitor, "remove"]);
+            added = false;
+            if (remaining.includes("primary=true")) throw new Error("monitor fixture lost its no-primary condition");
+            await waitFor(async () => {
+              const value = profile(await state(), "monitor");
+              return value?.display === "screen" && value.stage === "Idle" && value.frame === "0,0,1280,400";
+            }, "removed monitor falls back to first remaining unmarked display");
+            await command("app show_quake monitor");await settled(true, "monitor");
+            const after = profile(await state(), "monitor")!;
+            if (after.native_id !== before.native_id || after.frame !== "0,0,1280,400") throw new Error("monitor fallback replaced the window or reverted its geometry on resummon");
+            await command("monitor close_window");
+            await waitFor(async () => profile(await state(), "monitor")?.confirming === "true", "monitor profile close assessment");
+            await command("monitor confirm_close");
+            await waitFor(async () => !profile(await state(), "monitor"), "monitor fixture window cleanup");
+            console.log(`QUAKE_MONITOR fallback=screen primary=false frame=${after.frame} retained-window=${after.native_id}`);
+          } finally {if (added) run([monitor, "remove"]);}
+        }
+        await reload('fullscreen = true\nanimation = "none"\nhide_on_focus_loss = false');
+        await command("app show_quake");await settled(true);
+        const fullscreenBefore = (await current())!;
+        const propertyEvents: string[] = [];
+        const spy = macos ? undefined : Bun.spawn(["stdbuf", "-oL", "xprop", "-spy", "-id", fullscreenBefore.native_id!, "_NET_WM_STATE"], {stdout: "pipe", stderr: "pipe"});
+        const spying = spy ? (async () => {
+          let pending = "";
+          for await (const chunk of spy.stdout) {
+            pending += Buffer.from(chunk).toString();
+            let newline;
+            while ((newline = pending.indexOf("\n")) >= 0) {
+              propertyEvents.push(pending.slice(0, newline));
+              pending = pending.slice(newline + 1);
+            }
+          }
+        })() : Promise.resolve();
+        try {
+          if (spy) await waitFor(async () => propertyEvents.length > 0, "native fullscreen property observer ready");
+          await command("app show_quake");await settled(true);
+          await focusWitness();await waitFor(witnessActive, "external focus before unchanged fullscreen toggle");
+          await command("app toggle_quake");await settled(true);
+          const fullscreenAfter = (await current())!;
+          if (fullscreenAfter.native_id !== fullscreenBefore.native_id || fullscreenAfter.fullscreen !== "true" || fullscreenAfter.frame !== fullscreenBefore.frame) throw new Error("unchanged fullscreen summon altered retained presentation");
+          if (macos && (![fullscreenBefore.lease_changes, fullscreenAfter.lease_changes].every(value => value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) || fullscreenAfter.lease_changes !== fullscreenBefore.lease_changes || fullscreenAfter.options !== fullscreenBefore.options)) throw new Error(`unchanged summon released its presentation lease: ${fullscreenBefore.lease_changes}/${fullscreenBefore.options} -> ${fullscreenAfter.lease_changes}/${fullscreenAfter.options}`);
+          if (spy) {
+            await Bun.sleep(100);
+            if (spy.exitCode !== null) throw new Error("native fullscreen property observer exited before the continuity check completed");
+            spy.kill();await spy.exited;await spying;
+            if (propertyEvents.some(event => !event.includes("_NET_WM_STATE_FULLSCREEN"))) throw new Error(`unchanged summon exited native fullscreen: ${propertyEvents.join("; ")}`);
+          }
+          console.log(`QUAKE_IDEMPOTENT fullscreen=retained show-and-unfocused-toggle=passed native-window=${fullscreenAfter.native_id} lease-changes=${fullscreenAfter.lease_changes ?? "X11-property-events"}`);
+        } finally {if (spy && spy.exitCode === null) spy.kill();if (spy) await spy.exited;await spying;}
+        await reload('hide_on_focus_loss = false\nanimation_ms = 150');
+        await command("app show_quake");await settled(true);
+        if (!macos) {
+          await focusWitness();await waitFor(witnessActive, "external focus below quake");
+          await checkStackingState((await current())!, false);
+          const stacking = run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"]).match(/0x[0-9a-f]+/gi)?.map(Number) ?? [];
+          const quakeIndex = stacking.indexOf(Number((await current())!.native_id));
+          const witnessIndex = stacking.indexOf(Number(witnessWindow));
+          if (quakeIndex < 0 || witnessIndex < 0 || quakeIndex <= witnessIndex) throw new Error(`quake is missing or below the focused external window: ${stacking}`);
+          await command("app show_quake");await settled(true);
+        }
         // The window must stay up while repeated Press events arrive without Release.
         await hotkey(); await settled(false);
         if (macos) {
@@ -462,6 +544,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await command("default toggle_fullscreen");
     await waitFor(async () => (await current())?.regular === "true" && (await current())?.stage === "Idle", "regular presentation");
     if ((await current())?.decorated !== "true") throw new Error("regular presentation did not restore frame");
+    await checkStackingState((await current())!, true);
     if (macos && (await current())?.allows_offscreen !== "false") throw new Error("regular presentation retained unconstrained native frames");
     if (macos) {
       await command("default native_space");

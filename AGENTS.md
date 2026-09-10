@@ -843,3 +843,11 @@ Read backing scale from NSWindow while offscreen: NSScreen can be nil, and a
 synthetic 2x fallback can resize Metal's drawable at a different scale from GPUI
 after an on-screen move. Keep retained half/quarter/half resize coverage tied to
 native view and drawable dimensions, GPUI viewport/scale, and PTY rows/columns.
+
+RandR can return monitors with no primary flag. Missing retained monitors and
+regular-to-quake conversion must fall back to the first remaining monitor.
+For withdrawn X11 windows, merge ABOVE/STICKY into `_NET_WM_STATE` before mapping;
+window managers ignore state client messages until they manage the window.
+Unchanged visible quake summons only activate the window. Preserve fullscreen
+leases and native state; re-enter the transition path for changed profile or
+target geometry. Fullscreen geometry ignores work-area-only changes.

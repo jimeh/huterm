@@ -17,6 +17,7 @@ pub(super) struct Registry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Prepare,
+    Activate,
     Windowed,
     Animate,
     SettleVisible,
@@ -382,6 +383,12 @@ fn invoke_now(
                 if !show && view.close.confirmation.is_some() {
                     return Err("a close confirmation must remain visible".into());
                 }
+                let unchanged = show && native_idle && !state.regular
+                    && state.stage == Stage::Idle && state.transition.visible()
+                    && state.profile == config
+                    && state.native.visible().map_err(|error| error.to_string())?
+                    && state.native.fullscreen().map_err(|error| error.to_string())? == config.fullscreen
+                    && near(state.native.frame().map_err(|error| error.to_string())?, config.geometry(&state.display));
                 if show {
                     state.profile = config.clone();
                     if !state.regular {
@@ -389,6 +396,10 @@ fn invoke_now(
                     }
                 }
                 state.request(show, !show && active);
+                if unchanged {
+                    state.activation.observe(active);
+                    state.stage = Stage::Activate;
+                }
                 view.sync_quake_visibility(window, cx);
                 Ok(())
             })
@@ -519,6 +530,7 @@ pub(super) fn toggle(
             .iter()
             .find(|display| display.frame.contains(center.0, center.1))
             .or_else(|| displays.iter().find(|display| display.primary))
+            .or_else(|| displays.first())
             .cloned()
             .ok_or_else(|| {
                 CommandError::Unavailable("no display available".into())
@@ -693,14 +705,21 @@ fn step(
                     .iter()
                     .find(|display| display.id == state.display.id)
                     .or_else(|| displays.iter().find(|display| display.primary))
+                    .or_else(|| displays.first())
                     && *display != state.display
                 {
                     state.display = display.clone();
-                    state.target = state.profile.geometry(display);
+                    let target = state.profile.geometry(display);
+                    let geometry_changed = target != state.target;
+                    state.target = target;
                     // Presentation leases can change the work area mid-transition.
                     // Preserve active progress and its original failure deadline.
-                    if state.stage == Stage::Idle {
+                    if geometry_changed && state.stage == Stage::Idle {
                         state.refit();
+                    } else if geometry_changed && state.stage == Stage::Activate
+                    {
+                        // A pending raise must refit if the retained display changed.
+                        state.request(true, false);
                     }
                 }
             }
@@ -743,6 +762,13 @@ fn step(
         view.bounds = window.window_bounds();
     }
     let effect: Option<NativeEffect> = match state.stage {
+        Stage::Activate => {
+            state.stage = Stage::SettleVisible;
+            state
+                .activation
+                .take_request()
+                .then(|| NativeEffect::for_state(state, vec![NativeOp::Show]))
+        }
         Stage::Prepare => {
             state.stage = Stage::Windowed;
             state.suppress_blur = now + Duration::from_millis(200);

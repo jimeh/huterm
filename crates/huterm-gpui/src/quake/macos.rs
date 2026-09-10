@@ -333,7 +333,7 @@ impl Window {
             let drawable: gpui::Size<f64> = msg_send![layer, drawableSize];
             let contents_scale: f64 = msg_send![layer, contentsScale];
             Ok(format!(
-                "native_view={},{},{},{}\nbacking_scale={backing_scale}\nscreen_present={}\ndrawable={},{}\ncontents_scale={contents_scale}\nnative_id={id}\nopacity={alpha}\ndecorated={}\noptions={options}\nallows_offscreen={}",
+                "native_view={},{},{},{}\nbacking_scale={backing_scale}\nscreen_present={}\ndrawable={},{}\ncontents_scale={contents_scale}\nnative_id={id}\nopacity={alpha}\ndecorated={}\noptions={options}\nallows_offscreen={}\nlease_changes={}",
                 view_bounds.origin.x,
                 view_bounds.origin.y,
                 view_bounds.size.width,
@@ -342,7 +342,8 @@ impl Window {
                 drawable.width,
                 drawable.height,
                 style & 1 != 0,
-                offscreen == YES
+                offscreen == YES,
+                self.0.lease.ownership_changes()
             ))
         }
     }
