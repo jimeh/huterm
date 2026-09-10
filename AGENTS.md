@@ -164,6 +164,11 @@ On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
+On Linux, `freetype-sys` 0.20.1 uses a system FreeType only when pkg-config
+reports version 24.3.18 or newer; otherwise it compiles the bundled FreeType C
+source. Package verification must reject an unexpected `libfreetype.so.6`
+dependency and ship the FreeType License notice when that static fallback is
+present.
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
