@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 type Message = {
   id?: number;
   method?: string;
-  params?: { uri?: string; diagnostics?: { message: string }[]; items?: unknown[] };
+  params?: { uri?: string; diagnostics?: { message: string; range?: { start: { line: number; character: number } } }[]; items?: unknown[] };
   result?: unknown;
   error?: unknown;
 };
@@ -98,7 +98,7 @@ try {
   if (globalLabels.length !== 3) throw new Error(`Global commands include unsupported completions: ${JSON.stringify(globalLabels)}`);
   console.log("global shortcuts: only the three quake commands complete; profile type diagnosed");
   const quakeUri = pathToFileURL(join(directory, "quake.toml")).href;
-  const quakeDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === quakeUri && (message.params.diagnostics?.length ?? 0) > 0, "quake width boundary diagnostic");
+  const quakeDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === quakeUri && (message.params.diagnostics?.some(item => item.range?.start.line === 2 && item.range.start.character === 8 && item.message.includes("0 is less than or equal to the minimum of 0")) ?? false), "quake width boundary diagnostic");
   send({ method: "textDocument/didOpen", params: { textDocument: { uri: quakeUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[quake.profiles.default]\nwidth = 0\nedge = "top"\n` } } });
   await quakeDiagnostic;
   requireLabels(await completions(quakeUri, 3, 9), ["top", "bottom", "left", "right"]);

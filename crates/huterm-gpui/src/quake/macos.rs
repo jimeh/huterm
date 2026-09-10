@@ -240,7 +240,10 @@ impl Platform {
         let point = if selector == "pointer" {
             Some(pointer()?)
         } else if selector == "active" {
-            self.active_center()?.or(Some(pointer()?))
+            match self.active_center()? {
+                Some(center) => Some(center),
+                None => Some(pointer()?),
+            }
         } else {
             None
         };

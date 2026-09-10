@@ -821,3 +821,10 @@ so staged README and agent-guide edits receive the same checks as nested docs.
 Quake work-area refits must preserve focus; only explicit summons request it.
 After initial activation succeeds, later app switches cannot invalidate a visible
 transition. A failed return-focus attempt must not undo a successful native hide.
+
+The XDND source publishes terminal acknowledgements before closing Xlib and
+exiting. Await successful process exit and clear its fixture handle after
+drop/leave; otherwise a follow-up action can target a source already exiting.
+
+The AppKit witness publishes readiness before its first state snapshot. Wait for
+that snapshot or a command acknowledgement before reading its activation state.

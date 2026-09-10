@@ -38,6 +38,7 @@ async function checkHidden(executable: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-hidden-"));
   const app = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1"}, stdout: "pipe", stderr: "pipe"});
   let diagnostics = "";
+  let passed = false;
   const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   try {
     await waitFor(async () => {
@@ -55,6 +56,7 @@ async function checkHidden(executable: string): Promise<void> {
     await writeFile(join(directory, "finish"), "finish");
     await waitFor(async () => app.exitCode !== null, "hidden probe shutdown");
     if (await app.exited !== 0) throw new Error("hidden probe failed");
+    passed = true;
     console.log("QUAKE_HIDDEN_CREATION native-map-state=IsUnMapped before-any-hide=passed");
   } catch (error) {
     console.error(`Hidden-window probe ${directory}: ${diagnostics}`);
@@ -63,7 +65,7 @@ async function checkHidden(executable: string): Promise<void> {
     if (app.exitCode === null) app.kill();
     await app.exited;
     await errors;
-    await rm(directory, {recursive: true, force: true});
+    if (passed) await rm(directory, {recursive: true, force: true});
   }
 }
 
@@ -188,6 +190,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       try {
         if (macos) {
           await waitFor(() => Bun.file(join(departedDirectory, "witness-ready")).exists(), "temporary AppKit witness");
+          await waitFor(() => Bun.file(join(departedDirectory, "witness-state")).exists(), "temporary AppKit witness state publication");
           await publishCommand(join(departedDirectory, "witness-command-0"), "focus");
           await waitFor(async () => parseState(await readFile(join(departedDirectory, "witness-state"), "utf8")).active === "true", "temporary AppKit focus target");
         } else {
@@ -268,6 +271,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       const grabDirectory = join(directory,"external-grab");
       await import("node:fs/promises").then(fs => fs.mkdir(grabDirectory));
       const grab = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: grabDirectory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"},stdout:"ignore",stderr:"pipe"});
+      let grabCleanupError: unknown;
       try {
         await waitFor(() => Bun.file(join(grabDirectory,"ready")).exists(),"separate process owns control-alt-L");
         await checkOrdinaryExit(executable, true);
@@ -278,7 +282,25 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await command("app show_quake");await settled(true);
         if ((await current())?.frame !== before) throw new Error("failed grab reload published new profile geometry");
         await hotkey();await settled(false);await hotkey();await settled(true);
-      } finally {await writeFile(join(grabDirectory,"finish"),"finish");await waitFor(async () => grab.exitCode !== null,"external grab release");if (await grab.exited !== 0) throw new Error("external grab process failed");}
+      } finally {
+        try {
+          await writeFile(join(grabDirectory,"finish"),"finish");
+          await waitFor(async () => grab.exitCode !== null,"external grab release");
+        } catch (error) {
+          grabCleanupError = error;
+          console.error(`External grab cleanup failed: ${error}`);
+          if (grab.exitCode === null) {
+            try {
+              grab.kill("SIGKILL");
+              await waitFor(async () => grab.exitCode !== null, "external grab forced exit", 1000);
+            } catch (killError) {
+              console.error(`External grab forced cleanup failed: ${killError}`);
+            }
+          }
+        }
+      }
+      if (grabCleanupError !== undefined) throw grabCleanupError;
+      if (await grab.exited !== 0) throw new Error("external grab process failed");
       await writeFile(config,"[quake.profiles.default]\nwidth = 0");
       await command("app reload_config");
       await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"invalid profile reload rejection");
