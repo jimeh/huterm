@@ -60,14 +60,10 @@ fn append_trace(
     if observations.is_empty() {
         return;
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("trace.jsonl"))
-        .expect("open quake smoke trace");
+    let mut batch = String::new();
     for observation in observations {
         writeln!(
-            file,
+            batch,
             "{{\"monotonic_us\":{},\"profile\":\"{}\",\"generation\":{},\"desired\":{},\"progress\":{},\"stage\":\"{}\",\"frame\":[{},{},{},{}],\"opacity\":{},\"scheduler_gap_us\":{}}}",
             observation.monotonic_us,
             json_string(&observation.profile),
@@ -82,8 +78,15 @@ fn append_trace(
             observation.opacity,
             observation.scheduler_gap_us,
         )
-        .expect("append quake smoke trace");
+        .expect("format quake smoke trace");
     }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("trace.jsonl"))
+        .expect("open quake smoke trace");
+    file.write_all(batch.as_bytes())
+        .expect("append quake smoke trace");
 }
 
 fn json_string(value: &str) -> String {

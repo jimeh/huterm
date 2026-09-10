@@ -7,6 +7,7 @@ import {
   analyzeFade,
   analyzeReversal,
   analyzeSlide,
+  isIntermediateObservation,
   observationsForLatestGeneration,
   readQuakeTrace,
   retryInconclusiveOnce,
@@ -384,10 +385,10 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           let showing: QuakeObservation[] = [];
           await waitFor(async () => {
             showing = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", true);
-            return showing.some(observation => observation.stage === "Animate" && observation.progress > 0.15 && observation.progress < 0.7)
+            return showing.some(isIntermediateObservation)
               || Math.abs((showing.at(-1)?.progress ?? -1) - 1) < 0.001;
           }, "retained native show animation");
-          const intermediate = showing.findLast(observation => observation.stage === "Animate" && observation.progress > 0.15 && observation.progress < 0.7);
+          const intermediate = showing.findLast(isIntermediateObservation);
           if (!intermediate) {
             await settled(true);
             const verdict = analyzeFade(await completedTrace(cursor, true), true, frame((await current())!));
@@ -494,7 +495,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           hiddenPixel = (await current())?.root_pixel;
           if (!macos && (opaquePixel === fading.root_pixel || hiddenPixel === fading.root_pixel || opaquePixel === hiddenPixel)) throw new Error(`composed pixels did not prove fade: opaque=${opaquePixel}, intermediate=${fading.root_pixel}, hidden=${hiddenPixel}`);
           const observations = await completedTrace(cursor, false);
-          const intermediate = observations.find(observation => observation.progress > 0.2 && observation.progress < 0.8);
+          const intermediate = observations.find(isIntermediateObservation);
           if (!intermediate) throw new Error("native compositor sample is missing from retained animation trace");
           return { status: "passed" as const, intermediate };
         });
