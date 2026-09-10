@@ -840,8 +840,10 @@ windows, and suppress overlay reveal while the quake window is hidden.
 Lefthook's `**/*.md` glob skips root Markdown files. Include `*.md` explicitly
 so staged README and agent-guide edits receive the same checks as nested docs.
 Quake work-area refits must preserve focus; only explicit summons request it.
-After initial activation succeeds, later app switches cannot invalidate a visible
-transition. A failed return-focus attempt must not undo a successful native hide.
+While initial activation has never been observed, SettleVisible may retry Show on
+a bounded cadence within the original deadline. Once observed, later app switches
+must never re-arm retries. A failed return-focus attempt must not undo a successful
+native hide.
 
 The XDND source publishes terminal acknowledgements before closing Xlib and
 exiting. Await successful process exit and clear its fixture handle after

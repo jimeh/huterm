@@ -110,23 +110,47 @@ enum Stage {
 struct Activation {
     seen: bool,
     requested: bool,
+    next_retry: Option<Instant>,
 }
+const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
 impl Activation {
-    fn request(&mut self) {
+    fn request(&mut self, now: Instant) {
         self.seen = false;
         self.requested = true;
+        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+    }
+
+    fn cancel(&mut self) {
+        self.requested = false;
+        self.next_retry = None;
     }
 
     fn observe(&mut self, active: bool) {
         if active {
             self.seen = true;
+            self.cancel();
         } else if self.seen {
-            self.requested = false;
+            self.cancel();
         }
     }
 
     fn take_request(&mut self) -> bool {
         std::mem::take(&mut self.requested)
+    }
+
+    fn take_retry(&mut self, now: Instant, deadline: Instant) -> bool {
+        if self.seen || now >= deadline {
+            return false;
+        }
+        let Some(next_retry) = self.next_retry else {
+            return false;
+        };
+        if now < next_retry {
+            return false;
+        }
+        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+        true
     }
 
     fn refit(
@@ -136,7 +160,7 @@ impl Activation {
         now: Instant,
     ) -> Instant {
         if stage == Stage::Idle {
-            self.requested = false;
+            self.cancel();
             now + Duration::from_secs(3)
         } else {
             deadline
@@ -200,9 +224,10 @@ impl Presentation {
     fn request(&mut self, visible: bool, restore_focus: bool) {
         let now = Instant::now();
         self.deadline = now + Duration::from_secs(3);
-        self.activation.requested = visible;
         if visible {
-            self.activation.request();
+            self.activation.request(now);
+        } else {
+            self.activation.cancel();
         }
         self.prepare(visible, restore_focus, now);
     }
@@ -641,9 +666,10 @@ pub(super) fn attach(
         transition,
         stage: Stage::Prepare,
         deadline: now + Duration::from_secs(3),
-        activation: Activation {
-            seen: false,
-            requested: true,
+        activation: {
+            let mut activation = Activation::default();
+            activation.request(now);
+            activation
         },
         suppress_blur: now + Duration::from_millis(200),
         last_display_check: now,
@@ -780,7 +806,7 @@ fn recover(
                 state.recovering = true;
                 state.regular = true;
                 state.deadline = now + Duration::from_secs(3);
-                state.activation.request();
+                state.activation.request(now);
                 let effect = NativeEffect::for_state(
                     state,
                     vec![NativeOp::Opacity(1.0)],
@@ -1073,16 +1099,22 @@ fn step(
                     // can also move the frame when presentation options change.
                     // Reassert the endpoint after those native changes; only
                     // X11 delegates fullscreen geometry to the window manager.
-                    if !regular
+                    let reassert_frame = !regular
                         && (!expected || cfg!(target_os = "macos"))
-                        && native.visible().unwrap_or(false)
-                    {
-                        Some(NativeEffect::for_state(
-                            state,
-                            vec![NativeOp::Frame(state.target)],
-                        ))
-                    } else {
+                        && native.visible().unwrap_or(false);
+                    let retry_activation =
+                        state.activation.take_retry(now, state.deadline);
+                    let mut operations = Vec::new();
+                    if reassert_frame {
+                        operations.push(NativeOp::Frame(state.target));
+                    }
+                    if retry_activation {
+                        operations.push(NativeOp::Show);
+                    }
+                    if operations.is_empty() {
                         None
+                    } else {
+                        Some(NativeEffect::for_state(state, operations))
                     }
                 }
                 Err(error) => Some(NativeEffect::for_state(
@@ -1332,37 +1364,104 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Activation, Stage};
+    use super::{ACTIVATION_RETRY_INTERVAL, Activation, Stage};
     use std::time::{Duration, Instant};
 
     #[test]
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {
+        let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request();
+        activation.request(now);
         activation.observe(true);
         activation.observe(false);
         assert!(!activation.take_request());
+        assert!(!activation.take_retry(
+            now + ACTIVATION_RETRY_INTERVAL,
+            now + Duration::from_secs(3)
+        ));
         assert!(activation.seen, "initial activation remains successful");
     }
 
     #[test]
     fn unfocused_observation_before_initial_activation_keeps_the_request() {
+        let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request();
+        activation.request(now);
         activation.observe(false);
         assert!(activation.take_request());
         assert!(!activation.seen, "initial activation is still required");
         activation.observe(true);
-        activation.request();
+        activation.request(now + Duration::from_secs(1));
         assert!(!activation.seen, "a new summon needs fresh activation");
     }
+
+    #[test]
+    fn initial_activation_retries_on_cadence_until_the_original_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request(now);
+        assert!(activation.take_request(), "initial Show must run");
+        assert!(
+            !activation.take_retry(now + Duration::from_millis(99), deadline)
+        );
+        assert!(
+            activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+        assert!(
+            activation
+                .take_retry(now + ACTIVATION_RETRY_INTERVAL * 2, deadline)
+        );
+        assert!(!activation.take_retry(deadline, deadline));
+    }
+
+    #[test]
+    fn activation_retry_cadence_prevents_per_frame_show_requests() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request(now);
+        assert!(activation.take_request());
+        assert!(
+            !activation.take_retry(now + Duration::from_millis(16), deadline)
+        );
+        assert!(
+            activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+        assert!(!activation.take_retry(
+            now + ACTIVATION_RETRY_INTERVAL + Duration::from_millis(16),
+            deadline
+        ));
+    }
+
+    #[test]
+    fn a_new_summon_resets_activation_retry_eligibility() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request(now);
+        assert!(activation.take_request());
+        activation.observe(true);
+        activation.observe(false);
+        assert!(
+            !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+
+        let next = now + Duration::from_secs(1);
+        activation.request(next);
+        assert!(activation.take_request());
+        assert!(
+            activation.take_retry(next + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+    }
+
     #[test]
     fn geometry_refit_does_not_rearm_canceled_activation_or_extend_its_budget()
     {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request();
+        activation.request(now);
         activation.observe(true);
         activation.observe(false);
         let deadline = activation.refit(
@@ -1390,7 +1489,7 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request();
+        activation.request(now);
         activation.observe(false);
         let refit_deadline = activation.refit(
             Stage::Activate,
@@ -1413,9 +1512,9 @@ mod tests {
     fn idle_geometry_refit_is_passive_with_a_fresh_placement_budget() {
         let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request();
-        activation.observe(true);
+        activation.request(now);
         assert!(activation.take_request());
+        activation.observe(true);
         let deadline = activation.refit(Stage::Idle, now, now);
         assert!(
             !activation.take_request(),
