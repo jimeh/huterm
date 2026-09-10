@@ -525,6 +525,10 @@ toolchain file and update the lock after changing tool versions. CI runs format,
 Clippy, schema and script checks, and Rust tests sequentially in one job per
 platform so they reuse setup and debug artifacts without contending on the Cargo
 target-directory lock. Keep desktop smokes separate and serial within their job.
+The smoke job separately times Ghostty preparation, compilation, and execution.
+Its Cargo cache retains workspace crates, and its additional `.native/ghostty`
+cache key includes `scripts/ghostty-source.json`; keep the aggregate
+`ci:smoke:build` targets aligned with the binaries consumed by `ci:smoke:run`.
 
 Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
 with the repository ruleset. These gates require every validation job and disable

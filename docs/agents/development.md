@@ -194,7 +194,7 @@ process labels and directory inheritance are not implemented yet.
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-14` and Ubuntu 24.04 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
-| Pull request | `mise run ci:smoke` on `macos-14` and Ubuntu 24.04 | Serial native desktop smokes for each platform | CI |
+| Pull request | `mise run ci:smoke` on `macos-14` and Ubuntu 24.04 | Cached native source preparation, smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
@@ -214,6 +214,12 @@ Linux release benchmarks, and macOS packaging remain separate because combining
 them would lengthen the workflow's slowest path. The final
 `Verify Linux x86_64` and `Verify macOS arm64` jobs are the stable required
 checks; both require every validation job to pass.
+
+The smoke job restores Cargo dependencies, workspace build artifacts, and the
+verified Ghostty source tree before separately timing source preparation,
+compilation, and execution. `mise run ci:smoke` composes the same three phases
+for local use; the workflow invokes its build and run subtasks directly so a
+slow cache restore, native preparation, compile, or test is visible on its own.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,

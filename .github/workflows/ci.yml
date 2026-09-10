@@ -160,7 +160,9 @@ jobs:
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: smoke-debug
+          key: smoke-debug-${{ hashFiles('scripts/ghostty-source.json') }}
+          cache-workspace-crates: true
+          cache-directories: .native/ghostty
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -169,8 +171,14 @@ jobs:
         if: runner.os == 'macOS'
         run: test "$(uname -m)" = arm64
 
+      - name: Prepare desktop smoke dependencies
+        run: mise run ghostty:prepare
+
+      - name: Compile desktop smoke binaries
+        run: mise run ci:smoke:build
+
       - name: Run desktop smoke tests
-        run: mise run ci:smoke
+        run: mise run ci:smoke:run
 
   benchmarks:
     name: Scroll benchmarks
