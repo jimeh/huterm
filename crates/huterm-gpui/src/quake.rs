@@ -137,6 +137,9 @@ impl Transition {
         self.sampled = now;
         self.progress
     }
+    pub fn elapsed_since_sample(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.sampled)
+    }
     pub fn pause(&mut self, now: Instant) {
         self.sampled = now;
     }

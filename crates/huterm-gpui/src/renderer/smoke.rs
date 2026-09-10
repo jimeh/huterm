@@ -46,24 +46,8 @@ pub(crate) fn run() {
             .detach();
         }
         cx.activate(true);
-        if !hold {
-            cx.spawn(async move |cx| {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-                cx.update(|cx| {
-                    // A successful process must have exercised prepare and paint.
-                    assert!(PAINTED.load(std::sync::atomic::Ordering::Relaxed));
-                    println!("RENDERER_SMOKE passed");
-                    cx.quit();
-                })
-                .expect("finish renderer smoke");
-            })
-            .detach();
-        }
     });
 }
-
-static PAINTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 struct Panel {
     renderer: TerminalRenderer,
@@ -73,6 +57,35 @@ struct Panel {
 
 struct Fixture {
     panels: Vec<Rc<RefCell<Panel>>>,
+    completion: Rc<RefCell<Completion>>,
+}
+
+#[derive(Default)]
+struct Completion {
+    prepared: [bool; 3],
+    checked: [bool; 3],
+    painted: [bool; 3],
+    scheduled: bool,
+}
+
+impl Completion {
+    fn prepared_and_checked(&mut self, index: usize) {
+        self.prepared[index] = true;
+        self.checked[index] = true;
+    }
+
+    fn painted(&mut self, index: usize) -> bool {
+        self.painted[index] = true;
+        if self.scheduled
+            || !self.prepared.into_iter().all(std::convert::identity)
+            || !self.checked.into_iter().all(std::convert::identity)
+            || !self.painted.into_iter().all(std::convert::identity)
+        {
+            return false;
+        }
+        self.scheduled = true;
+        true
+    }
 }
 
 impl Fixture {
@@ -103,7 +116,10 @@ impl Fixture {
                 }))
             })
             .collect();
-        Self { panels }
+        Self {
+            panels,
+            completion: Rc::new(RefCell::new(Completion::default())),
+        }
     }
 }
 
@@ -130,9 +146,11 @@ impl Render for Fixture {
             .p(px(20.0))
             .size_full()
             .bg(gpui::rgb(0x001d_1f21));
-        for panel in &self.panels {
+        for (index, panel) in self.panels.iter().enumerate() {
             let prepare = Rc::clone(panel);
             let paint = Rc::clone(panel);
+            let prepare_completion = Rc::clone(&self.completion);
+            let paint_completion = Rc::clone(&self.completion);
             let m = panel.borrow().renderer.metrics;
             root = root.child(
                 canvas(
@@ -144,11 +162,33 @@ impl Render for Fixture {
                             check(&mut panel, window);
                             panel.checked = true;
                         }
+                        prepare_completion
+                            .borrow_mut()
+                            .prepared_and_checked(index);
                     },
-                    move |bounds, (), window, _| {
+                    move |bounds, (), window, cx| {
                         paint.borrow_mut().renderer.paint(bounds, window);
-                        PAINTED
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        if paint_completion.borrow_mut().painted(index)
+                            && std::env::var_os("HUTERM_RENDERER_HOLD").is_none()
+                        {
+                            cx.defer(|cx| {
+                                cx.spawn(async move |cx| {
+                                    // On Linux the initial paint can finish before the
+                                    // native event loop starts. Cross that boundary before
+                                    // asking the platform loop to stop.
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(50))
+                                        .await;
+                                    cx.update(|cx| {
+                                        println!("RENDERER_SMOKE all-panels prepared=3 checked=3 painted=3");
+                                        println!("RENDERER_SMOKE passed");
+                                        cx.quit();
+                                    })
+                                    .expect("finish renderer smoke");
+                                })
+                                .detach();
+                            });
+                        }
                     },
                 )
                 .w(m.cell_width * 32.0)
@@ -398,5 +438,22 @@ fn populate_wide(cells: &mut [Cell]) {
             cells[column + 1].text = "█".into();
             cells[column + 1].style.wide_spacer = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Completion;
+
+    #[test]
+    fn completion_fires_once_after_every_panel_finishes() {
+        let mut completion = Completion::default();
+        for index in 0..3 {
+            completion.prepared_and_checked(index);
+        }
+        assert!(!completion.painted(2));
+        assert!(!completion.painted(0));
+        assert!(completion.painted(1));
+        assert!(!completion.painted(1));
     }
 }

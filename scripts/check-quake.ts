@@ -1,8 +1,17 @@
 /** Exercise production quake commands through real global shortcuts. */
-import { mkdir, mkdtemp, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseState, type State } from "./check-fullscreen";
+import {
+  analyzeFade,
+  analyzeReversal,
+  analyzeSlide,
+  observationsForLatestGeneration,
+  readQuakeTrace,
+  retryInconclusiveOnce,
+  type QuakeObservation,
+} from "./quake-trace";
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
@@ -21,6 +30,9 @@ async function publishCommand(file: string, text: string): Promise<void> {
   await writeFile(temporary, text);
   await rename(temporary, file);
 }
+async function collectStream(stream: ReadableStream<Uint8Array>, append: (text: string) => void): Promise<void> {
+  for await (const chunk of stream) append(Buffer.from(chunk).toString());
+}
 function profile(state: State, name: string): State | undefined {
   const entry = Object.entries(state).find(([key, value]) => key.endsWith(".profile") && value === name);
   if (!entry) return;
@@ -33,6 +45,19 @@ function frame(value: State): [number, number, number, number] {
   return coordinates as [number, number, number, number];
 }
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+async function finishFixture(directory: string, kind: string, passed: boolean, diagnostics: string): Promise<void> {
+  if (!passed) {
+    const evidence = process.env.HUTERM_SMOKE_EVIDENCE_DIR;
+    if (evidence) {
+      const target = join(evidence, "quake", `${kind}-${basename(directory)}`);
+      await mkdir(target, { recursive: true });
+      await cp(directory, target, { recursive: true });
+      await writeFile(join(target, "app-stderr.log"), diagnostics);
+    }
+  }
+  if (passed && !process.env.HUTERM_KEEP_SMOKE) await rm(directory, { recursive: true, force: true });
+}
 
 async function checkHidden(executable: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-hidden-"));
@@ -65,7 +90,7 @@ async function checkHidden(executable: string): Promise<void> {
     if (app.exitCode === null) app.kill();
     await app.exited;
     await errors;
-    if (passed) await rm(directory, {recursive: true, force: true});
+    await finishFixture(directory, "hidden", passed, diagnostics);
   }
 }
 
@@ -112,6 +137,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   };
   const state = async () => parseState(await readFile(join(directory, "state"), "utf8"));
   const current = async () => profile(await state(), "default");
+  const traceFile = join(directory, "trace.jsonl");
+  const traceCursor = async () => (await readQuakeTrace(traceFile)).length;
+  const completedTrace = async (cursor: number, desired: boolean, name = "default") => {
+    let result: QuakeObservation[] = [];
+    await waitFor(async () => {
+      result = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), name, desired);
+      return Math.abs((result.at(-1)?.progress ?? -1) - Number(desired)) < 0.001;
+    }, `${name} ${desired ? "show" : "hide"} animation trace endpoint`);
+    return result;
+  };
   const checkLayout = async (fullscreen: boolean, name = "default") => {
     await waitFor(async () => {
       const value = profile(await state(), name);
@@ -341,19 +376,46 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning`);
         } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
-        await command("app hide_quake");await settled(false);
-        await command("app show_quake");
-        await waitFor(async () => {
-          const value = await current();
-          return value?.active === "true" && value.stage === "Animate"
-            && Number(value.opacity) > 0.15 && Number(value.opacity) < 0.7;
-        }, "activated window during native show animation");
-        await focusWitness();await waitFor(witnessActive, "deliberate app switch during show");
-        await waitFor(async () => (await current())?.stage === "Idle", "unfocused show settles");
-        const unfocused = (await current())!;
-        if (unfocused.regular !== "false" || unfocused.visible !== "true" || unfocused.active !== "false" || !await witnessActive()) {
-          throw new Error(`show stole focus or recovered after deliberate app switch: ${JSON.stringify(unfocused)}`);
-        }
+        const focusDuringShow = await retryInconclusiveOnce(async attempt => {
+          await focusWitness();await waitFor(witnessActive, `external focus before show attempt ${attempt}`);
+          await command("app hide_quake");await settled(false);
+          const cursor = await traceCursor();
+          await command("app show_quake");
+          let showing: QuakeObservation[] = [];
+          await waitFor(async () => {
+            showing = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", true);
+            return showing.some(observation => observation.stage === "Animate" && observation.progress > 0.15 && observation.progress < 0.7)
+              || Math.abs((showing.at(-1)?.progress ?? -1) - 1) < 0.001;
+          }, "retained native show animation");
+          const intermediate = showing.findLast(observation => observation.stage === "Animate" && observation.progress > 0.15 && observation.progress < 0.7);
+          if (!intermediate) {
+            await settled(true);
+            const verdict = analyzeFade(await completedTrace(cursor, true), true, frame((await current())!));
+            if (verdict.status === "passed") throw new Error("completed show trace lost its retained intermediate observation");
+            return verdict;
+          }
+          await focusWitness();
+          const witnessTarget = macos ? String(witness.pid) : witnessWindow;
+          let focusObservation: QuakeObservation | undefined;
+          await waitFor(async () => {
+            const value = await state();
+            if (value.current_focus_id !== witnessTarget || !await witnessActive()) return false;
+            focusObservation = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", true).at(-1);
+            return true;
+          }, "exact external focus target during show");
+          await waitFor(async () => (await current())?.stage === "Idle", "unfocused show settles");
+          const unfocused = (await current())!;
+          const verdict = analyzeFade(await completedTrace(cursor, true), true, frame(unfocused));
+          if (unfocused.regular !== "false" || unfocused.visible !== "true" || unfocused.active !== "false" || !await witnessActive()) {
+            throw new Error(`show stole focus or recovered after deliberate app switch: ${JSON.stringify(unfocused)}`);
+          }
+          if (focusObservation?.stage !== "Animate" || focusObservation.progress <= 0 || focusObservation.progress >= 1) {
+            return { status: "inconclusive" as const, reason: "scheduler reached the show endpoint before focus was observed" };
+          }
+          if (verdict.status === "inconclusive") return verdict;
+          return { status: "passed" as const, intermediate: focusObservation };
+        });
+        if (focusDuringShow.attempts > 1) console.log(`QUAKE_RETRY ${engine} focus-during-show reason=scheduler-gap`);
         console.log(`QUAKE_FOCUS ${engine} switch-during-show=settled-without-refocus`);
       }
       for (const fullscreen of engine === "alacritty" ? [false, true] : [false]) {
@@ -373,32 +435,27 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             const work = (await current())!.work_area!.split(",").map(Number);
             if (Math.abs(endpoint[0] + endpoint[2] / 2 - (work[0]! + work[2]! / 2)) > 2 || Math.abs(endpoint[1] + endpoint[3] / 2 - (work[1]! + work[3]! / 2)) > 2) throw new Error(`center placement differs from native work-area center: ${endpoint}, work=${work}`);
           }
-          await command("app hide_quake");
-          if (edge) {
-            const axis = edge === "left" || edge === "right" ? 0 : 1;
-            const extent = endpoint[axis + 2]!;
-            let intermediate: State | undefined;
-            await waitFor(async () => {
-              const value = (await current())!;
-              const distance = Math.abs(frame(value)[axis]! - endpoint[axis]!);
-              if (value.stage !== "Animate" || distance < extent * 0.2 || distance > extent * 0.8) return false;
-              intermediate = value;
-              return true;
-            }, `${animation} native intermediate slide position fullscreen=${fullscreen}`);
-            const moved = frame(intermediate!);
-            const direction = edge === "top" || edge === "left" ? -1 : 1;
-            const orthogonal = axis === 0 ? 1 : 0;
-            if ((moved[axis]! - endpoint[axis]!) * direction <= 0 || Math.abs(moved[orthogonal]! - endpoint[orthogonal]!) > 2 || Math.abs(moved[2] - endpoint[2]) > 2 || Math.abs(moved[3] - endpoint[3]) > 2) {
-              throw new Error(`${animation} native slide changed the wrong axis, direction, or size: ${endpoint} -> ${moved}`);
-            }
-            console.log(`QUAKE_SLIDE ${engine} ${animation} position=${position} fullscreen=${fullscreen} endpoint=${endpoint} intermediate=${moved}`);
+          if (edge || animation === "auto") {
+            const fade = animation === "auto" || animation.startsWith("fade_");
+            const checked = await retryInconclusiveOnce(async attempt => {
+              if (attempt > 1) {
+                await command("app show_quake");
+                await settled(true);
+              }
+              const cursor = await traceCursor();
+              await command("app hide_quake");
+              await settled(false);
+              const observations = await completedTrace(cursor, false);
+              return edge
+                ? analyzeSlide(observations, false, { endpoint, edge: edge as "top" | "bottom" | "left" | "right", fade })
+                : analyzeFade(observations, false, endpoint);
+            });
+            if (checked.attempts > 1) console.log(`QUAKE_RETRY ${engine} ${animation} position=${position} fullscreen=${fullscreen} reason=scheduler-gap`);
+            if (edge) console.log(`QUAKE_SLIDE ${engine} ${animation} position=${position} fullscreen=${fullscreen} endpoint=${endpoint} intermediate=${checked.verdict.intermediate.frame}`);
+          } else {
+            await command("app hide_quake");
+            await settled(false);
           }
-          if (!edge && animation === "auto") {
-            await waitFor(async () => {const value = (await current())!;return value.stage === "Animate" && Number(value.opacity) > 0.2 && Number(value.opacity) < 0.8;}, `auto fade fullscreen=${fullscreen} position=${position}`);
-            const intermediate = frame((await current())!);
-            if (intermediate.some((value, index) => Math.abs(value - endpoint[index]!) > 2)) throw new Error(`automatic fade moved frame: ${endpoint} -> ${intermediate}`);
-          }
-          await settled(false);
           if ((await current())?.fullscreen !== "false") throw new Error("hidden profile retained fullscreen presentation");
           await command("app show_quake");await settled(true);
           if (!(await current())?.text?.includes(`READY:${identity}`)) throw new Error("animation replaced retained PTY");
@@ -409,13 +466,40 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
         await command("app show_quake");await settled(true);
         const opaquePixel = (await current())?.root_pixel;
-        await command("app hide_quake");
-        await waitFor(async () => {const opacity = Number((await current())?.opacity);return opacity > 0.2 && opacity < 0.8;},"observable intermediate native opacity");
-        const fading = (await current())!;
-        await settled(false);
-        const hiddenPixel = (await current())?.root_pixel;
-        if (!macos && (opaquePixel === fading.root_pixel || hiddenPixel === fading.root_pixel || opaquePixel === hiddenPixel)) throw new Error(`composed pixels did not prove fade: opaque=${opaquePixel}, intermediate=${fading.root_pixel}, hidden=${hiddenPixel}`);
-        console.log(`QUAKE_FADE ${engine} native-alpha=${fading.opacity} composed-pixels=${macos ? "native-alpha-only" : `${opaquePixel}/${fading.root_pixel}/${hiddenPixel}`}`);
+        let fading: State | undefined;
+        let hiddenPixel: string | undefined;
+        const fadePixels = await retryInconclusiveOnce(async attempt => {
+          if (attempt > 1) {
+            await command("app show_quake");
+            await settled(true);
+          }
+          const cursor = await traceCursor();
+          await command("app hide_quake");
+          let completed = false;
+          await waitFor(async () => {
+            const value = (await current())!;
+            const opacity = Number(value.opacity);
+            if (opacity > 0.2 && opacity < 0.8) fading = value;
+            const observations = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", false);
+            completed = Math.abs(observations.at(-1)?.progress ?? -1) < 0.001;
+            return fading !== undefined || completed;
+          }, "observable intermediate native opacity or completed fade trace");
+          if (!fading) {
+            await settled(false);
+            const observations = await completedTrace(cursor, false);
+            const verdict = analyzeFade(observations, false, frame((await current())!));
+            return verdict.status === "inconclusive" ? verdict : { status: "inconclusive" as const, reason: "native state publisher skipped the compositor sample" };
+          }
+          await settled(false);
+          hiddenPixel = (await current())?.root_pixel;
+          if (!macos && (opaquePixel === fading.root_pixel || hiddenPixel === fading.root_pixel || opaquePixel === hiddenPixel)) throw new Error(`composed pixels did not prove fade: opaque=${opaquePixel}, intermediate=${fading.root_pixel}, hidden=${hiddenPixel}`);
+          const observations = await completedTrace(cursor, false);
+          const intermediate = observations.find(observation => observation.progress > 0.2 && observation.progress < 0.8);
+          if (!intermediate) throw new Error("native compositor sample is missing from retained animation trace");
+          return { status: "passed" as const, intermediate };
+        });
+        if (fadePixels.attempts > 1) console.log(`QUAKE_RETRY ${engine} compositor-fade reason=publisher-gap`);
+        console.log(`QUAKE_FADE ${engine} native-alpha=${fading!.opacity} composed-pixels=${macos ? "native-alpha-only" : `${opaquePixel}/${fading!.root_pixel}/${hiddenPixel}`}`);
         await command("app show_quake");await settled(true);
         const grabDirectory = join(directory,"external-grab");
         await import("node:fs/promises").then(fs => fs.mkdir(grabDirectory));
@@ -457,27 +541,39 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await reload('hide_on_focus_loss = false\nanimation = "fade_slide_top"\nanimation_ms = 1000');
       await command("app show_quake");await settled(true);
       const reversalEndpoint = frame((await current())!);
-      await command("app hide_quake");
-      await waitFor(async () => {
-        const value = (await current())!;
-        const distance = reversalEndpoint[1] - frame(value)[1];
-        return value.stage === "Animate" && distance > reversalEndpoint[3] * 0.3 && distance < reversalEndpoint[3] * 0.6;
-      }, "native slide position before reversal");
-      const reversing = (await current())!;
-      const beforeReversal = frame(reversing);
-      await command("app show_quake");
-      const reversed = (await current())!;
-      const afterReversal = frame(reversed);
-      if (Math.abs(afterReversal[1] - beforeReversal[1]) > reversalEndpoint[3] * 0.2 || Math.abs(Number(reversed.opacity) - Number(reversing.opacity)) > 0.2) {
-        throw new Error(`reversal jumped instead of preserving position/opacity: ${beforeReversal}/${reversing.opacity} -> ${afterReversal}/${reversed.opacity}`);
-      }
-      await waitFor(async () => {
-        const value = (await current())!;
-        const y = frame(value)[1];
-        return value.stage === "Animate" && y > beforeReversal[1] + reversalEndpoint[3] * 0.1 && y < reversalEndpoint[1] - reversalEndpoint[3] * 0.05;
-      }, "native slide reverses toward its endpoint before settling");
-      await settled(true);
-      console.log(`QUAKE_REVERSAL ${engine} endpoint=${reversalEndpoint} before=${beforeReversal} after=${afterReversal} continuity=passed`);
+      let reversalBefore: QuakeObservation | undefined;
+      let reversalAfter: QuakeObservation | undefined;
+      const reversal = await retryInconclusiveOnce(async attempt => {
+        if (attempt > 1 && (await current())?.visible !== "true") {
+          await command("app show_quake");
+          await settled(true);
+        }
+        const cursor = await traceCursor();
+        await command("app hide_quake");
+        let hiding: QuakeObservation[] = [];
+        await waitFor(async () => {
+          hiding = observationsForLatestGeneration((await readQuakeTrace(traceFile)).slice(cursor), "default", false);
+          return hiding.some(observation => observation.progress > 0.3 && observation.progress < 0.6)
+            || Math.abs((hiding.at(-1)?.progress ?? -1)) < 0.001;
+        }, "native slide trace before reversal");
+        const midpoint = hiding.findLast(observation => observation.progress > 0.3 && observation.progress < 0.6);
+        if (!midpoint) {
+          await settled(false);
+          await command("app show_quake");
+          await settled(true);
+          return { status: "inconclusive" as const, reason: `scheduler skipped reversal point; largest gap=${Math.max(...hiding.map(observation => observation.scheduler_gap_us)) / 1000}ms` };
+        }
+        await command("app show_quake");
+        await settled(true);
+        const all = (await readQuakeTrace(traceFile)).slice(cursor);
+        hiding = observationsForLatestGeneration(all, "default", false);
+        const showing = observationsForLatestGeneration(all, "default", true);
+        reversalBefore = hiding.at(-1);
+        reversalAfter = showing[0];
+        return analyzeReversal(hiding, showing, { endpoint: reversalEndpoint, edge: "top", fade: true }, 1000);
+      });
+      if (reversal.attempts > 1) console.log(`QUAKE_RETRY ${engine} reversal reason=scheduler-gap`);
+      console.log(`QUAKE_REVERSAL ${engine} endpoint=${reversalEndpoint} before=${reversalBefore?.frame} after=${reversalAfter?.frame} continuity=passed`);
       {
         await reload('hide_on_focus_loss = false\nanimation_ms = 0', '[quake.profiles.scratch]\nfullscreen = true\nanimation_ms = 0');
         await command("app show_quake");await settled(true);
@@ -609,7 +705,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     if (app.exitCode === null) app.kill();
     await app.exited;
     await errors;
-    if (passed) await rm(directory, { recursive: true, force: true });
+    await finishFixture(directory, engine, passed, diagnostics);
   }
 }
 
@@ -646,15 +742,26 @@ export async function checkOrdinaryExit(executable: string, conflict = false, un
     passed = true;
     console.log(`QUAKE_NO_REGISTRATIONS ${conflict ? "startup-grab-conflict=reported " : ""}${unregister ? "zero-window-unregister-reload" : "final-window-close"}=application-exit`);
   } catch (error) {console.error(`Ordinary exit evidence: ${directory}\n${await Bun.file(join(directory, "state")).text().catch(() => "no state")}\n${diagnostics}`);throw error;}
-  finally {if (app.exitCode === null) app.kill();await app.exited;await errors;if (passed) await rm(directory,{recursive:true,force:true});}
+  finally {if (app.exitCode === null) app.kill();await app.exited;await errors;await finishFixture(directory,"ordinary",passed,diagnostics);}
 }
 
 if (import.meta.main) {
   const executable = resolve(process.argv[2] ?? "target/debug/examples/quake_smoke");
   const witnessExecutable = process.argv[3] ? resolve(process.argv[3]) : undefined;
   if (process.platform === "darwin" && !witnessExecutable) throw new Error("macOS quake smoke requires the separate native witness executable");
-  const wm = process.platform === "linux" ? Bun.spawn(["openbox", "--sm-disable"], { stdout: "ignore", stderr: "pipe" }) : undefined;
-  const compositor = process.platform === "linux" ? Bun.spawn(["xcompmgr", "-c"], { stdout: "ignore", stderr: "pipe" }) : undefined;
+  const wm = process.platform === "linux" ? Bun.spawn(["openbox", "--sm-disable"], { stdout: "pipe", stderr: "pipe" }) : undefined;
+  const compositor = process.platform === "linux" ? Bun.spawn(["xcompmgr", "-c"], { stdout: "pipe", stderr: "pipe" }) : undefined;
+  let wmOutput = "";
+  let compositorOutput = "";
+  const wmLogs = wm ? Promise.all([
+    collectStream(wm.stdout, text => wmOutput += text),
+    collectStream(wm.stderr, text => wmOutput += text),
+  ]) : Promise.resolve();
+  const compositorLogs = compositor ? Promise.all([
+    collectStream(compositor.stdout, text => compositorOutput += text),
+    collectStream(compositor.stderr, text => compositorOutput += text),
+  ]) : Promise.resolve();
+  let passed = false;
   try {
     if (wm) await waitFor(async () => run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).includes("window id"), "EWMH window manager");
     await checkHidden(executable);
@@ -663,5 +770,18 @@ if (import.meta.main) {
       await checkOrdinaryExit(executable);
       await checkOrdinaryExit(executable, false, true);
     }
-  } finally { compositor?.kill(); wm?.kill(); }
+    passed = true;
+  } finally {
+    compositor?.kill();
+    wm?.kill();
+    await Promise.all([wmLogs, compositorLogs]);
+    if (!passed && process.env.HUTERM_SMOKE_EVIDENCE_DIR) {
+      const target = join(process.env.HUTERM_SMOKE_EVIDENCE_DIR, "quake");
+      await mkdir(target, { recursive: true });
+      await Promise.all([
+        writeFile(join(target, "openbox.log"), wmOutput),
+        writeFile(join(target, "xcompmgr.log"), compositorOutput),
+      ]);
+    }
+  }
 }

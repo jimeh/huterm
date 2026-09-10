@@ -3,9 +3,12 @@
 use super::*;
 use crate::quake::ProfileExt;
 use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
-use std::{cell::Cell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+};
 
-#[derive(Default)]
 pub(super) struct Registry {
     platform: Option<native::Platform>,
     registrations: Option<hotkeys::Registrations>,
@@ -13,6 +16,78 @@ pub(super) struct Registry {
     return_focus: Option<native::Focus>,
     pump_running: bool,
     pub(super) failed_spawn: Option<(String, String)>,
+    smoke_journal: Option<SmokeJournal>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            platform: None,
+            registrations: None,
+            windows: BTreeMap::new(),
+            return_focus: None,
+            pump_running: false,
+            failed_spawn: None,
+            smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
+                .map(|_| SmokeJournal::new()),
+        }
+    }
+}
+
+const SMOKE_JOURNAL_CAPACITY: usize = 4096;
+
+struct SmokeJournal {
+    started: Instant,
+    observations: VecDeque<SmokeObservation>,
+}
+
+impl SmokeJournal {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            observations: VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, draft: SmokeObservationDraft) {
+        if self.observations.len() == SMOKE_JOURNAL_CAPACITY {
+            self.observations.pop_front();
+        }
+        self.observations.push_back(SmokeObservation {
+            monotonic_us: self.started.elapsed().as_micros(),
+            profile: draft.profile,
+            generation: draft.generation,
+            desired: draft.desired,
+            progress: draft.progress,
+            stage: draft.stage,
+            frame: draft.frame,
+            opacity: draft.opacity,
+            scheduler_gap_us: draft.scheduler_gap.as_micros(),
+        });
+    }
+}
+
+pub(super) struct SmokeObservation {
+    pub monotonic_us: u128,
+    pub profile: String,
+    pub generation: u64,
+    pub desired: bool,
+    pub progress: f64,
+    pub stage: &'static str,
+    pub frame: Rect,
+    pub opacity: f64,
+    pub scheduler_gap_us: u128,
+}
+
+struct SmokeObservationDraft {
+    profile: String,
+    generation: u64,
+    desired: bool,
+    progress: f64,
+    stage: &'static str,
+    frame: Rect,
+    opacity: f64,
+    scheduler_gap: Duration,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -87,6 +162,7 @@ pub(super) struct Presentation {
     recovering: bool,
     detach_requested: bool,
     observed_fullscreen: bool,
+    smoke_observations: bool,
 }
 impl Presentation {
     pub fn chrome_hidden(&self) -> bool {
@@ -158,6 +234,11 @@ struct NativeEffect {
     gate: Rc<Cell<u64>>,
     generation: u64,
     operations: Vec<NativeOp>,
+    observation: Option<SmokeObservationDraft>,
+}
+struct NativeEffectOutcome {
+    warning: Option<String>,
+    observation: Option<SmokeObservationDraft>,
 }
 impl NativeEffect {
     fn for_state(state: &Presentation, operations: Vec<NativeOp>) -> Self {
@@ -166,13 +247,41 @@ impl NativeEffect {
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
             operations,
+            observation: None,
         }
     }
-    fn run(self) -> anyhow::Result<Option<String>> {
+    fn for_transition(
+        state: &Presentation,
+        operations: Vec<NativeOp>,
+        progress: f64,
+        resulting_stage: Stage,
+        frame: Rect,
+        opacity: f64,
+        scheduler_gap: Duration,
+    ) -> Self {
+        let mut effect = Self::for_state(state, operations);
+        if state.smoke_observations {
+            effect.observation = Some(SmokeObservationDraft {
+                profile: state.name.clone(),
+                generation: state.generation.get(),
+                desired: state.transition.visible(),
+                progress,
+                stage: resulting_stage.name(),
+                frame,
+                opacity,
+                scheduler_gap,
+            });
+        }
+        effect
+    }
+    fn run(self) -> anyhow::Result<NativeEffectOutcome> {
         let mut warning = None;
         for operation in self.operations {
             if self.gate.get() != self.generation {
-                return Ok(warning);
+                return Ok(NativeEffectOutcome {
+                    warning,
+                    observation: None,
+                });
             }
             match operation {
                 NativeOp::Frame(frame) => self.native.set_frame(frame)?,
@@ -198,7 +307,24 @@ impl NativeEffect {
                 NativeOp::Failure(error) => return Err(error),
             }
         }
-        Ok(warning)
+        Ok(NativeEffectOutcome {
+            warning,
+            observation: self.observation,
+        })
+    }
+}
+
+impl Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prepare => "Prepare",
+            Self::Activate => "Activate",
+            Self::Windowed => "Windowed",
+            Self::Animate => "Animate",
+            Self::SettleVisible => "SettleVisible",
+            Self::SettleHidden => "SettleHidden",
+            Self::Idle => "Idle",
+        }
     }
 }
 
@@ -239,22 +365,36 @@ fn start_pump(cx: &mut App) {
                 break;
             };
             for (handle, effect) in effects {
-                let result = effect.run();
-                if let Ok(Some(warning)) = &result {
-                    let _ = cx.update(|cx| report(cx, warning));
-                }
-                if let Err(error) = result {
-                    let message = error.to_string();
-                    let recovery = cx
-                        .update(|cx| recover(cx, handle, &message))
-                        .ok()
-                        .flatten();
-                    if let Some(effect) = recovery
-                        && let Err(error) = effect.run()
-                    {
-                        eprintln!("Quake recovery: {error}");
+                match effect.run() {
+                    Ok(outcome) => {
+                        let _ = cx.update(|cx| {
+                            if let Some(observation) = outcome.observation
+                                && let Some(journal) = cx
+                                    .global_mut::<Desktop>()
+                                    .quake
+                                    .smoke_journal
+                                    .as_mut()
+                            {
+                                journal.record(observation);
+                            }
+                            if let Some(warning) = outcome.warning {
+                                report(cx, &warning);
+                            }
+                        });
                     }
-                    let _ = cx.update(|cx| report(cx, &message));
+                    Err(error) => {
+                        let message = error.to_string();
+                        let recovery = cx
+                            .update(|cx| recover(cx, handle, &message))
+                            .ok()
+                            .flatten();
+                        if let Some(effect) = recovery
+                            && let Err(error) = effect.run()
+                        {
+                            eprintln!("Quake recovery: {error}");
+                        }
+                        let _ = cx.update(|cx| report(cx, &message));
+                    }
                 }
             }
         }
@@ -504,6 +644,7 @@ pub(super) fn attach(
         recovering: false,
         detach_requested: false,
         observed_fullscreen: false,
+        smoke_observations: std::env::var_os("HUTERM_QUAKE_SMOKE").is_some(),
     })
 }
 
@@ -824,6 +965,7 @@ fn step(
             }
         }
         Stage::Animate => {
+            let scheduler_gap = state.transition.elapsed_since_sample(now);
             let progress = state.transition.sample(now, state.duration());
             let finished = state.transition.finished();
             let (fade, edge) = state.profile.effects();
@@ -872,7 +1014,15 @@ fn step(
                     operations.push(NativeOp::Opacity(1.0));
                 }
             }
-            Some(NativeEffect::for_state(state, operations))
+            Some(NativeEffect::for_transition(
+                state,
+                operations,
+                progress,
+                state.stage,
+                frame,
+                opacity,
+                scheduler_gap,
+            ))
         }
         Stage::SettleVisible => {
             let expected = state.profile.fullscreen && !regular;
@@ -1125,6 +1275,15 @@ pub(super) fn inspect_return_focus(cx: &App) -> anyhow::Result<String> {
     Ok(format!(
         "current_focus_id={current}\nreturn_focus_id={id}\nreturn_focus_gone={gone}"
     ))
+}
+
+pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
+    cx.global_mut::<Desktop>()
+        .quake
+        .smoke_journal
+        .as_mut()
+        .map(|journal| journal.observations.drain(..).collect())
+        .unwrap_or_default()
 }
 
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {

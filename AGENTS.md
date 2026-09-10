@@ -430,6 +430,10 @@ exit checks and benchmark budgets strict. Clear any satisfied pending scroll
 intent after authoritative completion, including absolute/live intents, so
 later invalidation cannot replay a stale target. Cargo must force the verified
 native source path and benchmark optimization over inherited environment values.
+The renderer smoke's initial paint can finish before GPUI starts the Linux event
+loop. Gate completion on every expected panel, then cross that startup boundary
+before requesting platform quit; a fixed post-launch readiness timer is not paint
+evidence.
 
 Build commands use `scripts/build-exec.sh` to select Xcode 26 when the default
 macOS SDK is 27 or newer. Zig 0.15.2 otherwise fails linking its own build runner
