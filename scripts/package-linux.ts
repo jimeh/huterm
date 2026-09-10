@@ -1,6 +1,7 @@
 /** Build and verify relocatable Linux tarballs and AppImages. */
 import { createHash } from "node:crypto";
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
@@ -16,7 +17,9 @@ interface ToolDefinition { version: string; x86_64: ToolAsset; aarch64: ToolAsse
 interface ToolManifest { version: number; tools: { appimagetool: ToolDefinition; runtime: ToolDefinition } }
 interface PrivateLibraryPolicy { licenseSource: string; licenseFile: string }
 interface NoticePolicy { source: string; target: string }
-interface PackagePolicy { version: number; privateLibraries: Record<string, PrivateLibraryPolicy>; hostLibraries: string[]; notices: NoticePolicy[] }
+interface AppImageNoticePolicy extends NoticePolicy { sourceUrl: string; sha256: string }
+interface AppImageEnvelopePolicy { noticeDirectory: string; symlinks: Record<string, string>; files: Record<string, string>; notices: AppImageNoticePolicy[] }
+interface PackagePolicy { version: number; privateLibraries: Record<string, PrivateLibraryPolicy>; hostLibraries: string[]; notices: NoticePolicy[]; appImageEnvelope: AppImageEnvelopePolicy }
 interface PrivateLibraryRecord { file: string; soname: string; sha256: string; binaryPackage: string; sourcePackage: string; packageVersion: string; licenseFile: string }
 interface PackageManifest { version: number; architecture: LinuxArchitecture; releaseCommit: string; sourceDateEpoch: number; tools: { appimagetool: string; runtime: string }; privateLibraries: PrivateLibraryRecord[] }
 interface CommandResult { stdout: string; stderr: string; exitCode: number }
@@ -87,6 +90,54 @@ export function highestRequiredGlibc(symbolTable: string): { required: string; w
   const highest = [...required].sort(compareVersions).at(-1) ?? "0.0";
   if (compareVersions(highest, maximumGlibc) > 0) throw new Error(`required GLIBC_${highest} exceeds ${maximumGlibc}`);
   return { required: highest, weak: [...weak].sort(compareVersions) };
+}
+
+export function validateGlibcVersionInfo(versionInfo: string, weakVersions: string[]): void {
+  const weak = new Set(weakVersions);
+  const tags = new Set([...versionInfo.matchAll(/\bName:\s+(GLIBC_[A-Za-z0-9_.-]+)/g)].map(match => match[1]!));
+  for (const tag of tags) {
+    const version = /^GLIBC_(\d+(?:\.\d+)+)$/.exec(tag)?.[1];
+    if (!version) throw new Error(`unsupported glibc version tag ${tag}`);
+    if (compareVersions(version, maximumGlibc) > 0 && !weak.has(version)) {
+      throw new Error(`required ${tag} exceeds ${maximumGlibc}`);
+    }
+  }
+}
+
+export function validateResolvedLibraryEntries(
+  bundle: string,
+  privateNames: string[],
+  hostNames: string[],
+  entries: Map<string, string>,
+): void {
+  const privateSet = new Set(privateNames);
+  const hostSet = new Set(hostNames);
+  const bundleRoot = `${resolve(bundle)}${sep}`;
+  for (const [name, filePath] of entries) {
+    const inside = resolve(filePath).startsWith(bundleRoot);
+    if (privateSet.has(name)) {
+      if (!inside) throw new Error(`${name} resolved outside the bundle: ${filePath}`);
+    } else if (hostSet.has(name)) {
+      if (inside) throw new Error(`host-owned ${name} resolved inside the bundle`);
+    } else {
+      throw new Error(`unclassified resolved dependency: ${name} => ${filePath}`);
+    }
+  }
+}
+
+export async function withPrivateExecutableCopy<T>(source: string, operation: (executable: string) => Promise<T>): Promise<T> {
+  const root = await mkdtemp(join(tmpdir(), "huterm-private-executable-"));
+  const executable = join(root, basename(source));
+  try {
+    const bytes = await readRegularFile(source);
+    const destination = await open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o700);
+    try {
+      await destination.writeFile(bytes);
+      await destination.sync();
+      await destination.chmod(0o700);
+    } finally { await destination.close(); }
+    return await operation(executable);
+  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 export function validateToolManifest(value: unknown): ToolManifest {
@@ -186,7 +237,21 @@ async function requireCommands(commands: string[]): Promise<void> {
   if (missing.length > 0) throw new Error(`Linux packaging requires: ${missing.join(", ")}`);
 }
 
-async function sha256(file: string): Promise<string> { return createHash("sha256").update(await readFile(file)).digest("hex"); }
+async function sha256(file: string): Promise<string> { return createHash("sha256").update(await readRegularFile(file)).digest("hex"); }
+async function readRegularFile(file: string): Promise<Buffer> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error(`${file} is not a regular file`);
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || BigInt(bytes.length) !== after.size) {
+      throw new Error(`${file} changed while it was being read`);
+    }
+    return bytes;
+  } finally { await handle.close(); }
+}
 function neededLibraries(dynamic: string): string[] { return [...dynamic.matchAll(/\(NEEDED\).*?\[([^\]]+)\]/g)].map(match => match[1]!).sort(); }
 function dynamicRunpath(dynamic: string): string {
   const matches = [...dynamic.matchAll(/\((?:RUNPATH|RPATH)\).*?\[([^\]]*)\]/g)].map(match => match[1]!);
@@ -203,9 +268,19 @@ function parseLdd(output: string): Map<string, string> {
   const resolved = new Map<string, string>();
   for (const line of output.split(/\r?\n/)) {
     const match = /^\s*(\S+)\s+=>\s+(\/\S+)\s+\(/.exec(line);
-    if (match) resolved.set(match[1]!, match[2]!);
+    if (match) {
+      resolved.set(match[1]!, match[2]!);
+      continue;
+    }
+    const direct = /^\s*(\/\S+)\s+\(/.exec(line);
+    if (direct) resolved.set(basename(direct[1]!), direct[1]!);
   }
   return resolved;
+}
+
+function safeLeaf(value: string, label: string): string {
+  if (value.includes("/") || value === "." || value === "..") throw new Error(`${label} must be a single path component`);
+  return value;
 }
 
 async function readPackagePolicy(): Promise<PackagePolicy> {
@@ -224,8 +299,41 @@ async function readPackagePolicy(): Promise<PackagePolicy> {
     const fields = record(item, `notices[${index}]`);
     return { source: stringField(fields, "source", `notices[${index}]`), target: stringField(fields, "target", `notices[${index}]`) };
   });
+  const envelopeValue = record(value.appImageEnvelope, "appImageEnvelope");
+  const noticeDirectory = safeLeaf(stringField(envelopeValue, "noticeDirectory", "appImageEnvelope"), "appImageEnvelope.noticeDirectory");
+  const symlinkValue = record(envelopeValue.symlinks, "appImageEnvelope.symlinks");
+  const symlinks: Record<string, string> = {};
+  for (const [name, targetValue] of Object.entries(symlinkValue)) {
+    const target = typeof targetValue === "string" ? targetValue : "";
+    safeLeaf(name, `appImageEnvelope symlink ${name}`);
+    if (!target || target.startsWith("/") || target.split("/").includes("..")) throw new Error(`unsafe AppImage symlink target ${target}`);
+    symlinks[name] = target;
+  }
+  const fileValue = record(envelopeValue.files, "appImageEnvelope.files");
+  const files: Record<string, string> = {};
+  for (const [name, sourceValue] of Object.entries(fileValue)) {
+    const source = typeof sourceValue === "string" ? sourceValue : "";
+    safeLeaf(name, `appImageEnvelope file ${name}`);
+    if (!source.startsWith("usr/") || source.split("/").includes("..")) throw new Error(`unsafe AppImage file source ${source}`);
+    files[name] = source;
+  }
+  const rootNames = [noticeDirectory, "usr", ...Object.keys(symlinks), ...Object.keys(files)];
+  if (new Set(rootNames).size !== rootNames.length) throw new Error("AppImage envelope root paths must be unique");
+  if (!Array.isArray(envelopeValue.notices)) throw new Error("appImageEnvelope.notices must be an array");
+  const envelopeNotices = envelopeValue.notices.map((item, index) => {
+    const fields = record(item, `appImageEnvelope.notices[${index}]`);
+    const source = stringField(fields, "source", `appImageEnvelope.notices[${index}]`);
+    const target = safeLeaf(stringField(fields, "target", `appImageEnvelope.notices[${index}]`), `appImageEnvelope.notices[${index}].target`);
+    const sourceUrl = stringField(fields, "sourceUrl", `appImageEnvelope.notices[${index}]`);
+    const digest = stringField(fields, "sha256", `appImageEnvelope.notices[${index}]`);
+    if (!source.startsWith("third-party/appimage-runtime/") || source.split("/").includes("..")) throw new Error(`unsafe AppImage notice source ${source}`);
+    if (new URL(sourceUrl).protocol !== "https:") throw new Error(`AppImage notice source must use HTTPS: ${sourceUrl}`);
+    if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error(`AppImage notice ${target} must have a lowercase SHA-256 digest`);
+    return { source, target, sourceUrl, sha256: digest };
+  });
+  if (new Set(envelopeNotices.map(notice => notice.target)).size !== envelopeNotices.length) throw new Error("AppImage notice targets must be unique");
   validateDependencyPolicy(Object.keys(privateLibraries), value.hostLibraries as string[], []);
-  return { version: 1, privateLibraries, hostLibraries: value.hostLibraries as string[], notices };
+  return { version: 1, privateLibraries, hostLibraries: value.hostLibraries as string[], notices, appImageEnvelope: { noticeDirectory, symlinks, files, notices: envelopeNotices } };
 }
 
 async function readToolManifest(): Promise<ToolManifest> { return validateToolManifest(JSON.parse(await readFile(toolManifestPath, "utf8"))); }
@@ -343,15 +451,10 @@ async function validateMetadata(bundle: string): Promise<void> {
 async function validateResolvedLibraries(bundle: string, binary: string, policy: PackagePolicy): Promise<void> {
   const privateNames = Object.keys(policy.privateLibraries);
   const files = [binary, ...(await readdir(join(bundle, "lib/huterm"))).map(name => join(bundle, "lib/huterm", name))];
-  const bundleRoot = `${resolve(bundle)}${sep}`;
   for (const file of files) {
     const output = (await runCaptured("ldd", [file])).stdout;
     if (output.includes("not found")) throw new Error(`unresolved dependency for ${relative(bundle, file)}: ${output}`);
-    for (const [name, filePath] of parseLdd(output)) {
-      const inside = resolve(filePath).startsWith(bundleRoot);
-      if (privateNames.includes(name) && !inside) throw new Error(`${name} resolved outside the bundle: ${filePath}`);
-      if (policy.hostLibraries.includes(name) && inside) throw new Error(`host-owned ${name} resolved inside the bundle`);
-    }
+    validateResolvedLibraryEntries(bundle, privateNames, policy.hostLibraries, parseLdd(output));
   }
 }
 
@@ -367,30 +470,60 @@ async function walkFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
+type TreeEntry = { file: string; kind: "file" | "symlink" };
+
+async function walkTreeEntries(root: string): Promise<TreeEntry[]> {
+  const entries: TreeEntry[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(file);
+      else if (entry.isFile()) entries.push({ file, kind: "file" });
+      else if (entry.isSymbolicLink()) entries.push({ file, kind: "symlink" });
+      else throw new Error(`${file} is not a regular file or symlink`);
+    }
+  }
+  await visit(root);
+  return entries.sort((left, right) => left.file.localeCompare(right.file));
+}
+
 async function verifyBundle(bundle: string, expectedVersion: string, expectedArchitecture: LinuxArchitecture): Promise<PackageManifest> {
   const policy = await readPackagePolicy();
   const tools = await readToolManifest();
   const binary = join(bundle, "bin/huterm");
-  const executable = await stat(binary);
-  if (!executable.isFile() || (executable.mode & 0o111) === 0) throw new Error("bin/huterm is missing or not executable");
-  assertElfArchitecture(await readFile(binary), expectedArchitecture);
+  const binaryHandle = await open(binary, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let binaryBytes: Buffer;
+  try {
+    const executable = await binaryHandle.stat();
+    if (!executable.isFile() || (executable.mode & 0o111) === 0) throw new Error("bin/huterm is missing or not executable");
+    binaryBytes = await binaryHandle.readFile();
+  } finally { await binaryHandle.close(); }
+  assertElfArchitecture(binaryBytes, expectedArchitecture);
   const dynamic = await readDynamic(binary);
   validateRunpath(dynamicRunpath(dynamic), "bin/huterm");
   const needed = neededLibraries(dynamic);
   validateDependencyPolicy(Object.keys(policy.privateLibraries), policy.hostLibraries, needed);
   if (needed.includes("libfreetype.so.6")) throw new Error("libfreetype.so.6 must not be a dynamic dependency");
   const glibc = highestRequiredGlibc((await runCaptured("objdump", ["-T", binary])).stdout);
+  validateGlibcVersionInfo((await runCaptured("readelf", ["-VW", binary])).stdout, glibc.weak);
   if (glibc.weak.length > 0) console.log(`weak GLIBC imports: ${glibc.weak.join(", ")}`);
   const manifest = validatePackageManifest(JSON.parse(await readFile(join(bundle, "share/huterm/package-manifest.json"), "utf8")));
   if (manifest.architecture !== expectedArchitecture) throw new Error(`package manifest architecture ${manifest.architecture}, expected ${expectedArchitecture}`);
   if (manifest.tools.appimagetool !== tools.tools.appimagetool.version || manifest.tools.runtime !== tools.tools.runtime.version) throw new Error("package manifest tool versions do not match the pinned tool manifest");
   const normalizedTimestamp = manifest.sourceDateEpoch * 1_000;
   for (const file of await walkFiles(bundle)) {
-    const metadata = await lstat(file);
-    if (metadata.isSymbolicLink()) throw new Error(`neutral payload contains an unexpected symlink: ${relative(bundle, file)}`);
+    const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let metadata;
+    let bytes;
+    try {
+      metadata = await handle.stat();
+      if (!metadata.isFile()) throw new Error(`neutral payload contains a non-regular file: ${relative(bundle, file)}`);
+      bytes = await handle.readFile();
+    } finally { await handle.close(); }
     const expectedMode = relative(bundle, file) === "bin/huterm" ? 0o755 : 0o644;
     if ((metadata.mode & 0o777) !== expectedMode) throw new Error(`${relative(bundle, file)} mode is not ${expectedMode.toString(8)}`);
     if (metadata.mtimeMs !== normalizedTimestamp) throw new Error(`${relative(bundle, file)} timestamp is not SOURCE_DATE_EPOCH`);
+    if (bytes.includes(Buffer.from(repoRoot))) throw new Error(`${relative(bundle, file)} contains the build path`);
   }
   if (!/^\d+\.\d+\.\d+$/.test(expectedVersion)) throw new Error(`invalid expected version ${expectedVersion}`);
   const recordedFiles = new Set(manifest.privateLibraries.map(library => library.file));
@@ -404,25 +537,26 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
     validateRunpath(dynamicRunpath(libraryDynamic), library.file, true);
     await stat(join(bundle, library.licenseFile));
     validateDependencyPolicy(Object.keys(policy.privateLibraries), policy.hostLibraries, neededLibraries(libraryDynamic));
+    const libraryGlibc = highestRequiredGlibc((await runCaptured("objdump", ["-T", file])).stdout);
+    validateGlibcVersionInfo((await runCaptured("readelf", ["-VW", file])).stdout, libraryGlibc.weak);
   }
   for (const notice of policy.notices) {
-    if (!(await readFile(join(bundle, "share/licenses/huterm", notice.target))).equals(await readFile(join(repoRoot, notice.source)))) throw new Error(`packaged notice differs: ${notice.target}`);
+    if (!(await readRegularFile(join(bundle, "share/licenses/huterm", notice.target))).equals(await readRegularFile(join(repoRoot, notice.source)))) throw new Error(`packaged notice differs: ${notice.target}`);
   }
-  for (const banned of ["AppRun", ".DirIcon", "app.huterm.dev.desktop", "app.huterm.dev.png"]) if (await Bun.file(join(bundle, banned)).exists()) throw new Error(`neutral bundle contains AppImage-only file: ${banned}`);
+  for (const banned of [...Object.keys(policy.appImageEnvelope.symlinks), ...Object.keys(policy.appImageEnvelope.files), policy.appImageEnvelope.noticeDirectory]) if (await Bun.file(join(bundle, banned)).exists()) throw new Error(`neutral bundle contains AppImage-only file: ${banned}`);
   await validateMetadata(bundle);
   await validateResolvedLibraries(bundle, binary, policy);
-  for (const file of await walkFiles(bundle)) if ((await readFile(file)).includes(Buffer.from(repoRoot))) throw new Error(`${relative(bundle, file)} contains the build path`);
   console.log(`verified neutral Linux bundle ${basename(bundle)} (${expectedVersion}, ${expectedArchitecture}, GLIBC_${glibc.required})`);
   return manifest;
 }
 
-async function validateTarEntries(tarball: string, expectedRoot: string): Promise<void> {
+async function validateTarEntries(tarball: string, expectedRoot: string, forbiddenRootEntries: string[]): Promise<void> {
   const entries = (await runCaptured("tar", ["-tzf", tarball])).stdout.split(/\r?\n/).filter(Boolean);
   if (entries.length === 0) throw new Error("tarball is empty");
   for (const entry of entries) {
     const parts = entry.replace(/\/$/, "").split("/");
     if (entry.startsWith("/") || parts.includes("..") || parts[0] !== expectedRoot) throw new Error(`unsafe tarball entry: ${entry}`);
-    if (["AppRun", ".DirIcon"].includes(parts.at(-1)!)) throw new Error(`tarball contains AppImage-only entry: ${entry}`);
+    if (parts.length > 1 && forbiddenRootEntries.includes(parts[1]!)) throw new Error(`tarball contains AppImage-only entry: ${entry}`);
   }
 }
 
@@ -438,26 +572,78 @@ async function cachedTool(name: "appimagetool" | "runtime", architecture: LinuxA
   const definition = manifest.tools[name];
   const asset = definition[architecture];
   const cacheRoot = process.env.HUTERM_APPIMAGE_CACHE_DIR ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "huterm/appimage-tools");
-  const destination = join(cacheRoot, `${name}-${definition.version}-${architecture}`);
+  const destination = join(cacheRoot, `${name}-${definition.version}-${architecture}-${asset.sha256}`);
   await mkdir(cacheRoot, { recursive: true });
-  if (await Bun.file(destination).exists()) {
+  try {
+    verifyToolBytes(await readRegularFile(destination), asset.sha256, `${name} ${architecture}`);
+    return destination;
+  } catch { await rm(destination, { force: true }); }
+  const quarantine = await mkdtemp(join(cacheRoot, ".download-"));
+  const downloaded = join(quarantine, "download");
+  try {
+    await runInherited("curl", ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--output", downloaded, asset.url]);
+    const handle = await open(downloaded, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      verifyToolBytes(await readFile(destination), asset.sha256, `${name} ${architecture}`);
-      if (name === "appimagetool") await chmod(destination, 0o755);
-      return destination;
-    } catch { await rm(destination, { force: true }); }
-  }
-  const response = await fetch(asset.url, { redirect: "follow" });
-  if (!response.ok) throw new Error(`download ${asset.url} failed with HTTP ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  verifyToolBytes(bytes, asset.sha256, `${name} ${architecture}`);
-  const temporary = `${destination}.${process.pid}.tmp`;
-  await writeFile(temporary, bytes, { mode: name === "appimagetool" ? 0o755 : 0o644 });
-  await rename(temporary, destination);
-  return destination;
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) throw new Error(`${name} ${architecture} download is not a regular file`);
+      verifyToolBytes(await handle.readFile(), asset.sha256, `${name} ${architecture}`);
+    } finally { await handle.close(); }
+    await chmod(downloaded, 0o644);
+    await rename(downloaded, destination);
+    return destination;
+  } finally { await rm(quarantine, { recursive: true, force: true }); }
 }
 
-async function createAppImage(bundle: string, version: string, architecture: LinuxArchitecture, sourceDateEpoch: number, output: string, manifest: ToolManifest): Promise<void> {
+async function stageAppImageEnvelope(appDir: string, sourceDateEpoch: number, policy: AppImageEnvelopePolicy): Promise<void> {
+  const noticeDirectory = join(appDir, policy.noticeDirectory);
+  await mkdir(noticeDirectory);
+  for (const notice of policy.notices) {
+    const source = join(repoRoot, notice.source);
+    const bytes = await readRegularFile(source);
+    verifyToolBytes(bytes, notice.sha256, notice.target);
+    await copyFile(source, join(noticeDirectory, notice.target));
+  }
+  await normalizeTreeMetadata(noticeDirectory, sourceDateEpoch);
+  for (const [name, target] of Object.entries(policy.symlinks)) await symlink(target, join(appDir, name));
+  for (const [name, source] of Object.entries(policy.files)) {
+    const destination = join(appDir, name);
+    await copyFile(join(appDir, source), destination);
+    await chmod(destination, 0o644);
+    const timestamp = new Date(sourceDateEpoch * 1_000);
+    await utimes(destination, timestamp, timestamp);
+  }
+}
+
+function expectedAppImageDesktop(source: Buffer, version: string): Buffer {
+  const text = source.toString("utf8");
+  if (/^X-AppImage-Version=/m.test(text)) throw new Error("neutral desktop entry must not contain X-AppImage-Version");
+  return Buffer.from(`${text}${text.endsWith("\n") ? "" : "\n"}X-AppImage-Version=${version}\n`);
+}
+
+async function validateAppImageEnvelope(appDir: string, version: string, policy: AppImageEnvelopePolicy): Promise<void> {
+  const rootEntries = (await readdir(appDir)).sort();
+  const expectedEntries = [...Object.keys(policy.symlinks), ...Object.keys(policy.files), policy.noticeDirectory, "usr"].sort();
+  if (rootEntries.join("\n") !== expectedEntries.join("\n")) throw new Error(`unexpected AppImage root entries: ${rootEntries.join(", ")}`);
+  for (const [name, target] of Object.entries(policy.symlinks)) {
+    if ((await readlink(join(appDir, name))) !== target) throw new Error(`${name} must be a relative symlink to ${target}`);
+  }
+  for (const [name, source] of Object.entries(policy.files)) {
+    const [actual, neutral] = await Promise.all([readRegularFile(join(appDir, name)), readRegularFile(join(appDir, source))]);
+    const expected = name.endsWith(".desktop") ? expectedAppImageDesktop(neutral, version) : neutral;
+    if (!actual.equals(expected)) throw new Error(`${name} does not have the exact declared envelope contents`);
+  }
+  const noticeDirectory = join(appDir, policy.noticeDirectory);
+  const actualNotices = (await readdir(noticeDirectory)).sort();
+  const expectedNotices = policy.notices.map(notice => notice.target).sort();
+  if (actualNotices.join("\n") !== expectedNotices.join("\n")) throw new Error(`unexpected AppImage notice entries: ${actualNotices.join(", ")}`);
+  for (const notice of policy.notices) {
+    const source = await readRegularFile(join(repoRoot, notice.source));
+    verifyToolBytes(source, notice.sha256, notice.target);
+    if (!(await readRegularFile(join(noticeDirectory, notice.target))).equals(source)) throw new Error(`AppImage notice differs: ${notice.target}`);
+  }
+}
+
+async function createAppImage(bundle: string, version: string, architecture: LinuxArchitecture, sourceDateEpoch: number, output: string, manifest: ToolManifest, policy: PackagePolicy): Promise<void> {
   const appDirRoot = await mkdtemp(join(tmpdir(), "huterm-appdir-"));
   const appDir = join(appDirRoot, "Huterm.AppDir");
   try {
@@ -467,20 +653,18 @@ async function createAppImage(bundle: string, version: string, architecture: Lin
     await cp(join(bundle, "share"), join(appDir, "usr/share"), { recursive: true, preserveTimestamps: true });
     await copyFile(join(bundle, "README.md"), join(appDir, "usr/README.md"));
     await normalizeTreeMetadata(join(appDir, "usr"), sourceDateEpoch);
-    await symlink("usr/bin/huterm", join(appDir, "AppRun"));
-    await symlink("usr/share/applications/app.huterm.dev.desktop", join(appDir, "app.huterm.dev.desktop"));
-    await symlink("usr/share/icons/hicolor/512x512/apps/app.huterm.dev.png", join(appDir, "app.huterm.dev.png"));
-    await symlink("app.huterm.dev.png", join(appDir, ".DirIcon"));
+    await stageAppImageEnvelope(appDir, sourceDateEpoch, policy.appImageEnvelope);
     const appimagetool = await cachedTool("appimagetool", architecture, manifest);
     const runtime = await cachedTool("runtime", architecture, manifest);
-    await runInherited(appimagetool, ["--runtime-file", runtime, appDir, output], { env: {
-      APPIMAGE_EXTRACT_AND_RUN: "1", ARCH: architecture, SOURCE_DATE_EPOCH: String(sourceDateEpoch), VERSION: version,
-    } });
+    await withPrivateExecutableCopy(appimagetool, executable =>
+      runInherited(executable, ["--runtime-file", runtime, appDir, output], { env: {
+        APPIMAGE_EXTRACT_AND_RUN: "1", ARCH: architecture, SOURCE_DATE_EPOCH: String(sourceDateEpoch), VERSION: version,
+      } }));
   } finally { await rm(appDirRoot, { recursive: true, force: true }); }
 }
 
-async function extractTarball(tarball: string, expectedRoot: string): Promise<{ root: string; bundle: string }> {
-  await validateTarEntries(tarball, expectedRoot);
+async function extractTarball(tarball: string, expectedRoot: string, forbiddenRootEntries: string[]): Promise<{ root: string; bundle: string }> {
+  await validateTarEntries(tarball, expectedRoot, forbiddenRootEntries);
   const root = await mkdtemp(join(tmpdir(), "huterm-tarball-"));
   await runInherited("tar", ["-xzf", tarball, "-C", root]);
   return { root, bundle: join(root, expectedRoot) };
@@ -488,24 +672,32 @@ async function extractTarball(tarball: string, expectedRoot: string): Promise<{ 
 
 async function extractAppImage(appImage: string): Promise<{ root: string; appDir: string }> {
   const root = await mkdtemp(join(tmpdir(), "huterm-appimage-"));
-  await runInherited(appImage, ["--appimage-extract"], { cwd: root });
-  return { root, appDir: join(root, "squashfs-root") };
+  try {
+    await withPrivateExecutableCopy(appImage, executable => runInherited(executable, ["--appimage-extract"], { cwd: root }));
+    return { root, appDir: join(root, "squashfs-root") };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
-async function compareTrees(left: string, right: string): Promise<void> {
-  const leftFiles = await walkFiles(left);
-  const rightFiles = await walkFiles(right);
-  const leftNames = leftFiles.map(file => relative(left, file));
-  const rightNames = rightFiles.map(file => relative(right, file));
+export async function compareTrees(left: string, right: string): Promise<void> {
+  const leftFiles = await walkTreeEntries(left);
+  const rightFiles = await walkTreeEntries(right);
+  const leftNames = leftFiles.map(entry => relative(left, entry.file));
+  const rightNames = rightFiles.map(entry => relative(right, entry.file));
   if (leftNames.join("\n") !== rightNames.join("\n")) throw new Error("AppImage and tarball neutral payload file lists differ");
   for (let index = 0; index < leftFiles.length; index++) {
-    const leftPath = leftFiles[index]!;
-    const rightPath = rightFiles[index]!;
-    const [leftEntry, rightEntry] = await Promise.all([lstat(leftPath), lstat(rightPath)]);
-    if (leftEntry.isSymbolicLink() !== rightEntry.isSymbolicLink()) throw new Error(`${leftNames[index]} file types differ`);
-    if (leftEntry.isSymbolicLink()) {
-      if (await readlink(leftPath) !== await readlink(rightPath)) throw new Error(`${leftNames[index]} symlink targets differ`);
-    } else if (!(await readFile(leftPath)).equals(await readFile(rightPath))) throw new Error(`${leftNames[index]} bytes differ between AppImage and tarball`);
+    const leftEntry = leftFiles[index]!;
+    const rightEntry = rightFiles[index]!;
+    if (leftEntry.kind !== rightEntry.kind) throw new Error(`${leftNames[index]} types differ between AppImage and tarball`);
+    if (leftEntry.kind === "symlink") {
+      const [leftTarget, rightTarget] = await Promise.all([readlink(leftEntry.file), readlink(rightEntry.file)]);
+      if (leftTarget !== rightTarget) throw new Error(`${leftNames[index]} symlink targets differ between AppImage and tarball`);
+    } else {
+      const [leftBytes, rightBytes] = await Promise.all([readRegularFile(leftEntry.file), readRegularFile(rightEntry.file)]);
+      if (!leftBytes.equals(rightBytes)) throw new Error(`${leftNames[index]} bytes differ between AppImage and tarball`);
+    }
   }
 }
 
@@ -529,21 +721,21 @@ async function runPackageSmoke(executable: string, evidenceDirectory?: string, e
 
 async function verifyArtifacts(appImage: string, tarball: string, version: string, architecture: LinuxArchitecture, smoke = false): Promise<void> {
   const expectedRoot = `Huterm-${version}-Linux-${architecture}`;
-  assertElfArchitecture(await readFile(appImage), architecture);
-  const tar = await extractTarball(tarball, expectedRoot);
+  const policy = await readPackagePolicy();
+  assertElfArchitecture(await readRegularFile(appImage), architecture);
+  const forbiddenRootEntries = [...Object.keys(policy.appImageEnvelope.symlinks), ...Object.keys(policy.appImageEnvelope.files), policy.appImageEnvelope.noticeDirectory];
+  const tar = await extractTarball(tarball, expectedRoot, forbiddenRootEntries);
   const image = await extractAppImage(appImage);
   try {
     await verifyBundle(tar.bundle, version, architecture);
     await verifyBundle(join(image.appDir, "usr"), version, architecture);
-    const rootEntries = (await readdir(image.appDir)).sort();
-    const expectedEntries = [".DirIcon", "AppRun", "app.huterm.dev.desktop", "app.huterm.dev.png", "usr"].sort();
-    if (rootEntries.join("\n") !== expectedEntries.join("\n")) throw new Error(`unexpected AppImage root entries: ${rootEntries.join(", ")}`);
-    if ((await readlink(join(image.appDir, "AppRun"))) !== "usr/bin/huterm") throw new Error("AppRun must be a relative symlink to usr/bin/huterm");
+    await validateAppImageEnvelope(image.appDir, version, policy.appImageEnvelope);
     await compareTrees(tar.bundle, join(image.appDir, "usr"));
     if (smoke) {
       const evidence = process.env.HUTERM_PACKAGE_EVIDENCE_DIR;
       await runPackageSmoke(join(tar.bundle, "bin/huterm"), evidence ? join(evidence, "tarball") : undefined);
-      await runPackageSmoke(appImage, evidence ? join(evidence, "appimage") : undefined, { APPIMAGE_EXTRACT_AND_RUN: "1" });
+      await withPrivateExecutableCopy(appImage, executable =>
+        runPackageSmoke(executable, evidence ? join(evidence, "appimage") : undefined, { APPIMAGE_EXTRACT_AND_RUN: "1" }));
     }
   } finally { await Promise.all([rm(tar.root, { recursive: true, force: true }), rm(image.root, { recursive: true, force: true })]); }
   console.log(`verified ${basename(appImage)} and ${basename(tarball)} share the same neutral payload`);
@@ -569,7 +761,7 @@ async function sourceIdentity(): Promise<{ releaseCommit: string; sourceDateEpoc
 
 async function build(version: string, architecture: LinuxArchitecture): Promise<void> {
   if (process.platform !== "linux") throw new Error("Linux packaging requires a Linux host");
-  await requireCommands(["appstreamcli", "desktop-file-validate", "dpkg-query", "gzip", "ldd", "objdump", "patchelf", "readelf", "tar"]);
+  await requireCommands(["appstreamcli", "curl", "desktop-file-validate", "dpkg-query", "gzip", "ldd", "objdump", "patchelf", "readelf", "tar"]);
   const tools = await readToolManifest();
   const policy = await readPackagePolicy();
   const identity = await sourceIdentity();
@@ -594,7 +786,7 @@ async function build(version: string, architecture: LinuxArchitecture): Promise<
     await stageBundle(bundle, executable, architecture, identity.sourceDateEpoch, identity.releaseCommit, tools, policy);
     await verifyBundle(bundle, version, architecture);
     await createTarball(staging, bundleName, identity.sourceDateEpoch, stagedTarball);
-    await createAppImage(bundle, version, architecture, identity.sourceDateEpoch, stagedAppImage, tools);
+    await createAppImage(bundle, version, architecture, identity.sourceDateEpoch, stagedAppImage, tools, policy);
     const evidence = join(outputDirectory, "package-evidence");
     await rm(evidence, { recursive: true, force: true });
     await mkdir(evidence, { recursive: true });

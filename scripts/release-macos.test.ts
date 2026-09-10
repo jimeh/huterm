@@ -75,6 +75,7 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
         ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,
         GITHUB_EVENT_NAME: event, GITHUB_REF: ref, GITHUB_SHA: inputs.sha,
         RELEASE_SHA: sha, GITHUB_REPOSITORY: "fixture/huterm", TEST_MAIN_STATUS: status,
+        GITHUB_OUTPUT: join(directory, "source-output"),
       } });
       expect(result.exitCode, `${publish} ${event} ${ref} ${sha}: ${result.stderr}`).toBe(expected);
     }

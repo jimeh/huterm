@@ -171,6 +171,14 @@ dependency and ship the FreeType License notice when that static fallback is
 present.
 Canonicalize `ldd` paths before passing them to `dpkg-query -S`. Ubuntu's
 usrmerged loader can report `/lib/...` while dpkg records only `/usr/lib/...`.
+Keep the Linux package builder on Ubuntu 22.04 while the published ABI ceiling
+is glibc 2.35. Ubuntu 24.04's `libxkbcommon.so.0` requires the C23
+`strtol`/`strtoul` symbols from GLIBC_2.38, so bundling it breaks that contract
+even when the Huterm executable itself stays within the ceiling.
+The pinned AppImage type-2 runtime 20251108 statically contains musl 1.2.5,
+libfuse 3.15.0, squashfuse 0.5.2, zstd 1.5.6, zlib 1.3.1, and mimalloc 2.1.7.
+Keep their exact-tag notices in the declared AppImage envelope outside `usr`;
+the neutral tarball must not contain them.
 The AppImage type-2 launcher can hand execution to another PID. PID-bound X11
 package smokes must resolve the real process from the isolated Huterm window;
 `xdotool --pid` cannot reliably follow a direct AppImage launch.

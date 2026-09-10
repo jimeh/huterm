@@ -1,5 +1,5 @@
-# Ubuntu 24.04 multi-platform index, published 2026-08-10.
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+# Ubuntu 22.04 multi-platform index, published 2026-09-01.
+FROM ubuntu:22.04@sha256:829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

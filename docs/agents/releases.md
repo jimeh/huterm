@@ -39,9 +39,11 @@ and workflow logs.
 The release workflow separates validation, native platform builds, and final
 assembly:
 
-1. A credential-free preflight checks out the exact Release Please SHA, confirms
-   that `origin/main` contains it, and validates the tag, draft target, Cargo
-   package versions, and committed schemas.
+1. The preflight validates the requested SHA before checkout, revalidates the
+   checked-out source, Cargo package versions, and committed schemas, then emits
+   the SHA used by every build job. Publishing mode subsequently mints a
+   short-lived token to validate the exact tag and draft target; manual
+   verification does not receive that release credential.
 2. An Apple Silicon runner builds the universal `Huterm.app`, imports the
    Developer ID identity, signs every Mach-O and the app, notarizes and staples
    it, then runs Gatekeeper. It uploads the public ZIP and a digest manifest as
@@ -110,8 +112,12 @@ publish if the draft contains any unexpected asset.
 Both Linux formats contain the same neutral payload: `bin/huterm`, the desktop
 entry, AppStream metadata, the 512-pixel icon, package provenance, and third-party
 notices. The tarball does not contain `AppRun`, `.DirIcon`, an AppImage runtime,
-or other AppImage-only files. The AppImage adds only its launch envelope around
-that byte-identical payload.
+its redistribution notices, or other AppImage-only files. The AppImage adds a
+declared launch envelope around that byte-identical payload. The envelope holds
+only three launcher/icon symlinks, a root copy of the desktop entry with
+appimagetool's exact `X-AppImage-Version` addition, and exact-tag notices for the
+type-2 runtime, musl, libfuse, squashfuse, zstd, zlib, and mimalloc. Package
+verification rejects any other envelope path or changed bytes.
 
 Linux releases require x86_64 or aarch64, glibc 2.35 or newer, X11 or XWayland,
 and a working Vulkan driver. The package privately carries only the xkbcommon

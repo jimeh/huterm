@@ -199,7 +199,9 @@ Create a temporary AppDir by copying the neutral bundle directories under
 
 - `AppRun` as a relative symlink to `usr/bin/huterm`, avoiding a shell runtime
   dependency and preserving the executable's relative runpath;
-- the required root desktop-file and icon symlinks;
+- the required root desktop file, matching its neutral-payload source plus
+  appimagetool's `X-AppImage-Version` field;
+- the required root icon symlink;
 - `.DirIcon`; and
 - the architecture-matched type-2 runtime during image creation.
 

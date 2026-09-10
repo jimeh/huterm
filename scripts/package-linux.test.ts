@@ -1,18 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   assertElfArchitecture,
+  compareTrees,
   highestRequiredGlibc,
   normalizeLinuxArchitecture,
   normalizeTreeMetadata,
+  validateGlibcVersionInfo,
   validateDependencyPolicy,
   validatePackageManifest,
+  validateResolvedLibraryEntries,
   validateRunpath,
   validateToolManifest,
   verifyToolBytes,
+  withPrivateExecutableCopy,
 } from "./package-linux.ts";
+
+const repoRoot = resolve(import.meta.dir, "..");
 
 describe("Linux package policy", () => {
   test("normalizes payload modes and timestamps", async () => {
@@ -82,6 +88,93 @@ describe("Linux package policy", () => {
     ].join("\n");
     expect(highestRequiredGlibc(table)).toEqual({ required: "2.35", weak: ["2.39"] });
     expect(() => highestRequiredGlibc(table.replace("GLIBC_2.35", "GLIBC_2.36"))).toThrow("exceeds 2.35");
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_2.39  Flags: none", ["2.39"])).not.toThrow();
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_2.36  Flags: none", [])).toThrow("GLIBC_2.36");
+    expect(() => validateGlibcVersionInfo("Name: GLIBC_ABI_DT_RELR  Flags: none", [])).toThrow("GLIBC_ABI_DT_RELR");
+  });
+
+  test("rejects unknown complete ldd entries, including transitive libraries", () => {
+    const bundle = "/tmp/Huterm";
+    expect(() => validateResolvedLibraryEntries(
+      bundle,
+      ["libxkbcommon.so.0"],
+      ["libc.so.6"],
+      new Map([
+        ["libxkbcommon.so.0", `${bundle}/lib/huterm/libxkbcommon.so.0`],
+        ["libc.so.6", "/usr/lib/libc.so.6"],
+      ]),
+    )).not.toThrow();
+    expect(() => validateResolvedLibraryEntries(
+      bundle,
+      ["libxkbcommon.so.0"],
+      ["libc.so.6"],
+      new Map([["libcrypto.so.3", "/usr/lib/libcrypto.so.3"]]),
+    )).toThrow("unclassified resolved dependency: libcrypto.so.3");
+  });
+
+  test("runs a private executable copy without changing downloaded AppImage bytes or mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "huterm-appimage-mode-"));
+    const source = join(root, "Huterm.AppImage");
+    const bytes = Buffer.from("downloaded AppImage fixture");
+    try {
+      await writeFile(source, bytes);
+      await chmod(source, 0o644);
+      await withPrivateExecutableCopy(source, async executable => {
+        expect(executable).not.toBe(source);
+        expect((await stat(executable)).mode & 0o777).toBe(0o700);
+        expect(await readFile(executable)).toEqual(bytes);
+      });
+      expect((await stat(source)).mode & 0o777).toBe(0o644);
+      expect(await readFile(source)).toEqual(bytes);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  test("compares regular files and symlinks in neutral payloads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "huterm-package-trees-"));
+    const left = join(root, "left");
+    const right = join(root, "right");
+    try {
+      await Promise.all([mkdir(left), mkdir(right)]);
+      await Promise.all([writeFile(join(left, "huterm"), "binary"), writeFile(join(right, "huterm"), "binary")]);
+      await Promise.all([symlink("huterm", join(left, "AppRun")), symlink("huterm", join(right, "AppRun"))]);
+      await expect(compareTrees(left, right)).resolves.toBeUndefined();
+      await rm(join(right, "AppRun"));
+      await symlink("missing", join(right, "AppRun"));
+      await expect(compareTrees(left, right)).rejects.toThrow("symlink targets differ");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  test("declares exact tagged redistribution notices outside the neutral payload", async () => {
+    const policy = JSON.parse(await readFile(join(repoRoot, "assets/linux/package-policy.json"), "utf8")) as {
+      appImageEnvelope?: { noticeDirectory?: string; symlinks?: Record<string, string>; files?: Record<string, string>; notices?: { source: string; target: string; sourceUrl: string; sha256: string }[] };
+    };
+    expect(policy.appImageEnvelope?.noticeDirectory).toBe("appimage-runtime-notices");
+    expect(policy.appImageEnvelope?.symlinks).toEqual({
+      AppRun: "usr/bin/huterm",
+      "app.huterm.dev.png": "usr/share/icons/hicolor/512x512/apps/app.huterm.dev.png",
+      ".DirIcon": "app.huterm.dev.png",
+    });
+    expect(policy.appImageEnvelope?.files).toEqual({
+      "app.huterm.dev.desktop": "usr/share/applications/app.huterm.dev.desktop",
+    });
+    const notices = policy.appImageEnvelope?.notices ?? [];
+    expect(notices).toHaveLength(7);
+    const sourceRefs: Record<string, string> = {
+      "type2-runtime-20251108-LICENSE": "20251108",
+      "musl-1.2.5-COPYRIGHT": "v1.2.5",
+      "libfuse-3.15.0-LGPL2.txt": "fuse-3.15.0",
+      "squashfuse-0.5.2-LICENSE": "0.5.2",
+      "zstd-1.5.6-LICENSE": "v1.5.6",
+      "zlib-1.3.1-LICENSE": "v1.3.1",
+      "mimalloc-2.1.7-LICENSE": "v2.1.7",
+    };
+    for (const notice of notices) {
+      expect(notice.sourceUrl).toStartWith("https://");
+      expect(notice.sourceUrl).toContain(sourceRefs[notice.target]!);
+      const bytes = await readFile(join(repoRoot, notice.source));
+      expect(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")).toBe(notice.sha256);
+      expect(notice.target).not.toContain("/");
+    }
   });
 
   test("requires pinned tool URLs and valid SHA-256 digests", () => {
