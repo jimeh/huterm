@@ -24,6 +24,30 @@ enum Stage {
     Idle,
 }
 
+#[derive(Default)]
+struct Activation {
+    seen: bool,
+    requested: bool,
+}
+impl Activation {
+    fn request(&mut self) {
+        self.seen = false;
+        self.requested = true;
+    }
+
+    fn observe(&mut self, active: bool) {
+        if active {
+            self.seen = true;
+        } else if self.seen {
+            self.requested = false;
+        }
+    }
+
+    fn take_request(&mut self) -> bool {
+        std::mem::take(&mut self.requested)
+    }
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent focus, recovery, and presentation facts accompany the transition state"
@@ -40,10 +64,9 @@ pub(super) struct Presentation {
     transition: Transition,
     stage: Stage,
     deadline: Instant,
-    focus_seen: bool,
+    activation: Activation,
     suppress_blur: Instant,
     last_display_check: Instant,
-    focus_requested: bool,
     restore_focus: bool,
     fade_supported: bool,
     recovering: bool,
@@ -84,12 +107,20 @@ impl Presentation {
         self.transition.retarget(visible, now, self.duration());
         self.stage = Stage::Prepare;
         self.deadline = now + Duration::from_secs(3);
-        self.focus_requested = visible;
+        self.activation.requested = visible;
         if visible {
-            self.focus_seen = false;
+            self.activation.request();
             self.suppress_blur = now + Duration::from_millis(200);
         }
         self.restore_focus = restore_focus;
+    }
+
+    fn refit(&mut self) {
+        let focus_seen = self.activation.seen;
+        self.request(self.transition.visible(), false);
+        // Work-area changes do not constitute a new summon or activation.
+        self.activation.requested = false;
+        self.activation.seen = focus_seen;
     }
 }
 
@@ -117,10 +148,11 @@ impl NativeEffect {
             operations,
         }
     }
-    fn run(self) -> anyhow::Result<()> {
+    fn run(self) -> anyhow::Result<Option<String>> {
+        let mut warning = None;
         for operation in self.operations {
             if self.gate.get() != self.generation {
-                return Ok(());
+                return Ok(warning);
             }
             match operation {
                 NativeOp::Frame(frame) => self.native.set_frame(frame)?,
@@ -136,14 +168,17 @@ impl NativeEffect {
                     if was_active
                         && self.gate.get() == self.generation
                         && let Some((platform, target)) = target
+                        && let Err(error) = platform.focus(&target)
                     {
-                        platform.focus(&target)?;
+                        warning = Some(format!(
+                            "focus restoration failed after hiding: {error}"
+                        ));
                     }
                 }
                 NativeOp::Failure(error) => return Err(error),
             }
         }
-        Ok(())
+        Ok(warning)
     }
 }
 
@@ -184,7 +219,11 @@ fn start_pump(cx: &mut App) {
                 break;
             };
             for (handle, effect) in effects {
-                if let Err(error) = effect.run() {
+                let result = effect.run();
+                if let Ok(Some(warning)) = &result {
+                    let _ = cx.update(|cx| report(cx, warning));
+                }
+                if let Err(error) = result {
                     let message = error.to_string();
                     let recovery = cx
                         .update(|cx| recover(cx, handle, &message))
@@ -424,10 +463,12 @@ pub(super) fn attach(
         transition,
         stage: Stage::Prepare,
         deadline: now + Duration::from_secs(3),
-        focus_seen: false,
+        activation: Activation {
+            seen: false,
+            requested: true,
+        },
         suppress_blur: now + Duration::from_millis(200),
         last_display_check: now,
-        focus_requested: true,
         restore_focus: false,
         fade_supported,
         recovering: false,
@@ -559,8 +600,7 @@ fn recover(
                 state.recovering = true;
                 state.regular = true;
                 state.deadline = now + Duration::from_secs(3);
-                state.focus_requested = true;
-                state.focus_seen = false;
+                state.activation.request();
                 let effect = NativeEffect::for_state(
                     state,
                     vec![NativeOp::Opacity(1.0)],
@@ -627,16 +667,14 @@ fn step(
             ));
         }
     };
-    if active {
-        state.focus_seen = true;
-    }
+    state.activation.observe(active);
     if view.close.confirmation.is_some() && !state.transition.visible() {
         state.request(true, false);
     }
     if !state.regular
         && state.profile.hide_on_focus_loss
         && state.transition.visible()
-        && state.focus_seen
+        && state.activation.seen
         && !active
         && now >= state.suppress_blur
         && view.close.confirmation.is_none()
@@ -662,7 +700,7 @@ fn step(
                     // Presentation leases can change the work area mid-transition.
                     // Preserve active progress and its original failure deadline.
                     if state.stage == Stage::Idle {
-                        state.request(state.transition.visible(), false);
+                        state.refit();
                     }
                 }
             }
@@ -757,7 +795,7 @@ fn step(
             } else {
                 1.0
             };
-            let focus = std::mem::take(&mut state.focus_requested);
+            let focus = state.activation.take_request();
             let fullscreen = state.profile.fullscreen && !regular;
             let return_focus =
                 if finished && !showing && state.restore_focus && active {
@@ -797,7 +835,9 @@ fn step(
             let expected = state.profile.fullscreen && !regular;
             let settled = (|| -> anyhow::Result<bool> {
                 Ok(native.visible()?
-                    && native.active()?
+                    // Initial activation must succeed, but a later app switch
+                    // does not invalidate the requested visible geometry.
+                    && state.activation.seen
                     && native.fullscreen()? == expected
                     && (regular || near(native.frame()?, state.target)))
             })();
@@ -1049,4 +1089,31 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
         }
     }
     states
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Activation;
+
+    #[test]
+    fn observed_app_switch_cancels_activation_still_waiting_to_run() {
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(true);
+        activation.observe(false);
+        assert!(!activation.take_request());
+        assert!(activation.seen, "initial activation remains successful");
+    }
+
+    #[test]
+    fn unfocused_observation_before_initial_activation_keeps_the_request() {
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(false);
+        assert!(activation.take_request());
+        assert!(!activation.seen, "initial activation is still required");
+        activation.observe(true);
+        activation.request();
+        assert!(!activation.seen, "a new summon needs fresh activation");
+    }
 }

@@ -2378,6 +2378,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 }
                 let reserved = bind_keymap(cx, compiled);
                 cx.global_mut::<Desktop>().reserved = reserved;
+                maybe_exit(cx);
                 (config, family, metrics)
             });
             if let Err(error) = &result {

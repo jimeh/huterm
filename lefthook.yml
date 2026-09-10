@@ -12,7 +12,7 @@ pre-commit:
       run: mise run check:rust:analysis
 
     - name: markdown
-      glob: "**/*.md"
+      glob: "{*.md,**/*.md}"
       exclude:
         - "third-party/vendor/gpui-0.2.2/**"
         - "third-party/vendor/global-hotkey-0.8.0/**"

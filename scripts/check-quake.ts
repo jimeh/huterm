@@ -1,5 +1,5 @@
 /** Exercise production quake commands through real global shortcuts. */
-import { mkdtemp, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseState, type State } from "./check-fullscreen";
@@ -26,6 +26,11 @@ function profile(state: State, name: string): State | undefined {
   if (!entry) return;
   const prefix = entry[0].slice(0, -"profile".length);
   return Object.fromEntries(Object.entries(state).filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key.slice(prefix.length), value]));
+}
+function frame(value: State): [number, number, number, number] {
+  const coordinates = value.frame?.split(",").map(Number);
+  if (coordinates?.length !== 4 || coordinates.some(number => !Number.isFinite(number))) throw new Error(`invalid native frame: ${value.frame}`);
+  return coordinates as [number, number, number, number];
 }
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -177,13 +182,73 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       if ((await current())?.visible !== "true") throw new Error("disabled blur hiding ignored");
       await hotkey();await settled(true);
       if ((await current())?.active !== "true") throw new Error("visible unfocused toggle did not raise");
+      const departedDirectory = join(directory, "departed-witness");
+      await mkdir(departedDirectory);
+      const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "ignore"});
+      try {
+        if (macos) {
+          await waitFor(() => Bun.file(join(departedDirectory, "witness-ready")).exists(), "temporary AppKit witness");
+          await publishCommand(join(departedDirectory, "witness-command-0"), "focus");
+          await waitFor(async () => parseState(await readFile(join(departedDirectory, "witness-state"), "utf8")).active === "true", "temporary AppKit focus target");
+        } else {
+          const departedWindow = run(["xdotool", "search", "--sync", "--name", "^Quake departed focus witness$"]);
+          run(["xdotool", "windowactivate", "--sync", departedWindow]);
+        }
+        await command("app show_quake");await settled(true);
+        departed.kill();await departed.exited;
+        await command("app hide_quake");
+        await waitFor(async () => (await current())?.stage === "Idle", "hide after focus target exits");
+        const hidden = (await current())!;
+        if (hidden.visible !== "false" || hidden.regular !== "false" || hidden.active !== "false") {
+          throw new Error(`failed focus return undid successful hide: ${JSON.stringify(hidden)}`);
+        }
+        if (!(await state()).config_error?.includes("focus restoration failed")) throw new Error("failed focus restoration did not report a warning");
+        console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning`);
+      } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
+      await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
+      await command("app hide_quake");await settled(false);
+      await command("app show_quake");
+      await waitFor(async () => {
+        const value = await current();
+        return value?.active === "true" && value.stage === "Animate"
+          && Number(value.opacity) > 0.15 && Number(value.opacity) < 0.7;
+      }, "activated window during native show animation");
+      await focusWitness();await waitFor(witnessActive, "deliberate app switch during show");
+      await waitFor(async () => (await current())?.stage === "Idle", "unfocused show settles");
+      const unfocused = (await current())!;
+      if (unfocused.regular !== "false" || unfocused.visible !== "true" || unfocused.active !== "false" || !await witnessActive()) {
+        throw new Error(`show stole focus or recovered after deliberate app switch: ${JSON.stringify(unfocused)}`);
+      }
+      console.log(`QUAKE_FOCUS ${engine} switch-during-show=settled-without-refocus`);
       for (const fullscreen of [false, true]) {
         for (const animation of ["auto","none","fade","slide_top","slide_bottom","slide_left","slide_right","fade_slide_top","fade_slide_bottom","fade_slide_left","fade_slide_right"]) {
-          await reload(`hide_on_focus_loss = false\nfullscreen = ${fullscreen}\nanimation = "${animation}"\nanimation_ms = 180`);
+          const edge = animation === "auto" ? (fullscreen ? undefined : "top") : animation.match(/slide_(top|bottom|left|right)$/)?.[1];
+          await reload(`hide_on_focus_loss = false\nfullscreen = ${fullscreen}\nanimation = "${animation}"\nanimation_ms = ${edge ? 1000 : 180}`);
           await command("app show_quake");await settled(true);
           if ((await current())?.regular !== "false") throw new Error(`${animation}: transition recovered instead of settling quake`);
           if ((await current())?.fullscreen !== String(fullscreen) || (await current())?.fullscreen_context !== String(fullscreen)) throw new Error(`${animation}: native fullscreen endpoint disagrees`);
-          await command("app hide_quake");await settled(false);
+          const endpoint = frame((await current())!);
+          await command("app hide_quake");
+          if (edge) {
+            const axis = edge === "left" || edge === "right" ? 0 : 1;
+            const extent = endpoint[axis + 2]!;
+            let intermediate: State | undefined;
+            await waitFor(async () => {
+              const value = (await current())!;
+              const distance = Math.abs(frame(value)[axis]! - endpoint[axis]!);
+              if (value.stage !== "Animate" || distance < extent * 0.2 || distance > extent * 0.8) return false;
+              intermediate = value;
+              return true;
+            }, `${animation} native intermediate slide position fullscreen=${fullscreen}`);
+            const moved = frame(intermediate!);
+            const direction = edge === "top" || edge === "left" ? -1 : 1;
+            const orthogonal = axis === 0 ? 1 : 0;
+            if ((moved[axis]! - endpoint[axis]!) * direction <= 0 || Math.abs(moved[orthogonal]! - endpoint[orthogonal]!) > 2 || Math.abs(moved[2] - endpoint[2]) > 2 || Math.abs(moved[3] - endpoint[3]) > 2) {
+              throw new Error(`${animation} native slide changed the wrong axis, direction, or size: ${endpoint} -> ${moved}`);
+            }
+            console.log(`QUAKE_SLIDE ${animation} fullscreen=${fullscreen} endpoint=${endpoint} intermediate=${moved}`);
+          }
+          await settled(false);
           if ((await current())?.fullscreen !== "false") throw new Error("hidden profile retained fullscreen presentation");
           await command("app show_quake");await settled(true);
           if (!(await current())?.text?.includes(`READY:${identity}`)) throw new Error("animation replaced retained PTY");
@@ -218,9 +283,62 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await command("app reload_config");
       await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"invalid profile reload rejection");
       await hotkey();await settled(false);await hotkey();await settled(true);
-      await reload('hide_on_focus_loss = false\nanimation = "fade_slide_top"\nanimation_ms = 600');
-      await command("app hide_quake");await Bun.sleep(120);
+      await reload('hide_on_focus_loss = false\nanimation = "fade_slide_top"\nanimation_ms = 1000');
       await command("app show_quake");await settled(true);
+      const reversalEndpoint = frame((await current())!);
+      await command("app hide_quake");
+      await waitFor(async () => {
+        const value = (await current())!;
+        const distance = reversalEndpoint[1] - frame(value)[1];
+        return value.stage === "Animate" && distance > reversalEndpoint[3] * 0.3 && distance < reversalEndpoint[3] * 0.6;
+      }, "native slide position before reversal");
+      const reversing = (await current())!;
+      const beforeReversal = frame(reversing);
+      await command("app show_quake");
+      const reversed = (await current())!;
+      const afterReversal = frame(reversed);
+      if (Math.abs(afterReversal[1] - beforeReversal[1]) > reversalEndpoint[3] * 0.2 || Math.abs(Number(reversed.opacity) - Number(reversing.opacity)) > 0.2) {
+        throw new Error(`reversal jumped instead of preserving position/opacity: ${beforeReversal}/${reversing.opacity} -> ${afterReversal}/${reversed.opacity}`);
+      }
+      await waitFor(async () => {
+        const value = (await current())!;
+        const y = frame(value)[1];
+        return value.stage === "Animate" && y > beforeReversal[1] + reversalEndpoint[3] * 0.1 && y < reversalEndpoint[1] - reversalEndpoint[3] * 0.05;
+      }, "native slide reverses toward its endpoint before settling");
+      await settled(true);
+      console.log(`QUAKE_REVERSAL ${engine} endpoint=${reversalEndpoint} before=${beforeReversal} after=${afterReversal} continuity=passed`);
+      {
+        await reload('hide_on_focus_loss = false\nanimation_ms = 0', '[quake.profiles.scratch]\nfullscreen = true\nanimation_ms = 0');
+        await command("app show_quake");await settled(true);
+        const beforeRefit = (await current())!.frame;
+        await command("app show_quake scratch");await settled(true, "scratch");
+        // AppKit changes the work area with its fullscreen presentation lease.
+        // Openbox keeps it unchanged; supply the same native property change.
+        const workAreas = macos ? undefined : run(["xprop", "-root", "-notype", "_NET_WORKAREA"]).split("=")[1]!.trim();
+        try {
+          if (workAreas) {
+            const values = workAreas.split(",").map(Number);
+            for (let index = 0; index < values.length; index += 4) {
+              values[index + 1] = values[index + 1]! + 40;
+              values[index + 3] = values[index + 3]! - 40;
+            }
+            run(["xprop", "-root", "-f", "_NET_WORKAREA", "32c", "-set", "_NET_WORKAREA", values.join(",")]);
+          }
+          await waitFor(async () => {
+            const value = (await current())!;
+            return value.frame !== beforeRefit && value.stage === "Idle";
+          }, "partial profile refits changed native work area");
+          const refitted = (await current())!;
+          const foreground = profile(await state(), "scratch")!;
+          if (refitted.regular !== "false" || refitted.active !== "false" || refitted.visible !== "true" || foreground.active !== "true" || foreground.visible !== "true") {
+            throw new Error(`passive work-area refit stole focus from fullscreen profile: partial=${JSON.stringify(refitted)} fullscreen=${JSON.stringify(foreground)}`);
+          }
+          console.log(`QUAKE_WORK_AREA ${engine} before=${beforeRefit} after=${refitted.frame} foreground-profile=scratch focus-preserved=passed`);
+        } finally {
+          if (workAreas) run(["xprop", "-root", "-f", "_NET_WORKAREA", "32c", "-set", "_NET_WORKAREA", workAreas]);
+        }
+        await command("app hide_quake scratch");await settled(false, "scratch");
+      }
       await reload('hide_on_focus_loss = false\nfullscreen = true\nanimation_ms = 0', '[quake.profiles.scratch]\nedge = "left"\nwidth = 0.4\nheight = 1.0\nfullscreen = true\nhide_on_focus_loss = false\nanimation_ms = 0');
       await command("app show_quake");await settled(true);
       const sharedOptions = (await current())?.options;
@@ -319,11 +437,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   }
 }
 
-async function checkOrdinaryExit(executable: string, conflict = false): Promise<void> {
+export async function checkOrdinaryExit(executable: string, conflict = false, unregister = false): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-no-grabs-"));
   const config = join(directory,"config.toml");
   const shell = join(directory,"shell");
-  await writeFile(config, "[terminal]\nengine = 'alacritty'\n" + (conflict ? "[[global_keybinding]]\nkey = 'ctrl-alt-l'\ncommand = 'toggle_quake'\n" : ""));
+  const ordinaryConfig = "[terminal]\nengine = 'alacritty'\n";
+  await writeFile(config, ordinaryConfig + (conflict || unregister ? `[[global_keybinding]]\nkey = 'ctrl-alt-${unregister ? "u" : "l"}'\ncommand = 'toggle_quake'\n` : ""));
   await writeFile(shell, "#!/bin/sh\nprintf 'ORDINARY_READY\\n'\nwhile IFS= read -r line; do :; done\n", {mode:0o700});
   const app = Bun.spawn([executable], {env:{...process.env,WAYLAND_DISPLAY:undefined,HUTERM_CONFIG_FILE:config,HUTERM_QUAKE_SMOKE:directory,SHELL:shell},stdout:"ignore",stderr:"pipe"});
   let diagnostics = "";
@@ -333,15 +452,24 @@ async function checkOrdinaryExit(executable: string, conflict = false): Promise<
   try {
     await waitFor(async () => await Bun.file(join(directory,"state")).exists() && !!profile(await state(),"ordinary")?.text?.includes("ORDINARY_READY"),"ordinary window without registrations");
     if (conflict && !(await state()).config_error?.includes("cannot register")) throw new Error("startup grab conflict did not report its failure");
-    if ((await state()).keepalive !== "false") throw new Error("ordinary startup acquired a global shortcut");
+    if ((await state()).keepalive !== String(unregister)) throw new Error("ordinary startup registration ownership disagrees with configuration");
     await publishCommand(join(directory,"command-0"),"ordinary close_window");
-    await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true","ordinary final-window assessment");
-    if (app.exitCode === null) await publishCommand(join(directory,"command-1"),"ordinary confirm_close");
+    await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true" || (unregister && (await state()).windows === "0"),"ordinary final-window assessment");
+    let sequence = 1;
+    if (app.exitCode === null && profile(await state(), "ordinary")?.confirming === "true") {
+      await publishCommand(join(directory,`command-${sequence++}`),"ordinary confirm_close");
+    }
+    if (unregister) {
+      await waitFor(async () => (await state()).windows === "0", "zero windows before unregister reload");
+      if (app.exitCode !== null || (await state()).keepalive !== "true") throw new Error("last-window close failed to retain registered application");
+      await writeFile(config, ordinaryConfig);
+      await publishCommand(join(directory, `command-${sequence}`), "app reload_config");
+    }
     await waitFor(async () => app.exitCode !== null,"ordinary final-window application exit");
     if (await app.exited !== 0) throw new Error(`ordinary close exited ${app.exitCode}`);
     passed = true;
-    console.log(`QUAKE_NO_REGISTRATIONS ${conflict ? "startup-grab-conflict=reported " : ""}final-window-close=application-exit`);
-  } catch (error) {console.error(`Ordinary exit evidence: ${directory}\n${diagnostics}`);throw error;}
+    console.log(`QUAKE_NO_REGISTRATIONS ${conflict ? "startup-grab-conflict=reported " : ""}${unregister ? "zero-window-unregister-reload" : "final-window-close"}=application-exit`);
+  } catch (error) {console.error(`Ordinary exit evidence: ${directory}\n${await Bun.file(join(directory, "state")).text().catch(() => "no state")}\n${diagnostics}`);throw error;}
   finally {if (app.exitCode === null) app.kill();await app.exited;await errors;if (passed) await rm(directory,{recursive:true,force:true});}
 }
 
@@ -357,6 +485,7 @@ if (import.meta.main) {
     if (!process.env.HUTERM_QUAKE_ONLY_HIDDEN) {
       for (const engine of ["alacritty", "ghostty"]) await check(executable, engine, witnessExecutable);
       await checkOrdinaryExit(executable);
+      await checkOrdinaryExit(executable, false, true);
     }
   } finally { compositor?.kill(); wm?.kill(); }
 }

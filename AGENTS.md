@@ -815,3 +815,9 @@ Keep quake titlebar visibility separate from fullscreen tab policy: partial quak
 windows are frameless but retain the configured tab bar. Resolve tab presentation
 from actual quake fullscreen state, share layout synchronization with ordinary
 windows, and suppress overlay reveal while the quake window is hidden.
+
+Lefthook's `**/*.md` glob skips root Markdown files. Include `*.md` explicitly
+so staged README and agent-guide edits receive the same checks as nested docs.
+Quake work-area refits must preserve focus; only explicit summons request it.
+After initial activation succeeds, later app switches cannot invalidate a visible
+transition. A failed return-focus attempt must not undo a successful native hide.
