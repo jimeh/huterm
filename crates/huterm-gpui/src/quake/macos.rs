@@ -171,6 +171,16 @@ impl Platform {
     }
     #[expect(
         clippy::unused_self,
+        reason = "read-only smoke observation shares the X11 platform boundary"
+    )]
+    pub fn inspect_focus(&self, target: &Focus) -> anyhow::Result<(u32, bool)> {
+        // SAFETY: Read the exact retained main-thread NSRunningApplication.
+        let terminated: BOOL =
+            unsafe { msg_send![target.application.0, isTerminated] };
+        Ok((u32::try_from(target.pid)?, terminated == YES))
+    }
+    #[expect(
+        clippy::unused_self,
         reason = "platform adapter shares an instance API with X11"
     )]
     pub fn focus(&self, target: &Focus) -> anyhow::Result<()> {

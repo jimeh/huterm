@@ -78,6 +78,20 @@ impl Platform {
         Ok(self.cardinals(target.0, b"_NET_WM_PID")?.first().copied()
             == Some(std::process::id()))
     }
+    pub fn inspect_focus(&self, target: &Focus) -> anyhow::Result<(u32, bool)> {
+        let gone =
+            match self.connection.get_window_attributes(target.0)?.reply() {
+                Ok(_) => false,
+                Err(x11rb::errors::ReplyError::X11Error(error))
+                    if error.error_kind
+                        == x11rb::protocol::ErrorKind::Window =>
+                {
+                    true
+                }
+                Err(error) => return Err(error.into()),
+            };
+        Ok((target.0, gone))
+    }
     pub fn focus(&self, target: &Focus) -> anyhow::Result<()> {
         self.connection
             .get_window_attributes(target.0)?

@@ -136,6 +136,15 @@ fn read_state(cx: &mut App) -> String {
         quake_windows::keep_alive(cx),
         cx.global::<Desktop>().config_error.as_deref().unwrap_or("")
     );
+    match quake_windows::inspect_return_focus(cx) {
+        Ok(focus) => writeln!(output, "{focus}").unwrap(),
+        Err(error) => writeln!(
+            output,
+            "focus_observation_error={}",
+            error.to_string().replace('\n', " ")
+        )
+        .unwrap(),
+    }
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _=handle.update(cx,|root,window,cx| {
             let Ok(root)=root.downcast::<WorkspaceView>() else {return;};

@@ -47,6 +47,20 @@ impl Activation {
     fn take_request(&mut self) -> bool {
         std::mem::take(&mut self.requested)
     }
+
+    fn refit(
+        &mut self,
+        stage: Stage,
+        deadline: Instant,
+        now: Instant,
+    ) -> Instant {
+        if stage == Stage::Idle {
+            self.requested = false;
+            now + Duration::from_secs(3)
+        } else {
+            deadline
+        }
+    }
 }
 
 #[expect(
@@ -103,25 +117,30 @@ impl Presentation {
     }
     fn request(&mut self, visible: bool, restore_focus: bool) {
         let now = Instant::now();
-        self.generation.set(self.generation.get() + 1);
-        self.recovering = false;
-        self.transition.retarget(visible, now, self.duration());
-        self.stage = Stage::Prepare;
         self.deadline = now + Duration::from_secs(3);
         self.activation.requested = visible;
         if visible {
             self.activation.request();
+        }
+        self.prepare(visible, restore_focus, now);
+    }
+
+    fn prepare(&mut self, visible: bool, restore_focus: bool, now: Instant) {
+        self.generation.set(self.generation.get() + 1);
+        self.recovering = false;
+        self.transition.retarget(visible, now, self.duration());
+        self.stage = Stage::Prepare;
+        if visible {
             self.suppress_blur = now + Duration::from_millis(200);
         }
         self.restore_focus = restore_focus;
     }
 
     fn refit(&mut self) {
-        let focus_seen = self.activation.seen;
-        self.request(self.transition.visible(), false);
-        // Work-area changes do not constitute a new summon or activation.
-        self.activation.requested = false;
-        self.activation.seen = focus_seen;
+        let now = Instant::now();
+        self.deadline = self.activation.refit(self.stage, self.deadline, now);
+        // Placement changes preserve pending activation decisions and their deadline.
+        self.prepare(self.transition.visible(), false, now);
     }
 }
 
@@ -714,12 +733,10 @@ fn step(
                     state.target = target;
                     // Presentation leases can change the work area mid-transition.
                     // Preserve active progress and its original failure deadline.
-                    if geometry_changed && state.stage == Stage::Idle {
-                        state.refit();
-                    } else if geometry_changed && state.stage == Stage::Activate
+                    if geometry_changed
+                        && matches!(state.stage, Stage::Idle | Stage::Activate)
                     {
-                        // A pending raise must refit if the retained display changed.
-                        state.request(true, false);
+                        state.refit();
                     }
                 }
             }
@@ -1085,6 +1102,31 @@ impl WorkspaceView {
     }
 }
 
+pub(super) fn inspect_return_focus(cx: &App) -> anyhow::Result<String> {
+    let registry = &cx.global::<Desktop>().quake;
+    let Some(platform) = &registry.platform else {
+        return Ok(
+            "current_focus_id=0\nreturn_focus_id=0\nreturn_focus_gone=false"
+                .into(),
+        );
+    };
+    let current = platform
+        .focused()?
+        .as_ref()
+        .map(|focus| platform.inspect_focus(focus))
+        .transpose()?
+        .map_or(0, |(id, _)| id);
+    let (id, gone) = registry
+        .return_focus
+        .as_ref()
+        .map(|focus| platform.inspect_focus(focus))
+        .transpose()?
+        .unwrap_or((0, false));
+    Ok(format!(
+        "current_focus_id={current}\nreturn_focus_id={id}\nreturn_focus_gone={gone}"
+    ))
+}
+
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
@@ -1123,7 +1165,8 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::Activation;
+    use super::{Activation, Stage};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {
@@ -1145,5 +1188,76 @@ mod tests {
         activation.observe(true);
         activation.request();
         assert!(!activation.seen, "a new summon needs fresh activation");
+    }
+    #[test]
+    fn geometry_refit_does_not_rearm_canceled_activation_or_extend_its_budget()
+    {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(true);
+        activation.observe(false);
+        let deadline = activation.refit(
+            Stage::Activate,
+            deadline,
+            now + Duration::from_secs(2),
+        );
+        assert!(
+            !activation.take_request(),
+            "refitting must not steal focus back after an observed app switch"
+        );
+        assert!(
+            activation.seen,
+            "successful initial activation still permits inactive settlement"
+        );
+        let expired = now + Duration::from_secs(4);
+        assert!(
+            activation.refit(Stage::Activate, deadline, expired) <= expired,
+            "repeated placement changes must not postpone transition failure"
+        );
+    }
+
+    #[test]
+    fn geometry_refit_keeps_an_activation_that_has_not_yet_run() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(false);
+        let refit_deadline = activation.refit(
+            Stage::Activate,
+            deadline,
+            now + Duration::from_secs(2),
+        );
+        assert!(
+            activation.take_request(),
+            "the requested initial activation must still run"
+        );
+        assert!(
+            !activation.take_request(),
+            "refitting must not duplicate activation"
+        );
+        assert!(!activation.seen);
+        assert_eq!(refit_deadline, deadline);
+    }
+
+    #[test]
+    fn idle_geometry_refit_is_passive_with_a_fresh_placement_budget() {
+        let now = Instant::now();
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(true);
+        assert!(activation.take_request());
+        let deadline = activation.refit(Stage::Idle, now, now);
+        assert!(
+            !activation.take_request(),
+            "passive refit must not activate a window"
+        );
+        assert!(activation.seen);
+        assert!(
+            deadline > now,
+            "a new passive refit needs time to place the window"
+        );
     }
 }

@@ -305,17 +305,32 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await mkdir(departedDirectory);
         const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "ignore"});
         try {
+          let departedTarget = String(departed.pid);
           if (macos) {
             await waitFor(() => Bun.file(join(departedDirectory, "witness-ready")).exists(), "temporary AppKit witness");
             await waitFor(() => Bun.file(join(departedDirectory, "witness-state")).exists(), "temporary AppKit witness state publication");
             await publishCommand(join(departedDirectory, "witness-command-0"), "focus");
-            await waitFor(async () => parseState(await readFile(join(departedDirectory, "witness-state"), "utf8")).active === "true", "temporary AppKit focus target");
+            await waitFor(async () => {
+              const witness = parseState(await readFile(join(departedDirectory, "witness-state"), "utf8"));
+              return witness.active === "true" && witness.front_pid === departedTarget;
+            }, "temporary AppKit target is the exact frontmost process");
           } else {
             const departedWindow = run(["xdotool", "search", "--sync", "--name", "^Quake departed focus witness$"]);
+            departedTarget = departedWindow;
             run(["xdotool", "windowactivate", "--sync", departedWindow]);
           }
+          await waitFor(async () => (await state()).current_focus_id === departedTarget, "Huterm observes the exact external focus target before summon");
           await command("app show_quake");await settled(true);
+          await waitFor(async () => (await state()).return_focus_id === departedTarget, "summon captures the exact departed focus target");
+          const quakeTarget = macos ? String(app.pid) : (await current())!.native_id!;
+          await waitFor(async () => (await state()).current_focus_id === quakeTarget, "quake is frontmost before external target termination");
           departed.kill();await departed.exited;
+          await waitFor(async () => {
+            const value = await state();
+            return value.return_focus_id === departedTarget && value.return_focus_gone === "true";
+          }, "captured native target observes termination");
+          const eligible = await state();
+          if (eligible.current_focus_id !== quakeTarget || profile(eligible, "default")?.active !== "true") throw new Error(`external target termination moved focus before hide: front=${eligible.current_focus_id}, expected=${quakeTarget}, quake-active=${profile(eligible, "default")?.active}`);
           await command("app hide_quake");
           await waitFor(async () => (await current())?.stage === "Idle", "hide after focus target exits");
           const hidden = (await current())!;
