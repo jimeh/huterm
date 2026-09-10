@@ -139,7 +139,8 @@ Do not allow a hide request to make an active confirmation inaccessible.
 ### Geometry, animation, and fullscreen
 
 Quake presentation has no native window frame, titlebar, or window controls,
-for both partial and fullscreen profiles. Huterm's configured tab bar remains.
+for both partial and fullscreen profiles. Huterm's tab bar follows its configured
+single-tab and fullscreen visibility policies.
 Partial profiles use the display's usable work area, honor minimum window size,
 and center on the axis perpendicular to their selected edge. Resolve `active`
 from the previously focused application's display and `pointer` from the pointer

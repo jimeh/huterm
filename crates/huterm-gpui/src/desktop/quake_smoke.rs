@@ -150,6 +150,8 @@ fn read_state(cx: &mut App) -> String {
             }
             if let Some(terminal)=view.active_view() {
                 let terminal=terminal.read(cx);
+                let bounds = terminal.content_bounds(window);
+                writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}\nw{index}.terminal_top={}\nw{index}.safe_top={}", terminal.tab_presentation, view.reveal.progress, f32::from(bounds.origin.y), f32::from(view.fullscreen_insets.top)).unwrap();
                 let text=terminal.snapshot.as_ref().map(|snapshot|snapshot.cells().map(|cell|cell.text.as_str()).collect::<String>()).unwrap_or_default();
                 writeln!(output,"w{index}.text={}\nw{index}.grid={},{}\nw{index}.terminal_visible={}\nw{index}.focused={}",text.replace('\n'," ").trim(),terminal.last_grid_size.columns,terminal.last_grid_size.rows,terminal.visible,terminal.focus.is_focused(window)).unwrap();
             }

@@ -68,7 +68,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
   await writeFile(shell, `#!/bin/sh\nset -m\nsleep 600 &\njob=$!\ntrap 'kill "$job" 2>/dev/null; wait "$job" 2>/dev/null' 0\ntrap 'exit 0' HUP TERM\nprintf 'READY:%s JOB:%s\\n' "$$" "$job"\nwhile IFS= read -r line; do\ncase "$line" in\nexit) exit 0;;\n*) printf 'ACK:%s:%s:' "$line" "$$"; stty size; printf '%s:%s\\n' "$$" "$line" >> ${quote(join(directory, "acks"))};;\nesac\ndone\n`, { mode: 0o700 });
-  const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\nengine = "${engine}"\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
+  const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\nengine = "${engine}"\n[window]\nalways_show_tab_bar = true\nauto_hide_tab_bar_in_fullscreen = true\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
   await writeFile(config, configText());
   const app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_QUAKE_SMOKE: directory, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
   let diagnostics = "";
@@ -105,6 +105,13 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   };
   const state = async () => parseState(await readFile(join(directory, "state"), "utf8"));
   const current = async () => profile(await state(), "default");
+  const checkLayout = async (fullscreen: boolean, name = "default") => {
+    await waitFor(async () => {
+      const value = profile(await state(), name);
+      return value?.tab_presentation === (fullscreen ? "Overlay" : "Reserved")
+        && Number(value.terminal_top) === Number(value.safe_top) + (fullscreen ? 0 : 32);
+    }, `${name} frameless ${fullscreen ? "overlay" : "reserved-tab"} terminal bounds`);
+  };
   let sequence = 0;
   const command = async (text: string) => {
     const id = sequence++;
@@ -125,6 +132,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await waitFor(witnessActive,"external witness focus");
     await hotkey();
     await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && value.active === "true" && !!value.text?.includes("READY:"); }, "global summon from external app");
+    await checkLayout(false);
     const first = (await current())!;
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
     let identity = first.text!.match(/READY:(\d+)/)?.[1];
@@ -149,6 +157,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       const settled = async (show: boolean, name = "default") => {
         await waitFor(async () => {const value = profile(await state(), name);return value?.stage === "Idle" && value.visible === String(show) && (!show || value.active === "true");}, `${name} ${show ? "visible" : "hidden"} endpoint`);
         if (profile(await state(),name)?.opacity !== "1") throw new Error("animation leaked native opacity");
+        if (show) await checkLayout(profile(await state(),name)?.fullscreen === "true", name);
+        else await waitFor(async () => profile(await state(),name)?.tab_reveal === "0", "hidden quake dismisses tab overlay");
       };
       // The window must stay up while repeated Press events arrive without Release.
       await hotkey(); await settled(false);
@@ -270,6 +280,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     if ((await current())?.visible !== "true") throw new Error("regular presentation auto-hid");
     await command("default toggle_fullscreen");
     await waitFor(async () => (await current())?.regular === "false" && (await current())?.stage === "Idle", "return to quake presentation");
+    await checkLayout(false);
     await focusWitness();
     await waitFor(async () => (await current())?.visible === "false", "auto-hide on external focus");
     await command("app quit");

@@ -375,8 +375,8 @@ Closing its final tab clears the association; the next summon creates a new shel
 Registered shortcuts keep Huterm available when all windows are closed. Quit
 still assesses and closes every visible or hidden terminal.
 
-Partial profiles are frameless and use the work area; the tab bar remains.
-Their size is clamped to a usable minimum without exceeding the work area.
+Partial profiles are frameless and use the work area. Tabs follow the configured
+single-tab and fullscreen visibility settings. Their size is clamped to a usable minimum without exceeding the work area.
 `auto` fades fullscreen profiles and fades/slides partial profiles from their
 anchored edge. Other values are `none`, `fade`, `slide_top`, `slide_bottom`,
 `slide_left`, `slide_right`, and the corresponding `fade_slide_*` values.
