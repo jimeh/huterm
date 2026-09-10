@@ -372,7 +372,8 @@ export async function augmentSpdx(
   document.packages = packages;
   const described = Array.isArray(document.documentDescribes) ? document.documentDescribes as string[] : [];
   for (const pkg of nativePackages) {
-    const id = stringValue(pkg.SPDXID, "native package SPDX ID");
+    const retained = byKey.get(packageKey(pkg))!;
+    const id = stringValue(retained.SPDXID, "retained package SPDX ID");
     if (!described.includes(id)) described.push(id);
   }
   document.documentDescribes = described.sort();
@@ -384,6 +385,13 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
   if (document.spdxVersion !== "SPDX-2.3") throw new Error("SBOM must use SPDX 2.3");
   if (!Array.isArray(document.packages)) throw new Error("SBOM has no packages");
   const packages = document.packages.map(pkg => objectValue(pkg, "SPDX package"));
+  const packageIds = new Set(packages.map(pkg => stringValue(pkg.SPDXID, "SPDX package ID")));
+  const described = document.documentDescribes ?? [];
+  if (!Array.isArray(described)) throw new Error("SBOM documentDescribes must be an array");
+  for (const value of described) {
+    const id = stringValue(value, "SBOM documentDescribes ID");
+    if (!packageIds.has(id)) throw new Error(`SBOM documentDescribes references missing package ${id}`);
+  }
   for (const [name, expectedVersion] of [
     ["huterm", version],
     ["Sparkle", "2.9.6"],

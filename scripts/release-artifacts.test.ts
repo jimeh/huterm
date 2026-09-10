@@ -54,19 +54,60 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     SPDXID: "SPDXRef-DOCUMENT",
     spdxVersion: "SPDX-2.3",
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
-    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui", "0.2.2")],
+    packages: [
+      cargoPackage("huterm", "0.4.0"),
+      cargoPackage("gpui", "0.2.2"),
+      cargoPackage("libghostty-vt-sys", "0.2.1"),
+    ],
     documentDescribes: ["SPDXRef-huterm"],
   };
   const result = await augmentSpdx(application, {
     arm64: { packages: [cargoPackage("anyhow", "1.0.104"), cargoPackage("arm-only", "1.0.0")] },
     x86_64: { packages: [cargoPackage("anyhow", "1.0.104"), cargoPackage("x86-only", "1.0.0")] },
   });
-  expect(() => validateRuntimeSpdx(result, "0.4.0")).not.toThrow();
   const packages = result.packages as Record<string, unknown>[];
+  const described = result.documentDescribes as string[];
+  for (const name of ["gpui", "libghostty-vt-sys"]) {
+    const retained = packages.find(pkg => pkg.name === name)!;
+    expect(described).toContain(retained.SPDXID as string);
+    expect(described).not.toContain(`SPDXRef-Package-${name}`);
+  }
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).not.toThrow();
   expect(packages.find(pkg => pkg.name === "anyhow")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64 and x86_64") })]);
   expect(packages.find(pkg => pkg.name === "arm-only")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64") })]);
   expect(packages.find(pkg => pkg.name === "gpui")?.sourceInfo).toContain("Locally patched runtime crate");
   for (const name of ["Sparkle", "ghostty", "uucode", "highway", "libghostty-vt-sys"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
+});
+
+test("runtime SPDX validation rejects malformed and dangling document descriptions", async () => {
+  const result = await augmentSpdx({
+    SPDXID: "SPDXRef-DOCUMENT",
+    spdxVersion: "SPDX-2.3",
+    creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
+    packages: [cargoPackage("huterm", "0.4.0")],
+    documentDescribes: ["SPDXRef-huterm"],
+  }, {
+    arm64: { packages: [] },
+    x86_64: { packages: [] },
+  });
+  result.documentDescribes = ["SPDXRef-missing"];
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).toThrow(
+    "SBOM documentDescribes references missing package SPDXRef-missing",
+  );
+  result.documentDescribes = "SPDXRef-huterm";
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).toThrow(
+    "SBOM documentDescribes must be an array",
+  );
+  result.documentDescribes = [7];
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).toThrow(
+    "SBOM documentDescribes ID must be a non-empty string",
+  );
+  result.documentDescribes = ["SPDXRef-huterm"];
+  const packages = result.packages as Record<string, unknown>[];
+  packages.find(pkg => pkg.name === "huterm")!.SPDXID = 7;
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).toThrow(
+    "SPDX package ID must be a non-empty string",
+  );
 });

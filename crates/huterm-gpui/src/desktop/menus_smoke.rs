@@ -6,6 +6,8 @@ use super::*;
 use crate::config::KeybindingEntry;
 use crate::native_quit::{MenuShortcut, menu_shortcut};
 
+const COMMAND_MODIFIER: usize = 1 << 20;
+
 pub(crate) fn run() {
     Application::new().run(|cx| {
         if let Err(error) = check(cx) {
@@ -92,7 +94,7 @@ fn shortcut(title: &str, key: &str) -> anyhow::Result<()> {
     let actual = menu_shortcut(title)?;
     let expected = MenuShortcut {
         key: key.into(),
-        modifiers: 1 << 20,
+        modifiers: COMMAND_MODIFIER,
     };
     anyhow::ensure!(
         actual == expected,
@@ -103,9 +105,15 @@ fn shortcut(title: &str, key: &str) -> anyhow::Result<()> {
 
 fn unbound_menu_item(title: &str) -> anyhow::Result<()> {
     let actual = menu_shortcut(title)?;
+    let expected = MenuShortcut {
+        key: String::new(),
+        // AppKit retains GPUI's command mask even with no key equivalent.
+        // The empty key makes the menu item unbound.
+        modifiers: COMMAND_MODIFIER,
+    };
     anyhow::ensure!(
-        actual.key.is_empty() && actual.modifiers == 0,
-        "{title}: expected no shortcut, got {actual:?}"
+        actual == expected,
+        "{title}: expected {expected:?}, got {actual:?}"
     );
     Ok(())
 }
