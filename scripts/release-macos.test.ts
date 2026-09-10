@@ -129,10 +129,10 @@ test("all Huterm Cargo packages must match the release version", () => {
   expect(() => validateWorkspaceVersions({ packages: packages.map(item => item.name === "huterm-core" ? { ...item, version: "0.2.0" } : item) }, inputs.version)).toThrow("huterm-core version");
 });
 
-test("source privacy descriptions and entitlements match the release contract", async () => {
+test("source bundle metadata and entitlements match the release contract", async () => {
   const info = parseSimplePlist(await readFile(resolve(repoRoot, "assets/macos/Info.plist"), "utf8"));
   const entitlements = parseSimplePlist(await readFile(resolve(repoRoot, "assets/macos/Huterm.entitlements"), "utf8"));
-  expect(info).toEqual(privacyUsageDescriptions);
+  expect(info).toEqual({ CFBundleIconName: "Huterm", ...privacyUsageDescriptions });
   expect(Object.keys(entitlements).sort()).toEqual([...releaseEntitlements].sort());
   expect(() => validatePrivacyDescriptions(info)).not.toThrow();
   expect(() => validateEntitlements(entitlements)).not.toThrow();
