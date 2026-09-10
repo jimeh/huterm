@@ -67,6 +67,13 @@ silently passed on release runners without `rg`, bypassing the linkage check.
 Verify each slice with a separate `lipo -verify_arch` call: the macOS 27 system
 tool rejects multiple requested architectures, while Xcode 26's tool accepts
 them. Cross-compilation and Rosetta tests do not replace native Intel UI QA.
+`assets/Huterm.icon` is the icon source. Refresh its committed ICNS, 1024-pixel
+PNG, and macOS Assets.car with `mise run icons:generate` using Xcode 27.
+Normal builds only run the portable `icons:check`; include `assets/icons.json`
+with every regeneration. Xcode 26.3 cannot read this document and actool can
+exit zero without producing files. Require fresh outputs from a temporary
+directory. Render the PNG with Icon Composer's bundled `ictool`, not xcrun's
+unrelated entry point or the compiler's ICNS, which only contains up to 256 pixels.
 Release signing must finish before notarization. Submit a temporary ZIP, staple
 the accepted ticket to the app, verify without re-signing, and only then create
 the public ZIP. Re-signing after stapling invalidates the notarized artifact.
