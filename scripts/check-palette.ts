@@ -488,9 +488,12 @@ if (import.meta.main) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
     const checks = async (wm?: X11Process) => {
+      const completed: string[] = [];
       for (const engine of ["alacritty", "ghostty"]) {
         await checkPalette(executable, engine, wm);
+        completed.push(engine);
       }
+      console.log(`PALETTE_SMOKE_ALL engines=${completed.join(",")}`);
     };
     if (process.platform === "darwin") await checks();
     else await withOpenbox(checks);

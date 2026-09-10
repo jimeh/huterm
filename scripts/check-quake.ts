@@ -167,13 +167,14 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     }, `${regular ? "regular" : "quake"} X11 stacking and desktop state`);
   };
   let sequence = 0;
-  const command = async (text: string) => {
+  const command = async (text: string): Promise<string> => {
     const id = sequence++;
     await publishCommand(join(directory, `command-${id}`), text);
     await waitFor(() => Bun.file(join(directory, `result-${id}`)).exists(), text);
     const result = await readFile(join(directory, `result-${id}`), "utf8");
     if (result.includes("Err") || result.startsWith("error")) throw new Error(`${text}: ${result}`);
     await waitFor(async () => app.exitCode !== null || Number((await state()).command_sequence) > id, `${text} observation after dispatch`);
+    return result;
   };
   try {
     await waitFor(() => Bun.file(join(directory, "state")).exists(), "startup");
@@ -379,6 +380,19 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (!profile(warned, "ordinary")?.status?.includes("focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
           if (warned.config_error?.includes("focus restoration failed")) throw new Error("originated focus warning leaked into the global fallback");
           console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning reporter=ordinary`);
+          const reportResult = await command("app report_dead");
+          if (!reportResult.startsWith("fallback=")) throw new Error(`dead reporter did not identify its fallback window: ${reportResult}`);
+          const fallbackId = reportResult.slice("fallback=".length).trim();
+          await waitFor(async () => {
+            const value = await state();
+            const fallbackWindow = Object.entries(value).find(([key, id]) => key.endsWith(".window_id") && id === fallbackId)?.[0];
+            if (!fallbackWindow) return false;
+            const fallbackStatus = fallbackWindow.replace(/window_id$/, "status");
+            return value.config_error?.includes("Quake: smoke dead reporter") === true
+              && value[fallbackStatus]?.includes("Quake: smoke dead reporter") === true
+              && Object.entries(value).every(([key, status]) => key === fallbackStatus || !key.endsWith(".status") || !status.includes("Quake: smoke dead reporter"));
+          }, "dead reporter global and active-window fallback");
+          console.log(`QUAKE_REPORTER ${engine} live=window dead=global-and-active-window fallback=${fallbackId}`);
         } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
         const focusDuringShow = await retryInconclusiveOnce(async attempt => {

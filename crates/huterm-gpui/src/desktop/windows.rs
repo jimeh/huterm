@@ -426,16 +426,41 @@ fn report_deferred_failure(
     reporter: Option<WeakEntity<WorkspaceView>>,
     message: String,
 ) {
+    report_deferred_failure_inner(cx, reporter, message, false);
+}
+
+fn report_deferred_failure_with_global_latch(
+    cx: &mut App,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+    message: String,
+) {
+    let latch_if_dead = reporter.is_some();
+    if reporter.is_none() {
+        cx.global_mut::<Desktop>().config_error = Some(message.clone());
+    }
+    report_deferred_failure_inner(cx, reporter, message, latch_if_dead);
+}
+
+fn report_deferred_failure_inner(
+    cx: &mut App,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+    message: String,
+    latch_if_dead: bool,
+) {
     eprintln!("Huterm {message}");
     cx.defer(move |cx| {
-        if let Some(reporter) = reporter {
-            let _ = reporter.update(cx, |view, cx| {
+        if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade())
+        {
+            reporter.update(cx, |view, cx| {
                 view.status = Some(message);
                 cx.notify();
             });
-        } else {
-            show_active_window_status(cx, message);
+            return;
         }
+        if latch_if_dead {
+            cx.global_mut::<Desktop>().config_error = Some(message.clone());
+        }
+        show_active_window_status(cx, message);
     });
 }
 

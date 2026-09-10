@@ -507,16 +507,13 @@ fn platform(cx: &mut App) -> Result<native::Platform, String> {
         .clone()
         .ok_or_else(|| "native quake platform unavailable".into())
 }
-fn report(
+pub(super) fn report(
     cx: &mut App,
     error: &str,
     reporter: Option<WeakEntity<WorkspaceView>>,
 ) {
     let message = format!("Quake: {error}");
-    if reporter.is_none() {
-        cx.global_mut::<Desktop>().config_error = Some(message.clone());
-    }
-    report_deferred_failure(cx, reporter, message);
+    report_deferred_failure_with_global_latch(cx, reporter, message);
 }
 
 pub(super) fn invoke(

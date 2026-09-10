@@ -107,8 +107,8 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
         return Ok("window requested".to_owned());
     }
     if command == "quit" {
-        cx.quit();
-        return Ok("quit requested".to_owned());
+        super::approved_quit(cx);
+        return Ok("approved quit requested".to_owned());
     }
     let handle = *cx.windows().first().context("palette smoke window")?;
     let invocation = match command {
