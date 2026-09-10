@@ -52,7 +52,7 @@ for (const version of ["Xcode 26.3\nBuild version 17C529", "Xcode 28.0\nBuild ve
 for (const change of ["edit", "add", "remove", "generator"] as const) {
   test(`icon check detects source ${change}`, () => {
     const root = fixture();
-    const layer = join(root, "assets/Huterm.icon/Assets/prompt-large.svg");
+    const layer = join(root, "assets/Huterm.icon/Assets/prompt-sharp.svg");
     if (change === "edit") writeFileSync(layer, "changed artwork");
     if (change === "add") writeFileSync(join(root, "assets/Huterm.icon/Assets/new.svg"), "new artwork");
     if (change === "remove") rmSync(layer);
