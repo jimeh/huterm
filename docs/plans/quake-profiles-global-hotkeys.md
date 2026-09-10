@@ -58,7 +58,7 @@ Proposed configuration:
 
 ```toml
 [quake.profiles.default]
-edge = "top"
+position = "top"
 display = "active"
 width = 1.0
 height = 0.5
@@ -68,7 +68,7 @@ animation = "auto"
 animation_ms = 150
 
 [quake.profiles.logs]
-edge = "right"
+position = "right"
 display = "pointer"
 width = 0.4
 height = 1.0
@@ -103,8 +103,9 @@ Validate nonblank profile names, known edges and display selectors, finite
 width/height fractions in `(0, 1]`, and animation duration from 0 to 1000 ms.
 Unspecified fields inherit built-in defaults. `fullscreen = true` uses the
 display frame and overrides width/height. With `animation = "auto"`, fullscreen
-profiles fade and partial profiles fade while sliding from their anchored edge.
-Explicit animation directions are independent of placement edge.
+profiles and centered profiles fade. Other partial profiles fade while sliding
+from their anchored position.
+Explicit animation directions are independent of placement position.
 
 ### Association and lifecycle
 
@@ -142,7 +143,8 @@ Quake presentation has no native window frame, titlebar, or window controls,
 for both partial and fullscreen profiles. Huterm's tab bar follows its configured
 single-tab and fullscreen visibility policies.
 Partial profiles use the display's usable work area, honor minimum window size,
-and center on the axis perpendicular to their selected edge. Resolve `active`
+and center on the axis perpendicular to their selected position. `center` places
+the window at the work-area center on both axes. Resolve `active`
 from the previously focused application's display and `pointer` from the pointer
 when creating the profile's window. Also support `primary` and a platform display
 identifier, with a documented fallback to primary when the target is gone. Never
@@ -168,7 +170,8 @@ Support these animation choices:
 
 | Value | Show behavior |
 | --- | --- |
-| `auto` | Fade for fullscreen; fade plus slide from the anchored edge for partial profiles. |
+| `auto` | Fade for fullscreen or center; fade plus slide from the anchored position for other partial profiles. |
+| `slide` | Slide from the placement position; center uses the top. |
 | `none` | Show immediately. |
 | `fade` | Fade in at the target position. |
 | `slide_top`, `slide_bottom`, `slide_left`, `slide_right` | Slide in from the named edge. |

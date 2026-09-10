@@ -343,7 +343,7 @@ shortcuts are opt-in and work while another application has focus:
 
 ```toml
 [quake.profiles.default]
-edge = "top"                # top, bottom, left, right
+position = "top"            # top, bottom, left, right, center
 width = 1.0                 # fraction of work area, greater than 0 through 1
 height = 0.5
 fullscreen = false          # use the full display frame, overriding width/height
@@ -377,9 +377,12 @@ still assesses and closes every visible or hidden terminal.
 
 Partial profiles are frameless and use the work area. Tabs follow the configured
 single-tab and fullscreen visibility settings. Their size is clamped to a usable
-minimum without exceeding the work area.
+minimum without exceeding the work area. `position = "center"` centers both axes;
+the other positions anchor to that side and center the perpendicular axis.
 `auto` fades fullscreen profiles and fades/slides partial profiles from their
-anchored edge. Other values are `none`, `fade`, `slide_top`, `slide_bottom`,
+anchored position; centered profiles only fade. `slide` follows the position,
+using the top for centered profiles. Other values are `none`, `fade`,
+`slide_top`, `slide_bottom`,
 `slide_left`, `slide_right`, and the corresponding `fade_slide_*` values.
 Fullscreen quake uses the current Space on macOS and EWMH fullscreen on X11.
 Without an X11 compositor, fades are disabled with a diagnostic; slides remain.

@@ -7,8 +7,8 @@ records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI has separate file-drop and explicit-float
 patches, plus hidden-window creation, X11 native-handle, application-lifetime,
-and macOS offscreen-display fixes. The sys crate has separate CPU, build-script
-watch-path, and license patches.
+and macOS offscreen-display and per-window frame-constraint fixes. The sys crate
+has separate CPU, build-script watch-path, and license patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -223,8 +223,18 @@ still exits it.
 GPUI's macOS display-link setup dereferenced `NSWindow.screen` while an animated
 window was fully offscreen. AppKit returns nil in that state. The offscreen-display
 patch stops the link until a screen or visibility callback restarts it, and treats
-an offscreen window as not maximized. The native quake smoke exercises slide-out,
-resummon, and a fresh shell ACK.
+an offscreen window as not maximized. It reads backing scale from NSWindow, which
+retains the real scale without a screen. A synthetic offscreen scale can resize
+Metal's drawable at 2x while GPUI returns to 1x after moving onscreen. The native
+quake smoke checks retained resize, drawable/viewport agreement, and PTY geometry.
+
+The `macos-offscreen-frame` patch adds a per-window `gpuiAllowsOffscreenFrame` opt-in
+and `setGpuiAllowsOffscreenFrame:` setter. It defaults to false. Only opted-in windows
+bypass `constrainFrameRect:toScreen:`; other windows retain AppKit constraints.
+Huterm enables it throughout quake presentation and disables it on regular
+conversion and retained-window cleanup. AppKit clamps intermediate top-edge
+animation frames even with a zero borderless style mask. The native smoke checks
+actual slide intermediates and restored constraints on regular conversion.
 
 ## macOS exclusive global shortcuts
 

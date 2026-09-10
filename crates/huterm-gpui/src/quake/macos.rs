@@ -78,6 +78,11 @@ impl Drop for Inner {
                 if let Err(error) = lease.set(false) {
                     eprintln!("Quake presentation cleanup: {error}");
                 }
+                // SAFETY: Restore normal constraints before releasing the retained window.
+                unsafe {
+                    let _: () =
+                        msg_send![native.0, setGpuiAllowsOffscreenFrame:NO];
+                }
                 drop(view);
                 drop(native);
             })
@@ -314,12 +319,30 @@ impl Window {
             let id: isize = msg_send![self.0.native.0, windowNumber];
             let alpha: f64 = msg_send![self.0.native.0, alphaValue];
             let style: usize = msg_send![self.0.native.0, styleMask];
+            let offscreen: BOOL =
+                msg_send![self.0.native.0, gpuiAllowsOffscreenFrame];
             let app: *mut Object =
                 msg_send![class("NSApplication")?, sharedApplication];
             let options: usize = msg_send![app, presentationOptions];
+            let view_bounds: Bounds<f64> = msg_send![self.0.view.0, bounds];
+            let backing_scale: f64 =
+                msg_send![self.0.native.0, backingScaleFactor];
+            let screen: *mut Object = msg_send![self.0.native.0, screen];
+            let layer: *mut Object = msg_send![self.0.view.0, layer];
+            ensure!(!layer.is_null(), "quake backing layer unavailable");
+            let drawable: gpui::Size<f64> = msg_send![layer, drawableSize];
+            let contents_scale: f64 = msg_send![layer, contentsScale];
             Ok(format!(
-                "native_id={id}\nopacity={alpha}\ndecorated={}\noptions={options}",
-                style & 1 != 0
+                "native_view={},{},{},{}\nbacking_scale={backing_scale}\nscreen_present={}\ndrawable={},{}\ncontents_scale={contents_scale}\nnative_id={id}\nopacity={alpha}\ndecorated={}\noptions={options}\nallows_offscreen={}",
+                view_bounds.origin.x,
+                view_bounds.origin.y,
+                view_bounds.size.width,
+                view_bounds.size.height,
+                !screen.is_null(),
+                drawable.width,
+                drawable.height,
+                style & 1 != 0,
+                offscreen == YES
             ))
         }
     }
@@ -403,6 +426,7 @@ impl Window {
         // GPUI's NSWindow subclass already supports borderless key windows.
         unsafe {
             let native = self.0.native.0;
+            let _: () = msg_send![native,setGpuiAllowsOffscreenFrame:if enabled {YES} else {NO}];
             let style = if enabled {
                 self.0.style & !(0x1 | 0x2 | 0x4 | 0x8)
             } else {

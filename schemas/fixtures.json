@@ -468,7 +468,7 @@
   },
   {
     "name": "quake full profile",
-    "toml": "[quake.profiles.work]\nedge=\"right\"\ndisplay=\"id:42\"\nwidth=0.75\nheight=1.0\nfullscreen=true\nhide_on_focus_loss=false\nanimation=\"fade_slide_left\"\nanimation_ms=1000",
+    "toml": "[quake.profiles.work]\nposition=\"right\"\ndisplay=\"id:42\"\nwidth=0.75\nheight=1.0\nfullscreen=true\nhide_on_focus_loss=false\nanimation=\"fade_slide_left\"\nanimation_ms=1000",
     "valid": true
   },
   {
@@ -502,13 +502,13 @@
     "valid": false
   },
   {
-    "name": "quake invalid edge",
-    "toml": "[quake.profiles.default]\nedge=\"center\"",
+    "name": "quake invalid position",
+    "toml": "[quake.profiles.default]\nposition=\"diagonal\"",
     "valid": false
   },
   {
     "name": "quake invalid animation",
-    "toml": "[quake.profiles.default]\nanimation=\"slide\"",
+    "toml": "[quake.profiles.default]\nanimation=\"float\"",
     "valid": false
   },
   {
@@ -609,6 +609,36 @@
   {
     "name": "local quake rejects profile type",
     "toml": "[[keybinding]]\nkey=\"ctrl-shift-f12\"\ncommand=\"show_quake\"\nargs={profile=2}",
+    "valid": false
+  },
+  {
+    "name": "quake top position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"top\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake bottom position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"bottom\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake left position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"left\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake right position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"right\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake center position with slide",
+    "toml": "[quake.profiles.default]\nposition=\"center\"\nanimation=\"slide\"",
+    "valid": true
+  },
+  {
+    "name": "quake rejects removed edge property",
+    "toml": "[quake.profiles.default]\nedge=\"top\"",
     "valid": false
   }
 ]

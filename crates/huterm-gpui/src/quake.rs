@@ -10,7 +10,15 @@ pub(crate) mod native;
 #[path = "quake/macos.rs"]
 pub(crate) mod native;
 
-pub(crate) use huterm_config::quake::{Animation, Config, Edge, Profile};
+pub(crate) use huterm_config::quake::{Animation, Config, Position, Profile};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
 
 pub(crate) trait ProfileExt {
     fn effects(&self) -> (bool, Option<Edge>);
@@ -19,8 +27,19 @@ pub(crate) trait ProfileExt {
 
 impl ProfileExt for Profile {
     fn effects(&self) -> (bool, Option<Edge>) {
+        let edge = match self.position {
+            Position::Top | Position::Center => Edge::Top,
+            Position::Bottom => Edge::Bottom,
+            Position::Left => Edge::Left,
+            Position::Right => Edge::Right,
+        };
         match self.animation {
-            Animation::Auto => (true, (!self.fullscreen).then_some(self.edge)),
+            Animation::Auto => (
+                true,
+                (!self.fullscreen && self.position != Position::Center)
+                    .then_some(edge),
+            ),
+            Animation::Slide => (false, Some(edge)),
             Animation::None => (false, None),
             Animation::Fade => (true, None),
             Animation::SlideTop => (false, Some(Edge::Top)),
@@ -46,11 +65,12 @@ impl ProfileExt for Profile {
             width,
             height,
         };
-        match self.edge {
-            Edge::Top => result.y = area.y,
-            Edge::Bottom => result.y = area.y + area.height - height,
-            Edge::Left => result.x = area.x,
-            Edge::Right => result.x = area.x + area.width - width,
+        match self.position {
+            Position::Top => result.y = area.y,
+            Position::Bottom => result.y = area.y + area.height - height,
+            Position::Left => result.x = area.x,
+            Position::Right => result.x = area.x + area.width - width,
+            Position::Center => {}
         }
         result
     }
@@ -165,13 +185,39 @@ mod tests {
     fn automatic_effects_follow_fullscreen_and_anchor() {
         let mut profile = Profile::default();
         assert_eq!(profile.effects(), (true, Some(Edge::Top)));
-        profile.edge = Edge::Right;
+        profile.position = Position::Right;
         assert_eq!(profile.effects(), (true, Some(Edge::Right)));
         profile.fullscreen = true;
         assert_eq!(profile.effects(), (true, None));
         profile.animation = Animation::FadeSlideBottom;
         assert_eq!(profile.effects(), (true, Some(Edge::Bottom)));
     }
+    #[test]
+    fn center_auto_fades_and_slide_uses_position_with_top_center_fallback() {
+        let mut profile = Profile {
+            position: Position::Center,
+            ..Profile::default()
+        };
+        assert_eq!(profile.effects(), (true, None));
+        profile.animation = Animation::Slide;
+        for (position, edge) in [
+            (Position::Center, Edge::Top),
+            (Position::Top, Edge::Top),
+            (Position::Bottom, Edge::Bottom),
+            (Position::Left, Edge::Left),
+            (Position::Right, Edge::Right),
+        ] {
+            profile.position = position;
+            for fullscreen in [false, true] {
+                profile.fullscreen = fullscreen;
+                assert_eq!(profile.effects(), (false, Some(edge)));
+            }
+        }
+        profile.position = Position::Center;
+        profile.animation = Animation::SlideRight;
+        assert_eq!(profile.effects(), (false, Some(Edge::Right)));
+    }
+
     #[test]
     fn reversing_keeps_position_and_completes_without_a_jump() {
         let now = Instant::now();
@@ -213,7 +259,7 @@ mod tests {
         let mut profile = Profile {
             width: 0.01,
             height: 0.01,
-            edge: Edge::Bottom,
+            position: Position::Bottom,
             ..Profile::default()
         };
         assert_eq!(
@@ -221,6 +267,16 @@ mod tests {
             Rect {
                 x: -540.0,
                 y: 420.0,
+                width: 280.0,
+                height: 180.0
+            }
+        );
+        profile.position = Position::Center;
+        assert_eq!(
+            profile.geometry(&display),
+            Rect {
+                x: -540.0,
+                y: 225.0,
                 width: 280.0,
                 height: 180.0
             }

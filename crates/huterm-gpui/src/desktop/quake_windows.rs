@@ -1062,7 +1062,7 @@ impl WorkspaceView {
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\ndisplay={}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
@@ -1074,6 +1074,10 @@ pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
         frame.y,
         frame.width,
         frame.height,
+        state.display.work.x,
+        state.display.work.y,
+        state.display.work.width,
+        state.display.work.height,
         state.display.id,
         state.native.inspect()?
     ))

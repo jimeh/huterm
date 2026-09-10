@@ -8,6 +8,7 @@
         "auto",
         "none",
         "fade",
+        "slide",
         "slide_top",
         "slide_bottom",
         "slide_left",
@@ -34,15 +35,6 @@
         }
       },
       "type": "object"
-    },
-    "Edge": {
-      "enum": [
-        "top",
-        "bottom",
-        "left",
-        "right"
-      ],
-      "type": "string"
     },
     "GlobalKeybinding": {
       "allOf": [
@@ -304,6 +296,16 @@
       ],
       "type": "string"
     },
+    "Position": {
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "center"
+      ],
+      "type": "string"
+    },
     "Profile": {
       "additionalProperties": false,
       "properties": {
@@ -329,14 +331,6 @@
           "pattern": "^(active|pointer|primary|id:.*\\S.*)$",
           "type": "string"
         },
-        "edge": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/Edge"
-            }
-          ],
-          "default": "top"
-        },
         "fullscreen": {
           "default": false,
           "type": "boolean"
@@ -352,6 +346,14 @@
         "hide_on_focus_loss": {
           "default": true,
           "type": "boolean"
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Position"
+            }
+          ],
+          "default": "top"
         },
         "width": {
           "default": 1.0,

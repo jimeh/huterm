@@ -828,3 +828,11 @@ drop/leave; otherwise a follow-up action can target a source already exiting.
 
 The AppKit witness publishes readiness before its first state snapshot. Wait for
 that snapshot or a command acknowledgement before reading its activation state.
+
+AppKit clamps intermediate top-edge frames even for borderless windows. Quake
+opts only its own native window into unconstrained frames, retaining that flag
+while hidden and restoring default constraints on regular conversion and cleanup.
+Read backing scale from NSWindow while offscreen: NSScreen can be nil, and a
+synthetic 2x fallback can resize Metal's drawable at a different scale from GPUI
+after an on-screen move. Keep retained half/quarter/half resize coverage tied to
+native view and drawable dimensions, GPUI viewport/scale, and PTY rows/columns.

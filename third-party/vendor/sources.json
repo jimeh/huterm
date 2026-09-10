@@ -41,7 +41,12 @@
         {
           "name": "macos-offscreen-display-link",
           "file": "patches/gpui/macos-offscreen-display-link.patch",
-          "description": "Stop the display link while an offscreen macOS window has no NSScreen and restart it when a screen is assigned."
+          "description": "Preserve the window backing scale while offscreen, stop its display link without NSScreen, and restart when a screen is assigned."
+        },
+        {
+          "name": "macos-offscreen-frame",
+          "file": "patches/gpui/macos-offscreen-frame.patch",
+          "description": "Expose per-window opt-in to unconstrained offscreen frames while preserving normal AppKit constraints by default."
         }
       ]
     },

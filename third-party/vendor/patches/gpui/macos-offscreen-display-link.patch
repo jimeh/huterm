@@ -1,5 +1,5 @@
 diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
-index 95efffa3e77cdbeebf53acd47dd1aa9b33cb24ab..f919bd020459ddae3c19b83965188f6e910c221a 100644
+index 95efffa3e77cdbeebf53acd47dd1aa9b33cb24ab..3d6027195e1375f38a9b2bc43fd67ab1159f60d7 100644
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
 @@ -484,7 +484,11 @@ impl MacWindowState {
@@ -28,3 +28,30 @@ index 95efffa3e77cdbeebf53acd47dd1aa9b33cb24ab..f919bd020459ddae3c19b83965188f6e
              bounds.size == screen_size
          }
      }
+@@ -1568,21 +1576,11 @@ impl rwh::HasDisplayHandle for MacWindow {
+ }
+ 
+ fn get_scale_factor(native_window: id) -> f32 {
+-    let factor = unsafe {
+-        let screen: id = msg_send![native_window, screen];
+-        if screen.is_null() {
+-            return 2.0;
+-        }
+-        NSScreen::backingScaleFactor(screen) as f32
+-    };
+-
+-    // We are not certain what triggers this, but it seems that sometimes
+-    // this method would return 0 (https://github.com/zed-industries/zed/issues/6412)
+-    // It seems most likely that this would happen if the window has no screen
+-    // (if it is off-screen), though we'd expect to see viewDidChangeBackingProperties before
+-    // it was rendered for real.
+-    // Regardless, attempt to avoid the issue here.
+-    if factor == 0.0 { 2. } else { factor }
++    // NSWindow retains its backing scale while fully offscreen, when screen is nil.
++    // A synthetic screen fallback can resize the drawable at a different scale
++    // from the scene after the window moves back onto the same display.
++    let factor = unsafe { NSWindow::backingScaleFactor(native_window) as f32 };
++    if factor.is_finite() && factor > 0.0 { factor } else { 2.0 }
+ }
+ 
+ unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {

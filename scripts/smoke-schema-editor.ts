@@ -99,10 +99,11 @@ try {
   console.log("global shortcuts: only the three quake commands complete; profile type diagnosed");
   const quakeUri = pathToFileURL(join(directory, "quake.toml")).href;
   const quakeDiagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === quakeUri && (message.params.diagnostics?.some(item => item.range?.start.line === 2 && item.range.start.character === 8 && item.message.includes("0 is less than or equal to the minimum of 0")) ?? false), "quake width boundary diagnostic");
-  send({ method: "textDocument/didOpen", params: { textDocument: { uri: quakeUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[quake.profiles.default]\nwidth = 0\nedge = "top"\n` } } });
+  send({ method: "textDocument/didOpen", params: { textDocument: { uri: quakeUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[quake.profiles.default]\nwidth = 0\nposition = "center"\nanimation = "slide"\n` } } });
   await quakeDiagnostic;
-  requireLabels(await completions(quakeUri, 3, 9), ["top", "bottom", "left", "right"]);
-  console.log("quake profiles: edge values complete; width boundary diagnosed");
+  requireLabels(await completions(quakeUri, 3, 13), ["top", "bottom", "left", "right", "center"]);
+  requireLabels(await completions(quakeUri, 4, 14), ["auto", "none", "fade", "slide", "slide_top", "slide_bottom", "slide_left", "slide_right"]);
+  console.log("quake profiles: position and animation values complete; width boundary diagnosed");
   const engineUri = pathToFileURL(join(directory, "engine.toml")).href;
   const diagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === engineUri && (message.params.diagnostics?.length ?? 0) > 0, "engine enum diagnostic");
   send({ method: "textDocument/didOpen", params: { textDocument: { uri: engineUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[terminal]\nengine = "unknown"\n` } } });

@@ -43,7 +43,7 @@ impl Config {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
-    pub edge: Edge,
+    pub position: Position,
     pub display: String,
     pub width: f64,
     pub height: f64,
@@ -55,7 +55,7 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            edge: Edge::Top,
+            position: Position::Top,
             display: "active".into(),
             width: 1.0,
             height: 0.5,
@@ -94,11 +94,12 @@ impl Profile {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum Edge {
+pub enum Position {
     Top,
     Bottom,
     Left,
     Right,
+    Center,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -107,6 +108,7 @@ pub enum Animation {
     Auto,
     None,
     Fade,
+    Slide,
     SlideTop,
     SlideBottom,
     SlideLeft,
