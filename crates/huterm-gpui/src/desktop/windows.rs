@@ -425,7 +425,7 @@ fn check_for_updates(cx: &mut App) -> Result<CommandOutcome, CommandError> {
             .updater
             .check_for_updates()
             .map_err(CommandError::Unavailable)?;
-        return Ok(CommandOutcome::Accepted);
+        Ok(CommandOutcome::Accepted)
     }
     #[cfg(not(target_os = "macos"))]
     {

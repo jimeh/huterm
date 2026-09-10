@@ -404,7 +404,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: rust bun zig cargo:cargo-packager
+          install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager
           minimum_release_age: 3d
 
       - name: Install Linux package tools with Mise

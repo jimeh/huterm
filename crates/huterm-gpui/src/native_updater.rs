@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::marker::PhantomData;
+use std::path::Path;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -197,7 +198,7 @@ fn apply_config(updater: *mut Object, config: UpdateConfig) {
         }
         if let Some(desired) = overrides.check_interval_seconds {
             let current: f64 = msg_send![updater, updateCheckInterval];
-            if current != desired {
+            if (current - desired).abs() >= 0.5 {
                 let _: () = msg_send![updater, setUpdateCheckInterval: desired];
             }
         }
@@ -228,8 +229,11 @@ fn is_packaged_application() -> anyhow::Result<bool> {
         let identifier: *mut Object = msg_send![bundle, bundleIdentifier];
         let bundle_path: *mut Object = msg_send![bundle, bundlePath];
         Ok(native_string(identifier).is_ok_and(|value| value == APP_ID)
-            && native_string(bundle_path)
-                .is_ok_and(|path| path.ends_with(".app")))
+            && native_string(bundle_path).is_ok_and(|path| {
+                Path::new(&path).extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("app")
+                })
+            }))
     }
 }
 

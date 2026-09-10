@@ -2,13 +2,16 @@
 
 use std::io::Write as _;
 
-use super::*;
+use gpui::App;
+use huterm_protocol::ids;
+
+use super::{Desktop, run_with_startup};
 
 const UNPACKAGED_DIAGNOSTIC: &str =
     "self-updates are available only in the packaged Huterm application";
 
 pub(crate) fn run() -> anyhow::Result<()> {
-    super::run_with_startup(|cx| {
+    run_with_startup(|cx| {
         if let Err(error) = check(cx) {
             eprintln!("NATIVE_UPDATER_SMOKE failed: {error:#}");
             std::process::exit(1);
