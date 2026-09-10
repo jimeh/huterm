@@ -3,11 +3,11 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates clang cmake curl git pkg-config \
-    python3 ripgrep rsync procps locales xz-utils unzip zsh \
+    build-essential ca-certificates clang cmake curl file git pkg-config \
+    python3 ripgrep rsync procps locales patchelf pax-utils xz-utils unzip zsh \
     libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers \
     fontconfig fonts-dejavu-core xvfb xauth xdotool x11-xkb-utils \
-    x11-utils openbox xcompmgr twm \
+    x11-utils openbox xcompmgr twm desktop-file-utils appstream \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8
 

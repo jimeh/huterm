@@ -82,6 +82,10 @@ async function main(args: string[]): Promise<number> {
 
   const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "pipe" });
   if (revision.exitCode !== 0) throw new Error(`cannot resolve source revision: ${revision.stderr.toString().trim()}`);
+  const sourceDateEpoch = Bun.spawnSync(["git", "show", "-s", "--format=%ct", "HEAD"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  if (sourceDateEpoch.exitCode !== 0 || !/^\d+\s*$/.test(sourceDateEpoch.stdout.toString())) {
+    throw new Error(`cannot resolve source commit time: ${sourceDateEpoch.stderr.toString().trim()}`);
+  }
 
   const inputs = [
     ["scripts/linux/Dockerfile", "Dockerfile"],
@@ -129,6 +133,7 @@ async function main(args: string[]): Promise<number> {
     container = capture([
       "create", "--init", "--interactive", "--name", names.name, "--platform", `linux/${arch}`,
       "--env", `HUTERM_SOURCE_REVISION=${revision.stdout.toString().trim()}`,
+      "--env", `HUTERM_SOURCE_DATE_EPOCH=${sourceDateEpoch.stdout.toString().trim()}`,
       "--mount", `type=bind,source=${root},target=/source,readonly`,
       "--mount", `type=volume,source=${names.volumes[0]},target=/workspace`,
       "--mount", `type=volume,source=${names.volumes[1]},target=/cache`,

@@ -36,23 +36,38 @@ and workflow logs.
 
 ## Release path
 
-The release workflow does the following on an Apple Silicon macOS runner:
+The release workflow separates validation, native platform builds, and final
+assembly:
 
-1. Checks out the exact Release Please SHA with full tag history.
-2. Confirms that the checkout, tag, draft release target, and Cargo package
-   versions match that SHA and version, and that `origin/main` contains the SHA.
-3. Checks schema generation against the committed bytes, then builds the
-   universal `Huterm.app` with arm64 and x86_64 slices.
-4. Imports the Developer ID identity into a temporary keychain.
-5. Signs each Mach-O and the app with a secure timestamp and Hardened Runtime,
-   then checks the authority, team, runtime flag, timestamp, and entitlements.
-6. Submits a temporary ZIP to Apple's notary service, staples the accepted
-   ticket to the app, validates the ticket, and runs Gatekeeper assessment.
-7. Creates `Huterm-<version>-macOS-universal.zip` from the stapled app and
-   copies the committed `huterm.schema.json` and `huterm-theme.schema.json`,
-   and writes `SHA256SUMS` for all three payloads.
-8. Uploads all four files to the draft, checks the exact remote names, sizes, and
-   SHA-256 digests, then publishes the release.
+1. A credential-free preflight checks out the exact Release Please SHA, confirms
+   that `origin/main` contains it, and validates the tag, draft target, Cargo
+   package versions, and committed schemas.
+2. An Apple Silicon runner builds the universal `Huterm.app`, imports the
+   Developer ID identity, signs every Mach-O and the app, notarizes and staples
+   it, then runs Gatekeeper. It uploads the public ZIP and a digest manifest as
+   an intermediate Actions artifact.
+3. Native Ubuntu 22.04 x86_64 and aarch64 runners independently build and verify
+   the AppImage and tarball for their architecture. These jobs receive no Apple
+   or GitHub release credentials and upload their two packages plus a digest
+   manifest as intermediate Actions artifacts.
+4. The assembly job downloads exactly those three platform artifacts, validates
+   their inventories and digests, adds the committed schemas, and writes the
+   final `SHA256SUMS`. In publishing mode it mints a fresh release token, uploads
+   the exact eight-file asset set, verifies remote names, sizes, and GitHub
+   SHA-256 digests, and only then publishes the draft.
+
+The public asset set is:
+
+```text
+Huterm-<version>-macOS-universal.zip
+Huterm-<version>-Linux-x86_64.AppImage
+Huterm-<version>-Linux-x86_64.tar.gz
+Huterm-<version>-Linux-aarch64.AppImage
+Huterm-<version>-Linux-aarch64.tar.gz
+huterm.schema.json
+huterm-theme.schema.json
+SHA256SUMS
+```
 
 Any failure before the final publish call leaves the GitHub Release as a draft.
 The signing helper restores the runner's keychain configuration and deletes its
@@ -66,12 +81,12 @@ The local `mise run package:macos` task remains an unsigned package check.
 ## Manual verification
 
 Run the `Release` workflow manually with `publish` unchecked to exercise the
-credential-backed package path. Select the branch to run from and enter its
+complete package path. Select the branch to run from and enter its
 exact 40-character HEAD SHA, or a SHA from `main`, plus the matching Cargo
 version; leave the tag empty. The workflow validates the
-source, builds and signs both architectures, notarizes and staples the app, runs
-Gatekeeper, and uploads the ZIP, both schemas, and `SHA256SUMS` as an Actions
-artifact retained for seven days.
+source, builds both native Linux architectures, builds and signs both macOS
+slices, notarizes and staples the app, runs all package checks, and uploads the
+same eight-file inventory as an Actions artifact retained for seven days.
 
 Before checkout, the workflow requires the SHA to be on `main` or to match the
 exact branch commit selected by a manual, non-publishing dispatch. It verifies
@@ -87,8 +102,31 @@ temporary Actions artifact.
 To recover an existing draft release, run the same workflow with `publish`
 checked. Enter the exact 40-character SHA, `v`-prefixed tag, and version from
 that draft. The workflow revalidates the release and rebuilds the artifacts. It
-replaces the two expected assets when they already exist, but refuses to publish
-if the draft contains any unexpected asset.
+replaces the eight expected assets when they already exist, but refuses to
+publish if the draft contains any unexpected asset.
+
+## Linux package contract
+
+Both Linux formats contain the same neutral payload: `bin/huterm`, the desktop
+entry, AppStream metadata, the 512-pixel icon, package provenance, and third-party
+notices. The tarball does not contain `AppRun`, `.DirIcon`, an AppImage runtime,
+or other AppImage-only files. The AppImage adds only its launch envelope around
+that byte-identical payload.
+
+Linux releases require x86_64 or aarch64, glibc 2.35 or newer, X11 or XWayland,
+and a working Vulkan driver. The package privately carries only the xkbcommon
+library family. glibc, the ELF loader, X11/XCB, Vulkan and GPU drivers remain
+host-owned. FreeType and Ghostty VT are statically linked; verification rejects
+an unexpected dynamic FreeType dependency.
+
+Before the first public Linux release, launch each native package on Ubuntu
+22.04 and Ubuntu 24.04. Exercise the AppImage through FUSE when available and
+with `--appimage-extract-and-run` when FUSE is unavailable. Also run the
+tarball's `bin/huterm` before and after moving the extracted directory, and
+verify desktop integration by installing the included desktop entry, AppStream
+metadata, and icon under the corresponding `$XDG_DATA_HOME` paths. Record any
+physical-GPU or native-Wayland evidence separately; CI covers X11 under Xvfb
+with Mesa software Vulkan.
 
 ## Privacy and hardware checks
 

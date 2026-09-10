@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Huterm
+Comment=Native terminal emulator and multiplexer
+Exec=huterm
+Icon=app.huterm.dev
+Terminal=false
+Categories=Development;

@@ -169,6 +169,11 @@ reports version 24.3.18 or newer; otherwise it compiles the bundled FreeType C
 source. Package verification must reject an unexpected `libfreetype.so.6`
 dependency and ship the FreeType License notice when that static fallback is
 present.
+Canonicalize `ldd` paths before passing them to `dpkg-query -S`. Ubuntu's
+usrmerged loader can report `/lib/...` while dpkg records only `/usr/lib/...`.
+The AppImage type-2 launcher can hand execution to another PID. PID-bound X11
+package smokes must resolve the real process from the isolated Huterm window;
+`xdotool --pid` cannot reliably follow a direct AppImage launch.
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font

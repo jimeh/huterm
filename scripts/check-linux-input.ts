@@ -11,6 +11,21 @@ function run(args: string[]): string {
   return result.stdout.toString().trim();
 }
 
+function tryRun(args: string[]): string | undefined {
+  const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
+  return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
+}
+
+function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+function signal(pid: number, signal: NodeJS.Signals): void {
+  try { process.kill(pid, signal); }
+  catch { /* The process already exited. */ }
+}
+
 async function waitFor(check: () => Promise<boolean>, label: string): Promise<void> {
   const deadline = performance.now() + 10_000;
   while (!await check()) {
@@ -57,11 +72,25 @@ command = "quit"
     stdout: "pipe", stderr: "pipe",
   });
   const diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);
+  let applicationPid = app.pid;
   try {
     await waitFor(() => Bun.file(ready).exists(), "raw PTY readiness");
-    const windows = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/);
-    if (windows.length !== 1 || !windows[0]) throw new Error(`expected one Huterm window: ${windows}`);
-    run(["xdotool", "windowfocus", "--sync", windows[0]]);
+    let windowIds: string[] = [];
+    await waitFor(async () => {
+      const output = tryRun(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid)])
+        ?? tryRun(["xdotool", "search", "--onlyvisible", "--class", "^app\\.huterm\\.dev$"]);
+      windowIds = output?.split(/\s+/).filter(Boolean) ?? [];
+      return windowIds.length > 0;
+    }, "Huterm window");
+    if (windowIds.length !== 1 || !windowIds[0]) throw new Error(`expected one Huterm window: ${windowIds}`);
+    const windowId = windowIds[0];
+    applicationPid = Number(run(["xdotool", "getwindowpid", windowId]));
+    if (!Number.isSafeInteger(applicationPid) || applicationPid <= 0) throw new Error(`invalid Huterm window PID: ${applicationPid}`);
+    const mapsDirectory = process.env.HUTERM_PACKAGE_MAPS_DIR;
+    if (mapsDirectory) {
+      await writeFile(join(mapsDirectory, `${engine}.maps`), await readFile(`/proc/${applicationPid}/maps`));
+    }
+    run(["xdotool", "windowfocus", "--sync", windowId]);
     // XTest updates the server's XKB modifier state; --window would instead
     // send XSendEvent events and bypass the conversion this smoke must prove.
     run(["xdotool", "key", "--clearmodifiers", "--delay", "40",
@@ -73,14 +102,17 @@ command = "quit"
       throw new Error(`${engine}: expected ${expected.toString("hex")}, got ${actual.toString("hex")}`);
     }
     run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+q"]);
-    await waitFor(async () => app.exitCode !== null, "Huterm cleanup");
-    if (await app.exited !== 0) throw new Error(`${engine}: Huterm exited with ${app.exitCode}`);
+    await waitFor(async () => !isAlive(applicationPid), "Huterm cleanup");
+    if (app.exitCode === null && await app.exited !== 0) throw new Error(`${engine}: Huterm exited with ${app.exitCode}`);
+    if (app.exitCode !== null && app.exitCode !== 0) throw new Error(`${engine}: Huterm launcher exited with ${app.exitCode}`);
     console.log(`LINUX_INPUT_SMOKE ${engine} exact-bytes=${actual.toString("hex")} layout=us`);
   } finally {
     const forceKill = setTimeout(() => {
+      signal(applicationPid, "SIGKILL");
       if (app.exitCode === null) app.kill("SIGKILL");
     }, 1_000);
     try {
+      signal(applicationPid, "SIGTERM");
       if (app.exitCode === null) app.kill("SIGTERM");
       await app.exited;
     } finally {

@@ -58,18 +58,38 @@ jobs:
         run: mise run audit:scripts
 
   checks:
-    name: Checks (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Checks (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        include:
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            runner-arch: X64
+          - label: Linux aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            runner-arch: ARM64
+          - label: macOS arm64
+            runner: macos-14
+            machine: arm64
+            runner-arch: ARM64
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner-arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -77,6 +97,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev zsh
+
+      - name: Record Linux check evidence
+        if: runner.os == 'Linux'
+        run: |
+          evidence="$RUNNER_TEMP/huterm-check-evidence"
+          mkdir -p "$evidence"
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "image_os=${ImageOS:-}"
+            echo "image_version=${ImageVersion:-}"
+            echo "github_sha=$GITHUB_SHA"
+            uname -a
+          } > "$evidence/runner.txt"
 
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -93,14 +127,10 @@ jobs:
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: checks-debug
+          key: checks-debug-${{ runner.arch }}
 
       - name: Check platform prerequisites
         run: mise run doctor
-
-      - name: Confirm Apple Silicon runner
-        if: runner.os == 'macOS'
-        run: test "$(uname -m)" = arm64
 
       - name: Check Rust formatting
         run: mise run format:check
@@ -117,19 +147,46 @@ jobs:
       - name: Run Rust tests
         run: mise run ci:test
 
+      - name: Upload Linux check failure evidence
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: check-evidence-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/huterm-check-evidence
+
   smoke:
-    name: Rust smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Rust smoke (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        include:
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            runner-arch: X64
+          - label: Linux aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            runner-arch: ARM64
+          - label: macOS arm64
+            runner: macos-14
+            machine: arm64
+            runner-arch: ARM64
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner-arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -162,17 +219,13 @@ jobs:
         with:
           # Avoid keys drifting with unrelated Rust versions on hosted images.
           add-rust-environment-hash-key: false
-          key: smoke-debug-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml', 'scripts/ghostty-source.json') }}
+          key: smoke-debug-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml', 'scripts/ghostty-source.json') }}
           cache-on-failure: true
           cache-workspace-crates: true
           cache-directories: .native/ghostty
 
       - name: Check platform prerequisites
         run: mise run doctor
-
-      - name: Confirm Apple Silicon runner
-        if: runner.os == 'macOS'
-        run: test "$(uname -m)" = arm64
 
       - name: Prepare smoke evidence
         run: |
@@ -249,7 +302,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: smoke-evidence-${{ runner.os }}-${{ github.run_attempt }}
+          name: smoke-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-smoke-evidence
 
   benchmarks:
@@ -293,16 +346,55 @@ jobs:
         run: mise run ci:benchmarks
 
   package:
-    name: Package macOS arm64
-    runs-on: macos-14
-    timeout-minutes: 30
+    name: Package ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-14
+            machine: arm64
+            runner-arch: ARM64
+            task: package:macos
+          - label: Linux x86_64
+            runner: ubuntu-22.04
+            machine: x86_64
+            runner-arch: X64
+            task: package:linux
+          - label: Linux aarch64
+            runner: ubuntu-22.04-arm
+            machine: aarch64
+            runner-arch: ARM64
+            task: package:linux
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install job tools with Mise
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner-arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
+
+      - name: Install Linux build and package dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            appstream build-essential ca-certificates clang cmake curl \
+            desktop-file-utils file fontconfig fonts-dejavu-core git locales \
+            libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers openbox \
+            patchelf pax-utils pkg-config python3 ripgrep rsync xauth xcompmgr \
+            xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
+
+      - name: Install macOS package tools with Mise
+        if: runner.os == 'macOS'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
@@ -311,23 +403,41 @@ jobs:
           install_args: rust bun zig cargo:cargo-packager
           minimum_release_age: 3d
 
+      - name: Install Linux package tools with Mise
+        if: runner.os == 'Linux'
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun zig
+          minimum_release_age: 3d
+
       - name: Materialize Rust toolchain
         run: mise run verify:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: package-release
+          key: package-release-${{ runner.arch }}
 
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Build and verify Huterm.app with both engines
-        run: mise run package:macos
+      - name: Build and verify native package with both engines
+        run: mise run ${{ matrix.task }}
+
+      - name: Upload Linux package evidence on failure
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-evidence-${{ runner.arch }}-${{ github.run_attempt }}
+          path: dist/linux/${{ matrix.machine }}/package-evidence
+          if-no-files-found: ignore
 
   verify:
     # Preserve the required check names configured in the repository ruleset.
-    # Both gates require every job because matrix results are aggregated by job ID.
+    # These historical labels now cover both native Linux architectures because
+    # matrix results are aggregated by job ID.
     name: Verify ${{ matrix.platform }}
     needs: [policy, checks, smoke, benchmarks, package]
     if: always()

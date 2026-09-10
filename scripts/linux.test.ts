@@ -33,7 +33,8 @@ if (args[0] === 'start') {
   const git = join(directory, "git");
   writeFileSync(git, `#!/usr/bin/env bun
 if (process.env.GIT_TEST_FAIL) { console.error("missing repository"); process.exit(128); }
-console.log("0123456789abcdef0123456789abcdef01234567");
+if (process.argv.includes("--format=%ct")) console.log("1700000000");
+else console.log("0123456789abcdef0123456789abcdef01234567");
 `);
   chmodSync(git, 0o755);
   const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, DOCKER_TEST_LOG: log, ...overrides };
@@ -73,6 +74,7 @@ describe("Linux container runner", () => {
     const create = f.calls().find((args) => args[0] === "create")!;
     expect(create[create.indexOf("--platform") + 1]).toBe("linux/amd64");
     expect(create).toContain("HUTERM_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567");
+    expect(create).toContain("HUTERM_SOURCE_DATE_EPOCH=1700000000");
     expect(create.slice(-5)).toEqual(["printf", "%s", "a b", "$(literal)", "--help"]);
     expect(create.some((arg) => arg.endsWith("target=/source,readonly"))).toBe(true);
     expect(f.calls().at(-1)).toEqual(["rm", "--force", "owned-container-id"]);

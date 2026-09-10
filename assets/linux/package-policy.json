@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "privateLibraries": {
+    "libxkbcommon.so.0": {
+      "licenseSource": "/usr/share/doc/libxkbcommon0/copyright",
+      "licenseFile": "libxkbcommon0.copyright"
+    },
+    "libxkbcommon-x11.so.0": {
+      "licenseSource": "/usr/share/doc/libxkbcommon-x11-0/copyright",
+      "licenseFile": "libxkbcommon-x11-0.copyright"
+    },
+    "libxcb-xkb.so.1": {
+      "licenseSource": "/usr/share/doc/libxcb-xkb1/copyright",
+      "licenseFile": "libxcb-xkb1.copyright"
+    }
+  },
+  "hostLibraries": [
+    "ld-linux-aarch64.so.1",
+    "ld-linux-x86-64.so.2",
+    "libXau.so.6",
+    "libXdmcp.so.6",
+    "libbsd.so.0",
+    "libc.so.6",
+    "libdl.so.2",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libmd.so.0",
+    "libpthread.so.0",
+    "librt.so.1",
+    "libxcb.so.1"
+  ],
+  "notices": [
+    { "source": "LICENSE", "target": "LICENSE-Huterm" },
+    { "source": "crates/huterm-gpui/themes/licenses/catppuccin.txt", "target": "theme-catppuccin.txt" },
+    { "source": "crates/huterm-gpui/themes/licenses/folke.txt", "target": "theme-folke.txt" },
+    { "source": "crates/huterm-gpui/themes/licenses/dracula.txt", "target": "theme-dracula.txt" },
+    { "source": "crates/huterm-gpui/themes/licenses/nordtheme.txt", "target": "theme-nordtheme.txt" },
+    { "source": "crates/huterm-gpui/themes/licenses/binaryify.txt", "target": "theme-binaryify.txt" },
+    { "source": "crates/huterm-gpui/themes/licenses/chriskempson.txt", "target": "theme-chriskempson.txt" },
+    { "source": "third-party/ghostty/ghostty-MIT.txt", "target": "ghostty-MIT.txt" },
+    { "source": "third-party/terminal-graphics/LICENSE-Ghostty", "target": "terminal-graphics-LICENSE-Ghostty" },
+    { "source": "third-party/freetype/FTL.TXT", "target": "freetype-FTL.txt" }
+  ]
+}
