@@ -234,9 +234,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await command("app hide_quake");await settled(false);
       process.kill(Number(identity),"SIGTERM");
       await waitFor(async () => !profile(await state(),"default"),"hidden final shell exit removes association");
-      if (macos) await native(`activate\t${app.pid}`);
-      else run(["xdotool","windowactivate","--sync",run(["xdotool","search","--pid",String(app.pid)])]);
-      await input("exit");
+      await command("ordinary close_window");
+      await waitFor(async () => profile(await state(),"ordinary")?.confirming === "true", "last ordinary window close assessment");
+      await command("ordinary confirm_close");
       await waitFor(async () => (await state()).windows === "0","zero window keepalive");
       if (app.exitCode !== null || (await state()).keepalive !== "true") throw new Error("global registration did not keep zero-window application alive");
       const absentShell = shell + ".absent";

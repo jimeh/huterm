@@ -51,8 +51,6 @@ final class Witness: NSObject, NSApplicationDelegate {
         case "focus":
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
-        case "activate":
-            guard parts.count == 2, let pid = Int32(parts[1]), let app = NSRunningApplication(processIdentifier: pid), app.activate(options: [.activateIgnoringOtherApps]) else { throw NSError(domain: "QuakeWitness", code: 7) }
         case "key":
             guard parts.count == 4, let code = UInt16(parts[1]), let flags = UInt64(parts[3]) else { throw NSError(domain: "QuakeWitness", code: 3) }
             try postKey(code, parts[2] == "down", CGEventFlags(rawValue: flags))
