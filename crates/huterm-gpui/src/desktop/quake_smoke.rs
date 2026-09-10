@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use huterm_protocol::{
     CommandArgument, CommandInvocation, CommandValue, lookup,
 };
-use std::{fmt::Write as _, path::Path};
+use std::{fmt::Write as _, fs::OpenOptions, io::Write as _, path::Path};
 
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory = PathBuf::from(std::env::var("HUTERM_QUAKE_SMOKE")?);
@@ -19,9 +19,15 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(Duration::from_millis(10))
                     .await;
-                let Ok(state) = cx.update(read_state) else {
+                let Ok((state, observations)) = cx.update(|cx| {
+                    let state = read_state(cx);
+                    let observations =
+                        quake_windows::drain_smoke_observations(cx);
+                    (state, observations)
+                }) else {
                     break;
                 };
+                append_trace(&directory, &observations);
                 publish(
                     &directory,
                     "state",
@@ -45,6 +51,69 @@ pub(crate) fn run() -> anyhow::Result<()> {
         })
         .detach();
     })
+}
+
+fn append_trace(
+    directory: &Path,
+    observations: &[quake_windows::SmokeObservation],
+) {
+    if observations.is_empty() {
+        return;
+    }
+    let mut batch = String::new();
+    for observation in observations {
+        writeln!(
+            batch,
+            "{{\"monotonic_us\":{},\"profile\":\"{}\",\"generation\":{},\"desired\":{},\"progress\":{},\"stage\":\"{}\",\"frame\":[{},{},{},{}],\"target_frame\":[{},{},{},{}],\"display_frame\":[{},{},{},{}],\"opacity\":{},\"scheduler_gap_us\":{}}}",
+            observation.monotonic_us,
+            json_string(&observation.profile),
+            observation.generation,
+            observation.desired,
+            observation.progress,
+            observation.stage,
+            observation.frame.x,
+            observation.frame.y,
+            observation.frame.width,
+            observation.frame.height,
+            observation.target_frame.x,
+            observation.target_frame.y,
+            observation.target_frame.width,
+            observation.target_frame.height,
+            observation.display_frame.x,
+            observation.display_frame.y,
+            observation.display_frame.width,
+            observation.display_frame.height,
+            observation.opacity,
+            observation.scheduler_gap_us,
+        )
+        .expect("format quake smoke trace");
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("trace.jsonl"))
+        .expect("open quake smoke trace");
+    file.write_all(batch.as_bytes())
+        .expect("append quake smoke trace");
+}
+
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => {
+                write!(escaped, "\\u{:04x}", u32::from(ch))
+                    .expect("write JSON escape");
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 fn publish(directory: &Path, name: &str, text: &str) {
     let temporary = directory.join(format!("{name}.tmp"));

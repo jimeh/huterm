@@ -3,9 +3,12 @@
 use super::*;
 use crate::quake::ProfileExt;
 use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
-use std::{cell::Cell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+};
 
-#[derive(Default)]
 pub(super) struct Registry {
     platform: Option<native::Platform>,
     registrations: Option<hotkeys::Registrations>,
@@ -13,6 +16,84 @@ pub(super) struct Registry {
     return_focus: Option<native::Focus>,
     pump_running: bool,
     pub(super) failed_spawn: Option<(String, String)>,
+    smoke_journal: Option<SmokeJournal>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            platform: None,
+            registrations: None,
+            windows: BTreeMap::new(),
+            return_focus: None,
+            pump_running: false,
+            failed_spawn: None,
+            smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
+                .map(|_| SmokeJournal::new()),
+        }
+    }
+}
+
+const SMOKE_JOURNAL_CAPACITY: usize = 4096;
+
+struct SmokeJournal {
+    started: Instant,
+    observations: VecDeque<SmokeObservation>,
+}
+
+impl SmokeJournal {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            observations: VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, draft: SmokeObservationDraft) {
+        if self.observations.len() == SMOKE_JOURNAL_CAPACITY {
+            self.observations.pop_front();
+        }
+        self.observations.push_back(SmokeObservation {
+            monotonic_us: self.started.elapsed().as_micros(),
+            profile: draft.profile,
+            generation: draft.generation,
+            desired: draft.desired,
+            progress: draft.progress,
+            stage: draft.stage,
+            frame: draft.frame,
+            target_frame: draft.target_frame,
+            display_frame: draft.display_frame,
+            opacity: draft.opacity,
+            scheduler_gap_us: draft.scheduler_gap.as_micros(),
+        });
+    }
+}
+
+pub(super) struct SmokeObservation {
+    pub monotonic_us: u128,
+    pub profile: String,
+    pub generation: u64,
+    pub desired: bool,
+    pub progress: f64,
+    pub stage: &'static str,
+    pub frame: Rect,
+    pub target_frame: Rect,
+    pub display_frame: Rect,
+    pub opacity: f64,
+    pub scheduler_gap_us: u128,
+}
+
+struct SmokeObservationDraft {
+    profile: String,
+    generation: u64,
+    desired: bool,
+    progress: f64,
+    stage: &'static str,
+    frame: Rect,
+    target_frame: Rect,
+    display_frame: Rect,
+    opacity: f64,
+    scheduler_gap: Duration,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -29,23 +110,51 @@ enum Stage {
 struct Activation {
     seen: bool,
     requested: bool,
+    next_retry: Option<Instant>,
 }
+const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
 impl Activation {
     fn request(&mut self) {
         self.seen = false;
         self.requested = true;
+        self.next_retry = None;
+    }
+
+    fn cancel(&mut self) {
+        self.requested = false;
+        self.next_retry = None;
     }
 
     fn observe(&mut self, active: bool) {
         if active {
             self.seen = true;
+            self.cancel();
         } else if self.seen {
-            self.requested = false;
+            self.cancel();
         }
     }
 
-    fn take_request(&mut self) -> bool {
-        std::mem::take(&mut self.requested)
+    fn take_request(&mut self, now: Instant) -> bool {
+        if !std::mem::take(&mut self.requested) {
+            return false;
+        }
+        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+        true
+    }
+
+    fn take_retry(&mut self, now: Instant, deadline: Instant) -> bool {
+        if self.seen || now >= deadline {
+            return false;
+        }
+        let Some(next_retry) = self.next_retry else {
+            return false;
+        };
+        if now < next_retry {
+            return false;
+        }
+        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+        true
     }
 
     fn refit(
@@ -55,7 +164,7 @@ impl Activation {
         now: Instant,
     ) -> Instant {
         if stage == Stage::Idle {
-            self.requested = false;
+            self.cancel();
             now + Duration::from_secs(3)
         } else {
             deadline
@@ -87,6 +196,7 @@ pub(super) struct Presentation {
     recovering: bool,
     detach_requested: bool,
     observed_fullscreen: bool,
+    smoke_observations: bool,
 }
 impl Presentation {
     pub fn chrome_hidden(&self) -> bool {
@@ -118,9 +228,10 @@ impl Presentation {
     fn request(&mut self, visible: bool, restore_focus: bool) {
         let now = Instant::now();
         self.deadline = now + Duration::from_secs(3);
-        self.activation.requested = visible;
         if visible {
             self.activation.request();
+        } else {
+            self.activation.cancel();
         }
         self.prepare(visible, restore_focus, now);
     }
@@ -158,6 +269,11 @@ struct NativeEffect {
     gate: Rc<Cell<u64>>,
     generation: u64,
     operations: Vec<NativeOp>,
+    observation: Option<SmokeObservationDraft>,
+}
+struct NativeEffectOutcome {
+    warning: Option<String>,
+    observation: Option<SmokeObservationDraft>,
 }
 impl NativeEffect {
     fn for_state(state: &Presentation, operations: Vec<NativeOp>) -> Self {
@@ -166,13 +282,43 @@ impl NativeEffect {
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
             operations,
+            observation: None,
         }
     }
-    fn run(self) -> anyhow::Result<Option<String>> {
+    fn for_transition(
+        state: &Presentation,
+        operations: Vec<NativeOp>,
+        progress: f64,
+        resulting_stage: Stage,
+        frame: Rect,
+        opacity: f64,
+        scheduler_gap: Duration,
+    ) -> Self {
+        let mut effect = Self::for_state(state, operations);
+        if state.smoke_observations {
+            effect.observation = Some(SmokeObservationDraft {
+                profile: state.name.clone(),
+                generation: state.generation.get(),
+                desired: state.transition.visible(),
+                progress,
+                stage: resulting_stage.name(),
+                frame,
+                target_frame: state.target,
+                display_frame: state.display.frame,
+                opacity,
+                scheduler_gap,
+            });
+        }
+        effect
+    }
+    fn run(self) -> anyhow::Result<NativeEffectOutcome> {
         let mut warning = None;
         for operation in self.operations {
             if self.gate.get() != self.generation {
-                return Ok(warning);
+                return Ok(NativeEffectOutcome {
+                    warning,
+                    observation: None,
+                });
             }
             match operation {
                 NativeOp::Frame(frame) => self.native.set_frame(frame)?,
@@ -198,7 +344,24 @@ impl NativeEffect {
                 NativeOp::Failure(error) => return Err(error),
             }
         }
-        Ok(warning)
+        Ok(NativeEffectOutcome {
+            warning,
+            observation: self.observation,
+        })
+    }
+}
+
+impl Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prepare => "Prepare",
+            Self::Activate => "Activate",
+            Self::Windowed => "Windowed",
+            Self::Animate => "Animate",
+            Self::SettleVisible => "SettleVisible",
+            Self::SettleHidden => "SettleHidden",
+            Self::Idle => "Idle",
+        }
     }
 }
 
@@ -239,22 +402,36 @@ fn start_pump(cx: &mut App) {
                 break;
             };
             for (handle, effect) in effects {
-                let result = effect.run();
-                if let Ok(Some(warning)) = &result {
-                    let _ = cx.update(|cx| report(cx, warning));
-                }
-                if let Err(error) = result {
-                    let message = error.to_string();
-                    let recovery = cx
-                        .update(|cx| recover(cx, handle, &message))
-                        .ok()
-                        .flatten();
-                    if let Some(effect) = recovery
-                        && let Err(error) = effect.run()
-                    {
-                        eprintln!("Quake recovery: {error}");
+                match effect.run() {
+                    Ok(outcome) => {
+                        let _ = cx.update(|cx| {
+                            if let Some(observation) = outcome.observation
+                                && let Some(journal) = cx
+                                    .global_mut::<Desktop>()
+                                    .quake
+                                    .smoke_journal
+                                    .as_mut()
+                            {
+                                journal.record(observation);
+                            }
+                            if let Some(warning) = outcome.warning {
+                                report(cx, &warning);
+                            }
+                        });
                     }
-                    let _ = cx.update(|cx| report(cx, &message));
+                    Err(error) => {
+                        let message = error.to_string();
+                        let recovery = cx
+                            .update(|cx| recover(cx, handle, &message))
+                            .ok()
+                            .flatten();
+                        if let Some(effect) = recovery
+                            && let Err(error) = effect.run()
+                        {
+                            eprintln!("Quake recovery: {error}");
+                        }
+                        let _ = cx.update(|cx| report(cx, &message));
+                    }
                 }
             }
         }
@@ -493,9 +670,10 @@ pub(super) fn attach(
         transition,
         stage: Stage::Prepare,
         deadline: now + Duration::from_secs(3),
-        activation: Activation {
-            seen: false,
-            requested: true,
+        activation: {
+            let mut activation = Activation::default();
+            activation.request();
+            activation
         },
         suppress_blur: now + Duration::from_millis(200),
         last_display_check: now,
@@ -504,6 +682,7 @@ pub(super) fn attach(
         recovering: false,
         detach_requested: false,
         observed_fullscreen: false,
+        smoke_observations: std::env::var_os("HUTERM_QUAKE_SMOKE").is_some(),
     })
 }
 
@@ -783,7 +962,7 @@ fn step(
             state.stage = Stage::SettleVisible;
             state
                 .activation
-                .take_request()
+                .take_request(now)
                 .then(|| NativeEffect::for_state(state, vec![NativeOp::Show]))
         }
         Stage::Prepare => {
@@ -824,6 +1003,7 @@ fn step(
             }
         }
         Stage::Animate => {
+            let scheduler_gap = state.transition.elapsed_since_sample(now);
             let progress = state.transition.sample(now, state.duration());
             let finished = state.transition.finished();
             let (fade, edge) = state.profile.effects();
@@ -838,7 +1018,7 @@ fn step(
             } else {
                 1.0
             };
-            let focus = state.activation.take_request();
+            let focus = state.activation.take_request(now);
             let fullscreen = state.profile.fullscreen && !regular;
             let return_focus =
                 if finished && !showing && state.restore_focus && active {
@@ -872,7 +1052,15 @@ fn step(
                     operations.push(NativeOp::Opacity(1.0));
                 }
             }
-            Some(NativeEffect::for_state(state, operations))
+            Some(NativeEffect::for_transition(
+                state,
+                operations,
+                progress,
+                state.stage,
+                frame,
+                opacity,
+                scheduler_gap,
+            ))
         }
         Stage::SettleVisible => {
             let expected = state.profile.fullscreen && !regular;
@@ -915,16 +1103,22 @@ fn step(
                     // can also move the frame when presentation options change.
                     // Reassert the endpoint after those native changes; only
                     // X11 delegates fullscreen geometry to the window manager.
-                    if !regular
+                    let reassert_frame = !regular
                         && (!expected || cfg!(target_os = "macos"))
-                        && native.visible().unwrap_or(false)
-                    {
-                        Some(NativeEffect::for_state(
-                            state,
-                            vec![NativeOp::Frame(state.target)],
-                        ))
-                    } else {
+                        && native.visible().unwrap_or(false);
+                    let retry_activation =
+                        state.activation.take_retry(now, state.deadline);
+                    let mut operations = Vec::new();
+                    if reassert_frame {
+                        operations.push(NativeOp::Frame(state.target));
+                    }
+                    if retry_activation {
+                        operations.push(NativeOp::Show);
+                    }
+                    if operations.is_empty() {
                         None
+                    } else {
+                        Some(NativeEffect::for_state(state, operations))
                     }
                 }
                 Err(error) => Some(NativeEffect::for_state(
@@ -1127,15 +1321,25 @@ pub(super) fn inspect_return_focus(cx: &App) -> anyhow::Result<String> {
     ))
 }
 
+pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
+    cx.global_mut::<Desktop>()
+        .quake
+        .smoke_journal
+        .as_mut()
+        .map(|journal| journal.observations.drain(..).collect())
+        .unwrap_or_default()
+}
+
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
         state.native.visible()?,
         state.native.active()?,
+        state.activation.seen,
         state.native.fullscreen()?,
         state.fullscreen_context(),
         frame.x,
@@ -1165,30 +1369,129 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Activation, Stage};
+    use super::{ACTIVATION_RETRY_INTERVAL, Activation, Stage};
     use std::time::{Duration, Instant};
 
     #[test]
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {
+        let now = Instant::now();
         let mut activation = Activation::default();
         activation.request();
+        assert!(activation.take_request(now));
         activation.observe(true);
         activation.observe(false);
-        assert!(!activation.take_request());
+        assert!(!activation.take_request(now));
+        assert!(!activation.take_retry(
+            now + ACTIVATION_RETRY_INTERVAL,
+            now + Duration::from_secs(3)
+        ));
         assert!(activation.seen, "initial activation remains successful");
     }
 
     #[test]
     fn unfocused_observation_before_initial_activation_keeps_the_request() {
+        let now = Instant::now();
         let mut activation = Activation::default();
         activation.request();
         activation.observe(false);
-        assert!(activation.take_request());
+        assert!(activation.take_request(now));
         assert!(!activation.seen, "initial activation is still required");
         activation.observe(true);
         activation.request();
         assert!(!activation.seen, "a new summon needs fresh activation");
     }
+
+    #[test]
+    fn delayed_initial_show_anchors_retry_cadence_at_consumption() {
+        let requested = Instant::now();
+        let consumed = requested + Duration::from_millis(500);
+        let deadline = requested + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(consumed));
+        assert!(
+            !activation
+                .take_retry(consumed + Duration::from_millis(16), deadline)
+        );
+        assert!(
+            activation
+                .take_retry(consumed + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+    }
+
+    #[test]
+    fn active_observation_before_consumption_cancels_initial_show_and_retry() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(true);
+        assert!(!activation.take_request(now));
+        assert!(
+            !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+    }
+
+    #[test]
+    fn initial_activation_retries_on_cadence_until_the_original_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(now), "initial Show must run");
+        assert!(
+            !activation.take_retry(now + Duration::from_millis(99), deadline)
+        );
+        assert!(
+            activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+        assert!(
+            activation
+                .take_retry(now + ACTIVATION_RETRY_INTERVAL * 2, deadline)
+        );
+        assert!(!activation.take_retry(deadline, deadline));
+    }
+
+    #[test]
+    fn activation_retry_cadence_prevents_per_frame_show_requests() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(now));
+        assert!(
+            !activation.take_retry(now + Duration::from_millis(16), deadline)
+        );
+        assert!(
+            activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+        assert!(!activation.take_retry(
+            now + ACTIVATION_RETRY_INTERVAL + Duration::from_millis(16),
+            deadline
+        ));
+    }
+
+    #[test]
+    fn a_new_summon_resets_activation_retry_eligibility() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(now));
+        activation.observe(true);
+        activation.observe(false);
+        assert!(
+            !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+
+        let next = now + Duration::from_secs(1);
+        activation.request();
+        assert!(activation.take_request(next));
+        assert!(
+            activation.take_retry(next + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+    }
+
     #[test]
     fn geometry_refit_does_not_rearm_canceled_activation_or_extend_its_budget()
     {
@@ -1204,7 +1507,7 @@ mod tests {
             now + Duration::from_secs(2),
         );
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "refitting must not steal focus back after an observed app switch"
         );
         assert!(
@@ -1231,11 +1534,11 @@ mod tests {
             now + Duration::from_secs(2),
         );
         assert!(
-            activation.take_request(),
+            activation.take_request(now),
             "the requested initial activation must still run"
         );
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "refitting must not duplicate activation"
         );
         assert!(!activation.seen);
@@ -1247,11 +1550,11 @@ mod tests {
         let now = Instant::now();
         let mut activation = Activation::default();
         activation.request();
+        assert!(activation.take_request(now));
         activation.observe(true);
-        assert!(activation.take_request());
         let deadline = activation.refit(Stage::Idle, now, now);
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "passive refit must not activate a window"
         );
         assert!(activation.seen);
