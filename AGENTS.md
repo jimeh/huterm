@@ -521,9 +521,10 @@ when that condition was already true at prefix start.
 CI disables Mise auto-install so nested tasks retain each job's explicit tool
 selection. Its tool cache key hashes `mise.lock` and `rust-toolchain.toml` rather
 than task definitions. Keep Rust component/profile declarations aligned with the
-toolchain file and update the lock after changing tool versions. CI separates
-Clippy, tests, and desktop smokes to avoid Cargo target-directory lock contention;
-keep each platform's smokes serial within their job.
+toolchain file and update the lock after changing tool versions. CI runs format,
+Clippy, schema and script checks, and Rust tests sequentially in one job per
+platform so they reuse setup and debug artifacts without contending on the Cargo
+target-directory lock. Keep desktop smokes separate and serial within their job.
 
 Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
 with the repository ruleset. These gates require every validation job and disable

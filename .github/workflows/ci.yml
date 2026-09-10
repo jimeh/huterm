@@ -18,31 +18,6 @@ env:
   MISE_AUTO_INSTALL: 'false'
 
 jobs:
-  format:
-    name: Format
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          cache: true
-          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
-          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: rust
-          minimum_release_age: 3d
-
-      - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
-
-      - name: Check Rust formatting
-        run: mise run format:check
-
   policy:
     name: Policy
     runs-on: ubuntu-24.04
@@ -59,61 +34,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: actionlint markdownlint-cli2 pinact zizmor
-          minimum_release_age: 3d
-
-      - name: Verify repository policy
-        run: mise run verify:policy
-
-  scripts:
-    name: Scripts (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-14]
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          cache: true
-          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
-          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun rust
-          minimum_release_age: 3d
-
-      - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
-
-      - name: Check schema generation on this platform
-        run: mise run schema:check
-
-      - name: Check repository scripts
-        run: mise run check:scripts
-
-  dependencies:
-    name: Dependencies
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          cache: true
-          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
-          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: rust bun cargo:cargo-deny
+          install_args: rust bun cargo:cargo-deny actionlint markdownlint-cli2 pinact zizmor
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
@@ -122,7 +43,10 @@ jobs:
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: dependencies
+          key: policy
+
+      - name: Verify repository policy
+        run: mise run verify:policy
 
       - name: Verify patched vendor sources
         run: mise run vendor:check
@@ -133,15 +57,74 @@ jobs:
       - name: Audit scripting dependencies
         run: mise run audit:scripts
 
-  rust:
-    name: Rust ${{ matrix.check }} (${{ matrix.os }})
+  checks:
+    name: Checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
-        check: [lint, test, smoke]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev zsh
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: rust bun zig
+          minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: checks-debug
+
+      - name: Check platform prerequisites
+        run: mise run doctor
+
+      - name: Confirm Apple Silicon runner
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+
+      - name: Check Rust formatting
+        run: mise run format:check
+
+      - name: Run Clippy and architecture checks
+        run: mise run ci:lint
+
+      - name: Check schema generation on this platform
+        run: mise run schema:check
+
+      - name: Check repository scripts
+        run: mise run check:scripts
+
+      - name: Run Rust tests
+        run: mise run ci:test
+
+  smoke:
+    name: Rust smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,7 +139,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev zsh
 
       - name: Install Linux smoke dependencies
-        if: runner.os == 'Linux' && matrix.check == 'smoke'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install --no-install-recommends \
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
@@ -177,7 +160,7 @@ jobs:
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.check }}-debug
+          key: smoke-debug
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -186,8 +169,8 @@ jobs:
         if: runner.os == 'macOS'
         run: test "$(uname -m)" = arm64
 
-      - name: Run Rust validation
-        run: mise run ci:${{ matrix.check }}
+      - name: Run desktop smoke tests
+        run: mise run ci:smoke
 
   benchmarks:
     name: Scroll benchmarks
@@ -266,7 +249,7 @@ jobs:
     # Preserve the required check names configured in the repository ruleset.
     # Both gates require every job because matrix results are aggregated by job ID.
     name: Verify ${{ matrix.platform }}
-    needs: [format, policy, scripts, dependencies, rust, benchmarks, package]
+    needs: [policy, checks, smoke, benchmarks, package]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

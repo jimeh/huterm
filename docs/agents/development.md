@@ -193,13 +193,9 @@ process labels and directory inheritance are not implemented yet.
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
-| Pull request | `mise run format:check` on Ubuntu 24.04 | Rust formatting | CI |
-| Pull request | `mise run check:scripts` on `macos-14` and Ubuntu 24.04 | TypeScript, Bash syntax, and scripting tests | CI |
-| Pull request | `mise run ci:lint` on `macos-14` and Ubuntu 24.04 | Clippy and protocol dependency boundary | CI |
-| Pull request | `mise run ci:test` on `macos-14` and Ubuntu 24.04 | Rust unit and PTY integration tests | CI |
+| Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-14` and Ubuntu 24.04 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | `mise run ci:smoke` on `macos-14` and Ubuntu 24.04 | Serial native desktop smokes for each platform | CI |
-| Pull request | `mise run verify:policy` on Ubuntu 24.04 | Docs and workflow policy | CI |
-| Pull request | `mise run license` and `mise run audit:scripts` on Ubuntu 24.04 | Cargo and scripting dependency policy and advisories | CI |
+| Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
 | Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
@@ -212,9 +208,12 @@ process labels and directory inheritance are not implemented yet.
 | Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Both engines' snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
 | macOS package | `mise run package:macos` | Universal app metadata, icon, executable, and both architectures | CI or implementer |
 
-CI runs these check groups as separate jobs with focused tool and Cargo caches.
-The final `Verify Linux x86_64` and `Verify macOS arm64` jobs preserve the
-repository's required check names; both require every validation job to pass.
+CI groups format, static analysis, scripts, and Rust tests into one job per
+platform so their setup and debug artifacts are reused. Native desktop smokes,
+Linux release benchmarks, and macOS packaging remain separate because combining
+them would lengthen the workflow's slowest path. The final
+`Verify Linux x86_64` and `Verify macOS arm64` jobs are the stable required
+checks; both require every validation job to pass.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,
