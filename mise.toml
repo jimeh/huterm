@@ -558,24 +558,85 @@ run = "mise run test:rust"
 [tasks."ci:smoke"]
 description = "Run CI desktop smokes for the current platform"
 depends = ["verify:toolchain"]
+run = ["mise run ghostty:prepare", "mise run ci:smoke:build", "mise run ci:smoke:run"]
+
+[tasks."ci:smoke:build"]
+description = "Compile CI desktop smoke binaries for the current platform"
 run = '''
+set -eu
 case "$(uname -s)" in
   Darwin)
-    mise run smoke:renderer
-    mise run smoke:macos-menus
-    mise run smoke:macos-input
-    mise run smoke:macos-integration
-    mise run smoke:macos-quit
-    mise run smoke:macos-fullscreen
-    mise run smoke:macos-quake
+    bash scripts/build-exec.sh cargo build --locked \
+      -p huterm-gpui \
+      --example renderer_smoke \
+      --example native_menus_smoke \
+      --example native_input_smoke \
+      --example integration_smoke \
+      --example native_quit_smoke \
+      --example fullscreen_smoke \
+      --example quake_smoke
+    xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
     ;;
   Linux)
-    mise run smoke:renderer
-    mise run smoke:linux
-    mise run smoke:linux-input
-    mise run smoke:linux-integration
-    mise run smoke:linux-fullscreen
-    mise run smoke:linux-quake
+    bash scripts/build-exec.sh cargo build --locked \
+      -p huterm \
+      -p huterm-gpui \
+      --bin huterm \
+      --example renderer_smoke \
+      --example integration_smoke \
+      --example xdnd_source \
+      --example fullscreen_smoke \
+      --example quake_smoke \
+      --example quake_monitor
+    ;;
+  *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
+esac
+'''
+
+[tasks."ci:smoke:run"]
+description = "Run precompiled CI desktop smoke binaries for the current platform"
+run = '''
+set -eu
+case "$(uname -s)" in
+  Darwin)
+    bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
+    bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
+    bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+    bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
+    bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke
+    bun scripts/check-native-quit.ts target/debug/examples/native_quit_smoke ghostty
+    bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
+    bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
+    ;;
+  Linux)
+    for tool in openbox xcompmgr xprop xdotool xwininfo xmessage setxkbmap stdbuf; do
+      command -v "$tool" >/dev/null || { echo "Desktop smokes require $tool" >&2; exit 1; }
+    done
+
+    xvfb-run -a -s '-screen 0 1280x960x24 -noreset' \
+      bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
+
+    smoke_config=$(mktemp)
+    trap 'rm -f "$smoke_config"' EXIT
+    printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
+    set +e
+    HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+      -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
+    status=$?
+    set -e
+    if [ "$status" -ne 124 ]; then
+      echo "Huterm exited before the 8-second smoke window (status $status)" >&2
+      exit 1
+    fi
+
+    xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+      bun scripts/check-linux-input.ts target/debug/huterm
+    xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+      bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
+    xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+      bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
+    xvfb-run -a -s '-screen 0 1280x800x24 -noreset' \
+      bun scripts/check-quake.ts target/debug/examples/quake_smoke
     ;;
   *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
 esac
