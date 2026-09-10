@@ -48,6 +48,11 @@ function matchingDigests(actual: Digests, expected: unknown, label: string): voi
   }
 }
 
+function validateXcodeVersion(version: unknown): void {
+  const match = typeof version === "string" && /^Xcode (\d+)(?:\.\d+)*(?:\r?\n|$)/.exec(version);
+  if (!match || match[1] !== "27") throw new Error(`icon assets require Xcode 27; found ${String(version)}`);
+}
+
 export function validateIconMetadata(value: unknown): void {
   const plist = value as Record<string, unknown> | null;
   if (!plist || plist.CFBundleIconName !== "Huterm" || !["Huterm", "Huterm.icns"].includes(String(plist.CFBundleIconFile))) {
@@ -71,6 +76,7 @@ export function validateIconFiles(root: string): void {
 export function checkIcons(root = repository): void {
   const manifest = JSON.parse(readFileSync(join(root, manifestFile), "utf8"));
   if (manifest.version !== 1) throw new Error("unsupported icon manifest version");
+  validateXcodeVersion(manifest.tools?.xcode);
   matchingDigests(inputs(root), manifest.inputs, "source");
   matchingDigests(hashes(root, iconFiles), manifest.outputs, "output");
   validateIconFiles(root);
@@ -78,11 +84,13 @@ export function checkIcons(root = repository): void {
 
 export function generateIcons(root = repository, run: Run = runCommand): void {
   const before = inputs(root);
+  const xcode = run(["xcodebuild", "-version"]);
+  validateXcodeVersion(xcode);
   const actool = run(["xcrun", "--find", "actool"]);
   // xcrun's ictool is an asset-catalog entry point, not Icon Composer's renderer.
   const ictool = resolve(dirname(actool), "../../../Applications/Icon Composer.app/Contents/Executables/ictool");
   const tools = {
-    xcode: run(["xcodebuild", "-version"]),
+    xcode,
     iconComposer: JSON.parse(run([ictool, "--version"])),
     macOS: run(["sw_vers", "-productVersion"]),
   };

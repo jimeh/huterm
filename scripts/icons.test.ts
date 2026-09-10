@@ -23,6 +23,32 @@ test("icon check accepts the committed source and outputs without Apple tools", 
   checkIcons(fixture());
 });
 
+for (const version of ["Xcode 26.3\nBuild version 17C529", "Xcode 28.0\nBuild version 28A123", "Xcode unknown", undefined]) {
+  test(`icon check rejects unsupported recorded Xcode version: ${version}`, () => {
+    const root = fixture();
+    const file = join(root, "assets/icons.json");
+    const manifest = JSON.parse(readFileSync(file, "utf8"));
+    manifest.tools.xcode = version;
+    writeFileSync(file, JSON.stringify(manifest));
+    expect(() => checkIcons(root)).toThrow("icon assets require Xcode 27");
+  });
+}
+
+for (const version of ["Xcode 26.3\nBuild version 17C529", "Xcode 28.0\nBuild version 28A123"]) {
+  test(`generation rejects unsupported Xcode before exporting: ${version}`, () => {
+    const root = fixture();
+    const original = [...iconFiles, "assets/icons.json"].map(file => readFileSync(join(root, file)));
+    const run = (args: string[]): string => {
+      if (args[0] === "xcodebuild") return version;
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    };
+    expect(() => generateIcons(root, run)).toThrow("icon assets require Xcode 27");
+    for (const [index, file] of [...iconFiles, "assets/icons.json"].entries()) {
+      expect(readFileSync(join(root, file))).toEqual(original[index]!);
+    }
+  });
+}
+
 for (const change of ["edit", "add", "remove", "generator"] as const) {
   test(`icon check detects source ${change}`, () => {
     const root = fixture();
@@ -49,7 +75,7 @@ test("generation rejects a successful Apple export with no outputs and preserves
   const manifest = readFileSync(join(root, "assets/icons.json"));
   const run = (args: string[]): string => {
     if (args[0] === "xcrun" && args[1] === "--find") return "/Applications/Xcode.app/Contents/Developer/usr/bin/actool";
-    if (args[0] === "xcodebuild") return "Xcode fixture";
+    if (args[0] === "xcodebuild") return "Xcode 27.0\nBuild version 27A5228h";
     if (args[1] === "--version") return "{}";
     if (args[0] === "sw_vers") return "fixture";
     if (args[1] === "actool") return "Icon export exited with status 255, signal 0";

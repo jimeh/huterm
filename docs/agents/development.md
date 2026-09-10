@@ -286,7 +286,9 @@ mise run icons:check
 ```
 
 Use the path to your compatible Xcode installation, or omit `DEVELOPER_DIR` if
-it is already selected. Include the source changes and all generated files:
+it is already selected. Generation and manifest verification require Xcode 27
+provenance; support for another major version needs a reviewed script change.
+Include the source changes and all generated files:
 `assets/Huterm.icns`, `assets/Huterm.png`, `assets/macos/Assets.car`, and
 `assets/icons.json`. The PNG is a 1024-pixel render of the default appearance
 for Linux packaging. The asset catalog retains the layered macOS appearances;

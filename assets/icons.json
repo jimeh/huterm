@@ -14,11 +14,11 @@
     "assets/Huterm.icon/Assets/panel 2.svg": "07fee8a02c64346d5fe1f208a044ee9d7b69e22755ac89139d95e6f7731f2c90",
     "assets/Huterm.icon/Assets/prompt-large.svg": "aa607016b4bdfea4fe53a4105cbdd0dd5bc844349983c00507b9001e3d7de950",
     "assets/Huterm.icon/icon.json": "049d9ec5bffaf4ebd93018335c1507c7acf85b2b5bada42e6954332ded0ea146",
-    "scripts/icons.ts": "f2cebc04b3c7b45bc2cba8d023a45458be537a22ba7287e6abf5c7c880396fe6"
+    "scripts/icons.ts": "bbe646ea26a20ba911b9dc1839e5419c1c21291ba36376b2e82652e220565424"
   },
   "outputs": {
     "assets/Huterm.icns": "19e33de7a00e3adc871ff399ccfce73ac9e66d88480ac3f660338d5cfa386887",
     "assets/Huterm.png": "4cc7c2f237502f8e887765bad976507c0bec6e293b456b42cfc83a82baf434ea",
-    "assets/macos/Assets.car": "3433636101c38c2de3a6aac334c40528a44e9d298686d061e45bdb0c2c5e0efa"
+    "assets/macos/Assets.car": "428d2437e322f8f034e1f89a7d2878c0919de816f1316d2187f37969bff8e244"
   }
 }
