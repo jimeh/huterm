@@ -115,10 +115,10 @@ struct Activation {
 const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 impl Activation {
-    fn request(&mut self, now: Instant) {
+    fn request(&mut self) {
         self.seen = false;
         self.requested = true;
-        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+        self.next_retry = None;
     }
 
     fn cancel(&mut self) {
@@ -135,8 +135,12 @@ impl Activation {
         }
     }
 
-    fn take_request(&mut self) -> bool {
-        std::mem::take(&mut self.requested)
+    fn take_request(&mut self, now: Instant) -> bool {
+        if !std::mem::take(&mut self.requested) {
+            return false;
+        }
+        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
+        true
     }
 
     fn take_retry(&mut self, now: Instant, deadline: Instant) -> bool {
@@ -225,7 +229,7 @@ impl Presentation {
         let now = Instant::now();
         self.deadline = now + Duration::from_secs(3);
         if visible {
-            self.activation.request(now);
+            self.activation.request();
         } else {
             self.activation.cancel();
         }
@@ -668,7 +672,7 @@ pub(super) fn attach(
         deadline: now + Duration::from_secs(3),
         activation: {
             let mut activation = Activation::default();
-            activation.request(now);
+            activation.request();
             activation
         },
         suppress_blur: now + Duration::from_millis(200),
@@ -806,7 +810,7 @@ fn recover(
                 state.recovering = true;
                 state.regular = true;
                 state.deadline = now + Duration::from_secs(3);
-                state.activation.request(now);
+                state.activation.request();
                 let effect = NativeEffect::for_state(
                     state,
                     vec![NativeOp::Opacity(1.0)],
@@ -958,7 +962,7 @@ fn step(
             state.stage = Stage::SettleVisible;
             state
                 .activation
-                .take_request()
+                .take_request(now)
                 .then(|| NativeEffect::for_state(state, vec![NativeOp::Show]))
         }
         Stage::Prepare => {
@@ -1014,7 +1018,7 @@ fn step(
             } else {
                 1.0
             };
-            let focus = state.activation.take_request();
+            let focus = state.activation.take_request(now);
             let fullscreen = state.profile.fullscreen && !regular;
             let return_focus =
                 if finished && !showing && state.restore_focus && active {
@@ -1371,10 +1375,11 @@ mod tests {
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {
         let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request(now);
+        activation.request();
+        assert!(activation.take_request(now));
         activation.observe(true);
         activation.observe(false);
-        assert!(!activation.take_request());
+        assert!(!activation.take_request(now));
         assert!(!activation.take_retry(
             now + ACTIVATION_RETRY_INTERVAL,
             now + Duration::from_secs(3)
@@ -1386,13 +1391,44 @@ mod tests {
     fn unfocused_observation_before_initial_activation_keeps_the_request() {
         let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request(now);
+        activation.request();
         activation.observe(false);
-        assert!(activation.take_request());
+        assert!(activation.take_request(now));
         assert!(!activation.seen, "initial activation is still required");
         activation.observe(true);
-        activation.request(now + Duration::from_secs(1));
+        activation.request();
         assert!(!activation.seen, "a new summon needs fresh activation");
+    }
+
+    #[test]
+    fn delayed_initial_show_anchors_retry_cadence_at_consumption() {
+        let requested = Instant::now();
+        let consumed = requested + Duration::from_millis(500);
+        let deadline = requested + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(consumed));
+        assert!(
+            !activation
+                .take_retry(consumed + Duration::from_millis(16), deadline)
+        );
+        assert!(
+            activation
+                .take_retry(consumed + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
+    }
+
+    #[test]
+    fn active_observation_before_consumption_cancels_initial_show_and_retry() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        activation.observe(true);
+        assert!(!activation.take_request(now));
+        assert!(
+            !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
+        );
     }
 
     #[test]
@@ -1400,8 +1436,8 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request(now);
-        assert!(activation.take_request(), "initial Show must run");
+        activation.request();
+        assert!(activation.take_request(now), "initial Show must run");
         assert!(
             !activation.take_retry(now + Duration::from_millis(99), deadline)
         );
@@ -1420,8 +1456,8 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request(now);
-        assert!(activation.take_request());
+        activation.request();
+        assert!(activation.take_request(now));
         assert!(
             !activation.take_retry(now + Duration::from_millis(16), deadline)
         );
@@ -1439,8 +1475,8 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request(now);
-        assert!(activation.take_request());
+        activation.request();
+        assert!(activation.take_request(now));
         activation.observe(true);
         activation.observe(false);
         assert!(
@@ -1448,8 +1484,8 @@ mod tests {
         );
 
         let next = now + Duration::from_secs(1);
-        activation.request(next);
-        assert!(activation.take_request());
+        activation.request();
+        assert!(activation.take_request(next));
         assert!(
             activation.take_retry(next + ACTIVATION_RETRY_INTERVAL, deadline)
         );
@@ -1461,7 +1497,7 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request(now);
+        activation.request();
         activation.observe(true);
         activation.observe(false);
         let deadline = activation.refit(
@@ -1470,7 +1506,7 @@ mod tests {
             now + Duration::from_secs(2),
         );
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "refitting must not steal focus back after an observed app switch"
         );
         assert!(
@@ -1489,7 +1525,7 @@ mod tests {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
-        activation.request(now);
+        activation.request();
         activation.observe(false);
         let refit_deadline = activation.refit(
             Stage::Activate,
@@ -1497,11 +1533,11 @@ mod tests {
             now + Duration::from_secs(2),
         );
         assert!(
-            activation.take_request(),
+            activation.take_request(now),
             "the requested initial activation must still run"
         );
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "refitting must not duplicate activation"
         );
         assert!(!activation.seen);
@@ -1512,12 +1548,12 @@ mod tests {
     fn idle_geometry_refit_is_passive_with_a_fresh_placement_budget() {
         let now = Instant::now();
         let mut activation = Activation::default();
-        activation.request(now);
-        assert!(activation.take_request());
+        activation.request();
+        assert!(activation.take_request(now));
         activation.observe(true);
         let deadline = activation.refit(Stage::Idle, now, now);
         assert!(
-            !activation.take_request(),
+            !activation.take_request(now),
             "passive refit must not activate a window"
         );
         assert!(activation.seen);
