@@ -9,16 +9,16 @@
     "macOS": "27.0"
   },
   "inputs": {
-    "assets/Huterm.icon/Assets/cursor-large.svg": "d4e7fc4efd307481d0179d2a72f72f2602c1e00a43cf58557fae00fa9ace6a36",
+    "assets/Huterm.icon/Assets/cursor-sharp.svg": "1dd44d9011a8dae182fb2baef9f868768ed053964699c1e907500e59625dfe44",
     "assets/Huterm.icon/Assets/frame 3.svg": "2b7de910c35e7b598bfb2a5da1b02132fe8ca4f58764d4ba14d47b311fd730bc",
     "assets/Huterm.icon/Assets/panel 2.svg": "07fee8a02c64346d5fe1f208a044ee9d7b69e22755ac89139d95e6f7731f2c90",
-    "assets/Huterm.icon/Assets/prompt-large.svg": "aa607016b4bdfea4fe53a4105cbdd0dd5bc844349983c00507b9001e3d7de950",
-    "assets/Huterm.icon/icon.json": "049d9ec5bffaf4ebd93018335c1507c7acf85b2b5bada42e6954332ded0ea146",
+    "assets/Huterm.icon/Assets/prompt-sharp.svg": "4c56bd230b39ffbf60e2667acf1657f21c562a83d7249f39016a627cac4d0153",
+    "assets/Huterm.icon/icon.json": "a2931cf88943a38ee2d13bd5d46ebf1abc53a7122d2836e38174c7dc4cb088f1",
     "scripts/icons.ts": "bbe646ea26a20ba911b9dc1839e5419c1c21291ba36376b2e82652e220565424"
   },
   "outputs": {
-    "assets/Huterm.icns": "19e33de7a00e3adc871ff399ccfce73ac9e66d88480ac3f660338d5cfa386887",
-    "assets/Huterm.png": "4cc7c2f237502f8e887765bad976507c0bec6e293b456b42cfc83a82baf434ea",
-    "assets/macos/Assets.car": "428d2437e322f8f034e1f89a7d2878c0919de816f1316d2187f37969bff8e244"
+    "assets/Huterm.icns": "198471f525120d18997177d52e72f93ab847af94b6bcdde9a0b7db5722caad55",
+    "assets/Huterm.png": "e442f58315b21bb71a37ebba41417864be5771d1a0a507a0ba9af782dc7469d1",
+    "assets/macos/Assets.car": "dc6f15fa63304dcfc8c8696dae83b1111cbed6f7ddd3eae83b5ae3587a70af42"
   }
 }

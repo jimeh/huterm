@@ -2,11 +2,11 @@
   "version": 1,
   "algorithm": "rgba16-box-2x",
   "inputs": {
-    "assets/Huterm.png": "4cc7c2f237502f8e887765bad976507c0bec6e293b456b42cfc83a82baf434ea",
+    "assets/Huterm.png": "e442f58315b21bb71a37ebba41417864be5771d1a0a507a0ba9af782dc7469d1",
     "scripts/linux-icon.ts": "f4d0f3a760681349c49d65287b242d21ba5d65dba1df940ef23b69ee5192257f"
   },
   "output": {
     "file": "assets/Huterm-512.png",
-    "sha256": "35935442a4885ec3e069bb5b8fda89411c31c2246c4cbbf94921945a9ab08acd"
+    "sha256": "473c7dcee7cc3ab8783f249d11613e9c185b1f3449abf883c40fa765376d86a0"
   }
 }
