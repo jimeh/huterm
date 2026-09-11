@@ -1176,16 +1176,16 @@ mod tests {
             .find(|spec| spec.id == ids::SELECT_TAB)
             .unwrap();
         let mut editor = ArgumentEditor::new(select, &[], &target);
-        assert!(matches!(
-            editor.advance(),
-            Err(CommandError::MissingArgument { .. })
-        ));
+        // `index` belongs to a one-of group, so the first-iteration editor
+        // advances past it empty and completeness fails at invocation time.
+        // The slot editor replaces this behaviour.
         editor.set_scalar("10");
         assert!(matches!(
             editor.advance(),
             Err(CommandError::ArgumentRange { .. })
         ));
         editor.set_scalar("9");
+        assert_eq!(editor.advance(), Ok(false));
         assert_eq!(editor.advance(), Ok(true));
         assert_eq!(editor.invocation().unwrap().integer("index"), Some(9));
 
