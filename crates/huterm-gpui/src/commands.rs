@@ -89,8 +89,16 @@ impl CommandAction {
 
     /// Builds a menu item labelled with the command's catalog title.
     pub(crate) fn menu_item(&self) -> MenuItem {
-        let title =
-            lookup(self.invocation().id.as_str()).map_or("", |spec| spec.title);
+        let title = lookup(self.invocation().id.as_str()).map_or_else(
+            String::new,
+            |spec| {
+                let mut title = spec.title.to_owned();
+                if !spec.missing_prompted(self.invocation()).is_empty() {
+                    title.push('…');
+                }
+                title
+            },
+        );
         match self.clone() {
             Self::App(action) => MenuItem::action(title, action),
             Self::Window(action) => MenuItem::action(title, action),
@@ -312,6 +320,18 @@ mod tests {
             )),
             Err(CommandError::ConflictingArguments { .. })
         ));
+    }
+
+    #[test]
+    fn menu_items_mark_commands_that_need_interactive_arguments() {
+        let menu_name = |command| match invoke(command).menu_item() {
+            MenuItem::Action { name, .. } => name.to_string(),
+            _ => panic!("catalog command did not produce an action item"),
+        };
+
+        assert_eq!(menu_name(ids::SELECT_TAB), "Select Tab…");
+        assert_eq!(menu_name(ids::RENAME_TAB), "Rename Tab…");
+        assert_eq!(menu_name(ids::NEW_TAB), "New Tab");
     }
 
     #[test]

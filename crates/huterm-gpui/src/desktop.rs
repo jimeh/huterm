@@ -20,7 +20,9 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
-use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow, invoke};
+use crate::commands::{
+    InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
+};
 use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
@@ -142,6 +144,9 @@ fn install_menus(cx: &mut App) {
                 item(ids::ZOOM),
                 item(ids::NEXT_TAB),
                 item(ids::PREVIOUS_TAB),
+                item(ids::SELECT_RECENT_TAB),
+                item(ids::SELECT_TAB),
+                item(ids::RENAME_TAB),
             ],
         },
     ]);
@@ -188,6 +193,14 @@ impl Selection {
         // one character even though the pointer has not dragged across a cell.
         (self.anchor != self.head)
             .then(|| BufferRange::ordered(self.anchor, self.head))
+    }
+}
+
+fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
+    if selection.and_then(Selection::range).is_none() {
+        Err(CommandError::Unavailable("no selection".to_owned()))
+    } else {
+        Ok(())
     }
 }
 
@@ -821,11 +834,11 @@ impl TerminalView {
         command: huterm_protocol::CommandId,
     ) -> Result<(), CommandError> {
         match command {
+            ids::COPY => copy_availability(self.selection),
             ids::PASTE if self.exited => {
                 Err(CommandError::Unavailable("terminal has exited".to_owned()))
             }
-            ids::COPY
-            | ids::PASTE
+            ids::PASTE
             | ids::SCROLL_PAGE_UP
             | ids::SCROLL_PAGE_DOWN
             | ids::SCROLL_TO_BOTTOM => Ok(()),

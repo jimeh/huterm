@@ -14,9 +14,14 @@ mod quake_windows;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
-use super::palette::{CommandPalette, PaletteEvent, PaletteTarget};
+use super::palette::{
+    CommandFrequency, CommandPalette, HistoryView, PaletteEvent, PaletteTarget,
+    RecentCommands,
+};
 use super::*;
-use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
+use crate::commands::{
+    Route, fill_rename_target, fill_target, route, select_tab_slot,
+};
 use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
@@ -29,7 +34,7 @@ use huterm_core::{
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
-    catalog, validate,
+    catalog, validate, validate_supplied,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -216,7 +221,10 @@ impl DesktopRuntime {
             ));
         }
         let mut invocation = invocation.clone();
-        if invocation.id == ids::RENAME_SESSION {
+        if matches!(
+            invocation.id,
+            ids::RENAME_SESSION | ids::RESET_SESSION_NAME
+        ) {
             // The window knows its workspace; the session owning it is
             // canonical runtime state, so resolve it under the same lock. A
             // workspace that vanished since the window captured it is a
@@ -224,7 +232,7 @@ impl DesktopRuntime {
             if invocation.session("session").is_none() {
                 let workspace = invocation.workspace("workspace").ok_or(
                     CommandError::MissingArgument {
-                        command: ids::RENAME_SESSION,
+                        command: invocation.id,
                         name: "session",
                     },
                 )?;
@@ -325,6 +333,7 @@ struct Desktop {
     config_error: Option<String>,
     windows: Vec<WeakEntity<WorkspaceView>>,
     keymap: InstalledKeymap,
+    frequency: CommandFrequency,
     reloading: bool,
     quitting: bool,
     pending_spawns: usize,
@@ -566,6 +575,24 @@ fn app_command_availability(
     }
 }
 
+fn interactive_spec(
+    invocation: &CommandInvocation,
+) -> Result<(&'static huterm_protocol::CommandSpec, bool), CommandError> {
+    let spec = validate_supplied(invocation)?;
+    let prompt = spec.scope != CommandScope::Palette
+        && !spec.missing_prompted(invocation).is_empty();
+    Ok((spec, prompt))
+}
+
+fn set_dispatch_error<T>(
+    palette: &mut Option<T>,
+    status: &mut Option<String>,
+    error: &CommandError,
+) {
+    *palette = None;
+    *status = Some(error.to_string());
+}
+
 /// Binds the startup keymap and returns its reserved keys with the first
 /// diagnostic to show: a config error, a keymap error, or binding conflicts.
 ///
@@ -632,6 +659,7 @@ pub(super) fn run_with_startup(
             config_path: loaded.path,
             windows: Vec::new(),
             keymap,
+            frequency: CommandFrequency::default(),
             reloading: false,
             quitting: false,
             pending_spawns: 0,
@@ -976,6 +1004,7 @@ fn open_window_with_profile(
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
+                history: Vec::new(),
                 tab_scroll: px(0.0),
                 scroll_target: None,
                 last_scroll: Instant::now(),
@@ -993,6 +1022,8 @@ fn open_window_with_profile(
                 exited_tabs: ExitQueue::default(),
                 status: cx.global::<Desktop>().config_error.clone(),
                 palette: None,
+                palette_refresh_state: None,
+                recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
             });
             let weak = view.downgrade();
@@ -1058,6 +1089,7 @@ fn open_window_with_profile(
                                     });
                                 }
                                 view.resume_close(window, cx);
+                                view.refresh_palette(cx);
                                 if metadata_changed {
                                     cx.notify();
                                 }
@@ -1112,6 +1144,7 @@ struct WorkspaceView {
     workspace: Option<WorkspaceId>,
     tabs: Vec<TabView>,
     active: Option<TabId>,
+    history: Vec<TabId>,
     tab_scroll: Pixels,
     scroll_target: Option<Pixels>,
     last_scroll: Instant,
@@ -1129,7 +1162,19 @@ struct WorkspaceView {
     exited_tabs: ExitQueue,
     status: Option<String>,
     palette: Option<Entity<CommandPalette>>,
+    palette_refresh_state: Option<PaletteRefreshState>,
+    recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PaletteRefreshState {
+    tabs: usize,
+    active: Option<TabId>,
+    busy: bool,
+    confirming: bool,
+    reordering: bool,
+    quake: Option<(bool, bool)>,
 }
 
 impl Drop for WorkspaceView {
@@ -1328,6 +1373,26 @@ fn remove_tab<T>(
     if *active == Some(closed) {
         *active = tabs.get(index.min(tabs.len().saturating_sub(1))).map(id);
     }
+}
+
+fn record_tab_activation(history: &mut Vec<TabId>, id: TabId) {
+    history.retain(|recorded| *recorded != id);
+    history.insert(0, id);
+}
+
+fn prune_tab_history(history: &mut Vec<TabId>, id: TabId) {
+    history.retain(|recorded| *recorded != id);
+}
+
+fn recent_tab(
+    history: &[TabId],
+    active: Option<TabId>,
+    tabs: impl Fn(TabId) -> bool,
+) -> Option<TabId> {
+    history
+        .iter()
+        .copied()
+        .find(|id| Some(*id) != active && tabs(*id))
 }
 
 impl WorkspaceView {
@@ -1826,6 +1891,57 @@ impl WorkspaceView {
         Ok(CommandOutcome::Accepted)
     }
 
+    fn invoke_interactive(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let (spec, prompt) = interactive_spec(invocation)?;
+        if prompt {
+            return self.open_palette_request(Some(invocation), window, cx);
+        }
+        validate(invocation)?;
+        match spec.scope {
+            CommandScope::Application => {
+                let reporter = cx.entity().downgrade();
+                run_app_command(cx, invocation, Some(reporter))
+            }
+            CommandScope::Window | CommandScope::Runtime => {
+                self.run_command(invocation, window, cx)
+            }
+            CommandScope::Palette => self
+                .palette
+                .clone()
+                .ok_or_else(|| {
+                    CommandError::Unavailable(
+                        "command palette is not open".to_owned(),
+                    )
+                })?
+                .update(cx, |palette, cx| palette.run(invocation, window, cx)),
+            CommandScope::Terminal => Err(CommandError::ClientRequired),
+        }
+    }
+
+    fn invoke_palette(
+        &mut self,
+        action: &InvokePalette,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.stop_propagation();
+        if self.palette.is_none() {
+            return;
+        }
+        if let Err(error) = self.invoke_interactive(&action.0, window, cx)
+            && let Some(palette) = self.palette.clone()
+        {
+            palette.update(cx, |palette, cx| {
+                palette.set_error(error.to_string(), cx);
+            });
+        }
+    }
+
     fn open_palette(
         &mut self,
         window: &mut Window,
@@ -1888,6 +2004,7 @@ impl WorkspaceView {
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
         self.palette = Some(palette.clone());
+        self.palette_refresh_state = Some(self.current_palette_refresh_state());
         palette.read(cx).focus_handle(cx).focus(window);
 
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
@@ -1913,11 +2030,8 @@ impl WorkspaceView {
                             cx,
                         );
                     });
-                    let target = palette.read(cx).target.clone();
-                    let availability = view.palette_availability(&target, cx);
-                    palette.update(cx, |palette, _| {
-                        palette.set_availability(availability);
-                    });
+                    view.palette_refresh_state = None;
+                    view.refresh_palette(cx);
                 }
                 Ok(None) => {}
                 Err(error) => palette.update(cx, |palette, cx| {
@@ -1944,6 +2058,7 @@ impl WorkspaceView {
             PaletteEvent::Cancel => {
                 let target = palette.read(cx).target.clone();
                 self.palette = None;
+                self.palette_refresh_state = None;
                 self.restore_palette_focus(&target, window, cx);
                 cx.notify();
             }
@@ -1959,6 +2074,7 @@ impl WorkspaceView {
                     return;
                 }
                 self.palette = None;
+                self.palette_refresh_state = None;
                 self.restore_palette_focus(&target, window, cx);
                 let reporter = cx.entity().downgrade();
                 let result = match validate(invocation).map(|spec| spec.scope) {
@@ -1983,12 +2099,18 @@ impl WorkspaceView {
                     }
                     Err(error) => Err(error),
                 };
-                if let Err(error) = result {
-                    self.palette = Some(palette.clone());
-                    palette.read(cx).focus_handle(cx).focus(window);
-                    palette.update(cx, |palette, cx| {
-                        palette.set_error(error.to_string(), cx);
-                    });
+                match result {
+                    Ok(_) => {
+                        self.recent.record(invocation.id);
+                        cx.global_mut::<Desktop>()
+                            .frequency
+                            .record(invocation.id);
+                    }
+                    Err(error) => set_dispatch_error(
+                        &mut self.palette,
+                        &mut self.status,
+                        &error,
+                    ),
                 }
                 cx.notify();
             }
@@ -2030,6 +2152,47 @@ impl WorkspaceView {
             .collect()
     }
 
+    fn current_palette_refresh_state(&self) -> PaletteRefreshState {
+        PaletteRefreshState {
+            tabs: self.tabs.len(),
+            active: self.active,
+            busy: self.busy,
+            confirming: self.close.confirmation.is_some(),
+            reordering: self.reorder.is_some(),
+            quake: self
+                .quake
+                .as_ref()
+                .map(|state| (state.visible(), state.fullscreen_context())),
+        }
+    }
+
+    fn refresh_palette(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(palette) = self.palette.clone() else {
+            self.palette_refresh_state = None;
+            return;
+        };
+        let state = self.current_palette_refresh_state();
+        if self.palette_refresh_state == Some(state) {
+            return;
+        }
+        self.palette_refresh_state = Some(state);
+        let target = palette.read(cx).target.clone();
+        let availability = self.palette_availability(&target, cx);
+        let keymap = cx.global::<Desktop>().keymap.clone();
+        palette.update(cx, |palette, _| {
+            palette.set_availability(availability);
+            palette.set_keymap(keymap);
+        });
+    }
+
+    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
+    pub(super) fn history_view<'a>(&'a self, cx: &'a App) -> HistoryView<'a> {
+        HistoryView {
+            recent: &self.recent,
+            frequency: &cx.global::<Desktop>().frequency,
+        }
+    }
+
     fn command_availability(
         &self,
         command: huterm_protocol::CommandId,
@@ -2047,6 +2210,16 @@ impl WorkspaceView {
                     self.check_navigation_available()
                 }
                 ids::SELECT_TAB => self.check_navigation_available(),
+                ids::SELECT_RECENT_TAB => {
+                    self.check_navigation_available()?;
+                    if self.tabs.len() < 2 {
+                        Err(CommandError::Unavailable(
+                            "window has one tab".to_owned(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
                 ids::OPEN_COMMAND_PALETTE => self.check_available(true),
                 ids::MINIMIZE | ids::ZOOM => {
                     self.check_presentation_available()
@@ -2075,6 +2248,24 @@ impl WorkspaceView {
                             "loading command target".into(),
                         ))
                     }
+                    ids::RESET_TAB_NAME => self.custom_name_availability(
+                        target.tab.map(CommandValue::Tab),
+                        "window has no tab",
+                        "tab has no custom name",
+                        cx,
+                    ),
+                    ids::RESET_WORKSPACE_NAME => self.custom_name_availability(
+                        target.workspace.map(CommandValue::Workspace),
+                        "window has no workspace",
+                        "workspace has no custom name",
+                        cx,
+                    ),
+                    ids::RESET_SESSION_NAME => self.custom_name_availability(
+                        target.session.map(CommandValue::Session),
+                        "loading command target",
+                        "session has no custom name",
+                        cx,
+                    ),
                     _ => Ok(()),
                 }
             }
@@ -2094,6 +2285,68 @@ impl WorkspaceView {
             }
             CommandScope::Palette => Ok(()),
         }
+    }
+
+    fn custom_name_state(
+        &self,
+        value: &CommandValue,
+        cx: &App,
+    ) -> Option<bool> {
+        self.palette
+            .as_ref()
+            .and_then(|palette| palette.read(cx).custom_name_state(value))
+    }
+
+    fn custom_name_availability(
+        &self,
+        target: Option<CommandValue>,
+        missing_target: &str,
+        missing_custom_name: &str,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        let target = target.ok_or_else(|| {
+            CommandError::Unavailable(missing_target.to_owned())
+        })?;
+        if self.custom_name_state(&target, cx) == Some(false) {
+            Err(CommandError::Unavailable(missing_custom_name.to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fill_reset_target(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Result<CommandInvocation, CommandError> {
+        match invocation.id {
+            ids::RESET_TAB_NAME => fill_target(
+                invocation,
+                "tab",
+                self.active.map(CommandValue::Tab),
+            ),
+            ids::RESET_WORKSPACE_NAME => fill_target(
+                invocation,
+                "workspace",
+                self.workspace.map(CommandValue::Workspace),
+            ),
+            ids::RESET_SESSION_NAME
+                if invocation.argument("session").is_none() =>
+            {
+                fill_target(
+                    invocation,
+                    "workspace",
+                    self.workspace.map(CommandValue::Workspace),
+                )
+            }
+            ids::RESET_SESSION_NAME => Ok(invocation.clone()),
+            other => Err(CommandError::UnknownCommand(other)),
+        }
+    }
+
+    fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
+        self.palette_refresh_state = None;
+        self.refresh_palette(cx);
+        cx.notify();
     }
 
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
@@ -2225,6 +2478,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        validate(invocation)?;
         if self.palette.is_some() && invocation.id != ids::OPEN_COMMAND_PALETTE
         {
             return Err(CommandError::Unavailable(
@@ -2247,9 +2501,8 @@ impl WorkspaceView {
             }
             ids::NEXT_TAB => self.navigate(true, window, cx),
             ids::PREVIOUS_TAB => self.navigate(false, window, cx),
-            ids::SELECT_TAB => {
-                self.select_index(select_tab_slot(invocation)?, window, cx)
-            }
+            ids::SELECT_TAB => self.select_target(invocation, window, cx),
+            ids::SELECT_RECENT_TAB => self.select_recent_tab(window, cx),
             ids::TOGGLE_FULLSCREEN
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
@@ -2315,6 +2568,12 @@ impl WorkspaceView {
                     self.active,
                     self.workspace,
                 )?;
+                Ok(run_on_runtime(invocation, cx))
+            }
+            ids::RESET_TAB_NAME
+            | ids::RESET_WORKSPACE_NAME
+            | ids::RESET_SESSION_NAME => {
+                let invocation = self.fill_reset_target(invocation)?;
                 Ok(run_on_runtime(invocation, cx))
             }
             other => Err(CommandError::UnknownCommand(other)),
@@ -2559,6 +2818,7 @@ impl WorkspaceView {
             return;
         }
         self.active = Some(id);
+        record_tab_activation(&mut self.history, id);
         self.sync_tab_layout(window, cx);
         self.reveal_active(window);
         let visible = self.quake_visible();
@@ -2588,6 +2848,26 @@ impl WorkspaceView {
         if changed {
             self.reveal_tab_activity(window, cx);
         }
+    }
+
+    fn select_recent_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_navigation_available()?;
+        let next = recent_tab(&self.history, self.active, |id| {
+            self.tabs.iter().any(|tab| tab.id == id)
+        });
+        if let Some(next) = next {
+            self.select_from_command(next, window, cx);
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
+    pub(super) fn tab_history(&self) -> &[TabId] {
+        &self.history
     }
 
     fn reveal_tab_activity(
@@ -2620,6 +2900,38 @@ impl WorkspaceView {
         };
         self.select_from_command(self.tabs[next].id, window, cx);
         Ok(CommandOutcome::Completed)
+    }
+
+    fn select_by_id(
+        &mut self,
+        id: TabId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(true)?;
+        if !self.tabs.iter().any(|tab| tab.id == id) {
+            return Err(CommandError::StaleTarget);
+        }
+        self.select_from_command(id, window, cx);
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn select_target(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        match (invocation.tab("tab"), invocation.integer("index")) {
+            (Some(tab), _) => self.select_by_id(tab, window, cx),
+            (None, Some(_)) => {
+                self.select_index(select_tab_slot(invocation)?, window, cx)
+            }
+            (None, None) => Err(CommandError::MissingArgument {
+                command: ids::SELECT_TAB,
+                name: "tab",
+            }),
+        }
     }
 
     /// Selects the tab at zero-based `index`; slot 8 selects the last tab.
@@ -2842,6 +3154,7 @@ impl WorkspaceView {
                             id,
                             |tab| tab.id,
                         );
+                        prune_tab_history(&mut view.history, id);
                         if let Some(active) = view.active {
                             view.select(active, window, cx);
                             view.reveal_tab_activity(window, cx);
@@ -2956,7 +3269,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                 Some(format!("Config reload failed: {error}"));
                         }
                     }
-                    cx.notify();
+                    view.reload_palette(cx);
                 });
             }
         });
@@ -3154,13 +3467,15 @@ impl Render for WorkspaceView {
             ))
             .on_action(cx.listener(
                 |view, action: &InvokeWindow, window, cx| {
-                    if let Err(error) = view.run_command(&action.0, window, cx)
+                    if let Err(error) =
+                        view.invoke_interactive(&action.0, window, cx)
                     {
                         view.status = Some(error.to_string());
                         cx.notify();
                     }
                 },
-            ));
+            ))
+            .on_action(cx.listener(Self::invoke_palette));
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
         // Register before terminal children so capture consumes drag movement
@@ -3673,13 +3988,6 @@ impl Render for WorkspaceView {
             );
         }
         if let Some(palette) = &self.palette {
-            let target = palette.read(cx).target.clone();
-            let availability = self.palette_availability(&target, cx);
-            let keymap = cx.global::<Desktop>().keymap.clone();
-            palette.update(cx, |palette, _| {
-                palette.set_availability(availability);
-                palette.set_keymap(keymap);
-            });
             root = root.child(palette.clone());
         }
         root
@@ -3725,6 +4033,63 @@ mod tests {
                 "self-updates are available only in updater-enabled macOS release builds"
                     .to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn interactive_invocation_without_required_arguments_opens_the_palette() {
+        let select_tab = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        assert!(interactive_spec(&select_tab).unwrap().1);
+
+        let toggle_quake =
+            CommandInvocation::new(ids::TOGGLE_QUAKE, Vec::new());
+        assert!(!interactive_spec(&toggle_quake).unwrap().1);
+    }
+
+    #[test]
+    fn programmatic_invocation_without_required_arguments_fails() {
+        let invocation = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        assert_eq!(
+            validate(&invocation),
+            Err(CommandError::MissingArgument {
+                command: ids::SELECT_TAB,
+                name: "tab",
+            })
+        );
+    }
+
+    #[test]
+    fn synchronous_dispatch_failure_lands_in_status_not_palette() {
+        let mut status = None;
+        let mut palette = Some(());
+        set_dispatch_error(
+            &mut palette,
+            &mut status,
+            &CommandError::StaleTarget,
+        );
+        assert!(palette.is_none());
+        assert_eq!(status.as_deref(), Some("command target no longer exists"));
+    }
+
+    #[test]
+    fn copy_is_unavailable_without_selection() {
+        assert_eq!(
+            copy_availability(None),
+            Err(CommandError::Unavailable("no selection".to_owned()))
+        );
+        assert_eq!(
+            copy_availability(Some(Selection {
+                generation: 1,
+                anchor: BufferPoint {
+                    rows_from_live_bottom: 0,
+                    column: 0,
+                },
+                head: BufferPoint {
+                    rows_from_live_bottom: 0,
+                    column: 1,
+                },
+            })),
+            Ok(())
         );
     }
 
@@ -4547,6 +4912,44 @@ mod tests {
         close.cancel();
         assert_eq!(active, Some(second));
         assert!(tabs.contains(&active.unwrap()));
+    }
+
+    #[test]
+    fn activation_history_tracks_selection_and_prunes_closed_tabs() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let mut history = Vec::new();
+
+        record_tab_activation(&mut history, first);
+        record_tab_activation(&mut history, second);
+        record_tab_activation(&mut history, third);
+        record_tab_activation(&mut history, first);
+        assert_eq!(history, [first, third, second]);
+
+        prune_tab_history(&mut history, third);
+        assert_eq!(history, [first, second]);
+    }
+
+    #[test]
+    fn select_recent_tab_toggles_between_two_tabs_and_is_a_no_op_alone() {
+        let (first, second) = (TabId::new(1), TabId::new(2));
+        let tabs = [first, second];
+        let mut active = Some(second);
+        let mut history = vec![second, first];
+
+        let selected = recent_tab(&history, active, |id| tabs.contains(&id));
+        assert_eq!(selected, Some(first));
+        active = selected;
+        record_tab_activation(&mut history, first);
+
+        let selected = recent_tab(&history, active, |id| tabs.contains(&id));
+        assert_eq!(selected, Some(second));
+        active = selected;
+        record_tab_activation(&mut history, second);
+
+        assert_eq!(active, Some(second));
+        assert_eq!(history, [second, first]);
+        assert_eq!(recent_tab(&[first], Some(first), |id| id == first), None);
     }
 
     #[test]

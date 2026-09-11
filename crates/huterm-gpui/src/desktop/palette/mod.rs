@@ -5,10 +5,6 @@
 mod search;
 #[expect(dead_code, reason = "consumed when the palette UI lands")]
 mod slots;
-#[expect(
-    unused_imports,
-    reason = "consumed when the window records history"
-)]
 pub(super) use search::{CommandFrequency, HistoryView, RecentCommands};
 
 use std::collections::{HashMap, HashSet};
@@ -21,12 +17,11 @@ use gpui::{
 use huterm_core::HierarchySnapshot;
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
-    CommandSpec, CommandValue, SessionId, TabId, TerminalId, WorkspaceId,
-    catalog, ids, validate,
+    CommandOutcome, CommandSpec, CommandValue, SessionId, TabId, TerminalId,
+    WorkspaceId, catalog, ids, validate,
 };
 
 use super::TerminalView;
-use crate::commands::InvokePalette;
 use crate::keymap::InstalledKeymap;
 use crate::ui::picker::{PickerItem, PickerList};
 use crate::ui::text_field::{Changed, TextField};
@@ -46,6 +41,7 @@ struct IdentityRow {
     value: CommandValue,
     label: String,
     detail: String,
+    custom_name: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -79,6 +75,7 @@ impl PaletteHierarchy {
                 value: CommandValue::Session(session.id),
                 label: session.display_name().to_owned(),
                 detail: format!("session {:?}", session.id),
+                custom_name: session.custom_name().is_some(),
             })
             .collect();
         let workspaces = snapshot
@@ -94,6 +91,7 @@ impl PaletteHierarchy {
                         .map_or("unknown session", String::as_str),
                     workspace.id
                 ),
+                custom_name: workspace.custom_name().is_some(),
             })
             .collect();
         let tabs = snapshot
@@ -116,6 +114,7 @@ impl PaletteHierarchy {
                             .map_or("unknown workspace", String::as_str),
                         tab.id
                     ),
+                    custom_name: tab.custom_name().is_some(),
                 })
             })
             .collect();
@@ -140,6 +139,20 @@ impl PaletteHierarchy {
                 detail: row.detail.clone(),
             })
             .collect()
+    }
+
+    fn custom_name_state(&self, value: &CommandValue) -> bool {
+        let rows = match value {
+            CommandValue::Session(_) => &self.sessions,
+            CommandValue::Workspace(_) => &self.workspaces,
+            CommandValue::Tab(_) => &self.tabs,
+            CommandValue::Bool(_)
+            | CommandValue::Integer(_)
+            | CommandValue::Text(_) => return false,
+        };
+        rows.iter()
+            .find(|row| &row.value == value)
+            .is_some_and(|row| row.custom_name)
     }
 }
 
@@ -502,6 +515,8 @@ pub(super) struct CommandPalette {
     scroll: ScrollHandle,
     foreground: Hsla,
     background: Hsla,
+    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
+    requested: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -546,6 +561,7 @@ impl CommandPalette {
             scroll: ScrollHandle::new(),
             foreground,
             background,
+            requested: request.is_some(),
             _subscriptions: vec![subscription],
         };
         palette.prepare_active_picker(None);
@@ -564,6 +580,20 @@ impl CommandPalette {
         availability: HashMap<CommandId, String>,
     ) {
         self.availability = availability;
+    }
+
+    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
+    pub(super) fn requested(&self) -> bool {
+        self.requested
+    }
+
+    pub(super) fn custom_name_state(
+        &self,
+        value: &CommandValue,
+    ) -> Option<bool> {
+        self.hierarchy
+            .as_ref()
+            .map(|hierarchy| hierarchy.custom_name_state(value))
     }
     pub(super) fn set_error(
         &mut self,
@@ -746,30 +776,40 @@ impl CommandPalette {
         }
     }
 
-    fn invoke_palette(
+    pub(super) fn run(
         &mut self,
-        action: &InvokePalette,
+        invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
-        cx.stop_propagation();
-        let result = match action.0.id {
+    ) -> Result<CommandOutcome, CommandError> {
+        match invocation.id {
             ids::PALETTE_SELECT_NEXT => {
                 self.down(window, cx);
-                Ok(())
+                Ok(CommandOutcome::Completed)
             }
             ids::PALETTE_SELECT_PREVIOUS => {
                 self.up(window, cx);
-                Ok(())
+                Ok(CommandOutcome::Completed)
             }
-            ids::PALETTE_CONFIRM => {
+            ids::PALETTE_PAGE_DOWN => {
+                self.move_selection(8, cx);
+                Ok(CommandOutcome::Completed)
+            }
+            ids::PALETTE_PAGE_UP => {
+                self.move_selection(-8, cx);
+                Ok(CommandOutcome::Completed)
+            }
+            ids::PALETTE_CONFIRM
+            | ids::PALETTE_EXPAND
+            | ids::PALETTE_NEXT_SLOT => {
                 self.confirm(window, cx);
-                Ok(())
+                Ok(CommandOutcome::Completed)
             }
-            ids::PALETTE_BACK => {
+            ids::PALETTE_BACK | ids::PALETTE_POP => {
                 self.cancel(window, cx);
-                Ok(())
+                Ok(CommandOutcome::Completed)
             }
+            ids::PALETTE_PREVIOUS_SLOT => Ok(CommandOutcome::Completed),
             ids::TEXT_DELETE_BACKWARD
             | ids::TEXT_DELETE_FORWARD
             | ids::TEXT_DELETE_WORD_BACKWARD
@@ -784,14 +824,12 @@ impl CommandPalette {
             | ids::TEXT_SELECT_RIGHT
             | ids::TEXT_SELECT_ALL
             | ids::TEXT_COPY
-            | ids::TEXT_PASTE => self
-                .input
-                .update(cx, |field, cx| field.run(action.0.id, window, cx)),
+            | ids::TEXT_PASTE => self.input.update(cx, |field, cx| {
+                field
+                    .run(invocation.id, window, cx)
+                    .map(|()| CommandOutcome::Completed)
+            }),
             other => Err(CommandError::UnknownCommand(other)),
-        };
-        if let Err(error) = result {
-            self.diagnostic = Some(error.to_string());
-            cx.notify();
         }
     }
 
@@ -1041,7 +1079,6 @@ impl Render for CommandPalette {
             .items_start()
             .pt(px(48.0))
             .key_context("Palette")
-            .on_action(cx.listener(Self::invoke_palette))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 input_focus.focus(window);
                 cx.stop_propagation();
@@ -1261,11 +1298,13 @@ mod tests {
                         value: CommandValue::Tab(first),
                         label: "alpha".into(),
                         detail: "first".into(),
+                        custom_name: false,
                     },
                     IdentityRow {
                         value: CommandValue::Tab(second),
                         label: "beta".into(),
                         detail: "second".into(),
+                        custom_name: false,
                     },
                 ],
                 ..PaletteHierarchy::default()

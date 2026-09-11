@@ -554,13 +554,13 @@ Commands, their scope, and arguments:
 | `close_window` | Window | |
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
-| `select_tab` | Window | Exactly one of `index` (1 to 9; 9 selects the last tab) or a prompted `tab`. |
+| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) or `tab`; exactly one. Without either, prompts for a tab. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |
 | `minimize` | Window | |
 | `zoom` | Window | |
-| `copy` | Terminal | |
+| `copy` | Terminal | Requires a selection. |
 | `paste` | Terminal | |
 | `scroll_page_up` | Terminal | |
 | `scroll_page_down` | Terminal | |
@@ -568,10 +568,10 @@ Commands, their scope, and arguments:
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
-| `reset_tab_name` | Runtime | Optional `tab`; defaults to the active tab. |
-| `reset_workspace_name` | Runtime | Optional `workspace`; defaults to the window's workspace. |
-| `reset_session_name` | Runtime | Optional `session`; defaults to the window's session. |
-| `select_recent_tab` | Window | |
+| `reset_tab_name` | Runtime | Clear the active tab's custom name, or the optional `tab` target. |
+| `reset_workspace_name` | Runtime | Clear the window workspace's custom name, or the optional `workspace` target. |
+| `reset_session_name` | Runtime | Clear the window session's custom name, or the optional `session` target. |
+| `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
 | `palette_page_down` | Palette | |

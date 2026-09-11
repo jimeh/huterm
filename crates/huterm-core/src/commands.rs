@@ -50,6 +50,22 @@ pub fn execute(
                 .ok_or_else(|| missing("session"))?;
             mux.rename_session(session, Some(name()?))
         }
+        ids::RESET_TAB_NAME => {
+            let tab = invocation.tab("tab").ok_or_else(|| missing("tab"))?;
+            mux.rename_tab(tab, None)
+        }
+        ids::RESET_WORKSPACE_NAME => {
+            let workspace = invocation
+                .workspace("workspace")
+                .ok_or_else(|| missing("workspace"))?;
+            mux.rename_workspace(workspace, None)
+        }
+        ids::RESET_SESSION_NAME => {
+            let session = invocation
+                .session("session")
+                .ok_or_else(|| missing("session"))?;
+            mux.rename_session(session, None)
+        }
         other => {
             return Err(CommandError::Unavailable(format!(
                 "runtime command `{other}` has no executor"
@@ -150,6 +166,68 @@ mod tests {
             Err(CommandError::StaleTarget)
         );
         assert_eq!(mux.workspace(workspace).unwrap().tabs, Vec::new());
+        mux.close_session(session).unwrap();
+    }
+
+    #[test]
+    fn reset_clears_custom_names_and_is_idempotent() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(Some("custom session")).unwrap();
+        let workspace = mux
+            .create_workspace(session, Some("custom workspace"))
+            .unwrap();
+        let tab = mux.open_tab(workspace, &command()).unwrap().tab;
+        mux.rename_tab(tab.id, Some("custom tab")).unwrap();
+
+        let resets = [
+            CommandInvocation::new(
+                ids::RESET_TAB_NAME,
+                vec![CommandArgument::new("tab", CommandValue::Tab(tab.id))],
+            ),
+            CommandInvocation::new(
+                ids::RESET_WORKSPACE_NAME,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(workspace),
+                )],
+            ),
+            CommandInvocation::new(
+                ids::RESET_SESSION_NAME,
+                vec![CommandArgument::new(
+                    "session",
+                    CommandValue::Session(session),
+                )],
+            ),
+        ];
+
+        for reset in &resets {
+            assert_eq!(execute(&mut mux, reset), Ok(CommandOutcome::Completed));
+        }
+        assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);
+        assert_eq!(mux.workspace(workspace).unwrap().custom_name(), None);
+        assert_eq!(mux.session(session).unwrap().custom_name(), None);
+
+        for reset in &resets {
+            assert_eq!(execute(&mut mux, reset), Ok(CommandOutcome::Completed));
+        }
+
+        let foreign =
+            TabId::in_runtime(Mux::default().runtime_id(), tab.id.get());
+        assert_eq!(
+            execute(
+                &mut mux,
+                &CommandInvocation::new(
+                    ids::RESET_TAB_NAME,
+                    vec![CommandArgument::new(
+                        "tab",
+                        CommandValue::Tab(foreign),
+                    )],
+                ),
+            ),
+            Err(CommandError::StaleTarget)
+        );
+        assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);
+
         mux.close_session(session).unwrap();
     }
 }

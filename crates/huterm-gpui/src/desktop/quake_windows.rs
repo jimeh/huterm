@@ -34,6 +34,79 @@ impl Default for Registry {
     }
 }
 
+/// Configured quake profile and its current window state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "consumed by command palette chunk 6")]
+pub(super) struct ProfileRow {
+    pub(super) name: String,
+    pub(super) geometry: String,
+    pub(super) state: ProfileState,
+}
+
+/// Live state of a configured quake profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code, reason = "consumed by command palette chunk 6")]
+pub(super) enum ProfileState {
+    NotSummoned,
+    Hidden { tabs: usize },
+    Visible,
+}
+
+/// Configured profiles with their live window state, sorted by name.
+#[allow(dead_code, reason = "consumed by command palette chunk 6")]
+pub(super) fn profile_rows(cx: &App) -> Vec<ProfileRow> {
+    let desktop = cx.global::<Desktop>();
+    build_profile_rows(&desktop.config.quake.profiles, |name| {
+        let handle = desktop.quake.windows.get(name)?;
+        handle
+            .read(cx, |view: Entity<WorkspaceView>, cx| {
+                let view = view.read(cx);
+                view.quake
+                    .as_ref()
+                    .filter(|state| state.name == name)
+                    .map(|state| (state.visible(), view.tabs.len()))
+            })
+            .ok()
+            .flatten()
+    })
+}
+
+fn build_profile_rows(
+    profiles: &BTreeMap<String, Profile>,
+    mut live_state: impl FnMut(&str) -> Option<(bool, usize)>,
+) -> Vec<ProfileRow> {
+    profiles
+        .iter()
+        .map(|(name, profile)| ProfileRow {
+            name: name.clone(),
+            geometry: profile_geometry(profile),
+            state: match live_state(name) {
+                Some((true, _)) => ProfileState::Visible,
+                Some((false, tabs)) => ProfileState::Hidden { tabs },
+                None => ProfileState::NotSummoned,
+            },
+        })
+        .collect()
+}
+
+fn profile_geometry(profile: &Profile) -> String {
+    if profile.fullscreen {
+        return "fullscreen".to_owned();
+    }
+    let position = match profile.position {
+        quake::Position::Top => "top",
+        quake::Position::Bottom => "bottom",
+        quake::Position::Left => "left",
+        quake::Position::Right => "right",
+        quake::Position::Center => "center",
+    };
+    format!(
+        "{position} · {:.0}% × {:.0}%",
+        profile.width * 100.0,
+        profile.height * 100.0
+    )
+}
+
 const SMOKE_JOURNAL_CAPACITY: usize = 4096;
 
 struct SmokeJournal {
@@ -1393,8 +1466,41 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIVATION_RETRY_INTERVAL, Activation, Stage};
+    use super::{
+        ACTIVATION_RETRY_INTERVAL, Activation, Profile, ProfileState, Stage,
+        build_profile_rows,
+    };
+    use crate::quake::Position;
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn profile_rows_list_sorted_geometry_and_live_state() {
+        let profiles = BTreeMap::from([
+            ("default".to_owned(), Profile::default()),
+            (
+                "logs".to_owned(),
+                Profile {
+                    position: Position::Bottom,
+                    width: 0.8,
+                    height: 0.25,
+                    ..Profile::default()
+                },
+            ),
+        ]);
+        let rows = build_profile_rows(&profiles, |name| {
+            (name == "logs").then_some((false, 2))
+        });
+
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["default", "logs"]
+        );
+        assert_eq!(rows[0].geometry, "top · 100% × 50%");
+        assert_eq!(rows[0].state, ProfileState::NotSummoned);
+        assert_eq!(rows[1].geometry, "bottom · 80% × 25%");
+        assert_eq!(rows[1].state, ProfileState::Hidden { tabs: 2 });
+    }
 
     #[test]
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {
