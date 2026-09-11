@@ -258,7 +258,8 @@ command = "select_tab"
       else if (name === "tab") await nativeKey(48, 0, "\\t");
       else if (name === "down") await nativeKey(125, 0, "", "");
       else if (name === "up") await nativeKey(126, 0, "", "");
-      else await nativeKey(51, 0, "\x08");
+      // macOS Backspace delivers DEL (0x7f); GPUI names the key from it.
+      else await nativeKey(51, 0, "\x7f");
     } else {
       const mapped = {
         enter: "Return",
@@ -346,8 +347,11 @@ command = "select_tab"
     }
   }
 
+  // Result rows are about 54 points tall; the first is centred near 117.
+  const rowY = (row: number) => 117 + row * 54;
+
   async function movePointerToRow(row: number): Promise<void> {
-    const y = 105 + row * 42;
+    const y = rowY(row);
     if (process.platform === "darwin") {
       await command(`native\tmouse\t5\t0.5\t${y}`);
     } else {
@@ -368,7 +372,7 @@ command = "select_tab"
 
   async function clickRow(row: number): Promise<void> {
     await movePointerToRow(row);
-    const y = 105 + row * 42;
+    const y = rowY(row);
     if (process.platform === "darwin") {
       await command(`native\tmouse\t1\t0.5\t${y}`);
       await state("w0.palette=true", `hover=Some(${row})`);
@@ -520,11 +524,12 @@ command = "select_tab"
     await state("active=name", "tab:prefilled");
     await typeText("other");
     await key("tab");
+    // Rename targets any tab, so the quake window's tab is listed too.
     const targetBefore = await state(
       "slots command=rename_tab",
       "active=tab",
       "name:committed",
-      "picker=2",
+      "picker=3",
     );
     const selectedBefore = pickerSelection(targetBefore, "rename_tab");
     await key("up");
@@ -612,10 +617,12 @@ command = "select_tab"
     // 7. Hover does not move keyboard selection; clicking the third row runs it.
     await shortcut("palette");
     await typeText("scroll");
-    const beforeHover = await state('query="scroll"', "results=3", "hover=None");
+    // Fuzzy search matches more than the three scroll commands; those
+    // three rank first because they match in the title.
+    const beforeHover = await state('query="scroll"', "hover=None");
     const selectedBeforeHover = selectedCommand(beforeHover);
     await movePointerToRow(2);
-    const afterHover = await state("hover=Some(2)", "results=3");
+    const afterHover = await state("hover=Some(2)");
     if (selectedCommand(afterHover) !== selectedBeforeHover) {
       throw new Error(`${engine}: hover moved the keyboard selection`);
     }
