@@ -209,12 +209,14 @@ Initialization failure is nonfatal to terminal use, but the menu command reports
 the stored error and the packaged smoke fails.
 
 Sparkle persists both runtime properties in the application's user defaults and
-automatically reschedules after either changes. Do not write either property on
-every launch. Apply an explicit config value only when it differs from Sparkle's
-current value, and apply changes after config reload on the main thread. When a
-field is absent, do not call its setter. If an explicit field is later removed,
-return ownership to Sparkle without deleting the current persisted value; this
-avoids erasing an answer recorded by Sparkle's own consent prompt. Consequently,
+automatically reschedules after either changes. Apply an explicit
+`automatic_checks` value on every launch because Sparkle distinguishes a missing
+preference from an explicit `false` when deciding whether to show its consent
+prompt. Apply an explicit interval only when it differs from Sparkle's current
+value, and apply changes after config reload on the main thread. When a field is
+absent, do not call its setter. If an explicit field is later removed, return
+ownership to Sparkle without deleting the current persisted value; this avoids
+erasing an answer recorded by Sparkle's own consent prompt. Consequently,
 "absent" means "no Huterm override," not "reset Sparkle preferences." Document
 that distinction next to the generated config example.
 

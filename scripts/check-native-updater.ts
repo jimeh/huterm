@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const fixturePublicKey = "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=";
-const packagedMarkers = ["controller-started", "packaged-framework", "can-check", "application-command"];
+const packagedMarkers = ["controller-started", "explicit-false-preference", "packaged-framework", "can-check", "application-command"];
 const unpackagedMarkers = ["unpackaged-diagnostic"];
 
 export function checkNativeUpdaterRun(exitCode: number, output: string, unpackaged = false): void {

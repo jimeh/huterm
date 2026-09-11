@@ -4,7 +4,7 @@ import { checkNativeUpdaterRun, updaterFixturePlist } from "./check-native-updat
 const log = (values: string[]) => values.map(value => `NATIVE_UPDATER_SMOKE ${value}`).join("\n");
 
 test("packaged updater checker requires every ordered production-path observation", () => {
-  const markers = ["controller-started", "packaged-framework", "can-check", "application-command"];
+  const markers = ["controller-started", "explicit-false-preference", "packaged-framework", "can-check", "application-command"];
   expect(() => checkNativeUpdaterRun(0, `${log(markers)}\n`)).not.toThrow();
   expect(() => checkNativeUpdaterRun(1, log(markers))).toThrow();
   expect(() => checkNativeUpdaterRun(0, log(markers.slice(1)))).toThrow();

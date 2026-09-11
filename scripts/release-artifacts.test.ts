@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { augmentSpdx, validateAppcast, validateRuntimeSpdx } from "./release-artifacts.ts";
+import { augmentSpdx, ghosttyNativePackage, validateAppcast, validateRuntimeSpdx } from "./release-artifacts.ts";
 
 function signingFixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -79,6 +79,28 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   for (const name of ["Sparkle", "ghostty", "uucode", "highway", "libghostty-vt-sys"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
+});
+
+test("Ghostty native SPDX metadata is explicit for every package", () => {
+  const source = {
+    name: "future-native-package",
+    version: "1.2.3",
+    license: "MIT",
+    url: "https://deps.files.ghostty.org/future-native-package.tar.gz",
+    sha256: "a".repeat(64),
+  };
+  expect(ghosttyNativePackage(source)).toEqual(expect.objectContaining({
+    name: source.name,
+    versionInfo: source.version,
+    licenseConcluded: source.license,
+    licenseDeclared: source.license,
+  }));
+  expect(() => ghosttyNativePackage({ ...source, version: undefined })).toThrow(
+    "future-native-package version must be a non-empty string",
+  );
+  expect(() => ghosttyNativePackage({ ...source, license: undefined })).toThrow(
+    "future-native-package license must be a non-empty string",
+  );
 });
 
 test("runtime SPDX validation rejects malformed and dangling document descriptions", async () => {

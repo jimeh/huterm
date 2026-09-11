@@ -100,6 +100,20 @@ impl Updater {
         framework_bundle_path().map_err(|error| format!("{error:#}"))
     }
 
+    pub(crate) fn automatic_checks_preference(
+        &self,
+    ) -> Result<Option<bool>, String> {
+        let State::Ready { .. } = &self.state else {
+            let State::Unavailable(reason) = &self.state else {
+                unreachable!();
+            };
+            return Err(reason.clone());
+        };
+        ensure_main_thread().map_err(|error| format!("{error:#}"))?;
+        user_default_bool(c"SUEnableAutomaticChecks")
+            .map_err(|error| format!("{error:#}"))
+    }
+
     pub(crate) fn manual_check_count(&self) -> u32 {
         self.manual_checks.get()
     }
@@ -189,12 +203,9 @@ fn apply_config(updater: *mut Object, config: UpdateConfig) {
     // SAFETY: Callers retain updater and enforce Sparkle's main-thread rule.
     unsafe {
         if let Some(enabled) = overrides.automatic_checks {
-            let current: BOOL =
-                msg_send![updater, automaticallyChecksForUpdates];
             let desired = if enabled { YES } else { NO };
-            if current != desired {
-                let _: () = msg_send![updater, setAutomaticallyChecksForUpdates: desired];
-            }
+            let _: () =
+                msg_send![updater, setAutomaticallyChecksForUpdates: desired];
         }
         if let Some(desired) = overrides.check_interval_seconds {
             let current: f64 = msg_send![updater, updateCheckInterval];
@@ -251,6 +262,33 @@ fn framework_bundle_path() -> anyhow::Result<String> {
         ensure!(!bundle.is_null(), "Sparkle has no owning bundle");
         let bundle_path: *mut Object = msg_send![bundle, bundlePath];
         native_string(bundle_path)
+    }
+}
+
+fn user_default_bool(key: &CStr) -> anyhow::Result<Option<bool>> {
+    let defaults_class =
+        Class::get("NSUserDefaults").context("Foundation is unavailable")?;
+    let string_class =
+        Class::get("NSString").context("Foundation is unavailable")?;
+    // SAFETY: These Foundation objects are process-owned or autoreleased and
+    // remain valid while the value is read synchronously on the main thread.
+    unsafe {
+        let defaults: *mut Object =
+            msg_send![defaults_class, standardUserDefaults];
+        ensure!(
+            !defaults.is_null(),
+            "NSUserDefaults returned a null standard defaults object"
+        );
+        let key: *mut Object =
+            msg_send![string_class, stringWithUTF8String: key.as_ptr()];
+        ensure!(!key.is_null(), "NSString rejected a defaults key");
+        let value: *mut Object = msg_send![defaults, objectForKey: key];
+        if value.is_null() {
+            Ok(None)
+        } else {
+            let enabled: BOOL = msg_send![value, boolValue];
+            Ok(Some(enabled == YES))
+        }
     }
 }
 

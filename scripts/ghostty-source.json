@@ -10,6 +10,8 @@
   "packages": [
     {
       "name": "uucode",
+      "version": "0.2.0",
+      "license": "MIT",
       "url": "https://deps.files.ghostty.org/uucode-0.2.0-ZZjBPqZVVABQepOqZHR7vV_NcaN-wats0IB6o-Exj6m9.tar.gz",
       "sha256": "d0abee0f4f8bd6eae3c051777e16e7c42d8964aaaa015591c4e565703f465f95",
       "zig_hash": "uucode-0.2.0-ZZjBPqZVVABQepOqZHR7vV_NcaN-wats0IB6o-Exj6m9",
@@ -17,6 +19,8 @@
     },
     {
       "name": "highway",
+      "version": "66486a10623fa0d72fe91260f96c892e41aceb06",
+      "license": "Apache-2.0 OR BSD-3-Clause",
       "url": "https://deps.files.ghostty.org/highway-66486a10623fa0d72fe91260f96c892e41aceb06.tar.gz",
       "sha256": "87d4f8893ef4e08f224973608ffebf94268a81380ba79c12e8841968c80aa212",
       "zig_hash": "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE",

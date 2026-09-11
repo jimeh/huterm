@@ -2,6 +2,7 @@
 
 use std::io::Write as _;
 
+use anyhow::Context as _;
 use gpui::App;
 use huterm_protocol::ids;
 
@@ -45,13 +46,32 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     );
     marker("controller-started");
 
+    anyhow::ensure!(
+        updater
+            .automatic_checks_preference()
+            .map_err(anyhow::Error::msg)?
+            == Some(false),
+        "explicit automatic_checks=false did not persist a false preference"
+    );
+    marker("explicit-false-preference");
+
     let expected_framework = std::env::var("HUTERM_UPDATER_SMOKE_FRAMEWORK")?;
     let loaded_framework = updater
         .framework_bundle_path()
         .map_err(anyhow::Error::msg)?;
+    let expected_framework = std::fs::canonicalize(&expected_framework)
+        .with_context(|| {
+            format!("canonicalize expected framework {expected_framework}")
+        })?;
+    let loaded_framework = std::fs::canonicalize(&loaded_framework)
+        .with_context(|| {
+            format!("canonicalize loaded framework {loaded_framework}")
+        })?;
     anyhow::ensure!(
         loaded_framework == expected_framework,
-        "expected framework {expected_framework}, loaded {loaded_framework}"
+        "expected framework {}, loaded {}",
+        expected_framework.display(),
+        loaded_framework.display()
     );
     marker("packaged-framework");
 

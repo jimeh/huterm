@@ -539,7 +539,11 @@ has newer preedit. Bindings and menu installation share one operation;
 `smoke:macos-menus` reads actual NSMenuItem shortcuts.
 `smoke:macos-updater` assembles a disposable app with a fixture-only Sparkle
 key and feed, isolates its user defaults, and exercises the production updater
-command without requiring production signing material.
+command without requiring production signing material. Sparkle uses the
+presence of `SUEnableAutomaticChecks`, not just its boolean getter, to suppress
+the second-launch consent prompt. Always call its setter for an explicit
+`updates.automatic_checks` value, including `false`; omitted config calls no
+setter.
 Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.

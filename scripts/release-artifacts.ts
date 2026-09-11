@@ -301,6 +301,19 @@ function nativePackage(
   };
 }
 
+export function ghosttyNativePackage(packageValue: unknown): SpdxObject {
+  const pkg = objectValue(packageValue, "Ghostty native package");
+  const name = stringValue(pkg.name, "Ghostty native package name");
+  return nativePackage(
+    name,
+    stringValue(pkg.version, `${name} version`),
+    stringValue(pkg.url, `${name} URL`),
+    stringValue(pkg.sha256, `${name} digest`),
+    stringValue(pkg.license, `${name} license`),
+    "Statically linked through the pinned Ghostty Zig dependency graph.",
+  );
+}
+
 export async function augmentSpdx(
   applicationDocument: unknown,
   slices: Record<"arm64" | "x86_64", unknown>,
@@ -339,11 +352,7 @@ export async function augmentSpdx(
   ];
   if (!Array.isArray(ghostty.packages)) throw new Error("Ghostty manifest has no native packages");
   for (const packageValue of ghostty.packages) {
-    const pkg = objectValue(packageValue, "Ghostty native package");
-    const name = stringValue(pkg.name, "Ghostty native package name");
-    const version = name === "uucode" ? "0.2.0" : "66486a10623fa0d72fe91260f96c892e41aceb06";
-    const license = name === "uucode" ? "MIT" : "Apache-2.0 OR BSD-3-Clause";
-    nativePackages.push(nativePackage(name, version, stringValue(pkg.url, `${name} URL`), stringValue(pkg.sha256, `${name} digest`), license, "Statically linked through the pinned Ghostty Zig dependency graph."));
+    nativePackages.push(ghosttyNativePackage(packageValue));
   }
   const vendor = objectValue(JSON.parse(await readFile(join(repoRoot, "third-party/vendor/sources.json"), "utf8")), "vendor provenance");
   if (!Array.isArray(vendor.sources)) throw new Error("vendor provenance has no sources");
