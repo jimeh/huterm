@@ -132,6 +132,12 @@ export async function withPrivateExecutableCopy<T>(source: string, operation: (e
   const executable = join(root, basename(source));
   try {
     const bytes = await readRegularFile(source);
+    // QEMU's standard binfmt rule requires zero ELF padding and otherwise
+    // rejects the AppImage AI\x02 marker before starting the emulator.
+    if (bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
+      && bytes[8] === 0x41 && bytes[9] === 0x49 && bytes[10] === 0x02) {
+      bytes.fill(0, 8, 11);
+    }
     const destination = await open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o700);
     try {
       await destination.writeFile(bytes);

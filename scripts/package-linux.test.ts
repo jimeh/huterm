@@ -157,6 +157,23 @@ describe("Linux package policy", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  test("clears the AppImage marker only in the private executable copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "huterm-appimage-marker-"));
+    const source = join(root, "appimagetool-aarch64.AppImage");
+    const bytes = Buffer.alloc(64);
+    bytes.set([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x41, 0x49, 0x02]);
+    bytes[63] = 0xaa;
+    try {
+      await writeFile(source, bytes);
+      await withPrivateExecutableCopy(source, async executable => {
+        const expected = Buffer.from(bytes);
+        expected.fill(0, 8, 11);
+        expect((await inspectRegularFile(executable)).bytes).toEqual(expected);
+      });
+      expect((await inspectRegularFile(source)).bytes).toEqual(bytes);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   test("compares regular files and symlinks in neutral payloads", async () => {
     const root = await mkdtemp(join(tmpdir(), "huterm-package-trees-"));
     const left = join(root, "left");

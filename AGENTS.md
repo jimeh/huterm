@@ -184,6 +184,10 @@ the neutral tarball must not contain them.
 The AppImage type-2 launcher can hand execution to another PID. PID-bound X11
 package smokes must resolve the real process from the isolated Huterm window;
 `xdotool --pid` cannot reliably follow a direct AppImage launch.
+Run AppImages through private executable copies that clear the `AI\x02` marker
+at ELF offsets 8 through 10. Standard QEMU binfmt masks require zero padding
+there and reject foreign-architecture AppImages before starting the emulator.
+Never alter the cached download or public artifact.
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
