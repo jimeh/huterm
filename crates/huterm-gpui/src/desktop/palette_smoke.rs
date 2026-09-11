@@ -102,6 +102,9 @@ async fn execute(
 }
 
 fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
+    if command == "quake-state" {
+        return quake_state(cx);
+    }
     if command == "open-second" {
         open_window(cx);
         return Ok("window requested".to_owned());
@@ -186,6 +189,19 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     })?
 }
 
+fn quake_state(cx: &App) -> anyhow::Result<String> {
+    let mut output = String::new();
+    for row in super::quake_windows::profile_rows(cx) {
+        let state = match row.state {
+            super::quake_windows::ProfileState::NotSummoned => "not-summoned",
+            super::quake_windows::ProfileState::Hidden { .. } => "hidden",
+            super::quake_windows::ProfileState::Visible => "visible",
+        };
+        write!(output, "{}={state} ", row.name)?;
+    }
+    Ok(output.trim_end().to_owned())
+}
+
 fn workspace_view(
     cx: &mut App,
     index: usize,
@@ -265,9 +281,14 @@ fn read_state(cx: &mut App) -> String {
                         )
                     },
                 );
+            let active_index = view
+                .tabs
+                .iter()
+                .position(|tab| Some(tab.id) == view.active)
+                .map_or_else(|| "none".to_owned(), |index| index.to_string());
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.tabs={} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
                 palette.is_some(),
                 view.tabs.len(),
                 view.busy,

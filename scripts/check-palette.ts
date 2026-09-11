@@ -145,6 +145,13 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     `[terminal]
 engine = "${engine}"
 close_on_exit = false
+
+[quake.profiles.logs]
+position = "bottom"
+
+[[keybinding]]
+key = "${process.platform === "darwin" ? "cmd-shift-o" : "ctrl-shift-o"}"
+command = "select_tab"
 `,
   );
   const app = Bun.spawn([executable], {
@@ -195,17 +202,32 @@ close_on_exit = false
     await command(`native\t${code}\t${flags}\t${text}\t${plain}`);
   }
 
-  async function shortcut(name: "palette" | "new-tab"): Promise<void> {
+  async function shortcut(
+    name: "palette" | "new-tab" | "select-tab",
+  ): Promise<void> {
     if (process.platform === "darwin") {
       if (name === "palette") await nativeKey(35, commandFlag | shiftFlag, "P", "p");
-      else await nativeKey(17, commandFlag, "t");
+      else if (name === "new-tab") await nativeKey(17, commandFlag, "t");
+      else await nativeKey(31, commandFlag | shiftFlag, "O", "o");
     } else {
       run([
         "xdotool",
         "key",
         "--clearmodifiers",
-        name === "palette" ? "ctrl+shift+p" : "ctrl+shift+t",
+        name === "palette"
+          ? "ctrl+shift+p"
+          : name === "new-tab"
+            ? "ctrl+shift+t"
+            : "ctrl+shift+o",
       ]);
+    }
+  }
+
+  async function selectTabIndex(index: 1 | 2): Promise<void> {
+    if (process.platform === "darwin") {
+      await nativeKey(index === 1 ? 18 : 19, commandFlag, String(index));
+    } else {
+      run(["xdotool", "key", "--clearmodifiers", `alt+${index}`]);
     }
   }
 
@@ -219,12 +241,23 @@ close_on_exit = false
     }
   }
 
-  async function key(name: "enter" | "escape" | "select-all" | "backspace" | "tab"): Promise<void> {
+  async function key(
+    name:
+      | "enter"
+      | "escape"
+      | "select-all"
+      | "backspace"
+      | "tab"
+      | "down"
+      | "up",
+  ): Promise<void> {
     if (process.platform === "darwin") {
       if (name === "enter") await nativeKey(36, 0, "\r");
       else if (name === "escape") await nativeKey(53, 0, "\x1b");
       else if (name === "select-all") await nativeKey(0, commandFlag, "a");
       else if (name === "tab") await nativeKey(48, 0, "\\t");
+      else if (name === "down") await nativeKey(125, 0, "", "");
+      else if (name === "up") await nativeKey(126, 0, "", "");
       else await nativeKey(51, 0, "\x08");
     } else {
       const mapped = {
@@ -233,6 +266,8 @@ close_on_exit = false
         "select-all": "ctrl+a",
         backspace: "BackSpace",
         tab: "Tab",
+        down: "Down",
+        up: "Up",
       }[name];
       run(["xdotool", "key", "--clearmodifiers", mapped]);
     }
@@ -252,13 +287,96 @@ close_on_exit = false
     }
   }
 
+  async function coreState(
+    tabCount: number,
+    required: string[] = [],
+    forbidden: string[] = [],
+  ): Promise<string> {
+    const current = await command("core-state");
+    const actualCount = current.match(/\.name=/g)?.length ?? 0;
+    if (actualCount !== tabCount) {
+      throw new Error(
+        `${engine}: expected ${tabCount} core tabs, got ${actualCount}: ${current}`,
+      );
+    }
+    for (const value of required) {
+      if (!current.includes(value)) {
+        throw new Error(`${engine}: core state missing ${value}: ${current}`);
+      }
+    }
+    for (const value of forbidden) {
+      if (current.includes(value)) {
+        throw new Error(`${engine}: core state unexpectedly contains ${value}: ${current}`);
+      }
+    }
+    return current;
+  }
+
+  async function waitForCoreTabCount(tabCount: number): Promise<void> {
+    await waitFor(async () => {
+      const current = await command("core-state");
+      return (current.match(/\.name=/g)?.length ?? 0) === tabCount;
+    }, `${tabCount} core tabs`);
+  }
+
+  function selectedCommand(current: string): string {
+    const selected = current.match(/commands selected=([^\s]+)/)?.[1];
+    if (!selected) throw new Error(`missing selected command: ${current}`);
+    return selected;
+  }
+
+  function pickerSelection(current: string, commandId: string): string {
+    const selected = current.match(
+      new RegExp(`slots command=${commandId}[^\\n]* selected=(.*?) chips=`),
+    )?.[1];
+    if (!selected) throw new Error(`missing picker selection: ${current}`);
+    return selected;
+  }
+
   async function clickOverlay(): Promise<void> {
     if (process.platform === "darwin") {
       await command("native\tmouse\t1\t0.05\t200");
+      await state("w0.palette=true");
       await command("native\tmouse\t2\t0.05\t200");
     } else {
       run(["xdotool", "mousemove", "--window", windowId, "20", "200"]);
-      run(["xdotool", "click", "1"]);
+      run(["xdotool", "mousedown", "1"]);
+      await state("w0.palette=true");
+      run(["xdotool", "mouseup", "1"]);
+    }
+  }
+
+  async function movePointerToRow(row: number): Promise<void> {
+    const y = 105 + row * 42;
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t5\t0.5\t${y}`);
+    } else {
+      const geometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
+      const width = geometry.match(/^WIDTH=(\d+)$/m)?.[1];
+      if (!width) throw new Error(`cannot read window width: ${geometry}`);
+      run([
+        "xdotool",
+        "mousemove",
+        "--window",
+        windowId,
+        String(Math.floor(Number(width) / 2)),
+        String(y),
+      ]);
+    }
+    await state(`hover=Some(${row})`);
+  }
+
+  async function clickRow(row: number): Promise<void> {
+    await movePointerToRow(row);
+    const y = 105 + row * 42;
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t1\t0.5\t${y}`);
+      await state("w0.palette=true", `hover=Some(${row})`);
+      await command(`native\tmouse\t2\t0.5\t${y}`);
+    } else {
+      run(["xdotool", "mousedown", "1"]);
+      await state("w0.palette=true", `hover=Some(${row})`);
+      run(["xdotool", "mouseup", "1"]);
     }
   }
 
@@ -301,6 +419,7 @@ close_on_exit = false
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
 
+    // Existing modal routing, pointer isolation, and macOS composition coverage.
     await typeText("A");
     await terminalBytes("A");
     if (process.platform === "darwin") {
@@ -333,28 +452,265 @@ close_on_exit = false
       await key("select-all");
       await key("backspace");
     }
-    await typeText("scroll bottom");
-    await state("selected=scroll_to_bottom", 'query="scroll bottom"');
-    await key("enter");
+
+    // 1. Fuzzy command search resolves a non-contiguous title match.
+    await typeText("tfs");
+    await state("selected=toggle_fullscreen", 'query="tfs"');
+    await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
     await typeText("e");
     await terminalBytes("Ae");
 
+    // 2. Enter accepts the default optional quake profile; Tab exposes both.
+    await shortcut("palette");
+    await typeText("toggle q");
+    await state("selected=toggle_quake", 'query="toggle q"');
+    await key("enter");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await waitFor(
+      async () => (await command("quake-state")).includes("default=visible"),
+      "default quake request",
+    );
+    const quake = await command("quake-state");
+    if (!quake.includes("logs=not-summoned")) {
+      throw new Error(`${engine}: second quake profile missing: ${quake}`);
+    }
+    await waitForCoreTabCount(2);
+    await command("activate-first");
+    await state("w0.terminal_focused=true");
+    await shortcut("palette");
+    await typeText("toggle q");
+    await state("selected=toggle_quake");
+    await key("tab");
+    await state(
+      "w0.palette_state=slots command=toggle_quake",
+      "active=profile",
+      "picker=2",
+      "profile:prefilled",
+    );
+    await key("escape");
+    await state("w0.palette_state=commands", 'query="toggle q"');
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+
+    // 3. The prefilled tab target lets one Enter commit the typed name and run.
     await shortcut("palette");
     await typeText("rename tab");
     await state("selected=rename_tab");
     await key("enter");
     await state("slots command=rename_tab", "active=name", "tab:prefilled");
-    await typeText("renamed");
+    await typeText("once");
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
-    const renamed = await command("core-state");
-    if (!renamed.includes('name=Some("renamed")')) {
-      throw new Error(`${engine}: rename missing from core: ${renamed}`);
-    }
+    await coreState(2, ['name=Some("once")']);
     await typeText("B");
     await terminalBytes("AeB");
 
+    // 4. Tab commits the name, then Up selects the other tab target.
+    await shortcut("new-tab");
+    await state(
+      "w0.tabs=2",
+      "w0.active_index=1",
+      "w0.terminal_focused=true",
+    );
+    await waitForCoreTabCount(3);
+    await shortcut("palette");
+    await typeText("rename tab");
+    await key("enter");
+    await state("active=name", "tab:prefilled");
+    await typeText("other");
+    await key("tab");
+    const targetBefore = await state(
+      "slots command=rename_tab",
+      "active=tab",
+      "name:committed",
+      "picker=2",
+    );
+    const selectedBefore = pickerSelection(targetBefore, "rename_tab");
+    await key("up");
+    let targetAfter = "";
+    await waitFor(async () => {
+      targetAfter = await readFile(join(directory, "state"), "utf8").catch(
+        () => "",
+      );
+      return (
+        targetAfter.includes("slots command=rename_tab") &&
+        pickerSelection(targetAfter, "rename_tab") !== selectedBefore
+      );
+    }, "rename target selection change");
+    await key("enter");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await coreState(3, ['name=Some("other")'], ['name=Some("once")']);
+
+    // 5. A bare select_tab binding prompts; indexed defaults remain direct.
+    await shortcut("select-tab");
+    await state(
+      "w0.palette_state=slots command=select_tab requested=true",
+      "active=tab",
+      "picker=2",
+    );
+    await typeText("other");
+    await state('input="other"', "picker=1");
+    await key("enter");
+    await state(
+      "w0.palette=false",
+      "w0.active_index=0",
+      "w0.terminal_focused=true",
+    );
+    await coreState(3, ['name=Some("other")']);
+    await shortcut("select-tab");
+    await state(
+      "w0.palette_state=slots command=select_tab requested=true",
+      "active=tab",
+    );
+    await key("escape");
+    await state(
+      "w0.palette=false",
+      "w0.active_index=0",
+      "w0.terminal_focused=true",
+    );
+    await typeText("palettecancelproofx");
+    await key("enter");
+    await state(
+      "w0.palette=false",
+      "w0.terminal_focused=true",
+      "ACK:palettecancelproofx",
+    );
+    await terminalBytes("AeBpalettecancelproofx\r");
+    await selectTabIndex(2);
+    await state(
+      "w0.palette=false",
+      "w0.active_index=1",
+      "w0.terminal_focused=true",
+    );
+    await coreState(3, ['name=Some("other")']);
+    await selectTabIndex(1);
+    await state(
+      "w0.palette=false",
+      "w0.active_index=0",
+      "w0.terminal_focused=true",
+    );
+    await coreState(3, ['name=Some("other")']);
+
+    // 6. Backspace on an empty first slot returns to the retained search.
+    await shortcut("palette");
+    await typeText("ren");
+    await state("selected=rename_tab", 'query="ren"');
+    await key("enter");
+    await state("slots command=rename_tab", "active=name", 'input=""');
+    await key("backspace");
+    await state("w0.palette_state=commands", 'query="ren"');
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await shortcut("palette");
+    await state("w0.palette_state=commands", 'query="ren"', 'input="ren"');
+    await typeText("x");
+    await state('query="x"', 'input="x"');
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+
+    // 7. Hover does not move keyboard selection; clicking the third row runs it.
+    await shortcut("palette");
+    await typeText("scroll");
+    const beforeHover = await state('query="scroll"', "results=3", "hover=None");
+    const selectedBeforeHover = selectedCommand(beforeHover);
+    await movePointerToRow(2);
+    const afterHover = await state("hover=Some(2)", "results=3");
+    if (selectedCommand(afterHover) !== selectedBeforeHover) {
+      throw new Error(`${engine}: hover moved the keyboard selection`);
+    }
+    let keyboardRow = afterHover;
+    await key("down");
+    await waitFor(async () => {
+      const current = await readFile(join(directory, "state"), "utf8").catch(
+        () => "",
+      );
+      if (selectedCommand(current) === selectedCommand(keyboardRow)) return false;
+      keyboardRow = current;
+      return true;
+    }, "first keyboard move in scroll results");
+    await key("down");
+    let thirdRow = "";
+    await waitFor(async () => {
+      thirdRow = await readFile(join(directory, "state"), "utf8").catch(
+        () => "",
+      );
+      return selectedCommand(thirdRow) !== selectedCommand(keyboardRow);
+    }, "second keyboard move in scroll results");
+    const clickedCommand = selectedCommand(thirdRow);
+    await clickRow(2);
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await shortcut("palette");
+    const recent = await state('query=""', "w0.palette=true");
+    if (selectedCommand(recent) !== clickedCommand) {
+      throw new Error(
+        `${engine}: clicked command was not recorded as recent: ${recent}`,
+      );
+    }
+    await movePointerToRow(0);
+    const beforeWheel = await readFile(bytes).catch(() => Buffer.alloc(0));
+    if (process.platform === "linux") {
+      run(["xdotool", "click", "5"]);
+      await state("w0.palette=true");
+      await Bun.sleep(100);
+      const afterWheel = await readFile(bytes).catch(() => Buffer.alloc(0));
+      if (!afterWheel.equals(beforeWheel)) {
+        throw new Error(
+          `${engine}: palette wheel reached terminal: before=${beforeWheel.toString("hex")} after=${afterWheel.toString("hex")}`,
+        );
+      }
+    }
+    await clickOverlay();
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await typeText("C");
+    await terminalBytes("AeBpalettecancelproofx\rC");
+
+    // 8. Copy stays visible but unavailable without a selection.
+    await shortcut("palette");
+    await typeText("copy");
+    await state("selected=copy", 'unavailable=Some("no selection")');
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+
+    // 9. Reset clears the custom name, then reports why it cannot run again.
+    await shortcut("palette");
+    await typeText("reset tab");
+    await state("selected=reset_tab_name");
+    await key("enter");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await coreState(3, [], ["name=Some("]);
+    await shortcut("palette");
+    await typeText("reset tab");
+    await state(
+      "selected=reset_tab_name",
+      'unavailable=Some("tab has no custom name")',
+    );
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+
+    // 10. Switch to Last Tab toggles between the two main-window tabs.
+    await shortcut("palette");
+    await typeText("last tab");
+    await state("selected=select_recent_tab");
+    await key("enter");
+    await state(
+      "w0.palette=false",
+      "w0.active_index=1",
+      "w0.terminal_focused=true",
+    );
+    await coreState(3, [], ["name=Some("]);
+    await shortcut("palette");
+    await typeText("last tab");
+    await state("selected=select_recent_tab");
+    await key("enter");
+    await state(
+      "w0.palette=false",
+      "w0.active_index=0",
+      "w0.terminal_focused=true",
+    );
+    await coreState(3, [], ["name=Some("]);
+
+    // Preserve the existing non-palette, explicit, cancellation, and busy cases.
     await command("busy-on");
     const backgroundRename = await command("invoke-rename-tab");
     if (!backgroundRename.includes("Accepted")) {
@@ -364,14 +720,12 @@ close_on_exit = false
       async () => (await command("core-state")).includes('name=Some("blocked")'),
       "non-palette rename completion",
     );
+    await coreState(3, ['name=Some("blocked")']);
     await command("busy-off");
 
     await command("open-explicit");
-    await state("w0.palette=false");
-    const explicit = await command("core-state");
-    if (!explicit.includes('name=Some("explicit")')) {
-      throw new Error(`${engine}: explicit rename missing: ${explicit}`);
-    }
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await coreState(3, ['name=Some("explicit")']);
 
     await shortcut("palette");
     await typeText("rename tab");
@@ -381,18 +735,10 @@ close_on_exit = false
     await key("escape");
     await state("palette_state=commands", 'query="rename tab"');
     await key("escape");
-    await state("w0.palette=false");
-    const canceled = await command("core-state");
-    if (!canceled.includes('name=Some("explicit")')) {
-      throw new Error(`${engine}: canceled rename changed core: ${canceled}`);
-    }
-    await typeText("palettecancelproofx");
-    await key("enter");
-    await state(
-      "w0.palette=false",
-      "w0.terminal_focused=true",
-      "ACK:palettecancelproofx",
-    );
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await coreState(3, ['name=Some("explicit")'], ['name=Some("canceled")']);
+    await typeText("D");
+    await terminalBytes("AeBpalettecancelproofx\rCD");
 
     await shortcut("palette");
     await command("busy-on");
@@ -402,10 +748,8 @@ close_on_exit = false
     await state("w0.palette=true", "structural operation in progress");
     await command("busy-off");
     await key("escape");
-    await state("w0.palette=false");
+    await state("w0.palette=false", "w0.terminal_focused=true");
 
-    await shortcut("new-tab");
-    await state("w0.tabs=2", "w0.terminal_focused=true");
     await shortcut("palette");
     await typeText("rename tab");
     await key("enter");
@@ -414,14 +758,17 @@ close_on_exit = false
     await state("active=tab", "name:committed");
     await command("delete-target");
     await key("enter");
-    await state("w0.palette=false", "command target no longer exists");
-    const stale = await command("core-state");
-    if (!stale.includes('name=Some("explicit")') || stale.includes('name=Some("gone")')) {
-      throw new Error(`${engine}: stale rename affected another tab: ${stale}`);
-    }
+    await state(
+      "w0.palette=false",
+      "w0.terminal_focused=true",
+      "command target no longer exists",
+    );
+    await coreState(2, [], ['name=Some("gone")']);
 
+    // 11. A post-dispatch failure stays in the originating status line.
     await command("open-second");
-    await state("windows=2", "w1.tabs=1");
+    await state("windows=3", "w2.tabs=1");
+    await coreState(3, [], ['name=Some("gone")']);
     await command("activate-first");
     await command("remove-shell");
     await shortcut("palette");
@@ -429,28 +776,39 @@ close_on_exit = false
     await typeText("new window");
     await state("w0.palette_state=commands selected=new_window");
     await key("enter");
-    await state("w0.palette=false");
+    await state("w0.palette=false", "w0.terminal_focused=true");
     const reported = await state(
       "w0.status=Some(\"Cannot open tab:",
       "w1.status=None",
     );
-    if (!reported.includes("windows=3")) throw new Error("failed window was not published");
-
+    if (!reported.includes("windows=4")) {
+      throw new Error("failed window was not published");
+    }
+    await coreState(3, [], ['name=Some("gone")']);
     await command("activate-first");
+    await state("w0.terminal_focused=true", "w0.palette=false");
+
     await command("clear-status");
     await shortcut("palette");
     await typeText("show quake");
     await state("w0.palette_state=commands selected=show_quake");
+    await key("tab");
+    await state("slots command=show_quake", "active=profile", "picker=2");
+    await typeText("logs");
+    await state('input="logs"', "picker=1");
     await key("enter");
     await state(
-      "windows=3",
       "w0.palette=false",
+      "w0.terminal_focused=true",
       "w0.status=Some(\"Cannot open tab:",
       "w1.status=None",
     );
+    await coreState(3, [], ['name=Some("gone")']);
+    await command("activate-first");
+    await state("w0.terminal_focused=true", "w0.palette=false");
 
     console.log(
-      `PALETTE_SMOKE ${engine} native=${process.platform} isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged rename=renamed external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
+      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable reset=tab recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
     );
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");

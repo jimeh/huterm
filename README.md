@@ -381,18 +381,28 @@ attribution and palette import details.
 ### Keybindings
 
 Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux,
-or choose **View > Open Command Palette**. Type whitespace-separated terms to
-search command titles, stable IDs, and descriptions. Use Up and Down to choose
-a command, Enter to run it or edit its arguments, and Escape to return from
-arguments or close the palette. Unavailable commands remain in the list with
+or choose **View > Open Command Palette**. Search is fuzzy across command
+titles, stable IDs, and descriptions, so `tfs` finds Toggle Fullscreen. Match
+quality ranks first, followed by this window's recent commands, process-wide
+command frequency, and catalog order. Unavailable commands remain visible with
 their refusal reason.
 
-Arguments appear in catalog order. Text and bounded integers use the same
-single-line input; booleans toggle with Up and Down; session, workspace, and tab
-arguments use searchable pickers with their ancestry shown. Optional scalar
-arguments stay unset until edited, while optional identity arguments start on
-the session, workspace, or tab that was active when the palette opened. Palette
-input is modal within its window and is never sent to the terminal beneath it.
+Enter takes the most likely action. It runs a command when its arguments can use
+defaults, or opens the first required slot. Tab opens the slots even when Enter
+would run, so optional values can be changed. The input line shows the command,
+committed argument chips, and one active slot. Tabs and quake profiles use fuzzy
+pickers; identity pickers show labels and ancestry. In a slot, Tab moves to the
+next argument, Backspace on an empty field reopens the previous chip or returns
+to search, and Escape returns to search. Escape from search and a scrim click
+close the palette.
+
+A keybinding that omits a prompted argument, such as `select_tab` without an
+index, opens its picker directly. Cancelling from search retains and selects the
+query for 15 seconds by default; configure this with `[palette]`
+`retain_query` and `retain_query_seconds` as shown above. Every palette key is a
+catalog command with `Palette` context and can be rebound through
+`[[keybinding]]`. Palette input stays modal within its window and never reaches
+the terminal beneath it.
 
 Quake windows are retained terminal windows summoned by profile name. Global
 shortcuts are opt-in and work while another application has focus:

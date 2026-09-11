@@ -22,8 +22,8 @@ use gpui::{
 use huterm_core::HierarchySnapshot;
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
-    CommandOutcome, CommandSpec, CommandValue, SessionId, TabId, TerminalId,
-    WorkspaceId, catalog, ids,
+    CommandOutcome, CommandScope, CommandSpec, CommandValue, SessionId, TabId,
+    TerminalId, WorkspaceId, catalog, ids,
 };
 use search::{CommandHistory, CommandMatch, CommandSearch, PickerMatcher};
 use slots::{
@@ -117,6 +117,8 @@ struct IdentityRow {
     detail: String,
     /// One-based tab position, for `select_tab` shortcut key caps.
     position: Option<i64>,
+    /// Owning workspace, so window-scoped commands list only their own tabs.
+    workspace: Option<WorkspaceId>,
     custom_name: bool,
 }
 
@@ -128,6 +130,7 @@ fn profile_rows(profiles: Vec<QuakeProfileRow>) -> Vec<IdentityRow> {
             label: row.name,
             detail: row.detail,
             position: None,
+            workspace: None,
             custom_name: false,
         })
         .collect()
@@ -166,6 +169,7 @@ impl PaletteHierarchy {
                 label: session.display_name().to_owned(),
                 detail: "session".to_owned(),
                 position: None,
+                workspace: None,
                 custom_name: session.custom_name().is_some(),
             })
             .collect();
@@ -180,6 +184,7 @@ impl PaletteHierarchy {
                     .map_or("unknown session", String::as_str)
                     .to_owned(),
                 position: None,
+                workspace: Some(workspace.id),
                 custom_name: workspace.custom_name().is_some(),
             })
             .collect();
@@ -190,9 +195,12 @@ impl PaletteHierarchy {
                 workspace.tabs.iter().enumerate().map(|(index, tab)| {
                     IdentityRow {
                         value: CommandValue::Tab(tab.id),
-                        label: live_titles
-                            .get(&tab.id)
-                            .cloned()
+                        // Window tab records are initial snapshots, so a
+                        // custom name set later is only in the hierarchy.
+                        label: tab
+                            .custom_name()
+                            .map(str::to_owned)
+                            .or_else(|| live_titles.get(&tab.id).cloned())
                             .unwrap_or_else(|| tab.display_name("").to_owned()),
                         detail: format!(
                             "{} › {}",
@@ -204,6 +212,7 @@ impl PaletteHierarchy {
                                 .map_or("unknown workspace", String::as_str),
                         ),
                         position: i64::try_from(index + 1).ok(),
+                        workspace: Some(workspace.id),
                         custom_name: tab.custom_name().is_some(),
                     }
                 })
@@ -256,20 +265,30 @@ struct DomainView<'a> {
     hierarchy: Option<&'a PaletteHierarchy>,
     profiles: &'a [IdentityRow],
     target: &'a PaletteTarget,
+    /// Window-scoped commands can only act on this window's tabs.
+    window_only: bool,
 }
 
 impl DomainView<'_> {
-    fn rows(&self, kind: ArgumentKind) -> Option<&[IdentityRow]> {
+    /// Rows for `kind` in domain order; `None` while the hierarchy loads.
+    fn rows(&self, kind: ArgumentKind) -> Option<Vec<&IdentityRow>> {
         match kind {
-            ArgumentKind::QuakeProfile => Some(self.profiles),
+            ArgumentKind::QuakeProfile => Some(self.profiles.iter().collect()),
             ArgumentKind::Session
             | ArgumentKind::Workspace
-            | ArgumentKind::Tab => {
-                self.hierarchy.map(|hierarchy| hierarchy.rows(kind))
-            }
+            | ArgumentKind::Tab => Some(
+                self.hierarchy?
+                    .rows(kind)
+                    .iter()
+                    .filter(|row| {
+                        !(self.window_only && kind == ArgumentKind::Tab)
+                            || row.workspace == self.target.workspace
+                    })
+                    .collect(),
+            ),
             ArgumentKind::Bool
             | ArgumentKind::Integer { .. }
-            | ArgumentKind::Text => Some(&[]),
+            | ArgumentKind::Text => Some(Vec::new()),
         }
     }
 
@@ -279,7 +298,7 @@ impl DomainView<'_> {
         value: &CommandValue,
     ) -> Option<String> {
         self.rows(kind)?
-            .iter()
+            .into_iter()
             .find(|row| &row.value == value)
             .map(|row| row.label.clone())
     }
@@ -288,7 +307,7 @@ impl DomainView<'_> {
 impl SlotDomain for DomainView<'_> {
     fn values(&self, kind: ArgumentKind) -> Option<Vec<CommandValue>> {
         self.rows(kind)
-            .map(|rows| rows.iter().map(|row| row.value.clone()).collect())
+            .map(|rows| rows.into_iter().map(|row| row.value.clone()).collect())
     }
 
     fn default(&self, kind: ArgumentKind) -> Option<CommandValue> {
@@ -453,8 +472,12 @@ impl CommandPalette {
                 .map(|spec| (spec, request))
         });
         if let Some((spec, request)) = requested {
-            let editor =
-                SlotEditor::new(spec, &request.args, &palette.domain(), true);
+            let editor = SlotEditor::new(
+                spec,
+                &request.args,
+                &palette.domain_for(spec),
+                true,
+            );
             palette.enter_slots(editor, cx);
         } else {
             let query = retained_query.unwrap_or_default();
@@ -554,11 +577,30 @@ impl CommandPalette {
         self.set_error(error, cx);
     }
 
+    fn domain_for(&self, spec: &CommandSpec) -> DomainView<'_> {
+        DomainView {
+            hierarchy: self.hierarchy.as_ref(),
+            profiles: &self.profiles,
+            target: &self.target,
+            window_only: spec.scope == CommandScope::Window,
+        }
+    }
+
+    /// Whether the slot stage's command may only target this window.
+    fn window_only(&self) -> bool {
+        matches!(
+            &self.stage,
+            Stage::Slots(editor) if editor.spec().scope == CommandScope::Window
+        )
+    }
+
+    /// The domain for the slot stage's command.
     fn domain(&self) -> DomainView<'_> {
         DomainView {
             hierarchy: self.hierarchy.as_ref(),
             profiles: &self.profiles,
             target: &self.target,
+            window_only: self.window_only(),
         }
     }
 
@@ -602,7 +644,7 @@ impl CommandPalette {
             .domain()
             .rows(slot.spec.kind)
             .map(|rows| {
-                rows.iter()
+                rows.into_iter()
                     .map(|row| (row.label.clone(), row.detail.clone()))
                     .collect::<Vec<_>>()
             })
@@ -700,9 +742,10 @@ impl CommandPalette {
             )));
             return;
         }
-        match slots::runs_without_prompt(spec, &self.domain()) {
+        match slots::runs_without_prompt(spec, &self.domain_for(spec)) {
             Some(true) => {
-                let editor = SlotEditor::new(spec, &[], &self.domain(), false);
+                let editor =
+                    SlotEditor::new(spec, &[], &self.domain_for(spec), false);
                 match editor.invocation() {
                     Ok(invocation) => {
                         cx.emit(PaletteEvent::Execute(invocation));
@@ -738,7 +781,7 @@ impl CommandPalette {
             cx.notify();
             return;
         }
-        let editor = SlotEditor::new(spec, &[], &self.domain(), false);
+        let editor = SlotEditor::new(spec, &[], &self.domain_for(spec), false);
         self.enter_slots(editor, cx);
     }
 
@@ -749,6 +792,7 @@ impl CommandPalette {
             hierarchy: self.hierarchy.as_ref(),
             profiles: &self.profiles,
             target: &self.target,
+            window_only: self.window_only(),
         };
         let Stage::Slots(editor) = &mut self.stage else {
             return;
@@ -779,6 +823,7 @@ impl CommandPalette {
             hierarchy: self.hierarchy.as_ref(),
             profiles: &self.profiles,
             target: &self.target,
+            window_only: self.window_only(),
         };
         let Stage::Slots(editor) = &mut self.stage else {
             return;
@@ -1203,7 +1248,6 @@ impl CommandPalette {
         Vec<gpui::AnyElement>,
         Vec<(String, String)>,
     ) {
-        let domain = self.domain();
         let mut list = div()
             .id("palette-results")
             .flex()
@@ -1228,7 +1272,9 @@ impl CommandPalette {
             let hovered = self.hover == Some(row);
             let badge = if spec.args.is_empty() {
                 None
-            } else if slots::runs_without_prompt(spec, &domain) == Some(true) {
+            } else if slots::runs_without_prompt(spec, &self.domain_for(spec))
+                == Some(true)
+            {
                 Some(("⇥ options".to_owned(), true))
             } else {
                 Some(("↩ prompts".to_owned(), false))
@@ -1316,7 +1362,8 @@ impl CommandPalette {
         let has_args = selected_spec.is_some_and(|spec| !spec.args.is_empty());
         let runs = selected_spec.is_some_and(|spec| {
             spec.args.is_empty()
-                || slots::runs_without_prompt(spec, &domain) == Some(true)
+                || slots::runs_without_prompt(spec, &self.domain_for(spec))
+                    == Some(true)
         });
         let mut hints = vec![
             ("↑↓".to_owned(), "navigate".to_owned()),
@@ -1496,7 +1543,9 @@ impl CommandPalette {
             }
             let select_tab = huterm_protocol::lookup(ids::SELECT_TAB.as_str());
             for (row, index) in self.picker.iter().enumerate() {
-                let Some(item) = rows.and_then(|rows| rows.get(*index)) else {
+                let Some(item) =
+                    rows.as_ref().and_then(|rows| rows.get(*index).copied())
+                else {
                     continue;
                 };
                 let selected = selected_index == Some(row);
@@ -1827,6 +1876,51 @@ mod tests {
     }
 
     #[test]
+    fn window_scoped_commands_list_only_this_windows_tabs() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let other = mux.create_workspace(session, None).unwrap();
+        let mine = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
+        let theirs = mux.open_tab(other, &terminal_command()).unwrap().tab;
+        let hierarchy = PaletteHierarchy::from_snapshot(
+            &mux.capture_hierarchy(),
+            &HashMap::new(),
+            &[],
+        );
+        let target = PaletteTarget {
+            session: Some(session),
+            workspace: Some(workspace),
+            tab: Some(mine.id),
+            ..target()
+        };
+        let window_only = DomainView {
+            hierarchy: Some(&hierarchy),
+            profiles: &[],
+            target: &target,
+            window_only: true,
+        };
+        assert_eq!(
+            window_only.values(ArgumentKind::Tab),
+            Some(vec![CommandValue::Tab(mine.id)])
+        );
+        let runtime = DomainView {
+            window_only: false,
+            ..window_only
+        };
+        assert_eq!(
+            runtime.values(ArgumentKind::Tab).map(|values| values.len()),
+            Some(2)
+        );
+        assert!(
+            runtime
+                .label(ArgumentKind::Tab, &CommandValue::Tab(theirs.id))
+                .is_some()
+        );
+        mux.close_session(session).unwrap();
+    }
+
+    #[test]
     fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
         let mut mux = Mux::default();
         let first_session = mux.create_session(Some("duplicate")).unwrap();
@@ -1860,6 +1954,7 @@ mod tests {
             hierarchy: Some(&hierarchy),
             profiles: &[],
             target: &target,
+            window_only: false,
         };
         let mut editor = SlotEditor::new(rename, &[], &domain, false);
         editor.set_text("chosen");
@@ -1901,6 +1996,7 @@ mod tests {
             hierarchy: Some(&hierarchy),
             profiles: &[],
             target: &target,
+            window_only: false,
         };
         let mut editor = SlotEditor::new(rename, &[], &domain, false);
         editor.set_text("chosen");
@@ -1941,6 +2037,7 @@ mod tests {
             hierarchy: None,
             profiles: &profiles,
             target: &target,
+            window_only: false,
         };
         let toggle =
             huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
