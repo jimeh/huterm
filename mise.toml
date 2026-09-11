@@ -443,11 +443,37 @@ depends = ["typecheck:scripts", "test:scripts", "check:shell", "icons:check"]
 
 [tasks."icons:generate"]
 description = "Regenerate committed macOS and Linux icon assets with Xcode 27"
-run = "bun scripts/icons.ts generate"
+run = ["bun scripts/icons.ts generate", "bun scripts/linux-icon.ts generate"]
 
 [tasks."icons:check"]
 description = "Verify icon source and generated asset hashes without Apple tools"
-run = "bun scripts/icons.ts check"
+run = ["bun scripts/icons.ts check", "bun scripts/linux-icon.ts check"]
+
+[tasks."package:linux"]
+description = "Build and verify native Linux AppImage and tarball artifacts"
+depends = ["ghostty:prepare", "icons:check"]
+run = "bun scripts/package-linux.ts build"
+
+[tasks."package:linux:container"]
+description = "Build Linux packages in Ubuntu 22.04 and export them to host dist/"
+run = "bun scripts/linux.ts package"
+
+[tasks."package:linux:verify"]
+description = "Verify existing native Linux AppImage and tarball artifacts without network access"
+run = '''
+set -eu
+version="$(cargo metadata --locked --no-deps --format-version 1 | bun scripts/package-metadata.ts version)"
+case "$(uname -m)" in
+  x86_64|amd64) arch=x86_64 ;;
+  aarch64|arm64) arch=aarch64 ;;
+  *) echo "unsupported Linux architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+directory="dist/linux/$arch"
+bun scripts/package-linux.ts verify-artifacts \
+  "$directory/Huterm-$version-Linux-$arch.AppImage" \
+  "$directory/Huterm-$version-Linux-$arch.tar.gz" \
+  --version "$version" --arch "$arch"
+'''
 
 [tasks."audit:scripts"]
 description = "Audit locked scripting dependencies"

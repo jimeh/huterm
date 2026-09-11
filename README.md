@@ -9,9 +9,21 @@ can attach to the same runtime later.
 The first proof-of-concept implementation is under active validation. It has a
 working PTY runtime, incremental terminal snapshots, and macOS/Linux GPUI clients.
 Portable core tests, repository checks, Linux native tests, and the Linux Xvfb
-smoke pass locally. CI enforces the same suite on Apple Silicon macOS and Linux
-x86_64; green current-head CI is required for PR readiness, while manual
-visual/input evidence remains before the milestone is complete.
+smoke pass locally. CI enforces the same suite on Apple Silicon macOS and native
+Linux x86_64/aarch64; green current-head CI is required for PR readiness, while
+manual visual/input evidence remains before the milestone is complete.
+
+## Installation
+
+Releases provide a universal macOS app plus native Linux x86_64 and aarch64
+builds. Each Linux architecture has an AppImage for direct launch and a neutral
+binary tarball for manual installation. The tarball contains no AppImage runtime
+or AppImage-only files.
+
+Linux packages target glibc 2.35 or newer and require X11 or XWayland plus a
+working Vulkan driver. Make an AppImage executable before launching it. If FUSE
+is unavailable, use `--appimage-extract-and-run` or install the tarball instead.
+Verify downloads against the release's `SHA256SUMS`.
 
 ## Direction
 
@@ -35,8 +47,8 @@ GPUI rendering are shared.
 
 ## Current desktop
 
-Huterm runs on macOS Apple Silicon and Linux x86_64. Each native window has a
-private session and backing workspace with ordered tabs, one pane per tab,
+Huterm runs on macOS Apple Silicon and Linux x86_64/aarch64. Each native window
+has a private session and backing workspace with ordered tabs, one pane per tab,
 and independent terminal processes. Tabs can appear at the top, bottom, left,
 or right. Hidden tabs keep processing output without preparing viewport
 snapshots or painting.

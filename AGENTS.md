@@ -58,6 +58,8 @@ Run `mise tasks` to discover the full task set.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
 - `mise run package:macos` builds and verifies the universal `Huterm.app`.
+- `mise run package:linux:container` builds verified Linux packages in the
+  pinned Ubuntu 22.04 container and exports them to host `dist/`.
 - `mise run format` writes Rust formatting and refreshes action pins.
 
 Universal macOS packaging combines both architecture executables before signing.
@@ -164,6 +166,32 @@ On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
+On Linux, `freetype-sys` 0.20.1 uses a system FreeType only when pkg-config
+reports version 24.3.18 or newer; otherwise it compiles the bundled FreeType C
+source. Package verification must reject an unexpected `libfreetype.so.6`
+dependency and ship the FreeType License notice when that static fallback is
+present.
+Canonicalize `ldd` paths before passing them to `dpkg-query -S`. Ubuntu's
+usrmerged loader can report `/lib/...` while dpkg records only `/usr/lib/...`.
+Keep the Linux package builder on Ubuntu 22.04 while the published ABI ceiling
+is glibc 2.35. Ubuntu 24.04's `libxkbcommon.so.0` requires the C23
+`strtol`/`strtoul` symbols from GLIBC_2.38, so bundling it breaks that contract
+even when the Huterm executable itself stays within the ceiling.
+The pinned AppImage type-2 runtime 20251108 statically contains musl 1.2.5,
+libfuse 3.15.0, squashfuse 0.5.2, zstd 1.5.6, zlib 1.3.1, and mimalloc 2.1.7.
+Keep their exact-tag notices in the declared AppImage envelope outside `usr`;
+the neutral tarball must not contain them.
+The AppImage type-2 launcher can hand execution to another PID. PID-bound X11
+package smokes must resolve the real process from the isolated Huterm window;
+`xdotool --pid` cannot reliably follow a direct AppImage launch.
+Run AppImages through private executable copies that clear the `AI\x02` marker
+at ELF offsets 8 through 10. Standard QEMU binfmt masks require zero padding
+there and reject foreign-architecture AppImages before starting the emulator.
+Never alter the cached download or public artifact.
+Exclude host `dist` from the container workspace sync and clear retained
+workspace `dist` before package-mode builds. Export through `docker cp` from the
+stopped build container so artifact ownership does not depend on rootful or
+rootless Docker UID mappings.
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font

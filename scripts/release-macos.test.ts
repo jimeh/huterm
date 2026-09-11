@@ -3,24 +3,14 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  assetNames,
-  prepareSchemaAssets,
-  schemaAssets,
-  verifyLocalAssets,
-  isDispatchedBranchBuild,
   parseDeveloperIdentity,
   parseSimplePlist,
   privacyUsageDescriptions,
   releaseEntitlements,
   runMacReleasePipeline,
-  validateBuildInputs,
-  validateDraftRelease,
   validateEntitlements,
   validatePrivacyDescriptions,
-  validateReleaseAssets,
-  validateReleaseInputs,
   validateSignatureDetails,
-  validateWorkspaceVersions,
 } from "./release-macos.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -61,19 +51,11 @@ test("package verification checks static linkage without rg and rejects failed i
   }
 });
 
-test("branch verification requires the exact manually dispatched branch commit", () => {
-  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", inputs.sha)).toBe(true);
-  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/heads/fix-release", "b".repeat(40))).toBe(false);
-  expect(isDispatchedBranchBuild(inputs.sha, "push", "refs/heads/fix-release", inputs.sha)).toBe(false);
-  expect(isDispatchedBranchBuild(inputs.sha, "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha)).toBe(false);
-  expect(isDispatchedBranchBuild(inputs.sha, undefined, undefined, undefined)).toBe(false);
-});
-
 test("pre-checkout guard permits exact branch verification but keeps publishing on main", async () => {
   const workflow = Bun.YAML.parse(await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
-    jobs: { release: { steps: { name?: string; run?: string }[] } };
+    jobs: { preflight: { steps: { name?: string; run?: string }[] } };
   };
-  const script = workflow.jobs.release.steps.find(step => step.name === "Validate source selection")!.run!;
+  const script = workflow.jobs.preflight.steps.find(step => step.name === "Validate source selection")!.run!;
   const directory = await mkdtemp(join(tmpdir(), "huterm-release-guard-"));
   try {
     const gh = join(directory, "gh");
@@ -93,40 +75,13 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
         ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,
         GITHUB_EVENT_NAME: event, GITHUB_REF: ref, GITHUB_SHA: inputs.sha,
         RELEASE_SHA: sha, GITHUB_REPOSITORY: "fixture/huterm", TEST_MAIN_STATUS: status,
+        GITHUB_OUTPUT: join(directory, "source-output"),
       } });
       expect(result.exitCode, `${publish} ${event} ${ref} ${sha}: ${result.stderr}`).toBe(expected);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-test("build inputs require a full SHA and stable version without a tag", () => {
-  expect(validateBuildInputs(inputs.sha, inputs.version)).toEqual({ sha: inputs.sha, version: inputs.version });
-  expect(() => validateBuildInputs("abc", inputs.version)).toThrow("invalid release SHA");
-  expect(() => validateBuildInputs(inputs.sha, "0.1.0-beta.1")).toThrow("invalid release version");
-});
-
-test("release inputs bind a full SHA, stable version, and matching tag", () => {
-  expect(validateReleaseInputs(inputs.sha, inputs.tag, inputs.version)).toEqual(inputs);
-  expect(() => validateReleaseInputs("abc", inputs.tag, inputs.version)).toThrow("invalid release SHA");
-  expect(() => validateReleaseInputs(inputs.sha, "v0.2.0", inputs.version)).toThrow("does not match version");
-  expect(() => validateReleaseInputs(inputs.sha, "v0.1.0-beta.1", "0.1.0-beta.1")).toThrow("invalid release version");
-});
-
-test("draft validation requires one exact unpublished release", () => {
-  const release = { id: 17, draft: true, prerelease: false, tag_name: inputs.tag, target_commitish: inputs.sha };
-  expect(validateDraftRelease([[release]], inputs, 17)).toEqual(release);
-  expect(() => validateDraftRelease([{ ...release, draft: false }], inputs)).toThrow("not a draft");
-  expect(() => validateDraftRelease([{ ...release, target_commitish: "b".repeat(40) }], inputs)).toThrow("targets");
-  expect(() => validateDraftRelease([release, { ...release, id: 18 }], inputs)).toThrow("found 2");
-  expect(() => validateDraftRelease([release], inputs, 18)).toThrow("does not match 18");
-});
-
-test("all Huterm Cargo packages must match the release version", () => {
-  const packages = ["huterm", "huterm-core", "huterm-gpui", "huterm-protocol"].map(name => ({ name, version: inputs.version }));
-  expect(() => validateWorkspaceVersions({ packages }, inputs.version)).not.toThrow();
-  expect(() => validateWorkspaceVersions({ packages: packages.map(item => item.name === "huterm-core" ? { ...item, version: "0.2.0" } : item) }, inputs.version)).toThrow("huterm-core version");
 });
 
 test("source bundle metadata and entitlements match the release contract", async () => {
@@ -158,17 +113,6 @@ test("Developer ID selection rejects missing or ambiguous identities", () => {
   expect(parseDeveloperIdentity(output, "ABCDE12345")).toBe(identity);
   expect(() => parseDeveloperIdentity("0 valid identities found", "ABCDE12345")).toThrow("found 0");
   expect(() => parseDeveloperIdentity(`${output}\n${output}`, "ABCDE12345")).toThrow("found 2");
-});
-
-test("remote assets must exactly match local names, sizes, states, and digests", () => {
-  const local = [
-    { name: "Huterm-0.1.0-macOS-universal.zip", path: "/dist/app.zip", size: 120, digest: "a".repeat(64) },
-    { name: "SHA256SUMS", path: "/dist/SHA256SUMS", size: 100, digest: "b".repeat(64) },
-  ];
-  const remote = local.map(asset => ({ name: asset.name, size: asset.size, state: "uploaded", digest: `sha256:${asset.digest}` }));
-  expect(() => validateReleaseAssets([remote], local)).not.toThrow();
-  expect(() => validateReleaseAssets([...remote, { name: "extra", size: 1, state: "uploaded", digest: `sha256:${"c".repeat(64)}` }], local)).toThrow("names do not match");
-  expect(() => validateReleaseAssets(remote.map(asset => asset.name === "SHA256SUMS" ? { ...asset, digest: null } : asset), local)).toThrow("digest");
 });
 
 test("the final archive is created only after notarization and stapled-app verification", async () => {
@@ -251,56 +195,9 @@ test("manual verification signs without requiring or publishing a GitHub release
   expect(sourceValidation).toBeGreaterThan(0);
   expect(checkout).toBeGreaterThan(sourceValidation);
   expect(releaseWorkflow).toContain('compare/${RELEASE_SHA}...main');
-  expect(releaseWorkflow).toContain("run: bun scripts/release-macos.ts validate-build");
+  expect(releaseWorkflow).toContain("run: bun scripts/release.ts validate-build");
   expect(releaseWorkflow).toContain("if: ${{ !inputs.publish }}");
   expect(releaseWorkflow).toContain("uses: actions/upload-artifact@");
   expect(releaseWorkflow).toContain("retention-days: 7");
   expect(releaseWorkflow).toContain("if: inputs.publish");
-});
-
-
-test("release assets copy committed schemas and verify every payload before publication", async () => {
-  const dist = await mkdtemp(resolve(tmpdir(), "huterm-schema-release-"));
-  const names = assetNames(inputs.version);
-  try {
-    await writeFile(resolve(dist, names.archive), "signed archive fixture");
-    await prepareSchemaAssets(dist, inputs.version);
-    const local = await verifyLocalAssets(inputs, dist);
-    expect(local.map(asset => asset.name).sort()).toEqual([...names.payloads, names.checksums].sort());
-    const checksums = await readFile(resolve(dist, names.checksums), "utf8");
-    for (const name of names.payloads) expect(checksums).toContain(`  ${name}\n`);
-    for (const name of schemaAssets) {
-      expect(await readFile(resolve(dist, name))).toEqual(await readFile(resolve(repoRoot, "schemas", name)));
-      await rm(resolve(dist, name));
-      await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("missing or unexpected");
-      await prepareSchemaAssets(dist, inputs.version);
-      await writeFile(resolve(dist, name), "altered schema");
-      // Even a matching checksum cannot authorize bytes absent from the checkout.
-      const altered = new Bun.CryptoHasher("sha256").update("altered schema").digest("hex");
-      await writeFile(resolve(dist, names.checksums), checksums.replace(new RegExp(`[a-f0-9]{64}  ${name.replaceAll(".", "\\.")}`), `${altered}  ${name}`));
-      await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("does not match the release checkout");
-      await prepareSchemaAssets(dist, inputs.version);
-    }
-    await writeFile(resolve(dist, "extra"), "extra");
-    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("missing or unexpected");
-    await rm(resolve(dist, "extra"));
-    await writeFile(resolve(dist, names.checksums), "incorrect checksum");
-    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("SHA256SUMS");
-    await prepareSchemaAssets(dist, inputs.version);
-    await writeFile(resolve(dist, names.archive), "");
-    await expect(verifyLocalAssets(inputs, dist)).rejects.toThrow("empty");
-  } finally { await rm(dist, { recursive: true, force: true }); }
-});
-
-test("remote schema failures block the exact release inventory", async () => {
-  const local = [...assetNames(inputs.version).payloads, "SHA256SUMS"].map(name => ({ name, path: name, size: 10, digest: "a".repeat(64) }));
-  const remote = local.map(asset => ({ ...asset, state: "uploaded", digest: `sha256:${asset.digest}` }));
-  for (const name of schemaAssets) {
-    expect(() => validateReleaseAssets(remote.filter(asset => asset.name !== name), local)).toThrow("names");
-    for (const change of [{ size: 9 }, { state: "new" }, { digest: `sha256:${"b".repeat(64)}` }]) {
-      expect(() => validateReleaseAssets(remote.map(asset => asset.name === name ? { ...asset, ...change } : asset), local)).toThrow();
-    }
-  }
-  const workflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
-  for (const name of schemaAssets) expect(workflow).toContain(`dist/${name}`);
 });

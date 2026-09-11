@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "algorithm": "rgba16-box-2x",
+  "inputs": {
+    "assets/Huterm.png": "4cc7c2f237502f8e887765bad976507c0bec6e293b456b42cfc83a82baf434ea",
+    "scripts/linux-icon.ts": "f4d0f3a760681349c49d65287b242d21ba5d65dba1df940ef23b69ee5192257f"
+  },
+  "output": {
+    "file": "assets/Huterm-512.png",
+    "sha256": "35935442a4885ec3e069bb5b8fda89411c31c2246c4cbbf94921945a9ab08acd"
+  }
+}

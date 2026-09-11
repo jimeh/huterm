@@ -1,11 +1,11 @@
-/** Run existing Linux checks in a disposable Docker container. */
+/** Run Linux development workflows in a disposable Docker container. */
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 const repository = resolve(import.meta.dir, "..");
-type Mode = "test" | "smoke" | "exec" | "clean";
+type Mode = "test" | "smoke" | "package" | "exec" | "clean";
 type Architecture = "arm64" | "amd64";
 
 export function architecture(value: string): Architecture {
@@ -18,8 +18,8 @@ export function architecture(value: string): Architecture {
 
 export function argumentsFor(args: string[]): { mode: Mode; arch: string; command: string[] } {
   const [mode, ...rest] = args;
-  if (mode !== "test" && mode !== "smoke" && mode !== "exec" && mode !== "clean") {
-    throw new Error("expected test, smoke, exec, or clean");
+  if (mode !== "test" && mode !== "smoke" && mode !== "package" && mode !== "exec" && mode !== "clean") {
+    throw new Error("expected test, smoke, package, exec, or clean");
   }
   let arch = "native";
   let index = 0;
@@ -38,7 +38,11 @@ export function argumentsFor(args: string[]): { mode: Mode; arch: string; comman
   const command = rest.slice(index);
   if (mode === "exec" && command.length === 0) throw new Error("linux:exec requires a command");
   if (mode !== "exec" && command.length > 0) throw new Error(`linux:${mode} takes only --arch; use linux:exec for a custom command`);
-  return { mode, arch, command: mode === "test" ? ["mise", "run", "test:rust"] : mode === "smoke" ? ["mise", "run", "ci:smoke"] : command };
+  const selected = mode === "test" ? ["mise", "run", "test:rust"]
+    : mode === "smoke" ? ["mise", "run", "ci:smoke"]
+    : mode === "package" ? ["mise", "run", "package:linux"]
+    : command;
+  return { mode, arch, command: selected };
 }
 
 export function cacheNames(root: string, arch: Architecture) {
@@ -56,9 +60,48 @@ function capture(args: string[], required = true): string | undefined {
   return result.stdout.toString().trim();
 }
 
+function exportPackageArtifacts(root: string, container: string, arch: Architecture): void {
+  const packageArch = arch === "amd64" ? "x86_64" : "aarch64";
+  const distRoot = resolve(process.env.HUTERM_LINUX_DIST_DIR ?? join(root, "dist"));
+  const linuxDist = join(distRoot, "linux");
+  const destination = join(linuxDist, packageArch);
+  mkdirSync(linuxDist, { recursive: true });
+  const staging = mkdtempSync(join(linuxDist, `.container-export-${packageArch}-`));
+  if (staging.includes(",")) {
+    rmSync(staging, { recursive: true, force: true });
+    throw new Error("Docker package output paths containing commas are not supported");
+  }
+  let previous: string | undefined;
+  try {
+    // docker cp extracts through the host client, avoiding UID-map assumptions
+    // for bind-mounted output under rootless and user-namespace daemons.
+    capture(["cp", `${container}:/workspace/dist/linux/${packageArch}/.`, staging]);
+    const files = readdirSync(staging, { withFileTypes: true });
+    const appImages = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.AppImage`));
+    const tarballs = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.tar.gz`));
+    if (appImages.length !== 1 || tarballs.length !== 1) {
+      throw new Error(`package export expected one ${packageArch} AppImage and tarball, found ${appImages.length} and ${tarballs.length}`);
+    }
+    if (existsSync(destination)) {
+      previous = `${destination}.previous-${process.pid}-${crypto.randomUUID()}`;
+      renameSync(destination, previous);
+    }
+    try {
+      renameSync(staging, destination);
+    } catch (error) {
+      if (previous) renameSync(previous, destination);
+      throw error;
+    }
+    if (previous) rmSync(previous, { recursive: true, force: true });
+    console.log(`Exported Linux artifacts to ${relative(root, destination)}`);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 async function main(args: string[]): Promise<number> {
   if (args[1] === "--help") {
-    console.log("Usage: mise run linux:{test,smoke,exec,clean} -- [--arch native|amd64|arm64] [command ...]\nlinux:exec requires a command. linux:clean removes this worktree's selected-architecture cache volumes.");
+    console.log("Usage: mise run linux:{test,smoke,package,exec,clean} -- [--arch native|amd64|arm64] [command ...]\nlinux:package exports verified artifacts to host dist/. linux:exec requires a command. linux:clean removes this worktree's selected-architecture cache volumes.");
     return 0;
   }
   const options = argumentsFor(args);
@@ -82,6 +125,10 @@ async function main(args: string[]): Promise<number> {
 
   const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "pipe" });
   if (revision.exitCode !== 0) throw new Error(`cannot resolve source revision: ${revision.stderr.toString().trim()}`);
+  const sourceDateEpoch = Bun.spawnSync(["git", "show", "-s", "--format=%ct", "HEAD"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  if (sourceDateEpoch.exitCode !== 0 || !/^\d+\s*$/.test(sourceDateEpoch.stdout.toString())) {
+    throw new Error(`cannot resolve source commit time: ${sourceDateEpoch.stderr.toString().trim()}`);
+  }
 
   const inputs = [
     ["scripts/linux/Dockerfile", "Dockerfile"],
@@ -129,13 +176,17 @@ async function main(args: string[]): Promise<number> {
     container = capture([
       "create", "--init", "--interactive", "--name", names.name, "--platform", `linux/${arch}`,
       "--env", `HUTERM_SOURCE_REVISION=${revision.stdout.toString().trim()}`,
+      "--env", `HUTERM_SOURCE_DATE_EPOCH=${sourceDateEpoch.stdout.toString().trim()}`,
+      ...(options.mode === "package" ? ["--env", "HUTERM_LINUX_CLEAN_DIST=1"] : []),
       "--mount", `type=bind,source=${root},target=/source,readonly`,
       "--mount", `type=volume,source=${names.volumes[0]},target=/workspace`,
       "--mount", `type=volume,source=${names.volumes[1]},target=/cache`,
       image, ...options.command,
     ]);
     if (interrupted) return interrupted;
-    return await run(["docker", "start", "--attach", "--interactive", container!]);
+    const status = await run(["docker", "start", "--attach", "--interactive", container!]);
+    if (status === 0 && options.mode === "package") exportPackageArtifacts(root, container!, arch);
+    return status;
   } finally {
     if (container) capture(["rm", "--force", container], false);
     process.off("SIGINT", onInterrupt);

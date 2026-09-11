@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.huterm.dev</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Huterm</name>
+  <summary>Native terminal emulator and multiplexer</summary>
+  <description>
+    <p>
+      Huterm is a native terminal emulator with workspaces, tabs, and two
+      terminal emulation engines.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.huterm.dev.desktop</launchable>
+  <provides>
+    <binary>huterm</binary>
+  </provides>
+  <url type="homepage">https://github.com/jimeh/huterm</url>
+</component>

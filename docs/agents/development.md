@@ -18,7 +18,7 @@ documents both the Xcode settings and command-line installation paths in
 
 [apple-components]: https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components
 
-## Ubuntu 24.04 prerequisites
+## Ubuntu 22.04 prerequisites
 
 Install GPUI's X11 link libraries and the software Vulkan driver used by the
 headless smoke test:
@@ -50,8 +50,10 @@ require working emulation in that engine.
 ```sh
 mise run linux:test
 mise run linux:smoke
+mise run package:linux:container
 mise run linux:test -- --arch amd64
 mise run linux:smoke -- --arch arm64
+mise run linux:exec -- mise run package:linux
 mise run linux:exec -- mise run smoke:renderer
 mise run linux:exec -- --arch amd64 mise run build:exec -- \
   cargo test -p huterm-gpui renderer::builtin --lib
@@ -66,7 +68,16 @@ ghostty:prepare`, using the same `--arch` selection for both invocations.
 These checks exercise Linux X11 rendering, not native Wayland or physical GPU
 behavior. Keep timing benchmarks on native hardware.
 
-The first invocation builds a local Ubuntu 24.04 image with pinned Mise, Rust,
+`package:linux:container` builds and verifies the native-architecture AppImage
+and tarball in the pinned Ubuntu 22.04 image, then replaces only the matching
+`dist/linux/<architecture>` directory in the host checkout. Docker copies the
+verified output from the stopped build container through the host client, so
+the resulting artifacts are owned by the invoking user under rootful and
+rootless engines. Pass
+`-- --arch amd64` or `-- --arch arm64` to select an architecture; a non-native
+selection requires working Docker emulation.
+
+The first invocation builds a local Ubuntu 22.04 image with pinned Mise, Rust,
 Bun, and Zig. The Ubuntu index digest and Mise archive checksums are in
 `scripts/linux/Dockerfile`; tool versions come from `mise.toml`, `mise.lock`,
 and `rust-toolchain.toml`. Apt packages resolve to Ubuntu's updates when the
@@ -76,8 +87,10 @@ local and are not published.
 
 The checkout is mounted read-only, then copied into a Docker volume before
 each run. This includes current uncommitted and untracked source files and
-removes obsolete copies. Host `.git`, `target`, `.native`, `node_modules`, and
-`.codegraph` directories are excluded. The copied workspace has no Git
+removes obsolete copies. Host `.git`, `dist`, `target`, `.native`,
+`node_modules`, and `.codegraph` directories are excluded. Package runs also
+remove retained workspace `dist` output before building, so artifacts from an
+older version cannot enter the new export. The copied workspace has no Git
 metadata. Linux build artifacts, native source preparation, and dependency
 caches stay in volumes scoped to the checkout's real path and architecture.
 The runner allows only one active run for each such pair.
@@ -193,8 +206,8 @@ process labels and directory inheritance are not implemented yet.
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
-| Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-14` and Ubuntu 24.04 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
-| Pull request | Named platform smoke steps on `macos-14` and Ubuntu 24.04, implemented as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
+| Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-14`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
+| Pull request | Named platform smoke steps on `macos-14`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, implemented as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
@@ -207,13 +220,15 @@ process labels and directory inheritance are not implemented yet.
 | macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |
 | Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Both engines' snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
 | macOS package | `mise run package:macos` | Universal app metadata, icon, executable, and both architectures | CI or implementer |
+| Linux package | `mise run package:linux` | Native AppImage and relocatable tarball, dependency policy, provenance, payload equality, and both-engine input smoke | CI or implementer |
 
 CI groups format, static analysis, scripts, and Rust tests into one job per
 platform so their setup and debug artifacts are reused. Native desktop smokes,
 Linux release benchmarks, and macOS packaging remain separate because combining
 them would lengthen the workflow's slowest path. The final
 `Verify Linux x86_64` and `Verify macOS arm64` jobs are the stable required
-checks; both require every validation job to pass.
+checks; both require every validation job to pass, including native aarch64
+Linux checks and smoke coverage.
 
 The smoke job restores Cargo dependencies, workspace build artifacts, and the
 verified Ghostty source tree before separately timing source preparation,
@@ -288,6 +303,29 @@ in the [release guide](releases.md).
 The macOS CI job cross-compiles the Intel slice on Apple Silicon; this does not
 replace native Intel UI and hardware validation, which remains pending.
 
+On Linux, `mise run package:linux` creates native AppImage and binary tarball
+artifacts in `dist/` and verifies both as a pair. Run it on the architecture the
+artifact targets; cross-compilation is not release evidence. The build records
+the exact commit time as `SOURCE_DATE_EPOCH`, enforces a maximum required glibc
+symbol version of 2.35, writes only origin-relative ELF runpaths, records Debian
+package provenance for privately bundled xkbcommon libraries, and verifies the
+full dependency allowlist. It then extracts both formats into fresh temporary
+directories and runs the exact-byte input smoke with Alacritty and Ghostty.
+
+`mise run package:linux:verify` rechecks existing artifacts without downloading
+tools or rebuilding. It expects the architecture-specific filenames produced by
+the build and is suitable for offline release-artifact inspection. AppImage
+tools and type-2 runtimes are selected by architecture from the versioned,
+SHA-256-pinned manifest in `assets/linux/appimage-tools.json`.
+
+The binary tarball is deliberately AppImage-neutral. For manual installation,
+extract it wherever desired, keep its relative directory layout intact, and run
+`bin/huterm`. Copy `share/applications/app.huterm.dev.desktop`,
+`share/metainfo/app.huterm.dev.metainfo.xml`, and the icon below
+`share/icons/hicolor/512x512/apps/` into matching `$XDG_DATA_HOME` directories
+for desktop integration. If an AppImage cannot use FUSE, launch it with
+`--appimage-extract-and-run`; the tarball is the simpler permanent fallback.
+
 ### Updating the app icon
 
 Edit `assets/Huterm.icon` in Icon Composer from Xcode 27, then run this macOS step:
@@ -301,10 +339,11 @@ Use the path to your compatible Xcode installation, or omit `DEVELOPER_DIR` if
 it is already selected. Generation and manifest verification require Xcode 27
 provenance; support for another major version needs a reviewed script change.
 Include the source changes and all generated files:
-`assets/Huterm.icns`, `assets/Huterm.png`, `assets/macos/Assets.car`, and
-`assets/icons.json`. The PNG is a 1024-pixel render of the default appearance
-for Linux packaging. The asset catalog retains the layered macOS appearances;
-the ICNS supplies a static fallback.
+`assets/Huterm.icns`, `assets/Huterm.png`, `assets/Huterm-512.png`,
+`assets/macos/Assets.car`, `assets/icons.json`, and `assets/linux/icon.json`.
+The 1024-pixel PNG is the default rendered appearance; the deterministic Linux
+step downsamples it to the 512-pixel hicolor icon. The asset catalog retains the
+layered macOS appearances; the ICNS supplies a static fallback.
 
 Normal builds consume these committed files. `icons:check` verifies source,
 generator, and output hashes on macOS and Linux without Apple tools. Changing
