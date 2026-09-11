@@ -3,6 +3,7 @@
 use super::*;
 use crate::quake::ProfileExt;
 use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
+use gpui::EntityId;
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
@@ -50,21 +51,53 @@ pub(super) enum ProfileState {
     Visible,
 }
 
+/// Where a `profile_rows` call comes from.
+///
+/// GPUI takes a window out of its slot for the duration of an update, so
+/// reading the calling window, or its root view entity, from inside its own
+/// dispatch panics in GPUI. A caller inside a window therefore supplies its
+/// own quake state and is skipped; every other window is read through its
+/// view entity, which does not touch the window stack.
+pub(super) enum Viewpoint {
+    /// An update of the view with this id is in progress.
+    Window {
+        view: EntityId,
+        /// The caller's own profile name and visibility, when it is quake.
+        quake: Option<(String, bool)>,
+        tabs: usize,
+    },
+    /// No window update is on the stack: async tasks and smoke commands.
+    Outside,
+}
+
 /// Configured profiles with their live window state, sorted by name.
-pub(super) fn profile_rows(cx: &App) -> Vec<ProfileRow> {
+pub(super) fn profile_rows(cx: &App, viewpoint: &Viewpoint) -> Vec<ProfileRow> {
     let desktop = cx.global::<Desktop>();
+    let mut live: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+    if let Viewpoint::Window {
+        quake: Some((name, visible)),
+        tabs,
+        ..
+    } = viewpoint
+    {
+        live.insert(name.clone(), (*visible, *tabs));
+    }
+    for weak in &desktop.windows {
+        if let Viewpoint::Window { view, .. } = viewpoint
+            && weak.entity_id() == *view
+        {
+            continue;
+        }
+        let Some(entity) = weak.upgrade() else {
+            continue;
+        };
+        let view = entity.read(cx);
+        if let Some(state) = &view.quake {
+            live.insert(state.name.clone(), (state.visible(), view.tabs.len()));
+        }
+    }
     build_profile_rows(&desktop.config.quake.profiles, |name| {
-        let handle = desktop.quake.windows.get(name)?;
-        handle
-            .read(cx, |view: Entity<WorkspaceView>, cx| {
-                let view = view.read(cx);
-                view.quake
-                    .as_ref()
-                    .filter(|state| state.name == name)
-                    .map(|state| (state.visible(), view.tabs.len()))
-            })
-            .ok()
-            .flatten()
+        live.get(name).copied()
     })
 }
 

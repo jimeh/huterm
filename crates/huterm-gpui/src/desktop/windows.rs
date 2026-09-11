@@ -584,8 +584,21 @@ fn interactive_spec(
     Ok((spec, prompt))
 }
 
-fn quake_profile_rows(cx: &App) -> Vec<QuakeProfileRow> {
-    quake_windows::profile_rows(cx)
+/// Profile rows for a palette opened from `view`, which is on GPUI's update
+/// stack and must not be read back; its own state is passed instead.
+fn quake_profile_rows(
+    view: &WorkspaceView,
+    cx: &Context<'_, WorkspaceView>,
+) -> Vec<QuakeProfileRow> {
+    let viewpoint = quake_windows::Viewpoint::Window {
+        view: cx.entity_id(),
+        quake: view
+            .quake
+            .as_ref()
+            .map(|state| (state.name.clone(), state.visible())),
+        tabs: view.tabs.len(),
+    };
+    quake_windows::profile_rows(cx, &viewpoint)
         .into_iter()
         .map(|row| QuakeProfileRow {
             detail: format!(
@@ -2037,7 +2050,7 @@ impl WorkspaceView {
             availability,
             colors: self.palette_colors(),
             history,
-            profiles: quake_profile_rows(cx),
+            profiles: quake_profile_rows(self, cx),
             request,
             retained_query,
             tab_order,
@@ -2437,7 +2450,7 @@ impl WorkspaceView {
         self.refresh_palette(cx);
         if let Some(palette) = self.palette.clone() {
             let colors = self.palette_colors();
-            let profiles = quake_profile_rows(cx);
+            let profiles = quake_profile_rows(self, cx);
             palette.update(cx, |palette, cx| {
                 palette.set_presentation(colors, profiles, cx);
             });

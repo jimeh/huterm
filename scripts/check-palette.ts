@@ -479,6 +479,20 @@ command = "select_tab"
     if (!quake.includes("logs=not-summoned")) {
       throw new Error(`${engine}: second quake profile missing: ${quake}`);
     }
+    // Opening the palette inside the quake window builds the profile rows
+    // while that window is on GPUI's update stack; it must not read itself.
+    // Summoning activates the quake window asynchronously, so wait for it to
+    // own focus before sending the shortcut.
+    await state("w1.active=true", "w0.active=false");
+    await shortcut("palette");
+    await state("w1.palette=true", "w1.palette_focused=true");
+    await typeText("toggle q");
+    await state("w1.palette_state=commands selected=toggle_quake");
+    await key("tab");
+    await state("w1.palette_state=slots command=toggle_quake", "picker=2");
+    await key("escape");
+    await key("escape");
+    await state("w1.palette=false", "w1.terminal_focused=true");
     await waitForCoreTabCount(2);
     await command("activate-first");
     await state("w0.terminal_focused=true");

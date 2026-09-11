@@ -320,6 +320,14 @@ that exist in the current source.
 Global action callbacks run while the dispatching window is borrowed. Defer
 Quit routing before updating a native window handle; a synchronous update of
 the active window fails with `window not found` even though it remains open.
+Reading any window handle, or the root view entity of the dispatching window,
+from inside that window's action handler panics inside GPUI with `attempted
+to read a window that is already on the stack`, and the panic aborts because
+AppKit's selector callback cannot unwind. Cross-window reads such as quake
+profile rows take a `Viewpoint` naming the calling view with its own state;
+read other windows through their view entities, never through
+`AnyWindowHandle`, and pass `Outside` only from async tasks or smoke commands
+with no window update in progress.
 
 Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Project its current bits rather than retaining independent

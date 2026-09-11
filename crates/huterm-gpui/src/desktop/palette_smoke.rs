@@ -191,7 +191,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
 
 fn quake_state(cx: &App) -> anyhow::Result<String> {
     let mut output = String::new();
-    for row in super::quake_windows::profile_rows(cx) {
+    // Smoke commands run from an App update with no window on the stack.
+    let viewpoint = super::quake_windows::Viewpoint::Outside;
+    for row in super::quake_windows::profile_rows(cx, &viewpoint) {
         let state = match row.state {
             super::quake_windows::ProfileState::NotSummoned => "not-summoned",
             super::quake_windows::ProfileState::Hidden { .. } => "hidden",
@@ -288,8 +290,9 @@ fn read_state(cx: &mut App) -> String {
                 .map_or_else(|| "none".to_owned(), |index| index.to_string());
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
                 palette.is_some(),
+                window.is_window_active(),
                 view.tabs.len(),
                 view.busy,
                 view.status,
