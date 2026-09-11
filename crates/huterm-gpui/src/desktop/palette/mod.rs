@@ -3,6 +3,8 @@
 // The palette UI chunk consumes these; the `expect` lints fail once it does.
 #[expect(dead_code, reason = "consumed when the slot editor and UI land")]
 mod search;
+#[expect(dead_code, reason = "consumed when the palette UI lands")]
+mod slots;
 #[expect(
     unused_imports,
     reason = "consumed when the window records history"
