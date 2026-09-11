@@ -167,8 +167,9 @@ Even Better TOML editor extension. Newly created default configs include it:
 ```
 
 The schema validates settings and command-specific keybinding arguments. For
-example, `select_tab` requires an integer `args.index` from 1 through 9, while
-`copy` rejects that argument. Huterm still checks keystroke and `when` syntax,
+example, `select_tab` accepts an optional integer `args.index` from 1 through
+9, while `copy` rejects that argument. Huterm still checks keystroke and `when`
+syntax,
 platform restrictions, theme files, and inheritance cycles at runtime.
 Quake profiles share the same schema, including geometry and animation limits.
 Global shortcuts offer only the three quake commands and accept a text `profile`
@@ -223,6 +224,18 @@ Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+The command palette retains a cancelled search query for 15 seconds by
+default. Reopening it during that window restores and selects the query:
+
+```toml
+[palette]
+retain_query = true
+retain_query_seconds = 15
+```
+
+Set `retain_query = false` to disable retention. `retain_query_seconds` accepts
+values from 0 to 3600 seconds.
 
 Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
 mode. macOS defaults to non-native fullscreen in the current Space. Set

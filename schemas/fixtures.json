@@ -254,7 +254,7 @@
   {
     "name": "select_tab {}",
     "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = {}",
-    "valid": false,
+    "valid": true,
     "theme": false
   },
   {
@@ -266,7 +266,7 @@
   {
     "name": "select_tab args omitted",
     "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"",
-    "valid": false,
+    "valid": true,
     "theme": false
   },
   {
@@ -660,5 +660,89 @@
     "name": "updates automatic checks requires boolean",
     "toml": "[updates]\nautomatic_checks=\"yes\"",
     "valid": false
+  },
+  {
+    "name": "palette defaults",
+    "toml": "[palette]",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "palette retain off",
+    "toml": "[palette]\nretain_query = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "palette retain 3600",
+    "toml": "[palette]\nretain_query_seconds = 3600",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "palette retain 3601",
+    "toml": "[palette]\nretain_query_seconds = 3601",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "palette unknown key",
+    "toml": "[palette]\nvim = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "select_tab bare binding",
+    "toml": "[[keybinding]]\nkey = \"cmd-shift-o\"\ncommand = \"select_tab\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "select_tab index binding",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { index = 1 }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "select_tab tab in config",
+    "toml": "[[keybinding]]\nkey = \"cmd-1\"\ncommand = \"select_tab\"\nargs = { tab = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "palette command binding",
+    "toml": "[[keybinding]]\nkey = \"ctrl-n\"\ncommand = \"palette_select_next\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "palette command with when",
+    "toml": "[[keybinding]]\nkey = \"ctrl-n\"\ncommand = \"palette_select_next\"\nwhen = \"!confirming\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "quake profile text",
+    "toml": "[[keybinding]]\nkey = \"f5\"\ncommand = \"toggle_quake\"\nargs = { profile = \"logs\" }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "quake profile integer",
+    "toml": "[[keybinding]]\nkey = \"f5\"\ncommand = \"toggle_quake\"\nargs = { profile = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "reset tab name binding",
+    "toml": "[[keybinding]]\nkey = \"f6\"\ncommand = \"reset_tab_name\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "global palette command",
+    "toml": "[[global_keybinding]]\nkey = \"ctrl-alt-n\"\ncommand = \"palette_select_next\"",
+    "valid": false,
+    "theme": false
   }
 ]
