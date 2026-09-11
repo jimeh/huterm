@@ -594,16 +594,20 @@ The native input smoke command protocol is tab-separated, so a Tab keystroke's
 characters are written as the two-character escape `\t`; `native::post`
 unescapes it. Send DEL (`\x7f`) as Backspace's characters: GPUI names the key
 from that character, and `\x08` produces a keystroke no binding matches while
-a following replace-on-type hides the miss. Palette result rows are about 54
-points tall with the first centred near 117; hover and click fixtures must
-use that geometry. Palette, text-field, and other UI keyboard operations are
-`Palette`-scope catalog commands with a required context compiled into every
-binding, never hardcoded GPUI component bindings. `validate_supplied` guards
-bindings, menus, and interactive requests; only executors run the full
-`validate`, so a binding may omit prompted arguments and the palette collects
-them. Keep the keybinding schema aligned: only unprompted `Always` arguments
-are schema-required. Modules that land before their consumer carry
-`#[expect(dead_code)]` so Clippy fails when the consumer arrives and the
+a following replace-on-type hides the miss. Palette result and picker rows are
+exactly `ROW_HEIGHT` (54) points tall and the list caps at `VISIBLE_ROWS`;
+the first row centres near 117, and hover and click fixtures use that
+geometry. Text arguments accept a blank value: the core executor maps a
+blank rename name to `None`, which clears the custom name, so there are no
+reset-name commands. The palette prefills a rename's current custom name,
+selected, whenever the name slot is untouched. Palette, text-field, and other
+UI keyboard operations are `Palette`-scope catalog commands with a required
+context compiled into every binding, never hardcoded GPUI component bindings.
+`validate_supplied` guards bindings, menus, and interactive requests; only
+executors run the full `validate`, so a binding may omit prompted arguments and
+the palette collects them. Keep the keybinding schema aligned: only unprompted
+`Always` arguments are schema-required. Modules that land before their consumer
+carry `#[expect(dead_code)]` so Clippy fails when the consumer arrives and the
 attribute must go.
 Native input smoke events must enter NSApplication through `postEvent:atStart:`;
 calling NSView.keyDown: directly does not establish `currentEvent` for Option

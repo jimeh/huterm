@@ -224,17 +224,20 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-The command palette retains a cancelled search query for 15 seconds by
-default. Reopening it during that window restores and selects the query:
+The command palette sits near the top of the window by default and retains a
+cancelled search query for 15 seconds. Reopening it during that window restores
+and selects the query:
 
 ```toml
 [palette]
+placement = "top"           # top or center
 retain_query = true
 retain_query_seconds = 15
 ```
 
-Set `retain_query = false` to disable retention. `retain_query_seconds` accepts
-values from 0 to 3600 seconds.
+`placement = "center"` centres the palette at its full height, so the input
+line stays put while results filter down. Set `retain_query = false` to disable
+retention. `retain_query_seconds` accepts values from 0 to 3600 seconds.
 
 Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
 mode. macOS defaults to non-native fullscreen in the current Space. Set
@@ -391,7 +394,9 @@ Enter takes the most likely action. It runs a command when its arguments can use
 defaults, or opens the first required slot. Tab opens the slots even when Enter
 would run, so optional values can be changed. The input line shows the command,
 committed argument chips, and one active slot. Tabs and quake profiles use fuzzy
-pickers; identity pickers show labels and ancestry. In a slot, Tab moves to the
+pickers; identity pickers show labels and ancestry. Rename commands prefill the
+current custom name, selected, so typing replaces it; a blank name restores the
+default title. In a slot, Tab moves to the
 next argument, Backspace on an empty field reopens the previous chip or returns
 to search, and Escape returns to search. Escape from search and a scrim click
 close the palette.
@@ -578,9 +583,6 @@ Commands, their scope, and arguments:
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
-| `reset_tab_name` | Runtime | Clear the active tab's custom name, or the optional `tab` target. |
-| `reset_workspace_name` | Runtime | Clear the window workspace's custom name, or the optional `workspace` target. |
-| `reset_session_name` | Runtime | Clear the window session's custom name, or the optional `session` target. |
 | `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
@@ -595,6 +597,7 @@ Commands, their scope, and arguments:
 | `text_delete_backward` | Palette | |
 | `text_delete_forward` | Palette | |
 | `text_delete_word_backward` | Palette | |
+| `text_delete_word_forward` | Palette | |
 | `text_delete_line_start` | Palette | |
 | `text_move_left` | Palette | |
 | `text_move_right` | Palette | |
@@ -649,8 +652,9 @@ Default bindings differ per platform:
 | `palette_expand` | `tab` | `tab` |
 | `palette_previous_slot` | `shift-tab` | `shift-tab` |
 | `text_delete_backward` | `backspace` | `backspace` |
-| `text_delete_forward` | `delete` | `delete` |
+| `text_delete_forward` | `delete`, `ctrl-d` | `delete` |
 | `text_delete_word_backward` | `alt-backspace` | `alt-backspace` |
+| `text_delete_word_forward` | `alt-d` | `alt-d` |
 | `text_delete_line_start` | `cmd-backspace` | |
 | `text_move_left` / `text_move_right` | `left` / `right` | `left` / `right` |
 | `text_move_word_left` / `text_move_word_right` | `alt-left` / `alt-right` | `alt-left` / `alt-right` |

@@ -685,14 +685,6 @@ pub mod ids {
     pub const RENAME_WORKSPACE: CommandId = CommandId::new("rename_workspace");
     /// Renames a session.
     pub const RENAME_SESSION: CommandId = CommandId::new("rename_session");
-    /// Clears the custom name of a tab.
-    pub const RESET_TAB_NAME: CommandId = CommandId::new("reset_tab_name");
-    /// Clears the custom name of a workspace.
-    pub const RESET_WORKSPACE_NAME: CommandId =
-        CommandId::new("reset_workspace_name");
-    /// Clears the custom name of a session.
-    pub const RESET_SESSION_NAME: CommandId =
-        CommandId::new("reset_session_name");
     /// Activates the most recently used tab.
     pub const SELECT_RECENT_TAB: CommandId =
         CommandId::new("select_recent_tab");
@@ -730,6 +722,9 @@ pub mod ids {
     /// Deletes the word before the text cursor.
     pub const TEXT_DELETE_WORD_BACKWARD: CommandId =
         CommandId::new("text_delete_word_backward");
+    /// Deletes the word after the cursor.
+    pub const TEXT_DELETE_WORD_FORWARD: CommandId =
+        CommandId::new("text_delete_word_forward");
     /// Deletes from the line start to the text cursor.
     pub const TEXT_DELETE_LINE_START: CommandId =
         CommandId::new("text_delete_line_start");
@@ -1031,7 +1026,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::RENAME_TAB,
         CommandScope::Runtime,
         "Rename Tab",
-        "Set a custom name for a tab.",
+        "Set a custom name for a tab; a blank name restores the default.",
         &[
             NAME,
             ArgumentSpec {
@@ -1046,7 +1041,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::RENAME_WORKSPACE,
         CommandScope::Runtime,
         "Rename Workspace",
-        "Set a custom name for a workspace.",
+        "Set a custom name for a workspace; a blank name restores the default.",
         &[
             NAME,
             ArgumentSpec {
@@ -1061,7 +1056,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::RENAME_SESSION,
         CommandScope::Runtime,
         "Rename Session",
-        "Set a custom name for a session.",
+        "Set a custom name for a session; a blank name restores the default.",
         &[
             NAME,
             ArgumentSpec {
@@ -1071,42 +1066,6 @@ const CATALOG: &[CommandSpec] = &[
                 prompt: true,
             },
         ],
-    ),
-    spec(
-        ids::RESET_TAB_NAME,
-        CommandScope::Runtime,
-        "Reset Tab Name",
-        "Clear the custom name of a tab.",
-        &[ArgumentSpec {
-            name: "tab",
-            kind: ArgumentKind::Tab,
-            required: Requirement::Optional,
-            prompt: true,
-        }],
-    ),
-    spec(
-        ids::RESET_WORKSPACE_NAME,
-        CommandScope::Runtime,
-        "Reset Workspace Name",
-        "Clear the custom name of a workspace.",
-        &[ArgumentSpec {
-            name: "workspace",
-            kind: ArgumentKind::Workspace,
-            required: Requirement::Optional,
-            prompt: true,
-        }],
-    ),
-    spec(
-        ids::RESET_SESSION_NAME,
-        CommandScope::Runtime,
-        "Reset Session Name",
-        "Clear the custom name of a session.",
-        &[ArgumentSpec {
-            name: "session",
-            kind: ArgumentKind::Session,
-            required: Requirement::Optional,
-            prompt: true,
-        }],
     ),
     spec(
         ids::SELECT_RECENT_TAB,
@@ -1217,6 +1176,14 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Palette,
         "Text: Delete Word Backward",
         "Delete the word before the cursor.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_DELETE_WORD_FORWARD,
+        CommandScope::Palette,
+        "Text: Delete Word Forward",
+        "Delete the word after the cursor.",
         &[],
     ),
     spec_in(
@@ -1694,31 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_and_recent_commands_validate() {
-        let resets = [
-            (ids::RESET_TAB_NAME, "tab", CommandValue::Tab(TabId::new(1))),
-            (
-                ids::RESET_WORKSPACE_NAME,
-                "workspace",
-                CommandValue::Workspace(WorkspaceId::new(2)),
-            ),
-            (
-                ids::RESET_SESSION_NAME,
-                "session",
-                CommandValue::Session(SessionId::new(3)),
-            ),
-        ];
-        for (id, name, value) in resets {
-            assert!(validate(&CommandInvocation::new(id, Vec::new())).is_ok());
-            assert!(
-                validate(&CommandInvocation::new(
-                    id,
-                    vec![CommandArgument::new(name, value)]
-                ))
-                .is_ok()
-            );
-        }
-
+    fn recent_tab_command_validates() {
         let recent = CommandInvocation::new(ids::SELECT_RECENT_TAB, Vec::new());
         let spec = validate(&recent).unwrap();
         assert_eq!(spec.scope, CommandScope::Window);

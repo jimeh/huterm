@@ -639,6 +639,11 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
             ids::TEXT_DELETE_WORD_BACKWARD,
             "Delete Word Backward",
         ),
+        default(
+            "alt-d",
+            ids::TEXT_DELETE_WORD_FORWARD,
+            "Delete Word Forward",
+        ),
     ];
     match platform {
         Platform::MacOs => entries.extend([
@@ -647,6 +652,7 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-v", ids::TEXT_PASTE, "Paste"),
             default("ctrl-a", ids::TEXT_LINE_START, "Line Start"),
             default("ctrl-e", ids::TEXT_LINE_END, "Line End"),
+            default("ctrl-d", ids::TEXT_DELETE_FORWARD, "Delete Forward"),
             default("cmd-left", ids::TEXT_LINE_START, "Line Start"),
             default("cmd-right", ids::TEXT_LINE_END, "Line End"),
             default(

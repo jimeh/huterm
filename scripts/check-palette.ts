@@ -611,11 +611,15 @@ command = "select_tab"
     );
     await coreState(3, ['name=Some("other")']);
 
-    // 6. Backspace on an empty first slot returns to the retained search.
+    // 6. The name slot prefills the active tab's custom name, selected, so
+    // one Backspace blanks it; Backspace on the empty slot then returns to
+    // the retained search.
     await shortcut("palette");
     await typeText("ren");
     await state("selected=rename_tab", 'query="ren"');
     await key("enter");
+    await state("slots command=rename_tab", "active=name", 'input="other"');
+    await key("backspace");
     await state("slots command=rename_tab", "active=name", 'input=""');
     await key("backspace");
     await state("w0.palette_state=commands", 'query="ren"');
@@ -693,19 +697,24 @@ command = "select_tab"
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
 
-    // 9. Reset clears the custom name, then reports why it cannot run again.
+    // 9. Blanking the prefilled name and pressing Enter clears the custom
+    // name; a tab without one prefills nothing.
     await shortcut("palette");
-    await typeText("reset tab");
-    await state("selected=reset_tab_name");
+    await typeText("rename tab");
+    await state("selected=rename_tab");
+    await key("enter");
+    await state("slots command=rename_tab", "active=name", 'input="other"');
+    await key("backspace");
+    await state('input=""');
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(3, [], ["name=Some("]);
     await shortcut("palette");
-    await typeText("reset tab");
-    await state(
-      "selected=reset_tab_name",
-      'unavailable=Some("tab has no custom name")',
-    );
+    await typeText("rename tab");
+    await key("enter");
+    await state("slots command=rename_tab", "active=name", 'input=""');
+    await key("escape");
+    await state("w0.palette_state=commands");
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
 
@@ -829,7 +838,7 @@ command = "select_tab"
     await state("w0.terminal_focused=true", "w0.palette=false");
 
     console.log(
-      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable reset=tab recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
+      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable blank=clears recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
     );
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");

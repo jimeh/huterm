@@ -19,9 +19,7 @@ use super::palette::{
     PaletteEvent, PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
 };
 use super::*;
-use crate::commands::{
-    Route, fill_rename_target, fill_target, route, select_tab_slot,
-};
+use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
@@ -221,10 +219,7 @@ impl DesktopRuntime {
             ));
         }
         let mut invocation = invocation.clone();
-        if matches!(
-            invocation.id,
-            ids::RENAME_SESSION | ids::RESET_SESSION_NAME
-        ) {
+        if invocation.id == ids::RENAME_SESSION {
             // The window knows its workspace; the session owning it is
             // canonical runtime state, so resolve it under the same lock. A
             // workspace that vanished since the window captured it is a
@@ -1130,6 +1125,11 @@ fn open_window_with_profile(
                                 }
                                 view.resume_close(window, cx);
                                 view.refresh_palette(cx);
+                                if let Some(palette) = view.palette.clone() {
+                                    palette.update(cx, |palette, cx| {
+                                        palette.advance(Instant::now(), cx);
+                                    });
+                                }
                                 if metadata_changed {
                                     cx.notify();
                                 }
@@ -2049,6 +2049,7 @@ impl WorkspaceView {
             keymap,
             availability,
             colors: self.palette_colors(),
+            placement: self.config.palette.placement,
             history,
             profiles: quake_profile_rows(self, cx),
             request,
@@ -2350,24 +2351,6 @@ impl WorkspaceView {
                             "loading command target".into(),
                         ))
                     }
-                    ids::RESET_TAB_NAME => self.custom_name_availability(
-                        target.tab.map(CommandValue::Tab),
-                        "window has no tab",
-                        "tab has no custom name",
-                        cx,
-                    ),
-                    ids::RESET_WORKSPACE_NAME => self.custom_name_availability(
-                        target.workspace.map(CommandValue::Workspace),
-                        "window has no workspace",
-                        "workspace has no custom name",
-                        cx,
-                    ),
-                    ids::RESET_SESSION_NAME => self.custom_name_availability(
-                        target.session.map(CommandValue::Session),
-                        "loading command target",
-                        "session has no custom name",
-                        cx,
-                    ),
                     _ => Ok(()),
                 }
             }
@@ -2389,62 +2372,6 @@ impl WorkspaceView {
         }
     }
 
-    fn custom_name_state(
-        &self,
-        value: &CommandValue,
-        cx: &App,
-    ) -> Option<bool> {
-        self.palette
-            .as_ref()
-            .and_then(|palette| palette.read(cx).custom_name_state(value))
-    }
-
-    fn custom_name_availability(
-        &self,
-        target: Option<CommandValue>,
-        missing_target: &str,
-        missing_custom_name: &str,
-        cx: &App,
-    ) -> Result<(), CommandError> {
-        let target = target.ok_or_else(|| {
-            CommandError::Unavailable(missing_target.to_owned())
-        })?;
-        if self.custom_name_state(&target, cx) == Some(false) {
-            Err(CommandError::Unavailable(missing_custom_name.to_owned()))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn fill_reset_target(
-        &self,
-        invocation: &CommandInvocation,
-    ) -> Result<CommandInvocation, CommandError> {
-        match invocation.id {
-            ids::RESET_TAB_NAME => fill_target(
-                invocation,
-                "tab",
-                self.active.map(CommandValue::Tab),
-            ),
-            ids::RESET_WORKSPACE_NAME => fill_target(
-                invocation,
-                "workspace",
-                self.workspace.map(CommandValue::Workspace),
-            ),
-            ids::RESET_SESSION_NAME
-                if invocation.argument("session").is_none() =>
-            {
-                fill_target(
-                    invocation,
-                    "workspace",
-                    self.workspace.map(CommandValue::Workspace),
-                )
-            }
-            ids::RESET_SESSION_NAME => Ok(invocation.clone()),
-            other => Err(CommandError::UnknownCommand(other)),
-        }
-    }
-
     fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
         self.palette_refresh_state = None;
         self.refresh_palette(cx);
@@ -2452,7 +2379,12 @@ impl WorkspaceView {
             let colors = self.palette_colors();
             let profiles = quake_profile_rows(self, cx);
             palette.update(cx, |palette, cx| {
-                palette.set_presentation(colors, profiles, cx);
+                palette.set_presentation(
+                    colors,
+                    self.config.palette.placement,
+                    profiles,
+                    cx,
+                );
             });
         }
         cx.notify();
@@ -2677,12 +2609,6 @@ impl WorkspaceView {
                     self.active,
                     self.workspace,
                 )?;
-                Ok(run_on_runtime(invocation, cx))
-            }
-            ids::RESET_TAB_NAME
-            | ids::RESET_WORKSPACE_NAME
-            | ids::RESET_SESSION_NAME => {
-                let invocation = self.fill_reset_target(invocation)?;
                 Ok(run_on_runtime(invocation, cx))
             }
             other => Err(CommandError::UnknownCommand(other)),

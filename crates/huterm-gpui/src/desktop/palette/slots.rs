@@ -315,7 +315,9 @@ impl SlotEditor {
             return Ok(true);
         }
         let text = self.text.trim();
-        let value = if text.is_empty() {
+        // Blank text is a value for text arguments: renames clear the custom
+        // name on a blank, so Enter on an emptied name field runs the clear.
+        let value = if text.is_empty() && slot.spec.kind != ArgumentKind::Text {
             let required = match slot.spec.required {
                 Requirement::Always => true,
                 Requirement::Optional => false,
@@ -581,14 +583,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_required_text_reports_a_human_message() {
+    fn blank_name_commits_as_a_clear_and_empty_pickers_report_a_message() {
         let domain = with_tabs(&[1]);
         let mut editor =
             SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
-        assert_eq!(
-            editor.commit(None, &domain),
-            Err("Name is required".into())
-        );
+        editor.set_text("  ");
+        let Ok(Commit::Run(invocation)) = editor.commit(None, &domain) else {
+            panic!("a blank name runs the rename, which clears the name");
+        };
+        assert_eq!(invocation.text("name"), Some(""));
         let mut select = SlotEditor::new(
             spec(ids::SELECT_TAB),
             &[],

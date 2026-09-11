@@ -1940,30 +1940,12 @@ impl Render for TerminalView {
             && let Some(geometry) = self.scrollbar_geometry(window)
         {
             let expansion = self.scrollbar_expansion.progress;
-            if expansion > 0.0 {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .right(px(2.0))
-                        .top(px(geometry.track_start))
-                        .w(px(8.0 + 6.0 * expansion))
-                        .h(px(geometry.track_size()))
-                        .rounded(px(4.0 + 3.0 * expansion))
-                        .bg(color(self.theme.foreground).opacity(20.0 / 255.0))
-                        .opacity(self.scrollbar_visibility.opacity * expansion),
-                );
-            }
-            root = root.child(
-                div()
-                    .absolute()
-                    .right(px(2.0 + 2.0 * expansion))
-                    .top(px(geometry.thumb_start))
-                    .w(px(6.0 + 4.0 * expansion))
-                    .h(px(geometry.thumb_size))
-                    .rounded(px(3.0 + 2.0 * expansion))
-                    .bg(color(self.theme.foreground).opacity(187.0 / 255.0))
-                    .opacity(self.scrollbar_visibility.opacity),
-            );
+            root = root.children(crate::ui::scrollbar::layers(
+                geometry,
+                self.scrollbar_visibility.opacity,
+                expansion,
+                color(self.theme.foreground),
+            ));
             if let Some(label) = scroll_position_label(displayed_offset) {
                 root = root.child(
                     div()

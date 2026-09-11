@@ -734,8 +734,8 @@
     "theme": false
   },
   {
-    "name": "reset tab name binding",
-    "toml": "[[keybinding]]\nkey = \"f6\"\ncommand = \"reset_tab_name\"",
+    "name": "blank rename clears binding",
+    "toml": "[[keybinding]]\nkey = \"f6\"\ncommand = \"rename_tab\"\nargs = { name = \"\" }",
     "valid": true,
     "theme": false
   },

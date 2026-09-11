@@ -32,39 +32,29 @@ pub fn execute(
         command: spec.id,
         name,
     };
-    let name = || invocation.text("name").ok_or_else(|| missing("name"));
+    // A blank name clears the custom name; Mux takes `None` for that.
+    let name = || {
+        invocation
+            .text("name")
+            .map(|name| Some(name).filter(|name| !name.trim().is_empty()))
+            .ok_or_else(|| missing("name"))
+    };
     let result = match spec.id {
         ids::RENAME_TAB => {
             let tab = invocation.tab("tab").ok_or_else(|| missing("tab"))?;
-            mux.rename_tab(tab, Some(name()?))
+            mux.rename_tab(tab, name()?)
         }
         ids::RENAME_WORKSPACE => {
             let workspace = invocation
                 .workspace("workspace")
                 .ok_or_else(|| missing("workspace"))?;
-            mux.rename_workspace(workspace, Some(name()?))
+            mux.rename_workspace(workspace, name()?)
         }
         ids::RENAME_SESSION => {
             let session = invocation
                 .session("session")
                 .ok_or_else(|| missing("session"))?;
-            mux.rename_session(session, Some(name()?))
-        }
-        ids::RESET_TAB_NAME => {
-            let tab = invocation.tab("tab").ok_or_else(|| missing("tab"))?;
-            mux.rename_tab(tab, None)
-        }
-        ids::RESET_WORKSPACE_NAME => {
-            let workspace = invocation
-                .workspace("workspace")
-                .ok_or_else(|| missing("workspace"))?;
-            mux.rename_workspace(workspace, None)
-        }
-        ids::RESET_SESSION_NAME => {
-            let session = invocation
-                .session("session")
-                .ok_or_else(|| missing("session"))?;
-            mux.rename_session(session, None)
+            mux.rename_session(session, name()?)
         }
         other => {
             return Err(CommandError::Unavailable(format!(
@@ -140,10 +130,6 @@ mod tests {
                 name: "tab"
             })
         );
-        assert!(matches!(
-            execute(&mut mux, &rename_tab(" ", Some(tab.id))),
-            Err(CommandError::Runtime(_))
-        ));
         let foreign =
             TabId::in_runtime(Mux::default().runtime_id(), tab.id.get());
         assert_eq!(
@@ -170,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_custom_names_and_is_idempotent() {
+    fn blank_names_clear_custom_names_and_are_idempotent() {
         let mut mux = Mux::default();
         let session = mux.create_session(Some("custom session")).unwrap();
         let workspace = mux
@@ -179,51 +165,51 @@ mod tests {
         let tab = mux.open_tab(workspace, &command()).unwrap().tab;
         mux.rename_tab(tab.id, Some("custom tab")).unwrap();
 
-        let resets = [
+        let clears = [
+            rename_tab("", Some(tab.id)),
             CommandInvocation::new(
-                ids::RESET_TAB_NAME,
-                vec![CommandArgument::new("tab", CommandValue::Tab(tab.id))],
+                ids::RENAME_WORKSPACE,
+                vec![
+                    CommandArgument::new(
+                        "name",
+                        CommandValue::Text("  ".into()),
+                    ),
+                    CommandArgument::new(
+                        "workspace",
+                        CommandValue::Workspace(workspace),
+                    ),
+                ],
             ),
             CommandInvocation::new(
-                ids::RESET_WORKSPACE_NAME,
-                vec![CommandArgument::new(
-                    "workspace",
-                    CommandValue::Workspace(workspace),
-                )],
-            ),
-            CommandInvocation::new(
-                ids::RESET_SESSION_NAME,
-                vec![CommandArgument::new(
-                    "session",
-                    CommandValue::Session(session),
-                )],
+                ids::RENAME_SESSION,
+                vec![
+                    CommandArgument::new(
+                        "name",
+                        CommandValue::Text(String::new()),
+                    ),
+                    CommandArgument::new(
+                        "session",
+                        CommandValue::Session(session),
+                    ),
+                ],
             ),
         ];
 
-        for reset in &resets {
-            assert_eq!(execute(&mut mux, reset), Ok(CommandOutcome::Completed));
+        for clear in &clears {
+            assert_eq!(execute(&mut mux, clear), Ok(CommandOutcome::Completed));
         }
         assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);
         assert_eq!(mux.workspace(workspace).unwrap().custom_name(), None);
         assert_eq!(mux.session(session).unwrap().custom_name(), None);
 
-        for reset in &resets {
-            assert_eq!(execute(&mut mux, reset), Ok(CommandOutcome::Completed));
+        for clear in &clears {
+            assert_eq!(execute(&mut mux, clear), Ok(CommandOutcome::Completed));
         }
 
         let foreign =
             TabId::in_runtime(Mux::default().runtime_id(), tab.id.get());
         assert_eq!(
-            execute(
-                &mut mux,
-                &CommandInvocation::new(
-                    ids::RESET_TAB_NAME,
-                    vec![CommandArgument::new(
-                        "tab",
-                        CommandValue::Tab(foreign),
-                    )],
-                ),
-            ),
+            execute(&mut mux, &rename_tab("", Some(foreign))),
             Err(CommandError::StaleTarget)
         );
         assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);

@@ -5,7 +5,8 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, Hsla, Pixels,
-    Render, UTF16Selection, Window, canvas, div, prelude::*, px,
+    Render, ShapedLine, SharedString, TextRun, UTF16Selection, Window, canvas,
+    div, fill, point, prelude::*, px,
 };
 use huterm_protocol::{CommandError, CommandId, ids};
 use unicode_segmentation::UnicodeSegmentation;
@@ -261,6 +262,19 @@ impl TextField {
         self.buffer.replace(self.buffer.selection.clone(), "");
         Self::changed(cx);
     }
+    fn delete_word_forward(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.buffer.selection.is_empty() {
+            self.buffer.select_to(
+                self.buffer.next_word_boundary(self.buffer.cursor()),
+            );
+        }
+        self.buffer.replace(self.buffer.selection.clone(), "");
+        Self::changed(cx);
+    }
     fn delete_line_start(
         &mut self,
         _: &mut Window,
@@ -322,6 +336,9 @@ impl TextField {
             ids::TEXT_DELETE_FORWARD => self.delete(window, cx),
             ids::TEXT_DELETE_WORD_BACKWARD => {
                 self.delete_word_backward(window, cx);
+            }
+            ids::TEXT_DELETE_WORD_FORWARD => {
+                self.delete_word_forward(window, cx);
             }
             ids::TEXT_DELETE_LINE_START => self.delete_line_start(window, cx),
             ids::TEXT_MOVE_LEFT => self.left(window, cx),
@@ -435,37 +452,26 @@ impl Render for TextField {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
+        let empty = self.buffer.content.is_empty();
         let mut contents = div().flex().items_center().w_full();
-        if self.buffer.content.is_empty() {
-            if focused {
-                contents = contents
-                    .child(div().w(px(1.0)).h(px(18.0)).bg(self.foreground));
-            }
+        if empty {
             contents = contents
                 .child(div().opacity(0.62).child(self.placeholder.clone()));
         } else {
-            let selection = self.buffer.selection.clone();
-            let before = self.buffer.content[..selection.start].to_owned();
-            let selected = self.buffer.content[selection.clone()].to_owned();
-            let after = self.buffer.content[selection.end..].to_owned();
-            contents = contents.child(before);
-            if focused && self.buffer.reversed {
-                contents = contents
-                    .child(div().w(px(1.0)).h(px(18.0)).bg(self.foreground));
-            }
-            if !selected.is_empty() {
-                contents = contents.child(
-                    div().bg(self.foreground.opacity(0.18)).child(selected),
-                );
-            }
-            if focused && !self.buffer.reversed {
-                contents = contents
-                    .child(div().w(px(1.0)).h(px(18.0)).bg(self.foreground));
-            }
-            contents = contents.child(after);
+            contents = contents.child(self.buffer.content.clone());
         }
         let input = cx.entity();
         let focus = self.focus.clone();
+        // The caret and selection are painted over one unbroken text run,
+        // positioned by measuring it. Splitting the text around an inline
+        // caret element would shift the trailing text by the caret's width
+        // and lose kerning across the split.
+        let overlay = CaretOverlay {
+            text: self.buffer.content.clone().into(),
+            selection: self.buffer.selection.clone(),
+            caret: focused.then_some(self.buffer.cursor()),
+            foreground: self.foreground,
+        };
         div()
             .relative()
             .w_full()
@@ -482,8 +488,9 @@ impl Render for TextField {
             .child(contents)
             .child(
                 canvas(
-                    |_, _, _| (),
-                    move |bounds, (), window, cx| {
+                    move |_, window, _| overlay.shape(window),
+                    move |bounds, shaped, window, cx| {
+                        shaped.paint(bounds, window);
                         window.handle_input(
                             &focus,
                             ElementInputHandler::new(bounds, input),
@@ -494,6 +501,79 @@ impl Render for TextField {
                 .absolute()
                 .inset_0(),
             )
+    }
+}
+
+const FIELD_PADDING: f32 = 8.0;
+const CARET_HEIGHT: f32 = 18.0;
+
+/// What the caret canvas paints over the text run.
+struct CaretOverlay {
+    text: SharedString,
+    selection: Range<usize>,
+    caret: Option<usize>,
+    foreground: Hsla,
+}
+
+/// The overlay after measuring the text with the field's font.
+struct ShapedOverlay {
+    line: ShapedLine,
+    selection: Range<usize>,
+    caret: Option<usize>,
+    foreground: Hsla,
+}
+
+impl CaretOverlay {
+    fn shape(self, window: &mut Window) -> ShapedOverlay {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let run = TextRun {
+            len: self.text.len(),
+            font: style.font(),
+            color: self.foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let line =
+            window
+                .text_system()
+                .shape_line(self.text, font_size, &[run], None);
+        ShapedOverlay {
+            line,
+            selection: self.selection,
+            caret: self.caret,
+            foreground: self.foreground,
+        }
+    }
+}
+
+impl ShapedOverlay {
+    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+        let left = bounds.left() + px(FIELD_PADDING);
+        let top = bounds.top() + (bounds.size.height - px(CARET_HEIGHT)) / 2.0;
+        let x = |index: usize| left + self.line.x_for_index(index);
+        if !self.selection.is_empty() {
+            let start = x(self.selection.start);
+            let end = x(self.selection.end);
+            window.paint_quad(fill(
+                Bounds::from_corners(
+                    point(start, top),
+                    point(end, top + px(CARET_HEIGHT)),
+                ),
+                self.foreground.opacity(0.18),
+            ));
+        }
+        if let Some(caret) = self.caret {
+            let start = x(caret);
+            window.paint_quad(fill(
+                Bounds::from_corners(
+                    point(start, top),
+                    point(start + px(1.0), top + px(CARET_HEIGHT)),
+                ),
+                self.foreground,
+            ));
+        }
     }
 }
 
@@ -511,6 +591,20 @@ mod tests {
         buffer.selection = before_e..end;
         buffer.replace(buffer.selection.clone(), "");
         assert_eq!(buffer.content, "a👨‍👩‍👧‍👦");
+    }
+
+    #[test]
+    fn word_boundaries_delete_forward_and_backward_from_the_cursor() {
+        let mut buffer = TextBuffer::default();
+        buffer.replace(0..0, "one two three");
+        buffer.selection = 4..4;
+        buffer.select_to(buffer.next_word_boundary(buffer.cursor()));
+        buffer.replace(buffer.selection.clone(), "");
+        assert_eq!(buffer.content, "one  three");
+        buffer.selection = 4..4;
+        buffer.select_to(buffer.previous_word_boundary(buffer.cursor()));
+        buffer.replace(buffer.selection.clone(), "");
+        assert_eq!(buffer.content, " three");
     }
 
     #[test]

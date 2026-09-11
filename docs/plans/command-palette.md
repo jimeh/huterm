@@ -171,8 +171,9 @@ This delivery includes:
 - argument `prompt` flags and `OneOf` group requirements in the catalog;
 - `select_tab` accepting either `index` or a `tab` identity;
 - interactive prompting for missing arguments from keybindings and menus;
-- new catalog commands `reset_tab_name`, `reset_workspace_name`,
-  `reset_session_name`, and `select_recent_tab`, with a per-window tab
+- a blank rename name clears the custom name, and the name slot prefills the
+  current custom name selected;
+- the new catalog command `select_recent_tab`, with a per-window tab
   activation history;
 - `copy` unavailable without a selection;
 - the visual restyle: rounded selection with accent bar, hover state, key-cap
@@ -313,9 +314,9 @@ navigation, chip clicks, `palette_back`, `palette_pop`, close, or a snapshot
 failure clears the intent; a failed snapshot shows its error inline. Each
 palette opening is a new generation, so a stale completion can never execute.
 
-The snapshot carries each record's custom name, so reset-name availability for
-the captured or chosen target is answered from it without touching Mux. Core
-still validates at execution.
+The snapshot carries each record's custom name, so a rename's name slot can
+prefill the current name without touching Mux. Core still validates at
+execution.
 
 ### New catalog commands
 
@@ -324,9 +325,11 @@ still validates at execution.
   selection is the first row, so Enter goes to the most recently used other
   tab; with one tab that row is the active tab. Fuzzy filtering reorders by
   match score as everywhere else.
-- `reset_tab_name`, `reset_workspace_name`, `reset_session_name`: Runtime
-  scope, one optional identity argument each, unavailable when the target has
-  no custom name. Core already clears an override on `None`.
+- Renames clear on a blank name: the executor maps blank text to `None`,
+  which Mux already treats as clearing the override. The palette prefills
+  the target's current custom name, selected, so Enter keeps it, typing
+  replaces it, and deleting it then pressing Enter clears it. There are no
+  separate reset commands.
 - `select_recent_tab` ("Switch to Last Tab"): Window scope, no arguments,
   default `ctrl-tab` on both platforms. `WorkspaceView` keeps an ordered
   activation history updated on every tab activation and pruned on close.
@@ -498,7 +501,7 @@ a final review of the complete diff; it does not start automatically.
 1. Catalog: required context on `CommandSpec`, `prompt` flag and `OneOf`
    requirement on `ArgumentSpec`, `select_tab`'s `tab` argument,
    `CommandScope::Palette`, the palette and text commands, `QuakeProfile`,
-   reset commands, `select_recent_tab`, default bindings, schema, fixtures,
+   blank-name clears, `select_recent_tab`, default bindings, schema, fixtures,
    README tables. Prove validation, group exclusivity, context parsing, and
    default matching.
 2. Slot model: replace `ArgumentEditor` with `SlotEditor`, single-option
@@ -511,8 +514,8 @@ a final review of the complete diff; it does not start automatically.
    `InvokePalette` dispatch replacing the hardcoded component bindings,
    matcher tests for binding precedence and user overrides.
 5. Availability and execution: interactive prompting from `run_command`,
-   `select_tab` identity execution, `copy` selection check, reset-name
-   availability, status-line error routing, availability refresh outside
+   `select_tab` identity execution, `copy` selection check, name prefill,
+   status-line error routing, availability refresh outside
    `render`, pending-snapshot handling.
 6. Presentation: slot line, chips, badges, footer, scrim, theme invalidation.
 7. Quake profile picker with live state; MRU tab history and Switch to Last
@@ -555,8 +558,8 @@ Steps 2 and 3 are independent after 1. Steps 4 through 7 build on 2.
 - Catalog: every required context parses; palette and text commands are
   `Palette` scoped and hidden from a captured terminal context; ordinary
   commands remain listed; `select_tab` accepts `index` or `tab` and rejects
-  none or both; `QuakeProfile` accepts `Text` values; reset commands
-  validate; `select_recent_tab` is argument-free and Window scoped.
+  none or both; `QuakeProfile` accepts `Text` values; `select_recent_tab`
+  is argument-free and Window scoped.
 - Text field: word and line deletion, Backspace at the start of non-empty
   text leaves it unchanged, existing grapheme and composition tests.
 - Keymap: default palette bindings dispatch through `InvokePalette`; a user
@@ -567,8 +570,8 @@ Steps 2 and 3 are independent after 1. Steps 4 through 7 build on 2.
   palette does not reopen.
 - Retained query: within and beyond the window, and disabled.
 - History: activation order, pruning on close, toggle between two tabs.
-- Execute palette rename and reset invocations through core; stale target
-  still changes nothing.
+- Execute palette rename invocations through core, including a blank name
+  that clears; stale target still changes nothing.
 
 Use a targeted perturbation for the ranking test and one slot transition test.
 
@@ -592,7 +595,8 @@ Extend `smoke:macos-palette` and `smoke:linux-palette`:
 - Backspace-on-empty returns to search with the query intact; dismiss and
   reopen within the retention window shows the query;
 - `copy` unavailable without a selection and available with one;
-- reset name after rename, and unavailable before;
+- a rename opened on a named tab prefills the name; blanking it and pressing
+  Enter clears the custom name;
 - Switch to Last Tab toggles between two tabs;
 - existing cases: input isolation, modal routing, stale target, deferred
   failure in the originating window, macOS composition.
@@ -620,7 +624,8 @@ harness can express it.
 - Every palette keyboard operation is a catalog command with `Palette`
   scope; listing is decided by a required context on the spec, following
   Emacs's interactive-command model. No editing presets in this delivery.
-- Reset commands rather than empty-name-clears.
+- A blank name clears the custom name; no separate reset commands. Rename
+  slots prefill the current custom name, selected.
 - `select_tab` takes `index` or `tab`, exactly one; `index` is unprompted.
   Interactive invocation without arguments prompts through the palette with
   tabs in most-recently-used order, and aborting that prompt closes the

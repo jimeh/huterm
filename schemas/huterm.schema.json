@@ -303,6 +303,15 @@
       "additionalProperties": false,
       "description": "Command palette behavior.",
       "properties": {
+        "placement": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PalettePlacement"
+            }
+          ],
+          "default": "top",
+          "description": "Where the palette sits within the window: `top` or `center`."
+        },
         "retain_query": {
           "default": true,
           "description": "Keep the search text after the palette is cancelled, so reopening\nwithin `retain_query_seconds` restores it selected.",
@@ -318,6 +327,21 @@
         }
       },
       "type": "object"
+    },
+    "PalettePlacement": {
+      "description": "Where the command palette sits within its window.",
+      "oneOf": [
+        {
+          "const": "top",
+          "description": "Anchored near the top edge of the window.",
+          "type": "string"
+        },
+        {
+          "const": "center",
+          "description": "Centred on the window at the palette's full height, so filtering\nresults never moves the input line.",
+          "type": "string"
+        }
+      ]
     },
     "Position": {
       "enum": [
@@ -450,9 +474,6 @@
                 "rename_tab",
                 "rename_workspace",
                 "rename_session",
-                "reset_tab_name",
-                "reset_workspace_name",
-                "reset_session_name",
                 "select_recent_tab",
                 "palette_select_next",
                 "palette_select_previous",
@@ -467,6 +488,7 @@
                 "text_delete_backward",
                 "text_delete_forward",
                 "text_delete_word_backward",
+                "text_delete_word_forward",
                 "text_delete_line_start",
                 "text_move_left",
                 "text_move_right",
@@ -1896,7 +1918,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Set a custom name for a tab.",
+            "description": "Set a custom name for a tab; a blank name restores the default.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -1910,7 +1932,7 @@
               },
               "command": {
                 "const": "rename_tab",
-                "description": "Set a custom name for a tab.",
+                "description": "Set a custom name for a tab; a blank name restores the default.",
                 "type": "string"
               },
               "description": {
@@ -1947,7 +1969,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Set a custom name for a workspace.",
+            "description": "Set a custom name for a workspace; a blank name restores the default.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -1961,7 +1983,7 @@
               },
               "command": {
                 "const": "rename_workspace",
-                "description": "Set a custom name for a workspace.",
+                "description": "Set a custom name for a workspace; a blank name restores the default.",
                 "type": "string"
               },
               "description": {
@@ -1998,7 +2020,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Set a custom name for a session.",
+            "description": "Set a custom name for a session; a blank name restores the default.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -2012,148 +2034,7 @@
               },
               "command": {
                 "const": "rename_session",
-                "description": "Set a custom name for a session.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
-                "const": "reset_tab_name"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Clear the custom name of a tab.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "reset_tab_name",
-                "description": "Clear the custom name of a tab.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
-                "const": "reset_workspace_name"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Clear the custom name of a workspace.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "reset_workspace_name",
-                "description": "Clear the custom name of a workspace.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
-                "const": "reset_session_name"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Clear the custom name of a session.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "reset_session_name",
-                "description": "Clear the custom name of a session.",
+                "description": "Set a custom name for a session; a blank name restores the default.",
                 "type": "string"
               },
               "description": {
@@ -2812,6 +2693,53 @@
               "command": {
                 "const": "text_delete_word_backward",
                 "description": "Delete the word before the cursor.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "text_delete_word_forward"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Delete the word after the cursor.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "text_delete_word_forward",
+                "description": "Delete the word after the cursor.",
                 "type": "string"
               },
               "description": {

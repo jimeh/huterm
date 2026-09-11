@@ -153,11 +153,28 @@ impl Default for WindowConfig {
     }
 }
 
+/// Where the command palette sits within its window.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PalettePlacement {
+    /// Anchored near the top edge of the window.
+    #[default]
+    Top,
+    /// Centred on the window at the palette's full height, so filtering
+    /// results never moves the input line.
+    Center,
+}
+
 /// Command palette behavior.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct PaletteConfig {
+    /// Where the palette sits within the window: `top` or `center`.
+    pub placement: PalettePlacement,
     /// Keep the search text after the palette is cancelled, so reopening
     /// within `retain_query_seconds` restores it selected.
     pub retain_query: bool,
@@ -168,6 +185,7 @@ pub struct PaletteConfig {
 impl Default for PaletteConfig {
     fn default() -> Self {
         Self {
+            placement: PalettePlacement::Top,
             retain_query: true,
             retain_query_seconds: 15,
         }
@@ -582,9 +600,10 @@ mod tests {
         assert_eq!(defaults.palette, PaletteConfig::default());
 
         let maximum: RawConfig = toml::from_str(
-            "[palette]\nretain_query = false\nretain_query_seconds = 3600",
+            "[palette]\nplacement = \"center\"\nretain_query = false\nretain_query_seconds = 3600",
         )
         .unwrap();
+        assert_eq!(maximum.palette.placement, PalettePlacement::Center);
         assert!(!maximum.palette.retain_query);
         assert_eq!(maximum.palette.retain_query_seconds, 3600);
         assert!(maximum.validate_values().is_ok());

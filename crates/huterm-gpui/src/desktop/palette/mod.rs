@@ -12,13 +12,15 @@ mod slots;
 pub(super) use search::{CommandFrequency, HistoryView, RecentCommands};
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, FontWeight,
-    Hsla, KeyBindingContextPredicate, KeyContext, MouseButton, MouseDownEvent,
-    MouseUpEvent, Render, ScrollHandle, ScrollWheelEvent, Subscription,
-    WeakEntity, Window, div, prelude::*, px,
+    App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
+    FontWeight, Hsla, KeyBindingContextPredicate, KeyContext, MouseButton,
+    MouseDownEvent, MouseUpEvent, Render, ScrollHandle, ScrollWheelEvent,
+    Subscription, WeakEntity, Window, div, hsla, point, prelude::*, px,
 };
+use huterm_config::PalettePlacement;
 use huterm_core::HierarchySnapshot;
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
@@ -32,6 +34,7 @@ use slots::{
 
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
+use crate::scroll::{IndicatorVisibility, ScrollbarGeometry};
 use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
@@ -45,6 +48,21 @@ pub(super) struct PaletteTarget {
     pub(super) terminal_view: Option<WeakEntity<TerminalView>>,
     pub(super) contexts: Vec<KeyContext>,
 }
+
+/// Height of one result or picker row in points. Fixed so the list's
+/// maximum height is a whole number of rows and native smokes can address
+/// rows by position.
+const ROW_HEIGHT: f32 = 54.0;
+/// Rows visible before the list scrolls.
+const VISIBLE_ROWS: f32 = 6.0;
+const LIST_PADDING: f32 = 6.0;
+const LIST_MAX_HEIGHT: f32 = ROW_HEIGHT * VISIBLE_ROWS + LIST_PADDING * 2.0;
+/// The panel at its tallest: input line, full list, and footer. Centred
+/// placement positions this height so filtering never moves the input.
+const PANEL_MAX_HEIGHT: f32 = 412.0;
+/// Distance from the window's top edge for top placement, and the minimum
+/// for centred placement in short windows.
+const PANEL_TOP_INSET: f32 = 36.0;
 
 /// Theme colours the palette derives its presentation from.
 #[derive(Clone, Copy, Debug)]
@@ -100,6 +118,7 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) keymap: InstalledKeymap,
     pub(super) availability: HashMap<CommandId, String>,
     pub(super) colors: PaletteColors,
+    pub(super) placement: PalettePlacement,
     pub(super) history: OwnedHistory,
     pub(super) profiles: Vec<QuakeProfileRow>,
     /// A command invoked interactively without its required arguments.
@@ -243,20 +262,6 @@ impl PaletteHierarchy {
             _ => &[],
         }
     }
-
-    fn custom_name_state(&self, value: &CommandValue) -> bool {
-        let rows = match value {
-            CommandValue::Session(_) => &self.sessions,
-            CommandValue::Workspace(_) => &self.workspaces,
-            CommandValue::Tab(_) => &self.tabs,
-            CommandValue::Bool(_)
-            | CommandValue::Integer(_)
-            | CommandValue::Text(_) => return false,
-        };
-        rows.iter()
-            .find(|row| &row.value == value)
-            .is_some_and(|row| row.custom_name)
-    }
 }
 
 /// The slot editor's view of identity domains: the hierarchy snapshot for
@@ -396,6 +401,7 @@ pub(super) struct CommandPalette {
     availability: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
     colors: PaletteColors,
+    placement: PalettePlacement,
     diagnostic: Option<String>,
     pending: Option<Pending>,
     /// Filtered row indices for the active identity slot.
@@ -405,6 +411,9 @@ pub(super) struct CommandPalette {
     picker_selected: Option<CommandValue>,
     hover: Option<usize>,
     scroll: ScrollHandle,
+    /// Fading overlay scrollbar on the list; shown after list changes and
+    /// scrolling so it also signals rows beyond the visible six.
+    indicator: IndicatorVisibility,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -418,6 +427,7 @@ impl CommandPalette {
             keymap,
             availability,
             colors,
+            placement,
             history,
             profiles,
             request,
@@ -459,12 +469,14 @@ impl CommandPalette {
             availability,
             keymap,
             colors,
+            placement,
             diagnostic: None,
             pending: None,
             picker: Vec::new(),
             picker_selected: None,
             hover: None,
             scroll: ScrollHandle::new(),
+            indicator: IndicatorVisibility::default(),
             _subscriptions: vec![subscription],
         };
         let requested = request.and_then(|request| {
@@ -507,29 +519,23 @@ impl CommandPalette {
         self.availability = availability;
     }
 
-    /// Applies reloaded theme colours and profiles to an open palette.
+    /// Applies reloaded theme colours, placement, and profiles to an open
+    /// palette.
     pub(super) fn set_presentation(
         &mut self,
         colors: PaletteColors,
+        placement: PalettePlacement,
         profiles: Vec<QuakeProfileRow>,
         cx: &mut Context<'_, Self>,
     ) {
         self.colors = colors;
+        self.placement = placement;
         self.profiles = profile_rows(profiles);
         self.input.update(cx, |input, cx| {
             input.set_foreground(colors.foreground, cx);
         });
         self.refresh_picker_rows();
         cx.notify();
-    }
-
-    pub(super) fn custom_name_state(
-        &self,
-        value: &CommandValue,
-    ) -> Option<bool> {
-        self.hierarchy
-            .as_ref()
-            .map(|hierarchy| hierarchy.custom_name_state(value))
     }
 
     pub(super) fn set_error(
@@ -558,6 +564,7 @@ impl CommandPalette {
         ));
         self.diagnostic = None;
         self.refresh_picker_rows();
+        self.prefill_name(cx);
         match self.pending.take() {
             Some(Pending::Confirm) => self.confirm_search(cx),
             Some(Pending::Commit) => self.commit_slot(cx),
@@ -615,6 +622,31 @@ impl CommandPalette {
         });
         self.picker.clear();
         self.scroll.scroll_to_item(0);
+        self.show_scrollbar();
+    }
+
+    /// Reveals the list scrollbar; the window pump fades it out.
+    fn show_scrollbar(&mut self) {
+        self.indicator.activate(Instant::now());
+    }
+
+    /// Advances the scrollbar fade from the window refresh pump.
+    pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
+        if self.indicator.update(now, false) {
+            cx.notify();
+        }
+    }
+
+    /// Scrollbar geometry for the list's current overflow, if any.
+    fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
+        let viewport = f32::from(self.scroll.bounds().size.height);
+        let overflow = f32::from(self.scroll.max_offset().height);
+        ScrollbarGeometry::for_pixels(
+            viewport,
+            viewport + overflow,
+            viewport,
+            -f32::from(self.scroll.offset().y),
+        )
     }
 
     fn input_changed(&mut self, text: &str) {
@@ -653,6 +685,7 @@ impl CommandPalette {
         if let Some(index) = self.picker_index() {
             self.scroll.scroll_to_item(index);
         }
+        self.show_scrollbar();
     }
 
     /// Row index into the filtered picker that is currently highlighted.
@@ -706,6 +739,7 @@ impl CommandPalette {
                 }
             }
         }
+        self.show_scrollbar();
         cx.notify();
     }
 
@@ -915,7 +949,52 @@ impl CommandPalette {
         self.syncing = false;
         self.diagnostic = None;
         self.refresh_picker_rows();
+        self.prefill_name(cx);
         cx.notify();
+    }
+
+    /// Seeds an untouched rename name slot with the target's current custom
+    /// name, selected so typing replaces it and Enter keeps it. Does nothing
+    /// once the user has typed or committed a name.
+    fn prefill_name(&mut self, cx: &mut Context<'_, Self>) {
+        let Stage::Slots(editor) = &self.stage else {
+            return;
+        };
+        let slot = editor.active();
+        if slot.spec.kind != ArgumentKind::Text
+            || slot.value.is_some()
+            || !editor.text().is_empty()
+        {
+            return;
+        }
+        let Some(name) = self.current_name(editor) else {
+            return;
+        };
+        if let Stage::Slots(editor) = &mut self.stage {
+            editor.set_text(&name);
+        }
+        self.syncing = true;
+        self.input.update(cx, |input, cx| {
+            input.set_text(name, cx);
+            input.select_all_text(cx);
+        });
+        self.syncing = false;
+    }
+
+    /// The custom name a rename would replace, when its target has one.
+    fn current_name(&self, editor: &SlotEditor) -> Option<String> {
+        let (_, argument) = self.rename_target(editor)?;
+        let slot = editor
+            .slots()
+            .iter()
+            .find(|slot| slot.spec.name == argument)?;
+        let value = slot.value.as_ref()?;
+        self.domain()
+            .rows(slot.spec.kind)?
+            .into_iter()
+            .find(|row| &row.value == value)
+            .filter(|row| row.custom_name)
+            .map(|row| row.label.clone())
     }
 
     fn placeholder(&self, editor: &SlotEditor) -> String {
@@ -1027,6 +1106,9 @@ impl CommandPalette {
             self.domain()
                 .label(slot.spec.kind, value)
                 .or_else(|| Some(display_value(value)))
+        } else if matches!(value, CommandValue::Text(text) if text.trim().is_empty())
+        {
+            Some("blank".to_owned())
         } else {
             Some(display_value(value))
         }
@@ -1088,6 +1170,18 @@ impl CommandPalette {
             _ => None,
         };
         cx.emit(PaletteEvent::Cancel { query });
+    }
+}
+
+/// The panel's distance from the top of a window `height` points tall. Centred
+/// placement centres the panel at its maximum height, so the input line stays
+/// put while the result list grows and shrinks beneath it.
+fn panel_top(placement: PalettePlacement, height: f32) -> f32 {
+    match placement {
+        PalettePlacement::Top => PANEL_TOP_INSET,
+        PalettePlacement::Center => {
+            ((height - PANEL_MAX_HEIGHT) / 2.0).max(PANEL_TOP_INSET)
+        }
     }
 }
 
@@ -1252,10 +1346,16 @@ impl CommandPalette {
             .id("palette-results")
             .flex()
             .flex_col()
-            .p(px(6.0))
-            .max_h(px(330.0))
+            .p(px(LIST_PADDING))
+            .max_h(px(LIST_MAX_HEIGHT))
             .overflow_y_scroll()
-            .track_scroll(&self.scroll);
+            .track_scroll(&self.scroll)
+            .on_scroll_wheel(cx.listener(
+                |palette, _: &ScrollWheelEvent, _, cx| {
+                    palette.show_scrollbar();
+                    cx.notify();
+                },
+            ));
         if search.results.is_empty() {
             list = list.child(
                 div()
@@ -1307,7 +1407,8 @@ impl CommandPalette {
                 .items_center()
                 .gap(px(10.0))
                 .px(px(8.0))
-                .py(px(7.0))
+                .h(px(ROW_HEIGHT))
+                .flex_none()
                 .rounded(px(6.0))
                 .cursor_pointer()
                 .when(selected, |item| item.bg(swatch.selection))
@@ -1517,10 +1618,16 @@ impl CommandPalette {
             .id("palette-results")
             .flex()
             .flex_col()
-            .p(px(6.0))
-            .max_h(px(330.0))
+            .p(px(LIST_PADDING))
+            .max_h(px(LIST_MAX_HEIGHT))
             .overflow_y_scroll()
-            .track_scroll(&self.scroll);
+            .track_scroll(&self.scroll)
+            .on_scroll_wheel(cx.listener(
+                |palette, _: &ScrollWheelEvent, _, cx| {
+                    palette.show_scrollbar();
+                    cx.notify();
+                },
+            ));
         if is_identity(slot.spec.kind) {
             let selected_index = self.picker_index();
             let domain = self.domain();
@@ -1572,7 +1679,8 @@ impl CommandPalette {
                     .items_center()
                     .gap(px(10.0))
                     .px(px(8.0))
-                    .py(px(7.0))
+                    .h(px(ROW_HEIGHT))
+                    .flex_none()
                     .rounded(px(6.0))
                     .cursor_pointer()
                     .when(selected, |item| item.bg(swatch.selection))
@@ -1618,7 +1726,8 @@ impl CommandPalette {
                 }
                 _ => match self.rename_target(editor) {
                     Some((label, name)) => Some(format!(
-                        "Renames {label}. Press ⇥ to choose a different {name}."
+                        "Renames {label}; a blank name restores the default. \
+                         Press ⇥ to choose a different {name}."
                     )),
                     None if !slot.spec.is_required()
                         && slot.spec.group().is_none() =>
@@ -1663,10 +1772,12 @@ impl Render for CommandPalette {
     )]
     fn render(
         &mut self,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Swatch::new(self.colors);
+        let top =
+            panel_top(self.placement, f32::from(window.viewport_size().height));
         let mut line = div()
             .flex()
             .items_center()
@@ -1740,6 +1851,12 @@ impl Render for CommandPalette {
             .border_1()
             .border_color(swatch.fg.opacity(0.22))
             .rounded(px(10.0))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.55),
+                offset: point(px(0.0), px(16.0)),
+                blur_radius: px(48.0),
+                spread_radius: px(0.0),
+            }])
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -1756,7 +1873,24 @@ impl Render for CommandPalette {
             .on_click(|_: &ClickEvent, _, cx| cx.stop_propagation())
             .child(line)
             .children(below)
-            .child(list)
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(list)
+                    .children(self.scrollbar_geometry().into_iter().flat_map(
+                        |geometry| {
+                            crate::ui::scrollbar::layers(
+                                geometry,
+                                self.indicator.opacity,
+                                0.0,
+                                swatch.fg,
+                            )
+                        },
+                    )),
+            )
             .child(footer);
 
         div()
@@ -1767,7 +1901,7 @@ impl Render for CommandPalette {
             .flex()
             .justify_center()
             .items_start()
-            .pt(px(36.0))
+            .pt(px(top))
             .key_context("Palette")
             .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
@@ -1940,7 +2074,12 @@ mod tests {
         assert_ne!(hierarchy.sessions[0].value, hierarchy.sessions[1].value);
         assert!(
             hierarchy
-                .custom_name_state(&CommandValue::Workspace(first_workspace))
+                .workspaces
+                .iter()
+                .find(
+                    |row| row.value == CommandValue::Workspace(first_workspace)
+                )
+                .is_some_and(|row| row.custom_name)
         );
 
         let rename =
