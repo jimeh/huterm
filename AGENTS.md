@@ -582,6 +582,17 @@ Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
 
+The native input smoke command protocol is tab-separated, so a Tab keystroke's
+characters are written as the two-character escape `\t`; `native::post`
+unescapes it. Palette, text-field, and other UI keyboard operations are
+`Palette`-scope catalog commands with a required context compiled into every
+binding, never hardcoded GPUI component bindings. `validate_supplied` guards
+bindings, menus, and interactive requests; only executors run the full
+`validate`, so a binding may omit prompted arguments and the palette collects
+them. Keep the keybinding schema aligned: only unprompted `Always` arguments
+are schema-required. Modules that land before their consumer carry
+`#[expect(dead_code)]` so Clippy fails when the consumer arrives and the
+attribute must go.
 Native input smoke events must enter NSApplication through `postEvent:atStart:`;
 calling NSView.keyDown: directly does not establish `currentEvent` for Option
 composition. Use printable Option prefixes and held printable suffixes in replay

@@ -151,6 +151,30 @@ impl TextField {
         &self.buffer.content
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buffer.content.is_empty()
+    }
+
+    pub(crate) fn set_placeholder(&mut self, placeholder: impl Into<String>) {
+        self.placeholder = placeholder.into();
+    }
+
+    pub(crate) fn set_foreground(
+        &mut self,
+        foreground: Hsla,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.foreground = foreground;
+        cx.notify();
+    }
+
+    /// Selects the whole buffer without emitting `Changed`.
+    pub(crate) fn select_all_text(&mut self, cx: &mut Context<'_, Self>) {
+        self.buffer.selection = 0..self.buffer.content.len();
+        self.buffer.reversed = false;
+        cx.notify();
+    }
+
     pub(crate) fn set_text(
         &mut self,
         text: impl Into<String>,

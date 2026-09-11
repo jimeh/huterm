@@ -219,11 +219,12 @@ close_on_exit = false
     }
   }
 
-  async function key(name: "enter" | "escape" | "select-all" | "backspace"): Promise<void> {
+  async function key(name: "enter" | "escape" | "select-all" | "backspace" | "tab"): Promise<void> {
     if (process.platform === "darwin") {
       if (name === "enter") await nativeKey(36, 0, "\r");
       else if (name === "escape") await nativeKey(53, 0, "\x1b");
       else if (name === "select-all") await nativeKey(0, commandFlag, "a");
+      else if (name === "tab") await nativeKey(48, 0, "\\t");
       else await nativeKey(51, 0, "\x08");
     } else {
       const mapped = {
@@ -231,6 +232,7 @@ close_on_exit = false
         escape: "Escape",
         "select-all": "ctrl+a",
         backspace: "BackSpace",
+        tab: "Tab",
       }[name];
       run(["xdotool", "key", "--clearmodifiers", mapped]);
     }
@@ -320,7 +322,9 @@ close_on_exit = false
     await state("w0.palette_focused=true");
     await command("focus-terminal");
     await clickOverlay();
-    await state("w0.palette_focused=true");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await shortcut("palette");
+    await state("w0.palette=true", "w0.palette_focused=true");
     await assertOverlayBlocksMotion();
     if (process.platform === "darwin") {
       await command("native\tmarked\té");
@@ -340,10 +344,8 @@ close_on_exit = false
     await typeText("rename tab");
     await state("selected=rename_tab");
     await key("enter");
-    await state("arguments command=rename_tab active=name");
+    await state("slots command=rename_tab", "active=name", "tab:prefilled");
     await typeText("renamed");
-    await key("enter");
-    await state("active=tab", "picker=true", "loading=false");
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     const renamed = await command("core-state");
@@ -365,8 +367,6 @@ close_on_exit = false
     await command("busy-off");
 
     await command("open-explicit");
-    await state("arguments command=rename_tab active=complete");
-    await key("enter");
     await state("w0.palette=false");
     const explicit = await command("core-state");
     if (!explicit.includes('name=Some("explicit")')) {
@@ -379,7 +379,7 @@ close_on_exit = false
     await state("active=name");
     await typeText("canceled");
     await key("escape");
-    await state("palette_state=commands");
+    await state("palette_state=commands", 'query="rename tab"');
     await key("escape");
     await state("w0.palette=false");
     const canceled = await command("core-state");
@@ -410,8 +410,8 @@ close_on_exit = false
     await typeText("rename tab");
     await key("enter");
     await typeText("gone");
-    await key("enter");
-    await state("active=tab", "picker=true");
+    await key("tab");
+    await state("active=tab", "name:committed");
     await command("delete-target");
     await key("enter");
     await state("w0.palette=false", "command target no longer exists");
@@ -441,8 +441,6 @@ close_on_exit = false
     await shortcut("palette");
     await typeText("show quake");
     await state("w0.palette_state=commands selected=show_quake");
-    await key("enter");
-    await state("arguments command=show_quake active=profile");
     await key("enter");
     await state(
       "windows=3",

@@ -15,8 +15,8 @@ mod quake_windows;
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
 use super::palette::{
-    CommandFrequency, CommandPalette, HistoryView, PaletteEvent, PaletteTarget,
-    RecentCommands,
+    CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteColors,
+    PaletteEvent, PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
 };
 use super::*;
 use crate::commands::{
@@ -584,6 +584,32 @@ fn interactive_spec(
     Ok((spec, prompt))
 }
 
+fn quake_profile_rows(cx: &App) -> Vec<QuakeProfileRow> {
+    quake_windows::profile_rows(cx)
+        .into_iter()
+        .map(|row| QuakeProfileRow {
+            detail: format!(
+                "{} · {}",
+                row.geometry,
+                match row.state {
+                    quake_windows::ProfileState::NotSummoned => {
+                        "not summoned yet".to_owned()
+                    }
+                    quake_windows::ProfileState::Hidden { tabs } => {
+                        format!(
+                            "hidden · {tabs} tab{}",
+                            if tabs == 1 { "" } else { "s" }
+                        )
+                    }
+                    quake_windows::ProfileState::Visible =>
+                        "visible".to_owned(),
+                }
+            ),
+            name: row.name,
+        })
+        .collect()
+}
+
 fn set_dispatch_error<T>(
     palette: &mut Option<T>,
     status: &mut Option<String>,
@@ -1023,6 +1049,7 @@ fn open_window_with_profile(
                 status: cx.global::<Desktop>().config_error.clone(),
                 palette: None,
                 palette_refresh_state: None,
+                retained_query: None,
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
             });
@@ -1163,6 +1190,8 @@ struct WorkspaceView {
     status: Option<String>,
     palette: Option<Entity<CommandPalette>>,
     palette_refresh_state: Option<PaletteRefreshState>,
+    /// A cancelled search query and when it was cancelled.
+    retained_query: Option<(String, Instant)>,
     recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
 }
@@ -1961,6 +1990,13 @@ impl WorkspaceView {
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
+        // A request that already carries every required argument has
+        // nothing to prompt for; run it like any interactive invocation.
+        if let Some(request) = request
+            && interactive_spec(request).is_ok_and(|(_, prompt)| !prompt)
+        {
+            return self.invoke_interactive(request, window, cx);
+        }
         self.check_available(true)?;
         if cx.global::<Desktop>().quitting
             || cx.global::<Desktop>().quit_pending
@@ -1987,20 +2023,26 @@ impl WorkspaceView {
             contexts: window.context_stack(),
         };
         let availability = self.palette_availability(&target, cx);
-        let foreground = color(self.config.theme.foreground);
-        let background = color(self.config.theme.background);
         let keymap = cx.global::<Desktop>().keymap.clone();
-        let palette = cx.new(|cx| {
-            CommandPalette::new_with_request(
-                target,
-                keymap,
-                availability,
-                foreground,
-                background,
-                request,
-                cx,
-            )
-        });
+        let history = OwnedHistory::capture(&self.history_view(cx));
+        let retained_query = if request.is_some() {
+            None
+        } else {
+            self.take_retained_query()
+        };
+        let tab_order = self.palette_tab_order();
+        let open = PaletteOpen {
+            target,
+            keymap,
+            availability,
+            colors: self.palette_colors(),
+            history,
+            profiles: quake_profile_rows(cx),
+            request,
+            retained_query,
+            tab_order,
+        };
+        let palette = cx.new(|cx| CommandPalette::open(open, cx));
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
         self.palette = Some(palette.clone());
@@ -2035,7 +2077,7 @@ impl WorkspaceView {
                 }
                 Ok(None) => {}
                 Err(error) => palette.update(cx, |palette, cx| {
-                    palette.set_error(
+                    palette.hierarchy_failed(
                         format!("Cannot load command targets: {error}"),
                         cx,
                     );
@@ -2055,10 +2097,14 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         match event {
-            PaletteEvent::Cancel => {
+            PaletteEvent::Cancel { query } => {
                 let target = palette.read(cx).target.clone();
                 self.palette = None;
                 self.palette_refresh_state = None;
+                self.retained_query = query
+                    .clone()
+                    .filter(|_| self.config.palette.retain_query)
+                    .map(|query| (query, Instant::now()));
                 self.restore_palette_focus(&target, window, cx);
                 cx.notify();
             }
@@ -2145,9 +2191,15 @@ impl WorkspaceView {
             .iter()
             .filter(|spec| spec.id != ids::OPEN_COMMAND_PALETTE)
             .filter_map(|spec| {
-                self.command_availability(spec.id, target, cx)
-                    .err()
-                    .map(|error| (spec.id, error.to_string()))
+                self.command_availability(spec.id, target, cx).err().map(
+                    |error| {
+                        let reason = match error {
+                            CommandError::Unavailable(reason) => reason,
+                            other => other.to_string(),
+                        };
+                        (spec.id, reason)
+                    },
+                )
             })
             .collect()
     }
@@ -2185,11 +2237,48 @@ impl WorkspaceView {
         });
     }
 
-    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
-    pub(super) fn history_view<'a>(&'a self, cx: &'a App) -> HistoryView<'a> {
+    fn history_view<'a>(&'a self, cx: &'a App) -> HistoryView<'a> {
         HistoryView {
             recent: &self.recent,
             frequency: &cx.global::<Desktop>().frequency,
+        }
+    }
+
+    /// The retained query when it is still within the configured window.
+    fn take_retained_query(&mut self) -> Option<String> {
+        let (query, cancelled) = self.retained_query.take()?;
+        let limit = Duration::from_secs(u64::from(
+            self.config.palette.retain_query_seconds,
+        ));
+        (self.config.palette.retain_query && cancelled.elapsed() <= limit)
+            .then_some(query)
+    }
+
+    /// Tabs in most-recently-used order with the active tab last, so a
+    /// picker's first row is the tab the user most likely wants next.
+    fn palette_tab_order(&self) -> Vec<TabId> {
+        let mut order: Vec<TabId> = self
+            .history
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != self.active)
+            .collect();
+        for tab in &self.tabs {
+            if !order.contains(&tab.id) && Some(tab.id) != self.active {
+                order.push(tab.id);
+            }
+        }
+        order.extend(self.active);
+        order
+    }
+
+    fn palette_colors(&self) -> PaletteColors {
+        let theme = &self.config.theme;
+        PaletteColors {
+            foreground: color(theme.foreground),
+            background: color(theme.background),
+            selection: color(theme.selection),
+            accent: color(theme.ansi[4]),
         }
     }
 
@@ -2346,6 +2435,13 @@ impl WorkspaceView {
     fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
         self.palette_refresh_state = None;
         self.refresh_palette(cx);
+        if let Some(palette) = self.palette.clone() {
+            let colors = self.palette_colors();
+            let profiles = quake_profile_rows(cx);
+            palette.update(cx, |palette, cx| {
+                palette.set_presentation(colors, profiles, cx);
+            });
+        }
         cx.notify();
     }
 
@@ -2863,11 +2959,6 @@ impl WorkspaceView {
             self.select_from_command(next, window, cx);
         }
         Ok(CommandOutcome::Completed)
-    }
-
-    #[expect(dead_code, reason = "consumed by command palette chunk 6")]
-    pub(super) fn tab_history(&self) -> &[TabId] {
-        &self.history
     }
 
     fn reveal_tab_activity(
@@ -3501,8 +3592,6 @@ impl Render for WorkspaceView {
                                             window,
                                             cx,
                                         );
-                                        cx.stop_propagation();
-                                    } else if view.palette.is_some() {
                                         cx.stop_propagation();
                                     }
                                 });

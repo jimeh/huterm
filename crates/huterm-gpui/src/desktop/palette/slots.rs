@@ -150,14 +150,14 @@ impl SlotEditor {
                             (default, state)
                         }
                         (Requirement::Always | Requirement::OneOf(_), true) => {
+                            // Required identities carry no preselection: the
+                            // picker's first row (most recently used) is the
+                            // likeliest choice.
                             match domain.values(argument.kind) {
                                 Some(values) if values.len() == 1 => {
                                     (values.into_iter().next(), SlotState::Sole)
                                 }
-                                _ => (
-                                    domain.default(argument.kind),
-                                    SlotState::Empty,
-                                ),
+                                _ => (None, SlotState::Empty),
                             }
                         }
                         (_, false) => (None, SlotState::Empty),
@@ -176,7 +176,15 @@ impl SlotEditor {
             text: String::new(),
             requested,
         };
-        editor.active = editor.next_needing_input(None).unwrap_or(0);
+        editor.active = editor
+            .next_needing_input(None)
+            .or_else(|| {
+                editor
+                    .slots
+                    .iter()
+                    .position(|slot| slot.state != SlotState::Explicit)
+            })
+            .unwrap_or(0);
         editor.text = editor.reopen_text();
         editor
     }

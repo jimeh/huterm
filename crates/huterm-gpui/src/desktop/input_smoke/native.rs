@@ -34,8 +34,9 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
     );
     let key: u16 = fields[0].parse()?;
     let flags: usize = fields[1].parse()?;
-    let characters = CString::new(fields[2])?;
-    let plain = CString::new(fields[3])?;
+    // Fields are tab-separated, so a Tab key's characters arrive escaped.
+    let characters = CString::new(fields[2].replace("\\t", "\t"))?;
+    let plain = CString::new(fields[3].replace("\\t", "\t"))?;
     // SAFETY: Called on the AppKit main thread, outside GPUI's App borrow.
     // AppKit owns the window and retains the autoreleased event when queued.
     // Posting through the normal event loop sets NSApplication.currentEvent,

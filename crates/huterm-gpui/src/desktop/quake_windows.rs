@@ -36,7 +36,6 @@ impl Default for Registry {
 
 /// Configured quake profile and its current window state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "consumed by command palette chunk 6")]
 pub(super) struct ProfileRow {
     pub(super) name: String,
     pub(super) geometry: String,
@@ -45,7 +44,6 @@ pub(super) struct ProfileRow {
 
 /// Live state of a configured quake profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code, reason = "consumed by command palette chunk 6")]
 pub(super) enum ProfileState {
     NotSummoned,
     Hidden { tabs: usize },
@@ -53,7 +51,6 @@ pub(super) enum ProfileState {
 }
 
 /// Configured profiles with their live window state, sorted by name.
-#[allow(dead_code, reason = "consumed by command palette chunk 6")]
 pub(super) fn profile_rows(cx: &App) -> Vec<ProfileRow> {
     let desktop = cx.global::<Desktop>();
     build_profile_rows(&desktop.config.quake.profiles, |name| {
