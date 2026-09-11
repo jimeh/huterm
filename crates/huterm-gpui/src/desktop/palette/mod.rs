@@ -1,5 +1,14 @@
 //! Command-palette workflow and its window-independent state model.
 
+// The palette UI chunk consumes these; the `expect` lints fail once it does.
+#[expect(dead_code, reason = "consumed when the slot editor and UI land")]
+mod search;
+#[expect(
+    unused_imports,
+    reason = "consumed when the window records history"
+)]
+pub(super) use search::{CommandFrequency, HistoryView, RecentCommands};
+
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
