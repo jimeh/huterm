@@ -1978,6 +1978,9 @@ impl WorkspaceView {
                                 terminal.run_command(invocation, window, cx)
                             })
                         }),
+                    Ok(CommandScope::Palette) => {
+                        Err(CommandError::UnknownCommand(invocation.id))
+                    }
                     Err(error) => Err(error),
                 };
                 if let Err(error) = result {
@@ -2089,6 +2092,7 @@ impl WorkspaceView {
                 }
                 terminal.command_availability(command)
             }
+            CommandScope::Palette => Ok(()),
         }
     }
 

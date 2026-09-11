@@ -82,8 +82,6 @@ fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> InstalledKeymap {
     let (bindings, installed) = compiled.install_parts();
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
-    cx.bind_keys(palette::bindings());
-    cx.bind_keys(crate::ui::text_field::bindings());
     install_menus(cx);
     installed
 }

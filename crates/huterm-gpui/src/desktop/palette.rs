@@ -3,9 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, Focusable, Hsla, KeyBinding,
-    KeyContext, MouseButton, Render, ScrollHandle, ScrollWheelEvent,
-    Subscription, WeakEntity, Window, div, prelude::*, px,
+    App, Context, Entity, EventEmitter, Focusable, Hsla, KeyContext,
+    MouseButton, Render, ScrollHandle, ScrollWheelEvent, Subscription,
+    WeakEntity, Window, div, prelude::*, px,
 };
 use huterm_core::HierarchySnapshot;
 use huterm_protocol::{
@@ -15,20 +15,10 @@ use huterm_protocol::{
 };
 
 use super::TerminalView;
+use crate::commands::InvokePalette;
 use crate::keymap::InstalledKeymap;
 use crate::ui::picker::{PickerItem, PickerList};
 use crate::ui::text_field::{Changed, TextField};
-
-gpui::actions!(huterm_palette, [Up, Down, Confirm, Cancel]);
-
-pub(crate) fn bindings() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new("up", Up, Some("Palette")),
-        KeyBinding::new("down", Down, Some("Palette")),
-        KeyBinding::new("enter", Confirm, Some("Palette")),
-        KeyBinding::new("escape", Cancel, Some("Palette")),
-    ]
-}
 
 #[derive(Clone)]
 pub(super) struct PaletteTarget {
@@ -361,7 +351,7 @@ impl ArgumentEditor {
             argument.kind,
             ArgumentKind::Session | ArgumentKind::Workspace | ArgumentKind::Tab
         ) {
-            return if argument.required
+            return if argument.is_required()
                 && !self.values.contains_key(argument.name)
             {
                 Err(CommandError::MissingArgument {
@@ -374,7 +364,7 @@ impl ArgumentEditor {
         }
         let text = self.scalar.get(argument.name).map_or("", String::as_str);
         if text.trim().is_empty() {
-            if argument.required {
+            if argument.is_required() {
                 return Err(CommandError::MissingArgument {
                     command: self.spec.id,
                     name: argument.name,
@@ -663,19 +653,14 @@ impl CommandPalette {
         cx.notify();
     }
 
-    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<'_, Self>) {
+    fn up(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.move_selection(-1, cx);
     }
-    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<'_, Self>) {
+    fn down(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.move_selection(1, cx);
     }
 
-    fn confirm(
-        &mut self,
-        _: &Confirm,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         match &mut self.stage {
             PaletteStage::Commands(search) => {
                 let Some(spec) = search.selected() else {
@@ -740,18 +725,62 @@ impl CommandPalette {
         }
     }
 
-    fn cancel(
-        &mut self,
-        _: &Cancel,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         match &mut self.stage {
             PaletteStage::Commands(_) => cx.emit(PaletteEvent::Cancel),
             PaletteStage::Arguments(_) => {
                 self.stage = PaletteStage::Commands(CommandSearch::new());
                 self.sync_input(window, cx);
             }
+        }
+    }
+
+    fn invoke_palette(
+        &mut self,
+        action: &InvokePalette,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.stop_propagation();
+        let result = match action.0.id {
+            ids::PALETTE_SELECT_NEXT => {
+                self.down(window, cx);
+                Ok(())
+            }
+            ids::PALETTE_SELECT_PREVIOUS => {
+                self.up(window, cx);
+                Ok(())
+            }
+            ids::PALETTE_CONFIRM => {
+                self.confirm(window, cx);
+                Ok(())
+            }
+            ids::PALETTE_BACK => {
+                self.cancel(window, cx);
+                Ok(())
+            }
+            ids::TEXT_DELETE_BACKWARD
+            | ids::TEXT_DELETE_FORWARD
+            | ids::TEXT_DELETE_WORD_BACKWARD
+            | ids::TEXT_DELETE_LINE_START
+            | ids::TEXT_MOVE_LEFT
+            | ids::TEXT_MOVE_RIGHT
+            | ids::TEXT_MOVE_WORD_LEFT
+            | ids::TEXT_MOVE_WORD_RIGHT
+            | ids::TEXT_LINE_START
+            | ids::TEXT_LINE_END
+            | ids::TEXT_SELECT_LEFT
+            | ids::TEXT_SELECT_RIGHT
+            | ids::TEXT_SELECT_ALL
+            | ids::TEXT_COPY
+            | ids::TEXT_PASTE => self
+                .input
+                .update(cx, |field, cx| field.run(action.0.id, window, cx)),
+            other => Err(CommandError::UnknownCommand(other)),
+        };
+        if let Err(error) = result {
+            self.diagnostic = Some(error.to_string());
+            cx.notify();
         }
     }
 
@@ -1001,10 +1030,7 @@ impl Render for CommandPalette {
             .items_start()
             .pt(px(48.0))
             .key_context("Palette")
-            .on_action(cx.listener(Self::up))
-            .on_action(cx.listener(Self::down))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::invoke_palette))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 input_focus.focus(window);
                 cx.stop_propagation();

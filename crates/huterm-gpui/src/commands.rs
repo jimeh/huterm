@@ -3,14 +3,15 @@
 //! Each catalog scope maps to one GPUI action type so type-routed dispatch
 //! delivers a command to the handler that owns it: the application for
 //! [`InvokeApp`], the window's `WorkspaceView` for [`InvokeWindow`], and the
-//! active `TerminalView` for [`InvokeTerminal`]. Runtime-scope commands travel
-//! as [`InvokeWindow`] because the window fills omitted targets from its own
-//! context before forwarding to the structural worker.
+//! active `TerminalView` for [`InvokeTerminal`]. Palette-scope commands travel
+//! as [`InvokePalette`] to the window's open palette. Runtime-scope commands
+//! travel as [`InvokeWindow`] because the window fills omitted targets from
+//! its own context before forwarding to the structural worker.
 
 use gpui::{Action, App, MenuItem};
 use huterm_protocol::{
     CommandArgument, CommandError, CommandId, CommandInvocation, CommandScope,
-    CommandValue, TabId, WorkspaceId, ids, lookup, validate,
+    CommandValue, TabId, WorkspaceId, ids, lookup, validate_supplied,
 };
 
 /// Application-scope command carried through GPUI's global action handlers.
@@ -28,23 +29,34 @@ pub(crate) struct InvokeWindow(pub(crate) CommandInvocation);
 #[action(namespace = huterm, no_json)]
 pub(crate) struct InvokeTerminal(pub(crate) CommandInvocation);
 
+/// Palette-scope command handled by the window's open command palette.
+#[derive(Action, Clone, Debug, PartialEq)]
+#[action(namespace = huterm, no_json)]
+pub(crate) struct InvokePalette(pub(crate) CommandInvocation);
+
 /// A validated invocation wrapped in the action type for its scope.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CommandAction {
     App(InvokeApp),
     Window(InvokeWindow),
     Terminal(InvokeTerminal),
+    Palette(InvokePalette),
 }
 
 impl CommandAction {
-    /// Validates `invocation` and wraps it for its catalog scope.
+    /// Validates supplied arguments and wraps `invocation` for its catalog
+    /// scope.
+    ///
+    /// Bindings and menus may carry partial invocations that the window
+    /// completes or prompts for. Executors run full validation immediately
+    /// before side effects.
     ///
     /// # Errors
     /// Reports catalog validation failures unchanged.
     pub(crate) fn new(
         invocation: CommandInvocation,
     ) -> Result<Self, CommandError> {
-        let spec = validate(&invocation)?;
+        let spec = validate_supplied(&invocation)?;
         Ok(match spec.scope {
             CommandScope::Application => Self::App(InvokeApp(invocation)),
             CommandScope::Window | CommandScope::Runtime => {
@@ -53,6 +65,7 @@ impl CommandAction {
             CommandScope::Terminal => {
                 Self::Terminal(InvokeTerminal(invocation))
             }
+            CommandScope::Palette => Self::Palette(InvokePalette(invocation)),
         })
     }
 
@@ -61,6 +74,7 @@ impl CommandAction {
             Self::App(action) => &action.0,
             Self::Window(action) => &action.0,
             Self::Terminal(action) => &action.0,
+            Self::Palette(action) => &action.0,
         }
     }
 
@@ -69,6 +83,7 @@ impl CommandAction {
             Self::App(action) => Box::new(action),
             Self::Window(action) => Box::new(action),
             Self::Terminal(action) => Box::new(action),
+            Self::Palette(action) => Box::new(action),
         }
     }
 
@@ -80,6 +95,7 @@ impl CommandAction {
             Self::App(action) => MenuItem::action(title, action),
             Self::Window(action) => MenuItem::action(title, action),
             Self::Terminal(action) => MenuItem::action(title, action),
+            Self::Palette(action) => MenuItem::action(title, action),
         }
     }
 
@@ -89,6 +105,7 @@ impl CommandAction {
             Self::App(action) => cx.dispatch_action(action),
             Self::Window(action) => cx.dispatch_action(action),
             Self::Terminal(action) => cx.dispatch_action(action),
+            Self::Palette(action) => cx.dispatch_action(action),
         }
     }
 }
@@ -96,8 +113,9 @@ impl CommandAction {
 /// Wraps an argument-free catalog command.
 ///
 /// # Panics
-/// Panics when `id` is not a catalog command or requires arguments; call
-/// sites pass catalog constants, so this is a programming error.
+/// Panics when `id` is not a catalog command; call sites pass catalog
+/// constants, so this is a programming error. Commands with missing arguments
+/// remain valid partial invocations for an interactive caller to complete.
 pub(crate) fn invoke(id: CommandId) -> CommandAction {
     invoke_with(id, [])
 }
@@ -105,8 +123,9 @@ pub(crate) fn invoke(id: CommandId) -> CommandAction {
 /// Wraps a catalog command with named arguments.
 ///
 /// # Panics
-/// Panics when the invocation fails catalog validation; call sites pass
-/// catalog constants and literal arguments, so this is a programming error.
+/// Panics when the supplied invocation arguments fail catalog validation; call
+/// sites pass catalog constants and literal arguments, so this is a
+/// programming error.
 pub(crate) fn invoke_with(
     id: CommandId,
     args: impl IntoIterator<Item = (&'static str, CommandValue)>,
@@ -139,7 +158,9 @@ pub(crate) fn route<W>(
 ) -> Result<Route<W>, CommandError> {
     match scope {
         CommandScope::Application => Ok(Route::Application),
-        CommandScope::Window | CommandScope::Runtime => window
+        CommandScope::Window
+        | CommandScope::Runtime
+        | CommandScope::Palette => window
             .map(Route::Window)
             .ok_or(CommandError::ClientRequired),
         CommandScope::Terminal => window
@@ -230,7 +251,7 @@ pub(crate) fn select_tab_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::SessionId;
+    use huterm_protocol::{SessionId, validate};
 
     fn invocation(
         id: CommandId,
@@ -255,6 +276,10 @@ mod tests {
         assert!(matches!(invoke(ids::ABOUT), CommandAction::Window(_)));
         assert!(matches!(invoke(ids::COPY), CommandAction::Terminal(_)));
         assert!(matches!(
+            invoke(ids::PALETTE_CONFIRM),
+            CommandAction::Palette(_)
+        ));
+        assert!(matches!(
             invoke_with(
                 ids::RENAME_TAB,
                 [("name", CommandValue::Text("work".into()))]
@@ -265,6 +290,28 @@ mod tests {
             CommandAction::new(invocation(CommandId::new("missing"), &[])),
             Err(CommandError::UnknownCommand(CommandId::new("missing")))
         );
+    }
+
+    #[test]
+    fn command_action_accepts_partial_invocations() {
+        assert!(matches!(
+            CommandAction::new(invocation(ids::SELECT_TAB, &[])),
+            Ok(CommandAction::Window(_))
+        ));
+        assert!(matches!(
+            CommandAction::new(invocation(ids::PALETTE_CONFIRM, &[])),
+            Ok(CommandAction::Palette(_))
+        ));
+        assert!(matches!(
+            CommandAction::new(invocation(
+                ids::SELECT_TAB,
+                &[
+                    ("index", CommandValue::Integer(1)),
+                    ("tab", CommandValue::Tab(TabId::new(1))),
+                ],
+            )),
+            Err(CommandError::ConflictingArguments { .. })
+        ));
     }
 
     #[test]
@@ -307,10 +354,15 @@ mod tests {
             Err(CommandError::ClientRequired)
         );
         assert_eq!(
+            route::<u8>(CommandScope::Palette, None),
+            Err(CommandError::ClientRequired)
+        );
+        assert_eq!(
             route(CommandScope::Terminal, Some(7)),
             Ok(Route::Terminal(7))
         );
         assert_eq!(route(CommandScope::Runtime, Some(7)), Ok(Route::Window(7)));
+        assert_eq!(route(CommandScope::Palette, Some(7)), Ok(Route::Window(7)));
     }
 
     #[test]

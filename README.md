@@ -518,13 +518,15 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
-| `Palette` | The command-palette overlay has focus. |
-| `PaletteText` | The palette's text field has focus. |
+| `Palette` | The command palette is open and has focus. |
 
 Commands, their scope, and arguments:
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
+| `show_quake` | Application | Optional `profile` name; defaults to `default`. |
+| `hide_quake` | Application | Optional `profile` name; defaults to `default`. |
+| `toggle_quake` | Application | Optional `profile` name; defaults to `default`. |
 | `new_window` | Application | |
 | `quit` | Application | |
 | `hide` | Application | |
@@ -540,8 +542,7 @@ Commands, their scope, and arguments:
 | `close_window` | Window | |
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
-| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) |
-| `show_quake`, `hide_quake`, `toggle_quake` | Application | Optional `profile` string; defaults to `default`. |
+| `select_tab` | Window | Exactly one of `index` (1 to 9; 9 selects the last tab) or a prompted `tab`. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |
@@ -555,11 +556,44 @@ Commands, their scope, and arguments:
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
+| `reset_tab_name` | Runtime | Optional `tab`; defaults to the active tab. |
+| `reset_workspace_name` | Runtime | Optional `workspace`; defaults to the window's workspace. |
+| `reset_session_name` | Runtime | Optional `session`; defaults to the window's session. |
+| `select_recent_tab` | Window | |
+| `palette_select_next` | Palette | |
+| `palette_select_previous` | Palette | |
+| `palette_page_down` | Palette | |
+| `palette_page_up` | Palette | |
+| `palette_confirm` | Palette | |
+| `palette_back` | Palette | |
+| `palette_pop` | Palette | |
+| `palette_expand` | Palette | |
+| `palette_next_slot` | Palette | |
+| `palette_previous_slot` | Palette | |
+| `text_delete_backward` | Palette | |
+| `text_delete_forward` | Palette | |
+| `text_delete_word_backward` | Palette | |
+| `text_delete_line_start` | Palette | |
+| `text_move_left` | Palette | |
+| `text_move_right` | Palette | |
+| `text_move_word_left` | Palette | |
+| `text_move_word_right` | Palette | |
+| `text_line_start` | Palette | |
+| `text_line_end` | Palette | |
+| `text_select_left` | Palette | |
+| `text_select_right` | Palette | |
+| `text_select_all` | Palette | |
+| `text_copy` | Palette | |
+| `text_paste` | Palette | |
 
 Runtime commands execute in the core against canonical structure; the ID
 arguments cannot be written in config and are filled from the invoking window.
+Palette-scope commands imply the `Palette` context. User bindings for them need
+no `when`; the keymap adds the context predicate.
 
 Default bindings differ per platform:
+
+#### Application, window, and terminal
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -579,6 +613,30 @@ Default bindings differ per platform:
 | `quit` | `cmd-q` | |
 | `minimize` | `cmd-m` | |
 | `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
+
+#### Palette
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `palette_select_next` | `down`, `ctrl-n` | `down`, `ctrl-n` |
+| `palette_select_previous` | `up`, `ctrl-p` | `up`, `ctrl-p` |
+| `palette_page_down` | `pagedown` | `pagedown` |
+| `palette_page_up` | `pageup` | `pageup` |
+| `palette_confirm` | `enter` | `enter` |
+| `palette_back` | `escape` | `escape` |
+| `palette_expand` | `tab` | `tab` |
+| `palette_previous_slot` | `shift-tab` | `shift-tab` |
+| `text_delete_backward` | `backspace` | `backspace` |
+| `text_delete_forward` | `delete` | `delete` |
+| `text_delete_word_backward` | `alt-backspace` | `alt-backspace` |
+| `text_delete_line_start` | `cmd-backspace` | |
+| `text_move_left` / `text_move_right` | `left` / `right` | `left` / `right` |
+| `text_move_word_left` / `text_move_word_right` | `alt-left` / `alt-right` | `alt-left` / `alt-right` |
+| `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
+| `text_select_left` / `text_select_right` | `shift-left` / `shift-right` | `shift-left` / `shift-right` |
+| `text_select_all` | `cmd-a` | `ctrl-a` |
+| `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
+| `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
 Commands without a default binding are available through menus or config.
 
