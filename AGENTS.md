@@ -584,7 +584,11 @@ group, so accepted terminal input never reaches the fixture reader.
 
 The native input smoke command protocol is tab-separated, so a Tab keystroke's
 characters are written as the two-character escape `\t`; `native::post`
-unescapes it. Palette, text-field, and other UI keyboard operations are
+unescapes it. Send DEL (`\x7f`) as Backspace's characters: GPUI names the key
+from that character, and `\x08` produces a keystroke no binding matches while
+a following replace-on-type hides the miss. Palette result rows are about 54
+points tall with the first centred near 117; hover and click fixtures must
+use that geometry. Palette, text-field, and other UI keyboard operations are
 `Palette`-scope catalog commands with a required context compiled into every
 binding, never hardcoded GPUI component bindings. `validate_supplied` guards
 bindings, menus, and interactive requests; only executors run the full
