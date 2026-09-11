@@ -70,8 +70,10 @@ behavior. Keep timing benchmarks on native hardware.
 
 `package:linux:container` builds and verifies the native-architecture AppImage
 and tarball in the pinned Ubuntu 22.04 image, then replaces only the matching
-`dist/linux/<architecture>` directory in the host checkout. The export runs as
-the invoking host user, so the resulting artifacts are not owned by root. Pass
+`dist/linux/<architecture>` directory in the host checkout. Docker copies the
+verified output from the stopped build container through the host client, so
+the resulting artifacts are owned by the invoking user under rootful and
+rootless engines. Pass
 `-- --arch amd64` or `-- --arch arm64` to select an architecture; a non-native
 selection requires working Docker emulation.
 
@@ -85,8 +87,10 @@ local and are not published.
 
 The checkout is mounted read-only, then copied into a Docker volume before
 each run. This includes current uncommitted and untracked source files and
-removes obsolete copies. Host `.git`, `target`, `.native`, `node_modules`, and
-`.codegraph` directories are excluded. The copied workspace has no Git
+removes obsolete copies. Host `.git`, `dist`, `target`, `.native`,
+`node_modules`, and `.codegraph` directories are excluded. Package runs also
+remove retained workspace `dist` output before building, so artifacts from an
+older version cannot enter the new export. The copied workspace has no Git
 metadata. Linux build artifacts, native source preparation, and dependency
 caches stay in volumes scoped to the checkout's real path and architecture.
 The runner allows only one active run for each such pair.

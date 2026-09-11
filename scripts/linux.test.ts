@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { architecture, argumentsFor, cacheNames } from "./linux";
@@ -29,12 +29,12 @@ if (args[0] === 'start') {
   if (process.env.DOCKER_TEST_HOLD) { console.log('STARTED'); await new Promise(() => setInterval(() => {}, 1000)); }
   process.exit(Number(process.env.DOCKER_TEST_EXIT || 0));
 }
-if (args[0] === 'run') {
+if (args[0] === 'cp') {
   if (process.env.DOCKER_TEST_EXPORT_EXIT) process.exit(Number(process.env.DOCKER_TEST_EXPORT_EXIT));
-  const mount = args.find(arg => arg.startsWith('type=bind,') && arg.endsWith(',target=/output'));
-  const output = /(?:^|,)source=([^,]+)/.exec(mount || '')?.[1];
-  if (!output) { console.error('missing output mount'); process.exit(2); }
-  const packageArch = args.at(-1)?.includes('/aarch64/') ? 'aarch64' : 'x86_64';
+  const source = args[1];
+  const output = args[2];
+  if (!source || !output) { console.error('missing docker cp path'); process.exit(2); }
+  const packageArch = source.includes('/aarch64/') ? 'aarch64' : 'x86_64';
   mkdirSync(join(output, 'package-evidence'), { recursive: true });
   writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.AppImage\`), 'appimage');
   writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.tar.gz\`), 'tarball');
@@ -111,11 +111,12 @@ describe("Linux container runner", () => {
     const calls = f.calls();
     const create = calls.find(args => args[0] === "create")!;
     expect(create.slice(-3)).toEqual(["mise", "run", "package:linux"]);
-    const exportCall = calls.find(args => args[0] === "run")!;
-    expect(exportCall).toContain("--entrypoint");
-    expect(exportCall.some(arg => arg.endsWith("target=/workspace,readonly"))).toBe(true);
-    expect(exportCall.some(arg => arg.endsWith("target=/output"))).toBe(true);
-    expect(calls.findIndex(args => args[0] === "start")).toBeLessThan(calls.findIndex(args => args[0] === "run"));
+    expect(create).toContain("HUTERM_LINUX_CLEAN_DIST=1");
+    const exportCall = calls.find(args => args[0] === "cp")!;
+    expect(exportCall[1]).toBe("owned-container-id:/workspace/dist/linux/x86_64/.");
+    expect(exportCall[2]?.startsWith(join(f.output, "linux/.container-export-x86_64-"))).toBe(true);
+    expect(calls.some(args => args[0] === "run")).toBe(false);
+    expect(calls.findIndex(args => args[0] === "start")).toBeLessThan(calls.findIndex(args => args[0] === "cp"));
   });
 
   test("package exports an explicit arm64 build to the aarch64 package directory", () => {
@@ -126,6 +127,28 @@ describe("Linux container runner", () => {
     expect(readFileSync(join(f.output, "linux/aarch64/Huterm-0.4.0-Linux-aarch64.tar.gz"), "utf8")).toBe("tarball");
     const create = f.calls().find(args => args[0] === "create")!;
     expect(create[create.indexOf("--platform") + 1]).toBe("linux/arm64");
+    expect(f.calls().find(args => args[0] === "cp")?.[1]).toBe("owned-container-id:/workspace/dist/linux/aarch64/.");
+  });
+
+  test("package workspace sync drops host and retained dist artifacts", () => {
+    const root = mkdtempSync(join(tmpdir(), "huterm-linux-sync-test-"));
+    directories.push(root);
+    const source = join(root, "source");
+    const workspace = join(root, "workspace");
+    mkdirSync(join(source, "dist/linux/x86_64"), { recursive: true });
+    mkdirSync(join(workspace, "dist/linux/x86_64"), { recursive: true });
+    writeFileSync(join(source, "source.txt"), "current source");
+    writeFileSync(join(source, "dist/linux/x86_64/Huterm-0.3.0-Linux-x86_64.AppImage"), "host artifact");
+    writeFileSync(join(workspace, "dist/linux/x86_64/Huterm-0.2.0-Linux-x86_64.AppImage"), "retained artifact");
+    writeFileSync(join(workspace, "obsolete.txt"), "obsolete source");
+    const entrypoint = join(import.meta.dir, "linux/entrypoint.sh");
+    const result = Bun.spawnSync([
+      "bash", "-c", 'source "$1"; sync_workspace "$2" "$3" 1', "bash", entrypoint, source, workspace,
+    ], { stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(join(workspace, "source.txt"), "utf8")).toBe("current source");
+    expect(existsSync(join(workspace, "obsolete.txt"))).toBe(false);
+    expect(existsSync(join(workspace, "dist"))).toBe(false);
   });
 
   test("package export failure preserves existing host artifacts", () => {
@@ -135,7 +158,7 @@ describe("Linux container runner", () => {
     writeFileSync(existing, "keep");
     const result = f.run("package");
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("docker run failed");
+    expect(result.stderr.toString()).toContain("docker cp failed");
     expect(readFileSync(existing, "utf8")).toBe("keep");
   });
 

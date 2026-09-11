@@ -188,6 +188,10 @@ Run AppImages through private executable copies that clear the `AI\x02` marker
 at ELF offsets 8 through 10. Standard QEMU binfmt masks require zero padding
 there and reject foreign-architecture AppImages before starting the emulator.
 Never alter the cached download or public artifact.
+Exclude host `dist` from the container workspace sync and clear retained
+workspace `dist` before package-mode builds. Export through `docker cp` from the
+stopped build container so artifact ownership does not depend on rootful or
+rootless Docker UID mappings.
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font

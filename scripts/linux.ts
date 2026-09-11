@@ -60,10 +60,7 @@ function capture(args: string[], required = true): string | undefined {
   return result.stdout.toString().trim();
 }
 
-function exportPackageArtifacts(root: string, image: string, workspaceVolume: string, arch: Architecture): void {
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid === undefined || hostGid === undefined) throw new Error("Linux package export requires a Unix host user");
+function exportPackageArtifacts(root: string, container: string, arch: Architecture): void {
   const packageArch = arch === "amd64" ? "x86_64" : "aarch64";
   const distRoot = resolve(process.env.HUTERM_LINUX_DIST_DIR ?? join(root, "dist"));
   const linuxDist = join(distRoot, "linux");
@@ -76,12 +73,9 @@ function exportPackageArtifacts(root: string, image: string, workspaceVolume: st
   }
   let previous: string | undefined;
   try {
-    capture([
-      "run", "--rm", "--user", `${hostUid}:${hostGid}`, "--entrypoint", "/bin/sh",
-      "--mount", `type=volume,source=${workspaceVolume},target=/workspace,readonly`,
-      "--mount", `type=bind,source=${staging},target=/output`,
-      image, "-c", `cp -R /workspace/dist/linux/${packageArch}/. /output/`,
-    ]);
+    // docker cp extracts through the host client, avoiding UID-map assumptions
+    // for bind-mounted output under rootless and user-namespace daemons.
+    capture(["cp", `${container}:/workspace/dist/linux/${packageArch}/.`, staging]);
     const files = readdirSync(staging, { withFileTypes: true });
     const appImages = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.AppImage`));
     const tarballs = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.tar.gz`));
@@ -183,6 +177,7 @@ async function main(args: string[]): Promise<number> {
       "create", "--init", "--interactive", "--name", names.name, "--platform", `linux/${arch}`,
       "--env", `HUTERM_SOURCE_REVISION=${revision.stdout.toString().trim()}`,
       "--env", `HUTERM_SOURCE_DATE_EPOCH=${sourceDateEpoch.stdout.toString().trim()}`,
+      ...(options.mode === "package" ? ["--env", "HUTERM_LINUX_CLEAN_DIST=1"] : []),
       "--mount", `type=bind,source=${root},target=/source,readonly`,
       "--mount", `type=volume,source=${names.volumes[0]},target=/workspace`,
       "--mount", `type=volume,source=${names.volumes[1]},target=/cache`,
@@ -190,7 +185,7 @@ async function main(args: string[]): Promise<number> {
     ]);
     if (interrupted) return interrupted;
     const status = await run(["docker", "start", "--attach", "--interactive", container!]);
-    if (status === 0 && options.mode === "package") exportPackageArtifacts(root, image, names.volumes[0]!, arch);
+    if (status === 0 && options.mode === "package") exportPackageArtifacts(root, container!, arch);
     return status;
   } finally {
     if (container) capture(["rm", "--force", container], false);
