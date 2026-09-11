@@ -169,8 +169,7 @@ Even Better TOML editor extension. Newly created default configs include it:
 The schema validates settings and command-specific keybinding arguments. For
 example, `select_tab` accepts an optional integer `args.index` from 1 through
 9, while `copy` rejects that argument. Huterm still checks keystroke and `when`
-syntax,
-platform restrictions, theme files, and inheritance cycles at runtime.
+syntax, platform restrictions, theme files, and inheritance cycles at runtime.
 Quake profiles share the same schema, including geometry and animation limits.
 Global shortcuts offer only the three quake commands and accept a text `profile`
 argument. Profile existence, display availability, shortcut conflicts, and OS

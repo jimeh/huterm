@@ -380,7 +380,7 @@
   {
     "name": "rename_tab {}",
     "toml": "[[keybinding]]\nkey = \"cmd-r\"\ncommand = \"rename_tab\"\nargs = {}",
-    "valid": false,
+    "valid": true,
     "theme": false
   },
   {

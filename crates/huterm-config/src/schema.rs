@@ -66,7 +66,10 @@ fn keybindings(base: &Value, global: bool) -> Value {
             };
             properties.insert(arg.name.into(), schema);
             match arg.required {
-                Requirement::Always => required.push(arg.name),
+                // Prompted arguments may be omitted from a binding: an
+                // interactive caller collects them through the palette.
+                Requirement::Always if !arg.prompt => required.push(arg.name),
+                Requirement::Always => {}
                 Requirement::Optional => {}
                 Requirement::OneOf(group) => {
                     one_of_groups.entry(group).or_default().push(arg.name);
