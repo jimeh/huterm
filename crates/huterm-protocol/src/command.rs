@@ -43,6 +43,8 @@ pub enum CommandScope {
     Window,
     /// Executed by one terminal view.
     Terminal,
+    /// Executed by the window's open command palette.
+    Palette,
 }
 
 /// Declared type of one command argument.
@@ -59,12 +61,26 @@ pub enum ArgumentKind {
     },
     /// Free text.
     Text,
+    /// Name of a configured quake profile, resolved from client configuration;
+    /// carried as [`CommandValue::Text`].
+    QuakeProfile,
     /// Tab identity, supplied from client context rather than configuration.
     Tab,
     /// Workspace identity, supplied from client context.
     Workspace,
     /// Session identity, supplied from client context.
     Session,
+}
+
+/// Whether an invocation must supply one command argument.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Requirement {
+    /// Must be supplied.
+    Always,
+    /// May be omitted; the executor applies its documented default.
+    Optional,
+    /// Exactly one argument in the named group must be supplied.
+    OneOf(&'static str),
 }
 
 /// One declared argument of a command.
@@ -74,8 +90,28 @@ pub struct ArgumentSpec {
     pub name: &'static str,
     /// Accepted value type.
     pub kind: ArgumentKind,
-    /// Whether an invocation must supply the argument.
-    pub required: bool,
+    /// Whether and how an invocation must supply the argument.
+    pub required: Requirement,
+    /// Whether an interactive client prompts for this argument. Unprompted
+    /// arguments exist for keybindings and programmatic callers only.
+    pub prompt: bool,
+}
+
+impl ArgumentSpec {
+    /// Returns whether this argument must always be supplied.
+    #[must_use]
+    pub const fn is_required(&self) -> bool {
+        matches!(self.required, Requirement::Always)
+    }
+
+    /// Returns the one-of group containing this argument, if any.
+    #[must_use]
+    pub const fn group(&self) -> Option<&'static str> {
+        match self.required {
+            Requirement::OneOf(group) => Some(group),
+            Requirement::Always | Requirement::Optional => None,
+        }
+    }
 }
 
 /// Catalog definition of one command.
@@ -89,6 +125,9 @@ pub struct CommandSpec {
     pub description: &'static str,
     /// Owner that executes the command.
     pub scope: CommandScope,
+    /// Key context a client must have captured for this command to be listed
+    /// interactively. `None` lists the command everywhere.
+    pub context: Option<&'static str>,
     /// Declared arguments in positional order.
     pub args: &'static [ArgumentSpec],
 }
@@ -98,6 +137,55 @@ impl CommandSpec {
     #[must_use]
     pub fn argument(&self, name: &str) -> Option<&'static ArgumentSpec> {
         self.args.iter().find(|spec| spec.name == name)
+    }
+
+    /// Returns arguments an interactive client must still collect in catalog
+    /// order.
+    ///
+    /// This includes missing [`Requirement::Always`] arguments and one
+    /// prompted member of each unsatisfied [`Requirement::OneOf`] group.
+    #[must_use]
+    pub fn missing_prompted(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Vec<&'static ArgumentSpec> {
+        let mut missing = Vec::new();
+        for (index, argument) in self.args.iter().enumerate() {
+            match argument.required {
+                Requirement::Always => {
+                    if invocation.argument(argument.name).is_none() {
+                        missing.push(argument);
+                    }
+                }
+                Requirement::Optional => {}
+                Requirement::OneOf(group) => {
+                    let first_in_group = self.args[..index]
+                        .iter()
+                        .all(|earlier| earlier.group() != Some(group));
+                    let group_is_missing = self.args.iter().all(|member| {
+                        member.group() != Some(group)
+                            || invocation.argument(member.name).is_none()
+                    });
+                    if first_in_group && group_is_missing {
+                        let prompted = self
+                            .args
+                            .iter()
+                            .find(|member| {
+                                member.group() == Some(group) && member.prompt
+                            })
+                            .or_else(|| {
+                                self.args.iter().find(|member| {
+                                    member.group() == Some(group)
+                                })
+                            });
+                        if let Some(prompted) = prompted {
+                            missing.push(prompted);
+                        }
+                    }
+                }
+            }
+        }
+        missing
     }
 }
 
@@ -124,7 +212,10 @@ impl CommandValue {
             (self, kind),
             (Self::Bool(_), ArgumentKind::Bool)
                 | (Self::Integer(_), ArgumentKind::Integer { .. })
-                | (Self::Text(_), ArgumentKind::Text)
+                | (
+                    Self::Text(_),
+                    ArgumentKind::Text | ArgumentKind::QuakeProfile
+                )
                 | (Self::Tab(_), ArgumentKind::Tab)
                 | (Self::Workspace(_), ArgumentKind::Workspace)
                 | (Self::Session(_), ArgumentKind::Session)
@@ -268,6 +359,15 @@ pub enum CommandError {
         /// Declared name.
         name: &'static str,
     },
+    /// More than one argument of a one-of group was supplied.
+    ConflictingArguments {
+        /// Invoked command.
+        command: CommandId,
+        /// Declared one-of group.
+        group: &'static str,
+        /// Group member names in catalog order.
+        names: Vec<&'static str>,
+    },
     /// An argument value has the wrong type.
     ArgumentType {
         /// Invoked command.
@@ -319,6 +419,15 @@ impl fmt::Display for CommandError {
             Self::MissingArgument { command, name } => {
                 write!(f, "command `{command}` requires argument `{name}`")
             }
+            Self::ConflictingArguments { command, names, .. } => write!(
+                f,
+                "command `{command}` accepts only one of {}",
+                names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::ArgumentType {
                 command,
                 name,
@@ -359,22 +468,23 @@ fn describe_kind(kind: ArgumentKind) -> &'static str {
         ArgumentKind::Bool => "a boolean",
         ArgumentKind::Integer { .. } => "an integer",
         ArgumentKind::Text => "text",
+        ArgumentKind::QuakeProfile => "a quake profile name",
         ArgumentKind::Tab => "a tab",
         ArgumentKind::Workspace => "a workspace",
         ArgumentKind::Session => "a session",
     }
 }
 
-/// Checks an invocation against the catalog's static contract.
+/// Checks supplied arguments against the catalog's static contract.
 ///
 /// Names resolve against the declared arguments regardless of order; any
-/// optional argument may be omitted. Executors report availability, stale
-/// targets, and runtime failures separately.
+/// argument may be omitted. Executors report availability, stale targets, and
+/// runtime failures separately.
 ///
 /// # Errors
-/// Reports an unknown command, unknown or duplicate argument names, missing
-/// required arguments, mistyped values, and out-of-range integers.
-pub fn validate(
+/// Reports an unknown command, unknown or duplicate argument names, conflicting
+/// one-of arguments, mistyped values, and out-of-range integers.
+pub fn validate_supplied(
     invocation: &CommandInvocation,
 ) -> Result<&'static CommandSpec, CommandError> {
     let command = invocation.id;
@@ -418,11 +528,72 @@ pub fn validate(
             });
         }
     }
+    for (index, argument) in spec.args.iter().enumerate() {
+        let Some(group) = argument.group() else {
+            continue;
+        };
+        if spec.args[..index]
+            .iter()
+            .any(|earlier| earlier.group() == Some(group))
+        {
+            continue;
+        }
+        let supplied_count = spec
+            .args
+            .iter()
+            .filter(|member| {
+                member.group() == Some(group)
+                    && invocation.argument(member.name).is_some()
+            })
+            .count();
+        if supplied_count > 1 {
+            let names = spec
+                .args
+                .iter()
+                .filter(|member| member.group() == Some(group))
+                .map(|member| member.name)
+                .collect();
+            return Err(CommandError::ConflictingArguments {
+                command,
+                group,
+                names,
+            });
+        }
+    }
+    Ok(spec)
+}
+
+/// Checks an invocation against the catalog's complete static contract.
+///
+/// This runs [`validate_supplied`] and then requires every
+/// [`Requirement::Always`] argument and exactly one member of every
+/// [`Requirement::OneOf`] group.
+///
+/// # Errors
+/// Reports every error from [`validate_supplied`] and missing required
+/// arguments.
+pub fn validate(
+    invocation: &CommandInvocation,
+) -> Result<&'static CommandSpec, CommandError> {
+    let spec = validate_supplied(invocation)?;
     if let Some(missing) = spec.args.iter().find(|declared| {
-        declared.required && invocation.argument(declared.name).is_none()
+        declared.is_required() && invocation.argument(declared.name).is_none()
     }) {
         return Err(CommandError::MissingArgument {
-            command,
+            command: invocation.id,
+            name: missing.name,
+        });
+    }
+    if let Some(missing) =
+        spec.missing_prompted(invocation)
+            .into_iter()
+            .find(|argument| {
+                argument.group().is_some()
+                    && invocation.argument(argument.name).is_none()
+            })
+    {
+        return Err(CommandError::MissingArgument {
+            command: invocation.id,
             name: missing.name,
         });
     }
@@ -514,6 +685,79 @@ pub mod ids {
     pub const RENAME_WORKSPACE: CommandId = CommandId::new("rename_workspace");
     /// Renames a session.
     pub const RENAME_SESSION: CommandId = CommandId::new("rename_session");
+    /// Clears the custom name of a tab.
+    pub const RESET_TAB_NAME: CommandId = CommandId::new("reset_tab_name");
+    /// Clears the custom name of a workspace.
+    pub const RESET_WORKSPACE_NAME: CommandId =
+        CommandId::new("reset_workspace_name");
+    /// Clears the custom name of a session.
+    pub const RESET_SESSION_NAME: CommandId =
+        CommandId::new("reset_session_name");
+    /// Activates the most recently used tab.
+    pub const SELECT_RECENT_TAB: CommandId =
+        CommandId::new("select_recent_tab");
+    /// Moves the palette selection down.
+    pub const PALETTE_SELECT_NEXT: CommandId =
+        CommandId::new("palette_select_next");
+    /// Moves the palette selection up.
+    pub const PALETTE_SELECT_PREVIOUS: CommandId =
+        CommandId::new("palette_select_previous");
+    /// Moves the palette selection down one page.
+    pub const PALETTE_PAGE_DOWN: CommandId =
+        CommandId::new("palette_page_down");
+    /// Moves the palette selection up one page.
+    pub const PALETTE_PAGE_UP: CommandId = CommandId::new("palette_page_up");
+    /// Runs the selected command or commits the active argument.
+    pub const PALETTE_CONFIRM: CommandId = CommandId::new("palette_confirm");
+    /// Returns to command search or closes the palette.
+    pub const PALETTE_BACK: CommandId = CommandId::new("palette_back");
+    /// Reopens the previous argument or returns to command search.
+    pub const PALETTE_POP: CommandId = CommandId::new("palette_pop");
+    /// Opens the selected command's arguments without running it.
+    pub const PALETTE_EXPAND: CommandId = CommandId::new("palette_expand");
+    /// Moves to the next command argument.
+    pub const PALETTE_NEXT_SLOT: CommandId =
+        CommandId::new("palette_next_slot");
+    /// Moves to the previous command argument.
+    pub const PALETTE_PREVIOUS_SLOT: CommandId =
+        CommandId::new("palette_previous_slot");
+    /// Deletes the character before the text cursor.
+    pub const TEXT_DELETE_BACKWARD: CommandId =
+        CommandId::new("text_delete_backward");
+    /// Deletes the character after the text cursor.
+    pub const TEXT_DELETE_FORWARD: CommandId =
+        CommandId::new("text_delete_forward");
+    /// Deletes the word before the text cursor.
+    pub const TEXT_DELETE_WORD_BACKWARD: CommandId =
+        CommandId::new("text_delete_word_backward");
+    /// Deletes from the line start to the text cursor.
+    pub const TEXT_DELETE_LINE_START: CommandId =
+        CommandId::new("text_delete_line_start");
+    /// Moves the text cursor left.
+    pub const TEXT_MOVE_LEFT: CommandId = CommandId::new("text_move_left");
+    /// Moves the text cursor right.
+    pub const TEXT_MOVE_RIGHT: CommandId = CommandId::new("text_move_right");
+    /// Moves the text cursor left one word.
+    pub const TEXT_MOVE_WORD_LEFT: CommandId =
+        CommandId::new("text_move_word_left");
+    /// Moves the text cursor right one word.
+    pub const TEXT_MOVE_WORD_RIGHT: CommandId =
+        CommandId::new("text_move_word_right");
+    /// Moves the text cursor to the line start.
+    pub const TEXT_LINE_START: CommandId = CommandId::new("text_line_start");
+    /// Moves the text cursor to the line end.
+    pub const TEXT_LINE_END: CommandId = CommandId::new("text_line_end");
+    /// Extends the text selection left.
+    pub const TEXT_SELECT_LEFT: CommandId = CommandId::new("text_select_left");
+    /// Extends the text selection right.
+    pub const TEXT_SELECT_RIGHT: CommandId =
+        CommandId::new("text_select_right");
+    /// Selects all text.
+    pub const TEXT_SELECT_ALL: CommandId = CommandId::new("text_select_all");
+    /// Copies the text selection.
+    pub const TEXT_COPY: CommandId = CommandId::new("text_copy");
+    /// Pastes text from the clipboard.
+    pub const TEXT_PASTE: CommandId = CommandId::new("text_paste");
 }
 
 const fn spec(
@@ -528,6 +772,25 @@ const fn spec(
         title,
         description,
         scope,
+        context: None,
+        args,
+    }
+}
+
+const fn spec_in(
+    context: &'static str,
+    id: CommandId,
+    scope: CommandScope,
+    title: &'static str,
+    description: &'static str,
+    args: &'static [ArgumentSpec],
+) -> CommandSpec {
+    CommandSpec {
+        id,
+        title,
+        description,
+        scope,
+        context: Some(context),
         args,
     }
 }
@@ -535,13 +798,15 @@ const fn spec(
 const NAME: ArgumentSpec = ArgumentSpec {
     name: "name",
     kind: ArgumentKind::Text,
-    required: true,
+    required: Requirement::Always,
+    prompt: true,
 };
 
 const PROFILE: &[ArgumentSpec] = &[ArgumentSpec {
     name: "profile",
-    kind: ArgumentKind::Text,
-    required: false,
+    kind: ArgumentKind::QuakeProfile,
+    required: Requirement::Optional,
+    prompt: true,
 }];
 
 const CATALOG: &[CommandSpec] = &[
@@ -676,12 +941,21 @@ const CATALOG: &[CommandSpec] = &[
         ids::SELECT_TAB,
         CommandScope::Window,
         "Select Tab",
-        "Activate a tab by position; 9 selects the last tab.",
-        &[ArgumentSpec {
-            name: "index",
-            kind: ArgumentKind::Integer { min: 1, max: 9 },
-            required: true,
-        }],
+        "Activate a tab by position from a keybinding, or choose one.",
+        &[
+            ArgumentSpec {
+                name: "index",
+                kind: ArgumentKind::Integer { min: 1, max: 9 },
+                required: Requirement::OneOf("target"),
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "tab",
+                kind: ArgumentKind::Tab,
+                required: Requirement::OneOf("target"),
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::TOGGLE_FULLSCREEN,
@@ -763,7 +1037,8 @@ const CATALOG: &[CommandSpec] = &[
             ArgumentSpec {
                 name: "tab",
                 kind: ArgumentKind::Tab,
-                required: false,
+                required: Requirement::Optional,
+                prompt: true,
             },
         ],
     ),
@@ -777,7 +1052,8 @@ const CATALOG: &[CommandSpec] = &[
             ArgumentSpec {
                 name: "workspace",
                 kind: ArgumentKind::Workspace,
-                required: false,
+                required: Requirement::Optional,
+                prompt: true,
             },
         ],
     ),
@@ -791,9 +1067,253 @@ const CATALOG: &[CommandSpec] = &[
             ArgumentSpec {
                 name: "session",
                 kind: ArgumentKind::Session,
-                required: false,
+                required: Requirement::Optional,
+                prompt: true,
             },
         ],
+    ),
+    spec(
+        ids::RESET_TAB_NAME,
+        CommandScope::Runtime,
+        "Reset Tab Name",
+        "Clear the custom name of a tab.",
+        &[ArgumentSpec {
+            name: "tab",
+            kind: ArgumentKind::Tab,
+            required: Requirement::Optional,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::RESET_WORKSPACE_NAME,
+        CommandScope::Runtime,
+        "Reset Workspace Name",
+        "Clear the custom name of a workspace.",
+        &[ArgumentSpec {
+            name: "workspace",
+            kind: ArgumentKind::Workspace,
+            required: Requirement::Optional,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::RESET_SESSION_NAME,
+        CommandScope::Runtime,
+        "Reset Session Name",
+        "Clear the custom name of a session.",
+        &[ArgumentSpec {
+            name: "session",
+            kind: ArgumentKind::Session,
+            required: Requirement::Optional,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::SELECT_RECENT_TAB,
+        CommandScope::Window,
+        "Switch to Last Tab",
+        "Activate the most recently used tab; repeat to toggle between two tabs.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_SELECT_NEXT,
+        CommandScope::Palette,
+        "Palette: Next Item",
+        "Move the palette selection down.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_SELECT_PREVIOUS,
+        CommandScope::Palette,
+        "Palette: Previous Item",
+        "Move the palette selection up.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_PAGE_DOWN,
+        CommandScope::Palette,
+        "Palette: Page Down",
+        "Move the palette selection down one page.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_PAGE_UP,
+        CommandScope::Palette,
+        "Palette: Page Up",
+        "Move the palette selection up one page.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_CONFIRM,
+        CommandScope::Palette,
+        "Palette: Confirm",
+        "Run the selected command or commit the active argument.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_BACK,
+        CommandScope::Palette,
+        "Palette: Back",
+        "Return to command search, or close the palette.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_POP,
+        CommandScope::Palette,
+        "Palette: Pop Argument",
+        "Reopen the previous argument, or return to search.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_EXPAND,
+        CommandScope::Palette,
+        "Palette: Edit Arguments",
+        "Open the selected command's arguments without running it.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_NEXT_SLOT,
+        CommandScope::Palette,
+        "Palette: Next Argument",
+        "Move to the next argument.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::PALETTE_PREVIOUS_SLOT,
+        CommandScope::Palette,
+        "Palette: Previous Argument",
+        "Move to the previous argument.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_DELETE_BACKWARD,
+        CommandScope::Palette,
+        "Text: Delete Backward",
+        "Delete the character before the cursor.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_DELETE_FORWARD,
+        CommandScope::Palette,
+        "Text: Delete Forward",
+        "Delete the character after the cursor.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_DELETE_WORD_BACKWARD,
+        CommandScope::Palette,
+        "Text: Delete Word Backward",
+        "Delete the word before the cursor.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_DELETE_LINE_START,
+        CommandScope::Palette,
+        "Text: Delete to Line Start",
+        "Delete from the line start to the cursor.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_MOVE_LEFT,
+        CommandScope::Palette,
+        "Text: Move Left",
+        "Move the cursor left.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_MOVE_RIGHT,
+        CommandScope::Palette,
+        "Text: Move Right",
+        "Move the cursor right.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_MOVE_WORD_LEFT,
+        CommandScope::Palette,
+        "Text: Move Word Left",
+        "Move the cursor left one word.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_MOVE_WORD_RIGHT,
+        CommandScope::Palette,
+        "Text: Move Word Right",
+        "Move the cursor right one word.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_LINE_START,
+        CommandScope::Palette,
+        "Text: Line Start",
+        "Move the cursor to the line start.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_LINE_END,
+        CommandScope::Palette,
+        "Text: Line End",
+        "Move the cursor to the line end.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_SELECT_LEFT,
+        CommandScope::Palette,
+        "Text: Select Left",
+        "Extend the selection left.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_SELECT_RIGHT,
+        CommandScope::Palette,
+        "Text: Select Right",
+        "Extend the selection right.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_SELECT_ALL,
+        CommandScope::Palette,
+        "Text: Select All",
+        "Select all text.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_COPY,
+        CommandScope::Palette,
+        "Text: Copy",
+        "Copy the selection.",
+        &[],
+    ),
+    spec_in(
+        "Palette",
+        ids::TEXT_PASTE,
+        CommandScope::Palette,
+        "Text: Paste",
+        "Paste from the clipboard.",
+        &[],
     ),
 ];
 
@@ -818,6 +1338,32 @@ mod tests {
                 spec.id
             );
             assert_eq!(lookup(spec.id.as_str()), Some(spec));
+            assert!(
+                matches!(spec.context, None | Some("Palette")),
+                "{} has unknown context {:?}",
+                spec.id,
+                spec.context
+            );
+            for argument in spec.args {
+                let Some(group) = argument.group() else {
+                    continue;
+                };
+                let members = spec
+                    .args
+                    .iter()
+                    .filter(|member| member.group() == Some(group))
+                    .collect::<Vec<_>>();
+                assert!(
+                    members.len() >= 2,
+                    "{} group {group} has fewer than two members",
+                    spec.id
+                );
+                assert!(
+                    members.iter().any(|member| member.prompt),
+                    "{} group {group} has no prompted member",
+                    spec.id
+                );
+            }
         }
         assert_eq!(lookup("unbind"), None);
     }
@@ -895,6 +1441,17 @@ mod tests {
         assert!(validate(&reordered).is_ok());
         assert_eq!(reordered.tab("tab"), Some(tab));
         assert_eq!(reordered.text("tab"), None);
+
+        let by_index = CommandInvocation::new(
+            ids::SELECT_TAB,
+            vec![CommandArgument::new("index", CommandValue::Integer(3))],
+        );
+        assert!(validate(&by_index).is_ok());
+        let by_tab = CommandInvocation::new(
+            ids::SELECT_TAB,
+            vec![CommandArgument::new("tab", CommandValue::Tab(tab))],
+        );
+        assert!(validate(&by_tab).is_ok());
     }
 
     #[test]
@@ -936,6 +1493,252 @@ mod tests {
     }
 
     #[test]
+    fn validate_supplied_accepts_partial_invocations_and_rejects_bad_values() {
+        let bare = CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        assert_eq!(
+            validate_supplied(&bare).map(|spec| spec.id),
+            Ok(ids::SELECT_TAB)
+        );
+
+        assert_eq!(
+            validate_supplied(&CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![CommandArgument::new("index", CommandValue::Integer(10))]
+            )),
+            Err(CommandError::ArgumentRange {
+                command: ids::SELECT_TAB,
+                name: "index",
+                value: 10,
+                min: 1,
+                max: 9,
+            })
+        );
+        assert_eq!(
+            validate_supplied(&CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![text("index", "1")]
+            )),
+            Err(CommandError::ArgumentType {
+                command: ids::SELECT_TAB,
+                name: "index",
+                expected: ArgumentKind::Integer { min: 1, max: 9 },
+            })
+        );
+
+        let conflicting = CommandInvocation::new(
+            ids::SELECT_TAB,
+            vec![
+                CommandArgument::new("tab", CommandValue::Tab(TabId::new(2))),
+                CommandArgument::new("index", CommandValue::Integer(1)),
+            ],
+        );
+        let conflict = CommandError::ConflictingArguments {
+            command: ids::SELECT_TAB,
+            group: "target",
+            names: vec!["index", "tab"],
+        };
+        assert_eq!(validate_supplied(&conflicting), Err(conflict.clone()));
+        assert_eq!(validate(&conflicting), Err(conflict));
+
+        assert_eq!(
+            validate_supplied(&CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![CommandArgument::new(
+                    "position",
+                    CommandValue::Integer(1)
+                )]
+            )),
+            Err(CommandError::UnknownArgument {
+                command: ids::SELECT_TAB,
+                name: "position".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_requires_exactly_one_group_member() {
+        assert_eq!(
+            validate(&CommandInvocation::new(ids::SELECT_TAB, Vec::new())),
+            Err(CommandError::MissingArgument {
+                command: ids::SELECT_TAB,
+                name: "tab",
+            })
+        );
+        assert!(
+            validate(&CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![CommandArgument::new("index", CommandValue::Integer(3))]
+            ))
+            .is_ok()
+        );
+        assert!(
+            validate(&CommandInvocation::new(
+                ids::SELECT_TAB,
+                vec![CommandArgument::new(
+                    "tab",
+                    CommandValue::Tab(TabId::new(3))
+                )]
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn missing_prompted_lists_only_what_a_client_must_collect() {
+        let select_tab = lookup(ids::SELECT_TAB.as_str()).unwrap();
+        let bare_select_tab =
+            CommandInvocation::new(ids::SELECT_TAB, Vec::new());
+        assert_eq!(
+            select_tab
+                .missing_prompted(&bare_select_tab)
+                .iter()
+                .map(|argument| argument.name)
+                .collect::<Vec<_>>(),
+            vec!["tab"]
+        );
+        let select_by_index = CommandInvocation::new(
+            ids::SELECT_TAB,
+            vec![CommandArgument::new("index", CommandValue::Integer(2))],
+        );
+        assert!(select_tab.missing_prompted(&select_by_index).is_empty());
+
+        let rename_tab = lookup(ids::RENAME_TAB.as_str()).unwrap();
+        assert_eq!(
+            rename_tab
+                .missing_prompted(&CommandInvocation::new(
+                    ids::RENAME_TAB,
+                    Vec::new()
+                ))
+                .iter()
+                .map(|argument| argument.name)
+                .collect::<Vec<_>>(),
+            vec!["name"]
+        );
+
+        let toggle_quake = lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
+        assert!(
+            toggle_quake
+                .missing_prompted(&CommandInvocation::new(
+                    ids::TOGGLE_QUAKE,
+                    Vec::new()
+                ))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn quake_profile_arguments_carry_text() {
+        assert!(
+            validate(&CommandInvocation::new(
+                ids::TOGGLE_QUAKE,
+                vec![text("profile", "logs")]
+            ))
+            .is_ok()
+        );
+        assert_eq!(
+            validate(&CommandInvocation::new(
+                ids::TOGGLE_QUAKE,
+                vec![CommandArgument::new("profile", CommandValue::Integer(1))]
+            )),
+            Err(CommandError::ArgumentType {
+                command: ids::TOGGLE_QUAKE,
+                name: "profile",
+                expected: ArgumentKind::QuakeProfile,
+            })
+        );
+    }
+
+    #[test]
+    fn palette_commands_are_palette_scoped_and_context_bound() {
+        let expected = [
+            ids::PALETTE_SELECT_NEXT,
+            ids::PALETTE_SELECT_PREVIOUS,
+            ids::PALETTE_PAGE_DOWN,
+            ids::PALETTE_PAGE_UP,
+            ids::PALETTE_CONFIRM,
+            ids::PALETTE_BACK,
+            ids::PALETTE_POP,
+            ids::PALETTE_EXPAND,
+            ids::PALETTE_NEXT_SLOT,
+            ids::PALETTE_PREVIOUS_SLOT,
+            ids::TEXT_DELETE_BACKWARD,
+            ids::TEXT_DELETE_FORWARD,
+            ids::TEXT_DELETE_WORD_BACKWARD,
+            ids::TEXT_DELETE_LINE_START,
+            ids::TEXT_MOVE_LEFT,
+            ids::TEXT_MOVE_RIGHT,
+            ids::TEXT_MOVE_WORD_LEFT,
+            ids::TEXT_MOVE_WORD_RIGHT,
+            ids::TEXT_LINE_START,
+            ids::TEXT_LINE_END,
+            ids::TEXT_SELECT_LEFT,
+            ids::TEXT_SELECT_RIGHT,
+            ids::TEXT_SELECT_ALL,
+            ids::TEXT_COPY,
+            ids::TEXT_PASTE,
+        ];
+        for id in expected {
+            let spec = lookup(id.as_str()).unwrap();
+            assert_eq!(spec.scope, CommandScope::Palette, "{id}");
+            assert_eq!(spec.context, Some("Palette"), "{id}");
+            assert!(spec.args.is_empty(), "{id}");
+        }
+        for spec in catalog().iter().filter(|spec| {
+            spec.id.as_str().starts_with("palette_")
+                || spec.id.as_str().starts_with("text_")
+        }) {
+            assert_eq!(spec.scope, CommandScope::Palette, "{}", spec.id);
+            assert_eq!(spec.context, Some("Palette"), "{}", spec.id);
+            assert!(spec.args.is_empty(), "{}", spec.id);
+        }
+    }
+
+    #[test]
+    fn reset_and_recent_commands_validate() {
+        let resets = [
+            (ids::RESET_TAB_NAME, "tab", CommandValue::Tab(TabId::new(1))),
+            (
+                ids::RESET_WORKSPACE_NAME,
+                "workspace",
+                CommandValue::Workspace(WorkspaceId::new(2)),
+            ),
+            (
+                ids::RESET_SESSION_NAME,
+                "session",
+                CommandValue::Session(SessionId::new(3)),
+            ),
+        ];
+        for (id, name, value) in resets {
+            assert!(validate(&CommandInvocation::new(id, Vec::new())).is_ok());
+            assert!(
+                validate(&CommandInvocation::new(
+                    id,
+                    vec![CommandArgument::new(name, value)]
+                ))
+                .is_ok()
+            );
+        }
+
+        let recent = CommandInvocation::new(ids::SELECT_RECENT_TAB, Vec::new());
+        let spec = validate(&recent).unwrap();
+        assert_eq!(spec.scope, CommandScope::Window);
+        assert!(spec.args.is_empty());
+        assert_eq!(
+            validate(&CommandInvocation::new(
+                ids::SELECT_RECENT_TAB,
+                vec![CommandArgument::new(
+                    "tab",
+                    CommandValue::Tab(TabId::new(1))
+                )]
+            )),
+            Err(CommandError::UnknownArgument {
+                command: ids::SELECT_RECENT_TAB,
+                name: "tab".into(),
+            })
+        );
+    }
+
+    #[test]
     fn errors_display_their_context() {
         let error = CommandError::ArgumentRange {
             command: ids::SELECT_TAB,
@@ -947,6 +1750,15 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "command `select_tab` argument `index` is 12; expected 1 to 9"
+        );
+        let conflict = CommandError::ConflictingArguments {
+            command: ids::SELECT_TAB,
+            group: "target",
+            names: vec!["index", "tab"],
+        };
+        assert_eq!(
+            conflict.to_string(),
+            "command `select_tab` accepts only one of `index`, `tab`"
         );
         let source: &dyn std::error::Error = &error;
         assert!(source.source().is_none());
