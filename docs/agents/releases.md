@@ -34,6 +34,55 @@ Connect key must match the configured key and issuer IDs and have permission to
 submit notarization requests. Keep all four secret values out of the repository
 and workflow logs.
 
+Create a protected GitHub Environment named `release`. Restrict it to the
+production branch and recovery tags, then add `SPARKLE_EDDSA_PRIVATE_KEY` as an
+environment secret. Build and assembly jobs cannot read it. Only the publishing
+job enters the environment.
+
+## Sparkle signing authority
+
+Prepare the pinned Sparkle tools and generate the production key on a trusted
+Mac:
+
+```sh
+mise run sparkle:prepare
+.native/sparkle/distribution/bin/generate_keys --account huterm
+.native/sparkle/distribution/bin/generate_keys --account huterm -p \
+  > assets/macos/SparklePublicKey
+sparkle_key_dir="$(mktemp -d)"
+.native/sparkle/distribution/bin/generate_keys --account huterm \
+  -x "$sparkle_key_dir/huterm-sparkle-private-key"
+```
+
+Commit `assets/macos/SparklePublicKey`. The release package injects it as
+`SUPublicEDKey`; the source `assets/macos/Info.plist` remains Sparkle-free. Store
+the exact exported private-key contents as the protected
+`SPARKLE_EDDSA_PRIVATE_KEY` environment secret and keep an encrypted offline
+recovery copy. Ordinary builds and `mise run package:macos` need neither key.
+
+```sh
+gh secret set --repo jimeh/huterm --env release \
+  SPARKLE_EDDSA_PRIVATE_KEY \
+  < "$sparkle_key_dir/huterm-sparkle-private-key"
+```
+
+After checking the secret name with
+`gh secret list --repo jimeh/huterm --env release`, delete the transient export.
+GitHub never returns the secret value. Keep the Keychain item created by
+`generate_keys` unless deliberately transferring update authority to another
+trusted Mac.
+
+Run `mise run smoke:macos-updater` on macOS to exercise framework loading,
+controller startup, `canCheckForUpdates`, application-command dispatch, and the
+unpackaged diagnostic. The smoke uses a fixture key and reserved-domain feed.
+It never reads the production private key.
+
+The public key is application identity; the private key grants update
+authority. Rotate it only by shipping a replacement public key through an
+update signed by the existing key. Losing the private key without a recovery
+copy requires a separately distributed Developer ID signed package or manual
+reinstallation.
+
 ## Release path
 
 The release workflow separates validation, native platform builds, and final
@@ -44,19 +93,24 @@ assembly:
    the SHA used by every build job. Publishing mode subsequently mints a
    short-lived token to validate the exact tag and draft target; manual
    verification does not receive that release credential.
-2. An Apple Silicon runner builds the universal `Huterm.app`, imports the
-   Developer ID identity, signs every Mach-O and the app, notarizes and staples
-   it, then runs Gatekeeper. It uploads the public ZIP and a digest manifest as
-   an intermediate Actions artifact.
+2. An Apple Silicon runner runs `package:macos-release`, which builds the
+   updater-enabled universal app, injects the committed public key and production
+   feed, and copies the verified Sparkle framework. It signs every retained
+   Sparkle and Huterm code object inside out, notarizes and staples the app, runs
+   Gatekeeper, creates the SPDX SBOM and a fixture appcast, then uploads those
+   payloads with their digest manifest.
 3. Native Ubuntu 22.04 x86_64 and aarch64 runners independently build and verify
    the AppImage and tarball for their architecture. These jobs receive no Apple
    or GitHub release credentials and upload their two packages plus a digest
    manifest as intermediate Actions artifacts.
 4. The assembly job downloads exactly those three platform artifacts, validates
-   their inventories and digests, adds the committed schemas, and writes the
-   final `SHA256SUMS`. In publishing mode it mints a fresh release token, uploads
-   the exact eight-file asset set, verifies remote names, sizes, and GitHub
-   SHA-256 digests, and only then publishes the draft.
+   their inventories and digests, adds the committed schemas, writes
+   `SHA256SUMS`, and uploads an immutable ten-file candidate.
+5. The protected macOS publication job verifies the candidate artifact ID and
+   digest, revalidates the draft, replaces the fixture appcast with one signed by
+   the production EdDSA key, and rewrites `SHA256SUMS`. It uploads the exact
+   assets, verifies GitHub's sizes and SHA-256 digests, attests the macOS ZIP and
+   SPDX SBOM, and publishes only after every check passes.
 
 Each platform job publishes its immutable artifact under its own actual
 attempt-qualified name and exposes that name as a job output. Assembly downloads
@@ -74,6 +128,8 @@ The public asset set is:
 
 ```text
 Huterm-<version>-macOS-universal.zip
+Huterm-<version>-macOS-universal.spdx.json
+appcast.xml
 Huterm-<version>-Linux-x86_64.AppImage
 Huterm-<version>-Linux-x86_64.tar.gz
 Huterm-<version>-Linux-aarch64.AppImage
@@ -90,7 +146,9 @@ temporary keychain in a `finally` path. The workflow also runs cleanup with
 
 The public ZIP is created after stapling. Re-signing the app after notarization
 would invalidate the ticket, so the post-staple path only verifies signatures.
-The local `mise run package:macos` task remains an unsigned package check.
+The local `mise run package:macos` task remains an unsigned, Sparkle-free
+package check. `mise run package:macos-release` is the unsigned updater-enabled
+package check. It requires the committed public key, never the private key.
 
 ## Manual verification
 
@@ -99,8 +157,9 @@ complete package path. Select the branch to run from and enter its
 exact 40-character HEAD SHA, or a SHA from `main`, plus the matching Cargo
 version; leave the tag empty. The workflow validates the
 source, builds both native Linux architectures, builds and signs both macOS
-slices, notarizes and staples the app, runs all package checks, and uploads the
-same eight-file inventory as an Actions artifact retained for seven days.
+slices, notarizes and staples the app, validates the SPDX SBOM and a non-public
+fixture appcast, and uploads the same ten-file inventory as an Actions artifact
+retained for seven days.
 
 Before checkout, the workflow requires the SHA to be on `main` or to match the
 exact branch commit selected by a manual, non-publishing dispatch. It verifies
@@ -108,16 +167,24 @@ the checkout and Cargo versions again before exposing the signing and
 notarization credentials. Publishing always requires ancestry on `main`.
 
 Verification mode does not inspect, create, update, or publish a GitHub Release
-or tag. It does submit the app to Apple's notarization service and creates the
-temporary Actions artifact.
+or tag. It never receives the production Sparkle private key or attestation
+authority. It does submit the app to Apple's notarization service and creates
+the temporary Actions artifact.
 
 ## Manual recovery
 
 To recover an existing draft release, run the same workflow with `publish`
-checked. Enter the exact 40-character SHA, `v`-prefixed tag, and version from
-that draft. The workflow revalidates the release and rebuilds the artifacts. It
-replaces the eight expected assets when they already exist, but refuses to
-publish if the draft contains any unexpected asset.
+checked and select that release's exact `v`-prefixed tag as the workflow ref.
+Enter the exact 40-character SHA, tag, and version from that draft. The tag must
+also be allowed by the `release` environment's deployment rules. The workflow
+revalidates this source identity before rebuilding the artifacts, replaces the
+ten expected assets when they already exist, and refuses to publish if the
+draft contains any unexpected asset.
+
+A manual dispatch of the outer `Release Please` workflow runs from a branch and
+therefore cannot publish attestations. If it creates a draft and tag, finish it
+through the exact-tag recovery dispatch above. Automatic `main` push runs remain
+the normal publishing path.
 
 ## Linux package contract
 

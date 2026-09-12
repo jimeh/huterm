@@ -247,6 +247,10 @@ mod tests {
     #[test]
     fn wrapper_follows_catalog_scope_and_rejects_unknown_commands() {
         assert!(matches!(invoke(ids::QUIT), CommandAction::App(_)));
+        assert!(matches!(
+            invoke(ids::CHECK_FOR_UPDATES),
+            CommandAction::App(_)
+        ));
         assert!(matches!(invoke(ids::NEW_TAB), CommandAction::Window(_)));
         assert!(matches!(invoke(ids::ABOUT), CommandAction::Window(_)));
         assert!(matches!(invoke(ids::COPY), CommandAction::Terminal(_)));

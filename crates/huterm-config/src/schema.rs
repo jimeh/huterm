@@ -209,6 +209,14 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
         .map(|field| field.remove("default"));
     definitions["RawFont"]["properties"]["size"]["minimum"] = json!(6);
     definitions["RawFont"]["properties"]["size"]["maximum"] = json!(96);
+    definitions["UpdateConfig"]["properties"]["automatic_checks"]["description"] = json!(
+        "Enable or disable scheduled update checks without Sparkle's consent prompt. Omit to preserve Sparkle's stored choice; a fresh macOS profile asks on its second launch."
+    );
+    definitions["UpdateConfig"]["properties"]["check_interval_hours"]["minimum"] =
+        json!(1);
+    definitions["UpdateConfig"]["properties"]["check_interval_hours"]["description"] = json!(
+        "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours."
+    );
     for name in ["padding_x", "padding_y"] {
         definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
         definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);

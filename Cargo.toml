@@ -45,6 +45,10 @@ repository.workspace = true
 rust-version.workspace = true
 version = "0.5.0"
 
+[features]
+default = []
+macos-updater = ["huterm-gpui/macos-updater"]
+
 [dependencies]
 anyhow.workspace = true
 huterm-gpui.workspace = true
@@ -64,6 +68,7 @@ resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "
 [package.metadata.packager.macos]
 entitlements = "assets/macos/Huterm.entitlements"
 infoPlistPath = "assets/macos/Info.plist"
+minimumSystemVersion = "10.15.7"
 
 [[package.metadata.packager.binaries]]
 path = "huterm"

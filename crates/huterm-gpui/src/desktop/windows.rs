@@ -9,12 +9,17 @@ pub(crate) mod integration_smoke;
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
 mod quake_windows;
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+#[path = "updater_smoke.rs"]
+pub(crate) mod updater_smoke;
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
 use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
 use crate::native_quit;
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_core::{
     CloseAssessment, CloseRequest, HierarchySnapshot, MuxError, OpenedTab,
@@ -299,6 +304,8 @@ struct Desktop {
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+    updater: native_updater::Updater,
 }
 impl Global for Desktop {}
 
@@ -388,6 +395,7 @@ fn run_app_command(
             quake_windows::invoke(cx, invocation)
         }
         ids::RELOAD_CONFIG => reload(cx),
+        ids::CHECK_FOR_UPDATES => check_for_updates(cx),
         ids::QUIT => {
             // Global actions run while the dispatching window is borrowed.
             // Route quit after that window has returned to App's window map.
@@ -407,6 +415,39 @@ fn run_app_command(
             Ok(CommandOutcome::Completed)
         }
         other => Err(CommandError::UnknownCommand(other)),
+    }
+}
+
+fn check_for_updates(cx: &mut App) -> Result<CommandOutcome, CommandError> {
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+    {
+        cx.global::<Desktop>()
+            .updater
+            .check_for_updates()
+            .map_err(CommandError::Unavailable)?;
+        Ok(CommandOutcome::Accepted)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
+    {
+        let _ = cx;
+        Err(unsupported_update_error())
+    }
+}
+
+#[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
+fn unsupported_update_error() -> CommandError {
+    CommandError::Unavailable(
+        "self-updates are available only in updater-enabled macOS release builds"
+            .to_owned(),
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+fn apply_update_config(cx: &App, config: &Config) {
+    if let Err(error) =
+        cx.global::<Desktop>().updater.apply_config(config.updates)
+    {
+        eprintln!("Updater configuration failed: {error}");
     }
 }
 
@@ -465,6 +506,9 @@ pub(super) fn run_with_startup(
     });
     application.run(move |cx| {
         let (reserved, config_error) = install_startup_keymap(cx, &loaded);
+        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+        let updater =
+            native_updater::Updater::initialize(loaded.config.updates);
         cx.set_global(Desktop {
             quake: quake_windows::Registry::default(),
             runtime: Arc::clone(&app_runtime),
@@ -478,6 +522,8 @@ pub(super) fn run_with_startup(
             pending_spawns: 0,
             quit_pending: false,
             external_drag_window: None,
+            #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+            updater,
         });
         install_native_quit(cx);
         quake_windows::install(cx);
@@ -2370,6 +2416,8 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
             });
             let mut keymap_status = None;
             let result = result.map(|(config, family, metrics, compiled)| {
+                #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+                apply_update_config(cx, &config);
                 cx.global_mut::<Desktop>().config = config.clone();
                 cx.global_mut::<Desktop>().config_error = None;
                 quake_windows::reconcile(cx);
@@ -2381,9 +2429,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 maybe_exit(cx);
                 (config, family, metrics)
             });
-            if let Err(error) = &result {
-                eprintln!("Config reload failed: {error}");
-            }
+            report_config_reload_error(&result);
             let windows = cx.global::<Desktop>().windows.clone();
             for window in windows {
                 let _ = window.update(cx, |view, cx| {
@@ -2443,6 +2489,12 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     })
     .detach();
     Ok(CommandOutcome::Accepted)
+}
+
+fn report_config_reload_error<T>(result: &Result<T, String>) {
+    if let Err(error) = result {
+        eprintln!("Config reload failed: {error}");
+    }
 }
 
 fn path_for_status(cx: &App) -> String {
@@ -3176,6 +3228,18 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
+    #[test]
+    fn check_for_updates_reports_updater_build_requirement() {
+        assert_eq!(
+            unsupported_update_error(),
+            CommandError::Unavailable(
+                "self-updates are available only in updater-enabled macOS release builds"
+                    .to_owned()
+            )
+        );
+    }
 
     #[test]
     fn hidden_and_every_overlay_frame_preserve_full_terminal_bounds() {

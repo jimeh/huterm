@@ -22,6 +22,8 @@ mod mouse;
 mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_quit;
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+mod native_updater;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod quake;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -60,6 +62,13 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(target_os = "macos")]
 pub fn run_native_menu_smoke() {
     desktop::menus_smoke::run();
+}
+
+/// Runs the packaged Sparkle controller and command verification executable.
+#[doc(hidden)]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+pub fn run_native_updater_smoke() -> anyhow::Result<()> {
+    desktop::updater_smoke::run()
 }
 
 /// Runs the isolated native input verification executable.
@@ -134,6 +143,16 @@ mod package_tests {
         assert_eq!(packager["icons"][0].as_str(), Some("assets/Huterm.icns"));
         assert_eq!(packager["binaries"][0]["path"].as_str(), Some("huterm"));
         assert_eq!(packager["binaries"][0]["main"].as_bool(), Some(true));
+        assert_eq!(
+            packager["macos"]["minimumSystemVersion"].as_str(),
+            Some("10.15.7")
+        );
+        assert!(packager["macos"].get("frameworks").is_none());
+        assert!(packager["resources"].as_array().is_some_and(|resources| {
+            resources.iter().all(|resource| {
+                resource["target"].as_str() != Some("Sparkle-LICENSE")
+            })
+        }));
         let icon = include_bytes!("../../../assets/Huterm.icns");
         assert_eq!(&icon[..4], b"icns");
     }

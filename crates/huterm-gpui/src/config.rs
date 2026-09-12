@@ -7,7 +7,7 @@ use crate::themes;
 pub(super) use huterm_config::{
     ConfigError, FontConfig, KeybindingEntry, LinkModifiers,
     MacosFullscreenMode, MacosOptionAsAlt, RawConfig, TabPosition,
-    TerminalConfig, Theme, WindowConfig, keybinding_diagnostic,
+    TerminalConfig, Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
 };
 use huterm_protocol::TerminalEngineKind;
 
@@ -44,6 +44,15 @@ tab_position = "top"
 always_show_tab_bar = false
 auto_hide_tab_bar_in_fullscreen = false
 
+[updates]
+# true enables scheduled checks and false disables them. Omit this setting to
+# let Sparkle ask on the second launch of a fresh macOS profile. Removing an
+# explicit value later preserves Sparkle's current stored preference.
+# automatic_checks = true
+# Minimum 1 hour. Omit this setting for Sparkle's stored interval, which is 24
+# hours on a fresh profile.
+# check_interval_hours = 24
+
 [theme]
 name = "huterm-dark"
 # Override individual colors without replacing the whole palette:
@@ -72,6 +81,7 @@ pub(super) struct Config {
     pub(super) engine: TerminalEngineKind,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
+    pub(super) updates: UpdateConfig,
     pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
     pub(super) keybindings: Vec<KeybindingEntry>,
@@ -94,6 +104,7 @@ impl Default for Config {
             font: FontConfig::default(),
             theme: Theme::default(),
             window: WindowConfig::default(),
+            updates: UpdateConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: Vec::new(),
             quake: crate::quake::Config {
@@ -258,6 +269,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     Ok(Config {
         engine,
         window: raw.window,
+        updates: raw.updates,
         terminal: TerminalConfig {
             close_on_exit: raw.terminal.close_on_exit,
             links: raw.terminal.links,
@@ -313,7 +325,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 113);
+        assert_eq!(fixtures.len(), 117);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -378,6 +390,37 @@ mod tests {
         .unwrap();
         assert!(config.window.always_show_tab_bar);
         assert!(config.window.auto_hide_tab_bar_in_fullscreen);
+    }
+
+    #[test]
+    fn update_settings_are_optional_and_preserve_explicit_values() {
+        let defaults = parse("").unwrap().updates;
+        assert_eq!(defaults.automatic_checks, None);
+        assert_eq!(defaults.check_interval_hours, None);
+
+        let configured = parse(
+            "[updates]\nautomatic_checks = false\ncheck_interval_hours = 6",
+        )
+        .unwrap()
+        .updates;
+        assert_eq!(configured.automatic_checks, Some(false));
+        assert_eq!(configured.check_interval_hours, Some(6));
+    }
+
+    #[test]
+    fn update_interval_rejects_values_below_sparkles_minimum() {
+        let error = parse("[updates]\ncheck_interval_hours = 0")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "updates.check_interval_hours must be at least 1");
+    }
+
+    #[test]
+    fn generated_default_keeps_update_overrides_commented_out() {
+        let document = default_document();
+        assert!(document.contains("# automatic_checks = true"));
+        assert!(document.contains("# check_interval_hours = 24"));
+        assert_eq!(parse(&document).unwrap().updates, UpdateConfig::default());
     }
 
     #[test]

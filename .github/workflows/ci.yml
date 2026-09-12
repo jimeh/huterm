@@ -245,7 +245,9 @@ jobs:
           echo "HUTERM_SMOKE_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Prepare desktop smoke dependencies
-        run: mise run ghostty:prepare
+        run: |
+          mise run ghostty:prepare
+          mise run sparkle:prepare
 
       - name: Compile desktop smoke binaries
         run: mise run ci:smoke:build
@@ -261,6 +263,10 @@ jobs:
       - name: Smoke macOS menus
         if: runner.os == 'macOS'
         run: HUTERM_CI_SMOKE_STEP=macos-menus mise run ci:smoke:run
+
+      - name: Smoke packaged macOS updater
+        if: runner.os == 'macOS'
+        run: HUTERM_CI_SMOKE_STEP=macos-updater mise run ci:smoke:run
 
       - name: Smoke Linux input
         if: runner.os == 'Linux'
@@ -400,7 +406,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: rust bun zig cargo:cargo-packager
+          install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager
           minimum_release_age: 3d
 
       - name: Install Linux package tools with Mise

@@ -74,15 +74,17 @@ export function isDispatchedBranchBuild(sha: string, event: string | undefined, 
 export function releaseAssetNames(version: string) {
   validateBuildInputs("0".repeat(40), version);
   const macos = `Huterm-${version}-macOS-universal.zip`;
+  const macosSbom = `Huterm-${version}-macOS-universal.spdx.json`;
+  const appcast = "appcast.xml";
   const linuxX86 = [`Huterm-${version}-Linux-x86_64.AppImage`, `Huterm-${version}-Linux-x86_64.tar.gz`];
   const linuxArm = [`Huterm-${version}-Linux-aarch64.AppImage`, `Huterm-${version}-Linux-aarch64.tar.gz`];
   const platforms = [
-    { id: "macos", payloads: [macos], manifest: "macos-SHA256SUMS" },
+    { id: "macos", payloads: [macos, macosSbom, appcast], manifest: "macos-SHA256SUMS" },
     { id: "linux-x86_64", payloads: linuxX86, manifest: "linux-x86_64-SHA256SUMS" },
     { id: "linux-aarch64", payloads: linuxArm, manifest: "linux-aarch64-SHA256SUMS" },
   ] as const;
-  const payloads = [macos, ...linuxX86, ...linuxArm, ...schemaAssets];
-  return { macos, platforms, payloads, checksums: "SHA256SUMS", all: [...payloads, "SHA256SUMS"] };
+  const payloads = [macos, macosSbom, appcast, ...linuxX86, ...linuxArm, ...schemaAssets];
+  return { appcast, macos, macosSbom, platforms, payloads, checksums: "SHA256SUMS", all: [...payloads, "SHA256SUMS"] };
 }
 
 async function sha256(file: string): Promise<string> {

@@ -2,9 +2,11 @@
 export function checkNativeMenus(exitCode: number, output: string): void {
   const expected = [
     "default-fullscreen-shortcut",
+    "startup-update-command",
     "startup-user-shortcut",
     "untouched-default-shortcut",
     "startup-special-shortcuts",
+    "reloaded-update-command",
     "reloaded-user-shortcut",
     "reloaded-special-shortcuts",
   ];

@@ -185,6 +185,24 @@ For development, point the directive at the absolute local path to
 `schemas/huterm.schema.json`. Release URLs become available after the first
 release containing these assets is published.
 
+Official release-packaged macOS builds use Sparkle's standard update interface.
+**Check for Updates...** is available from the Huterm application menu in those
+builds. Optional scheduled-check overrides live in the same config:
+
+```toml
+[updates]
+automatic_checks = true
+check_interval_hours = 24
+```
+
+Leave either setting absent to leave its persisted value under Sparkle's
+control. On a fresh profile, omitting both preserves Sparkle's normal consent
+prompt on the second launch and its 24-hour default interval. Explicit `true`
+or `false` enables or disables scheduled checks without prompting; setting an
+interval alone does not grant consent. Development binaries, ordinary local
+macOS packages, and Linux builds do not include Sparkle or contact the
+production update feed.
+
 Terminal padding defaults to 4 logical points on each side. Add or adjust the
 `[window]` section to change it:
 
@@ -498,6 +516,7 @@ Commands, their scope, and arguments:
 | `hide_others` | Application | |
 | `show_all` | Application | |
 | `reload_config` | Application | |
+| `check_for_updates` | Application | macOS packaged application only |
 | `open_settings` | Window | |
 | `about` | Window | |
 | `new_tab` | Window | |
@@ -554,9 +573,11 @@ mise run package:macos
 
 The package task installs both Rust targets, builds both terminal engines for
 arm64 and x86_64, and combines the executables into
-`target/release/bundle/Huterm.app`. It also checks the packaged macOS privacy
-descriptions and release entitlements, but does not sign or notarize local
-packages. Intel hardware validation remains pending.
+`target/release/bundle/Huterm.app`. This local package deliberately excludes
+Sparkle and production update metadata. It checks that exclusion along with the
+macOS privacy descriptions and release entitlements, but does not sign or
+notarize the app. The CI release workflow uses the separate updater-enabled
+package path. Intel hardware validation remains pending.
 
 Use `mise tasks` to discover all commands. `mise run check` is the fast local
 gate, while `mise run verify` also runs tests, the dependency-license policy,

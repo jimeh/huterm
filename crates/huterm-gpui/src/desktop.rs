@@ -53,6 +53,8 @@ pub(crate) mod menus_smoke;
 mod windows;
 #[cfg(target_os = "macos")]
 pub(crate) use windows::input_smoke;
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
+pub(crate) use windows::updater_smoke;
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
@@ -83,21 +85,24 @@ fn install_menus(cx: &mut App) {
         return;
     }
     let item = |id| invoke(id).menu_item();
+    let mut application_items = vec![item(ids::ABOUT)];
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+    application_items.push(item(ids::CHECK_FOR_UPDATES));
+    application_items.extend([
+        item(ids::OPEN_SETTINGS),
+        item(ids::RELOAD_CONFIG),
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+        item(ids::HIDE),
+        item(ids::HIDE_OTHERS),
+        item(ids::SHOW_ALL),
+        MenuItem::separator(),
+        item(ids::QUIT),
+    ]);
     cx.set_menus(vec![
         Menu {
             name: "Huterm".into(),
-            items: vec![
-                item(ids::ABOUT),
-                item(ids::OPEN_SETTINGS),
-                item(ids::RELOAD_CONFIG),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                item(ids::HIDE),
-                item(ids::HIDE_OTHERS),
-                item(ids::SHOW_ALL),
-                MenuItem::separator(),
-                item(ids::QUIT),
-            ],
+            items: application_items,
         },
         Menu {
             name: "File".into(),

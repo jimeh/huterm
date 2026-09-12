@@ -1,11 +1,49 @@
-import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { releaseAssetNames, validateBuildInputs, type BuildInputs } from "./release.ts";
+import {
+  generateAppcast,
+  generateFixtureAppcast,
+  generateSbom,
+  validateAppcast,
+  validateRuntimeSpdx,
+} from "./release-artifacts.ts";
+import {
+  releaseAssetNames,
+  validateBuildInputs,
+  validateReleaseInputs,
+  verifyLocalAssets,
+  writePlatformManifest,
+  type BuildInputs,
+  type ReleaseInputs,
+} from "./release.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const appPath = join(repoRoot, "target/release/bundle/Huterm.app");
 const entitlementPath = join(repoRoot, "assets/macos/Huterm.entitlements");
+const sparklePublicKeyPath = join(repoRoot, "assets/macos/SparklePublicKey");
+
+export const sparkleFeedUrl = "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml";
+export const minimumMacosVersion = "10.15.7";
+const sparkleFrameworkRelative = "Contents/Frameworks/Sparkle.framework";
+const sparkleVersionRelative = `${sparkleFrameworkRelative}/Versions/B`;
+
+export interface SigningTarget {
+  path: string;
+  entitlements: "huterm" | "none";
+}
+
+export function signingPlan(bundlePath: string): SigningTarget[] {
+  return [
+    { path: join(bundlePath, `${sparkleVersionRelative}/Autoupdate`), entitlements: "none" },
+    { path: join(bundlePath, `${sparkleVersionRelative}/Updater.app/Contents/MacOS/Updater`), entitlements: "none" },
+    { path: join(bundlePath, `${sparkleVersionRelative}/Updater.app`), entitlements: "none" },
+    { path: join(bundlePath, `${sparkleVersionRelative}/Sparkle`), entitlements: "none" },
+    { path: join(bundlePath, sparkleFrameworkRelative), entitlements: "none" },
+    { path: join(bundlePath, "Contents/MacOS/huterm"), entitlements: "huterm" },
+    { path: bundlePath, entitlements: "huterm" },
+  ];
+}
 
 export const releaseEntitlements = [
   "com.apple.security.automation.apple-events",
@@ -207,11 +245,211 @@ async function readPlist(plistPath: string): Promise<JsonObject> {
   return objectValue(JSON.parse(stdout), plistPath);
 }
 
-async function verifyPackageConfiguration(bundlePath: string): Promise<void> {
-  validatePrivacyDescriptions(await readPlist(join(bundlePath, "Contents/Info.plist")));
+async function expectedSparklePublicKey(): Promise<string> {
+  let value: string;
+  try {
+    value = (await readFile(process.env.SPARKLE_PUBLIC_KEY_FILE ?? sparklePublicKeyPath, "utf8")).trim();
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(
+        "the production Sparkle public key is missing; add assets/macos/SparklePublicKey before enabling the production feed",
+      );
+    }
+    throw error;
+  }
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(value)) {
+    throw new Error("the Sparkle public key must be a canonical 32-byte base64 EdDSA key");
+  }
+  return value;
+}
+
+type ArchiveExtractor = (archive: string, destination: string) => Promise<void>;
+type PlistReader = (plistPath: string) => Promise<JsonObject>;
+
+async function extractZip(archive: string, destination: string): Promise<void> {
+  await runInherited("ditto", ["-x", "-k", archive, destination]);
+}
+
+export async function sparklePublicKeyFromArchive(
+  archive: string,
+  expectedPublicKey: string,
+  extract: ArchiveExtractor = extractZip,
+  plistReader: PlistReader = readPlist,
+): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-key-verification-"));
+  try {
+    await extract(archive, directory);
+    const entries = await readdir(directory);
+    if (entries.length !== 1 || entries[0] !== "Huterm.app") {
+      throw new Error(`candidate archive must contain only Huterm.app, found: ${entries.join(", ")}`);
+    }
+    const bundle = join(directory, "Huterm.app");
+    const bundleDetails = await lstat(bundle);
+    if (!bundleDetails.isDirectory() || bundleDetails.isSymbolicLink()) {
+      throw new Error("candidate archive Huterm.app is not a directory");
+    }
+    const info = await plistReader(join(bundle, "Contents/Info.plist"));
+    const embedded = info.SUPublicEDKey;
+    if (typeof embedded !== "string" || !/^[A-Za-z0-9+/]{43}=$/.test(embedded)) {
+      throw new Error("candidate archive embeds a malformed Sparkle public key");
+    }
+    if (embedded !== expectedPublicKey) {
+      throw new Error("candidate archive Sparkle public key does not match the committed canonical key");
+    }
+    return embedded;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+export function validateUpdatePlist(value: unknown, expectedVersion: string, publicKey: string): void {
+  const plist = objectValue(value, "Info.plist");
+  validatePackagePlist(plist, expectedVersion);
+  if (plist.SUFeedURL !== sparkleFeedUrl) throw new Error("SUFeedURL does not match the production feed");
+  if (plist.SUPublicEDKey !== publicKey) throw new Error("SUPublicEDKey does not match the pinned production key");
+  if (plist.SUVerifyUpdateBeforeExtraction !== true) throw new Error("SUVerifyUpdateBeforeExtraction must be true");
+  if (plist.SURequireSignedFeed !== true) throw new Error("SURequireSignedFeed must be true");
+  for (const forbidden of ["SUAutomaticallyUpdate", "SUEnableAutomaticChecks", "SUScheduledCheckInterval"]) {
+    if (forbidden in plist) throw new Error(`${forbidden} must remain unset`);
+  }
+}
+
+function validatePackagePlist(plist: JsonObject, expectedVersion: string): void {
+  if (plist.CFBundleVersion !== expectedVersion) {
+    throw new Error(`CFBundleVersion ${String(plist.CFBundleVersion)} does not match ${expectedVersion}`);
+  }
+  if (plist.CFBundleShortVersionString !== expectedVersion) {
+    throw new Error(
+      `CFBundleShortVersionString ${String(plist.CFBundleShortVersionString)} does not match ${expectedVersion}`,
+    );
+  }
+  if (plist.LSMinimumSystemVersion !== minimumMacosVersion) {
+    throw new Error(
+      `LSMinimumSystemVersion ${String(plist.LSMinimumSystemVersion)} does not match ${minimumMacosVersion}`,
+    );
+  }
+}
+
+const sparklePlistKeys = [
+  "SUFeedURL",
+  "SUPublicEDKey",
+  "SURequireSignedFeed",
+  "SUVerifyUpdateBeforeExtraction",
+  "SUAutomaticallyUpdate",
+  "SUEnableAutomaticChecks",
+  "SUScheduledCheckInterval",
+] as const;
+
+export function updaterPlistValues(publicKey: string): JsonObject {
+  return {
+    SUFeedURL: sparkleFeedUrl,
+    SUPublicEDKey: publicKey,
+    SURequireSignedFeed: true,
+    SUVerifyUpdateBeforeExtraction: true,
+  };
+}
+
+export function validateLocalPackagePlist(value: unknown, expectedVersion: string): void {
+  const plist = objectValue(value, "Info.plist");
+  validatePackagePlist(plist, expectedVersion);
+  for (const key of sparklePlistKeys) {
+    if (key in plist) throw new Error(`${key} must remain absent from Sparkle-free packages`);
+  }
+}
+
+async function requireSymlink(filePath: string, expectedTarget: string): Promise<void> {
+  const details = await lstat(filePath);
+  if (!details.isSymbolicLink()) throw new Error(`${filePath} must remain a symbolic link`);
+  const target = await readlink(filePath);
+  if (target !== expectedTarget) throw new Error(`${filePath} points at ${target}, expected ${expectedTarget}`);
+}
+
+async function assertAbsent(filePath: string, label: string): Promise<void> {
+  try {
+    await lstat(filePath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`${label} must not remain in the packaged framework`);
+}
+
+async function verifyUniversalBinary(binary: string): Promise<void> {
+  await runCaptured("lipo", [binary, "-verify_arch", "arm64"]);
+  await runCaptured("lipo", [binary, "-verify_arch", "x86_64"]);
+}
+
+async function verifySparkleFramework(bundlePath: string): Promise<void> {
+  const framework = join(bundlePath, sparkleFrameworkRelative);
+  await requireSymlink(join(framework, "Versions/Current"), "B");
+  await requireSymlink(join(framework, "Sparkle"), "Versions/Current/Sparkle");
+  await requireSymlink(join(framework, "Autoupdate"), "Versions/Current/Autoupdate");
+  await requireSymlink(join(framework, "Updater.app"), "Versions/Current/Updater.app");
+  await requireSymlink(join(framework, "Resources"), "Versions/Current/Resources");
+  await assertAbsent(join(framework, "XPCServices"), "Sparkle XPCServices symlink");
+  await assertAbsent(join(framework, "Versions/B/XPCServices"), "Sparkle XPCServices directory");
+  const license = await readFile(join(bundlePath, "Contents/Resources/Sparkle-LICENSE"));
+  const reviewedLicense = await readFile(join(repoRoot, "third-party/sparkle/LICENSE"));
+  if (!license.equals(reviewedLicense)) throw new Error("packaged Sparkle license does not match the reviewed notice");
+  for (const binary of [
+    join(framework, "Versions/B/Sparkle"),
+    join(framework, "Versions/B/Autoupdate"),
+    join(framework, "Versions/B/Updater.app/Contents/MacOS/Updater"),
+  ]) {
+    await verifyUniversalBinary(binary);
+  }
+}
+
+async function prepareUpdaterPackage(bundlePath: string): Promise<void> {
+  const publicKey = await expectedSparklePublicKey();
+  const framework = join(bundlePath, sparkleFrameworkRelative);
+  const sourceFramework = join(repoRoot, ".native/sparkle/distribution/Sparkle.framework");
+  const resources = join(bundlePath, "Contents/Resources");
+  await rm(framework, { force: true, recursive: true });
+  await mkdir(dirname(framework), { recursive: true });
+  await mkdir(resources, { recursive: true });
+  await runInherited("ditto", [sourceFramework, framework]);
+  await copyFile(join(repoRoot, "third-party/sparkle/LICENSE"), join(resources, "Sparkle-LICENSE"));
+  await rm(join(framework, "XPCServices"), { force: true });
+  await rm(join(framework, "Versions/B/XPCServices"), { force: true, recursive: true });
+  const plist = join(bundlePath, "Contents/Info.plist");
+  for (const [key, value] of Object.entries(updaterPlistValues(publicKey))) {
+    const type = typeof value === "boolean" ? "bool" : "string";
+    await runInherited("plutil", ["-insert", key, `-${type}`, String(value), plist]);
+  }
+}
+
+async function verifyPackageConfiguration(bundlePath: string, expectedVersion?: string): Promise<void> {
+  const info = await readPlist(join(bundlePath, "Contents/Info.plist"));
+  validatePrivacyDescriptions(info);
   validateEntitlements(await readPlist(entitlementPath));
+  const version = expectedVersion ?? String(info.CFBundleShortVersionString);
+  validateUpdatePlist(info, version, await expectedSparklePublicKey());
+  await verifySparkleFramework(bundlePath);
+  const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
+  const dependencies = linkage.stdout.split(/\r?\n/).filter(line => /^\s+/.test(line)).join("\n");
+  if (dependencies.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
+  if (!dependencies.includes("@rpath/Sparkle.framework/Versions/B/Sparkle")) {
+    throw new Error("package verification failed: Huterm does not resolve the packaged Sparkle framework");
+  }
+  if (dependencies.includes(".native/sparkle") || dependencies.includes(repoRoot)) {
+    throw new Error("package verification failed: Sparkle linkage contains a build-machine path");
+  }
+}
+
+async function verifyLocalPackageConfiguration(bundlePath: string, expectedVersion?: string): Promise<void> {
+  const info = await readPlist(join(bundlePath, "Contents/Info.plist"));
+  validatePrivacyDescriptions(info);
+  validateEntitlements(await readPlist(entitlementPath));
+  const version = expectedVersion ?? String(info.CFBundleShortVersionString);
+  validateLocalPackagePlist(info, version);
+  await assertAbsent(join(bundlePath, sparkleFrameworkRelative), "Sparkle framework");
+  await assertAbsent(join(bundlePath, "Contents/Resources/Sparkle-LICENSE"), "Sparkle license");
   const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
   if (linkage.stdout.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
+  if (linkage.stdout.includes("Sparkle.framework")) {
+    throw new Error("package verification failed: Sparkle-free Huterm links Sparkle");
+  }
 }
 
 function currentBuildInputs(): BuildInputs {
@@ -347,7 +585,8 @@ async function extractedEntitlements(target: string): Promise<JsonObject> {
   const combined = `${result.stdout}\n${result.stderr}`;
   const start = combined.indexOf("<?xml");
   const end = combined.indexOf("</plist>", start);
-  if (start < 0 || end < 0) throw new Error(`codesign did not report entitlements for ${target}`);
+  if (start < 0 && end < 0) return {};
+  if (start < 0 || end < 0) throw new Error(`codesign reported malformed entitlements for ${target}`);
   return parseSimplePlist(combined.slice(start, end + "</plist>".length));
 }
 
@@ -356,8 +595,15 @@ async function signAndVerifyApp(identity: string, teamId: string): Promise<void>
   const keychain = keychainPaths().keychain;
   const binaries = await findMachOBinaries(appPath);
   if (!binaries.includes(mainExecutable)) throw new Error("packaged app does not contain the Huterm Mach-O executable");
-  for (const binary of binaries) await codesignTarget(binary, identity, keychain, binary === mainExecutable);
-  await codesignTarget(appPath, identity, keychain, true);
+  const plan = signingPlan(appPath);
+  const plannedBinaries = new Set(plan.filter(target => target.path !== appPath && !target.path.endsWith(".app") && !target.path.endsWith(".framework")).map(target => target.path));
+  const unplannedBinaries = binaries.filter(binary => !plannedBinaries.has(binary));
+  if (unplannedBinaries.length > 0) {
+    throw new Error(`packaged app contains unplanned Mach-O files: ${unplannedBinaries.map(file => relative(appPath, file)).join(", ")}`);
+  }
+  for (const target of plan) {
+    await codesignTarget(target.path, identity, keychain, target.entitlements === "huterm");
+  }
   await verifySignedApp(teamId);
 }
 
@@ -366,13 +612,22 @@ async function verifySignedApp(teamId: string): Promise<void> {
   const binaries = await findMachOBinaries(appPath);
   if (!binaries.includes(mainExecutable)) throw new Error("packaged app does not contain the Huterm Mach-O executable");
   await runInherited("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
-  for (const target of [...binaries, appPath]) {
-    await runInherited("codesign", ["--verify", "--strict", "--verbose=2", target]);
-    const details = await runCaptured("codesign", ["-dvvv", target]);
-    validateSignatureDetails(`${details.stdout}\n${details.stderr}`, teamId, relative(repoRoot, target));
+  const plan = signingPlan(appPath);
+  const plannedBinaries = new Set(plan.filter(target => target.path !== appPath && !target.path.endsWith(".app") && !target.path.endsWith(".framework")).map(target => target.path));
+  const unplannedBinaries = binaries.filter(binary => !plannedBinaries.has(binary));
+  if (unplannedBinaries.length > 0) {
+    throw new Error(`packaged app contains unplanned Mach-O files: ${unplannedBinaries.map(file => relative(appPath, file)).join(", ")}`);
   }
-  validateEntitlements(await extractedEntitlements(mainExecutable));
-  validateEntitlements(await extractedEntitlements(appPath));
+  for (const target of plan) {
+    await runInherited("codesign", ["--verify", "--strict", "--verbose=2", target.path]);
+    const details = await runCaptured("codesign", ["-dvvv", target.path]);
+    validateSignatureDetails(`${details.stdout}\n${details.stderr}`, teamId, relative(repoRoot, target.path));
+    const entitlements = await extractedEntitlements(target.path);
+    if (target.entitlements === "huterm") validateEntitlements(entitlements);
+    else if (Object.keys(entitlements).length > 0) {
+      throw new Error(`${relative(repoRoot, target.path)} unexpectedly inherits Huterm entitlements`);
+    }
+  }
   console.log(`verified ${binaries.length} signed Mach-O file${binaries.length === 1 ? "" : "s"}`);
 }
 
@@ -395,17 +650,18 @@ async function buildRelease(): Promise<void> {
   const p12 = strictBase64(requiredEnv("MACOS_SIGN_P12"), "MACOS_SIGN_P12");
   const notaryKey = strictBase64(requiredEnv("MACOS_NOTARY_KEY"), "MACOS_NOTARY_KEY");
   const dist = requiredEnv("RELEASE_DIST_DIR");
-  const archive = releaseAssetNames(inputs.version).macos;
+  const names = releaseAssetNames(inputs.version);
   const tempRoot = keychainPaths().tempRoot;
   const notarizationZip = join(tempRoot, "notarization.zip");
 
+  await rm(dist, { force: true, recursive: true });
   await mkdir(dist, { recursive: true });
-  await runInherited("mise", ["run", "package:macos"]);
-  await verifyPackageConfiguration(appPath);
+  await runInherited("mise", ["run", "package:macos-release"]);
+  await verifyPackageConfiguration(appPath, inputs.version);
 
   try {
     const signing = await prepareKeychain(teamId, p12, signPassword, notaryKey);
-    const finalArchive = join(dist, archive);
+    const finalArchive = join(dist, names.macos);
     await runMacReleasePipeline({
       signAndVerify: () => signAndVerifyApp(signing.identity, teamId),
       createNotarizationArchive: () => zipApp(notarizationZip),
@@ -427,11 +683,134 @@ async function buildRelease(): Promise<void> {
       assessGatekeeper: () => runInherited("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]),
       createFinalArchive: () => zipApp(finalArchive),
     });
-    if ((await stat(finalArchive)).size <= 0) throw new Error("final macOS archive is empty");
-    console.log(`prepared ${archive}`);
+    await generateSbom(dist, appPath, inputs.version);
+    await generateFixtureAppcast(dist, names.macos, { ...inputs, tag: `v${inputs.version}` });
+    for (const name of names.platforms[0].payloads) {
+      if ((await stat(join(dist, name))).size <= 0) throw new Error(`${name} is empty`);
+    }
+    console.log(`prepared signed macOS payloads ${names.platforms[0].payloads.join(", ")}`);
   } finally {
     await cleanupSigning();
   }
+}
+
+async function validateReleaseMetadata(inputs: ReleaseInputs, dist: string): Promise<void> {
+  await verifyLocalAssets(inputs, dist);
+  const names = releaseAssetNames(inputs.version);
+  const sbomPath = join(dist, names.macosSbom);
+  validateRuntimeSpdx(JSON.parse(await readFile(sbomPath, "utf8")), inputs.version);
+  await runInherited("pyspdxtools", ["-i", sbomPath]);
+  const publicKey = await sparklePublicKeyFromArchive(
+    join(dist, names.macos),
+    await expectedSparklePublicKey(),
+  );
+  validateAppcast(
+    await readFile(join(dist, names.appcast)),
+    await readFile(join(dist, names.macos)),
+    names.macos,
+    inputs,
+    publicKey,
+  );
+}
+
+async function finalizeReleaseMetadata(): Promise<void> {
+  const inputs = validateReleaseInputs(
+    requiredEnv("RELEASE_SHA"),
+    requiredEnv("RELEASE_TAG"),
+    requiredEnv("RELEASE_VERSION"),
+  );
+  const dist = requiredEnv("RELEASE_DIST_DIR");
+  await verifyLocalAssets(inputs, dist);
+  const privateKey = (await new Response(Bun.stdin.stream()).text()).trim();
+  if (privateKey.length === 0) throw new Error("a Sparkle EdDSA private key must be supplied on standard input");
+  const names = releaseAssetNames(inputs.version);
+  const publicKey = await sparklePublicKeyFromArchive(
+    join(dist, names.macos),
+    await expectedSparklePublicKey(),
+  );
+  await generateAppcast(dist, names.macos, inputs, publicKey, privateKey);
+  await writePlatformManifest(join(dist, names.checksums), names.payloads.map(name => join(dist, name)));
+  await validateReleaseMetadata(inputs, dist);
+  console.log(`prepared signed release metadata ${names.appcast} and ${names.checksums}`);
+}
+
+async function verifyReleaseMetadata(): Promise<void> {
+  const inputs = validateReleaseInputs(
+    requiredEnv("RELEASE_SHA"),
+    requiredEnv("RELEASE_TAG"),
+    requiredEnv("RELEASE_VERSION"),
+  );
+  await validateReleaseMetadata(inputs, requiredEnv("RELEASE_DIST_DIR"));
+  console.log(`verified signed updater metadata for ${inputs.tag}`);
+}
+
+async function fetchPublicAsset(url: string): Promise<Buffer> {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "huterm-release-probe" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`public release probe failed for ${url}: HTTP ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export function assertPublicAssetMatches(publicBytes: Buffer, expectedBytes: Buffer, mismatchMessage: string): void {
+  if (!publicBytes.equals(expectedBytes)) throw new Error(mismatchMessage);
+}
+
+function repository(): string {
+  const value = requiredEnv("GITHUB_REPOSITORY");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) throw new Error(`invalid GITHUB_REPOSITORY: ${value}`);
+  return value;
+}
+
+async function probePublicRelease(): Promise<void> {
+  const inputs = validateReleaseInputs(
+    requiredEnv("RELEASE_SHA"),
+    requiredEnv("RELEASE_TAG"),
+    requiredEnv("RELEASE_VERSION"),
+  );
+  const dist = requiredEnv("RELEASE_DIST_DIR");
+  const names = releaseAssetNames(inputs.version);
+  const taggedPrefix = `https://github.com/${repository()}/releases/download/${inputs.tag}`;
+  const latestAppcast = `https://github.com/${repository()}/releases/latest/download/${names.appcast}`;
+  const expectedAppcast = await readFile(join(dist, names.appcast));
+  let publicAppcast: Buffer | undefined;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    try {
+      const candidate = await fetchPublicAsset(latestAppcast);
+      assertPublicAssetMatches(candidate, expectedAppcast, "latest appcast bytes do not match the published asset");
+      publicAppcast = expectedAppcast;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 10) await Bun.sleep(3_000);
+    }
+  }
+  if (!publicAppcast) throw lastError;
+  const probeDirectory = requiredEnv("RELEASE_PUBLIC_DIR");
+  await rm(probeDirectory, { force: true, recursive: true });
+  await mkdir(probeDirectory, { recursive: true });
+  for (const name of [names.macos, names.macosSbom]) {
+    const downloaded = await fetchPublicAsset(`${taggedPrefix}/${name}`);
+    const localPath = join(dist, name);
+    const local = await readFile(localPath);
+    assertPublicAssetMatches(downloaded, local, `public ${name} bytes do not match the verified release asset`);
+    await copyFile(localPath, join(probeDirectory, name));
+  }
+  await writeFile(join(probeDirectory, names.appcast), publicAppcast);
+  validateAppcast(
+    publicAppcast,
+    await readFile(join(probeDirectory, names.macos)),
+    names.macos,
+    inputs,
+    await sparklePublicKeyFromArchive(
+      join(probeDirectory, names.macos),
+      await expectedSparklePublicKey(),
+    ),
+  );
+  console.log(`verified unauthenticated appcast, archive, and SBOM for ${inputs.tag}`);
 }
 
 async function main(): Promise<void> {
@@ -444,14 +823,43 @@ async function main(): Promise<void> {
       console.log("verified macOS privacy descriptions, release entitlements, and static Ghostty linkage");
       break;
     }
+    case "verify-local-package-config": {
+      const bundle = Bun.argv[3];
+      if (!bundle) throw new Error("verify-local-package-config requires an app bundle path");
+      await verifyLocalPackageConfiguration(resolve(repoRoot, bundle));
+      console.log("verified Sparkle-free macOS package configuration and static Ghostty linkage");
+      break;
+    }
+    case "validate-updater-inputs":
+      await expectedSparklePublicKey();
+      console.log("verified the canonical Sparkle public key");
+      break;
+    case "prepare-updater-package": {
+      const bundle = Bun.argv[3];
+      if (!bundle) throw new Error("prepare-updater-package requires an app bundle path");
+      await prepareUpdaterPackage(resolve(repoRoot, bundle));
+      console.log("installed the verified Sparkle framework and production updater metadata");
+      break;
+    }
     case "build":
       await buildRelease();
+      break;
+    case "finalize-metadata":
+      await finalizeReleaseMetadata();
+      break;
+    case "verify-release-metadata":
+      await verifyReleaseMetadata();
+      break;
+    case "probe-public":
+      await probePublicRelease();
       break;
     case "cleanup":
       await cleanupSigning();
       break;
     default:
-      throw new Error("expected verify-package-config, build, or cleanup");
+      throw new Error(
+        "expected validate-updater-inputs, prepare-updater-package, verify-package-config, verify-local-package-config, build, finalize-metadata, verify-release-metadata, probe-public, or cleanup",
+      );
   }
 }
 
