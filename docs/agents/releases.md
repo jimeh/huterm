@@ -181,6 +181,11 @@ revalidates this source identity before rebuilding the artifacts, replaces the
 ten expected assets when they already exist, and refuses to publish if the
 draft contains any unexpected asset.
 
+A manual dispatch of the outer `Release Please` workflow runs from a branch and
+therefore cannot publish attestations. If it creates a draft and tag, finish it
+through the exact-tag recovery dispatch above. Automatic `main` push runs remain
+the normal publishing path.
+
 ## Linux package contract
 
 Both Linux formats contain the same neutral payload: `bin/huterm`, the desktop
