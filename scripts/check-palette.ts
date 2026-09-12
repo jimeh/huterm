@@ -334,6 +334,102 @@ command = "select_tab"
     return selected;
   }
 
+  function paletteNumber(current: string, field: string): number {
+    const value = current.match(
+      new RegExp(`${field}=(-?\\d+(?:\\.\\d+)?)`),
+    )?.[1];
+    if (value === undefined) {
+      throw new Error(`missing ${field}: ${current}`);
+    }
+    return Number(value);
+  }
+
+  async function movePointer(
+    x: number,
+    y: number,
+    dragging = false,
+  ): Promise<void> {
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t${dragging ? 6 : 5}\t${x}\t${y}`);
+    } else {
+      run([
+        "xdotool",
+        "mousemove",
+        "--window",
+        windowId,
+        String(Math.round(x)),
+        String(Math.round(y)),
+      ]);
+    }
+  }
+
+  async function mouseDown(x: number, y: number): Promise<void> {
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t1\t${x}\t${y}`);
+    } else {
+      run(["xdotool", "mousedown", "1"]);
+    }
+  }
+
+  async function mouseUp(x: number, y: number): Promise<void> {
+    if (process.platform === "darwin") {
+      await command(`native\tmouse\t2\t${x}\t${y}`);
+    } else {
+      run(["xdotool", "mouseup", "1"]);
+    }
+  }
+
+  async function assertScrollbarClickAndOutsideDrag(): Promise<void> {
+    // The geometry appears once the reopened list has laid out.
+    let before = "";
+    await waitFor(async () => {
+      before = await readFile(join(directory, "state"), "utf8").catch(
+        () => "",
+      );
+      return (
+        before.includes("scrollbar_drag=false") &&
+        paletteNumber(before, "scrollbar_x") >= 0
+      );
+    }, "palette scrollbar geometry");
+    const initialOffset = paletteNumber(before, "scroll_offset");
+    const x = paletteNumber(before, "scrollbar_x");
+    const y = paletteNumber(before, "scrollbar_thumb_y");
+
+    await movePointer(x, y);
+    await mouseDown(x, y);
+    await state("scrollbar_drag=true");
+    await mouseUp(x, y);
+    const afterClick = await state("scrollbar_drag=false");
+    const clickOffset = paletteNumber(afterClick, "scroll_offset");
+    if (Math.abs(clickOffset - initialOffset) > 0.1) {
+      throw new Error(
+        `${engine}: scrollbar thumb click changed offset from ${initialOffset} to ${clickOffset}`,
+      );
+    }
+
+    await movePointer(x, y);
+    await mouseDown(x, y);
+    await state("scrollbar_drag=true");
+    await movePointer(x, 2_000, true);
+    await waitFor(async () => {
+      const current = await readFile(join(directory, "state"), "utf8").catch(
+        () => "",
+      );
+      return paletteNumber(current, "scroll_offset") > initialOffset + 0.5;
+    }, "outside-window scrollbar drag");
+    await mouseUp(x, 2_000);
+    await state("scrollbar_drag=false");
+
+    // Reopen so the following row fixtures start from an unscrolled list.
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+    await shortcut("palette");
+    const reopened = await state('query=""', "w0.palette=true");
+    if (Math.abs(paletteNumber(reopened, "scroll_offset")) > 0.1) {
+      throw new Error(`${engine}: reopened palette is scrolled: ${reopened}`);
+    }
+  }
+
   async function clickOverlay(): Promise<void> {
     if (process.platform === "darwin") {
       await command("native\tmouse\t1\t0.05\t200");
@@ -672,6 +768,7 @@ command = "select_tab"
         `${engine}: clicked command was not recorded as recent: ${recent}`,
       );
     }
+    await assertScrollbarClickAndOutsideDrag();
     await movePointerToRow(0);
     const beforeWheel = await readFile(bytes).catch(() => Buffer.alloc(0));
     if (process.platform === "linux") {
@@ -838,7 +935,7 @@ command = "select_tab"
     await state("w0.terminal_focused=true", "w0.palette=false");
 
     console.log(
-      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable blank=clears recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
+      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click scrollbar=click-outside-drag wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable blank=clears recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
     );
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");

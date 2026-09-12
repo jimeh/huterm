@@ -16,10 +16,10 @@ use std::time::Instant;
 
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
-    FontWeight, Hsla, KeyBindingContextPredicate, KeyContext, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollHandle,
-    ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
-    prelude::*, px,
+    FontWeight, HighlightStyle, Hsla, KeyBindingContextPredicate, KeyContext,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
+    ScrollHandle, ScrollWheelEvent, Subscription, WeakEntity, Window, canvas,
+    div, hsla, point, prelude::*, px,
 };
 use huterm_config::PalettePlacement;
 use huterm_core::HierarchySnapshot;
@@ -80,6 +80,7 @@ const LIST_MAX_HEIGHT: f32 = ROW_HEIGHT * VISIBLE_ROWS + LIST_PADDING * 2.0;
 /// The panel at its tallest: input line, full list, and footer. Centred
 /// placement positions this height so filtering never moves the input.
 const PANEL_MAX_HEIGHT: f32 = 412.0;
+const PANEL_CHROME_HEIGHT: f32 = PANEL_MAX_HEIGHT - LIST_MAX_HEIGHT;
 /// Distance from the window's top edge for top placement, and the minimum
 /// for centred placement in short windows.
 const PANEL_TOP_INSET: f32 = 36.0;
@@ -1270,10 +1271,21 @@ impl CommandPalette {
                 self.pending.is_some(),
             ),
         };
+        let scroll_offset = -f32::from(self.scroll.offset().y);
+        let (scrollbar_x, scrollbar_thumb_y) =
+            self.scrollbar_geometry().map_or((-1.0, -1.0), |geometry| {
+                (
+                    f32::from(self.scroll.bounds().right()) - 4.0,
+                    f32::from(self.scroll.bounds().top())
+                        + geometry.thumb_start
+                        + geometry.thumb_size / 2.0,
+                )
+            });
         format!(
-            "{stage} input={:?} diagnostic={:?}",
+            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1}",
             self.input.read(cx).text(),
-            self.diagnostic
+            self.diagnostic,
+            self.scrollbar_drag.is_some(),
         )
     }
 
@@ -1285,13 +1297,17 @@ impl CommandPalette {
 }
 
 /// The panel's distance from the top of a window `height` points tall. Centred
-/// placement centres the panel at its maximum height, so the input line stays
-/// put while the result list grows and shrinks beneath it.
-fn panel_top(placement: PalettePlacement, height: f32) -> f32 {
+/// placement centres the panel's clamped height, so it remains centred in a
+/// short window while the result list grows and shrinks beneath the input.
+fn panel_top(
+    placement: PalettePlacement,
+    height: f32,
+    panel_height: f32,
+) -> f32 {
     match placement {
         PalettePlacement::Top => PANEL_TOP_INSET,
         PalettePlacement::Center => {
-            ((height - PANEL_MAX_HEIGHT) / 2.0).max(PANEL_TOP_INSET)
+            ((height - panel_height) / 2.0).max(PANEL_TOP_INSET)
         }
     }
 }
@@ -1467,27 +1483,49 @@ fn selection_bar(selected: bool, swatch: Swatch) -> impl IntoElement {
         .when(selected, |bar| bar.bg(swatch.accent))
 }
 
+fn title_highlight_ranges(
+    title: &str,
+    indices: &[u32],
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for (index, ch) in title.char_indices() {
+        if !indices.iter().any(|matched| *matched as usize == index) {
+            continue;
+        }
+        let end = index + ch.len_utf8();
+        if let Some(previous) = ranges.last_mut()
+            && previous.end == index
+        {
+            previous.end = end;
+        } else {
+            ranges.push(index..end);
+        }
+    }
+    ranges
+}
+
 fn highlighted_title(
     title: &str,
     indices: &[u32],
     swatch: Swatch,
+    window: &Window,
 ) -> gpui::AnyElement {
-    let mut element = div().flex().text_size(px(13.5));
-    if indices.is_empty() {
-        return element.child(title.to_owned()).into_any_element();
-    }
-    for (index, ch) in title.char_indices() {
-        let matched = indices.iter().any(|i| *i as usize == index);
-        element = element.child(if matched {
-            div()
-                .text_color(swatch.accent)
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(ch.to_string())
-        } else {
-            div().child(ch.to_string())
-        });
-    }
-    element.into_any_element()
+    let highlight = HighlightStyle {
+        color: Some(swatch.accent),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..HighlightStyle::default()
+    };
+    let highlights = title_highlight_ranges(title, indices)
+        .into_iter()
+        .map(|range| (range, highlight));
+    div()
+        .truncate()
+        .text_size(px(13.5))
+        .child(
+            gpui::StyledText::new(title.to_owned())
+                .with_default_highlights(&window.text_style(), highlights),
+        )
+        .into_any_element()
 }
 
 /// Chips for the slot line, the picker list, bands beneath the line, and
@@ -1508,6 +1546,8 @@ impl CommandPalette {
         &self,
         search: &SearchState,
         swatch: Swatch,
+        window: &Window,
+        list_max: f32,
         cx: &mut Context<'_, Self>,
     ) -> (
         gpui::Stateful<gpui::Div>,
@@ -1519,7 +1559,7 @@ impl CommandPalette {
             .flex()
             .flex_col()
             .p(px(LIST_PADDING))
-            .max_h(px(LIST_MAX_HEIGHT))
+            .max_h(px(list_max))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(
@@ -1553,7 +1593,7 @@ impl CommandPalette {
             };
             let recent = search.query.is_empty()
                 && self.history.recency(spec.id).is_some();
-            let mut meta = div().flex().items_center().gap(px(6.0));
+            let mut meta = div().flex().flex_none().items_center().gap(px(6.0));
             if recent {
                 meta = meta.child(tag("recent".to_owned(), swatch, false));
             }
@@ -1605,13 +1645,16 @@ impl CommandPalette {
                     div()
                         .flex_1()
                         .min_w_0()
+                        .overflow_hidden()
                         .child(highlighted_title(
                             spec.title,
                             &matched.title_indices,
                             swatch,
+                            window,
                         ))
                         .child(
                             div()
+                                .truncate()
                                 .text_size(px(11.5))
                                 .text_color(if unavailable.is_some() {
                                     swatch.accent
@@ -1728,6 +1771,7 @@ impl CommandPalette {
         &self,
         editor: &SlotEditor,
         swatch: Swatch,
+        list_max: f32,
         cx: &mut Context<'_, Self>,
     ) -> SlotRender {
         let requested = editor.requested();
@@ -1791,7 +1835,7 @@ impl CommandPalette {
             .flex()
             .flex_col()
             .p(px(LIST_PADDING))
-            .max_h(px(LIST_MAX_HEIGHT))
+            .max_h(px(list_max))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(
@@ -1845,7 +1889,8 @@ impl CommandPalette {
                     .next()
                 });
                 let value = item.value.clone();
-                let mut meta = div().flex().items_center().gap(px(6.0));
+                let mut meta =
+                    div().flex().flex_none().items_center().gap(px(6.0));
                 if let Some(key) = key {
                     meta = meta.child(key_cap(&key, swatch));
                 }
@@ -1880,13 +1925,16 @@ impl CommandPalette {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .overflow_hidden()
                             .child(
                                 div()
+                                    .truncate()
                                     .text_size(px(13.5))
                                     .child(item.label.clone()),
                             )
                             .child(
                                 div()
+                                    .truncate()
                                     .text_size(px(11.5))
                                     .text_color(swatch.muted)
                                     .child(item.detail.clone()),
@@ -1952,8 +2000,13 @@ impl Render for CommandPalette {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Swatch::new(self.colors);
-        let top =
-            panel_top(self.placement, f32::from(window.viewport_size().height));
+        let palette = cx.entity();
+        let viewport = f32::from(window.viewport_size().height);
+        let available = viewport - PANEL_TOP_INSET * 2.0 - PANEL_CHROME_HEIGHT;
+        let list_max =
+            available.clamp(ROW_HEIGHT + LIST_PADDING * 2.0, LIST_MAX_HEIGHT);
+        let panel_height = list_max + PANEL_CHROME_HEIGHT;
+        let top = panel_top(self.placement, viewport, panel_height);
         let mut line = div()
             .flex()
             .items_center()
@@ -1966,7 +2019,7 @@ impl Render for CommandPalette {
         let (list, below, hints) = match &self.stage {
             Stage::Search(search) => {
                 let (list, below, hints) =
-                    self.render_search(search, swatch, cx);
+                    self.render_search(search, swatch, window, list_max, cx);
                 line = line
                     .child(div().text_color(swatch.dim).child("›"))
                     .child(self.input.clone())
@@ -1990,7 +2043,7 @@ impl Render for CommandPalette {
             }
             Stage::Slots(editor) => {
                 let (chips, list, below, hints) =
-                    self.render_slots(editor, swatch, cx);
+                    self.render_slots(editor, swatch, list_max, cx);
                 line = line.children(chips);
                 (list, below, hints)
             }
@@ -2051,6 +2104,14 @@ impl Render for CommandPalette {
                         }
                     }),
                 )
+                // A press and release within one frame ends before the
+                // window-level release listener below exists.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|palette, _: &MouseUpEvent, _, cx| {
+                        palette.scrollbar_release(cx);
+                    }),
+                )
                 .children(self.scrollbar_geometry().into_iter().flat_map(
                     |geometry| {
                         crate::ui::scrollbar::layers(
@@ -2061,6 +2122,36 @@ impl Render for CommandPalette {
                         )
                     },
                 ))
+        });
+        let scrollbar_capture = self.scrollbar_drag.is_some().then(|| {
+            canvas(
+                |_, _, _| {},
+                move |_, (), window, _cx| {
+                    let mover = palette.clone();
+                    window.on_mouse_event(
+                        move |event: &MouseMoveEvent, phase, _, cx| {
+                            if phase.bubble() {
+                                mover.update(cx, |palette, cx| {
+                                    palette
+                                        .scrollbar_drag_to(event.position, cx);
+                                });
+                            }
+                        },
+                    );
+                    let releaser = palette.clone();
+                    window.on_mouse_event(
+                        move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase.bubble() {
+                                releaser.update(cx, |palette, cx| {
+                                    palette.scrollbar_release(cx);
+                                });
+                            }
+                        },
+                    );
+                },
+            )
+            .absolute()
+            .inset_0()
         });
 
         let input_focus = self.focus_handle(cx);
@@ -2088,13 +2179,9 @@ impl Render for CommandPalette {
                     cx.stop_propagation();
                 },
             )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|palette, _: &MouseUpEvent, _, cx| {
-                    palette.scrollbar_release(cx);
-                    cx.stop_propagation();
-                }),
-            )
+            .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
+                cx.stop_propagation();
+            })
             .on_click(|_: &ClickEvent, _, cx| cx.stop_propagation())
             .child(line)
             .children(below)
@@ -2106,7 +2193,8 @@ impl Render for CommandPalette {
                     .flex()
                     .flex_col()
                     .child(list)
-                    .children(scrollbar),
+                    .children(scrollbar)
+                    .children(scrollbar_capture),
             )
             .child(footer);
 
@@ -2127,18 +2215,9 @@ impl Render for CommandPalette {
             .on_mouse_down(MouseButton::Middle, |_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_mouse_move(cx.listener(
-                |palette, event: &MouseMoveEvent, _, cx| {
-                    palette.scrollbar_drag_to(event.position, cx);
-                },
-            ))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|palette, _: &MouseUpEvent, _, cx| {
-                    palette.scrollbar_release(cx);
-                    cx.stop_propagation();
-                }),
-            )
+            .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
+                cx.stop_propagation();
+            })
             .on_click(cx.listener(|palette, _: &ClickEvent, _, cx| {
                 // Clicks inside the panel stop before reaching here.
                 palette.close_from_scrim(cx);
@@ -2216,6 +2295,35 @@ mod tests {
             .map(|spec| spec.id)
             .collect::<Vec<_>>();
         assert_eq!(FORWARDED_TEXT_COMMANDS, catalog_text_commands);
+    }
+
+    #[test]
+    fn title_highlights_use_utf8_ranges_and_merge_adjacent_matches() {
+        assert_eq!(
+            title_highlight_ranges("Toggle Fullscreen", &[0, 7, 11]),
+            [0..1, 7..8, 11..12]
+        );
+        let adjacent =
+            title_highlight_ranges("Toggle Fullscreen", &[7, 8, 9, 10]);
+        assert_eq!(adjacent.len(), 1);
+        assert_eq!(adjacent[0], 7..11);
+    }
+
+    #[test]
+    fn top_placement_keeps_its_inset_with_a_clamped_panel() {
+        assert!(
+            (panel_top(PalettePlacement::Top, 300.0, 200.0) - PANEL_TOP_INSET)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn center_placement_uses_the_clamped_panel_height() {
+        assert!(
+            (panel_top(PalettePlacement::Center, 300.0, 200.0) - 50.0).abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]
