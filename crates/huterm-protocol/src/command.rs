@@ -1618,6 +1618,7 @@ mod tests {
             ids::TEXT_DELETE_BACKWARD,
             ids::TEXT_DELETE_FORWARD,
             ids::TEXT_DELETE_WORD_BACKWARD,
+            ids::TEXT_DELETE_WORD_FORWARD,
             ids::TEXT_DELETE_LINE_START,
             ids::TEXT_MOVE_LEFT,
             ids::TEXT_MOVE_RIGHT,
@@ -1654,6 +1655,19 @@ mod tests {
                 && argument.required == Requirement::Optional
                 && !argument.prompt
         })
+    }
+
+    #[test]
+    fn non_palette_commands_with_arguments_offer_a_prompted_argument() {
+        for spec in catalog().iter().filter(|spec| {
+            spec.scope != CommandScope::Palette && !spec.args.is_empty()
+        }) {
+            assert!(
+                spec.args.iter().any(|argument| argument.prompt),
+                "command `{}` has arguments but no prompted argument",
+                spec.id
+            );
+        }
     }
 
     #[test]

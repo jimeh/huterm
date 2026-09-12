@@ -1056,6 +1056,7 @@ fn open_window_with_profile(
                 exited_tabs: ExitQueue::default(),
                 status: cx.global::<Desktop>().config_error.clone(),
                 palette: None,
+                palette_generation: 0,
                 palette_refresh_state: None,
                 retained_query: None,
                 recent: RecentCommands::default(),
@@ -1202,6 +1203,7 @@ struct WorkspaceView {
     exited_tabs: ExitQueue,
     status: Option<String>,
     palette: Option<Entity<CommandPalette>>,
+    palette_generation: u64,
     palette_refresh_state: Option<PaletteRefreshState>,
     /// A cancelled search query and when it was cancelled.
     retained_query: Option<(String, Instant)>,
@@ -2056,6 +2058,8 @@ impl WorkspaceView {
             retained_query,
             tab_order,
         };
+        self.palette_generation = self.palette_generation.wrapping_add(1);
+        let generation = self.palette_generation;
         let palette = cx.new(|cx| CommandPalette::open(open, cx));
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
@@ -2063,6 +2067,17 @@ impl WorkspaceView {
         self.palette_refresh_state = Some(self.current_palette_refresh_state());
         palette.read(cx).focus_handle(cx).focus(window);
 
+        self.load_palette_hierarchy(palette, generation, cx);
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn load_palette_hierarchy(
+        &self,
+        palette: Entity<CommandPalette>,
+        generation: u64,
+        cx: &mut Context<'_, Self>,
+    ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         let tab = self.active;
@@ -2076,31 +2091,36 @@ impl WorkspaceView {
             .spawn(async move { runtime.palette_snapshot(workspace, tab) });
         cx.spawn(async move |view, cx| {
             let result = task.await;
-            let _ = view.update(cx, |view, cx| match result {
-                Ok(Some((target, hierarchy))) => {
-                    palette.update(cx, |palette, cx| {
-                        palette.set_hierarchy(
-                            target,
-                            &hierarchy,
-                            &live_titles,
+            let _ = view.update(cx, |view, cx| {
+                if view.palette.is_none()
+                    || view.palette_generation != generation
+                {
+                    return;
+                }
+                match result {
+                    Ok(Some((target, hierarchy))) => {
+                        palette.update(cx, |palette, cx| {
+                            palette.set_hierarchy(
+                                target,
+                                &hierarchy,
+                                &live_titles,
+                                cx,
+                            );
+                        });
+                        view.palette_refresh_state = None;
+                        view.refresh_palette(cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => palette.update(cx, |palette, cx| {
+                        palette.hierarchy_failed(
+                            format!("Cannot load command targets: {error}"),
                             cx,
                         );
-                    });
-                    view.palette_refresh_state = None;
-                    view.refresh_palette(cx);
+                    }),
                 }
-                Ok(None) => {}
-                Err(error) => palette.update(cx, |palette, cx| {
-                    palette.hierarchy_failed(
-                        format!("Cannot load command targets: {error}"),
-                        cx,
-                    );
-                }),
             });
         })
         .detach();
-        cx.notify();
-        Ok(CommandOutcome::Completed)
     }
 
     fn handle_palette_event(
@@ -2110,15 +2130,19 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self
+            .palette
+            .as_ref()
+            .is_none_or(|current| current.entity_id() != palette.entity_id())
+        {
+            return;
+        }
         match event {
             PaletteEvent::Cancel { query } => {
                 let target = palette.read(cx).target.clone();
                 self.palette = None;
                 self.palette_refresh_state = None;
-                self.retained_query = query
-                    .clone()
-                    .filter(|_| self.config.palette.retain_query)
-                    .map(|query| (query, Instant::now()));
+                self.retain_palette_query(query.clone());
                 self.restore_palette_focus(&target, window, cx);
                 cx.notify();
             }
@@ -2194,6 +2218,21 @@ impl WorkspaceView {
         } else {
             self.focus.focus(window);
         }
+    }
+
+    fn retain_palette_query(&mut self, query: Option<String>) {
+        self.retained_query = query
+            .filter(|_| self.config.palette.retain_query)
+            .map(|query| (query, Instant::now()));
+    }
+
+    fn dismiss_palette_for_confirmation(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(palette) = self.palette.take() else {
+            return;
+        };
+        self.palette_refresh_state = None;
+        self.retain_palette_query(palette.read(cx).cancellation_query());
+        cx.notify();
     }
 
     fn palette_availability(
@@ -3064,6 +3103,7 @@ impl WorkspaceView {
                         view.request_close(target, window, cx);
                     }
                     Some(CloseDecision::Confirm(_)) => {
+                        view.dismiss_palette_for_confirmation(cx);
                         view.focus.focus(window);
                         cx.notify();
                     }

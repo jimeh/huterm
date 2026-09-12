@@ -42,6 +42,23 @@ use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
 
+const FORWARDED_TEXT_COMMANDS: &[CommandId] = &[
+    ids::TEXT_DELETE_BACKWARD,
+    ids::TEXT_DELETE_FORWARD,
+    ids::TEXT_DELETE_WORD_BACKWARD,
+    ids::TEXT_DELETE_WORD_FORWARD,
+    ids::TEXT_DELETE_LINE_START,
+    ids::TEXT_MOVE_LEFT,
+    ids::TEXT_MOVE_RIGHT,
+    ids::TEXT_MOVE_WORD_LEFT,
+    ids::TEXT_MOVE_WORD_RIGHT,
+    ids::TEXT_LINE_START,
+    ids::TEXT_LINE_END,
+    ids::TEXT_SELECT_ALL,
+    ids::TEXT_COPY,
+    ids::TEXT_PASTE,
+];
+
 #[derive(Clone)]
 pub(super) struct PaletteTarget {
     pub(super) session: Option<SessionId>,
@@ -394,9 +411,6 @@ pub(super) struct CommandPalette {
     /// The search query to restore when leaving slots entered from search.
     return_query: Option<String>,
     input: Entity<TextField>,
-    /// Set while the palette writes the field itself, so the `Changed`
-    /// subscription does not treat its own write as user input.
-    syncing: bool,
     engine: CommandSearch,
     matcher: PickerMatcher,
     history: OwnedHistory,
@@ -449,10 +463,14 @@ impl CommandPalette {
             .new(|cx| TextField::new("Search commands", colors.foreground, cx));
         let subscription =
             cx.subscribe(&input, |palette, input, _: &Changed, cx| {
-                if palette.syncing {
+                let text = input.read(cx).text().to_owned();
+                let unchanged = match &palette.stage {
+                    Stage::Search(search) => search.query == text,
+                    Stage::Slots(editor) => editor.text() == text,
+                };
+                if unchanged {
                     return;
                 }
-                let text = input.read(cx).text().to_owned();
                 palette.input_changed(&text);
                 cx.notify();
             });
@@ -469,7 +487,6 @@ impl CommandPalette {
             }),
             return_query: None,
             input,
-            syncing: false,
             engine: CommandSearch::new(),
             matcher: PickerMatcher::new(),
             history,
@@ -504,22 +521,33 @@ impl CommandPalette {
                 &palette.domain_for(spec),
                 true,
             );
-            palette.enter_slots(editor, cx);
+            if editor.slots().is_empty() {
+                palette.rank("");
+            } else {
+                palette.enter_slots(editor, cx);
+            }
         } else {
             let query = retained_query.unwrap_or_default();
             palette.rank(&query);
-            palette.syncing = true;
             palette.input.update(cx, |input, cx| {
                 input.set_text(query, cx);
                 input.select_all_text(cx);
             });
-            palette.syncing = false;
         }
         palette
     }
 
     pub(super) fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
         self.input.read(cx).focus_handle(cx)
+    }
+
+    pub(super) fn cancellation_query(&self) -> Option<String> {
+        match &self.stage {
+            Stage::Search(search) if !search.query.is_empty() => {
+                Some(search.query.clone())
+            }
+            Stage::Search(_) | Stage::Slots(_) => None,
+        }
     }
 
     pub(super) fn set_keymap(&mut self, keymap: InstalledKeymap) {
@@ -576,6 +604,15 @@ impl CommandPalette {
             live_titles,
             &self.tab_order,
         ));
+        let domain = DomainView {
+            hierarchy: self.hierarchy.as_ref(),
+            profiles: &self.profiles,
+            target: &self.target,
+            window_only: self.window_only(),
+        };
+        if let Stage::Slots(editor) = &mut self.stage {
+            editor.fill_defaults(&domain);
+        }
         self.diagnostic = None;
         self.refresh_picker_rows();
         self.prefill_name(cx);
@@ -867,6 +904,7 @@ impl CommandPalette {
 
     /// Enter on a command row.
     fn confirm_search(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         let Stage::Search(search) = &self.stage else {
             return;
         };
@@ -913,6 +951,7 @@ impl CommandPalette {
 
     /// Tab on a command row: open its slots even when Enter would run it.
     fn expand_search(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         let Stage::Search(search) = &self.stage else {
             return;
         };
@@ -929,11 +968,15 @@ impl CommandPalette {
             return;
         }
         let editor = SlotEditor::new(spec, &[], &self.domain_for(spec), false);
+        if editor.slots().is_empty() {
+            return;
+        }
         self.enter_slots(editor, cx);
     }
 
     /// Enter in a slot.
     fn commit_slot(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         let picked = self.picker_value();
         let domain = DomainView {
             hierarchy: self.hierarchy.as_ref(),
@@ -965,6 +1008,7 @@ impl CommandPalette {
 
     /// Tab in a slot.
     fn next_slot(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         let picked = self.picker_value();
         let domain = DomainView {
             hierarchy: self.hierarchy.as_ref(),
@@ -988,6 +1032,7 @@ impl CommandPalette {
     }
 
     fn previous_slot(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         if let Stage::Slots(editor) = &mut self.stage {
             editor.previous_slot();
             self.picker_selected = None;
@@ -1036,6 +1081,7 @@ impl CommandPalette {
     }
 
     fn edit_slot(&mut self, index: usize, cx: &mut Context<'_, Self>) {
+        self.pending = None;
         if let Stage::Slots(editor) = &mut self.stage {
             editor.edit(index);
             self.picker_selected = None;
@@ -1054,12 +1100,10 @@ impl CommandPalette {
                 (editor.text().to_owned(), self.placeholder(editor))
             }
         };
-        self.syncing = true;
         self.input.update(cx, |input, cx| {
             input.set_placeholder(placeholder);
             input.set_text(text, cx);
         });
-        self.syncing = false;
         self.diagnostic = None;
         self.refresh_picker_rows();
         self.prefill_name(cx);
@@ -1086,28 +1130,15 @@ impl CommandPalette {
         if let Stage::Slots(editor) = &mut self.stage {
             editor.set_text(&name);
         }
-        self.syncing = true;
         self.input.update(cx, |input, cx| {
             input.set_text(name, cx);
             input.select_all_text(cx);
         });
-        self.syncing = false;
     }
 
     /// The custom name a rename would replace, when its target has one.
     fn current_name(&self, editor: &SlotEditor) -> Option<String> {
-        let (_, argument) = self.rename_target(editor)?;
-        let slot = editor
-            .slots()
-            .iter()
-            .find(|slot| slot.spec.name == argument)?;
-        let value = slot.value.as_ref()?;
-        self.domain()
-            .rows(slot.spec.kind)?
-            .into_iter()
-            .find(|row| &row.value == value)
-            .filter(|row| row.custom_name)
-            .map(|row| row.label.clone())
+        current_custom_name(editor, &self.domain())
     }
 
     fn placeholder(&self, editor: &SlotEditor) -> String {
@@ -1131,16 +1162,7 @@ impl CommandPalette {
         &self,
         editor: &SlotEditor,
     ) -> Option<(String, &'static str)> {
-        if !editor.spec().id.as_str().starts_with("rename_") {
-            return None;
-        }
-        let slot = editor
-            .slots()
-            .iter()
-            .find(|slot| is_identity(slot.spec.kind))?;
-        let label =
-            self.domain().label(slot.spec.kind, slot.value.as_ref()?)?;
-        Some((label, slot.spec.name))
+        rename_target_in(editor, &self.domain())
     }
 
     /// Runs one `Palette`-scope catalog command.
@@ -1175,19 +1197,8 @@ impl CommandPalette {
             {
                 self.pop(cx);
             }
-            ids::TEXT_DELETE_BACKWARD
-            | ids::TEXT_DELETE_FORWARD
-            | ids::TEXT_DELETE_WORD_BACKWARD
-            | ids::TEXT_DELETE_LINE_START
-            | ids::TEXT_MOVE_LEFT
-            | ids::TEXT_MOVE_RIGHT
-            | ids::TEXT_MOVE_WORD_LEFT
-            | ids::TEXT_MOVE_WORD_RIGHT
-            | ids::TEXT_LINE_START
-            | ids::TEXT_LINE_END
-            | ids::TEXT_SELECT_ALL
-            | ids::TEXT_COPY
-            | ids::TEXT_PASTE => {
+            id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
+                self.pending = None;
                 self.input.update(cx, |field, cx| {
                     field.run(invocation, window, cx)
                 })?;
@@ -1202,13 +1213,7 @@ impl CommandPalette {
         spec: &CommandSpec,
         args: Option<&[CommandArgument]>,
     ) -> Vec<String> {
-        self.keymap
-            .shortcuts(spec.id, &self.target.contexts, args)
-            .iter()
-            .filter(|binding| args.is_some() || binding.args.is_empty())
-            .take(2)
-            .map(|binding| binding.key.clone())
-            .collect()
+        shortcut_keys_for(&self.keymap, &self.target.contexts, spec, args)
     }
 
     fn slot_label(&self, slot: &Slot) -> Option<String> {
@@ -1274,12 +1279,7 @@ impl CommandPalette {
 
     /// Scrim click: close regardless of stage.
     fn close_from_scrim(&mut self, cx: &mut Context<'_, Self>) {
-        let query = match &self.stage {
-            Stage::Search(search) if !search.query.is_empty() => {
-                Some(search.query.clone())
-            }
-            _ => None,
-        };
+        let query = self.cancellation_query();
         cx.emit(PaletteEvent::Cancel { query });
     }
 }
@@ -1320,6 +1320,67 @@ fn display_value(value: &CommandValue) -> String {
         CommandValue::Session(id) => format!("session {}", id.get()),
         CommandValue::Workspace(id) => format!("workspace {}", id.get()),
         CommandValue::Tab(id) => format!("tab {}", id.get()),
+    }
+}
+
+fn rename_target_in(
+    editor: &SlotEditor,
+    domain: &DomainView<'_>,
+) -> Option<(String, &'static str)> {
+    if !editor.spec().id.as_str().starts_with("rename_") {
+        return None;
+    }
+    let slot = editor
+        .slots()
+        .iter()
+        .find(|slot| is_identity(slot.spec.kind))?;
+    let label = domain.label(slot.spec.kind, slot.value.as_ref()?)?;
+    Some((label, slot.spec.name))
+}
+
+fn current_custom_name(
+    editor: &SlotEditor,
+    domain: &DomainView<'_>,
+) -> Option<String> {
+    let (_, argument) = rename_target_in(editor, domain)?;
+    let slot = editor
+        .slots()
+        .iter()
+        .find(|slot| slot.spec.name == argument)?;
+    let value = slot.value.as_ref()?;
+    domain
+        .rows(slot.spec.kind)?
+        .into_iter()
+        .find(|row| &row.value == value)
+        .filter(|row| row.custom_name)
+        .map(|row| row.label.clone())
+}
+
+fn shortcut_keys_for(
+    keymap: &InstalledKeymap,
+    contexts: &[KeyContext],
+    spec: &CommandSpec,
+    args: Option<&[CommandArgument]>,
+) -> Vec<String> {
+    keymap
+        .shortcuts(spec.id, contexts, args)
+        .iter()
+        .filter(|binding| match args {
+            Some(args) => binding.matches_arguments(args),
+            None => binding.args.is_empty(),
+        })
+        .take(2)
+        .map(|binding| binding.key.clone())
+        .collect()
+}
+
+fn select_tab_shortcut_index(position: i64, tab_count: usize) -> Option<i64> {
+    if (1..=8).contains(&position) {
+        Some(position)
+    } else if usize::try_from(position).ok() == Some(tab_count) {
+        Some(9)
+    } else {
+        None
     }
 }
 
@@ -1769,11 +1830,15 @@ impl CommandPalette {
                 let selected = selected_index == Some(row);
                 let hovered = self.hover == Some(row);
                 let key = item.position.and_then(|position| {
+                    let index = select_tab_shortcut_index(
+                        position,
+                        rows.as_ref()?.len(),
+                    )?;
                     self.shortcut_keys(
                         select_tab?,
                         Some(&[CommandArgument::new(
                             "index",
-                            CommandValue::Integer(position),
+                            CommandValue::Integer(index),
                         )]),
                     )
                     .into_iter()
@@ -1855,7 +1920,7 @@ impl CommandPalette {
 
         let runs = editor.complete()
             || !editor.text().trim().is_empty()
-            || is_identity(slot.spec.kind);
+            || editor.remaining_required_satisfied();
         let mut hints = vec![(
             "↩".to_owned(),
             if runs { "run" } else { "next" }.to_owned(),
@@ -1953,6 +2018,51 @@ impl Render for CommandPalette {
             );
         }
 
+        let scrollbar = (self.indicator.opacity > 0.0).then(|| {
+            let width = if self.scrollbar_expansion.active() {
+                SCROLLBAR_EXPANDED_WIDTH
+            } else {
+                SCROLLBAR_WIDTH
+            };
+            div()
+                .id("palette-scrollbar")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(width))
+                .block_mouse_except_scroll()
+                .on_mouse_move(cx.listener(
+                    |palette, event: &MouseMoveEvent, _, cx| {
+                        palette.scrollbar_pointer_moved(event.position, cx);
+                    },
+                ))
+                .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
+                    if !hovering && palette.scrollbar_hovering {
+                        palette.scrollbar_hovering = false;
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|palette, event: &MouseDownEvent, _, cx| {
+                        if palette.scrollbar_press(event.position, cx) {
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+                .children(self.scrollbar_geometry().into_iter().flat_map(
+                    |geometry| {
+                        crate::ui::scrollbar::layers(
+                            geometry,
+                            self.indicator.opacity,
+                            self.scrollbar_expansion.progress,
+                            swatch.fg,
+                        )
+                    },
+                ))
+        });
+
         let input_focus = self.focus_handle(cx);
         let panel = div()
             .id("palette-panel")
@@ -1995,38 +2105,8 @@ impl Render for CommandPalette {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .on_mouse_move(cx.listener(
-                        |palette, event: &MouseMoveEvent, _, cx| {
-                            palette.scrollbar_pointer_moved(event.position, cx);
-                        },
-                    ))
-                    .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
-                        if !hovering && palette.scrollbar_hovering {
-                            palette.scrollbar_hovering = false;
-                            cx.notify();
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(
-                            |palette, event: &MouseDownEvent, _, cx| {
-                                if palette.scrollbar_press(event.position, cx) {
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ),
-                    )
                     .child(list)
-                    .children(self.scrollbar_geometry().into_iter().flat_map(
-                        |geometry| {
-                            crate::ui::scrollbar::layers(
-                                geometry,
-                                self.indicator.opacity,
-                                self.scrollbar_expansion.progress,
-                                swatch.fg,
-                            )
-                        },
-                    )),
+                    .children(scrollbar),
             )
             .child(footer);
 
@@ -2073,6 +2153,8 @@ impl Render for CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::KeybindingEntry;
+    use crate::keymap::{Platform, compile};
     use huterm_core::Mux;
     use huterm_protocol::{
         CellSize, GridSize, RuntimeId, TerminalCommand, TerminalEngineKind,
@@ -2124,6 +2206,63 @@ mod tests {
             KeyContext::parse("Palette").unwrap(),
         ];
         assert!(context_matches(Some("Palette"), &palette_context));
+    }
+
+    #[test]
+    fn forwarded_text_commands_cover_the_catalog() {
+        let catalog_text_commands = catalog()
+            .iter()
+            .filter(|spec| spec.id.as_str().starts_with("text_"))
+            .map(|spec| spec.id)
+            .collect::<Vec<_>>();
+        assert_eq!(FORWARDED_TEXT_COMMANDS, catalog_text_commands);
+    }
+
+    #[test]
+    fn ten_tab_picker_caps_match_select_tab_positions_exactly() {
+        let bare = KeybindingEntry {
+            key: "cmd-shift-o".into(),
+            command: "select_tab".into(),
+            args: None,
+            when: None,
+            description: None,
+        };
+        let (_, keymap) =
+            compile(Platform::MacOs, &[bare]).unwrap().install_parts();
+        let spec = huterm_protocol::lookup(ids::SELECT_TAB.as_str()).unwrap();
+        let contexts = target().contexts;
+        let caps = (1..=10)
+            .map(|position| {
+                let index = select_tab_shortcut_index(position, 10)?;
+                shortcut_keys_for(
+                    &keymap,
+                    &contexts,
+                    spec,
+                    Some(&[CommandArgument::new(
+                        "index",
+                        CommandValue::Integer(index),
+                    )]),
+                )
+                .into_iter()
+                .next()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            caps,
+            [
+                Some("cmd-1".into()),
+                Some("cmd-2".into()),
+                Some("cmd-3".into()),
+                Some("cmd-4".into()),
+                Some("cmd-5".into()),
+                Some("cmd-6".into()),
+                Some("cmd-7".into()),
+                Some("cmd-8".into()),
+                None,
+                Some("cmd-9".into()),
+            ]
+        );
+        assert!(caps.iter().flatten().all(|key| key != "cmd-shift-o"));
     }
 
     #[test]
@@ -2253,6 +2392,84 @@ mod tests {
         };
         assert_eq!(invocation.workspace("workspace"), Some(second_workspace));
         assert_eq!(invocation.text("name"), Some("chosen"));
+    }
+
+    #[test]
+    fn hierarchy_fills_only_unresolved_identity_defaults() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(Some("named session")).unwrap();
+        let workspace = mux
+            .create_workspace(session, Some("named workspace"))
+            .unwrap();
+        let hierarchy = PaletteHierarchy::from_snapshot(
+            &mux.capture_hierarchy(),
+            &HashMap::new(),
+            &[],
+        );
+
+        let unresolved_target = target();
+        let loading = DomainView {
+            hierarchy: None,
+            profiles: &[],
+            target: &unresolved_target,
+            window_only: false,
+        };
+        let rename_session =
+            huterm_protocol::lookup(ids::RENAME_SESSION.as_str()).unwrap();
+        let mut session_editor =
+            SlotEditor::new(rename_session, &[], &loading, false);
+        let session_slot = session_editor
+            .slots()
+            .iter()
+            .position(|slot| slot.spec.kind == ArgumentKind::Session)
+            .unwrap();
+        assert_eq!(
+            session_editor.slots()[session_slot].state,
+            SlotState::Empty
+        );
+
+        let resolved_target = PaletteTarget {
+            session: Some(session),
+            workspace: Some(workspace),
+            ..target()
+        };
+        let resolved = DomainView {
+            hierarchy: Some(&hierarchy),
+            profiles: &[],
+            target: &resolved_target,
+            window_only: false,
+        };
+        session_editor.fill_defaults(&resolved);
+        assert_eq!(
+            session_editor.slots()[session_slot].state,
+            SlotState::Prefilled
+        );
+        assert_eq!(
+            current_custom_name(&session_editor, &resolved).as_deref(),
+            Some("named session")
+        );
+
+        let rename_workspace =
+            huterm_protocol::lookup(ids::RENAME_WORKSPACE.as_str()).unwrap();
+        let mut workspace_editor =
+            SlotEditor::new(rename_workspace, &[], &resolved, false);
+        let workspace_slot = workspace_editor
+            .slots()
+            .iter()
+            .position(|slot| slot.spec.kind == ArgumentKind::Workspace)
+            .unwrap();
+        let before = workspace_editor.slots()[workspace_slot].clone();
+        workspace_editor.fill_defaults(&resolved);
+        assert_eq!(
+            workspace_editor.slots()[workspace_slot].state,
+            before.state
+        );
+        assert_eq!(
+            workspace_editor.slots()[workspace_slot].value,
+            before.value
+        );
+
+        mux.close_session(session).unwrap();
     }
 
     #[test]

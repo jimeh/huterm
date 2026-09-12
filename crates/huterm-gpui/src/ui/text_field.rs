@@ -128,6 +128,19 @@ impl TextBuffer {
     }
 }
 
+fn snap_to_grapheme_start(content: &str, index: usize) -> usize {
+    let index = index.min(content.len());
+    if index == content.len() {
+        return index;
+    }
+    content
+        .grapheme_indices(true)
+        .map(|(start, _)| start)
+        .take_while(|start| *start <= index)
+        .last()
+        .unwrap_or(0)
+}
+
 pub(crate) struct TextField {
     focus: FocusHandle,
     placeholder: String,
@@ -163,13 +176,7 @@ impl TextField {
         let x = position.x - bounds.left() - px(FIELD_PADDING);
         let index = line.closest_index_for_x(x).min(self.buffer.content.len());
         // Glyph indices can fall inside a cluster; snap to its start.
-        Some(if self.buffer.content.is_char_boundary(index) {
-            self.buffer
-                .next_boundary(index.saturating_sub(1))
-                .min(index)
-        } else {
-            self.buffer.previous_boundary(index)
-        })
+        Some(snap_to_grapheme_start(&self.buffer.content, index))
     }
 
     fn press(&mut self, event: &MouseDownEvent, cx: &mut Context<'_, Self>) {
@@ -323,7 +330,7 @@ impl TextField {
     fn select_all(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.buffer.selection = 0..self.buffer.content.len();
         self.buffer.reversed = false;
-        Self::changed(cx);
+        cx.notify();
     }
     fn backspace(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         if self.buffer.selection.is_empty() {
@@ -698,6 +705,14 @@ mod tests {
         buffer.selection = before_e..end;
         buffer.replace(buffer.selection.clone(), "");
         assert_eq!(buffer.content, "a👨‍👩‍👧‍👦");
+    }
+
+    #[test]
+    fn pointer_indices_snap_to_grapheme_starts_and_keep_the_end() {
+        let content = "e\u{301}x";
+        assert_eq!(snap_to_grapheme_start(content, 1), 0);
+        assert_eq!(snap_to_grapheme_start(content, 3), 3);
+        assert_eq!(snap_to_grapheme_start(content, 4), 4);
     }
 
     #[test]

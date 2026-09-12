@@ -211,6 +211,22 @@ impl SlotEditor {
         self.requested
     }
 
+    /// Fills optional identity slots that had no captured target when the
+    /// editor was created.
+    pub(super) fn fill_defaults(&mut self, domain: &dyn SlotDomain) {
+        for slot in &mut self.slots {
+            if slot.state == SlotState::Empty
+                && slot.value.is_none()
+                && is_identity(slot.spec.kind)
+                && slot.spec.required == Requirement::Optional
+                && let Some(value) = domain.default(slot.spec.kind)
+            {
+                slot.value = Some(value);
+                slot.state = SlotState::Prefilled;
+            }
+        }
+    }
+
     /// Whether the command can run right now with the values held.
     pub(super) fn complete(&self) -> bool {
         self.invocation().is_ok()
@@ -221,6 +237,7 @@ impl SlotEditor {
         let args = self
             .slots
             .iter()
+            .filter(|slot| !matches!(slot.state, SlotState::Empty))
             .filter_map(|slot| {
                 slot.value
                     .clone()
@@ -257,6 +274,14 @@ impl SlotEditor {
     fn next_needing_input(&self, after: Option<usize>) -> Option<usize> {
         let start = after.map_or(0, |index| index + 1);
         (start..self.slots.len()).find(|index| self.needs_input(*index))
+    }
+
+    /// Whether committing the active slot would satisfy every other required
+    /// slot.
+    pub(super) fn remaining_required_satisfied(&self) -> bool {
+        (0..self.slots.len())
+            .filter(|index| *index != self.active)
+            .all(|index| !self.needs_input(index))
     }
 
     /// Commits the active slot. Pickers pass the highlighted value; scalar
@@ -684,6 +709,12 @@ mod tests {
             editor.slots()[0].value,
             Some(CommandValue::Text("work".into()))
         );
+        assert!(!editor.remaining_required_satisfied());
+        assert_eq!(
+            editor.commit(Some(CommandValue::Tab(tab(2))), &domain),
+            Ok(Commit::Next)
+        );
+        assert_eq!(editor.active().spec.name, "name");
     }
 
     #[test]

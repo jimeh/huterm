@@ -346,6 +346,8 @@ The overlay blocks motion, buttons, and wheel from reaching the terminal by
 itself. Rows and picker items take `on_click`, hover styling, and a pointer
 cursor. Clicking a chip reopens that slot. Clicking the scrim cancels. The list
 uses GPUI's scrollable container so the wheel scrolls it.
+The visible scrollbar strip blocks row hover and clicks while preserving wheel
+scrolling through the list.
 
 ### Palette and text commands
 
