@@ -129,6 +129,9 @@ fails to resolve the tool.
 Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
 CI cache can restore its Rust install symlink without the corresponding rustup
 toolchain, and parallel Cargo invocations then race while materializing it.
+On GitHub-hosted macOS runners, isolate Mise's Rustup and Cargo homes under
+`/Users/runner/.local/share/mise` and disable the Mise cache. Otherwise Mise can
+reuse the image's Homebrew Rustup proxies or restore incomplete Rust state.
 
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and

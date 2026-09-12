@@ -74,7 +74,7 @@ jobs:
             machine: aarch64
             runner-arch: ARM64
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
     steps:
@@ -112,10 +112,17 @@ jobs:
             uname -a
           } > "$evidence/runner.txt"
 
+      - name: Isolate Mise-managed Rust on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          # Rustup state must remain complete when Mise's install state is restored.
+          cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: rust bun zig
@@ -171,7 +178,7 @@ jobs:
             machine: aarch64
             runner-arch: ARM64
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
     steps:
@@ -202,10 +209,17 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
             x11-utils openbox xcompmgr
 
+      - name: Isolate Mise-managed Rust on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          # Rustup state must remain complete when Mise's install state is restored.
+          cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: rust bun zig
@@ -360,7 +374,7 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
             task: package:macos
@@ -399,11 +413,17 @@ jobs:
             patchelf pax-utils pkg-config python3 ripgrep rsync xauth xcompmgr \
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
+      - name: Isolate Mise-managed Rust on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager
