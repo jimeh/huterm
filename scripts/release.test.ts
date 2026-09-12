@@ -125,6 +125,62 @@ test("release workflow binds validated source, schemas, and producer-qualified a
   ]);
 });
 
+test("publication and manual verification share repaired native candidate preparation", async () => {
+  type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
+  type Job = { if?: string; environment?: string; permissions?: Record<string, string>; steps: Step[] };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, Job> };
+  const actionName = "./.github/actions/prepare-release-candidate";
+  for (const name of ["publish", "verify_candidate"]) {
+    const steps = workflow.jobs[name]?.steps ?? [];
+    const preparation = steps.findIndex(step => step.uses === actionName);
+    expect(preparation).toBeGreaterThan(steps.findIndex(step => step.uses?.startsWith("actions/checkout@")));
+    expect(preparation).toBeGreaterThanOrEqual(0);
+    expect(steps[preparation]?.with?.["artifact-id"]).toBe("${{ needs.assemble.outputs.artifact_id }}");
+    expect(steps[preparation]?.with?.["artifact-digest"]).toBe("${{ needs.assemble.outputs.artifact_digest }}");
+  }
+  const verification = workflow.jobs.verify_candidate!;
+  expect(verification.if).toBe("${{ !inputs.publish }}");
+  expect(verification.environment).toBeUndefined();
+  expect(verification.permissions).toEqual({ actions: "read", contents: "read" });
+  expect(workflow.jobs.publish?.if).toBe("inputs.publish");
+  const action = Bun.YAML.parse(await readFile(join(repository, ".github/actions/prepare-release-candidate/action.yml"), "utf8")) as { runs: { steps: Step[] } };
+  const steps = action.runs.steps;
+  const install = steps.findIndex(step => step.uses?.startsWith("jdx/mise-action@"));
+  const repair = steps.findIndex(step => step.run === "mise run ci:toolchain");
+  const validate = steps.findIndex(step => step.run === "bun scripts/release.ts validate-build");
+  const download = steps.findIndex(step => step.uses?.startsWith("actions/download-artifact@"));
+  const verify = steps.findIndex(step => step.run === "mise run release:verify-candidate");
+  expect(install).toBeGreaterThanOrEqual(0);
+  expect(repair).toBeGreaterThan(install);
+  expect(validate).toBeGreaterThan(repair);
+  expect(download).toBeGreaterThan(validate);
+  expect(verify).toBeGreaterThan(download);
+  const macos = workflow.jobs.macos!.steps;
+  expect(macos.findIndex(step => step.run === "mise run ci:toolchain")).toBeGreaterThanOrEqual(0);
+  expect(macos.findIndex(step => step.run === "mise run ci:toolchain")).toBeLessThan(macos.findIndex(step => step.run === "bun scripts/release.ts validate-build"));
+});
+
+test("candidate CLI rejects altered assets before native signing without requiring a tag", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-candidate-"));
+  const names = releaseAssetNames(inputs.version);
+  try {
+    for (const name of names.payloads) {
+      await writeFile(join(root, name), name.endsWith(".schema.json")
+        ? await readFile(join(repository, "schemas", name)) : name);
+    }
+    await writePlatformManifest(join(root, names.checksums), names.payloads.map(name => join(root, name)));
+    await writeFile(join(root, names.macos), "altered archive");
+    const child = Bun.spawn([process.execPath, join(repository, "scripts/release-macos.ts"), "verify-candidate"], {
+      env: { ...process.env, RELEASE_SHA: inputs.sha, RELEASE_VERSION: inputs.version, RELEASE_DIST_DIR: root, RELEASE_TAG: "" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [status, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(status).toBe(1);
+    expect(stderr).toContain("SHA256SUMS does not match the release payloads");
+    expect(await readFile(join(root, names.macos), "utf8")).toBe("altered archive");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("assembly verifies platform digests and creates the exact ten-file release", async () => {
   const root = await mkdtemp(join(tmpdir(), "huterm-release-assembly-"));
   const incoming = join(root, "incoming");

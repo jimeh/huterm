@@ -106,7 +106,14 @@ assembly:
 4. The assembly job downloads exactly those three platform artifacts, validates
    their inventories and digests, adds the committed schemas, writes
    `SHA256SUMS`, and uploads an immutable ten-file candidate.
-5. The protected macOS publication job verifies the candidate artifact ID and
+5. Both manual verification and publication use the same native candidate
+   preparation action. It installs publication tools, verifies and repairs the
+   Rust toolchain before Cargo runs, verifies the artifact ID and digest, and
+   downloads the exact candidate. It checks the inventory, checksums, SPDX SBOM,
+   and embedded production public key, then exercises Sparkle signing and
+   signature validation with an ephemeral fixture key in a temporary directory.
+   This leaves the downloaded candidate unchanged.
+6. The protected macOS publication job verifies the candidate artifact ID and
    digest, revalidates the draft, replaces the fixture appcast with one signed by
    the production EdDSA key, and rewrites `SHA256SUMS`. It uploads the exact
    assets, verifies GitHub's sizes and SHA-256 digests, attests the macOS ZIP and
@@ -161,6 +168,14 @@ slices, notarizes and staples the app, validates the SPDX SBOM and a non-public
 fixture appcast, and uploads the same ten-file inventory as an Actions artifact
 retained for seven days.
 
+After assembly, a separate macOS job runs the same candidate preparation action
+as publication, including toolchain repair and native fixture signing. It has
+only read permissions and does not enter the protected release environment.
+To repeat the local candidate checks on a Mac with the publication tools and
+Sparkle distribution prepared, set `RELEASE_SHA`, `RELEASE_VERSION`, and
+`RELEASE_DIST_DIR`, then run `mise run release:verify-candidate`. No tag is
+required.
+
 Before checkout, the workflow requires the SHA to be on `main` or to match the
 exact branch commit selected by a manual, non-publishing dispatch. It verifies
 the checkout and Cargo versions again before exposing the signing and
@@ -170,6 +185,10 @@ Verification mode does not inspect, create, update, or publish a GitHub Release
 or tag. It never receives the production Sparkle private key or attestation
 authority. It does submit the app to Apple's notarization service and creates
 the temporary Actions artifact.
+
+This does not verify the production Sparkle private key, draft-asset uploads,
+GitHub attestation issuance, final publication, or the public updater feed.
+Those operations remain exclusive to publishing mode.
 
 ## Manual recovery
 

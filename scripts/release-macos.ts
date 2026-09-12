@@ -713,6 +713,26 @@ async function validateReleaseMetadata(inputs: ReleaseInputs, dist: string): Pro
   );
 }
 
+async function verifyReleaseCandidate(): Promise<void> {
+  const inputs = currentBuildInputs();
+  const dist = requiredEnv("RELEASE_DIST_DIR");
+  await verifyLocalAssets(inputs, dist);
+  const names = releaseAssetNames(inputs.version);
+  const sbomPath = join(dist, names.macosSbom);
+  validateRuntimeSpdx(JSON.parse(await readFile(sbomPath, "utf8")), inputs.version);
+  await runInherited("pyspdxtools", ["-i", sbomPath]);
+  const archive = join(dist, names.macos);
+  await sparklePublicKeyFromArchive(archive, await expectedSparklePublicKey());
+  const fixture = await mkdtemp(join(tmpdir(), "huterm-candidate-signing-"));
+  try {
+    await copyFile(archive, join(fixture, names.macos));
+    await generateFixtureAppcast(fixture, names.macos, { ...inputs, tag: `v${inputs.version}` });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+  console.log(`verified candidate ${inputs.version} and native fixture signing`);
+}
+
 async function finalizeReleaseMetadata(): Promise<void> {
   const inputs = validateReleaseInputs(
     requiredEnv("RELEASE_SHA"),
@@ -844,6 +864,9 @@ async function main(): Promise<void> {
     case "build":
       await buildRelease();
       break;
+    case "verify-candidate":
+      await verifyReleaseCandidate();
+      break;
     case "finalize-metadata":
       await finalizeReleaseMetadata();
       break;
@@ -858,7 +881,7 @@ async function main(): Promise<void> {
       break;
     default:
       throw new Error(
-        "expected validate-updater-inputs, prepare-updater-package, verify-package-config, verify-local-package-config, build, finalize-metadata, verify-release-metadata, probe-public, or cleanup",
+        "expected validate-updater-inputs, prepare-updater-package, verify-package-config, verify-local-package-config, build, verify-candidate, finalize-metadata, verify-release-metadata, probe-public, or cleanup",
       );
   }
 }

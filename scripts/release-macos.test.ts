@@ -375,8 +375,8 @@ test("protected publication alone receives updater signing and attestation autho
   expect(workflow.slice(jobs, publishJob)).not.toContain("SPARKLE_EDDSA_PRIVATE_KEY");
   expect(workflow.slice(publishJob)).toContain("environment: release");
   expect(workflow.slice(publishJob)).toContain("SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}");
-  expect(workflow.slice(publishJob)).toContain("artifact-ids: ${{ needs.assemble.outputs.artifact_id }}");
-  expect(workflow.slice(publishJob)).toContain("EXPECTED_ARTIFACT_DIGEST: ${{ needs.assemble.outputs.artifact_digest }}");
+  expect(workflow.slice(publishJob)).toContain("artifact-id: ${{ needs.assemble.outputs.artifact_id }}");
+  expect(workflow.slice(publishJob)).toContain("artifact-digest: ${{ needs.assemble.outputs.artifact_digest }}");
   for (const permission of ["artifact-metadata: write", "attestations: write", "id-token: write"]) {
     expect(workflow.slice(publishJob)).toContain(permission);
   }
