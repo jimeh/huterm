@@ -1,6 +1,6 @@
 {
   "ghostty-MIT.txt": {
-    "url": "https://github.com/ghostty-org/ghostty/blob/a887df42c56f6de86c0fe6da9c4eeca37931e083/LICENSE",
+    "url": "https://github.com/ghostty-org/ghostty/blob/20c3eae04dee606349eb21e2dd0293b203d47179/LICENSE",
     "sha256": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1"
   },
   "libghostty-rs-MIT.txt": {
@@ -8,15 +8,15 @@
     "sha256": "64afe9aa17b5a1bf58375ea0e1bcfef3503b2ef85c1cfae7e00c3f7555f29137"
   },
   "uucode-MIT.md": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/v0.2.0/LICENSE.md",
+    "url": "https://github.com/jacobsandlund/uucode/blob/2826a37a4562284fdacd8fa029d49509cc9bffcd/LICENSE.md",
     "sha256": "312e901e142be2477b4ca859e9311f9e3f80d33372991759b7921c1893605f33"
   },
   "unicode.txt": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/v0.2.0/licenses/LICENSE_unicode",
+    "url": "https://github.com/jacobsandlund/uucode/blob/2826a37a4562284fdacd8fa029d49509cc9bffcd/licenses/LICENSE_unicode",
     "sha256": "1eda5a3b026870c737b22e8bcd4954338612c790db688242e003f41a4fa95175"
   },
   "uucode-utf8.txt": {
-    "url": "https://github.com/jacobsandlund/uucode/blob/v0.2.0/licenses/LICENSE_Bjoern_Hoehrmann",
+    "url": "https://github.com/jacobsandlund/uucode/blob/2826a37a4562284fdacd8fa029d49509cc9bffcd/licenses/LICENSE_Bjoern_Hoehrmann",
     "sha256": "de219cece932aad5a817bf763393d8d149d378a15d2ad5320e3331eac07626dd"
   },
   "simdutf-MIT.txt": {
