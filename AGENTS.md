@@ -84,6 +84,9 @@ the accepted ticket to the app, verify without re-signing, and only then create
 the public ZIP. Re-signing after stapling invalidates the notarized artifact.
 Release checks must cover every Mach-O plus the app's exact Developer ID team,
 Hardened Runtime flag, secure timestamp, and approved entitlements.
+Syft's macOS application scan can emit an empty `versionInfo`; normalize that
+to an omitted field because SPDX 2.3 makes package versions optional. Keep exact
+version checks for Huterm's required runtime components.
 Normal builds and `package:macos` exclude Sparkle, its menu item, and its plist
 metadata. `package:macos-release` enables the updater, copies the verified
 framework and license, and injects the committed public key and production feed

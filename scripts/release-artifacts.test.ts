@@ -139,6 +139,38 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   }
 });
 
+test("SPDX augmentation preserves packages without optional version metadata", async () => {
+  const unversioned = {
+    SPDXID: "SPDXRef-unversioned",
+    name: "unversioned-runtime",
+    downloadLocation: "NOASSERTION",
+    filesAnalyzed: false,
+    licenseConcluded: "NOASSERTION",
+    licenseDeclared: "NOASSERTION",
+    copyrightText: "NOASSERTION",
+  };
+  const blankVersion = {
+    ...unversioned,
+    SPDXID: "SPDXRef-blank-version",
+    name: "blank-version-runtime",
+    versionInfo: "",
+  };
+  const result = await augmentSpdx({
+    SPDXID: "SPDXRef-DOCUMENT",
+    spdxVersion: "SPDX-2.3",
+    creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
+    packages: [cargoPackage("huterm", "0.4.0"), unversioned, blankVersion],
+    documentDescribes: ["SPDXRef-huterm"],
+  }, {
+    arm64: { packages: [] },
+    x86_64: { packages: [] },
+  });
+  const packages = result.packages as Record<string, unknown>[];
+  expect(packages.find(pkg => pkg.name === unversioned.name)).not.toHaveProperty("versionInfo");
+  expect(packages.find(pkg => pkg.name === blankVersion.name)).not.toHaveProperty("versionInfo");
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).not.toThrow();
+});
+
 test("Ghostty native SPDX metadata is explicit for every package", () => {
   const source = {
     name: "future-native-package",
