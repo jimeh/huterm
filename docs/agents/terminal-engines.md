@@ -40,17 +40,12 @@ mise run build:exec -- cargo build --locked
 engines and the native license notices. Benchmark engine selectors change only
 configuration; both engines run from the same compiled binary.
 
-Build tasks use `build:exec`'s shared Bash SDK wrapper.
-Mise pins Bun and Zig; the wrapper only selects the SDK and executes its
-command. On macOS, if the
-selected SDK is 27 or newer, it selects Xcode 26 at
-`/Applications/Xcode.app/Contents/Developer`. Zig 0.15.2 fails to link its build
-runner against the Xcode 27 beta SDK, reporting undefined system symbols before
-Ghostty compiles. If Xcode 26 is elsewhere, set `DEVELOPER_DIR` to its developer
-directory. An explicit `DEVELOPER_DIR` is always preserved. This selection applies
-only to the invoked command; it does not change `xcode-select` or other projects.
-Direct Cargo builds must supply the compatible environment themselves or run
-through `mise run build:exec -- <command>`.
+Build tasks retain the shared `build:exec` entrypoint and preserve the selected
+Apple toolchain, including an explicit `DEVELOPER_DIR`. Zig 0.16.0 and the pinned
+Ghostty source support Xcode 27 without selecting an older SDK or replacing
+`xcrun`. Ghostty supplies compatibility headers for Xcode 27 and uses Apple's
+native linker where needed. Direct Cargo builds require the pinned Mise tools
+and prepared native source.
 
 All builds explicitly target Zig's portable CPU baseline. Cargo forces this
 setting over inherited environment values. A narrow local sys-crate backport
@@ -61,20 +56,29 @@ vendored path dependencies, so each CI run rebuilds the sys crate.
 ## Native inputs and policy
 
 The safe Rust bindings and locally patched sys crate are pinned to 0.2.1.
-Native Ghostty is pinned to `a887df42c56f6de86c0fe6da9c4eeca37931e083`,
-built with Zig 0.15.2 and static linking. Source preparation runs on Bun and
+Native Ghostty is pinned to `20c3eae04dee606349eb21e2dd0293b203d47179`,
+built with Zig 0.16.0 and static linking. Source preparation runs on Bun and
 retains the OS-owned preparation lock and reviewed source-tree hash format.
 `scripts/ghostty-source.json` records the archive checksum and
 full source-tree checksum. Preparation checks the Rust revision constant and
 license provenance against that manifest, then verifies existing source contents;
 a changed generated tree fails rather than silently building different source.
-Generated inputs live in ignored `.native/ghostty`, outside Cargo's `target`
+Verified inputs live in ignored `.native/ghostty`, outside Cargo's `target`
 directory: the CI Cargo cache removes non-Cargo files under `target` before
-saving. Previous `target/ghostty` contents are left untouched and no longer used.
+saving. The sys build script copies those inputs to its private `OUT_DIR` before
+building. Zig 0.16 creates a mutable `zig-pkg` directory beside `build.zig`; this
+must not modify the verified source. Each build-script invocation refreshes the
+private copy, while preserving compilation caches outside it. The Zig child gets
+a Git discovery ceiling at `OUT_DIR` to avoid Huterm's enclosing release tags.
 
 This is a narrow native-source exception to the Cargo registry-only policy.
-The safe wrapper remains a registry dependency. The sys crate uses a reviewed
-local path patch of that same published version. The native archive has an
+The safe wrapper remains a registry dependency with Kitty graphics disabled.
+The sys crate backports upstream's Zig 0.16 migration and matching generated
+bindings. Do not enable the wrapper's `kitty-graphics` feature with this pair:
+its temporary-file accessors still pass a boolean, while the new native API
+expects a directory string. Huterm does not compile those accessors.
+The sys crate uses a reviewed local path patch of that same published version.
+The native archive has an
 immutable revision and SHA-256; Zig dependencies use the content hashes in
 that reviewed source. Zig may download application-related lazy packages during
 build

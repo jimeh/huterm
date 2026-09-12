@@ -4,10 +4,13 @@ These notices accompany the statically linked Ghostty VT engine.
 `provenance.json` records the origin and checksum of each notice.
 
 The Rust wrappers are libghostty-vt and libghostty-vt-sys 0.2.1. Their source
-revision is 46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0. The native source is Ghostty
-a887df42c56f6de86c0fe6da9c4eeca37931e083, built with Zig 0.15.2.
+revision is 46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0, with the sys crate's
+[reviewed patch stack](../vendor/README.md#libghostty-vt-sys-cpu-backport)
+including the Zig 0.16 migration. The native source is Ghostty
+20c3eae04dee606349eb21e2dd0293b203d47179, built with Zig 0.16.0.
 
-The VT build includes Ghostty, uucode 0.2.0 (including Unicode and UTF-8 helper
+The VT build includes Ghostty, uucode 0.2.0 at
+2826a37a4562284fdacd8fa029d49509cc9bffcd (including Unicode and UTF-8 helper
 notices), simdutf 9.0.0, and Highway 66486a10623fa0d72fe91260f96c892e41aceb06.
 The vendored simdutf header identifies version 9.0.0; its package manifest's
 5.2.8 label is stale. MIT is selected where an upstream dual license permits it.

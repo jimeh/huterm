@@ -8,7 +8,8 @@ Each patch has a stable name, a description, and an upstream link when available
 Keep each coherent fix together. GPUI has separate file-drop and explicit-float
 patches, plus hidden-window creation, X11 native-handle, application-lifetime,
 and macOS offscreen-display and per-window frame-constraint fixes. The sys crate
-has separate CPU, build-script watch-path, and license patches.
+has separate CPU, build-script watch-path, license, Zig 0.16 migration, and
+build-source staging patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -165,11 +166,33 @@ All published files are retained unchanged except `build.rs`; Cargo's local
 existing reviewed binding notice in `third-party/ghostty`. Huterm uses the MIT
 option of the crate's `MIT OR Apache-2.0` license.
 
-The safe wrapper remains registry version 0.2.1, native Ghostty remains
-`a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig remains 0.15.2. No current
-upstream bindings or native API changes are included. The root Cargo patch
-selects this local crate; its source identity invalidates old registry-built
-native artifacts without deleting the rest of the Cargo cache.
+The safe wrapper remains registry version 0.2.1 with default features disabled.
+The `zig-016` patch backports upstream commit
+[`6111c4d72f11f0a1894cf3c5943b9ee25a6d0c61`](https://github.com/Uzaaft/libghostty-rs/commit/6111c4d72f11f0a1894cf3c5943b9ee25a6d0c61):
+native Ghostty advances to `20c3eae04dee606349eb21e2dd0293b203d47179` with
+matching generated bindings and Zig 0.16.0. This includes the later upstream
+[`memset` C ABI fix](https://github.com/ghostty-org/ghostty/commit/20c3eae04dee606349eb21e2dd0293b203d47179).
+The initial migration pin corrupted Rust hash-table control bytes when `memset`
+received a negative fill value. The public VT headers are unchanged between the
+migration and fixed pins. That native revision includes Xcode
+27 compatibility headers and native Apple linking support. Preserve the other
+three patches, which address independent build and packaging behavior.
+
+The `build-source-staging` patch creates a fresh private source copy under
+`OUT_DIR` before invoking Zig. Zig 0.16 writes mutable `zig-pkg` dependencies
+beside `build.zig`, so building in the verified source would invalidate its hash.
+The copy omits Git metadata, dereferences file symlinks, and sets the Zig child's
+Git discovery ceiling at canonical `OUT_DIR`. Compilation caches stay outside
+the refreshed copy. The build-script tests run through `test:build-toolchain`
+and the scripting suite.
+
+The wrapper's Kitty graphics feature must remain disabled for this backport.
+Its temporary-file accessors use the old boolean ABI; the new native API expects
+a directory string. Those accessors are not compiled in Huterm. Revisit this
+constraint when upgrading to published matching wrappers.
+
+The root Cargo patch selects this local crate. The build-script change causes
+Cargo to rebuild native artifacts without deleting the rest of the Cargo cache.
 
 Remove this directory and the Cargo patch when a reviewed published release
 provides this CPU fix and is compatible with the selected native revision and
