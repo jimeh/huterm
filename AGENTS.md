@@ -144,6 +144,9 @@ for uncovered behavior, visual checks, and investigation, then turn useful
 manual reproductions into automated regression checks where practical. Physical
 device behavior and unsupported IMEs may still require manual testing; state
 those coverage limits explicitly.
+CI invokes `ci:smoke:build` separately after the workflow's dependency-preparation
+step. When a smoke binary gains a native compile-time dependency, prepare it in
+that workflow step as well as in the developer-facing smoke task.
 
 The pre-commit hook runs staged-path formatting and Markdown checks, then
 triggers whole-workspace Clippy or workflow checks only for relevant staged

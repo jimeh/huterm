@@ -174,10 +174,12 @@ the temporary Actions artifact.
 ## Manual recovery
 
 To recover an existing draft release, run the same workflow with `publish`
-checked. Enter the exact 40-character SHA, `v`-prefixed tag, and version from
-that draft. The workflow revalidates the release and rebuilds the artifacts. It
-replaces the ten expected assets when they already exist, but refuses to
-publish if the draft contains any unexpected asset.
+checked and select that release's exact `v`-prefixed tag as the workflow ref.
+Enter the exact 40-character SHA, tag, and version from that draft. The tag must
+also be allowed by the `release` environment's deployment rules. The workflow
+revalidates this source identity before rebuilding the artifacts, replaces the
+ten expected assets when they already exist, and refuses to publish if the
+draft contains any unexpected asset.
 
 ## Linux package contract
 

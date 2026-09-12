@@ -245,7 +245,9 @@ jobs:
           echo "HUTERM_SMOKE_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Prepare desktop smoke dependencies
-        run: mise run ghostty:prepare
+        run: |
+          mise run ghostty:prepare
+          mise run sparkle:prepare
 
       - name: Compile desktop smoke binaries
         run: mise run ci:smoke:build

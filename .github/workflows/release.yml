@@ -90,6 +90,23 @@ jobs:
             exit 1
           fi
 
+          # Fail before expensive builds if the workflow identity cannot issue
+          # attestations for this release source.
+          if [[ "$RELEASE_PUBLISH" == true ]]; then
+            if [[ "$GITHUB_SHA" != "$RELEASE_SHA" ]]; then
+              echo "workflow source SHA $GITHUB_SHA does not match release SHA $RELEASE_SHA" >&2
+              exit 1
+            fi
+            if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+              :
+            elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]; then
+              :
+            else
+              echo "publishing attestations requires the normal main ref or an exact-tag recovery dispatch" >&2
+              exit 1
+            fi
+          fi
+
           # Manual verification may build the exact branch commit chosen at dispatch.
           if [[ "$RELEASE_PUBLISH" == false && "$GITHUB_EVENT_NAME" == workflow_dispatch &&
                 "$GITHUB_REF" == refs/heads/* && "$RELEASE_SHA" == "$GITHUB_SHA" ]]; then

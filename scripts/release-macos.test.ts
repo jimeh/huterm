@@ -129,14 +129,18 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
       ["false", "push", "refs/heads/fix", inputs.sha, "behind", 1],
       ["false", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "behind", 1],
       ["false", "workflow_dispatch", "refs/heads/fix", "b".repeat(40), "behind", 1],
-      ["true", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 0],
+      ["true", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 1],
+      ["true", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "identical", 0],
+      ["true", "push", "refs/heads/main", inputs.sha, "identical", 0],
+      ["true", "push", "refs/heads/main", "b".repeat(40), "ahead", 1],
       ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 0],
       ["false", "workflow_dispatch", "refs/heads/fix", "invalid", "ahead", 1],
     ] as const) {
       const result = Bun.spawnSync(["bash", "-c", script], { env: {
         ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,
         GITHUB_EVENT_NAME: event, GITHUB_REF: ref, GITHUB_SHA: inputs.sha,
-        RELEASE_SHA: sha, GITHUB_REPOSITORY: "fixture/huterm", TEST_MAIN_STATUS: status,
+        RELEASE_SHA: sha, RELEASE_TAG: inputs.tag,
+        GITHUB_REPOSITORY: "fixture/huterm", TEST_MAIN_STATUS: status,
         GITHUB_OUTPUT: join(directory, "source-output"),
       } });
       expect(result.exitCode, `${publish} ${event} ${ref} ${sha}: ${result.stderr}`).toBe(expected);
@@ -280,6 +284,10 @@ test("the final archive is created only after notarization and stapled-app verif
 
 test("release-please can update explicit package versions and centralized exact pins", async () => {
   const rootManifest = await readFile(resolve(repoRoot, "Cargo.toml"), "utf8");
+  const releasePleaseConfig = JSON.parse(await readFile(resolve(repoRoot, ".github/release-please-config.json"), "utf8")) as {
+    packages: { ".": { "extra-files": { path: string; type: string }[] } };
+  };
+  const macosInfo = await readFile(resolve(repoRoot, "assets/macos/Info.plist"), "utf8");
   const rootVersion = await rootPackageVersion();
   expect(rootVersion).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   expect(rootManifest).toContain('[package]\nname = "huterm"');
@@ -292,6 +300,23 @@ test("release-please can update explicit package versions and centralized exact 
     expect(manifest).toContain(`version = "${rootVersion}"`);
     expect(manifest).not.toMatch(/^version\.workspace = true$/m);
   }
+  expect(releasePleaseConfig.packages["."]["extra-files"]).toContainEqual({
+    type: "generic",
+    path: "assets/macos/Info.plist",
+  });
+  expect(macosInfo).toContain(`<string>${rootVersion}</string> <!-- x-release-please-version -->`);
+});
+
+test("macOS CI prepares Sparkle before compiling updater smokes", async () => {
+  const workflow = Bun.YAML.parse(await readFile(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+    jobs: { smoke: { steps: { name?: string; run?: string }[] } };
+  };
+  const steps = workflow.jobs.smoke.steps;
+  const prepare = steps.findIndex(step => step.name === "Prepare desktop smoke dependencies");
+  const compile = steps.findIndex(step => step.name === "Compile desktop smoke binaries");
+  expect(prepare).toBeGreaterThan(-1);
+  expect(compile).toBeGreaterThan(prepare);
+  expect(steps[prepare]!.run).toContain("mise run sparkle:prepare");
 });
 
 test("release workflows use the documented repository credential names", async () => {

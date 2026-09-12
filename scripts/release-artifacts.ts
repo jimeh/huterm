@@ -113,6 +113,20 @@ function publicKeyObject(publicKey: string) {
   return createPublicKey({ key: Buffer.concat([ed25519SpkiPrefix, raw]), format: "der", type: "spki" });
 }
 
+export function sparklePublicKeyFromPrivateKey(privateKey: string): string {
+  const seed = Buffer.from(privateKey, "base64");
+  if (seed.length !== 32 || seed.toString("base64") !== privateKey) {
+    throw new Error("Sparkle private key must be canonical base64 for a 32-byte Ed25519 seed");
+  }
+  const privateKeyObject = createPrivateKey({
+    key: Buffer.concat([ed25519Pkcs8Prefix, seed]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const publicKeyDer = createPublicKey(privateKeyObject).export({ format: "der", type: "spki" });
+  return publicKeyDer.subarray(-32).toString("base64");
+}
+
 export function validateAppcast(
   bytes: Uint8Array,
   archiveBytes: Uint8Array,
@@ -134,9 +148,11 @@ export function validateAppcast(
   const enclosure = enclosureAttributes(xml);
   if (enclosure.url !== expectedUrls.archive) throw new Error("appcast enclosure URL does not match the immutable release asset");
   if (enclosure.length !== String(archiveBytes.byteLength)) throw new Error("appcast enclosure length does not match the archive");
-  const itemLinks = elementText(xml, "link").filter(link => link.includes("/releases/tag/"));
+  const item = /<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/.exec(xml);
+  if (!item) throw new Error("appcast update item is malformed");
+  const itemLinks = elementText(item[1]!, "link");
   if (itemLinks.length !== 1 || itemLinks[0] !== expectedUrls.release) {
-    throw new Error("appcast release link does not match the immutable GitHub release");
+    throw new Error("appcast release link does not match the expected release URL");
   }
   const archiveSignature = enclosure["sparkle:edSignature"];
   if (!archiveSignature) throw new Error("appcast enclosure lacks an EdDSA signature");
@@ -168,6 +184,9 @@ export async function generateAppcast(
   publicKey: string,
   privateKey: string,
 ): Promise<void> {
+  if (sparklePublicKeyFromPrivateKey(privateKey) !== publicKey) {
+    throw new Error("Sparkle private key does not match the embedded public key");
+  }
   const temporary = await mkdtemp(join(tmpdir(), "huterm-appcast-"));
   try {
     const archive = join(dist, archiveName);
@@ -199,13 +218,7 @@ export async function generateFixtureAppcast(
 ): Promise<void> {
   const seed = randomBytes(32);
   const privateKey = seed.toString("base64");
-  const privateKeyObject = createPrivateKey({
-    key: Buffer.concat([ed25519Pkcs8Prefix, seed]),
-    format: "der",
-    type: "pkcs8",
-  });
-  const publicKeyDer = createPublicKey(privateKeyObject).export({ format: "der", type: "spki" });
-  const publicKey = publicKeyDer.subarray(-32).toString("base64");
+  const publicKey = sparklePublicKeyFromPrivateKey(privateKey);
   const archive = join(dist, archiveName);
   const archiveBytes = await readFile(archive);
   const signature = (await runSecretCaptured(
