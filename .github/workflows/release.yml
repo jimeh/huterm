@@ -208,7 +208,7 @@ jobs:
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
 
       - name: Install Cargo release tools
         run: |

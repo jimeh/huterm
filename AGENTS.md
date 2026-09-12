@@ -126,8 +126,10 @@ tools for each job. `mise.lock` also records the Rust version, so run
 `mise install` and commit the lock after any toolchain bump; otherwise CI
 fails to resolve the tool.
 
-Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
-CI cache can restore its Rust install symlink without the corresponding rustup
+Keep `verify:toolchain` as a serial preflight before `verify:parallel`. CI uses
+`ci:toolchain`, which runs that preflight and reinstalls the Rust toolchain once
+if rustup reports a corrupt component immediately after installation. Mise's CI
+cache can restore its Rust install symlink without the corresponding rustup
 toolchain, and parallel Cargo invocations then race while materializing it.
 On GitHub-hosted macOS runners, set `RUSTUP_HOME` and `CARGO_HOME` under
 `/Users/runner/.local/share/mise` and disable the Mise cache. Mise-specific home

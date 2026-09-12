@@ -50,6 +50,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                                 })?;
                                 return Ok(());
                             }
+                            if command == "reset_link_diagnostics" {
+                                reset_link_diagnostics(cx)?;
+                                return Ok(());
+                            }
                             let spec = huterm_protocol::lookup(command.trim())
                                 .context("unknown command")?;
                             let window = cx.windows().first().copied();
@@ -87,6 +91,27 @@ pub(crate) fn run() -> anyhow::Result<()> {
         })
         .detach();
     })
+}
+
+fn reset_link_diagnostics(cx: &mut gpui::App) -> anyhow::Result<()> {
+    let handle = cx.windows().first().copied().context("no window")?;
+    handle.update(cx, |root, _, cx| {
+        let workspace = root
+            .downcast::<super::WorkspaceView>()
+            .map_err(|_| anyhow::anyhow!("window is not a workspace"))?;
+        let terminal = workspace
+            .read(cx)
+            .active_view()
+            .context("workspace has no active terminal")?;
+        terminal.update(cx, |view, _| {
+            view.link_requests = 0;
+            view.link_completions = 0;
+            view.link_max_lookup = std::time::Duration::ZERO;
+            view.link_max_latency = std::time::Duration::ZERO;
+        });
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(())
 }
 
 fn publish(directory: &Path, name: &str, value: &str) {

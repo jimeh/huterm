@@ -356,6 +356,18 @@ run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-co
 description = "Materialize the pinned Rust toolchain before parallel checks"
 run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
 
+[tasks."ci:toolchain"]
+description = "Verify CI's Rust toolchain, reinstalling one corrupt bootstrap"
+run = '''
+if mise run verify:toolchain; then
+  exit 0
+fi
+echo "Rust toolchain verification failed; reinstalling it once" >&2
+rustup toolchain uninstall "$RUSTUP_TOOLCHAIN"
+mise install --locked --force --jobs=1 rust
+mise run verify:toolchain
+'''
+
 [tasks."verify:parallel"]
 hide = true
 depends = ["check", "test", "license", "audit:scripts", "ci:workflows", "vendor:check"]

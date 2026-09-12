@@ -172,9 +172,11 @@ for scheduler and host variation. CI runs it alongside the existing scroll gates
 
 `smoke:macos-integration` and `smoke:linux-integration` enforce at most one
 snapshot/lookup in flight and one pending intent, no idle retries after output
-settles, and completed hover latency at most 200 ms. They drive continuous URL
-output and verify a raw PTY input acknowledgment. These elapsed-time limits
-catch stalls; they do not establish a frame-time guarantee. Native file-drop
+settles, and completed hover latency at most 200 ms. A single exceeded latency
+gets one idle confirmation sample so host scheduling cannot fail an otherwise
+responsive run. They drive continuous URL output and verify a raw PTY input
+acknowledgment. These elapsed-time limits catch repeatable stalls; they do not
+establish a frame-time guarantee. Native file-drop
 protocol checks complement separate Finder/file-manager QA. Use
 `smoke:manual-integration -- alacritty` or `-- ghostty` for a raw recorder that
 never executes dropped paths.
