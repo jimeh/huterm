@@ -9,7 +9,7 @@ pub(crate) mod integration_smoke;
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
 mod quake_windows;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
 use super::*;
@@ -18,7 +18,7 @@ use crate::config::TabPosition;
 use crate::fullscreen::{Effect, FullscreenController, ToggleIntent};
 #[cfg(target_os = "macos")]
 use crate::native_quit;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_core::{
@@ -304,7 +304,7 @@ struct Desktop {
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
@@ -419,7 +419,7 @@ fn run_app_command(
 }
 
 fn check_for_updates(cx: &mut App) -> Result<CommandOutcome, CommandError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     {
         cx.global::<Desktop>()
             .updater
@@ -427,22 +427,22 @@ fn check_for_updates(cx: &mut App) -> Result<CommandOutcome, CommandError> {
             .map_err(CommandError::Unavailable)?;
         Ok(CommandOutcome::Accepted)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
     {
         let _ = cx;
         Err(unsupported_update_error())
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
 fn unsupported_update_error() -> CommandError {
     CommandError::Unavailable(
-        "self-updates are currently available only in packaged macOS builds"
+        "self-updates are available only in updater-enabled macOS release builds"
             .to_owned(),
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
 fn apply_update_config(cx: &App, config: &Config) {
     if let Err(error) =
         cx.global::<Desktop>().updater.apply_config(config.updates)
@@ -506,7 +506,7 @@ pub(super) fn run_with_startup(
     });
     application.run(move |cx| {
         let (reserved, config_error) = install_startup_keymap(cx, &loaded);
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         let updater =
             native_updater::Updater::initialize(loaded.config.updates);
         cx.set_global(Desktop {
@@ -522,7 +522,7 @@ pub(super) fn run_with_startup(
             pending_spawns: 0,
             quit_pending: false,
             external_drag_window: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
         install_native_quit(cx);
@@ -2416,7 +2416,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
             });
             let mut keymap_status = None;
             let result = result.map(|(config, family, metrics, compiled)| {
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", feature = "macos-updater"))]
                 apply_update_config(cx, &config);
                 cx.global_mut::<Desktop>().config = config.clone();
                 cx.global_mut::<Desktop>().config_error = None;
@@ -3229,13 +3229,13 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
     #[test]
-    fn check_for_updates_reports_packaged_macos_requirement() {
+    fn check_for_updates_reports_updater_build_requirement() {
         assert_eq!(
             unsupported_update_error(),
             CommandError::Unavailable(
-                "self-updates are currently available only in packaged macOS builds"
+                "self-updates are available only in updater-enabled macOS release builds"
                     .to_owned()
             )
         );

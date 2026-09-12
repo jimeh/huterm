@@ -280,8 +280,19 @@ bun scripts/check-scroll-benchmark.ts "$report"
 '''
 
 [tasks."package:macos"]
-description = "Build and verify the universal macOS Huterm.app bundle"
+description = "Build and verify the Sparkle-free universal macOS Huterm.app bundle"
+run = "mise run package:macos:bundle"
+
+[tasks."package:macos-release"]
+description = "Build and verify the updater-enabled universal macOS release bundle"
 depends = ["sparkle:prepare"]
+run = [
+  "bun scripts/release-macos.ts validate-updater-inputs",
+  "HUTERM_MACOS_UPDATER=1 mise run package:macos:bundle",
+]
+
+[tasks."package:macos:bundle"]
+hide = true
 run = '''
 set -eu
 if [ "$(uname -s)" != Darwin ]; then
@@ -290,7 +301,9 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 cargo packager --release --formats app
 bundle="target/release/bundle/Huterm.app"
-bun scripts/release-macos.ts prepare-package "$bundle"
+if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
+  bun scripts/release-macos.ts prepare-updater-package "$bundle"
+fi
 plist="$bundle/Contents/Info.plist"
 executable="$bundle/Contents/MacOS/huterm"
 metadata="$(cargo metadata --no-deps --format-version 1)"
@@ -323,7 +336,11 @@ if [ ! -x "$executable" ]; then
 fi
 lipo "$executable" -verify_arch arm64
 lipo "$executable" -verify_arch x86_64
-bun scripts/release-macos.ts verify-package-config "$bundle"
+if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
+  bun scripts/release-macos.ts verify-package-config "$bundle"
+else
+  bun scripts/release-macos.ts verify-local-package-config "$bundle"
+fi
 echo "verified $bundle ($identifier, version $version, arm64 + x86_64)"
 '''
 
@@ -376,7 +393,6 @@ description = "Measure release engine processing and snapshot elapsed times"
 run = "bash scripts/build-exec.sh cargo test --release --locked -p huterm-core engine_benchmark -- --ignored --nocapture --test-threads=1"
 
 [tasks."ghostty:prepare"]
-depends = ["sparkle:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 
@@ -414,11 +430,16 @@ run = "HUTERM_BENCH_ENGINE=ghostty mise run bench:renderer"
 
 [tasks."package:build:macos"]
 hide = true
-depends = ["ghostty:prepare", "sparkle:prepare", "package:targets:macos", "icons:check"]
+depends = ["ghostty:prepare", "package:targets:macos", "icons:check"]
 run = '''
 set -eu
-bash scripts/build-exec.sh cargo auditable build --release --locked --target aarch64-apple-darwin -p huterm
-bash scripts/build-exec.sh cargo auditable build --release --locked --target x86_64-apple-darwin -p huterm
+if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
+  bash scripts/build-exec.sh cargo auditable build --release --locked --target aarch64-apple-darwin -p huterm --features macos-updater
+  bash scripts/build-exec.sh cargo auditable build --release --locked --target x86_64-apple-darwin -p huterm --features macos-updater
+else
+  bash scripts/build-exec.sh cargo auditable build --release --locked --target aarch64-apple-darwin -p huterm
+  bash scripts/build-exec.sh cargo auditable build --release --locked --target x86_64-apple-darwin -p huterm
+fi
 mkdir -p target/universal-apple-darwin/release
 lipo -create target/aarch64-apple-darwin/release/huterm target/x86_64-apple-darwin/release/huterm -output target/universal-apple-darwin/release/huterm
 lipo target/universal-apple-darwin/release/huterm -verify_arch arm64
@@ -507,26 +528,26 @@ depends = ["scripts:install"]
 run = "bun audit"
 
 [tasks."smoke:macos-menus"]
-depends = ["ghostty:prepare"]
+depends = ["ghostty:prepare", "sparkle:prepare"]
 description = "Verify native AppKit menu shortcuts at startup and reload"
 run = '''
 if [ "$(uname -s)" != Darwin ]; then
   echo "Native menu smoke skipped: AppKit requires macOS"
   exit 0
 fi
-bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_menus_smoke
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --features macos-updater --example native_menus_smoke
 bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
 '''
 
 [tasks."smoke:macos-updater"]
-depends = ["ghostty:prepare"]
+depends = ["ghostty:prepare", "sparkle:prepare"]
 description = "Verify packaged Sparkle startup and application-command dispatch"
 run = '''
 if [ "$(uname -s)" != Darwin ]; then
   echo "Native updater smoke skipped: Sparkle requires macOS"
   exit 0
 fi
-bash scripts/build-exec.sh cargo build --locked --example native_updater_smoke
+bash scripts/build-exec.sh cargo build --locked --features macos-updater --example native_updater_smoke
 bun scripts/check-native-updater.ts target/debug/examples/native_updater_smoke
 '''
 
@@ -624,7 +645,7 @@ run = "mise run test:rust"
 [tasks."ci:smoke"]
 description = "Run CI desktop smokes for the current platform"
 depends = ["verify:toolchain"]
-run = ["mise run ghostty:prepare", "mise run ci:smoke:build", "mise run ci:smoke:run"]
+run = ["mise run ghostty:prepare", "mise run sparkle:prepare", "mise run ci:smoke:build", "mise run ci:smoke:run"]
 
 [tasks."ci:smoke:build"]
 description = "Compile CI desktop smoke binaries for the current platform"
@@ -632,11 +653,11 @@ run = '''
 set -eu
 case "$(uname -s)" in
   Darwin)
-    bash scripts/build-exec.sh cargo build --locked --example native_updater_smoke
+    bash scripts/build-exec.sh cargo build --locked --features macos-updater --example native_updater_smoke
+    bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --features macos-updater --example native_menus_smoke
     bash scripts/build-exec.sh cargo build --locked \
       -p huterm-gpui \
       --example renderer_smoke \
-      --example native_menus_smoke \
       --example native_input_smoke \
       --example integration_smoke \
       --example native_quit_smoke \

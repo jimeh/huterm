@@ -157,29 +157,27 @@ tests, license notice, and `.gitignore` entry. Add the new non-Cargo dependency
 to repository license and source-policy checks rather than assuming
 `cargo deny` covers it.
 
-Embed `Sparkle.framework` at
-`Huterm.app/Contents/Frameworks/Sparkle.framework` and link the macOS executable
-through cargo-packager's macOS framework configuration, which preserves the
-versioned symlinks. Since Huterm is not sandboxed, remove the unused Sparkle XPC
-services from the copied application bundle before signing. Do not alter the
-verified `.native/sparkle` source tree. Retain the normal updater application
-and autoupdate helper.
+Keep ordinary development builds and `mise run package:macos` Sparkle-free. A
+root `macos-updater` Cargo feature owns the native bridge, updater menu item, and
+framework linkage; it is disabled by default and forwarded to `huterm-gpui`.
+Only updater smokes and `package:macos-release` enable it.
 
-Weak-link the verified framework and resolve its Objective-C classes through the
-runtime. This lets unpackaged builds report that updates are unavailable when
-Sparkle is absent without adding a custom `dlopen` path. Add a root-package
-`build.rs` for the final `huterm` executable's framework search path,
-`-weak_framework Sparkle`, and
-`@executable_path/../Frameworks` runtime search path. Do not emit the rpath from
-`huterm-gpui`, since Cargo does not propagate a dependency build script's raw
-link arguments into the root executable. Development and test launches point
-`DYLD_FRAMEWORK_PATH` at the verified `.native/sparkle` framework when they need
-to exercise the controller.
+The release package task copies `Sparkle.framework` from the verified
+distribution to `Huterm.app/Contents/Frameworks/Sparkle.framework` with its
+versioned symlinks intact, adds the reviewed license, and injects the production
+feed and committed public key into the package copy of `Info.plist`. Since
+Huterm is not sandboxed, remove the unused Sparkle XPC services from that copy
+before signing. Do not alter the verified `.native/sparkle` source tree. Retain
+the normal updater application and autoupdate helper.
 
-Add `sparkle:prepare` to every Mise task that compiles or launches `huterm-gpui`
-on macOS, including build, Clippy, typecheck, tests, smokes, and packaging. The
-corresponding macOS CI jobs must materialize Sparkle before the first Cargo
-invocation. Linux tasks remain independent of it.
+Link updater-enabled executables to the verified framework and add
+`@executable_path/../Frameworks` as their runtime search path. Emit those link
+arguments from the root package's `build.rs`, because Cargo does not propagate a
+dependency build script's raw link arguments into the root executable.
+Development and test launches that exercise the controller point
+`DYLD_FRAMEWORK_PATH` at the verified framework. Only tasks that enable the
+feature prepare Sparkle; ordinary builds, Clippy, tests, and local packaging
+remain independent of it.
 
 Package checks must prove:
 
@@ -226,7 +224,7 @@ with no arguments. Route it through the existing `InvokeApp` action and
 menu is the discoverable macOS entry point, and an unbound command cannot steal
 terminal input.
 
-Add these Info.plist values:
+Inject these values into the updater-enabled release bundle's Info.plist:
 
 - `CFBundleVersion` equals the three-part Cargo package version and changes only
   when Release Please changes that version;
@@ -236,10 +234,12 @@ Add these Info.plist values:
 - `SUVerifyUpdateBeforeExtraction` is true; and
 - `SURequireSignedFeed` is true.
 
-Do not put `SUEnableAutomaticChecks` or `SUScheduledCheckInterval` in the plist.
-Their absence is required for the optional Huterm config and Sparkle's
-second-launch consent behavior to coexist. Continue to leave
-`SUAutomaticallyUpdate` unset so its default remains false.
+Do not put any Sparkle key in the source `assets/macos/Info.plist`; ordinary
+packages must remain updater-free. Do not inject `SUEnableAutomaticChecks` or
+`SUScheduledCheckInterval` into release bundles. Their absence is required for
+the optional Huterm config and Sparkle's second-launch consent behavior to
+coexist. Continue to leave `SUAutomaticallyUpdate` unset so its default remains
+false.
 
 Do not add new application entitlements. If Sparkle proves it needs one in the
 packaged application, stop and review that requirement against the existing
@@ -520,7 +520,8 @@ AppImage and its update metadata in that delivery.
   after draft asset verification but before publication.
 - Run `mise run check:scripts`, focused Rust tests, `mise run package:macos`,
   the updater and menu smokes, `mise run smoke:macos-quit`, and finally
-  `mise run verify`.
+  `mise run verify`. Once the production public key is committed, also run
+  `mise run package:macos-release` and verify the updater-enabled bundle.
 
 ### Native release evidence
 

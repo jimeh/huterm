@@ -22,7 +22,7 @@ mod mouse;
 mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_quit;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
 mod native_updater;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod quake;
@@ -66,7 +66,7 @@ pub fn run_native_menu_smoke() {
 
 /// Runs the packaged Sparkle controller and command verification executable.
 #[doc(hidden)]
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "macos-updater"))]
 pub fn run_native_updater_smoke() -> anyhow::Result<()> {
     desktop::updater_smoke::run()
 }
@@ -147,14 +147,10 @@ mod package_tests {
             packager["macos"]["minimumSystemVersion"].as_str(),
             Some("10.15.7")
         );
-        assert_eq!(
-            packager["macos"]["frameworks"][0].as_str(),
-            Some(".native/sparkle/distribution/Sparkle.framework")
-        );
+        assert!(packager["macos"].get("frameworks").is_none());
         assert!(packager["resources"].as_array().is_some_and(|resources| {
-            resources.iter().any(|resource| {
-                resource["src"].as_str() == Some("third-party/sparkle/LICENSE")
-                    && resource["target"].as_str() == Some("Sparkle-LICENSE")
+            resources.iter().all(|resource| {
+                resource["target"].as_str() != Some("Sparkle-LICENSE")
             })
         }));
         let icon = include_bytes!("../../../assets/Huterm.icns");

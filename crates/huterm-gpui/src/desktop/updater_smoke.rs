@@ -17,7 +17,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
             eprintln!("NATIVE_UPDATER_SMOKE failed: {error:#}");
             std::process::exit(1);
         }
-        cx.quit();
+        // A live Sparkle check can keep the disposable AppKit helper running.
+        // All smoke assertions are complete once their markers are flushed.
+        std::process::exit(0);
     })
 }
 
