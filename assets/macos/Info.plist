@@ -5,7 +5,7 @@
 	<key>CFBundleIconName</key>
 	<string>Huterm</string>
 	<key>CFBundleVersion</key>
-	<string>0.6.0</string> <!-- x-release-please-version -->
+	<string>0.7.0</string> <!-- x-release-please-version -->
 	<key>NSAppBundlesUsageDescription</key>
 	<string>Huterm or a program running within it would like to access files inside other applications.</string>
 	<key>NSAppDataUsageDescription</key>

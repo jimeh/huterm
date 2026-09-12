@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/jimeh/huterm/compare/v0.6.0...v0.7.0) (2026-09-12)
+
+
+### Features
+
+* add command palette and argument pickers ([#91](https://github.com/jimeh/huterm/issues/91)) ([d6327d4](https://github.com/jimeh/huterm/commit/d6327d4c8e7e7f77a22f2af6aee83e06f0f9ab5d))
+
 ## [0.6.0](https://github.com/jimeh/huterm/compare/v0.5.0...v0.6.0) (2026-09-12)
 
 
