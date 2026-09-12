@@ -132,7 +132,9 @@ toolchain, and parallel Cargo invocations then race while materializing it.
 On GitHub-hosted macOS runners, set `RUSTUP_HOME` and `CARGO_HOME` under
 `/Users/runner/.local/share/mise` and disable the Mise cache. Mise-specific home
 variables do not reach nested Cargo tool installs, which can otherwise race in
-the image's shared Rustup state.
+the image's shared Rustup state. Install `cargo:*` tools serially only after
+`verify:toolchain`; a parallel Mise install can publish the Rust tool before its
+Cargo component is dispatchable.
 
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and

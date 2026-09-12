@@ -204,8 +204,16 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager syft pipx:spdx-tools
+          install_args: rust bun zig syft pipx:spdx-tools
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run verify:toolchain
+
+      - name: Install Cargo release tools
+        run: |
+          mise install --locked cargo:cargo-auditable
+          mise install --locked cargo:cargo-packager
 
       - name: Check platform prerequisites
         run: mise run doctor
