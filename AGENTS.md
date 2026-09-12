@@ -440,7 +440,9 @@ Give confirmation dialogs an explicit viewport-clamped width before measuring
 wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
 let buttons escape the panel; keep text and button containers nonshrinking.
 Ghostty builds use libghostty-vt/sys 0.2.1, native revision
-`a887df42c56f6de86c0fe6da9c4eeca37931e083`, and Zig 0.15.2. Run
+`20c3eae04dee606349eb21e2dd0293b203d47179`, and Zig 0.16.0. Keep its
+`memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
+values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
 full native source tree against `scripts/ghostty-source.json`. Keep that source,
 the binding versions, and bundled notices aligned. All builds include both
@@ -488,6 +490,10 @@ Keep Cargo's Git discovery ceiling at `.native/ghostty`. The extracted source
 has no repository, and Ghostty otherwise discovers Huterm's enclosing release
 tag and panics because it does not match Ghostty's version. The ceiling preserves
 Git discovery from Huterm's root and uses Ghostty's archive-version fallback.
+Zig 0.16 creates mutable `zig-pkg` dependencies beside `build.zig`. Build from a
+fresh private source copy under the sys crate's `OUT_DIR`, with the Zig child's
+Git discovery ceiling set there. Keep the verified `.native/ghostty/source`
+unchanged and compilation caches outside the refreshed copy.
 Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
 Git. Commit hooks export repository and index paths that override a fixture's
 working directory and can redirect its commits into the caller's worktree.
@@ -504,15 +510,14 @@ loop. Gate completion on every expected panel, then cross that startup boundary
 before requesting platform quit; a fixed post-launch readiness timer is not paint
 evidence.
 
-Build commands use `scripts/build-exec.sh` to select Xcode 26 when the default
-macOS SDK is 27 or newer. Zig 0.15.2 otherwise fails linking its own build runner
-with undefined system symbols before compiling Ghostty. Preserve explicit
-`DEVELOPER_DIR` overrides; route new native build tasks through this wrapper or
-`mise run build:exec -- <command>`. Preparation cannot export this environment
-to a later Cargo task, so each native build invocation needs the wrapper.
+Build commands retain `scripts/build-exec.sh` as their shared entrypoint and
+preserve the selected Xcode, including explicit `DEVELOPER_DIR` overrides.
+The pinned Ghostty source and Zig 0.16 support Xcode 27 without SDK fallback or
+an `xcrun` shim. Check that `xcrun metal --version` actually runs: the launcher
+can exist even when Xcode's optional Metal Toolchain is missing.
 
 Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
-SDK wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
+build wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
 keep bunfig.toml's minimum release age aligned with the three-day policy.
 Run `mise run check:scripts` for tooling edits. Native source preparation uses
 Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
@@ -644,14 +649,6 @@ by `ci:smoke:run`.
 Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
 with the repository ruleset. These gates require every validation job and disable
 matrix fail-fast so each reports its own failure instead of cancelling its sibling.
-
-macOS SDK 26.5 can expose only arm64e in libSystem.tbd. Zig 0.15.2 cannot
-resolve arm64 system symbols against those stubs, even with Xcode 26 selected.
-The build wrapper selects installed stubs containing arm64-macos, or accepts
-HUTERM_ZIG_SDKROOT. Its scoped xcrun shim redirects only the SDK path query;
-Xcode and Metal tools remain selected normally. SDKROOT and Zig's --sysroot
-alone do not fix build-runner linking. Keep diagnostic Zig caches outside the
-verified native source tree.
 
 GPUI 0.2.2's X11 ConfigureNotify handler stores raw event origins, including
 parent-relative coordinates after a reparenting window manager restores a

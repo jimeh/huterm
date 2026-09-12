@@ -14,7 +14,7 @@ pinact = "4.1.1"
 rust = { version = "1.98.1", components = ["clippy", "rustfmt"], profile = "minimal" }
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.51.1"
-zig = "0.15.2"
+zig = "0.16.0"
 zizmor = "1.30.0"
 
 [tasks.setup]
@@ -36,7 +36,7 @@ if [ "$(uname -s)" = Darwin ]; then
     echo "select a complete Xcode installation with xcode-select" >&2
     exit 1
   fi
-  if ! xcrun --find metal >/dev/null 2>&1; then
+  if ! xcrun metal --version >/dev/null 2>&1; then
     echo "missing Xcode Metal Toolchain required for GPUI shaders" >&2
     echo "install it with: xcodebuild -downloadComponent MetalToolchain" >&2
     echo "see docs/agents/development.md for macOS setup" >&2
@@ -453,12 +453,12 @@ description = "Verify assembled release assets and native fixture signing withou
 run = "bun scripts/release-macos.ts verify-candidate"
 
 [tasks."build:exec"]
-description = "Run a command with a compatible macOS SDK"
+description = "Run a command with the selected toolchain"
 run = "bash scripts/build-exec.sh"
 
 [tasks."test:build-toolchain"]
-description = "Test Ghostty SDK selection"
-run = "bun test ./scripts/build-exec.test.ts"
+description = "Test build command and SDK preservation"
+run = "bun test ./scripts/build-exec.test.ts ./scripts/ghostty-build.test.ts"
 
 [tasks."scripts:install"]
 description = "Install locked TypeScript tooling dependencies"
@@ -476,7 +476,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/build-exec.sh && bash -n scripts/zig-sdk-bin/xcrun && bash -n scripts/linux/entrypoint.sh"
+run = "bash -n scripts/build-exec.sh && bash -n scripts/linux/entrypoint.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"

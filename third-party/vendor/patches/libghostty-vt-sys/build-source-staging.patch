@@ -1,0 +1,262 @@
+diff --git a/build.rs b/build.rs
+index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..c3ce056ff4dbeb2914e46680f3339df6dac31a1d 100644
+--- a/build.rs
++++ b/build.rs
+@@ -1,4 +1,7 @@
+ use std::env;
++use std::ffi::OsStr;
++use std::fs;
++use std::io::ErrorKind;
+ use std::path::{Path, PathBuf};
+ use std::process::Command;
+ 
+@@ -108,7 +111,7 @@ fn build_vendored(link_mode: LinkMode) {
+     let host = env::var("HOST").expect("HOST must be set");
+ 
+     // Locate ghostty source: env override > fetch into OUT_DIR.
+-    let ghostty_dir = match env::var("GHOSTTY_SOURCE_DIR") {
++    let ghostty_source_dir = match env::var("GHOSTTY_SOURCE_DIR") {
+         Ok(dir) => {
+             let p = PathBuf::from(dir);
+             assert!(
+@@ -120,6 +123,7 @@ fn build_vendored(link_mode: LinkMode) {
+         }
+         Err(_) => fetch_ghostty(&out_dir),
+     };
++    let ghostty_dir = stage_build_source(&ghostty_source_dir, &out_dir);
+ 
+     // Build libghostty-vt via zig.
+     let install_prefix = out_dir.join("ghostty-install");
+@@ -151,6 +155,7 @@ fn build_vendored(link_mode: LinkMode) {
+         .arg("--cache-dir")
+         .arg(&zig_cache_dir)
+         .current_dir(&ghostty_dir);
++    isolate_git_discovery(&mut build, &out_dir);
+ 
+     // Package managers can provide Ghostty's Zig package cache ahead of time
+     // and ask Zig to resolve packages from that immutable store path instead
+@@ -224,6 +229,79 @@ fn build_vendored(link_mode: LinkMode) {
+     emit_include_metadata(&[include_dir]);
+ }
+ 
++/// Copy the source into disposable build storage because Zig may write package
++/// metadata next to build.zig. Recreate it on every build-script invocation so
++/// no generated file can survive into the next native build.
++fn stage_build_source(source: &Path, out_dir: &Path) -> PathBuf {
++    let destination = out_dir.join("ghostty-build-source");
++    remove_existing(&destination);
++    copy_source_tree(source, &destination);
++    destination
++}
++
++fn remove_existing(path: &Path) {
++    match fs::symlink_metadata(path) {
++        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
++            fs::remove_dir_all(path)
++                .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
++        }
++        Ok(_) => {
++            fs::remove_file(path)
++                .unwrap_or_else(|error| panic!("failed to remove {}: {error}", path.display()));
++        }
++        Err(error) if error.kind() == ErrorKind::NotFound => {}
++        Err(error) => panic!("failed to inspect {}: {error}", path.display()),
++    }
++}
++
++fn copy_source_tree(source: &Path, destination: &Path) {
++    fs::create_dir_all(destination)
++        .unwrap_or_else(|error| panic!("failed to create {}: {error}", destination.display()));
++    let entries = fs::read_dir(source)
++        .unwrap_or_else(|error| panic!("failed to read {}: {error}", source.display()));
++    for entry in entries {
++        let entry = entry
++            .unwrap_or_else(|error| panic!("failed to read entry from {}: {error}", source.display()));
++        let name = entry.file_name();
++        if name == OsStr::new(".git") {
++            continue;
++        }
++        let source_entry = entry.path();
++        let destination_entry = destination.join(&name);
++        let metadata = fs::symlink_metadata(&source_entry)
++            .unwrap_or_else(|error| panic!("failed to inspect {}: {error}", source_entry.display()));
++        if metadata.is_dir() {
++            copy_source_tree(&source_entry, &destination_entry);
++            continue;
++        }
++        if metadata.file_type().is_symlink() {
++            let target = fs::metadata(&source_entry).unwrap_or_else(|error| {
++                panic!("failed to inspect symlink target {}: {error}", source_entry.display())
++            });
++            assert!(
++                target.is_file(),
++                "source symlink must resolve to a file: {}",
++                source_entry.display()
++            );
++        } else if !metadata.is_file() {
++            panic!("unsupported source entry: {}", source_entry.display());
++        }
++        fs::copy(&source_entry, &destination_entry).unwrap_or_else(|error| {
++            panic!(
++                "failed to copy {} to {}: {error}",
++                source_entry.display(),
++                destination_entry.display()
++            )
++        });
++    }
++}
++
++fn isolate_git_discovery(command: &mut Command, out_dir: &Path) {
++    let ceiling = fs::canonicalize(out_dir)
++        .unwrap_or_else(|error| panic!("failed to resolve {}: {error}", out_dir.display()));
++    command.env("GIT_CEILING_DIRECTORIES", ceiling);
++}
++
+ fn warn_unused_xcframework(lib_dir: &Path) {
+     let xcframework = lib_dir.join("ghostty-vt.xcframework");
+     if xcframework.exists() {
+@@ -407,3 +485,144 @@ fn zig_target(target: &str) -> String {
+     };
+     value.to_owned()
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::process::Stdio;
++    use std::time::{SystemTime, UNIX_EPOCH};
++
++    struct TestDirectory(PathBuf);
++
++    impl TestDirectory {
++        fn new(name: &str) -> Self {
++            let unique = SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .expect("clock must follow the Unix epoch")
++                .as_nanos();
++            let path = env::temp_dir().join(format!(
++                "libghostty-vt-sys-{name}-{}-{unique}",
++                std::process::id()
++            ));
++            fs::create_dir(&path).expect("create test directory");
++            Self(path)
++        }
++    }
++
++    impl Drop for TestDirectory {
++        fn drop(&mut self) {
++            let _ = fs::remove_dir_all(&self.0);
++        }
++    }
++
++    #[test]
++    fn staging_copies_source_and_removes_previous_build_outputs() {
++        let root = TestDirectory::new("staging");
++        let source = root.0.join("source");
++        let out_dir = root.0.join("out");
++        fs::create_dir_all(source.join("src/nested")).expect("create source directories");
++        fs::create_dir(&out_dir).expect("create output directory");
++        fs::write(source.join("build.zig"), "authoritative build\n").expect("write build file");
++        fs::write(source.join("src/nested/value.txt"), "nested source\n")
++            .expect("write nested file");
++
++        let staged = stage_build_source(&source, &out_dir);
++        assert_eq!(
++            fs::read_to_string(staged.join("build.zig")).expect("read staged build file"),
++            "authoritative build\n"
++        );
++        assert_eq!(
++            fs::read_to_string(staged.join("src/nested/value.txt"))
++                .expect("read staged nested file"),
++            "nested source\n"
++        );
++
++        fs::write(staged.join("build.zig"), "mutated build\n").expect("mutate staged file");
++        fs::create_dir(staged.join("zig-pkg")).expect("create generated package directory");
++        fs::write(staged.join("zig-pkg/generated"), "generated\n")
++            .expect("write generated package file");
++
++        let rebuilt = stage_build_source(&source, &out_dir);
++        assert_eq!(rebuilt, staged);
++        assert!(!rebuilt.join("zig-pkg").exists());
++        assert_eq!(
++            fs::read_to_string(rebuilt.join("build.zig")).expect("read rebuilt file"),
++            "authoritative build\n"
++        );
++        assert_eq!(
++            fs::read_to_string(source.join("build.zig")).expect("read original build file"),
++            "authoritative build\n"
++        );
++        assert!(!source.join("zig-pkg").exists());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn staging_dereferences_source_file_symlinks() {
++        use std::os::unix::fs::symlink;
++
++        let root = TestDirectory::new("symlink");
++        let source = root.0.join("source");
++        let out_dir = root.0.join("out");
++        fs::create_dir(&source).expect("create source directory");
++        fs::create_dir(&out_dir).expect("create output directory");
++        fs::write(source.join("AGENTS.md"), "source instructions\n")
++            .expect("write symlink target");
++        symlink("AGENTS.md", source.join("CLAUDE.md")).expect("create source symlink");
++
++        let staged = stage_build_source(&source, &out_dir);
++        assert_eq!(
++            fs::read_to_string(staged.join("CLAUDE.md")).expect("read staged symlink content"),
++            "source instructions\n"
++        );
++        assert!(!fs::symlink_metadata(staged.join("CLAUDE.md"))
++            .expect("inspect staged file")
++            .file_type()
++            .is_symlink());
++        assert!(fs::symlink_metadata(source.join("CLAUDE.md"))
++            .expect("inspect original symlink")
++            .file_type()
++            .is_symlink());
++    }
++
++    #[test]
++    fn zig_command_cannot_discover_a_repository_above_out_dir() {
++        fn git_command(directory: &Path) -> Command {
++            let mut command = Command::new("git");
++            command
++                .arg("-c")
++                .arg("core.hooksPath=/dev/null")
++                .current_dir(directory)
++                .stdout(Stdio::null())
++                .stderr(Stdio::null());
++            for (name, _) in env::vars_os() {
++                if name.to_string_lossy().starts_with("GIT_") {
++                    command.env_remove(name);
++                }
++            }
++            command
++        }
++
++        let root = TestDirectory::new("git-ceiling");
++        let mut initialize = git_command(&root.0);
++        initialize.args(["init", "--quiet"]);
++        assert!(initialize.status().expect("run git init").success());
++
++        let out_dir = root.0.join("out");
++        let build_source = out_dir.join("ghostty-build-source");
++        fs::create_dir_all(&build_source).expect("create staged source directory");
++        let mut unrestricted = git_command(&build_source);
++        unrestricted.args(["rev-parse", "--show-toplevel"]);
++        assert!(
++            unrestricted
++                .status()
++                .expect("run unrestricted git discovery")
++                .success()
++        );
++
++        let mut isolated = git_command(&build_source);
++        isolated.args(["rev-parse", "--show-toplevel"]);
++        isolate_git_discovery(&mut isolated, &out_dir);
++        assert!(!isolated.status().expect("run isolated git discovery").success());
++    }
++}

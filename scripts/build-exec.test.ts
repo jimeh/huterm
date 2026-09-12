@@ -53,40 +53,19 @@ test("explicit developer directory is preserved", () => {
 test("compatible selected SDK is preserved", () => {
   expect(run("Darwin", "26.2").out).toStartWith("unset\n");
 });
-test("beta SDK selects installed Xcode 26", () => {
-  const result = run("Darwin");
+test("Xcode 27 SDK is preserved without requiring an older installation", () => {
+  const result = run("Darwin", "27.0", "missing");
   expect(result.code).toBe(0);
-  expect(result.out).toStartWith("/Applications/Xcode.app/Contents/Developer\n");
-  expect(result.err).toContain("using macOS SDK 26.2");
+  expect(result.out).toStartWith("unset\n");
+  expect(result.err).toBe("");
 });
-for (const fallback of ["missing", "27.0"]) {
-  test(`reports actionable failure for fallback ${fallback}`, () => {
-    const result = run("Darwin", "27.0", fallback);
-    expect(result.code).toBe(1);
-    expect(result.err).toContain("set DEVELOPER_DIR");
-    expect(result.out).toBe("");
-  });
-}
 test("preserves invoked command exit code", () => {
   expect(run("Linux", "27.0", "26.2", undefined, 37).code).toBe(37);
 });
 
-test("routes the SDK query to explicit compatible stubs with spaces in the path", () => {
-  const result = run("Darwin", "26.5", "26.5", undefined, 0, "arm64-macos, arm64e-macos");
+test("Apple Silicon uses the selected SDK even with arm64e-only stubs", () => {
+  const result = run("Darwin", "27.0", "missing", undefined, 0, "arm64e-macos", true);
   expect(result.code).toBe(0);
   expect(result.out.trim()).toEndWith("/SDK with spaces");
-});
-
-test("rejects explicit arm64e-only SDK before invoking the build", () => {
-  const result = run("Darwin", "26.5", "26.5", undefined, 0, "arm64e-macos");
-  expect(result.code).toBe(1);
-  expect(result.err).toContain("lacks arm64-macos system stubs");
-  expect(result.out).toBe("");
-});
-
-test("falls back from arm64e-only stubs to an installed compatible SDK", () => {
-  const result = run("Darwin", "26.5", "26.5", undefined, 0, "arm64e-macos", true);
-  expect(result.code).toBe(0);
-  expect(result.out.trim()).toEndWith("/MacOSX15.4.sdk");
-  expect(result.err).toContain("selected SDK lacks arm64-macos");
+  expect(result.err).toBe("");
 });
