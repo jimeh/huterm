@@ -496,8 +496,6 @@
                 "text_move_word_right",
                 "text_line_start",
                 "text_line_end",
-                "text_select_left",
-                "text_select_right",
                 "text_select_all",
                 "text_copy",
                 "text_paste",
@@ -2823,17 +2821,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor left.",
+            "description": "Move the cursor left, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_move_left",
-                "description": "Move the cursor left.",
+                "description": "Move the cursor left, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {
@@ -2870,17 +2872,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor right.",
+            "description": "Move the cursor right, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_move_right",
-                "description": "Move the cursor right.",
+                "description": "Move the cursor right, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {
@@ -2917,17 +2923,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor left one word.",
+            "description": "Move the cursor one word left, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_move_word_left",
-                "description": "Move the cursor left one word.",
+                "description": "Move the cursor one word left, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {
@@ -2964,17 +2974,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor right one word.",
+            "description": "Move the cursor one word right, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_move_word_right",
-                "description": "Move the cursor right one word.",
+                "description": "Move the cursor one word right, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {
@@ -3011,17 +3025,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor to the line start.",
+            "description": "Move the cursor to the line start, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_line_start",
-                "description": "Move the cursor to the line start.",
+                "description": "Move the cursor to the line start, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {
@@ -3058,111 +3076,21 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move the cursor to the line end.",
+            "description": "Move the cursor to the line end, or extend the selection with `select`.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "select": {
+                    "type": "boolean"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "text_line_end",
-                "description": "Move the cursor to the line end.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
-                "const": "text_select_left"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Extend the selection left.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "text_select_left",
-                "description": "Extend the selection left.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
-                "const": "text_select_right"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Extend the selection right.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "text_select_right",
-                "description": "Extend the selection right.",
+                "description": "Move the cursor to the line end, or extend the selection with `select`.",
                 "type": "string"
               },
               "description": {

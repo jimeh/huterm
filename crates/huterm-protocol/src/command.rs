@@ -742,11 +742,6 @@ pub mod ids {
     pub const TEXT_LINE_START: CommandId = CommandId::new("text_line_start");
     /// Moves the text cursor to the line end.
     pub const TEXT_LINE_END: CommandId = CommandId::new("text_line_end");
-    /// Extends the text selection left.
-    pub const TEXT_SELECT_LEFT: CommandId = CommandId::new("text_select_left");
-    /// Extends the text selection right.
-    pub const TEXT_SELECT_RIGHT: CommandId =
-        CommandId::new("text_select_right");
     /// Selects all text.
     pub const TEXT_SELECT_ALL: CommandId = CommandId::new("text_select_all");
     /// Copies the text selection.
@@ -796,6 +791,14 @@ const NAME: ArgumentSpec = ArgumentSpec {
     required: Requirement::Always,
     prompt: true,
 };
+
+/// Movement commands extend the selection instead when `select` is true.
+const SELECT: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "select",
+    kind: ArgumentKind::Bool,
+    required: Requirement::Optional,
+    prompt: false,
+}];
 
 const PROFILE: &[ArgumentSpec] = &[ArgumentSpec {
     name: "profile",
@@ -1199,64 +1202,48 @@ const CATALOG: &[CommandSpec] = &[
         ids::TEXT_MOVE_LEFT,
         CommandScope::Palette,
         "Text: Move Left",
-        "Move the cursor left.",
-        &[],
+        "Move the cursor left, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
         ids::TEXT_MOVE_RIGHT,
         CommandScope::Palette,
         "Text: Move Right",
-        "Move the cursor right.",
-        &[],
+        "Move the cursor right, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
         ids::TEXT_MOVE_WORD_LEFT,
         CommandScope::Palette,
         "Text: Move Word Left",
-        "Move the cursor left one word.",
-        &[],
+        "Move the cursor one word left, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
         ids::TEXT_MOVE_WORD_RIGHT,
         CommandScope::Palette,
         "Text: Move Word Right",
-        "Move the cursor right one word.",
-        &[],
+        "Move the cursor one word right, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
         ids::TEXT_LINE_START,
         CommandScope::Palette,
         "Text: Line Start",
-        "Move the cursor to the line start.",
-        &[],
+        "Move the cursor to the line start, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
         ids::TEXT_LINE_END,
         CommandScope::Palette,
         "Text: Line End",
-        "Move the cursor to the line end.",
-        &[],
-    ),
-    spec_in(
-        "Palette",
-        ids::TEXT_SELECT_LEFT,
-        CommandScope::Palette,
-        "Text: Select Left",
-        "Extend the selection left.",
-        &[],
-    ),
-    spec_in(
-        "Palette",
-        ids::TEXT_SELECT_RIGHT,
-        CommandScope::Palette,
-        "Text: Select Right",
-        "Extend the selection right.",
-        &[],
+        "Move the cursor to the line end, or extend the selection with `select`.",
+        SELECT,
     ),
     spec_in(
         "Palette",
@@ -1638,8 +1625,6 @@ mod tests {
             ids::TEXT_MOVE_WORD_RIGHT,
             ids::TEXT_LINE_START,
             ids::TEXT_LINE_END,
-            ids::TEXT_SELECT_LEFT,
-            ids::TEXT_SELECT_RIGHT,
             ids::TEXT_SELECT_ALL,
             ids::TEXT_COPY,
             ids::TEXT_PASTE,
@@ -1648,7 +1633,7 @@ mod tests {
             let spec = lookup(id.as_str()).unwrap();
             assert_eq!(spec.scope, CommandScope::Palette, "{id}");
             assert_eq!(spec.context, Some("Palette"), "{id}");
-            assert!(spec.args.is_empty(), "{id}");
+            assert!(only_select_argument(spec), "{id}");
         }
         for spec in catalog().iter().filter(|spec| {
             spec.id.as_str().starts_with("palette_")
@@ -1656,8 +1641,19 @@ mod tests {
         }) {
             assert_eq!(spec.scope, CommandScope::Palette, "{}", spec.id);
             assert_eq!(spec.context, Some("Palette"), "{}", spec.id);
-            assert!(spec.args.is_empty(), "{}", spec.id);
+            assert!(only_select_argument(spec), "{}", spec.id);
         }
+    }
+
+    /// Palette commands take no prompted arguments; movement commands may
+    /// take the unprompted `select` flag.
+    fn only_select_argument(spec: &CommandSpec) -> bool {
+        spec.args.iter().all(|argument| {
+            argument.name == "select"
+                && argument.kind == ArgumentKind::Bool
+                && argument.required == Requirement::Optional
+                && !argument.prompt
+        })
     }
 
     #[test]

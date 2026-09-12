@@ -4,11 +4,12 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, Hsla, Pixels,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     Render, ShapedLine, SharedString, TextRun, UTF16Selection, Window, canvas,
     div, fill, point, prelude::*, px,
 };
-use huterm_protocol::{CommandError, CommandId, ids};
+use huterm_protocol::{CommandError, CommandInvocation, ids};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::text::{range_from_utf16, range_to_utf16};
@@ -132,6 +133,11 @@ pub(crate) struct TextField {
     placeholder: String,
     buffer: TextBuffer,
     foreground: Hsla,
+    /// The field's last painted bounds and shaped text, for pointer
+    /// hit-testing.
+    layout: Option<(Bounds<Pixels>, ShapedLine)>,
+    /// A pointer selection in progress since a left press in the field.
+    dragging: bool,
 }
 
 impl TextField {
@@ -145,6 +151,74 @@ impl TextField {
             placeholder: placeholder.into(),
             buffer: TextBuffer::default(),
             foreground,
+            layout: None,
+            dragging: false,
+        }
+    }
+
+    /// The grapheme offset nearest to a window `position`, from the last
+    /// paint.
+    fn index_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let (bounds, line) = self.layout.as_ref()?;
+        let x = position.x - bounds.left() - px(FIELD_PADDING);
+        let index = line.closest_index_for_x(x).min(self.buffer.content.len());
+        // Glyph indices can fall inside a cluster; snap to its start.
+        Some(if self.buffer.content.is_char_boundary(index) {
+            self.buffer
+                .next_boundary(index.saturating_sub(1))
+                .min(index)
+        } else {
+            self.buffer.previous_boundary(index)
+        })
+    }
+
+    fn press(&mut self, event: &MouseDownEvent, cx: &mut Context<'_, Self>) {
+        let Some(index) = self.index_at(event.position) else {
+            return;
+        };
+        match event.click_count {
+            2 => {
+                let word = self
+                    .buffer
+                    .content
+                    .unicode_word_indices()
+                    .map(|(start, word)| start..start + word.len())
+                    .find(|range| range.contains(&index) || range.end == index);
+                match word {
+                    Some(range) => {
+                        self.buffer.move_to(range.start);
+                        self.buffer.select_to(range.end);
+                    }
+                    None => self.buffer.move_to(index),
+                }
+            }
+            count if count >= 3 => {
+                self.buffer.move_to(0);
+                self.buffer.select_to(self.buffer.content.len());
+            }
+            _ if event.modifiers.shift => self.buffer.select_to(index),
+            _ => self.buffer.move_to(index),
+        }
+        self.dragging = true;
+        cx.notify();
+    }
+
+    fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<'_, Self>) {
+        if !self.dragging {
+            return;
+        }
+        if let Some(index) = self.index_at(position)
+            && index != self.buffer.cursor()
+        {
+            self.buffer.select_to(index);
+            cx.notify();
+        }
+    }
+
+    fn release(&mut self, cx: &mut Context<'_, Self>) {
+        if self.dragging {
+            self.dragging = false;
+            cx.notify();
         }
     }
 
@@ -192,41 +266,59 @@ impl TextField {
         cx.emit(Changed);
         cx.notify();
     }
-    fn left(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = if self.buffer.selection.is_empty() {
+    /// Moves the cursor to `target`, or extends the selection there when
+    /// `select` is set. Cursor changes never emit `Changed`; the text is the
+    /// same.
+    fn move_cursor(
+        &mut self,
+        target: usize,
+        select: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if select {
+            self.buffer.select_to(target);
+        } else {
+            self.buffer.move_to(target);
+        }
+        cx.notify();
+    }
+    fn left(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        let to = if select || self.buffer.selection.is_empty() {
             self.buffer.previous_boundary(self.buffer.cursor())
         } else {
             self.buffer.selection.start
         };
-        self.buffer.move_to(to);
-        Self::changed(cx);
+        self.move_cursor(to, select, cx);
     }
-    fn right(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = if self.buffer.selection.is_empty() {
+    fn right(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        let to = if select || self.buffer.selection.is_empty() {
             self.buffer.next_boundary(self.buffer.cursor())
         } else {
             self.buffer.selection.end
         };
-        self.buffer.move_to(to);
-        Self::changed(cx);
+        self.move_cursor(to, select, cx);
     }
-    fn select_left(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = self.buffer.previous_boundary(self.buffer.cursor());
-        self.buffer.select_to(to);
-        Self::changed(cx);
+    fn home(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        self.move_cursor(0, select, cx);
     }
-    fn select_right(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = self.buffer.next_boundary(self.buffer.cursor());
-        self.buffer.select_to(to);
-        Self::changed(cx);
+    fn end(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        self.move_cursor(self.buffer.content.len(), select, cx);
     }
-    fn home(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        self.buffer.move_to(0);
-        Self::changed(cx);
+    fn move_word_left(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        let to = if select || self.buffer.selection.is_empty() {
+            self.buffer.previous_word_boundary(self.buffer.cursor())
+        } else {
+            self.buffer.selection.start
+        };
+        self.move_cursor(to, select, cx);
     }
-    fn end(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        self.buffer.move_to(self.buffer.content.len());
-        Self::changed(cx);
+    fn move_word_right(&mut self, select: bool, cx: &mut Context<'_, Self>) {
+        let to = if select || self.buffer.selection.is_empty() {
+            self.buffer.next_word_boundary(self.buffer.cursor())
+        } else {
+            self.buffer.selection.end
+        };
+        self.move_cursor(to, select, cx);
     }
     fn select_all(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         self.buffer.selection = 0..self.buffer.content.len();
@@ -286,24 +378,6 @@ impl TextField {
         self.buffer.replace(self.buffer.selection.clone(), "");
         Self::changed(cx);
     }
-    fn move_word_left(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = if self.buffer.selection.is_empty() {
-            self.buffer.previous_word_boundary(self.buffer.cursor())
-        } else {
-            self.buffer.selection.start
-        };
-        self.buffer.move_to(to);
-        Self::changed(cx);
-    }
-    fn move_word_right(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
-        let to = if self.buffer.selection.is_empty() {
-            self.buffer.next_word_boundary(self.buffer.cursor())
-        } else {
-            self.buffer.selection.end
-        };
-        self.buffer.move_to(to);
-        Self::changed(cx);
-    }
     fn copy(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         if !self.buffer.selection.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -327,11 +401,12 @@ impl TextField {
     /// not own.
     pub(crate) fn run(
         &mut self,
-        id: CommandId,
+        invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), CommandError> {
-        match id {
+        let select = invocation.bool("select").unwrap_or(false);
+        match invocation.id {
             ids::TEXT_DELETE_BACKWARD => self.backspace(window, cx),
             ids::TEXT_DELETE_FORWARD => self.delete(window, cx),
             ids::TEXT_DELETE_WORD_BACKWARD => {
@@ -341,14 +416,12 @@ impl TextField {
                 self.delete_word_forward(window, cx);
             }
             ids::TEXT_DELETE_LINE_START => self.delete_line_start(window, cx),
-            ids::TEXT_MOVE_LEFT => self.left(window, cx),
-            ids::TEXT_MOVE_RIGHT => self.right(window, cx),
-            ids::TEXT_MOVE_WORD_LEFT => self.move_word_left(window, cx),
-            ids::TEXT_MOVE_WORD_RIGHT => self.move_word_right(window, cx),
-            ids::TEXT_LINE_START => self.home(window, cx),
-            ids::TEXT_LINE_END => self.end(window, cx),
-            ids::TEXT_SELECT_LEFT => self.select_left(window, cx),
-            ids::TEXT_SELECT_RIGHT => self.select_right(window, cx),
+            ids::TEXT_MOVE_LEFT => self.left(select, cx),
+            ids::TEXT_MOVE_RIGHT => self.right(select, cx),
+            ids::TEXT_MOVE_WORD_LEFT => self.move_word_left(select, cx),
+            ids::TEXT_MOVE_WORD_RIGHT => self.move_word_right(select, cx),
+            ids::TEXT_LINE_START => self.home(select, cx),
+            ids::TEXT_LINE_END => self.end(select, cx),
             ids::TEXT_SELECT_ALL => self.select_all(window, cx),
             ids::TEXT_COPY => self.copy(window, cx),
             ids::TEXT_PASTE => self.paste(window, cx),
@@ -462,6 +535,7 @@ impl Render for TextField {
         }
         let input = cx.entity();
         let focus = self.focus.clone();
+        let dragging = self.dragging;
         // The caret and selection are painted over one unbroken text run,
         // positioned by measuring it. Splitting the text around an inline
         // caret element would shift the trailing text by the caret's width
@@ -485,12 +559,45 @@ impl Render for TextField {
                     .border_b_1()
                     .border_color(self.foreground.opacity(0.8))
             })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|field, event: &MouseDownEvent, _, cx| {
+                    field.press(event, cx);
+                }),
+            )
             .child(contents)
             .child(
                 canvas(
                     move |_, window, _| overlay.shape(window),
                     move |bounds, shaped, window, cx| {
                         shaped.paint(bounds, window);
+                        input.update(cx, |field, _| {
+                            field.layout = Some((bounds, shaped.line.clone()));
+                        });
+                        if dragging {
+                            // Track the pointer beyond the field while a
+                            // press-drag selection is in progress.
+                            let mover = input.clone();
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, _, cx| {
+                                    if phase.bubble() {
+                                        mover.update(cx, |field, cx| {
+                                            field.drag_to(event.position, cx);
+                                        });
+                                    }
+                                },
+                            );
+                            let releaser = input.clone();
+                            window.on_mouse_event(
+                                move |_: &MouseUpEvent, phase, _, cx| {
+                                    if phase.bubble() {
+                                        releaser.update(cx, |field, cx| {
+                                            field.release(cx);
+                                        });
+                                    }
+                                },
+                            );
+                        }
                         window.handle_input(
                             &focus,
                             ElementInputHandler::new(bounds, input),

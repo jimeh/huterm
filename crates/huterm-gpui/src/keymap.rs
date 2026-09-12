@@ -510,6 +510,17 @@ fn default(key: &str, command: CommandId, description: &str) -> BindingEntry {
     default_with(key, command, &[], description)
 }
 
+/// A movement command bound with `select = true`, so it extends the
+/// selection instead of moving the cursor.
+fn selecting(key: &str, command: CommandId, description: &str) -> BindingEntry {
+    default_with(
+        key,
+        command,
+        &[("select", CommandValue::Bool(true))],
+        description,
+    )
+}
+
 fn default_with(
     key: &str,
     command: CommandId,
@@ -630,10 +641,30 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
         default("right", ids::TEXT_MOVE_RIGHT, "Move Right"),
         default("alt-left", ids::TEXT_MOVE_WORD_LEFT, "Move Word Left"),
         default("alt-right", ids::TEXT_MOVE_WORD_RIGHT, "Move Word Right"),
+        default("alt-b", ids::TEXT_MOVE_WORD_LEFT, "Move Word Left"),
+        default("alt-f", ids::TEXT_MOVE_WORD_RIGHT, "Move Word Right"),
         default("home", ids::TEXT_LINE_START, "Line Start"),
         default("end", ids::TEXT_LINE_END, "Line End"),
-        default("shift-left", ids::TEXT_SELECT_LEFT, "Select Left"),
-        default("shift-right", ids::TEXT_SELECT_RIGHT, "Select Right"),
+        selecting("shift-left", ids::TEXT_MOVE_LEFT, "Select Left"),
+        selecting("shift-right", ids::TEXT_MOVE_RIGHT, "Select Right"),
+        selecting(
+            "shift-alt-left",
+            ids::TEXT_MOVE_WORD_LEFT,
+            "Select Word Left",
+        ),
+        selecting(
+            "shift-alt-right",
+            ids::TEXT_MOVE_WORD_RIGHT,
+            "Select Word Right",
+        ),
+        selecting("shift-alt-b", ids::TEXT_MOVE_WORD_LEFT, "Select Word Left"),
+        selecting(
+            "shift-alt-f",
+            ids::TEXT_MOVE_WORD_RIGHT,
+            "Select Word Right",
+        ),
+        selecting("shift-home", ids::TEXT_LINE_START, "Select to Line Start"),
+        selecting("shift-end", ids::TEXT_LINE_END, "Select to Line End"),
         default(
             "alt-backspace",
             ids::TEXT_DELETE_WORD_BACKWARD,
@@ -655,6 +686,22 @@ fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
             default("ctrl-d", ids::TEXT_DELETE_FORWARD, "Delete Forward"),
             default("cmd-left", ids::TEXT_LINE_START, "Line Start"),
             default("cmd-right", ids::TEXT_LINE_END, "Line End"),
+            selecting(
+                "shift-ctrl-a",
+                ids::TEXT_LINE_START,
+                "Select to Line Start",
+            ),
+            selecting("shift-ctrl-e", ids::TEXT_LINE_END, "Select to Line End"),
+            selecting(
+                "shift-cmd-left",
+                ids::TEXT_LINE_START,
+                "Select to Line Start",
+            ),
+            selecting(
+                "shift-cmd-right",
+                ids::TEXT_LINE_END,
+                "Select to Line End",
+            ),
             default(
                 "cmd-backspace",
                 ids::TEXT_DELETE_LINE_START,

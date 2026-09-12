@@ -396,7 +396,9 @@ would run, so optional values can be changed. The input line shows the command,
 committed argument chips, and one active slot. Tabs and quake profiles use fuzzy
 pickers; identity pickers show labels and ancestry. Rename commands prefill the
 current custom name, selected, so typing replaces it; a blank name restores the
-default title. In a slot, Tab moves to the
+default title. Click places the cursor, drag or Shift-click selects, and
+double-click selects a word; holding Shift with any movement key extends the
+selection. In a slot, Tab moves to the
 next argument, Backspace on an empty field reopens the previous chip or returns
 to search, and Escape returns to search. Escape from search and a scrim click
 close the palette.
@@ -599,14 +601,12 @@ Commands, their scope, and arguments:
 | `text_delete_word_backward` | Palette | |
 | `text_delete_word_forward` | Palette | |
 | `text_delete_line_start` | Palette | |
-| `text_move_left` | Palette | |
-| `text_move_right` | Palette | |
-| `text_move_word_left` | Palette | |
-| `text_move_word_right` | Palette | |
-| `text_line_start` | Palette | |
-| `text_line_end` | Palette | |
-| `text_select_left` | Palette | |
-| `text_select_right` | Palette | |
+| `text_move_left` | Palette | optional `select` extends the selection instead |
+| `text_move_right` | Palette | optional `select` |
+| `text_move_word_left` | Palette | optional `select` |
+| `text_move_word_right` | Palette | optional `select` |
+| `text_line_start` | Palette | optional `select` |
+| `text_line_end` | Palette | optional `select` |
 | `text_select_all` | Palette | |
 | `text_copy` | Palette | |
 | `text_paste` | Palette | |
@@ -657,9 +657,9 @@ Default bindings differ per platform:
 | `text_delete_word_forward` | `alt-d` | `alt-d` |
 | `text_delete_line_start` | `cmd-backspace` | |
 | `text_move_left` / `text_move_right` | `left` / `right` | `left` / `right` |
-| `text_move_word_left` / `text_move_word_right` | `alt-left` / `alt-right` | `alt-left` / `alt-right` |
+| `text_move_word_left` / `text_move_word_right` | `alt-left`, `alt-b` / `alt-right`, `alt-f` | `alt-left`, `alt-b` / `alt-right`, `alt-f` |
 | `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
-| `text_select_left` / `text_select_right` | `shift-left` / `shift-right` | `shift-left` / `shift-right` |
+| movement with `select = true` | `shift-` plus each movement key above | `shift-` plus each movement key above |
 | `text_select_all` | `cmd-a` | `ctrl-a` |
 | `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
 | `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |

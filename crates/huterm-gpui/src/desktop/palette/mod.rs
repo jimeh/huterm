@@ -17,8 +17,9 @@ use std::time::Instant;
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
     FontWeight, Hsla, KeyBindingContextPredicate, KeyContext, MouseButton,
-    MouseDownEvent, MouseUpEvent, Render, ScrollHandle, ScrollWheelEvent,
-    Subscription, WeakEntity, Window, div, hsla, point, prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollHandle,
+    ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
+    prelude::*, px,
 };
 use huterm_config::PalettePlacement;
 use huterm_core::HierarchySnapshot;
@@ -34,7 +35,9 @@ use slots::{
 
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
-use crate::scroll::{IndicatorVisibility, ScrollbarGeometry};
+use crate::scroll::{
+    IndicatorVisibility, ScrollbarExpansion, ScrollbarGeometry, TrackMargins,
+};
 use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
@@ -63,6 +66,9 @@ const PANEL_MAX_HEIGHT: f32 = 412.0;
 /// Distance from the window's top edge for top placement, and the minimum
 /// for centred placement in short windows.
 const PANEL_TOP_INSET: f32 = 36.0;
+/// Pointer strip at the list's right edge that owns scrollbar gestures.
+const SCROLLBAR_WIDTH: f32 = 12.0;
+const SCROLLBAR_EXPANDED_WIDTH: f32 = 18.0;
 
 /// Theme colours the palette derives its presentation from.
 #[derive(Clone, Copy, Debug)]
@@ -414,6 +420,11 @@ pub(super) struct CommandPalette {
     /// Fading overlay scrollbar on the list; shown after list changes and
     /// scrolling so it also signals rows beyond the visible six.
     indicator: IndicatorVisibility,
+    /// Widens the scrollbar while the pointer is over it or dragging.
+    scrollbar_expansion: ScrollbarExpansion,
+    scrollbar_hovering: bool,
+    /// Pointer distance from the thumb's top while dragging it.
+    scrollbar_drag: Option<f32>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -477,6 +488,9 @@ impl CommandPalette {
             hover: None,
             scroll: ScrollHandle::new(),
             indicator: IndicatorVisibility::default(),
+            scrollbar_expansion: ScrollbarExpansion::default(),
+            scrollbar_hovering: false,
+            scrollbar_drag: None,
             _subscriptions: vec![subscription],
         };
         let requested = request.and_then(|request| {
@@ -630,9 +644,18 @@ impl CommandPalette {
         self.indicator.activate(Instant::now());
     }
 
-    /// Advances the scrollbar fade from the window refresh pump.
+    /// Advances the scrollbar fade and expansion from the window refresh
+    /// pump.
     pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
-        if self.indicator.update(now, false) {
+        let interacting =
+            self.scrollbar_hovering || self.scrollbar_drag.is_some();
+        let mut changed = self.indicator.update(now, interacting);
+        changed |= self.scrollbar_expansion.update(
+            now,
+            self.indicator.opacity > 0.0,
+            interacting,
+        );
+        if changed {
             cx.notify();
         }
     }
@@ -646,7 +669,97 @@ impl CommandPalette {
             viewport + overflow,
             viewport,
             -f32::from(self.scroll.offset().y),
+            TrackMargins::EVEN,
         )
+    }
+
+    /// Whether `position` is over the scrollbar strip at the list's right
+    /// edge, with the strip's local y.
+    fn scrollbar_hit(&self, position: gpui::Point<Pixels>) -> Option<f32> {
+        let geometry = self.scrollbar_geometry()?;
+        let bounds = self.scroll.bounds();
+        let width = if self.scrollbar_expansion.active() {
+            SCROLLBAR_EXPANDED_WIDTH
+        } else {
+            SCROLLBAR_WIDTH
+        };
+        let y = f32::from(position.y - bounds.top());
+        (self.indicator.opacity > 0.0
+            && position.x >= bounds.right() - px(width)
+            && position.x < bounds.right()
+            && geometry.track_contains(y))
+        .then_some(y)
+    }
+
+    fn scrollbar_pointer_moved(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let hovering = self.scrollbar_hit(position).is_some();
+        if hovering {
+            self.scrollbar_expansion.activate(Instant::now());
+            self.show_scrollbar();
+        }
+        if hovering != self.scrollbar_hovering {
+            self.scrollbar_hovering = hovering;
+            cx.notify();
+        }
+    }
+
+    /// Mouse down on the strip: grab the thumb, or jump it under the pointer
+    /// and grab it there.
+    fn scrollbar_press(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(y) = self.scrollbar_hit(position) else {
+            return false;
+        };
+        let Some(geometry) = self.scrollbar_geometry() else {
+            return false;
+        };
+        let grab = if geometry.contains(y) {
+            y - geometry.thumb_start
+        } else {
+            let grab = geometry.thumb_size / 2.0;
+            self.scrollbar_seek(geometry, y - grab);
+            grab
+        };
+        self.scrollbar_drag = Some(grab);
+        self.scrollbar_expansion.activate(Instant::now());
+        self.show_scrollbar();
+        cx.notify();
+        true
+    }
+
+    fn scrollbar_drag_to(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(grab) = self.scrollbar_drag else {
+            return;
+        };
+        let Some(geometry) = self.scrollbar_geometry() else {
+            return;
+        };
+        let y = f32::from(position.y - self.scroll.bounds().top());
+        self.scrollbar_seek(geometry, y - grab);
+        self.show_scrollbar();
+        cx.notify();
+    }
+
+    fn scrollbar_release(&mut self, cx: &mut Context<'_, Self>) {
+        if self.scrollbar_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn scrollbar_seek(&self, geometry: ScrollbarGeometry, thumb_start: f32) {
+        let offset = geometry.pixel_offset_for_thumb_start(thumb_start);
+        self.scroll.set_offset(point(px(0.0), px(-offset)));
     }
 
     fn input_changed(&mut self, text: &str) {
@@ -1072,13 +1185,11 @@ impl CommandPalette {
             | ids::TEXT_MOVE_WORD_RIGHT
             | ids::TEXT_LINE_START
             | ids::TEXT_LINE_END
-            | ids::TEXT_SELECT_LEFT
-            | ids::TEXT_SELECT_RIGHT
             | ids::TEXT_SELECT_ALL
             | ids::TEXT_COPY
             | ids::TEXT_PASTE => {
                 self.input.update(cx, |field, cx| {
-                    field.run(invocation.id, window, cx)
+                    field.run(invocation, window, cx)
                 })?;
             }
             other => return Err(CommandError::UnknownCommand(other)),
@@ -1867,25 +1978,51 @@ impl Render for CommandPalette {
                     cx.stop_propagation();
                 },
             )
-            .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|palette, _: &MouseUpEvent, _, cx| {
+                    palette.scrollbar_release(cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_click(|_: &ClickEvent, _, cx| cx.stop_propagation())
             .child(line)
             .children(below)
             .child(
                 div()
+                    .id("palette-list-frame")
                     .relative()
                     .w_full()
                     .flex()
                     .flex_col()
+                    .on_mouse_move(cx.listener(
+                        |palette, event: &MouseMoveEvent, _, cx| {
+                            palette.scrollbar_pointer_moved(event.position, cx);
+                        },
+                    ))
+                    .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
+                        if !hovering && palette.scrollbar_hovering {
+                            palette.scrollbar_hovering = false;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(
+                            |palette, event: &MouseDownEvent, _, cx| {
+                                if palette.scrollbar_press(event.position, cx) {
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ),
+                    )
                     .child(list)
                     .children(self.scrollbar_geometry().into_iter().flat_map(
                         |geometry| {
                             crate::ui::scrollbar::layers(
                                 geometry,
                                 self.indicator.opacity,
-                                0.0,
+                                self.scrollbar_expansion.progress,
                                 swatch.fg,
                             )
                         },
@@ -1910,9 +2047,18 @@ impl Render for CommandPalette {
             .on_mouse_down(MouseButton::Middle, |_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_mouse_up(MouseButton::Left, |_: &MouseUpEvent, _, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_move(cx.listener(
+                |palette, event: &MouseMoveEvent, _, cx| {
+                    palette.scrollbar_drag_to(event.position, cx);
+                },
+            ))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|palette, _: &MouseUpEvent, _, cx| {
+                    palette.scrollbar_release(cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_click(cx.listener(|palette, _: &ClickEvent, _, cx| {
                 // Clicks inside the panel stop before reaching here.
                 palette.close_from_scrim(cx);

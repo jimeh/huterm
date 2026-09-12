@@ -740,6 +740,18 @@
     "theme": false
   },
   {
+    "name": "selecting movement binding",
+    "toml": "[[keybinding]]\nkey = \"shift-alt-f\"\ncommand = \"text_move_word_right\"\nargs = { select = true }",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "selecting movement rejects text",
+    "toml": "[[keybinding]]\nkey = \"shift-alt-f\"\ncommand = \"text_move_word_right\"\nargs = { select = \"yes\" }",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "global palette command",
     "toml": "[[global_keybinding]]\nkey = \"ctrl-alt-n\"\ncommand = \"palette_select_next\"",
     "valid": false,

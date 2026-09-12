@@ -370,9 +370,9 @@ Text editing commands, named by what they do to text so a later text field
 elsewhere reuses them: `text_delete_backward`,
 `text_delete_forward`, `text_delete_word_backward`, `text_delete_line_start`,
 `text_move_left`, `text_move_right`, `text_move_word_left`,
-`text_move_word_right`, `text_line_start`, `text_line_end`,
-`text_select_left`, `text_select_right`, `text_select_all`, `text_copy`,
-`text_paste`.
+`text_move_word_right`, `text_line_start`, `text_line_end` (each with an
+optional unprompted `select` flag that extends the selection instead),
+`text_select_all`, `text_copy`, `text_paste`.
 
 Both families share the single `Palette` context; `PaletteText` is removed
 from the field, the README table, and the fixtures. With one context, a user
