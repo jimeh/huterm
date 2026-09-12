@@ -133,8 +133,10 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
       ["true", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "identical", 0],
       ["true", "push", "refs/heads/main", inputs.sha, "identical", 0],
       ["true", "push", "refs/heads/main", "b".repeat(40), "ahead", 1],
-      ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 0],
+      ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 1],
       ["false", "workflow_dispatch", "refs/heads/fix", "invalid", "ahead", 1],
+      ["false", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 0],
+      ["false", "workflow_dispatch", "refs/heads/fix", "b".repeat(40), "ahead", 1],
     ] as const) {
       const result = Bun.spawnSync(["bash", "-c", script], { env: {
         ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,

@@ -56,23 +56,21 @@ test("draft and remote asset validation reject widened release state", () => {
   expect(() => validateReleaseAssets(remote.map(asset => asset.name === "SHA256SUMS" ? { ...asset, digest: null } : asset), local)).toThrow("digest");
 });
 
-test("release workflow binds validated source, schemas, and producer-qualified artifact names", async () => {
+test("release workflow binds event source, schemas, and producer-qualified artifact names", async () => {
   type Step = { name?: string; id?: string; run?: string; uses?: string; env?: Record<string, unknown>; with?: Record<string, unknown> };
   type Job = { env?: Record<string, unknown>; outputs?: Record<string, unknown>; steps: Step[] };
-  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, Job> };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { env: Record<string, unknown>; jobs: Record<string, Job> };
   const preflight = workflow.jobs.preflight!;
-  expect(preflight.outputs?.validated_sha).toBe("${{ steps.source.outputs.validated_sha }}");
+  expect(workflow.env.RELEASE_SHA).toBe("${{ github.sha }}");
   const validationIndex = preflight.steps.findIndex(step => step.run === "bun scripts/release.ts validate-build");
-  const sourceIndex = preflight.steps.findIndex(step => step.id === "source");
   const schemaIndex = preflight.steps.findIndex(step => step.run === "mise run schema:check");
   expect(schemaIndex).toBeGreaterThan(validationIndex);
-  expect(sourceIndex).toBeGreaterThan(schemaIndex);
 
-  const validatedSha = "${{ needs.preflight.outputs.validated_sha }}";
-  for (const jobName of ["macos", "linux_x86_64", "linux_aarch64", "assemble"]) {
+  const eventSha = "${{ github.sha }}";
+  for (const jobName of ["preflight", "macos", "linux_x86_64", "linux_aarch64", "assemble", "verify_candidate", "publish"]) {
     const job = workflow.jobs[jobName]!;
-    expect(job.env?.RELEASE_SHA).toBe(validatedSha);
-    expect(job.steps.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.ref).toBe(validatedSha);
+    expect(job.env?.RELEASE_SHA).toBeUndefined();
+    expect(job.steps.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.ref).toBe(eventSha);
   }
 
   const releaseMutationJobs = Object.entries(workflow.jobs).filter(([, job]) =>
@@ -80,7 +78,7 @@ test("release workflow binds validated source, schemas, and producer-qualified a
   ).map(([name]) => name);
   expect(releaseMutationJobs).toEqual(["publish"]);
 
-  const sha = "${{ needs.preflight.outputs.validated_sha }}";
+  const sha = "${{ github.sha }}";
   const actionName = (job: Job, stepName: string) => job.steps.find(step => step.name === stepName)?.with?.name;
   const producers = [
     ["macos", "release-macos"],

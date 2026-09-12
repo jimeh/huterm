@@ -88,10 +88,11 @@ reinstallation.
 The release workflow separates validation, native platform builds, and final
 assembly:
 
-1. The preflight validates the requested SHA before checkout, revalidates the
-   checked-out source, Cargo package versions, and committed schemas, then emits
-   the SHA used by every build job. Publishing mode subsequently mints a
-   short-lived token to validate the exact tag and draft target; manual
+1. Every job checks out the immutable workflow event SHA (`github.sha`). The
+   preflight requires the supplied SHA to match before checkout, then validates
+   the checked-out source, Cargo package versions, and committed schemas.
+   Publishing mode subsequently mints a short-lived token to validate the exact
+   tag and draft target; manual
    verification does not receive that release credential.
 2. An Apple Silicon runner runs `package:macos-release`, which builds the
    updater-enabled universal app, injects the committed public key and production
@@ -161,9 +162,10 @@ package check. It requires the committed public key, never the private key.
 
 Run the `Release` workflow manually with `publish` unchecked to exercise the
 complete package path. Select the branch to run from and enter its
-exact 40-character HEAD SHA, or a SHA from `main`, plus the matching Cargo
-version; leave the tag empty. The workflow validates the
-source, builds both native Linux architectures, builds and signs both macOS
+exact 40-character HEAD SHA plus the matching Cargo version; leave the tag empty.
+The SHA input is a consistency check, not an independent source selector.
+The workflow validates the source, builds both native Linux architectures,
+builds and signs both macOS
 slices, notarizes and staples the app, validates the SPDX SBOM and a non-public
 fixture appcast, and uploads the same ten-file inventory as an Actions artifact
 retained for seven days.
@@ -176,9 +178,10 @@ Sparkle distribution prepared, set `RELEASE_SHA`, `RELEASE_VERSION`, and
 `RELEASE_DIST_DIR`, then run `mise run release:verify-candidate`. No tag is
 required.
 
-Before checkout, the workflow requires the SHA to be on `main` or to match the
-exact branch commit selected by a manual, non-publishing dispatch. It verifies
-the checkout and Cargo versions again before exposing the signing and
+Before checkout, the workflow requires the supplied SHA to match `github.sha`.
+It also requires ancestry on `main`, except for the exact branch commit selected
+by a manual, non-publishing dispatch. It verifies the checkout and Cargo versions
+again before exposing the signing and
 notarization credentials. Publishing always requires ancestry on `main`.
 
 Verification mode does not inspect, create, update, or publish a GitHub Release
