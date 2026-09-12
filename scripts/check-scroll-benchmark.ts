@@ -2,6 +2,7 @@
 const WARM_SAMPLES = 5;
 const MIN_SAMPLES = 20;
 const MIN_INPUT_SAMPLES = 10;
+export const REQUIRED_SCROLL_SNAPSHOT_SAMPLES = WARM_SAMPLES + MIN_SAMPLES;
 
 type Sample = Record<string, number>;
 
@@ -41,8 +42,8 @@ export function checkScrollBenchmark(log: string): string {
   let snapshots = samples("huterm-scroll snapshot ");
   let paintSamples = samples("huterm-scroll sample ");
   const queue = samples("huterm-scroll queue ");
-  if (snapshots.length < WARM_SAMPLES + MIN_SAMPLES) {
-    fail(`needed at least ${WARM_SAMPLES + MIN_SAMPLES} snapshot samples, got ${snapshots.length}`);
+  if (snapshots.length < REQUIRED_SCROLL_SNAPSHOT_SAMPLES) {
+    fail(`needed at least ${REQUIRED_SCROLL_SNAPSHOT_SAMPLES} snapshot samples, got ${snapshots.length}`);
   }
   if (!queue.length) fail("missing request queue diagnostics");
   if (snapshots.some(sample => field(sample, "requested") !== field(sample, "returned"))) {
@@ -85,7 +86,7 @@ export function checkScrollBenchmark(log: string): string {
   let medianPaintElapsed = 0;
   let p95PaintElapsed = 0;
   let p95PaintLatency = 0;
-  if (paintSamples.length >= WARM_SAMPLES + MIN_SAMPLES) {
+  if (paintSamples.length >= REQUIRED_SCROLL_SNAPSHOT_SAMPLES) {
     paintSamples = paintSamples.slice(WARM_SAMPLES);
     const inputPaint = paintSamples.filter(sample => sample.input === 1);
     if (inputPaint.length < MIN_INPUT_SAMPLES) {
@@ -127,7 +128,7 @@ export function checkScrollBenchmark(log: string): string {
   };
   const output = [`huterm-scroll summary ${Object.entries(summary).map(([key, value]) => `${key}=${value}`).join(" ")}`];
   if (presentation === "not_measured") {
-    output.push(`Paint budgets were not measured because the host produced fewer than ${WARM_SAMPLES + MIN_SAMPLES} paint samples.`);
+    output.push(`Paint budgets were not measured because the host produced fewer than ${REQUIRED_SCROLL_SNAPSHOT_SAMPLES} paint samples.`);
   }
   output.push("Elapsed preparation and paint encoding do not prove GPU presentation.");
   return output.join("\n");

@@ -812,6 +812,9 @@ Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
 run twm with `LC_ALL=C`. Default manual placement can grab the X server and
 block Huterm startup, producing zero samples; missing host fontsets can also
 leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.
+The scroll benchmark must wait for the checker's sample and queue-coalescing
+evidence before stopping Huterm. Parsing the initial 10,000 history rows varies
+enough across CI hosts that a fixed process lifetime can leave too few samples.
 
 Patched registry crates use ordered named patches in
 `third-party/vendor/sources.json` against checksum-pinned release archives. Agents
@@ -949,6 +952,10 @@ drop/leave; otherwise a follow-up action can target a source already exiting.
 
 The AppKit witness publishes readiness before its first state snapshot. Wait for
 that snapshot or a command acknowledgement before reading its activation state.
+Before summoning from an external AppKit witness, wait for both the exact
+frontmost process and the quake window's inactive observation. NSWorkspace can
+publish the new frontmost process before NSApplication clears its active state;
+sampling only the former can falsely satisfy a new activation request.
 
 AppKit clamps intermediate top-edge frames even for borderless windows. Quake
 opts only its own native window into unconstrained frames, retaining that flag
