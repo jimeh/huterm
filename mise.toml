@@ -224,11 +224,7 @@ if [ "$platform" = Darwin ]; then
 else
   hardware="$(lscpu | awk -F: '$1 == "Model name" { sub(/^[[:space:]]+/, "", $2); print $2; exit }')"
 fi
-app_pid=""
 cleanup() {
-  if [ -n "$app_pid" ]; then
-    kill "$app_pid" >/dev/null 2>&1 || true
-  fi
   rm -f "$report" "$bench_config"
 }
 trap cleanup EXIT
@@ -239,42 +235,23 @@ if [ "$platform" = Linux ]; then
     wm_pid=$!
     SHELL="$1" HUTERM_SCROLL_BENCH=1 HUTERM_SCROLL_REVISION="$4" \
       HUTERM_SCROLL_HARDWARE="$5" \
-      timeout --signal=TERM 10s "$2" >"$3" 2>&1
+      bun scripts/run-scroll-benchmark.ts "$3" "$2"
     result=$?
-    cat "$3"
     kill "$wm_pid" >/dev/null 2>&1 || true
     wait "$wm_pid" >/dev/null 2>&1 || true
     exit "$result"
   ' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
   status=$?
   set -e
-  if [ "$status" -ne 124 ]; then
-    echo "Huterm scroll benchmark ended early (status $status)" >&2
+  if [ "$status" -ne 0 ]; then
+    echo "Huterm scroll benchmark collection failed (status $status)" >&2
     exit 1
   fi
 else
   SHELL="$workload" HUTERM_SCROLL_BENCH=1 \
     HUTERM_SCROLL_REVISION="$revision" \
     HUTERM_SCROLL_HARDWARE="$hardware" \
-    target/release/huterm >"$report" 2>&1 &
-  app_pid=$!
-  sleep 10
-  if ! kill -0 "$app_pid" >/dev/null 2>&1; then
-    set +e
-    wait "$app_pid"
-    status=$?
-    set -e
-    app_pid=""
-    cat "$report"
-    echo "Huterm scroll benchmark ended early (status $status)" >&2
-    exit 1
-  fi
-  kill -TERM "$app_pid" >/dev/null 2>&1 || true
-  set +e
-  wait "$app_pid"
-  set -e
-  app_pid=""
-  cat "$report"
+    bun scripts/run-scroll-benchmark.ts "$report" target/release/huterm
 fi
 bun scripts/check-scroll-benchmark.ts "$report"
 '''

@@ -785,6 +785,9 @@ Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
 run twm with `LC_ALL=C`. Default manual placement can grab the X server and
 block Huterm startup, producing zero samples; missing host fontsets can also
 leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.
+The scroll benchmark must wait for the checker's sample and queue-coalescing
+evidence before stopping Huterm. Parsing the initial 10,000 history rows varies
+enough across CI hosts that a fixed process lifetime can leave too few samples.
 
 Patched registry crates use ordered named patches in
 `third-party/vendor/sources.json` against checksum-pinned release archives. Agents
