@@ -56,23 +56,21 @@ test("draft and remote asset validation reject widened release state", () => {
   expect(() => validateReleaseAssets(remote.map(asset => asset.name === "SHA256SUMS" ? { ...asset, digest: null } : asset), local)).toThrow("digest");
 });
 
-test("release workflow binds validated source, schemas, and producer-qualified artifact names", async () => {
+test("release workflow binds event source, schemas, and producer-qualified artifact names", async () => {
   type Step = { name?: string; id?: string; run?: string; uses?: string; env?: Record<string, unknown>; with?: Record<string, unknown> };
   type Job = { env?: Record<string, unknown>; outputs?: Record<string, unknown>; steps: Step[] };
-  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, Job> };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { env: Record<string, unknown>; jobs: Record<string, Job> };
   const preflight = workflow.jobs.preflight!;
-  expect(preflight.outputs?.validated_sha).toBe("${{ steps.source.outputs.validated_sha }}");
+  expect(workflow.env.RELEASE_SHA).toBe("${{ github.sha }}");
   const validationIndex = preflight.steps.findIndex(step => step.run === "bun scripts/release.ts validate-build");
-  const sourceIndex = preflight.steps.findIndex(step => step.id === "source");
   const schemaIndex = preflight.steps.findIndex(step => step.run === "mise run schema:check");
   expect(schemaIndex).toBeGreaterThan(validationIndex);
-  expect(sourceIndex).toBeGreaterThan(schemaIndex);
 
-  const validatedSha = "${{ needs.preflight.outputs.validated_sha }}";
-  for (const jobName of ["macos", "linux_x86_64", "linux_aarch64", "assemble"]) {
+  const eventSha = "${{ github.sha }}";
+  for (const jobName of ["preflight", "macos", "linux_x86_64", "linux_aarch64", "assemble", "verify_candidate", "publish"]) {
     const job = workflow.jobs[jobName]!;
-    expect(job.env?.RELEASE_SHA).toBe(validatedSha);
-    expect(job.steps.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.ref).toBe(validatedSha);
+    expect(job.env?.RELEASE_SHA).toBeUndefined();
+    expect(job.steps.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.ref).toBe(eventSha);
   }
 
   const releaseMutationJobs = Object.entries(workflow.jobs).filter(([, job]) =>
@@ -80,7 +78,7 @@ test("release workflow binds validated source, schemas, and producer-qualified a
   ).map(([name]) => name);
   expect(releaseMutationJobs).toEqual(["publish"]);
 
-  const sha = "${{ needs.preflight.outputs.validated_sha }}";
+  const sha = "${{ github.sha }}";
   const actionName = (job: Job, stepName: string) => job.steps.find(step => step.name === stepName)?.with?.name;
   const producers = [
     ["macos", "release-macos"],
@@ -123,6 +121,62 @@ test("release workflow binds validated source, schemas, and producer-qualified a
     `release-linux-x86_64-${inputs.sha}-1`,
     `release-linux-aarch64-${inputs.sha}-2`,
   ]);
+});
+
+test("publication and manual verification share repaired native candidate preparation", async () => {
+  type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
+  type Job = { if?: string; environment?: string; permissions?: Record<string, string>; steps: Step[] };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, Job> };
+  const actionName = "./.github/actions/prepare-release-candidate";
+  for (const name of ["publish", "verify_candidate"]) {
+    const steps = workflow.jobs[name]?.steps ?? [];
+    const preparation = steps.findIndex(step => step.uses === actionName);
+    expect(preparation).toBeGreaterThan(steps.findIndex(step => step.uses?.startsWith("actions/checkout@")));
+    expect(preparation).toBeGreaterThanOrEqual(0);
+    expect(steps[preparation]?.with?.["artifact-id"]).toBe("${{ needs.assemble.outputs.artifact_id }}");
+    expect(steps[preparation]?.with?.["artifact-digest"]).toBe("${{ needs.assemble.outputs.artifact_digest }}");
+  }
+  const verification = workflow.jobs.verify_candidate!;
+  expect(verification.if).toBe("${{ !inputs.publish }}");
+  expect(verification.environment).toBeUndefined();
+  expect(verification.permissions).toEqual({ actions: "read", contents: "read" });
+  expect(workflow.jobs.publish?.if).toBe("inputs.publish");
+  const action = Bun.YAML.parse(await readFile(join(repository, ".github/actions/prepare-release-candidate/action.yml"), "utf8")) as { runs: { steps: Step[] } };
+  const steps = action.runs.steps;
+  const install = steps.findIndex(step => step.uses?.startsWith("jdx/mise-action@"));
+  const repair = steps.findIndex(step => step.run === "mise run ci:toolchain");
+  const validate = steps.findIndex(step => step.run === "bun scripts/release.ts validate-build");
+  const download = steps.findIndex(step => step.uses?.startsWith("actions/download-artifact@"));
+  const verify = steps.findIndex(step => step.run === "mise run release:verify-candidate");
+  expect(install).toBeGreaterThanOrEqual(0);
+  expect(repair).toBeGreaterThan(install);
+  expect(validate).toBeGreaterThan(repair);
+  expect(download).toBeGreaterThan(validate);
+  expect(verify).toBeGreaterThan(download);
+  const macos = workflow.jobs.macos!.steps;
+  expect(macos.findIndex(step => step.run === "mise run ci:toolchain")).toBeGreaterThanOrEqual(0);
+  expect(macos.findIndex(step => step.run === "mise run ci:toolchain")).toBeLessThan(macos.findIndex(step => step.run === "bun scripts/release.ts validate-build"));
+});
+
+test("candidate CLI rejects altered assets before native signing without requiring a tag", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-candidate-"));
+  const names = releaseAssetNames(inputs.version);
+  try {
+    for (const name of names.payloads) {
+      await writeFile(join(root, name), name.endsWith(".schema.json")
+        ? await readFile(join(repository, "schemas", name)) : name);
+    }
+    await writePlatformManifest(join(root, names.checksums), names.payloads.map(name => join(root, name)));
+    await writeFile(join(root, names.macos), "altered archive");
+    const child = Bun.spawn([process.execPath, join(repository, "scripts/release-macos.ts"), "verify-candidate"], {
+      env: { ...process.env, RELEASE_SHA: inputs.sha, RELEASE_VERSION: inputs.version, RELEASE_DIST_DIR: root, RELEASE_TAG: "" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [status, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(status).toBe(1);
+    expect(stderr).toContain("SHA256SUMS does not match the release payloads");
+    expect(await readFile(join(root, names.macos), "utf8")).toBe("altered archive");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("assembly verifies platform digests and creates the exact ten-file release", async () => {

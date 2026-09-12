@@ -108,9 +108,11 @@ from `main` or the exact branch commit selected by manual dispatch, exercises
 signing through Gatekeeper, and uploads only an Actions
 artifact. It must not require or inspect a tag or GitHub Release. Manual recovery
 requires an explicit publish choice and retains the full draft-release guards.
-Validate a selected SHA against `main` before checkout or any target-controlled
-code runs, allowing only the exact dispatched branch commit for manual
-non-publishing verification. Revalidate the checkout and Cargo metadata afterward.
+Check out `github.sha` directly in every release job. Require the supplied SHA
+to match that immutable event SHA before checkout or any target-controlled code
+runs. Validate ancestry against `main`, allowing the exact dispatched branch
+commit for manual non-publishing verification. Revalidate the checkout and Cargo
+metadata afterward.
 
 Draft release listings require push access even though the API accepts read-only
 tokens. Use a contents-write bot token for draft validation; keep the job token

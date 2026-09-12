@@ -448,6 +448,10 @@ run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin"
 description = "Build, sign, notarize, and package the universal macOS release"
 run = "bun scripts/release-macos.ts build"
 
+[tasks."release:verify-candidate"]
+description = "Verify assembled release assets and native fixture signing without publishing"
+run = "bun scripts/release-macos.ts verify-candidate"
+
 [tasks."build:exec"]
 description = "Run a command with a compatible macOS SDK"
 run = "bash scripts/build-exec.sh"

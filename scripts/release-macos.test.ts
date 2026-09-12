@@ -133,8 +133,10 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
       ["true", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "identical", 0],
       ["true", "push", "refs/heads/main", inputs.sha, "identical", 0],
       ["true", "push", "refs/heads/main", "b".repeat(40), "ahead", 1],
-      ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 0],
+      ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 1],
       ["false", "workflow_dispatch", "refs/heads/fix", "invalid", "ahead", 1],
+      ["false", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 0],
+      ["false", "workflow_dispatch", "refs/heads/fix", "b".repeat(40), "ahead", 1],
     ] as const) {
       const result = Bun.spawnSync(["bash", "-c", script], { env: {
         ...process.env, PATH: `${directory}:${process.env.PATH}`, RELEASE_PUBLISH: publish,
@@ -375,8 +377,8 @@ test("protected publication alone receives updater signing and attestation autho
   expect(workflow.slice(jobs, publishJob)).not.toContain("SPARKLE_EDDSA_PRIVATE_KEY");
   expect(workflow.slice(publishJob)).toContain("environment: release");
   expect(workflow.slice(publishJob)).toContain("SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}");
-  expect(workflow.slice(publishJob)).toContain("artifact-ids: ${{ needs.assemble.outputs.artifact_id }}");
-  expect(workflow.slice(publishJob)).toContain("EXPECTED_ARTIFACT_DIGEST: ${{ needs.assemble.outputs.artifact_digest }}");
+  expect(workflow.slice(publishJob)).toContain("artifact-id: ${{ needs.assemble.outputs.artifact_id }}");
+  expect(workflow.slice(publishJob)).toContain("artifact-digest: ${{ needs.assemble.outputs.artifact_digest }}");
   for (const permission of ["artifact-metadata: write", "attestations: write", "id-token: write"]) {
     expect(workflow.slice(publishJob)).toContain(permission);
   }
