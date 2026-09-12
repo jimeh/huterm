@@ -336,6 +336,7 @@ test("release workflows use the documented repository credential names", async (
     "MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64",
     "MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD",
     "APPLE_NOTARIZATION_KEY_P8_BASE64",
+    "SPARKLE_EDDSA_PRIVATE_KEY",
   ];
 
   for (const variable of variables) {
@@ -347,9 +348,11 @@ test("release workflows use the documented repository credential names", async (
     expect(releaseWorkflow).toContain(`secrets.${secret}`);
     expect(releasePleaseWorkflow).toContain(`secrets.${secret}`);
   }
-  expect(releaseGuide).toContain("`SPARKLE_EDDSA_PRIVATE_KEY`");
-  expect(releaseWorkflow).toContain("secrets.SPARKLE_EDDSA_PRIVATE_KEY");
-  expect(releasePleaseWorkflow).not.toContain("secrets.SPARKLE_EDDSA_PRIVATE_KEY");
+  const caller = Bun.YAML.parse(releasePleaseWorkflow) as {
+    jobs: Record<string, { secrets?: Record<string, string> }>;
+  };
+  expect(caller.jobs["build-release"]!.secrets?.SPARKLE_EDDSA_PRIVATE_KEY)
+    .toBe("${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}");
 });
 
 test("manual verification signs without requiring or publishing a GitHub release", async () => {

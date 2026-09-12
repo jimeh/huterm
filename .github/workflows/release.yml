@@ -33,7 +33,7 @@ on:
         description: Base64-encoded App Store Connect API private key
         required: true
       SPARKLE_EDDSA_PRIVATE_KEY:
-        description: Supplied by the protected release environment for appcast signing
+        description: Repository secret for appcast signing, required when publishing
         required: false
   workflow_dispatch:
     inputs:
