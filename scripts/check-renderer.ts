@@ -1,6 +1,7 @@
 /** Run the renderer smoke with the same portable process checks as native smokes. */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { runSmokeProcess } from "./smoke-process.ts";
 
 export type RendererOutcome = {
   exitCode: number | null;
@@ -36,19 +37,11 @@ if (import.meta.main) {
   const executable = Bun.argv[2];
   if (!executable) throw new Error("usage: check-renderer.ts <executable>");
   const timeout = 15_000;
-  const started = performance.now();
-  const result = Bun.spawnSync([executable], {
-    stdout: "pipe", stderr: "pipe", timeout,
+  const evidence = process.env.HUTERM_SMOKE_EVIDENCE_DIR;
+  const outcome = await runSmokeProcess([executable], {
+    timeoutMs: timeout,
+    evidenceDir: evidence ? join(evidence, "renderer-process") : undefined,
   });
-  const outcome: RendererOutcome = {
-    exitCode: result.exitCode,
-    signalCode: result.signalCode ?? null,
-    timedOut: result.exitCode === null && performance.now() - started >= timeout - 100,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
-  process.stdout.write(outcome.stdout);
-  process.stderr.write(outcome.stderr);
   try {
     checkRenderer(outcome);
   } catch (error) {

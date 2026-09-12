@@ -1,3 +1,4 @@
+import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 /** Run the AppKit menu smoke in its own main-thread process. */
 export function checkNativeMenus(exitCode: number, output: string): void {
   const expected = [
@@ -24,10 +25,7 @@ export function checkNativeMenus(exitCode: number, output: string): void {
 if (import.meta.main) {
   const executable = Bun.argv[2];
   if (!executable) throw new Error("usage: check-native-menus.ts <executable>");
-  const result = Bun.spawnSync([executable], {
-    stdout: "pipe", stderr: "pipe", timeout: 30_000,
-  });
-  process.stdout.write(result.stdout);
-  process.stderr.write(result.stderr);
-  checkNativeMenus(result.exitCode, result.stdout.toString());
+  const result = await runSmokeProcess([executable], { timeoutMs: 30_000 });
+  checkSmokeProcess(result, "native menu smoke");
+  checkNativeMenus(result.exitCode, result.stdout);
 }

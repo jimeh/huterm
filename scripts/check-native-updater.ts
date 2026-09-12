@@ -1,6 +1,7 @@
 import { chmod, copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const fixturePublicKey = "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=";
@@ -18,16 +19,13 @@ export function checkNativeUpdaterRun(exitCode: number, output: string, unpackag
   }
 }
 
-function run(executable: string, env: Record<string, string>, unpackaged: boolean): void {
-  const result = Bun.spawnSync([executable], {
+async function run(executable: string, env: Record<string, string>, unpackaged: boolean): Promise<void> {
+  const result = await runSmokeProcess([executable], {
     env: { ...process.env, ...env },
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 30_000,
+    timeoutMs: 30_000,
   });
-  process.stdout.write(result.stdout);
-  process.stderr.write(result.stderr);
-  checkNativeUpdaterRun(result.exitCode, result.stdout.toString(), unpackaged);
+  checkSmokeProcess(result, "native updater smoke");
+  checkNativeUpdaterRun(result.exitCode, result.stdout, unpackaged);
 }
 
 export function updaterFixturePlist(): string {
@@ -97,13 +95,13 @@ async function main(): Promise<void> {
       throw new Error("updater smoke fixture must not use the production feed");
     }
     const { bundleExecutable, framework } = await assembleBundle(executable, directory);
-    run(bundleExecutable, {
+    await run(bundleExecutable, {
       CFFIXED_USER_HOME: directory,
       HUTERM_CONFIG_FILE: config,
       HUTERM_UPDATER_SMOKE_FRAMEWORK: framework,
       SHELL: "/bin/sh",
     }, false);
-    run(executable, {
+    await run(executable, {
       CFFIXED_USER_HOME: directory,
       HUTERM_CONFIG_FILE: config,
       HUTERM_UPDATER_SMOKE_UNPACKAGED: "1",

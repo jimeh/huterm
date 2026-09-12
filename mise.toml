@@ -155,7 +155,7 @@ smoke_config=$(mktemp)
 trap 'rm -f "$smoke_config"' EXIT
 printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
-HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
 status=$?
 set -e
@@ -730,6 +730,10 @@ case "$(uname -s)" in
 esac
 '''
 
+[tasks."ci:smoke:step"]
+description = "Supervise one named CI smoke step with bounded cleanup and live evidence"
+run = "bun scripts/run-smoke-step.ts"
+
 [tasks."ci:smoke:run"]
 description = "Run precompiled CI desktop smoke binaries for the current platform"
 run = '''
@@ -782,7 +786,13 @@ case "$(uname -s)" in
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
-    for tool in openbox xcompmgr xprop xdotool xwininfo xmessage setxkbmap stdbuf; do
+    # The renderer and basic desktop launch do not use a window manager.
+    smoke_tools="xvfb-run"
+    case "$smoke_step" in
+      renderer|linux-desktop) ;;
+      *) smoke_tools="$smoke_tools openbox xcompmgr xprop xdotool xwininfo xmessage setxkbmap stdbuf" ;;
+    esac
+    for tool in $smoke_tools; do
       command -v "$tool" >/dev/null || { echo "Desktop smokes require $tool" >&2; exit 1; }
     done
 
@@ -798,7 +808,7 @@ case "$(uname -s)" in
       smoke_config=$(mktemp)
       printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
       set +e
-      HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM 8s xvfb-run -a \
+      HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
         -e "$evidence_dir/linux-desktop-xvfb.log" -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
       status=$?
       set -e
