@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/jimeh/huterm/compare/v0.7.0...v0.7.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **ci:** repair and verify release publication tools ([#105](https://github.com/jimeh/huterm/issues/105)) ([9caac95](https://github.com/jimeh/huterm/commit/9caac9522a6b8dc22b5a1fda8651c36af119030c))
+* stabilize scroll sampling and palette drag capture ([#103](https://github.com/jimeh/huterm/issues/103)) ([b8f42e3](https://github.com/jimeh/huterm/commit/b8f42e3fdb90fa27489a430df526e7f5c5b05f05))
+
 ## [0.7.0](https://github.com/jimeh/huterm/compare/v0.6.0...v0.7.0) (2026-09-12)
 
 
