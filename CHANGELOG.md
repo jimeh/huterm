@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/jimeh/huterm/compare/v0.5.0...v0.6.0) (2026-09-12)
+
+
+### Features
+
+* add native macOS self-updates ([#92](https://github.com/jimeh/huterm/issues/92)) ([7567a20](https://github.com/jimeh/huterm/commit/7567a20d8efc05a1c8fe351c17633c3ee4ab396b))
+
 ## [0.5.0](https://github.com/jimeh/huterm/compare/v0.4.0...v0.5.0) (2026-09-11)
 
 
