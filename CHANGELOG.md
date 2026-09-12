@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/jimeh/huterm/compare/v0.4.0...v0.5.0) (2026-09-11)
+
+
+### Features
+
+* refresh Huterm app icon ([#93](https://github.com/jimeh/huterm/issues/93)) ([1cd44d6](https://github.com/jimeh/huterm/commit/1cd44d6184372f270e3d16bad5db9e8105d660e3))
+* ship native Linux AppImage and tarball releases ([#90](https://github.com/jimeh/huterm/issues/90)) ([72ddd6c](https://github.com/jimeh/huterm/commit/72ddd6c2c32615a17e9c1db65dee17f3a1ef55a0))
+
 ## [0.4.0](https://github.com/jimeh/huterm/compare/v0.3.0...v0.4.0) (2026-09-10)
 
 
