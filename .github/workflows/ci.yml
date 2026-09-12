@@ -46,6 +46,8 @@ jobs:
           key: policy
 
       - name: Verify repository policy
+        env:
+          PINACT_GITHUB_TOKEN: ${{ github.token }}
         run: mise run verify:policy
 
       - name: Verify patched vendor sources

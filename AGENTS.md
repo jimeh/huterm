@@ -135,6 +135,9 @@ variables do not reach nested Cargo tool installs, which can otherwise race in
 the image's shared Rustup state. Install `cargo:*` tools serially only after
 `verify:toolchain`; a parallel Mise install can publish the Rust tool before its
 Cargo component is dispatchable.
+Pass `${{ github.token }}` to Pinact as `PINACT_GITHUB_TOKEN` in CI. The Mise
+action's token environment is Mise-specific, so Pinact otherwise uses GitHub's
+anonymous API limit while verifying action pins.
 
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and
