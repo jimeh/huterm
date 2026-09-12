@@ -80,7 +80,7 @@ test("cancelling the supervisor terminates its child and cannot report success",
   const module = join(import.meta.dir, "smoke-process.ts");
   const source = `
     import { runSmokeProcess } from ${JSON.stringify(module)};
-    const outcome = await runSmokeProcess([process.execPath, "-e", 'process.kill(process.ppid, "SIGTERM"); setInterval(() => {}, 10)'], { timeoutMs: 2000, stream: false });
+    const outcome = await runSmokeProcess([process.execPath, "-e", 'process.kill(process.ppid, "SIGTERM"); setTimeout(() => process.exit(3), 1500)'], { timeoutMs: 2000, stream: false });
     console.log(JSON.stringify(outcome));
   `;
   const result = await run(source, 3_000);
