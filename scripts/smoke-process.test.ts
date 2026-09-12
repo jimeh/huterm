@@ -90,3 +90,45 @@ test("cancelling the supervisor terminates its child and cannot report success",
   expect(inner.timedOut).toBe(false);
   expect(() => checkSmokeProcess(inner, "fixture")).toThrow("terminated by SIGTERM");
 });
+
+
+test("nested cancellation allows the inner supervisor to force native cleanup", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-nested-cancel-"));
+  try {
+    const ready = join(directory, "ready");
+    const module = join(import.meta.dir, "smoke-process.ts");
+    const native = `
+      process.on("SIGTERM", () => {});
+      require("node:fs").writeFileSync(${JSON.stringify(ready)}, "ready");
+      setTimeout(() => process.exit(3), 4000);
+    `;
+    const inner = `
+      import { runSmokeProcess } from ${JSON.stringify(module)};
+      const result = await runSmokeProcess([process.execPath, "-e", ${JSON.stringify(native)}], { timeoutMs: 3000, graceMs: 50, stream: false });
+      console.log(JSON.stringify(result));
+    `;
+    const outer = `
+      import { runSmokeProcess } from ${JSON.stringify(module)};
+      const timer = setInterval(() => {
+        if (require("node:fs").existsSync(${JSON.stringify(ready)})) {
+          clearInterval(timer);
+          process.kill(process.pid, "SIGTERM");
+        }
+      }, 10);
+      const result = await runSmokeProcess([process.execPath, "-e", ${JSON.stringify(inner)}], { timeoutMs: 3500, graceMs: 500, stream: false });
+      clearInterval(timer);
+      console.log(JSON.stringify(result));
+    `;
+    const result = await run(outer);
+    checkSmokeProcess(result, "test driver");
+    const outerResult = JSON.parse(result.stdout);
+    expect(outerResult.signalCode).toBe("SIGTERM");
+    expect(outerResult.timedOut).toBe(false);
+    const innerResult = JSON.parse(outerResult.stdout);
+    expect(innerResult.signalCode).toBe("SIGTERM");
+    expect(innerResult.exitCode).toBe(null);
+    expect(innerResult.timedOut).toBe(false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

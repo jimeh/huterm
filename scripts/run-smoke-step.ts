@@ -12,6 +12,8 @@ if (!step || !steps.has(step)) throw new Error(`expected one named smoke step, r
 const evidence = process.env.HUTERM_SMOKE_EVIDENCE_DIR;
 const outcome = await runSmokeProcess(["mise", "run", "ci:smoke:run"], {
   timeoutMs: 300_000,
+  // Inner native supervisors force cleanup after one second; let them finish.
+  graceMs: 5_000,
   evidenceDir: evidence ? join(evidence, "steps", step) : undefined,
 });
 checkSmokeProcess(outcome, `smoke step ${step}`);
