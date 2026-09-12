@@ -384,12 +384,12 @@ jobs:
             runner: ubuntu-22.04
             machine: x86_64
             runner-arch: X64
-            task: package:linux
+            task: ci:package:linux
           - label: Linux aarch64
             runner: ubuntu-22.04-arm
             machine: aarch64
             runner-arch: ARM64
-            task: package:linux
+            task: ci:package:linux
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -601,6 +601,9 @@ restore rust-cache's automatic Rust environment hash: hosted images can carry
 different unrelated toolchains between runs, preventing valid cache restores.
 Keep `cache-on-failure` enabled so transient native smoke failures do not discard
 a successful compilation before the requested rerun.
+CI Linux packaging retries once with retained Cargo and Zig caches because
+Ghostty's native dependency downloads can fail transiently. A second failure
+remains authoritative.
 Keep the aggregate `ci:smoke:build` targets aligned with the binaries consumed
 by `ci:smoke:run`.
 

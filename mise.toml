@@ -513,6 +513,16 @@ description = "Build and verify native Linux AppImage and tarball artifacts"
 depends = ["ghostty:prepare", "icons:check"]
 run = "bun scripts/package-linux.ts build"
 
+[tasks."ci:package:linux"]
+description = "Build Linux packages, retrying one transient native dependency fetch"
+run = '''
+if mise run package:linux; then
+  exit 0
+fi
+echo "Linux packaging failed; retrying once with retained Cargo and Zig caches" >&2
+mise run package:linux
+'''
+
 [tasks."package:linux:container"]
 description = "Build Linux packages in Ubuntu 22.04 and export them to host dist/"
 run = "bun scripts/linux.ts package"
