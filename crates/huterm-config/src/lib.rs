@@ -153,6 +153,45 @@ impl Default for WindowConfig {
     }
 }
 
+/// Where the command palette sits within its window.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PalettePlacement {
+    /// Anchored near the top edge of the window.
+    #[default]
+    Top,
+    /// Centred on the window at the palette's full height, so filtering
+    /// results never moves the input line.
+    Center,
+}
+
+/// Command palette behavior.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct PaletteConfig {
+    /// Where the palette sits within the window: `top` or `center`.
+    pub placement: PalettePlacement,
+    /// Keep the search text after the palette is cancelled, so reopening
+    /// within `retain_query_seconds` restores it selected.
+    pub retain_query: bool,
+    /// How long a cancelled palette's search text is retained, 0 to 3600.
+    pub retain_query_seconds: u32,
+}
+
+impl Default for PaletteConfig {
+    fn default() -> Self {
+        Self {
+            placement: PalettePlacement::Top,
+            retain_query: true,
+            retain_query_seconds: 15,
+        }
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -306,6 +345,8 @@ pub struct RawConfig {
     pub window: WindowConfig,
     #[serde(default)]
     pub updates: UpdateConfig,
+    #[serde(default)]
+    pub palette: PaletteConfig,
     #[serde(default)]
     pub theme: ThemeDefinition,
     #[serde(default)]
@@ -482,6 +523,11 @@ impl RawConfig {
     /// Returns an error when the input violates the configuration contract.
     pub fn validate_values(&self) -> Result<(), ConfigError> {
         self.quake.validate().map_err(ConfigError::Quake)?;
+        if self.palette.retain_query_seconds > 3600 {
+            return Err(ConfigError::Invalid(
+                "palette.retain_query_seconds must be between 0 and 3600",
+            ));
+        }
         if self.font.family.trim().is_empty() {
             return Err(ConfigError::Invalid("font.family must not be empty"));
         }
@@ -541,6 +587,35 @@ mod update_tests {
                 .to_string(),
             "updates.check_interval_hours must be at least 1"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_defaults_and_bounds() {
+        let defaults: RawConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.palette, PaletteConfig::default());
+
+        let maximum: RawConfig = toml::from_str(
+            "[palette]\nplacement = \"center\"\nretain_query = false\nretain_query_seconds = 3600",
+        )
+        .unwrap();
+        assert_eq!(maximum.palette.placement, PalettePlacement::Center);
+        assert!(!maximum.palette.retain_query);
+        assert_eq!(maximum.palette.retain_query_seconds, 3600);
+        assert!(maximum.validate_values().is_ok());
+
+        let above_maximum: RawConfig =
+            toml::from_str("[palette]\nretain_query_seconds = 3601").unwrap();
+        assert_eq!(
+            above_maximum.validate_values().unwrap_err().to_string(),
+            "palette.retain_query_seconds must be between 0 and 3600"
+        );
+
+        assert!(toml::from_str::<RawConfig>("[palette]\nvim = true").is_err());
     }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

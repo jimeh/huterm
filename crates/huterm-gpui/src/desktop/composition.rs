@@ -5,6 +5,8 @@ use std::ops::Range;
 use super::TerminalView;
 #[cfg(target_os = "macos")]
 use super::windows;
+#[cfg(any(target_os = "macos", test))]
+use crate::ui::text::{range_from_utf16, range_to_utf16, utf16_len};
 use gpui::Context;
 #[cfg(target_os = "macos")]
 use gpui::{App, Bounds, Pixels, Window, point, size};
@@ -33,35 +35,15 @@ impl Composition {
 #[cfg(any(target_os = "macos", test))]
 impl Composition {
     fn len(&self) -> usize {
-        self.text.encode_utf16().count()
+        utf16_len(&self.text)
     }
 
     // AppKit ranges use UTF-16 units; never slice through a UTF-8 scalar or
     // the middle of a surrogate pair when adjusting an external range.
     fn range(&self, range: Range<usize>) -> (Range<usize>, Range<usize>) {
-        let mut byte_start = self.text.len();
-        let mut unit_start = self.len();
-        let mut byte_end = self.text.len();
-        let mut unit_end = self.len();
-        let mut units = 0;
-        for (byte, ch) in self.text.char_indices() {
-            let next = units + ch.len_utf16();
-            if range.start < next && byte_start == self.text.len() {
-                byte_start = byte;
-                unit_start = units;
-            }
-            if range.end <= units {
-                byte_end = byte;
-                unit_end = units;
-                break;
-            }
-            units = next;
-        }
-        if range.end < range.start {
-            byte_end = byte_start;
-            unit_end = unit_start;
-        }
-        (byte_start..byte_end, unit_start..unit_end)
+        let bytes = range_from_utf16(&self.text, range);
+        let units = range_to_utf16(&self.text, bytes.clone());
+        (bytes, units)
     }
 
     fn replace(&mut self, range: Option<Range<usize>>, text: &str) -> usize {

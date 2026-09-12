@@ -9,7 +9,7 @@ mod command;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
     CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
-    catalog, ids, lookup, validate,
+    Requirement, catalog, ids, lookup, validate, validate_supplied,
 };
 
 macro_rules! opaque_id {

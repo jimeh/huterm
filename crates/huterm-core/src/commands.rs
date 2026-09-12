@@ -32,23 +32,29 @@ pub fn execute(
         command: spec.id,
         name,
     };
-    let name = || invocation.text("name").ok_or_else(|| missing("name"));
+    // A blank name clears the custom name; Mux takes `None` for that.
+    let name = || {
+        invocation
+            .text("name")
+            .map(|name| Some(name).filter(|name| !name.trim().is_empty()))
+            .ok_or_else(|| missing("name"))
+    };
     let result = match spec.id {
         ids::RENAME_TAB => {
             let tab = invocation.tab("tab").ok_or_else(|| missing("tab"))?;
-            mux.rename_tab(tab, Some(name()?))
+            mux.rename_tab(tab, name()?)
         }
         ids::RENAME_WORKSPACE => {
             let workspace = invocation
                 .workspace("workspace")
                 .ok_or_else(|| missing("workspace"))?;
-            mux.rename_workspace(workspace, Some(name()?))
+            mux.rename_workspace(workspace, name()?)
         }
         ids::RENAME_SESSION => {
             let session = invocation
                 .session("session")
                 .ok_or_else(|| missing("session"))?;
-            mux.rename_session(session, Some(name()?))
+            mux.rename_session(session, name()?)
         }
         other => {
             return Err(CommandError::Unavailable(format!(
@@ -124,10 +130,6 @@ mod tests {
                 name: "tab"
             })
         );
-        assert!(matches!(
-            execute(&mut mux, &rename_tab(" ", Some(tab.id))),
-            Err(CommandError::Runtime(_))
-        ));
         let foreign =
             TabId::in_runtime(Mux::default().runtime_id(), tab.id.get());
         assert_eq!(
@@ -150,6 +152,68 @@ mod tests {
             Err(CommandError::StaleTarget)
         );
         assert_eq!(mux.workspace(workspace).unwrap().tabs, Vec::new());
+        mux.close_session(session).unwrap();
+    }
+
+    #[test]
+    fn blank_names_clear_custom_names_and_are_idempotent() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(Some("custom session")).unwrap();
+        let workspace = mux
+            .create_workspace(session, Some("custom workspace"))
+            .unwrap();
+        let tab = mux.open_tab(workspace, &command()).unwrap().tab;
+        mux.rename_tab(tab.id, Some("custom tab")).unwrap();
+
+        let clears = [
+            rename_tab("", Some(tab.id)),
+            CommandInvocation::new(
+                ids::RENAME_WORKSPACE,
+                vec![
+                    CommandArgument::new(
+                        "name",
+                        CommandValue::Text("  ".into()),
+                    ),
+                    CommandArgument::new(
+                        "workspace",
+                        CommandValue::Workspace(workspace),
+                    ),
+                ],
+            ),
+            CommandInvocation::new(
+                ids::RENAME_SESSION,
+                vec![
+                    CommandArgument::new(
+                        "name",
+                        CommandValue::Text(String::new()),
+                    ),
+                    CommandArgument::new(
+                        "session",
+                        CommandValue::Session(session),
+                    ),
+                ],
+            ),
+        ];
+
+        for clear in &clears {
+            assert_eq!(execute(&mut mux, clear), Ok(CommandOutcome::Completed));
+        }
+        assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);
+        assert_eq!(mux.workspace(workspace).unwrap().custom_name(), None);
+        assert_eq!(mux.session(session).unwrap().custom_name(), None);
+
+        for clear in &clears {
+            assert_eq!(execute(&mut mux, clear), Ok(CommandOutcome::Completed));
+        }
+
+        let foreign =
+            TabId::in_runtime(Mux::default().runtime_id(), tab.id.get());
+        assert_eq!(
+            execute(&mut mux, &rename_tab("", Some(foreign))),
+            Err(CommandError::StaleTarget)
+        );
+        assert_eq!(mux.tab(tab.id).unwrap().custom_name(), None);
+
         mux.close_session(session).unwrap();
     }
 }

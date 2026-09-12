@@ -3,6 +3,7 @@
 use super::*;
 use crate::quake::ProfileExt;
 use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
+use gpui::EntityId;
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
@@ -32,6 +33,108 @@ impl Default for Registry {
                 .map(|_| SmokeJournal::new()),
         }
     }
+}
+
+/// Configured quake profile and its current window state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ProfileRow {
+    pub(super) name: String,
+    pub(super) geometry: String,
+    pub(super) state: ProfileState,
+}
+
+/// Live state of a configured quake profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProfileState {
+    NotSummoned,
+    Hidden { tabs: usize },
+    Visible,
+}
+
+/// Where a `profile_rows` call comes from.
+///
+/// GPUI takes a window out of its slot for the duration of an update, so
+/// reading the calling window, or its root view entity, from inside its own
+/// dispatch panics in GPUI. A caller inside a window therefore supplies its
+/// own quake state and is skipped; every other window is read through its
+/// view entity, which does not touch the window stack.
+pub(super) enum Viewpoint {
+    /// An update of the view with this id is in progress.
+    Window {
+        view: EntityId,
+        /// The caller's own profile name and visibility, when it is quake.
+        quake: Option<(String, bool)>,
+        tabs: usize,
+    },
+    /// No window update is on the stack: async tasks and smoke commands.
+    Outside,
+}
+
+/// Configured profiles with their live window state, sorted by name.
+pub(super) fn profile_rows(cx: &App, viewpoint: &Viewpoint) -> Vec<ProfileRow> {
+    let desktop = cx.global::<Desktop>();
+    let mut live: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+    if let Viewpoint::Window {
+        quake: Some((name, visible)),
+        tabs,
+        ..
+    } = viewpoint
+    {
+        live.insert(name.clone(), (*visible, *tabs));
+    }
+    for weak in &desktop.windows {
+        if let Viewpoint::Window { view, .. } = viewpoint
+            && weak.entity_id() == *view
+        {
+            continue;
+        }
+        let Some(entity) = weak.upgrade() else {
+            continue;
+        };
+        let view = entity.read(cx);
+        if let Some(state) = &view.quake {
+            live.insert(state.name.clone(), (state.visible(), view.tabs.len()));
+        }
+    }
+    build_profile_rows(&desktop.config.quake.profiles, |name| {
+        live.get(name).copied()
+    })
+}
+
+fn build_profile_rows(
+    profiles: &BTreeMap<String, Profile>,
+    mut live_state: impl FnMut(&str) -> Option<(bool, usize)>,
+) -> Vec<ProfileRow> {
+    profiles
+        .iter()
+        .map(|(name, profile)| ProfileRow {
+            name: name.clone(),
+            geometry: profile_geometry(profile),
+            state: match live_state(name) {
+                Some((true, _)) => ProfileState::Visible,
+                Some((false, tabs)) => ProfileState::Hidden { tabs },
+                None => ProfileState::NotSummoned,
+            },
+        })
+        .collect()
+}
+
+fn profile_geometry(profile: &Profile) -> String {
+    if profile.fullscreen {
+        return "fullscreen".to_owned();
+    }
+    let position = match profile.position {
+        quake::Position::Top => "top",
+        quake::Position::Bottom => "bottom",
+        quake::Position::Left => "left",
+        quake::Position::Right => "right",
+        quake::Position::Center => "center",
+    };
+    format!(
+        "{position} · {:.0}% × {:.0}%",
+        profile.width * 100.0,
+        profile.height * 100.0
+    )
 }
 
 const SMOKE_JOURNAL_CAPACITY: usize = 4096;
@@ -178,6 +281,7 @@ impl Activation {
 )]
 pub(super) struct Presentation {
     pub name: String,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
     profile: Profile,
@@ -266,6 +370,7 @@ enum NativeOp {
 }
 struct NativeEffect {
     native: native::Window,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     gate: Rc<Cell<u64>>,
     generation: u64,
     operations: Vec<NativeOp>,
@@ -275,10 +380,15 @@ struct NativeEffectOutcome {
     warning: Option<String>,
     observation: Option<SmokeObservationDraft>,
 }
+struct NativeEffectResult {
+    outcome: anyhow::Result<NativeEffectOutcome>,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+}
 impl NativeEffect {
     fn for_state(state: &Presentation, operations: Vec<NativeOp>) -> Self {
         Self {
             native: state.native.clone(),
+            reporter: state.reporter.clone(),
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
             operations,
@@ -311,43 +421,49 @@ impl NativeEffect {
         }
         effect
     }
-    fn run(self) -> anyhow::Result<NativeEffectOutcome> {
-        let mut warning = None;
-        for operation in self.operations {
-            if self.gate.get() != self.generation {
-                return Ok(NativeEffectOutcome {
-                    warning,
-                    observation: None,
-                });
-            }
-            match operation {
-                NativeOp::Frame(frame) => self.native.set_frame(frame)?,
-                NativeOp::Quake(enabled) => self.native.set_quake(enabled)?,
-                NativeOp::Fullscreen(enabled) => {
-                    self.native.set_fullscreen(enabled)?;
+    fn run(self) -> NativeEffectResult {
+        let reporter = self.reporter.clone();
+        let outcome = (|| {
+            let mut warning = None;
+            for operation in self.operations {
+                if self.gate.get() != self.generation {
+                    return Ok(NativeEffectOutcome {
+                        warning,
+                        observation: None,
+                    });
                 }
-                NativeOp::Opacity(value) => self.native.opacity(value)?,
-                NativeOp::Show => self.native.show()?,
-                NativeOp::Hide(target) => {
-                    let was_active = self.native.active()?;
-                    self.native.hide()?;
-                    if was_active
-                        && self.gate.get() == self.generation
-                        && let Some((platform, target)) = target
-                        && let Err(error) = platform.focus(&target)
-                    {
-                        warning = Some(format!(
-                            "focus restoration failed after hiding: {error}"
-                        ));
+                match operation {
+                    NativeOp::Frame(frame) => self.native.set_frame(frame)?,
+                    NativeOp::Quake(enabled) => {
+                        self.native.set_quake(enabled)?;
                     }
+                    NativeOp::Fullscreen(enabled) => {
+                        self.native.set_fullscreen(enabled)?;
+                    }
+                    NativeOp::Opacity(value) => self.native.opacity(value)?,
+                    NativeOp::Show => self.native.show()?,
+                    NativeOp::Hide(target) => {
+                        let was_active = self.native.active()?;
+                        self.native.hide()?;
+                        if was_active
+                            && self.gate.get() == self.generation
+                            && let Some((platform, target)) = target
+                            && let Err(error) = platform.focus(&target)
+                        {
+                            warning = Some(format!(
+                                "focus restoration failed after hiding: {error}"
+                            ));
+                        }
+                    }
+                    NativeOp::Failure(error) => return Err(error),
                 }
-                NativeOp::Failure(error) => return Err(error),
             }
-        }
-        Ok(NativeEffectOutcome {
-            warning,
-            observation: self.observation,
-        })
+            Ok(NativeEffectOutcome {
+                warning,
+                observation: self.observation,
+            })
+        })();
+        NativeEffectResult { outcome, reporter }
     }
 }
 
@@ -372,7 +488,7 @@ pub(super) fn install(cx: &mut App) {
         .map_err(|error| error.to_string())
         .and_then(|compiled| replace_registrations(cx, &config, &compiled));
     if let Err(error) = result {
-        report(cx, &error);
+        report(cx, &error, None);
     }
 }
 
@@ -402,7 +518,8 @@ fn start_pump(cx: &mut App) {
                 break;
             };
             for (handle, effect) in effects {
-                match effect.run() {
+                let NativeEffectResult { outcome, reporter } = effect.run();
+                match outcome {
                     Ok(outcome) => {
                         let _ = cx.update(|cx| {
                             if let Some(observation) = outcome.observation
@@ -415,7 +532,7 @@ fn start_pump(cx: &mut App) {
                                 journal.record(observation);
                             }
                             if let Some(warning) = outcome.warning {
-                                report(cx, &warning);
+                                report(cx, &warning, reporter);
                             }
                         });
                     }
@@ -426,11 +543,11 @@ fn start_pump(cx: &mut App) {
                             .ok()
                             .flatten();
                         if let Some(effect) = recovery
-                            && let Err(error) = effect.run()
+                            && let Err(error) = effect.run().outcome
                         {
                             eprintln!("Quake recovery: {error}");
                         }
-                        let _ = cx.update(|cx| report(cx, &message));
+                        let _ = cx.update(|cx| report(cx, &message, reporter));
                     }
                 }
             }
@@ -493,16 +610,19 @@ fn platform(cx: &mut App) -> Result<native::Platform, String> {
         .clone()
         .ok_or_else(|| "native quake platform unavailable".into())
 }
-fn report(cx: &mut App, error: &str) {
+pub(super) fn report(
+    cx: &mut App,
+    error: &str,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+) {
     let message = format!("Quake: {error}");
-    eprintln!("{message}");
-    cx.global_mut::<Desktop>().config_error = Some(message.clone());
-    cx.defer(move |cx| show_active_window_status(cx, message));
+    report_deferred_failure_with_global_latch(cx, reporter, message);
 }
 
 pub(super) fn invoke(
     cx: &mut App,
     invocation: &CommandInvocation,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) -> Result<CommandOutcome, CommandError> {
     let name = invocation.text("profile").unwrap_or("default").to_owned();
     if !cx
@@ -523,8 +643,8 @@ pub(super) fn invoke(
     }
     let command = invocation.id;
     cx.defer(move |cx| {
-        if let Err(error) = invoke_now(cx, &name, command) {
-            report(cx, &error);
+        if let Err(error) = invoke_now(cx, &name, command, reporter.clone()) {
+            report(cx, &error, reporter);
         }
     });
     Ok(CommandOutcome::Accepted)
@@ -533,6 +653,7 @@ fn invoke_now(
     cx: &mut App,
     name: &str,
     command: huterm_protocol::CommandId,
+    reporter: Option<WeakEntity<WorkspaceView>>,
 ) -> Result<(), String> {
     let native = platform(cx)?;
     let config = cx
@@ -591,6 +712,7 @@ fn invoke_now(
                         state.target = state.profile.geometry(&state.display);
                     }
                 }
+                state.reporter.clone_from(&reporter);
                 state.request(show, !show && active);
                 if unchanged {
                     state.activation.observe(active);
@@ -614,6 +736,7 @@ fn invoke_now(
         cx,
         true,
         Some((name.to_owned(), config, display)),
+        reporter,
     );
     if !cx.global::<Desktop>().quake.windows.contains_key(name) {
         return Err(format!("could not create quake profile {name:?}"));
@@ -625,6 +748,7 @@ pub(super) fn attach(
     name: String,
     profile: Profile,
     display: Display,
+    reporter: Option<WeakEntity<WorkspaceView>>,
     window: &Window,
     cx: &mut App,
 ) -> Result<Presentation, String> {
@@ -660,6 +784,7 @@ pub(super) fn attach(
     start_pump(cx);
     Ok(Presentation {
         name,
+        reporter,
         generation: Rc::new(Cell::new(0)),
         native,
         profile,
@@ -759,8 +884,8 @@ fn dispatch_hotkeys(cx: &mut App) {
         .map(hotkeys::Registrations::drain)
         .unwrap_or_default();
     for command in commands {
-        if let Err(error) = invoke(cx, &command) {
-            report(cx, &error.to_string());
+        if let Err(error) = invoke(cx, &command, None) {
+            report(cx, &error.to_string(), None);
         }
     }
 }
@@ -1076,6 +1201,7 @@ fn step(
                 Ok(true) => {
                     state.stage = Stage::Idle;
                     state.recovering = false;
+                    state.reporter = None;
                     if regular {
                         view.bounds = window.window_bounds();
                     } else {
@@ -1130,6 +1256,7 @@ fn step(
         Stage::SettleHidden => match native.visible() {
             Ok(false) => {
                 state.stage = Stage::Idle;
+                state.reporter = None;
                 None
             }
             Ok(true) => None,
@@ -1369,8 +1496,41 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIVATION_RETRY_INTERVAL, Activation, Stage};
+    use super::{
+        ACTIVATION_RETRY_INTERVAL, Activation, Profile, ProfileState, Stage,
+        build_profile_rows,
+    };
+    use crate::quake::Position;
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn profile_rows_list_sorted_geometry_and_live_state() {
+        let profiles = BTreeMap::from([
+            ("default".to_owned(), Profile::default()),
+            (
+                "logs".to_owned(),
+                Profile {
+                    position: Position::Bottom,
+                    width: 0.8,
+                    height: 0.25,
+                    ..Profile::default()
+                },
+            ),
+        ]);
+        let rows = build_profile_rows(&profiles, |name| {
+            (name == "logs").then_some((false, 2))
+        });
+
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["default", "logs"]
+        );
+        assert_eq!(rows[0].geometry, "top · 100% × 50%");
+        assert_eq!(rows[0].state, ProfileState::NotSummoned);
+        assert_eq!(rows[1].geometry, "bottom · 80% × 25%");
+        assert_eq!(rows[1].state, ProfileState::Hidden { tabs: 2 });
+    }
 
     #[test]
     fn observed_app_switch_cancels_activation_still_waiting_to_run() {

@@ -36,9 +36,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
                 ) {
-                    let result = cx
-                        .update(|cx| execute(cx, &command))
-                        .and_then(std::convert::identity);
+                    let result = execute(&command, cx).await;
                     publish(
                         &directory,
                         &format!("result-{sequence}"),
@@ -121,7 +119,17 @@ fn publish(directory: &Path, name: &str, text: &str) {
     std::fs::rename(temporary, directory.join(name))
         .expect("publish quake smoke observation");
 }
-fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
+async fn execute(
+    command: &str,
+    cx: &mut gpui::AsyncApp,
+) -> anyhow::Result<String> {
+    if command.split_whitespace().nth(1) == Some("report_dead") {
+        return report_dead_for_smoke(cx).await;
+    }
+    cx.update(|cx| execute_ui(cx, command))?
+}
+
+fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let fields: Vec<_> = command.split_whitespace().collect();
     let target = *fields.first().context("command target")?;
     let name = *fields.get(1).context("command name")?;
@@ -197,6 +205,58 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
         Desktop::invoke(cx, &CommandInvocation::new(spec.id, args), handle)
     ))
 }
+
+async fn report_dead_for_smoke(
+    cx: &mut gpui::AsyncApp,
+) -> anyhow::Result<String> {
+    let (reporter, fallback) = cx.update(setup_dead_reporter)??;
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !cx.update(|cx| cx.active_window() == Some(fallback))? {
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "fallback window {:?} did not become active",
+            fallback.window_id()
+        );
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(10))
+            .await;
+    }
+    cx.update(move |cx| {
+        quake_windows::report(cx, "smoke dead reporter", Some(reporter));
+    })?;
+    Ok(format!("fallback={:?}", fallback.window_id()))
+}
+
+fn setup_dead_reporter(
+    cx: &mut App,
+) -> anyhow::Result<(WeakEntity<WorkspaceView>, AnyWindowHandle)> {
+    let existing = cx.windows();
+    let fallback = existing
+        .first()
+        .copied()
+        .context("dead reporter fallback window")?;
+    open_window_inner(cx, false);
+    let temporary = cx
+        .windows()
+        .into_iter()
+        .find(|candidate| !existing.contains(candidate))
+        .context("temporary dead reporter window")?;
+    let reporter = temporary.update(cx, |root, window, _| {
+        let reporter = root
+            .downcast::<WorkspaceView>()
+            .map_err(|_| anyhow::anyhow!("temporary reporter root"))?
+            .downgrade();
+        window.remove_window();
+        Ok::<_, anyhow::Error>(reporter)
+    })??;
+    fallback.update(cx, |_, window, cx| {
+        window.activate_window();
+        cx.activate(true);
+    })?;
+    Ok((reporter, fallback))
+}
+
 fn read_state(cx: &mut App) -> String {
     let mut output = format!(
         "windows={}\nreloading={}\nkeepalive={}\nconfig_error={}\n",

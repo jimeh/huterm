@@ -792,6 +792,18 @@ impl FullscreenController {
         intent: ToggleIntent,
         non_native_preflight: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
+        self.check_toggle(intent, non_native_preflight)?;
+        let desired = self.toggle_target(intent);
+        self.recovery_blocked = false;
+        self.desired = desired;
+        Ok(())
+    }
+
+    pub fn check_toggle(
+        &self,
+        intent: ToggleIntent,
+        non_native_preflight: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.closing {
             return Err("window is closing".to_owned());
         }
@@ -800,7 +812,21 @@ impl FullscreenController {
                 "non-native fullscreen is only available on macOS".to_owned()
             );
         }
-        let desired = if self.recovery_blocked {
+        let desired = self.toggle_target(intent);
+        if self.recovery
+            || self.observed == Mode::NonNative
+            || desired == Mode::NonNative
+            || self
+                .pending
+                .is_some_and(|op| op.effect != Effect::ToggleNative)
+        {
+            non_native_preflight()?;
+        }
+        Ok(())
+    }
+
+    fn toggle_target(&self, intent: ToggleIntent) -> Mode {
+        if self.recovery_blocked {
             Mode::Windowed
         } else if self.desired == Mode::Windowed {
             match intent {
@@ -815,19 +841,7 @@ impl FullscreenController {
             }
         } else {
             Mode::Windowed
-        };
-        if self.recovery
-            || self.observed == Mode::NonNative
-            || desired == Mode::NonNative
-            || self
-                .pending
-                .is_some_and(|op| op.effect != Effect::ToggleNative)
-        {
-            non_native_preflight()?;
         }
-        self.recovery_blocked = false;
-        self.desired = desired;
-        Ok(())
     }
 
     pub fn next(&mut self, now: Instant) -> Option<Operation> {
@@ -1118,6 +1132,11 @@ mod tests {
         c.set_default(MacosFullscreenMode::NonNative);
         for intent in [ToggleIntent::Default, ToggleIntent::NonNative] {
             assert!(
+                c.check_toggle(intent, || Err("no screen".to_owned()))
+                    .is_err()
+            );
+            assert_eq!(c.desired, Mode::Windowed);
+            assert!(
                 c.toggle_checked(intent, || Err("no screen".to_owned()))
                     .is_err()
             );
@@ -1361,6 +1380,7 @@ mod tests {
     fn linux_ignores_portable_default_and_rejects_explicit_non_native() {
         let mut c = controller(false);
         c.set_default(MacosFullscreenMode::NonNative);
+        assert!(c.check_toggle(ToggleIntent::NonNative, || Ok(())).is_err());
         assert!(c.toggle(ToggleIntent::NonNative).is_err());
         c.toggle(ToggleIntent::Default).unwrap();
         c.sample(false, c.bounds);

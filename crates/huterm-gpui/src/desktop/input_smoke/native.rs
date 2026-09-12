@@ -18,6 +18,12 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
     if matches!(command, "cursor-center" | "cursor-restore") {
         return position_cursor(command == "cursor-center");
     }
+    if let Some(text) = command.strip_prefix("marked\t") {
+        return post_composition(text, false);
+    }
+    if let Some(text) = command.strip_prefix("commit\t") {
+        return post_composition(text, true);
+    }
     let fields: Vec<_> = command.split('\t').collect();
     if fields[0] == "mouse" && matches!(fields.len(), 4 | 5) {
         return post_mouse(&fields);
@@ -28,8 +34,9 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
     );
     let key: u16 = fields[0].parse()?;
     let flags: usize = fields[1].parse()?;
-    let characters = CString::new(fields[2])?;
-    let plain = CString::new(fields[3])?;
+    // Fields are tab-separated, so a Tab key's characters arrive escaped.
+    let characters = CString::new(fields[2].replace("\\t", "\t"))?;
+    let plain = CString::new(fields[3].replace("\\t", "\t"))?;
     // SAFETY: Called on the AppKit main thread, outside GPUI's App borrow.
     // AppKit owns the window and retains the autoreleased event when queued.
     // Posting through the normal event loop sets NSApplication.currentEvent,
@@ -60,6 +67,58 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
             keyCode: key];
         ensure!(!event.is_null(), "NSEvent construction failed");
         let _: () = msg_send![app, postEvent: event atStart: NO];
+    }
+    Ok(())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+fn post_composition(text: &str, commit: bool) -> anyhow::Result<()> {
+    let utf16_len = text.encode_utf16().count();
+    let text = CString::new(text)?;
+    // SAFETY: Called on the AppKit main thread. GPUI's content view implements
+    // NSTextInputClient and translates these native callbacks through the
+    // focused ElementInputHandler.
+    unsafe {
+        let app: *mut Object = msg_send![
+            Class::get("NSApplication").context("NSApplication")?,
+            sharedApplication
+        ];
+        let window: *mut Object = msg_send![app, keyWindow];
+        ensure!(!window.is_null(), "no key window");
+        let responder: *mut Object = msg_send![window, firstResponder];
+        ensure!(!responder.is_null(), "key window has no first responder");
+        let string: *mut Object = msg_send![
+            Class::get("NSString").context("NSString")?,
+            stringWithUTF8String: text.as_ptr()
+        ];
+        let invalid = NSRange {
+            location: usize::MAX,
+            length: 0,
+        };
+        if commit {
+            let _: () = msg_send![
+                responder,
+                insertText: string
+                replacementRange: invalid
+            ];
+        } else {
+            let selected = NSRange {
+                location: utf16_len,
+                length: 0,
+            };
+            let _: () = msg_send![
+                responder,
+                setMarkedText: string
+                selectedRange: selected
+                replacementRange: invalid
+            ];
+        }
     }
     Ok(())
 }
