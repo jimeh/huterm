@@ -320,6 +320,14 @@ that exist in the current source.
 Global action callbacks run while the dispatching window is borrowed. Defer
 Quit routing before updating a native window handle; a synchronous update of
 the active window fails with `window not found` even though it remains open.
+Reading any window handle, or the root view entity of the dispatching window,
+from inside that window's action handler panics inside GPUI with `attempted
+to read a window that is already on the stack`, and the panic aborts because
+AppKit's selector callback cannot unwind. Cross-window reads such as quake
+profile rows take a `Viewpoint` naming the calling view with its own state;
+read other windows through their view entities, never through
+`AnyWindowHandle`, and pass `Outside` only from async tasks or smoke commands
+with no window update in progress.
 
 Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Project its current bits rather than retaining independent
@@ -582,6 +590,25 @@ Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
 
+The native input smoke command protocol is tab-separated, so a Tab keystroke's
+characters are written as the two-character escape `\t`; `native::post`
+unescapes it. Send DEL (`\x7f`) as Backspace's characters: GPUI names the key
+from that character, and `\x08` produces a keystroke no binding matches while
+a following replace-on-type hides the miss. Palette result and picker rows are
+exactly `ROW_HEIGHT` (54) points tall and the list caps at `VISIBLE_ROWS`;
+the first row centres near 117, and hover and click fixtures use that
+geometry. Text arguments accept a blank value: the core executor maps a
+blank rename name to `None`, which clears the custom name, so there are no
+reset-name commands. The palette prefills a rename's current custom name,
+selected, whenever the name slot is untouched. Palette, text-field, and other
+UI keyboard operations are `Palette`-scope catalog commands with a required
+context compiled into every binding, never hardcoded GPUI component bindings.
+`validate_supplied` guards bindings, menus, and interactive requests; only
+executors run the full `validate`, so a binding may omit prompted arguments and
+the palette collects them. Keep the keybinding schema aligned: only unprompted
+`Always` arguments are schema-required. Modules that land before their consumer
+carry `#[expect(dead_code)]` so Clippy fails when the consumer arrives and the
+attribute must go.
 Native input smoke events must enter NSApplication through `postEvent:atStart:`;
 calling NSView.keyDown: directly does not establish `currentEvent` for Option
 composition. Use printable Option prefixes and held printable suffixes in replay

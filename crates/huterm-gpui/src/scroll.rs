@@ -108,6 +108,23 @@ pub(super) struct ScrollbarGeometry {
     track_padding: f32,
     travel: f32,
     history: usize,
+    /// Scrollable pixel range for `for_pixels` geometry; zero for rows.
+    pixel_range: f32,
+}
+
+/// Empty space above and below a scrollbar track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TrackMargins {
+    pub(super) top: f32,
+    pub(super) bottom: f32,
+}
+
+impl TrackMargins {
+    /// Equal margins for lists inside a panel.
+    pub(super) const EVEN: Self = Self {
+        top: TRACK_TOP_MARGIN,
+        bottom: TRACK_TOP_MARGIN,
+    };
 }
 
 impl ScrollbarGeometry {
@@ -156,7 +173,64 @@ impl ScrollbarGeometry {
             track_padding,
             travel,
             history,
+            pixel_range: 0.0,
         })
+    }
+
+    /// Geometry for pixel-scrolled content such as a list: `content` and
+    /// `viewport` heights with `offset` measured from the top. `None` when
+    /// nothing overflows. The result carries no row mapping, so
+    /// `offset_for_thumb_start` is not meaningful for it.
+    pub(super) fn for_pixels(
+        height: f32,
+        content: f32,
+        viewport: f32,
+        offset: f32,
+        margins: TrackMargins,
+    ) -> Option<Self> {
+        if !height.is_finite()
+            || height <= 0.0
+            || content <= viewport
+            || viewport <= 0.0
+        {
+            return None;
+        }
+        let margin_scale = (height
+            / (margins.top
+                + margins.bottom
+                + TRACK_PADDING * 2.0
+                + MIN_THUMB_SIZE))
+            .min(1.0);
+        let track_start = margins.top * margin_scale;
+        let track_height = height - track_start - margins.bottom * margin_scale;
+        let track_padding = TRACK_PADDING * margin_scale;
+        let inner_height = (track_height - track_padding * 2.0).max(0.0);
+        let thumb_size = (inner_height * viewport / content)
+            .max(MIN_THUMB_SIZE)
+            .min(inner_height);
+        let travel = (inner_height - thumb_size).max(0.0);
+        let ratio = (offset / (content - viewport)).clamp(0.0, 1.0);
+        Some(Self {
+            thumb_start: track_start + track_padding + travel * ratio,
+            thumb_size,
+            track_start,
+            track_padding,
+            travel,
+            history: 0,
+            pixel_range: content - viewport,
+        })
+    }
+
+    /// The pixel offset that puts the thumb's top at `position`, for
+    /// `for_pixels` geometry.
+    pub(super) fn pixel_offset_for_thumb_start(self, position: f32) -> f32 {
+        if self.travel <= 0.0 {
+            return 0.0;
+        }
+        let ratio = ((position - self.track_start - self.track_padding)
+            / self.travel)
+            .clamp(0.0, 1.0);
+        ratio * self.pixel_range
     }
 
     pub(super) fn contains(self, position: f32) -> bool {
@@ -819,6 +893,51 @@ mod tests {
 
         assert_eq!(controller.desired(), 0);
         assert_eq!(controller.begin_request(), Some(Viewport::default()));
+    }
+
+    #[test]
+    fn pixel_geometry_maps_offset_from_top_and_needs_overflow() {
+        let even = TrackMargins::EVEN;
+        assert!(
+            ScrollbarGeometry::for_pixels(336.0, 336.0, 336.0, 0.0, even)
+                .is_none()
+        );
+        let top = ScrollbarGeometry::for_pixels(336.0, 672.0, 336.0, 0.0, even)
+            .expect("overflow should produce an indicator");
+        let bottom =
+            ScrollbarGeometry::for_pixels(336.0, 672.0, 336.0, 336.0, even)
+                .expect("overflow should produce an indicator");
+        let middle =
+            ScrollbarGeometry::for_pixels(336.0, 672.0, 336.0, 168.0, even)
+                .expect("overflow should produce an indicator");
+        assert!((top.track_start - 2.0).abs() < f32::EPSILON);
+        assert!(
+            (bottom.track_start + bottom.track_size() - 334.0).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (middle.pixel_offset_for_thumb_start(middle.thumb_start) - 168.0)
+                .abs()
+                < 0.01
+        );
+        assert!((top.thumb_start - top.track_start - 2.0).abs() < f32::EPSILON);
+        assert!(
+            (bottom.track_start + bottom.track_size()
+                - bottom.thumb_start
+                - bottom.thumb_size
+                - 2.0)
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (middle.thumb_start - top.thumb_start.midpoint(bottom.thumb_start))
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (top.thumb_size * 2.0 - (top.travel + top.thumb_size)).abs()
+                < 0.0001
+        );
     }
 
     #[test]

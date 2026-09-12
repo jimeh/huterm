@@ -5,9 +5,11 @@ export function checkNativeMenus(exitCode: number, output: string): void {
     "startup-update-command",
     "startup-user-shortcut",
     "untouched-default-shortcut",
+    "startup-palette-shortcut",
     "startup-special-shortcuts",
     "reloaded-update-command",
     "reloaded-user-shortcut",
+    "reloaded-palette-shortcut",
     "reloaded-special-shortcuts",
   ];
   const prefix = "NATIVE_MENUS_SMOKE ";

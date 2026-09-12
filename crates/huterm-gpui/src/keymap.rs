@@ -5,14 +5,15 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
-    DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke,
-    Modifiers,
+    DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, KeyContext,
+    Keystroke, Modifiers,
 };
 use huterm_protocol::{
-    ArgumentKind, CommandArgument, CommandId, CommandInvocation, CommandValue,
-    ids, lookup, validate,
+    ArgumentKind, CommandArgument, CommandId, CommandInvocation, CommandSpec,
+    CommandValue, ids, lookup, validate_supplied,
 };
 
 use crate::commands::CommandAction;
@@ -62,9 +63,23 @@ pub(crate) struct EffectiveBinding {
     pub(crate) key: String,
     pub(crate) command: CommandId,
     pub(crate) args: Vec<CommandArgument>,
+    pub(crate) context: Option<&'static str>,
     pub(crate) when: Option<String>,
+    pub(crate) predicate: Option<Rc<KeyBindingContextPredicate>>,
     pub(crate) description: String,
     pub(crate) origin: Origin,
+}
+
+impl EffectiveBinding {
+    pub(crate) fn matches_context(&self, contexts: &[KeyContext]) -> bool {
+        self.predicate
+            .as_ref()
+            .is_none_or(|predicate| predicate.depth_of(contexts).is_some())
+    }
+
+    pub(crate) fn matches_arguments(&self, args: &[CommandArgument]) -> bool {
+        self.args == args
+    }
 }
 
 /// Independently reserved strokes, compared by modifiers and key.
@@ -99,14 +114,57 @@ impl ReservedKeys {
 pub(crate) struct CompiledKeymap {
     pub(crate) bindings: Vec<KeyBinding>,
     /// Retained so later UI can list bindings without re-parsing config.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the settings UI and palette")
-    )]
     pub(crate) effective: Vec<EffectiveBinding>,
     pub(crate) reserved: ReservedKeys,
     /// Non-fatal precedence diagnostics in entry order.
     pub(crate) conflicts: Vec<String>,
+}
+
+/// The read-only portions of the currently installed keymap.
+#[derive(Clone)]
+pub(crate) struct InstalledKeymap {
+    pub(crate) reserved: Arc<ReservedKeys>,
+    pub(crate) effective: Arc<[EffectiveBinding]>,
+}
+
+impl InstalledKeymap {
+    fn new(reserved: ReservedKeys, effective: Vec<EffectiveBinding>) -> Self {
+        Self {
+            reserved: Arc::new(reserved),
+            effective: effective.into(),
+        }
+    }
+
+    pub(crate) fn shortcuts(
+        &self,
+        command: CommandId,
+        contexts: &[KeyContext],
+        args: Option<&[CommandArgument]>,
+    ) -> Vec<&EffectiveBinding> {
+        let mut matches: Vec<_> = self
+            .effective
+            .iter()
+            .filter(|binding| {
+                binding.command == command
+                    && binding.matches_context(contexts)
+                    && args.is_none_or(|args| {
+                        binding.args.is_empty()
+                            || binding.matches_arguments(args)
+                    })
+            })
+            .collect();
+        if let Some(args) = args {
+            matches.sort_by_key(|binding| !binding.matches_arguments(args));
+        }
+        matches
+    }
+}
+
+impl CompiledKeymap {
+    pub(crate) fn install_parts(self) -> (Vec<KeyBinding>, InstalledKeymap) {
+        let installed = InstalledKeymap::new(self.reserved, self.effective);
+        (self.bindings, installed)
+    }
 }
 
 /// A fatal diagnostic naming the offending entry.
@@ -184,7 +242,9 @@ fn toml_value(name: &str, value: &toml::Value) -> Result<CommandValue, String> {
 /// Returns the catalog command a compiled binding dispatches.
 #[cfg(test)]
 pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
-    use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow};
+    use crate::commands::{
+        InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow,
+    };
     let action = binding.action().as_any();
     action
         .downcast_ref::<InvokeApp>()
@@ -197,6 +257,11 @@ pub(crate) fn bound_command(binding: &KeyBinding) -> Option<CommandId> {
         .or_else(|| {
             action
                 .downcast_ref::<InvokeTerminal>()
+                .map(|action| action.0.id)
+        })
+        .or_else(|| {
+            action
+                .downcast_ref::<InvokePalette>()
                 .map(|action| action.0.id)
         })
 }
@@ -223,6 +288,10 @@ impl Resolved {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolution validates and preserves one ordered binding pipeline"
+)]
 fn compile_entries(
     entries: &[BindingEntry],
 ) -> Result<CompiledKeymap, KeymapError> {
@@ -261,8 +330,17 @@ fn compile_entries(
             });
             continue;
         }
-        let predicate = entry
-            .when
+        let (spec, action, mut effective) =
+            resolve_command(entry).map_err(&fail)?;
+        let predicate_source = match (spec.context, entry.when.as_deref()) {
+            (Some(context), Some(when)) => {
+                Some(format!("({context}) && ({when})"))
+            }
+            (Some(context), None) => Some(context.to_owned()),
+            (None, Some(when)) => Some(when.to_owned()),
+            (None, None) => None,
+        };
+        let predicate = predicate_source
             .as_deref()
             .map(|source| {
                 KeyBindingContextPredicate::parse(source)
@@ -270,7 +348,7 @@ fn compile_entries(
                     .map_err(|error| fail(format!("invalid when: {error}")))
             })
             .transpose()?;
-        let (action, effective) = resolve_command(entry).map_err(fail)?;
+        effective.predicate.clone_from(&predicate);
         if let Some(index) = resolved.iter().position(|existing| {
             same_keystrokes(&existing.keystrokes, &keystrokes)
                 && existing.predicate == predicate
@@ -360,7 +438,7 @@ fn same_keystrokes(left: &[Keystroke], right: &[Keystroke]) -> bool {
 
 fn resolve_command(
     entry: &BindingEntry,
-) -> Result<(CommandAction, EffectiveBinding), String> {
+) -> Result<(&'static CommandSpec, CommandAction, EffectiveBinding), String> {
     let spec = lookup(&entry.command)
         .ok_or_else(|| format!("unknown command `{}`", entry.command))?;
     let mut args = Vec::with_capacity(entry.args.len());
@@ -381,7 +459,7 @@ fn resolve_command(
         args.push(CommandArgument::new(name.clone(), value.clone()));
     }
     let invocation = CommandInvocation::new(spec.id, args);
-    validate(&invocation).map_err(|error| error.to_string())?;
+    validate_supplied(&invocation).map_err(|error| error.to_string())?;
     let description = entry
         .description
         .clone()
@@ -390,12 +468,15 @@ fn resolve_command(
     let action = CommandAction::new(invocation.clone())
         .map_err(|error| error.to_string())?;
     Ok((
+        spec,
         action,
         EffectiveBinding {
             key: entry.key.clone(),
             command: spec.id,
             args: invocation.args,
+            context: spec.context,
             when: entry.when.clone(),
+            predicate: None,
             description,
             origin: entry.origin,
         },
@@ -427,6 +508,17 @@ fn describe(title: &str, args: &[CommandArgument]) -> String {
 
 fn default(key: &str, command: CommandId, description: &str) -> BindingEntry {
     default_with(key, command, &[], description)
+}
+
+/// A movement command bound with `select = true`, so it extends the
+/// selection instead of moving the cursor.
+fn selecting(key: &str, command: CommandId, description: &str) -> BindingEntry {
+    default_with(
+        key,
+        command,
+        &[("select", CommandValue::Bool(true))],
+        description,
+    )
 }
 
 fn default_with(
@@ -461,6 +553,11 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     ];
     match platform {
         Platform::MacOs => entries.extend([
+            default(
+                "cmd-shift-p",
+                ids::OPEN_COMMAND_PALETTE,
+                "Open the command palette",
+            ),
             default("cmd-enter", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("cmd-c", ids::COPY, "Copy the selection"),
@@ -475,6 +572,11 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-alt-h", ids::HIDE_OTHERS, "Hide other applications"),
         ]),
         Platform::Linux => entries.extend([
+            default(
+                "ctrl-shift-p",
+                ids::OPEN_COMMAND_PALETTE,
+                "Open the command palette",
+            ),
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("ctrl-shift-c", ids::COPY, "Copy the selection"),
             default("ctrl-shift-v", ids::PASTE, "Paste from the clipboard"),
@@ -517,6 +619,103 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             },
         )
     }));
+    entries.extend(palette_defaults(platform));
+    entries
+}
+
+fn palette_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let mut entries = vec![
+        default("down", ids::PALETTE_SELECT_NEXT, "Next Item"),
+        default("up", ids::PALETTE_SELECT_PREVIOUS, "Previous Item"),
+        default("pagedown", ids::PALETTE_PAGE_DOWN, "Page Down"),
+        default("pageup", ids::PALETTE_PAGE_UP, "Page Up"),
+        default("enter", ids::PALETTE_CONFIRM, "Confirm"),
+        default("escape", ids::PALETTE_BACK, "Back"),
+        default("tab", ids::PALETTE_EXPAND, "Edit Arguments"),
+        default("shift-tab", ids::PALETTE_PREVIOUS_SLOT, "Previous Argument"),
+        default("ctrl-n", ids::PALETTE_SELECT_NEXT, "Next Item"),
+        default("ctrl-p", ids::PALETTE_SELECT_PREVIOUS, "Previous Item"),
+        default("backspace", ids::TEXT_DELETE_BACKWARD, "Delete Backward"),
+        default("delete", ids::TEXT_DELETE_FORWARD, "Delete Forward"),
+        default("left", ids::TEXT_MOVE_LEFT, "Move Left"),
+        default("right", ids::TEXT_MOVE_RIGHT, "Move Right"),
+        default("alt-left", ids::TEXT_MOVE_WORD_LEFT, "Move Word Left"),
+        default("alt-right", ids::TEXT_MOVE_WORD_RIGHT, "Move Word Right"),
+        default("alt-b", ids::TEXT_MOVE_WORD_LEFT, "Move Word Left"),
+        default("alt-f", ids::TEXT_MOVE_WORD_RIGHT, "Move Word Right"),
+        default("home", ids::TEXT_LINE_START, "Line Start"),
+        default("end", ids::TEXT_LINE_END, "Line End"),
+        selecting("shift-left", ids::TEXT_MOVE_LEFT, "Select Left"),
+        selecting("shift-right", ids::TEXT_MOVE_RIGHT, "Select Right"),
+        selecting(
+            "shift-alt-left",
+            ids::TEXT_MOVE_WORD_LEFT,
+            "Select Word Left",
+        ),
+        selecting(
+            "shift-alt-right",
+            ids::TEXT_MOVE_WORD_RIGHT,
+            "Select Word Right",
+        ),
+        selecting("shift-alt-b", ids::TEXT_MOVE_WORD_LEFT, "Select Word Left"),
+        selecting(
+            "shift-alt-f",
+            ids::TEXT_MOVE_WORD_RIGHT,
+            "Select Word Right",
+        ),
+        selecting("shift-home", ids::TEXT_LINE_START, "Select to Line Start"),
+        selecting("shift-end", ids::TEXT_LINE_END, "Select to Line End"),
+        default(
+            "alt-backspace",
+            ids::TEXT_DELETE_WORD_BACKWARD,
+            "Delete Word Backward",
+        ),
+        default(
+            "alt-d",
+            ids::TEXT_DELETE_WORD_FORWARD,
+            "Delete Word Forward",
+        ),
+    ];
+    match platform {
+        Platform::MacOs => entries.extend([
+            default("cmd-a", ids::TEXT_SELECT_ALL, "Select All"),
+            default("cmd-c", ids::TEXT_COPY, "Copy"),
+            default("cmd-v", ids::TEXT_PASTE, "Paste"),
+            default("ctrl-a", ids::TEXT_LINE_START, "Line Start"),
+            default("ctrl-e", ids::TEXT_LINE_END, "Line End"),
+            default("ctrl-d", ids::TEXT_DELETE_FORWARD, "Delete Forward"),
+            default("cmd-left", ids::TEXT_LINE_START, "Line Start"),
+            default("cmd-right", ids::TEXT_LINE_END, "Line End"),
+            selecting(
+                "shift-ctrl-a",
+                ids::TEXT_LINE_START,
+                "Select to Line Start",
+            ),
+            selecting("shift-ctrl-e", ids::TEXT_LINE_END, "Select to Line End"),
+            selecting(
+                "shift-cmd-left",
+                ids::TEXT_LINE_START,
+                "Select to Line Start",
+            ),
+            selecting(
+                "shift-cmd-right",
+                ids::TEXT_LINE_END,
+                "Select to Line End",
+            ),
+            default(
+                "cmd-backspace",
+                ids::TEXT_DELETE_LINE_START,
+                "Delete to Line Start",
+            ),
+        ]),
+        Platform::Linux => entries.extend([
+            default("ctrl-a", ids::TEXT_SELECT_ALL, "Select All"),
+            default("ctrl-c", ids::TEXT_COPY, "Copy"),
+            default("ctrl-shift-c", ids::TEXT_COPY, "Copy"),
+            default("ctrl-v", ids::TEXT_PASTE, "Paste"),
+            default("ctrl-shift-v", ids::TEXT_PASTE, "Paste"),
+        ]),
+    }
     entries
 }
 
@@ -577,6 +776,28 @@ mod tests {
             }
             assert!(compiled.reserved.is_reserved(&keystroke("shift-pageup")));
             assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-c")));
+            let palette = compiled
+                .effective
+                .iter()
+                .find(|binding| binding.command == ids::OPEN_COMMAND_PALETTE)
+                .expect("platform default opens the command palette");
+            assert_eq!(
+                palette.key,
+                match platform {
+                    Platform::MacOs => "cmd-shift-p",
+                    Platform::Linux => "ctrl-shift-p",
+                }
+            );
+            let palette_key = palette.key.clone();
+            let keymap = Keymap::new(compiled.bindings);
+            let contexts = [KeyContext::parse("Workspace").unwrap()];
+            let (bindings, pending) = keymap
+                .bindings_for_input(&[keystroke(&palette_key)], &contexts);
+            assert!(!pending);
+            assert_eq!(
+                bindings.first().map(command_of),
+                Some(ids::OPEN_COMMAND_PALETTE)
+            );
         }
         let macos = compile(Platform::MacOs, &[]).unwrap().reserved;
         for chord in [
@@ -985,5 +1206,204 @@ mod tests {
             first("fullscreen > Terminal", &terminal),
             Some(ids::CLOSE_TAB)
         );
+    }
+
+    #[test]
+    fn installed_shortcuts_use_captured_context_and_exact_arguments() {
+        let user = [
+            KeybindingEntry {
+                when: Some("Terminal && !confirming".into()),
+                ..with_args(
+                    entry("alt-r", "rename_tab"),
+                    &[("name", toml::Value::String("work".into()))],
+                )
+            },
+            with_args(
+                entry("alt-4", "select_tab"),
+                &[("index", toml::Value::Integer(4))],
+            ),
+            entry("alt-q", "show_quake"),
+            with_args(
+                entry("alt-l", "show_quake"),
+                &[("profile", toml::Value::String("logs".into()))],
+            ),
+        ];
+        let (_, installed) =
+            compile(Platform::Linux, &user).unwrap().install_parts();
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let confirming = [
+            KeyContext::parse("Workspace confirming").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        assert_eq!(
+            installed.shortcuts(ids::RENAME_TAB, &terminal, None).len(),
+            1
+        );
+        assert!(
+            installed
+                .shortcuts(ids::RENAME_TAB, &confirming, None)
+                .is_empty()
+        );
+        assert!(
+            installed
+                .shortcuts(
+                    ids::SELECT_TAB,
+                    &terminal,
+                    Some(&[CommandArgument::new(
+                        "index",
+                        CommandValue::Integer(4),
+                    )]),
+                )
+                .iter()
+                .any(|binding| binding.key == "alt-4")
+        );
+        assert!(
+            installed
+                .shortcuts(
+                    ids::SELECT_TAB,
+                    &terminal,
+                    Some(&[CommandArgument::new(
+                        "index",
+                        CommandValue::Integer(5),
+                    )]),
+                )
+                .iter()
+                .all(|binding| binding.key != "alt-4")
+        );
+        let quake = installed.shortcuts(
+            ids::SHOW_QUAKE,
+            &terminal,
+            Some(&[CommandArgument::new(
+                "profile",
+                CommandValue::Text("logs".into()),
+            )]),
+        );
+        assert_eq!(
+            quake.first().map(|binding| binding.key.as_str()),
+            Some("alt-l")
+        );
+        assert!(quake.iter().any(|binding| binding.key == "alt-q"));
+    }
+
+    #[test]
+    fn palette_defaults_dispatch_through_invoke_palette() {
+        let compiled = compile(Platform::MacOs, &[]).unwrap();
+        let keymap = Keymap::new(compiled.bindings);
+        let palette = [
+            KeyContext::parse("Workspace palette").unwrap(),
+            KeyContext::parse("Palette").unwrap(),
+        ];
+        let matched = |key: &str, contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], contexts);
+            assert!(!pending);
+            bindings.first().map(command_of)
+        };
+        assert_eq!(matched("cmd-c", &palette), Some(ids::TEXT_COPY));
+        assert_eq!(matched("down", &palette), Some(ids::PALETTE_SELECT_NEXT));
+        assert_eq!(matched("enter", &palette), Some(ids::PALETTE_CONFIRM));
+
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        assert_eq!(matched("cmd-c", &terminal), Some(ids::COPY));
+        assert_eq!(matched("down", &terminal), None);
+    }
+
+    #[test]
+    fn user_palette_override_wins_at_equal_depth() {
+        let compiled =
+            compile(Platform::MacOs, &[entry("up", "text_line_start")])
+                .unwrap();
+        let keymap = Keymap::new(compiled.bindings);
+        let contexts = [
+            KeyContext::parse("Workspace palette").unwrap(),
+            KeyContext::parse("Palette").unwrap(),
+        ];
+        let (bindings, pending) =
+            keymap.bindings_for_input(&[keystroke("up")], &contexts);
+        assert!(!pending);
+        assert_eq!(
+            bindings.first().map(command_of),
+            Some(ids::TEXT_LINE_START)
+        );
+    }
+
+    #[test]
+    fn palette_bindings_never_reserve_terminal_strokes() {
+        let compiled =
+            compile(Platform::MacOs, &[entry("ctrl-c", "text_copy")]).unwrap();
+        assert!(!compiled.reserved.is_reserved(&keystroke("ctrl-c")));
+        let binding = compiled
+            .effective
+            .iter()
+            .find(|binding| {
+                binding.origin == Origin::User && binding.key == "ctrl-c"
+            })
+            .expect("user binding is effective");
+        assert_eq!(binding.context, Some("Palette"));
+        assert_eq!(binding.when, None);
+    }
+
+    #[test]
+    fn context_and_when_combine() {
+        let user = [KeybindingEntry {
+            when: Some("!confirming".into()),
+            ..entry("ctrl-n", "palette_select_next")
+        }];
+        let compiled = compile(Platform::MacOs, &user).unwrap();
+        let binding = compiled
+            .effective
+            .iter()
+            .find(|binding| {
+                binding.origin == Origin::User && binding.key == "ctrl-n"
+            })
+            .expect("user binding is effective");
+        let palette = [
+            KeyContext::parse("Workspace palette").unwrap(),
+            KeyContext::parse("Palette").unwrap(),
+        ];
+        let confirming = [
+            KeyContext::parse("Workspace palette confirming").unwrap(),
+            KeyContext::parse("Palette").unwrap(),
+        ];
+        assert!(binding.matches_context(&palette));
+        assert!(!binding.matches_context(&confirming));
+    }
+
+    #[test]
+    fn partial_bindings_compile_but_bad_values_fail() {
+        assert!(
+            compile(Platform::MacOs, &[entry("cmd-shift-o", "select_tab")],)
+                .is_ok()
+        );
+
+        let range = compile(
+            Platform::MacOs,
+            &[with_args(
+                entry("cmd-shift-o", "select_tab"),
+                &[("index", toml::Value::Integer(12))],
+            )],
+        )
+        .err()
+        .expect("out-of-range index fails")
+        .to_string();
+        assert!(range.contains("expected 1 to 9"), "{range}");
+
+        let identity = compile(
+            Platform::MacOs,
+            &[with_args(
+                entry("cmd-shift-o", "select_tab"),
+                &[("tab", toml::Value::Integer(1))],
+            )],
+        )
+        .err()
+        .expect("configured runtime identity fails")
+        .to_string();
+        assert!(identity.contains("runtime identity"), "{identity}");
     }
 }

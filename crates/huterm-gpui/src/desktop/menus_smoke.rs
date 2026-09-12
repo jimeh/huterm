@@ -43,6 +43,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
             binding("cmd-enter", "toggle_fullscreen"),
             binding("cmd-tab", "next_tab"),
             binding("cmd-e", "unbind"),
+            binding("cmd-j", "open_command_palette"),
         ],
         ..Config::default()
     };
@@ -52,7 +53,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
         error: None,
         fatal: false,
     };
-    let (_, error) = windows::install_startup_keymap(cx, &loaded);
+    let (installed, error) = windows::install_startup_keymap(cx, &loaded);
     anyhow::ensure!(error.is_none(), "startup keymap: {error:?}");
     unbound_menu_item("Check for Updates...")?;
     marker("startup-update-command");
@@ -62,20 +63,39 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     marker("untouched-default-shortcut");
     shortcut("Toggle Fullscreen", "\r")?;
     shortcut("Next Tab", "\t")?;
+    shortcut("Open Command Palette", "j")?;
+    anyhow::ensure!(
+        installed
+            .shortcuts(ids::OPEN_COMMAND_PALETTE, &[], None)
+            .iter()
+            .any(|binding| binding.key == "cmd-j"),
+        "startup effective palette binding missing"
+    );
+    marker("startup-palette-shortcut");
     marker("startup-special-shortcuts");
 
     config.keybindings[1].key = "cmd-y".into();
     config.keybindings[2].key = "cmd-f".into();
     config.keybindings[3].key = "cmd-enter".into();
+    config.keybindings[5].key = "cmd-k".into();
     let compiled = keymap::compile(Platform::MacOs, &config.keybindings)?;
     // Reload invokes this same function after configuration validation.
-    bind_keymap(cx, compiled);
+    let installed = bind_keymap(cx, compiled);
     unbound_menu_item("Check for Updates...")?;
     marker("reloaded-update-command");
     shortcut("Reload Configuration", "y")?;
     marker("reloaded-user-shortcut");
     shortcut("Toggle Fullscreen", "f")?;
     shortcut("Next Tab", "\r")?;
+    shortcut("Open Command Palette", "k")?;
+    anyhow::ensure!(
+        installed
+            .shortcuts(ids::OPEN_COMMAND_PALETTE, &[], None)
+            .iter()
+            .any(|binding| binding.key == "cmd-k"),
+        "reloaded effective palette binding missing"
+    );
+    marker("reloaded-palette-shortcut");
     marker("reloaded-special-shortcuts");
     Ok(())
 }

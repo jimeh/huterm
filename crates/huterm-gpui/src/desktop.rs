@@ -20,14 +20,18 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
-use crate::commands::{InvokeApp, InvokeTerminal, InvokeWindow, invoke};
+use crate::commands::{
+    InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
+};
 use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
     Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
 };
-use crate::keymap::{self, CompiledKeymap, Platform, ReservedKeys};
+use crate::keymap::{
+    self, CompiledKeymap, InstalledKeymap, Platform, ReservedKeys,
+};
 use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::{
@@ -47,7 +51,10 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 mod composition;
 mod keyboard;
 mod links;
-pub(crate) use windows::{fullscreen_smoke, integration_smoke, quake_smoke};
+pub(crate) mod palette;
+pub(crate) use windows::{
+    fullscreen_smoke, integration_smoke, palette_smoke, quake_smoke,
+};
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
@@ -72,12 +79,13 @@ fn compile_keymap(config: &Config) -> (CompiledKeymap, Option<String>) {
     }
 }
 
-/// Replaces GPUI's bindings and menu shortcuts together, returning reserved keys.
-fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> Arc<ReservedKeys> {
+/// Replaces command, component, menu, and discovery bindings together.
+fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> InstalledKeymap {
+    let (bindings, installed) = compiled.install_parts();
     cx.clear_key_bindings();
-    cx.bind_keys(compiled.bindings);
+    cx.bind_keys(bindings);
     install_menus(cx);
-    Arc::new(compiled.reserved)
+    installed
 }
 
 fn install_menus(cx: &mut App) {
@@ -120,6 +128,8 @@ fn install_menus(cx: &mut App) {
         Menu {
             name: "View".into(),
             items: vec![
+                item(ids::OPEN_COMMAND_PALETTE),
+                MenuItem::separator(),
                 item(ids::SCROLL_PAGE_UP),
                 item(ids::SCROLL_PAGE_DOWN),
                 item(ids::SCROLL_TO_BOTTOM),
@@ -134,6 +144,9 @@ fn install_menus(cx: &mut App) {
                 item(ids::ZOOM),
                 item(ids::NEXT_TAB),
                 item(ids::PREVIOUS_TAB),
+                item(ids::SELECT_RECENT_TAB),
+                item(ids::SELECT_TAB),
+                item(ids::RENAME_TAB),
             ],
         },
     ]);
@@ -180,6 +193,14 @@ impl Selection {
         // one character even though the pointer has not dragged across a cell.
         (self.anchor != self.head)
             .then(|| BufferRange::ordered(self.anchor, self.head))
+    }
+}
+
+fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
+    if selection.and_then(Selection::range).is_none() {
+        Err(CommandError::Unavailable("no selection".to_owned()))
+    } else {
+        Ok(())
     }
 }
 
@@ -808,6 +829,23 @@ impl TerminalView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this view does not own as [`CommandError::UnknownCommand`].
+    fn command_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+    ) -> Result<(), CommandError> {
+        match command {
+            ids::COPY => copy_availability(self.selection),
+            ids::PASTE if self.exited => {
+                Err(CommandError::Unavailable("terminal has exited".to_owned()))
+            }
+            ids::PASTE
+            | ids::SCROLL_PAGE_UP
+            | ids::SCROLL_PAGE_DOWN
+            | ids::SCROLL_TO_BOTTOM => Ok(()),
+            other => Err(CommandError::UnknownCommand(other)),
+        }
+    }
+
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -815,6 +853,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.clear_option_composition();
+        self.command_availability(invocation.id)?;
         match invocation.id {
             ids::COPY => {
                 if let Some(text) = &self.selected_text {
@@ -824,11 +863,6 @@ impl TerminalView {
                 }
             }
             ids::PASTE => {
-                if self.exited {
-                    return Err(CommandError::Unavailable(
-                        "terminal has exited".to_owned(),
-                    ));
-                }
                 if let Some(text) =
                     cx.read_from_clipboard().and_then(|item| item.text())
                 {
@@ -1906,30 +1940,12 @@ impl Render for TerminalView {
             && let Some(geometry) = self.scrollbar_geometry(window)
         {
             let expansion = self.scrollbar_expansion.progress;
-            if expansion > 0.0 {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .right(px(2.0))
-                        .top(px(geometry.track_start))
-                        .w(px(8.0 + 6.0 * expansion))
-                        .h(px(geometry.track_size()))
-                        .rounded(px(4.0 + 3.0 * expansion))
-                        .bg(color(self.theme.foreground).opacity(20.0 / 255.0))
-                        .opacity(self.scrollbar_visibility.opacity * expansion),
-                );
-            }
-            root = root.child(
-                div()
-                    .absolute()
-                    .right(px(2.0 + 2.0 * expansion))
-                    .top(px(geometry.thumb_start))
-                    .w(px(6.0 + 4.0 * expansion))
-                    .h(px(geometry.thumb_size))
-                    .rounded(px(3.0 + 2.0 * expansion))
-                    .bg(color(self.theme.foreground).opacity(187.0 / 255.0))
-                    .opacity(self.scrollbar_visibility.opacity),
-            );
+            root = root.children(crate::ui::scrollbar::layers(
+                geometry,
+                self.scrollbar_visibility.opacity,
+                expansion,
+                color(self.theme.foreground),
+            ));
             if let Some(label) = scroll_position_label(displayed_offset) {
                 root = root.child(
                     div()

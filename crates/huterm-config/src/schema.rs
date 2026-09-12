@@ -1,5 +1,7 @@
 //! Deterministic Draft 7 schemas for TOML editors.
-use huterm_protocol::{ArgumentKind, catalog};
+use std::collections::BTreeMap;
+
+use huterm_protocol::{ArgumentKind, Requirement, catalog};
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
@@ -46,10 +48,15 @@ fn keybindings(base: &Value, global: bool) -> Value {
     }) {
         let mut properties = Map::new();
         let mut required = Vec::new();
+        let mut one_of_groups = BTreeMap::<_, Vec<_>>::new();
         for arg in command.args {
             let schema = match arg.kind {
                 ArgumentKind::Bool => json!({"type":"boolean"}),
                 ArgumentKind::Text => json!({"type":"string"}),
+                ArgumentKind::QuakeProfile => json!({
+                    "type":"string",
+                    "description":"Configured quake profile name; defaults to `default`."
+                }),
                 ArgumentKind::Integer { min, max } => {
                     json!({"type":"integer", "minimum":min, "maximum":max})
                 }
@@ -58,13 +65,36 @@ fn keybindings(base: &Value, global: bool) -> Value {
                 | ArgumentKind::Session => continue,
             };
             properties.insert(arg.name.into(), schema);
-            if arg.required {
-                required.push(arg.name);
+            match arg.required {
+                // Prompted arguments may be omitted from a binding: an
+                // interactive caller collects them through the palette.
+                Requirement::Always if !arg.prompt => required.push(arg.name),
+                Requirement::Always | Requirement::Optional => {}
+                Requirement::OneOf(group) => {
+                    one_of_groups.entry(group).or_default().push(arg.name);
+                }
             }
         }
         let mut alternative =
             binding(base, command.id.as_str(), command.description, !global);
-        alternative["properties"]["args"] = json!({"type":"object", "additionalProperties":false, "properties":properties, "required":required});
+        let mut args_schema = json!({
+            "type":"object",
+            "additionalProperties":false,
+            "properties":properties,
+            "required":required
+        });
+        let mut exclusivity = one_of_groups
+            .values()
+            .filter(|members| members.len() > 1)
+            .map(|members| json!({"not":{"required":members}}));
+        if let Some(first) = exclusivity.next() {
+            args_schema["not"] = first["not"].clone();
+            let remaining: Vec<_> = exclusivity.collect();
+            if !remaining.is_empty() {
+                args_schema["allOf"] = json!(remaining);
+            }
+        }
+        alternative["properties"]["args"] = args_schema;
         if !required.is_empty() {
             alternative["required"] = json!(["key", "command", "args"]);
         }
@@ -217,6 +247,8 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     definitions["UpdateConfig"]["properties"]["check_interval_hours"]["description"] = json!(
         "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours."
     );
+    definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
+        json!(3600);
     for name in ["padding_x", "padding_y"] {
         definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
         definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);

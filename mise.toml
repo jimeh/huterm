@@ -654,6 +654,33 @@ bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_
 bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
 '''
 
+[tasks."smoke:macos-palette"]
+depends = ["ghostty:prepare"]
+description = "Verify the AppKit command palette, arguments, isolation, and dispatch"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native palette smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
+bun scripts/check-palette.ts target/debug/examples/palette_smoke
+'''
+
+[tasks."smoke:linux-palette"]
+depends = ["ghostty:prepare"]
+description = "Verify the X11 command palette, arguments, isolation, and dispatch"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux palette smoke skipped: X11 requires Linux"
+  exit 0
+fi
+for tool in openbox xdotool setxkbmap; do
+  command -v "$tool" >/dev/null || { echo "Palette smoke requires $tool" >&2; exit 1; }
+done
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-palette.ts target/debug/examples/palette_smoke
+'''
+
 [tasks."ci:lint"]
 description = "Run CI Clippy and architecture checks"
 depends = ["verify:toolchain"]
@@ -684,6 +711,7 @@ case "$(uname -s)" in
       --example integration_smoke \
       --example native_quit_smoke \
       --example fullscreen_smoke \
+      --example palette_smoke \
       --example quake_smoke
     xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
     ;;
@@ -696,6 +724,7 @@ case "$(uname -s)" in
       --example integration_smoke \
       --example xdnd_source \
       --example fullscreen_smoke \
+      --example palette_smoke \
       --example quake_smoke \
       --example quake_monitor
     ;;
@@ -716,7 +745,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|macos-menus|macos-updater|macos-input|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|macos-menus|macos-updater|macos-input|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -731,6 +760,9 @@ case "$(uname -s)" in
     fi
     if run_smoke_step macos-input; then
       bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+    fi
+    if run_smoke_step macos-palette; then
+      bun scripts/check-palette.ts target/debug/examples/palette_smoke
     fi
     if run_smoke_step macos-integration; then
       bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
@@ -748,7 +780,7 @@ case "$(uname -s)" in
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|linux-desktop|linux-input|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|linux-desktop|linux-input|linux-palette|linux-integration|linux-fullscreen|linux-quake) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -782,6 +814,10 @@ case "$(uname -s)" in
     if run_smoke_step linux-input; then
       xvfb-run -a -e "$evidence_dir/linux-input-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-linux-input.ts target/debug/huterm
+    fi
+    if run_smoke_step linux-palette; then
+      xvfb-run -a -e "$evidence_dir/linux-palette-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-palette.ts target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-integration; then
       xvfb-run -a -e "$evidence_dir/linux-integration-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \

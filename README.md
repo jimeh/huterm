@@ -167,9 +167,9 @@ Even Better TOML editor extension. Newly created default configs include it:
 ```
 
 The schema validates settings and command-specific keybinding arguments. For
-example, `select_tab` requires an integer `args.index` from 1 through 9, while
-`copy` rejects that argument. Huterm still checks keystroke and `when` syntax,
-platform restrictions, theme files, and inheritance cycles at runtime.
+example, `select_tab` accepts an optional integer `args.index` from 1 through
+9, while `copy` rejects that argument. Huterm still checks keystroke and `when`
+syntax, platform restrictions, theme files, and inheritance cycles at runtime.
 Quake profiles share the same schema, including geometry and animation limits.
 Global shortcuts offer only the three quake commands and accept a text `profile`
 argument. Profile existence, display availability, shortcut conflicts, and OS
@@ -223,6 +223,21 @@ Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+The command palette sits near the top of the window by default and retains a
+cancelled search query for 15 seconds. Reopening it during that window restores
+and selects the query:
+
+```toml
+[palette]
+placement = "top"           # top or center
+retain_query = true
+retain_query_seconds = 15
+```
+
+`placement = "center"` centres the palette at its full height, so the input
+line stays put while results filter down. Set `retain_query = false` to disable
+retention. `retain_query_seconds` accepts values from 0 to 3600 seconds.
 
 Cmd-Enter on macOS, and F11 on either platform, toggle the configured fullscreen
 mode. macOS defaults to non-native fullscreen in the current Space. Set
@@ -368,6 +383,34 @@ attribution and palette import details.
 
 ### Keybindings
 
+Open the command palette with Cmd+Shift+P on macOS or Ctrl+Shift+P on Linux,
+or choose **View > Open Command Palette**. Search is fuzzy across command
+titles, stable IDs, and descriptions, so `tfs` finds Toggle Fullscreen. Match
+quality ranks first, followed by this window's recent commands, process-wide
+command frequency, and catalog order. Unavailable commands remain visible with
+their refusal reason.
+
+Enter takes the most likely action. It runs a command when its arguments can use
+defaults, or opens the first required slot. Tab opens the slots even when Enter
+would run, so optional values can be changed. The input line shows the command,
+committed argument chips, and one active slot. Tabs and quake profiles use fuzzy
+pickers; identity pickers show labels and ancestry. Rename commands prefill the
+current custom name, selected, so typing replaces it; a blank name restores the
+default title. Click places the cursor, drag or Shift-click selects, and
+double-click selects a word; holding Shift with any movement key extends the
+selection. In a slot, Tab moves to the
+next argument, Backspace on an empty field reopens the previous chip or returns
+to search, and Escape returns to search. Escape from search and a scrim click
+close the palette.
+
+A keybinding that omits a prompted argument, such as `select_tab` without an
+index, opens its picker directly. Cancelling from search retains and selects the
+query for 15 seconds by default; configure this with `[palette]`
+`retain_query` and `retain_query_seconds` as shown above. Every palette key is a
+catalog command with `Palette` context and can be rebound through
+`[[keybinding]]`. Palette input stays modal within its window and never reaches
+the terminal beneath it.
+
 Quake windows are retained terminal windows summoned by profile name. Global
 shortcuts are opt-in and work while another application has focus:
 
@@ -503,13 +546,16 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `confirming` | A close confirmation is open. |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
-
-`Palette` is reserved for the future command palette.
+| `palette` | The window owns an open command palette. |
+| `Palette` | The command palette is open and has focus. |
 
 Commands, their scope, and arguments:
 
 | Command | Scope | Arguments |
 | --- | --- | --- |
+| `show_quake` | Application | Optional `profile` name; defaults to `default`. |
+| `hide_quake` | Application | Optional `profile` name; defaults to `default`. |
+| `toggle_quake` | Application | Optional `profile` name; defaults to `default`. |
 | `new_window` | Application | |
 | `quit` | Application | |
 | `hide` | Application | |
@@ -519,19 +565,19 @@ Commands, their scope, and arguments:
 | `check_for_updates` | Application | macOS packaged application only |
 | `open_settings` | Window | |
 | `about` | Window | |
+| `open_command_palette` | Window | |
 | `new_tab` | Window | |
 | `close_tab` | Window | |
 | `close_window` | Window | |
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
-| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) |
-| `show_quake`, `hide_quake`, `toggle_quake` | Application | Optional `profile` string; defaults to `default`. |
+| `select_tab` | Window | `index` (1 to 9; 9 selects the last tab) or `tab`; exactly one. Without either, prompts for a tab. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enter native mode, or exit any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enter current-Space mode, or exit any active fullscreen mode. |
 | `minimize` | Window | |
 | `zoom` | Window | |
-| `copy` | Terminal | |
+| `copy` | Terminal | Requires a selection. |
 | `paste` | Terminal | |
 | `scroll_page_up` | Terminal | |
 | `scroll_page_down` | Terminal | |
@@ -539,15 +585,45 @@ Commands, their scope, and arguments:
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
+| `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
+| `palette_select_next` | Palette | |
+| `palette_select_previous` | Palette | |
+| `palette_page_down` | Palette | |
+| `palette_page_up` | Palette | |
+| `palette_confirm` | Palette | |
+| `palette_back` | Palette | |
+| `palette_pop` | Palette | |
+| `palette_expand` | Palette | |
+| `palette_next_slot` | Palette | |
+| `palette_previous_slot` | Palette | |
+| `text_delete_backward` | Palette | |
+| `text_delete_forward` | Palette | |
+| `text_delete_word_backward` | Palette | |
+| `text_delete_word_forward` | Palette | |
+| `text_delete_line_start` | Palette | |
+| `text_move_left` | Palette | optional `select` extends the selection instead |
+| `text_move_right` | Palette | optional `select` |
+| `text_move_word_left` | Palette | optional `select` |
+| `text_move_word_right` | Palette | optional `select` |
+| `text_line_start` | Palette | optional `select` |
+| `text_line_end` | Palette | optional `select` |
+| `text_select_all` | Palette | |
+| `text_copy` | Palette | |
+| `text_paste` | Palette | |
 
 Runtime commands execute in the core against canonical structure; the ID
 arguments cannot be written in config and are filled from the invoking window.
+Palette-scope commands imply the `Palette` context. User bindings for them need
+no `when`; the keymap adds the context predicate.
 
 Default bindings differ per platform:
+
+#### Application, window, and terminal
 
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `new_window` | `cmd-n` | `ctrl-shift-n` |
+| `open_command_palette` | `cmd-shift-p` | `ctrl-shift-p` |
 | `new_tab` | `cmd-t` | `ctrl-shift-t` |
 | `close_tab` | `cmd-w` | `ctrl-shift-w` |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
@@ -562,6 +638,31 @@ Default bindings differ per platform:
 | `quit` | `cmd-q` | |
 | `minimize` | `cmd-m` | |
 | `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
+
+#### Palette
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `palette_select_next` | `down`, `ctrl-n` | `down`, `ctrl-n` |
+| `palette_select_previous` | `up`, `ctrl-p` | `up`, `ctrl-p` |
+| `palette_page_down` | `pagedown` | `pagedown` |
+| `palette_page_up` | `pageup` | `pageup` |
+| `palette_confirm` | `enter` | `enter` |
+| `palette_back` | `escape` | `escape` |
+| `palette_expand` | `tab` | `tab` |
+| `palette_previous_slot` | `shift-tab` | `shift-tab` |
+| `text_delete_backward` | `backspace` | `backspace` |
+| `text_delete_forward` | `delete`, `ctrl-d` | `delete` |
+| `text_delete_word_backward` | `alt-backspace` | `alt-backspace` |
+| `text_delete_word_forward` | `alt-d` | `alt-d` |
+| `text_delete_line_start` | `cmd-backspace` | |
+| `text_move_left` / `text_move_right` | `left` / `right` | `left` / `right` |
+| `text_move_word_left` / `text_move_word_right` | `alt-left`, `alt-b` / `alt-right`, `alt-f` | `alt-left`, `alt-b` / `alt-right`, `alt-f` |
+| `text_line_start` / `text_line_end` | `home`, `ctrl-a`, `cmd-left` / `end`, `ctrl-e`, `cmd-right` | `home` / `end` |
+| movement with `select = true` | `shift-` plus each movement key above | `shift-` plus each movement key above |
+| `text_select_all` | `cmd-a` | `ctrl-a` |
+| `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
+| `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
 Commands without a default binding are available through menus or config.
 

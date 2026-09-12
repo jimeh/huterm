@@ -82,6 +82,7 @@ pub(super) struct Config {
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) updates: UpdateConfig,
+    pub(super) palette: huterm_config::PaletteConfig,
     pub(super) terminal: TerminalConfig,
     pub(super) theme: Theme,
     pub(super) keybindings: Vec<KeybindingEntry>,
@@ -105,6 +106,7 @@ impl Default for Config {
             theme: Theme::default(),
             window: WindowConfig::default(),
             updates: UpdateConfig::default(),
+            palette: huterm_config::PaletteConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: Vec::new(),
             quake: crate::quake::Config {
@@ -270,6 +272,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         engine,
         window: raw.window,
         updates: raw.updates,
+        palette: raw.palette,
         terminal: TerminalConfig {
             close_on_exit: raw.terminal.close_on_exit,
             links: raw.terminal.links,
@@ -325,7 +328,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 117);
+        assert_eq!(fixtures.len(), 133);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
