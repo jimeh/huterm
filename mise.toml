@@ -31,6 +31,11 @@ if [ "$(uname -s)" = Darwin ]; then
     echo "see docs/agents/development.md for macOS setup" >&2
     exit 1
   fi
+  if ! xcrun swiftc --version >/dev/null 2>&1; then
+    echo "missing Xcode Swift compiler required for the macOS smoke helper" >&2
+    echo "select a complete Xcode installation with xcode-select" >&2
+    exit 1
+  fi
   if ! xcrun --find metal >/dev/null 2>&1; then
     echo "missing Xcode Metal Toolchain required for GPUI shaders" >&2
     echo "install it with: xcodebuild -downloadComponent MetalToolchain" >&2
@@ -594,6 +599,18 @@ mkdir -p "$(dirname "$xvfb_log")"
 xvfb-run -a -e "$xvfb_log" -s '-screen 0 1280x800x24 -noreset' bun scripts/check-quake.ts target/debug/examples/quake_smoke
 '''
 
+[tasks."build:swift"]
+description = "Compile the macOS smoke helper with Xcode's Swift compiler"
+run = '''
+set -eu
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Swift helper requires macOS and Xcode" >&2
+  exit 1
+fi
+mkdir -p target/debug
+xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
+'''
+
 [tasks."smoke:macos-quake"]
 depends = ["ghostty:prepare"]
 description = "Verify global AppKit quake shortcuts, external focus, animation, and retained PTYs"
@@ -603,7 +620,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example quake_smoke
-xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
+mise run build:swift
 bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
 '''
 
@@ -690,7 +707,7 @@ case "$(uname -s)" in
       --example fullscreen_smoke \
       --example palette_smoke \
       --example quake_smoke
-    xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
+    mise run build:swift
     ;;
   Linux)
     bash scripts/build-exec.sh cargo build --locked \
