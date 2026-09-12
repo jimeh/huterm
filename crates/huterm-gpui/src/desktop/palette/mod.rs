@@ -2123,36 +2123,31 @@ impl Render for CommandPalette {
                     },
                 ))
         });
-        let scrollbar_capture = self.scrollbar_drag.is_some().then(|| {
-            canvas(
-                |_, _, _| {},
-                move |_, (), window, _cx| {
-                    let mover = palette.clone();
-                    window.on_mouse_event(
-                        move |event: &MouseMoveEvent, phase, _, cx| {
-                            if phase.bubble() {
-                                mover.update(cx, |palette, cx| {
-                                    palette
-                                        .scrollbar_drag_to(event.position, cx);
-                                });
-                            }
-                        },
-                    );
-                    let releaser = palette.clone();
-                    window.on_mouse_event(
-                        move |_: &MouseUpEvent, phase, _, cx| {
-                            if phase.bubble() {
-                                releaser.update(cx, |palette, cx| {
-                                    palette.scrollbar_release(cx);
-                                });
-                            }
-                        },
-                    );
-                },
-            )
-            .absolute()
-            .inset_0()
-        });
+        let scrollbar_capture = canvas(
+            |_, _, _| {},
+            move |_, (), window, _cx| {
+                let mover = palette.clone();
+                window.on_mouse_event(
+                    move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase.bubble() {
+                            mover.update(cx, |palette, cx| {
+                                palette.scrollbar_drag_to(event.position, cx);
+                            });
+                        }
+                    },
+                );
+                let releaser = palette.clone();
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase.bubble() {
+                        releaser.update(cx, |palette, cx| {
+                            palette.scrollbar_release(cx);
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
 
         let input_focus = self.focus_handle(cx);
         let panel = div()
@@ -2194,7 +2189,7 @@ impl Render for CommandPalette {
                     .flex_col()
                     .child(list)
                     .children(scrollbar)
-                    .children(scrollbar_capture),
+                    .child(scrollbar_capture),
             )
             .child(footer);
 

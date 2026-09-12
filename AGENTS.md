@@ -269,7 +269,9 @@ pixel dimensions even if the row/column count stays the same. Keep bundled theme
 licenses in the packaged resources.
 GPUI element `on_mouse_move` filters by hover. Register drag tracking through
 `Window::on_mouse_event` during canvas paint to receive movement outside the
-window. Transparent macOS titlebars extend the content area; use the shared
+window. Mount that canvas before a drag starts; conditionally adding it after
+mouse-down races the first outside-window move before the next paint, especially
+under Xvfb. Transparent macOS titlebars extend the content area; use the shared
 terminal viewport inset for PTY sizing, scrollbar geometry, and mouse input.
 Within that viewport, `TerminalLayout` owns padded grid bounds and dimensions
 for painting, PTY sizing, and selection coordinates. Keep scrollbar geometry
