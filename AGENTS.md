@@ -84,6 +84,9 @@ the accepted ticket to the app, verify without re-signing, and only then create
 the public ZIP. Re-signing after stapling invalidates the notarized artifact.
 Release checks must cover every Mach-O plus the app's exact Developer ID team,
 Hardened Runtime flag, secure timestamp, and approved entitlements.
+Syft's macOS application scan can emit an empty `versionInfo`; normalize that
+to an omitted field because SPDX 2.3 makes package versions optional. Keep exact
+version checks for Huterm's required runtime components.
 Normal builds and `package:macos` exclude Sparkle, its menu item, and its plist
 metadata. `package:macos-release` enables the updater, copies the verified
 framework and license, and injects the committed public key and production feed
@@ -126,9 +129,20 @@ tools for each job. `mise.lock` also records the Rust version, so run
 `mise install` and commit the lock after any toolchain bump; otherwise CI
 fails to resolve the tool.
 
-Keep `verify:toolchain` as a serial preflight before `verify:parallel`. Mise's
-CI cache can restore its Rust install symlink without the corresponding rustup
+Keep `verify:toolchain` as a serial preflight before `verify:parallel`. CI uses
+`ci:toolchain`, which runs that preflight and reinstalls the Rust toolchain once
+if rustup reports a corrupt component immediately after installation. Mise's CI
+cache can restore its Rust install symlink without the corresponding rustup
 toolchain, and parallel Cargo invocations then race while materializing it.
+On GitHub-hosted macOS runners, set `RUSTUP_HOME` and `CARGO_HOME` under
+`/Users/runner/.local/share/mise` and disable the Mise cache. Mise-specific home
+variables do not reach nested Cargo tool installs, which can otherwise race in
+the image's shared Rustup state. Install `cargo:*` tools serially only after
+`verify:toolchain`; a parallel Mise install can publish the Rust tool before its
+Cargo component is dispatchable.
+Pass `${{ github.token }}` to Pinact as `PINACT_GITHUB_TOKEN` in CI. The Mise
+action's token environment is Mise-specific, so Pinact otherwise uses GitHub's
+anonymous API limit while verifying action pins.
 
 Use focused Cargo tests while iterating. Run `mise run verify` before a broad
 handoff. GitHub Actions is the source of truth for macOS arm64 compilation and
@@ -590,6 +604,9 @@ restore rust-cache's automatic Rust environment hash: hosted images can carry
 different unrelated toolchains between runs, preventing valid cache restores.
 Keep `cache-on-failure` enabled so transient native smoke failures do not discard
 a successful compilation before the requested rerun.
+CI Linux packaging retries once with retained Cargo and Zig caches because
+Ghostty's native dependency downloads can fail transiently. A second failure
+remains authoritative.
 Keep the aggregate `ci:smoke:build` targets aligned with the binaries consumed
 by `ci:smoke:run`.
 

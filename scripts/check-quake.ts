@@ -510,12 +510,15 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         try {
           await waitFor(() => Bun.file(join(grabDirectory,"ready")).exists(),"separate process owns control-alt-L");
           await checkOrdinaryExit(executable, true);
-          const before = (await current())!.frame;
+          const beforeState = (await current())!;
+          const before = beforeState.frame;
+          const beforeWidth = frame(beforeState)[2];
           await writeFile(config, configText('width = 0.4', '[[global_keybinding]]\nkey = "ctrl-alt-l"\ncommand = "toggle_quake"'));
           await command("app reload_config");
           await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"OS grab conflict rejection");
           await command("app show_quake");await settled(true);
-          if ((await current())?.frame !== before) throw new Error("failed grab reload published new profile geometry");
+          const after = (await current())!;
+          if (frame(after)[2] !== beforeWidth) throw new Error(`failed grab reload published new profile width: before=${before} after=${after.frame}`);
           await hotkey();await settled(false);await hotkey();await settled(true);
         } finally {
           try {

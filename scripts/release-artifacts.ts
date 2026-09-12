@@ -271,7 +271,8 @@ function stringValue(value: unknown, label: string): string {
 
 function packageKey(value: unknown): string {
   const pkg = objectValue(value, "SPDX package");
-  return `${stringValue(pkg.name, "SPDX package name")}\0${stringValue(pkg.versionInfo, "SPDX package version")}`;
+  const version = pkg.versionInfo === undefined ? "" : stringValue(pkg.versionInfo, "SPDX package version");
+  return `${stringValue(pkg.name, "SPDX package name")}\0${version}`;
 }
 
 function isCargoPackage(value: unknown): boolean {
@@ -334,7 +335,13 @@ export async function augmentSpdx(
   const document = structuredClone(objectValue(applicationDocument, "application SPDX document"));
   const creationInfo = objectValue(document.creationInfo, "SPDX creation info");
   const created = stringValue(creationInfo.created, "SPDX creation time");
-  const packages = Array.isArray(document.packages) ? document.packages as SpdxObject[] : [];
+  const packages = Array.isArray(document.packages)
+    ? document.packages.map(value => {
+      const pkg = objectValue(value, "SPDX package");
+      if (pkg.versionInfo === "") delete pkg.versionInfo;
+      return pkg;
+    })
+    : [];
   const byKey = new Map(packages.map(pkg => [packageKey(pkg), pkg]));
   const architectureByKey = new Map<string, string[]>();
   for (const architecture of ["arm64", "x86_64"] as const) {

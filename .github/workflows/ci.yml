@@ -38,7 +38,7 @@ jobs:
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -46,6 +46,8 @@ jobs:
           key: policy
 
       - name: Verify repository policy
+        env:
+          PINACT_GITHUB_TOKEN: ${{ github.token }}
         run: mise run verify:policy
 
       - name: Verify patched vendor sources
@@ -74,7 +76,7 @@ jobs:
             machine: aarch64
             runner-arch: ARM64
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
     steps:
@@ -112,17 +114,24 @@ jobs:
             uname -a
           } > "$evidence/runner.txt"
 
+      - name: Isolate Rust state on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          # Rustup state must remain complete when Mise's install state is restored.
+          cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: rust bun zig
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -171,7 +180,7 @@ jobs:
             machine: aarch64
             runner-arch: ARM64
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
     steps:
@@ -202,17 +211,24 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
             x11-utils openbox xcompmgr
 
+      - name: Isolate Rust state on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          # Rustup state must remain complete when Mise's install state is restored.
+          cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: rust bun zig
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -338,7 +354,7 @@ jobs:
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -360,7 +376,7 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             machine: arm64
             runner-arch: ARM64
             task: package:macos
@@ -368,12 +384,12 @@ jobs:
             runner: ubuntu-22.04
             machine: x86_64
             runner-arch: X64
-            task: package:linux
+            task: ci:package:linux
           - label: Linux aarch64
             runner: ubuntu-22.04-arm
             machine: aarch64
             runner-arch: ARM64
-            task: package:linux
+            task: ci:package:linux
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -399,14 +415,20 @@ jobs:
             patchelf pax-utils pkg-config python3 ripgrep rsync xauth xcompmgr \
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
+      - name: Isolate Rust state on macOS
+        if: runner.os == 'macOS'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          cache: true
+          cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager
+          install_args: rust bun zig
           minimum_release_age: 3d
 
       - name: Install Linux package tools with Mise
@@ -419,7 +441,13 @@ jobs:
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
-        run: mise run verify:toolchain
+        run: mise run ci:toolchain
+
+      - name: Install macOS Cargo package tools
+        if: runner.os == 'macOS'
+        run: |
+          mise install --locked cargo:cargo-auditable
+          mise install --locked cargo:cargo-packager
 
       - name: Cache Cargo dependencies and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
