@@ -233,9 +233,27 @@ fn build_vendored(link_mode: LinkMode) {
 /// metadata next to build.zig. Recreate it on every build-script invocation so
 /// no generated file can survive into the next native build.
 fn stage_build_source(source: &Path, out_dir: &Path) -> PathBuf {
+    let source = fs::canonicalize(source)
+        .unwrap_or_else(|error| panic!("failed to resolve {}: {error}", source.display()));
+    let out_dir = fs::canonicalize(out_dir)
+        .unwrap_or_else(|error| panic!("failed to resolve {}: {error}", out_dir.display()));
     let destination = out_dir.join("ghostty-build-source");
+    let resolved_destination = match fs::canonicalize(&destination) {
+        Ok(destination) => destination,
+        Err(error) if error.kind() == ErrorKind::NotFound => destination.clone(),
+        Err(error) => panic!("failed to resolve {}: {error}", destination.display()),
+    };
+    assert!(
+        !destination.starts_with(&source)
+            && !source.starts_with(&destination)
+            && !resolved_destination.starts_with(&source)
+            && !source.starts_with(&resolved_destination),
+        "Ghostty source and build destination must not overlap: source {}, destination {}",
+        source.display(),
+        resolved_destination.display()
+    );
     remove_existing(&destination);
-    copy_source_tree(source, &destination);
+    copy_source_tree(&source, &destination);
     destination
 }
 
@@ -299,7 +317,10 @@ fn copy_source_tree(source: &Path, destination: &Path) {
 fn isolate_git_discovery(command: &mut Command, out_dir: &Path) {
     let ceiling = fs::canonicalize(out_dir)
         .unwrap_or_else(|error| panic!("failed to resolve {}: {error}", out_dir.display()));
-    command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env("GIT_CEILING_DIRECTORIES", ceiling);
 }
 
 fn warn_unused_xcframework(lib_dir: &Path) {
@@ -586,6 +607,96 @@ mod tests {
     }
 
     #[test]
+    fn staging_rejects_a_destination_inside_the_source_before_copying() {
+        let root = TestDirectory::new("destination-inside-source");
+        let source = root.0.join("source");
+        fs::create_dir(&source).expect("create source directory");
+        fs::write(source.join("build.zig"), "authoritative build\n").expect("write build file");
+
+        let result = std::panic::catch_unwind(|| stage_build_source(&source, &source));
+        assert!(result.is_err(), "overlapping paths must be rejected");
+        assert_eq!(
+            fs::read_to_string(source.join("build.zig")).expect("read preserved source file"),
+            "authoritative build\n"
+        );
+        assert!(!source.join("ghostty-build-source").exists());
+    }
+
+    #[test]
+    fn staging_rejects_a_source_inside_the_destination_before_deleting() {
+        let root = TestDirectory::new("source-inside-destination");
+        let out_dir = root.0.join("out");
+        let destination = out_dir.join("ghostty-build-source");
+        let source = destination.join("source");
+        fs::create_dir_all(&source).expect("create nested source directory");
+        fs::write(source.join("build.zig"), "authoritative build\n").expect("write build file");
+
+        let result = std::panic::catch_unwind(|| stage_build_source(&source, &out_dir));
+        assert!(result.is_err(), "overlapping paths must be rejected");
+        assert_eq!(
+            fs::read_to_string(source.join("build.zig")).expect("read preserved source file"),
+            "authoritative build\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_rejects_a_destination_symlink_to_the_source() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestDirectory::new("destination-symlink");
+        let source = root.0.join("source");
+        let out_dir = root.0.join("out");
+        fs::create_dir(&source).expect("create source directory");
+        fs::create_dir(&out_dir).expect("create output directory");
+        fs::write(source.join("build.zig"), "authoritative build\n").expect("write build file");
+        symlink(&source, out_dir.join("ghostty-build-source"))
+            .expect("create destination symlink");
+
+        let result = std::panic::catch_unwind(|| stage_build_source(&source, &out_dir));
+        assert!(result.is_err(), "aliased overlapping paths must be rejected");
+        assert_eq!(
+            fs::read_to_string(source.join("build.zig")).expect("read preserved source file"),
+            "authoritative build\n"
+        );
+        assert!(
+            fs::symlink_metadata(out_dir.join("ghostty-build-source"))
+                .expect("inspect preserved destination symlink")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_rejects_a_symlink_entry_inside_the_source() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestDirectory::new("destination-symlink-entry");
+        let source = root.0.join("source");
+        let external = root.0.join("external");
+        fs::create_dir(&source).expect("create source directory");
+        fs::create_dir(&external).expect("create external directory");
+        fs::write(source.join("build.zig"), "authoritative build\n").expect("write build file");
+        fs::write(external.join("sentinel"), "external data\n").expect("write external file");
+        let destination = source.join("ghostty-build-source");
+        symlink(&external, &destination).expect("create destination symlink");
+
+        let result = std::panic::catch_unwind(|| stage_build_source(&source, &source));
+        assert!(result.is_err(), "lexically overlapping paths must be rejected");
+        assert_eq!(
+            fs::read_to_string(external.join("sentinel")).expect("read preserved external file"),
+            "external data\n"
+        );
+        assert!(
+            fs::symlink_metadata(&destination)
+                .expect("inspect preserved destination symlink")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
     fn zig_command_cannot_discover_a_repository_above_out_dir() {
         fn git_command(directory: &Path) -> Command {
             let mut command = Command::new("git");
@@ -622,7 +733,27 @@ mod tests {
 
         let mut isolated = git_command(&build_source);
         isolated.args(["rev-parse", "--show-toplevel"]);
+        isolated
+            .env("GIT_DIR", root.0.join(".git"))
+            .env("GIT_WORK_TREE", &root.0);
         isolate_git_discovery(&mut isolated, &out_dir);
         assert!(!isolated.status().expect("run isolated git discovery").success());
+
+        let mut hostile_control = git_command(&build_source);
+        hostile_control
+            .args(["rev-parse", "--show-toplevel"])
+            .env("GIT_DIR", root.0.join(".git"))
+            .env("GIT_WORK_TREE", &root.0)
+            .env(
+                "GIT_CEILING_DIRECTORIES",
+                fs::canonicalize(&out_dir).expect("resolve output directory"),
+            );
+        assert!(
+            hostile_control
+                .status()
+                .expect("run hostile git discovery control")
+                .success(),
+            "Git overrides must bypass the ceiling in the control command"
+        );
     }
 }

@@ -182,8 +182,10 @@ The `build-source-staging` patch creates a fresh private source copy under
 `OUT_DIR` before invoking Zig. Zig 0.16 writes mutable `zig-pkg` dependencies
 beside `build.zig`, so building in the verified source would invalidate its hash.
 The copy omits Git metadata, dereferences file symlinks, and sets the Zig child's
-Git discovery ceiling at canonical `OUT_DIR`. Compilation caches stay outside
-the refreshed copy. The build-script tests run through `test:build-toolchain`
+Git discovery ceiling at canonical `OUT_DIR`, clearing inherited Git repository
+overrides. Reject overlapping source and staging paths before removing previous
+build output. Compilation caches stay outside the refreshed copy. The build-script
+tests run through `test:build-toolchain`
 and the scripting suite.
 
 The wrapper's Kitty graphics feature must remain disabled for this backport.
