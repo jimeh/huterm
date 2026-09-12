@@ -12,11 +12,24 @@ xcodebuild -downloadComponent MetalToolchain
 
 If multiple Xcode versions are installed, select the intended version with
 `xcode-select` before downloading the component. `mise run doctor` checks that
-Xcode is selected and that `xcrun` can locate the Metal compiler. Apple
-documents both the Xcode settings and command-line installation paths in
+Xcode is selected, its Swift compiler runs, and `xcrun` can locate the Metal
+compiler. Apple documents both the Xcode settings and command-line installation
+paths in
 [Downloading and installing additional Xcode components][apple-components].
 
 [apple-components]: https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components
+
+The AppKit smoke helper uses Xcode's bundled Swift compiler; no separate Swift
+installation is needed. `mise run build:swift` compiles it independently of Rust
+and Ghostty. Both the native smoke tasks and CodeQL use this task.
+
+CodeQL's advanced workflow scans Actions, JavaScript/TypeScript, Rust, and Swift
+with the security-extended query suite. Swift uses a manual build because the
+helper is a standalone file, not an Xcode project or Swift package. When enabling
+`.github/workflows/codeql.yml`, switch the repository from default to advanced
+CodeQL setup: default setup blocks uploads from custom CodeQL workflows. Verify
+all four language jobs and their uploaded analyses before retiring the old
+default-setup analysis configurations.
 
 ## Ubuntu 22.04 prerequisites
 
