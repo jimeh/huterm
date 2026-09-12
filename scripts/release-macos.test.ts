@@ -1,47 +1,109 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  assertPublicAssetMatches,
   parseDeveloperIdentity,
   parseSimplePlist,
   privacyUsageDescriptions,
   releaseEntitlements,
   runMacReleasePipeline,
+  signingPlan,
+  sparklePublicKeyFromArchive,
+  updaterPlistValues,
   validateEntitlements,
+  validateLocalPackagePlist,
   validatePrivacyDescriptions,
   validateSignatureDetails,
+  validateUpdatePlist,
 } from "./release-macos.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const inputs = { sha: "a".repeat(40), tag: "v0.1.0", version: "0.1.0" };
 
+async function rootPackageVersion(): Promise<string> {
+  const manifest = await readFile(resolve(repoRoot, "Cargo.toml"), "utf8");
+  const version = /^version = "([^"]+)"$/m.exec(manifest)?.[1];
+  if (!version) throw new Error("root Cargo package version is missing");
+  return version;
+}
+
+test("public release comparison accepts exact bytes and rejects mismatches", () => {
+  const expected = Buffer.from("verified local candidate");
+  expect(() => assertPublicAssetMatches(Buffer.from(expected), expected, "mismatch")).not.toThrow();
+  expect(() => assertPublicAssetMatches(Buffer.from("network mismatch"), expected, "mismatch")).toThrow("mismatch");
+});
+
 test("package verification checks static linkage without rg and rejects failed inspection", async () => {
+  const packageVersion = await rootPackageVersion();
   const directory = await mkdtemp(join(tmpdir(), "huterm-linkage-"));
   try {
+    const bundle = join(directory, "fixture.app");
+    const framework = join(bundle, "Contents/Frameworks/Sparkle.framework");
+    const sparkleVersion = join(framework, "Versions/B");
+    await mkdir(join(sparkleVersion, "Updater.app/Contents/MacOS"), { recursive: true });
+    await mkdir(join(sparkleVersion, "Resources"), { recursive: true });
+    await mkdir(join(bundle, "Contents/MacOS"), { recursive: true });
+    await mkdir(join(bundle, "Contents/Resources"), { recursive: true });
+    await symlink("B", join(framework, "Versions/Current"));
+    for (const [name, target] of [
+      ["Sparkle", "Versions/Current/Sparkle"],
+      ["Autoupdate", "Versions/Current/Autoupdate"],
+      ["Updater.app", "Versions/Current/Updater.app"],
+      ["Resources", "Versions/Current/Resources"],
+    ] as const) await symlink(target, join(framework, name));
+    for (const file of [
+      join(sparkleVersion, "Sparkle"),
+      join(sparkleVersion, "Autoupdate"),
+      join(sparkleVersion, "Updater.app/Contents/MacOS/Updater"),
+      join(bundle, "Contents/MacOS/huterm"),
+    ]) await writeFile(file, "universal fixture");
+    await writeFile(join(bundle, "Contents/Resources/Sparkle-LICENSE"), await readFile(join(repoRoot, "third-party/sparkle/LICENSE")));
+    const publicKey = `${"A".repeat(43)}=`;
+    const publicKeyFile = join(directory, "SparklePublicKey");
+    await writeFile(publicKeyFile, publicKey);
+    const updateInfo = {
+      ...privacyUsageDescriptions,
+      CFBundleShortVersionString: packageVersion,
+      CFBundleVersion: packageVersion,
+      LSMinimumSystemVersion: "10.15.7",
+      SUFeedURL: "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml",
+      SUPublicEDKey: publicKey,
+      SURequireSignedFeed: true,
+      SUVerifyUpdateBeforeExtraction: true,
+    };
     const plutil = join(directory, "plutil");
     await writeFile(plutil, '#!/bin/bash\ncase "${@: -1}" in\n  *.entitlements) printf "%s" "$TEST_ENTITLEMENTS" ;;\n  *) printf "%s" "$TEST_PRIVACY" ;;\nesac\n');
     await chmod(plutil, 0o755);
     const otool = join(directory, "otool");
     await writeFile(otool, '#!/bin/bash\nprintf "%s" "$TEST_LINKAGE"\nexit "$TEST_OTOOL_EXIT"\n');
     await chmod(otool, 0o755);
+    const lipo = join(directory, "lipo");
+    await writeFile(lipo, "#!/bin/bash\nexit 0\n");
+    await chmod(lipo, 0o755);
+    const absoluteHeader = `${repoRoot}/target/release/bundle/Huterm.app/Contents/MacOS/huterm`;
     for (const [linkage, code, expected] of [
-      ["huterm:\n /usr/lib/libSystem.B.dylib\n", "0", 0],
+      [`${absoluteHeader} (architecture x86_64):\n @rpath/Sparkle.framework/Versions/B/Sparkle\n /usr/lib/libSystem.B.dylib\n`, "0", 0],
+      [`${absoluteHeader}:\n @rpath/Sparkle.framework/Versions/B/Sparkle\n ${repoRoot}/.native/sparkle/Sparkle.framework/Versions/B/Sparkle\n`, "0", 1],
       ["huterm:\n @rpath/libghostty-vt.dylib\n", "0", 1],
       ["", "1", 1],
     ] as const) {
-      const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", "fixture.app"], { env: {
-        ...process.env, PATH: directory, TEST_LINKAGE: linkage, TEST_OTOOL_EXIT: code,
-        TEST_PRIVACY: JSON.stringify(privacyUsageDescriptions),
+      const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", bundle], { env: {
+        ...process.env, PATH: directory, SPARKLE_PUBLIC_KEY_FILE: publicKeyFile,
+        TEST_LINKAGE: linkage, TEST_OTOOL_EXIT: code,
+        TEST_PRIVACY: JSON.stringify(updateInfo),
         TEST_ENTITLEMENTS: JSON.stringify(Object.fromEntries(releaseEntitlements.map(key => [key, true]))),
       } });
       expect(result.exitCode, result.stderr.toString()).toBe(expected);
+      if (linkage.includes(".native/sparkle")) expect(result.stderr.toString()).toContain("build-machine path");
       if (linkage.includes("libghostty")) expect(result.stderr.toString()).toContain("Ghostty must be statically linked");
       if (code === "1") expect(result.stderr.toString()).toContain("otool exited with status 1");
     }
     await rm(otool);
-    const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", "fixture.app"], { env: {
-      ...process.env, PATH: directory, TEST_PRIVACY: JSON.stringify(privacyUsageDescriptions),
+    const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "release-macos.ts"), "verify-package-config", bundle], { env: {
+      ...process.env, PATH: directory, SPARKLE_PUBLIC_KEY_FILE: publicKeyFile,
+      TEST_PRIVACY: JSON.stringify(updateInfo),
       TEST_ENTITLEMENTS: JSON.stringify(Object.fromEntries(releaseEntitlements.map(key => [key, true]))),
     } });
     expect(result.exitCode).toBe(1);
@@ -85,14 +147,89 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
 });
 
 test("source bundle metadata and entitlements match the release contract", async () => {
+  const packageVersion = await rootPackageVersion();
   const info = parseSimplePlist(await readFile(resolve(repoRoot, "assets/macos/Info.plist"), "utf8"));
   const entitlements = parseSimplePlist(await readFile(resolve(repoRoot, "assets/macos/Huterm.entitlements"), "utf8"));
-  expect(info).toEqual({ CFBundleIconName: "Huterm", ...privacyUsageDescriptions });
+  expect(info).toEqual({ CFBundleIconName: "Huterm", CFBundleVersion: packageVersion, ...privacyUsageDescriptions });
   expect(Object.keys(entitlements).sort()).toEqual([...releaseEntitlements].sort());
   expect(() => validatePrivacyDescriptions(info)).not.toThrow();
   expect(() => validateEntitlements(entitlements)).not.toThrow();
   expect(() => validatePrivacyDescriptions({ ...info, NSCameraUsageDescription: "wrong" })).toThrow("NSCameraUsageDescription");
   expect(() => validateEntitlements({ ...entitlements, "com.apple.security.cs.allow-jit": true })).toThrow("keys do not match");
+  const publicKey = `${"A".repeat(43)}=`;
+  expect(updaterPlistValues(publicKey)).toEqual({
+    SUFeedURL: "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml",
+    SUPublicEDKey: publicKey,
+    SURequireSignedFeed: true,
+    SUVerifyUpdateBeforeExtraction: true,
+  });
+  const packagedInfo = {
+    ...info,
+    CFBundleShortVersionString: packageVersion,
+    LSMinimumSystemVersion: "10.15.7",
+  };
+  expect(() => validateLocalPackagePlist(packagedInfo, packageVersion)).not.toThrow();
+  expect(() => validateLocalPackagePlist({ ...packagedInfo, SUFeedURL: "https://example.invalid" }, packageVersion)).toThrow(
+    "SUFeedURL must remain absent",
+  );
+  expect(() => validateUpdatePlist({
+    ...packagedInfo,
+    SUFeedURL: "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml",
+    SUPublicEDKey: publicKey,
+    SURequireSignedFeed: true,
+    SUVerifyUpdateBeforeExtraction: true,
+  }, packageVersion, publicKey)).not.toThrow();
+  expect(() => validateUpdatePlist(packagedInfo, packageVersion, publicKey)).toThrow("SUFeedURL");
+});
+
+test("macOS packaging keeps Sparkle opt-in and release-only", async () => {
+  const manifest = await readFile(resolve(repoRoot, "Cargo.toml"), "utf8");
+  const tasks = await readFile(resolve(repoRoot, "mise.toml"), "utf8");
+  const releaseScript = await readFile(resolve(repoRoot, "scripts/release-macos.ts"), "utf8");
+  expect(manifest).toContain('macos-updater = ["huterm-gpui/macos-updater"]');
+  expect(manifest).not.toContain('frameworks = [".native/sparkle/distribution/Sparkle.framework"]');
+  expect(tasks).toContain('[tasks."package:macos-release"]');
+  expect(tasks).toContain('"bun scripts/release-macos.ts validate-updater-inputs"');
+  expect(tasks).toContain('"HUTERM_MACOS_UPDATER=1 mise run package:macos:bundle"');
+  expect(releaseScript).toContain('await runInherited("mise", ["run", "package:macos-release"]);');
+});
+
+test("candidate archive key comes from the exact Huterm app and matches the committed key", async () => {
+  const publicKey = `${"A".repeat(43)}=`;
+  const archive = "/candidate/Huterm-0.1.0-macOS-universal.zip";
+  const extracted = await sparklePublicKeyFromArchive(
+    archive,
+    publicKey,
+    async (selectedArchive, destination) => {
+      expect(selectedArchive).toBe(archive);
+      await mkdir(join(destination, "Huterm.app"));
+    },
+    async plistPath => {
+      expect(plistPath.endsWith("Huterm.app/Contents/Info.plist")).toBe(true);
+      return { SUPublicEDKey: publicKey };
+    },
+  );
+  expect(extracted).toBe(publicKey);
+  await expect(sparklePublicKeyFromArchive(
+    archive,
+    publicKey,
+    async (_selectedArchive, destination) => {
+      await mkdir(join(destination, "Huterm.app"));
+    },
+    async () => ({ SUPublicEDKey: `${"B".repeat(43)}=` }),
+  )).rejects.toThrow("does not match");
+});
+
+test("nested signing plan is explicit, inside-out, and isolates helper entitlements", () => {
+  expect(signingPlan("/tmp/Huterm.app")).toEqual([
+    { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate", entitlements: "none" },
+    { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater", entitlements: "none" },
+    { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app", entitlements: "none" },
+    { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle", entitlements: "none" },
+    { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework", entitlements: "none" },
+    { path: "/tmp/Huterm.app/Contents/MacOS/huterm", entitlements: "huterm" },
+    { path: "/tmp/Huterm.app", entitlements: "huterm" },
+  ]);
 });
 
 test("release signing details require Developer ID, team, runtime, and timestamp", () => {
@@ -143,7 +280,7 @@ test("the final archive is created only after notarization and stapled-app verif
 
 test("release-please can update explicit package versions and centralized exact pins", async () => {
   const rootManifest = await readFile(resolve(repoRoot, "Cargo.toml"), "utf8");
-  const rootVersion = /^version = "([^"]+)"$/m.exec(rootManifest)?.[1];
+  const rootVersion = await rootPackageVersion();
   expect(rootVersion).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   expect(rootManifest).toContain('[package]\nname = "huterm"');
   expect(rootManifest).not.toMatch(/^version\.workspace = true$/m);
@@ -183,6 +320,9 @@ test("release workflows use the documented repository credential names", async (
     expect(releaseWorkflow).toContain(`secrets.${secret}`);
     expect(releasePleaseWorkflow).toContain(`secrets.${secret}`);
   }
+  expect(releaseGuide).toContain("`SPARKLE_EDDSA_PRIVATE_KEY`");
+  expect(releaseWorkflow).toContain("secrets.SPARKLE_EDDSA_PRIVATE_KEY");
+  expect(releasePleaseWorkflow).not.toContain("secrets.SPARKLE_EDDSA_PRIVATE_KEY");
 });
 
 test("manual verification signs without requiring or publishing a GitHub release", async () => {
@@ -196,8 +336,24 @@ test("manual verification signs without requiring or publishing a GitHub release
   expect(checkout).toBeGreaterThan(sourceValidation);
   expect(releaseWorkflow).toContain('compare/${RELEASE_SHA}...main');
   expect(releaseWorkflow).toContain("run: bun scripts/release.ts validate-build");
-  expect(releaseWorkflow).toContain("if: ${{ !inputs.publish }}");
   expect(releaseWorkflow).toContain("uses: actions/upload-artifact@");
   expect(releaseWorkflow).toContain("retention-days: 7");
-  expect(releaseWorkflow).toContain("if: inputs.publish");
+  expect(releaseWorkflow.slice(releaseWorkflow.indexOf("\n  publish:\n"))).toContain("if: inputs.publish");
+});
+
+test("protected publication alone receives updater signing and attestation authority", async () => {
+  const workflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const jobs = workflow.indexOf("\njobs:\n");
+  const publishJob = workflow.indexOf("\n  publish:\n");
+  expect(jobs).toBeGreaterThan(0);
+  expect(publishJob).toBeGreaterThan(0);
+  expect(workflow.slice(jobs, publishJob)).not.toContain("SPARKLE_EDDSA_PRIVATE_KEY");
+  expect(workflow.slice(publishJob)).toContain("environment: release");
+  expect(workflow.slice(publishJob)).toContain("SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}");
+  expect(workflow.slice(publishJob)).toContain("artifact-ids: ${{ needs.assemble.outputs.artifact_id }}");
+  expect(workflow.slice(publishJob)).toContain("EXPECTED_ARTIFACT_DIGEST: ${{ needs.assemble.outputs.artifact_digest }}");
+  for (const permission of ["artifact-metadata: write", "attestations: write", "id-token: write"]) {
+    expect(workflow.slice(publishJob)).toContain(permission);
+  }
+  expect(workflow.slice(publishJob)).toContain("--predicate-type https://spdx.dev/Document/v2.3");
 });

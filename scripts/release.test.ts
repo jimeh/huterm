@@ -78,7 +78,7 @@ test("release workflow binds validated source, schemas, and producer-qualified a
   const releaseMutationJobs = Object.entries(workflow.jobs).filter(([, job]) =>
     job.steps.some(step => /scripts\/release\.ts (?:upload-assets|publish)/.test(step.run ?? "")),
   ).map(([name]) => name);
-  expect(releaseMutationJobs).toEqual(["assemble"]);
+  expect(releaseMutationJobs).toEqual(["publish"]);
 
   const sha = "${{ needs.preflight.outputs.validated_sha }}";
   const actionName = (job: Job, stepName: string) => job.steps.find(step => step.name === stepName)?.with?.name;
@@ -91,7 +91,7 @@ test("release workflow binds validated source, schemas, and producer-qualified a
     const job = workflow.jobs[jobName]!;
     expect(job.outputs?.artifact_name).toBe("${{ steps.artifact-name.outputs.name }}");
     expect(job.steps.find(step => step.id === "artifact-name")?.env?.ARTIFACT_NAME).toBe(`${prefix}-${sha}-${"${{ github.run_attempt }}"}`);
-    expect(actionName(job, `Upload verified ${jobName === "macos" ? "macOS" : "Linux"} payload${jobName === "macos" ? "" : "s"}`)).toBe("${{ steps.artifact-name.outputs.name }}");
+    expect(actionName(job, `Upload verified ${jobName === "macos" ? "macOS" : "Linux"} payloads`)).toBe("${{ steps.artifact-name.outputs.name }}");
   }
   const downloadExpressions = [
     actionName(workflow.jobs.assemble!, "Download exact macOS payload"),
@@ -125,7 +125,7 @@ test("release workflow binds validated source, schemas, and producer-qualified a
   ]);
 });
 
-test("assembly verifies platform digests and creates the exact eight-file release", async () => {
+test("assembly verifies platform digests and creates the exact ten-file release", async () => {
   const root = await mkdtemp(join(tmpdir(), "huterm-release-assembly-"));
   const incoming = join(root, "incoming");
   const dist = join(root, "dist");
@@ -162,7 +162,7 @@ test("local release verification rejects missing, extra, empty, and changed sche
       else await writeFile(join(root, name), name);
     }
     await writePlatformManifest(join(root, "SHA256SUMS"), names.payloads.map(name => join(root, name)));
-    await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).resolves.toHaveLength(8);
+    await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).resolves.toHaveLength(10);
     await writeFile(join(root, "extra"), "extra");
     await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).rejects.toThrow("missing or unexpected");
     await rm(join(root, "extra"));

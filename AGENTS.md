@@ -57,7 +57,8 @@ Run `mise tasks` to discover the full task set.
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
   elapsed time, reuse, and input latency when the host delivers enough frames.
-- `mise run package:macos` builds and verifies the universal `Huterm.app`.
+- `mise run package:macos` builds and verifies a Sparkle-free universal
+  `Huterm.app`; `package:macos-release` is the updater-enabled release input.
 - `mise run package:linux:container` builds verified Linux packages in the
   pinned Ubuntu 22.04 container and exports them to host `dist/`.
 - `mise run format` writes Rust formatting and refreshes action pins.
@@ -66,6 +67,8 @@ Universal macOS packaging combines both architecture executables before signing.
 Keep static Ghostty linkage inspection in the Bun package verifier, where an
 `otool` failure aborts verification. An `if otool ... | rg ...` shell condition
 silently passed on release runners without `rg`, bypassing the linkage check.
+Inspect only indented dependency records from `otool -L`; its section headers
+repeat the inspected executable path and may be absolute.
 Verify each slice with a separate `lipo -verify_arch` call: the macOS 27 system
 tool rejects multiple requested architectures, while Xcode 26's tool accepts
 them. Cross-compilation and Rosetta tests do not replace native Intel UI QA.
@@ -81,12 +84,14 @@ the accepted ticket to the app, verify without re-signing, and only then create
 the public ZIP. Re-signing after stapling invalidates the notarized artifact.
 Release checks must cover every Mach-O plus the app's exact Developer ID team,
 Hardened Runtime flag, secure timestamp, and approved entitlements.
-Sparkle releases use the verified `.native/sparkle` distribution and remove
-only the package copy's unused XPC services. Sign Autoupdate and Updater inside
-out before `Sparkle.framework`, then sign Huterm. The protected publication job
-alone receives the EdDSA private key and attestation authority; the build job
-hands off the signed ZIP, schemas, and validated SPDX SBOM by exact Actions
-artifact ID and digest.
+Normal builds and `package:macos` exclude Sparkle, its menu item, and its plist
+metadata. `package:macos-release` enables the updater, copies the verified
+framework and license, and injects the committed public key and production feed
+before signing. Remove only the package copy's unused XPC services. Sign
+Autoupdate and Updater inside out before `Sparkle.framework`, then sign Huterm.
+Only the protected publication job receives the EdDSA private key and
+attestation authority. It consumes the assembled cross-platform candidate by
+exact Actions artifact ID and digest.
 
 Release Please requires a scalar `package.version` in the root and every member
 manifest. Keep internal exact versions centralized in `workspace.dependencies`
@@ -544,6 +549,10 @@ presence of `SUEnableAutomaticChecks`, not just its boolean getter, to suppress
 the second-launch consent prompt. Always call its setter for an explicit
 `updates.automatic_checks` value, including `false`; omitted config calls no
 setter.
+After emitting every ordered updater marker, the disposable smoke process exits
+explicitly. An active Sparkle network check can otherwise keep its AppKit helper
+alive beyond the harness deadline; graceful application shutdown is outside
+this smoke's contract.
 Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.

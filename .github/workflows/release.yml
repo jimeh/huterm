@@ -32,6 +32,9 @@ on:
       APPLE_NOTARIZATION_KEY_P8_BASE64:
         description: Base64-encoded App Store Connect API private key
         required: true
+      SPARKLE_EDDSA_PRIVATE_KEY:
+        description: Supplied by the protected release environment for appcast signing
+        required: false
   workflow_dispatch:
     inputs:
       publish:
@@ -182,7 +185,7 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun zig cargo:cargo-packager
+          install_args: rust bun zig cargo:cargo-auditable cargo:cargo-packager syft pipx:spdx-tools
           minimum_release_age: 3d
 
       - name: Check platform prerequisites
@@ -191,7 +194,7 @@ jobs:
       - name: Revalidate checked-out source and versions
         run: bun scripts/release.ts validate-build
 
-      - name: Build, sign, and notarize universal app
+      - name: Build, sign, notarize, and inventory universal app
         env:
           MACOS_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARIZATION_ISSUER_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY_P8_BASE64 }}
@@ -205,7 +208,9 @@ jobs:
         run: |
           bun scripts/release.ts write-platform-manifest \
             "$RELEASE_DIST_DIR/macos-SHA256SUMS" \
-            "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.zip"
+            "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.zip" \
+            "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.spdx.json" \
+            "$RELEASE_DIST_DIR/appcast.xml"
 
       - id: artifact-name
         name: Record macOS artifact name
@@ -213,12 +218,14 @@ jobs:
           ARTIFACT_NAME: release-macos-${{ needs.preflight.outputs.validated_sha }}-${{ github.run_attempt }}
         run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload verified macOS payload
+      - name: Upload verified macOS payloads
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: |
             dist-macos/Huterm-${{ inputs.version }}-macOS-universal.zip
+            dist-macos/Huterm-${{ inputs.version }}-macOS-universal.spdx.json
+            dist-macos/appcast.xml
             dist-macos/macos-SHA256SUMS
           if-no-files-found: error
           retention-days: 30
@@ -420,6 +427,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      artifact_digest: ${{ steps.candidate.outputs.artifact-digest }}
+      artifact_id: ${{ steps.candidate.outputs.artifact-id }}
     env:
       RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
       RELEASE_INCOMING_DIR: ${{ github.workspace }}/.release-incoming
@@ -464,8 +474,8 @@ jobs:
       - name: Assemble exact release inventory
         run: bun scripts/release.ts assemble
 
-      - name: Upload complete verification artifact
-        if: ${{ !inputs.publish }}
+      - id: candidate
+        name: Upload exact assembled candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Huterm-${{ inputs.version }}-all-platforms-verified-${{ github.run_attempt }}
@@ -475,24 +485,158 @@ jobs:
           compression-level: 0
           overwrite: false
 
+  publish:
+    name: Attest and publish release
+    needs: [preflight, assemble]
+    if: inputs.publish
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    env:
+      RELEASE_DIST_DIR: ${{ github.workspace }}/dist
+      RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+      RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
+    steps:
+      - name: Validate attestation source identity
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_SHA" != "$RELEASE_SHA" ]]; then
+            echo "workflow source SHA $GITHUB_SHA does not match release SHA $RELEASE_SHA" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]; then
+            exit 0
+          fi
+          echo "publishing attestations requires the normal main ref or an exact-tag recovery dispatch" >&2
+          exit 1
+
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.validated_sha }}
+
+      - name: Install publication tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: false
+          install_args: rust bun pipx:spdx-tools
+          minimum_release_age: 3d
+
+      - name: Materialize verified Sparkle signing tools
+        run: bun scripts/prepare-sparkle.ts
+
+      - name: Revalidate checked-out source and versions
+        run: bun scripts/release.ts validate-build
+
+      - name: Validate candidate artifact identity
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.assemble.outputs.artifact_digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.assemble.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          actual_digest="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${EXPECTED_ARTIFACT_ID}" --jq .digest)"
+          if [[ "$actual_digest" != "sha256:$EXPECTED_ARTIFACT_DIGEST" ]]; then
+            echo "candidate artifact digest mismatch" >&2
+            exit 1
+          fi
+
+      - name: Download exact assembled candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.assemble.outputs.artifact_id }}
+          path: dist
+          merge-multiple: true
+
       - id: app-token
         name: Create fresh release bot token
-        if: inputs.publish
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           permission-contents: write
 
+      - id: draft
+        name: Revalidate exact draft release
+        env:
+          EXPECTED_RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bun scripts/release.ts validate-release
+          actual_id="$(tail -n 1 "$GITHUB_OUTPUT" | cut -d= -f2)"
+          if [[ "$actual_id" != "$EXPECTED_RELEASE_ID" ]]; then
+            echo "draft release changed across the artifact boundary" >&2
+            exit 1
+          fi
+
+      - name: Generate signed appcast and final checksums
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" |
+            env -u SPARKLE_EDDSA_PRIVATE_KEY bun scripts/release-macos.ts finalize-metadata
+
       - name: Upload and verify draft assets
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bun scripts/release.ts upload-assets
 
+      - name: Attest macOS build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/Huterm-${{ inputs.version }}-macOS-universal.zip
+
+      - name: Attest macOS SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/Huterm-${{ inputs.version }}-macOS-universal.zip
+          sbom-path: dist/Huterm-${{ inputs.version }}-macOS-universal.spdx.json
+
+      - name: Verify both local attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          archive="dist/Huterm-${RELEASE_VERSION}-macOS-universal.zip"
+          signer="${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" --source-ref "$GITHUB_REF" --source-digest "$RELEASE_SHA"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" --source-ref "$GITHUB_REF" --source-digest "$RELEASE_SHA" \
+            --predicate-type https://spdx.dev/Document/v2.3
+
       - name: Publish verified release
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         # GitHub Releases has no OIDC trusted-publishing exchange.
-        run: bun scripts/release.ts publish # zizmor: ignore[use-trusted-publishing]
+        run: |
+          bun scripts/release-macos.ts verify-release-metadata
+          bun scripts/release.ts publish # zizmor: ignore[use-trusted-publishing]
+
+      - name: Probe public updater feed and attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PUBLIC_DIR: ${{ runner.temp }}/huterm-public-release
+        run: |
+          set -euo pipefail
+          bun scripts/release-macos.ts probe-public
+          archive="$RELEASE_PUBLIC_DIR/Huterm-${RELEASE_VERSION}-macOS-universal.zip"
+          signer="${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" --source-ref "$GITHUB_REF" --source-digest "$RELEASE_SHA"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" --source-ref "$GITHUB_REF" --source-digest "$RELEASE_SHA" \
+            --predicate-type https://spdx.dev/Document/v2.3
