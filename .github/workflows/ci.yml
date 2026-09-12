@@ -112,11 +112,11 @@ jobs:
             uname -a
           } > "$evidence/runner.txt"
 
-      - name: Isolate Mise-managed Rust on macOS
+      - name: Isolate Rust state on macOS
         if: runner.os == 'macOS'
         run: |
-          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
-          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -209,11 +209,11 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils \
             x11-utils openbox xcompmgr
 
-      - name: Isolate Mise-managed Rust on macOS
+      - name: Isolate Rust state on macOS
         if: runner.os == 'macOS'
         run: |
-          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
-          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -413,11 +413,11 @@ jobs:
             patchelf pax-utils pkg-config python3 ripgrep rsync xauth xcompmgr \
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
-      - name: Isolate Mise-managed Rust on macOS
+      - name: Isolate Rust state on macOS
         if: runner.os == 'macOS'
         run: |
-          echo "MISE_RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
-          echo "MISE_CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.local/share/mise/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'

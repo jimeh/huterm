@@ -188,10 +188,10 @@ jobs:
     outputs:
       artifact_name: ${{ steps.artifact-name.outputs.name }}
     env:
-      MISE_CARGO_HOME: /Users/runner/.local/share/mise/cargo
-      MISE_RUSTUP_HOME: /Users/runner/.local/share/mise/rustup
+      CARGO_HOME: /Users/runner/.local/share/mise/cargo
       RELEASE_DIST_DIR: ${{ github.workspace }}/dist-macos
       RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
+      RUSTUP_HOME: /Users/runner/.local/share/mise/rustup
     steps:
       - name: Check out exact release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -518,11 +518,11 @@ jobs:
       contents: read
       id-token: write
     env:
-      MISE_CARGO_HOME: /Users/runner/.local/share/mise/cargo
-      MISE_RUSTUP_HOME: /Users/runner/.local/share/mise/rustup
+      CARGO_HOME: /Users/runner/.local/share/mise/cargo
       RELEASE_DIST_DIR: ${{ github.workspace }}/dist
       RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
       RELEASE_SHA: ${{ needs.preflight.outputs.validated_sha }}
+      RUSTUP_HOME: /Users/runner/.local/share/mise/rustup
     steps:
       - name: Validate attestation source identity
         run: |
