@@ -3,6 +3,7 @@ import { REQUIRED_SCROLL_SNAPSHOT_SAMPLES } from "./check-scroll-benchmark.ts";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SNAPSHOT_PREFIX = "huterm-scroll snapshot ";
 const QUEUE_PREFIX = "huterm-scroll queue ";
+const SNAPSHOT_COLLECTION_TARGET = REQUIRED_SCROLL_SNAPSHOT_SAMPLES * 3;
 
 type Outcome =
   | { kind: "ready" }
@@ -19,7 +20,7 @@ function snapshotCount(log: string): number {
 }
 
 export function scrollBenchmarkReady(log: string): boolean {
-  if (snapshotCount(log) < REQUIRED_SCROLL_SNAPSHOT_SAMPLES) return false;
+  if (snapshotCount(log) < SNAPSHOT_COLLECTION_TARGET) return false;
   const latestQueue = log.split(/\r?\n/).filter(line => line.startsWith(QUEUE_PREFIX)).at(-1);
   return latestQueue !== undefined
     && (numericField(latestQueue, "requests_coalesced") ?? 0) > 0

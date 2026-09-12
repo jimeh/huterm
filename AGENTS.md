@@ -269,7 +269,9 @@ pixel dimensions even if the row/column count stays the same. Keep bundled theme
 licenses in the packaged resources.
 GPUI element `on_mouse_move` filters by hover. Register drag tracking through
 `Window::on_mouse_event` during canvas paint to receive movement outside the
-window. Transparent macOS titlebars extend the content area; use the shared
+window. Mount that canvas before a drag starts; conditionally adding it after
+mouse-down races the first outside-window move before the next paint, especially
+under Xvfb. Transparent macOS titlebars extend the content area; use the shared
 terminal viewport inset for PTY sizing, scrollbar geometry, and mouse input.
 Within that viewport, `TerminalLayout` owns padded grid bounds and dimensions
 for painting, PTY sizing, and selection coordinates. Keep scrollbar geometry
@@ -812,9 +814,11 @@ Headless benchmarks must use the explicit `scripts/linux/benchmark.twmrc` and
 run twm with `LC_ALL=C`. Default manual placement can grab the X server and
 block Huterm startup, producing zero samples; missing host fontsets can also
 leave twm stuck during cleanup. RandomPlacement and fixed core fonts avoid both.
-The scroll benchmark must wait for the checker's sample and queue-coalescing
-evidence before stopping Huterm. Parsing the initial 10,000 history rows varies
-enough across CI hosts that a fixed process lifetime can leave too few samples.
+The scroll benchmark must collect three minimum-size snapshot windows plus
+queue-coalescing evidence before stopping Huterm. Parsing the initial 10,000
+history rows varies enough across CI hosts that a fixed process lifetime can
+leave too few samples. One 25-snapshot window can make median wakeup hinge on a
+short callback-delay burst immediately after the release build.
 
 Patched registry crates use ordered named patches in
 `third-party/vendor/sources.json` against checksum-pinned release archives. Agents
