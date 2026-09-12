@@ -1,3 +1,4 @@
+import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 /** Check an already-built native AppKit smoke executable in a child process. */
 export function checkNativeQuit(exitCode: number, output: string): void {
   const expected = [
@@ -20,12 +21,7 @@ export function checkNativeQuit(exitCode: number, output: string): void {
 if (import.meta.main) {
   const command = Bun.argv.slice(2);
   if (command.length === 0) throw new Error("usage: check-native-quit.ts <executable> [args...]");
-  const result = Bun.spawnSync(command, {
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 30_000,
-  });
-  process.stdout.write(result.stdout);
-  process.stderr.write(result.stderr);
-  checkNativeQuit(result.exitCode, result.stdout.toString());
+  const result = await runSmokeProcess(command, { timeoutMs: 30_000 });
+  checkSmokeProcess(result, "native quit smoke");
+  checkNativeQuit(result.exitCode, result.stdout);
 }

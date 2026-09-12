@@ -266,70 +266,86 @@ jobs:
           mise run sparkle:prepare
 
       - name: Compile desktop smoke binaries
+        id: smoke-build
         run: mise run ci:smoke:build
 
-
       - name: Smoke renderer
-        run: HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step
 
       - name: Smoke Linux desktop
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-desktop mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-desktop mise run ci:smoke:step
 
       - name: Smoke macOS menus
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-menus mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-menus mise run ci:smoke:step
 
       - name: Smoke packaged macOS updater
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-updater mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-updater mise run ci:smoke:step
 
       - name: Smoke Linux input
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-input mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-input mise run ci:smoke:step
 
       - name: Smoke macOS input
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-input mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-input mise run ci:smoke:step
 
       - name: Smoke Linux command palette
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-palette mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-palette mise run ci:smoke:step
 
       - name: Smoke macOS command palette
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-palette mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-palette mise run ci:smoke:step
 
       - name: Smoke Linux integration
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-integration mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-integration mise run ci:smoke:step
 
       - name: Smoke macOS integration
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-integration mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-integration mise run ci:smoke:step
 
       - name: Smoke native Quit
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-quit mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-quit mise run ci:smoke:step
 
       - name: Smoke Linux fullscreen
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-fullscreen mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-fullscreen mise run ci:smoke:step
 
       - name: Smoke macOS fullscreen
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-fullscreen mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-fullscreen mise run ci:smoke:step
 
       - name: Smoke Linux quake windows
-        if: runner.os == 'Linux'
-        run: HUTERM_CI_SMOKE_STEP=linux-quake mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-quake mise run ci:smoke:step
 
       - name: Smoke macOS quake windows
-        if: runner.os == 'macOS'
-        run: HUTERM_CI_SMOKE_STEP=macos-quake mise run ci:smoke:run
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-quake mise run ci:smoke:step
 
-      - name: Upload smoke failure evidence
-        if: failure()
+      - name: Upload smoke evidence
+        if: ${{ !cancelled() && (steps.smoke-build.outcome == 'success' || failure()) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smoke-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}

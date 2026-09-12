@@ -220,7 +220,7 @@ process labels and directory inheritance are not implemented yet.
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
-| Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, implemented as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
+| Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
@@ -253,6 +253,21 @@ inputs explicitly; it does not vary with unrelated Rust versions preinstalled
 on a hosted runner image. Because native smoke execution can fail transiently
 after compilation succeeds, the job still saves its build cache on failure so
 the requested rerun does not compile from scratch.
+
+Each CI smoke step has a five-minute process deadline and a six-minute Actions
+backstop. The supervisor streams output and records stdout, stderr, elapsed-time
+events, and exit status under `HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
+is uploaded for successful and failed jobs so timing can be compared. The
+renderer also records its native process events under `renderer-process`,
+distinguishing paint completion from process exit. Its 15-second deadline and
+completion assertions remain enforced.
+
+After compilation succeeds, independent smoke steps continue after a failure;
+the failed step still fails the job. Cancellation stops subsequent steps. The
+supervisor forwards termination to its private process group, escalates to KILL,
+and removes remaining group members on exit. It does not retry failed assertions.
+To reproduce one supervised step after building, run
+`HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step`.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,
