@@ -952,6 +952,10 @@ drop/leave; otherwise a follow-up action can target a source already exiting.
 
 The AppKit witness publishes readiness before its first state snapshot. Wait for
 that snapshot or a command acknowledgement before reading its activation state.
+Before summoning from an external AppKit witness, wait for both the exact
+frontmost process and the quake window's inactive observation. NSWorkspace can
+publish the new frontmost process before NSApplication clears its active state;
+sampling only the former can falsely satisfy a new activation request.
 
 AppKit clamps intermediate top-edge frames even for borderless windows. Quake
 opts only its own native window into unconstrained frames, retaining that flag

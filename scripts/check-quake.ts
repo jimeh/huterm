@@ -358,7 +358,11 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             departedTarget = departedWindow;
             run(["xdotool", "windowactivate", "--sync", departedWindow]);
           }
-          await waitFor(async () => (await state()).current_focus_id === departedTarget, "Huterm observes the exact external focus target before summon");
+          await waitFor(async () => {
+            const value = await state();
+            return value.current_focus_id === departedTarget
+              && profile(value, "default")?.active === "false";
+          }, "Huterm observes the exact external focus target and inactive quake before summon");
           await command("app show_quake");await settled(true);
           await waitFor(async () => (await state()).return_focus_id === departedTarget, "summon captures the exact departed focus target");
           const quakeTarget = macos ? String(app.pid) : (await current())!.native_id!;
