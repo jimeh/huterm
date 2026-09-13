@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/jimeh/huterm/compare/v0.8.0...v0.8.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **deps:** update grid past unsafe dimension growth ([#116](https://github.com/jimeh/huterm/issues/116)) ([1ebbe22](https://github.com/jimeh/huterm/commit/1ebbe223baaecbeffded1c4f6dfa55756b3ac191))
+
 ## [0.8.0](https://github.com/jimeh/huterm/compare/v0.7.3...v0.8.0) (2026-09-13)
 
 
