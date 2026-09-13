@@ -217,15 +217,39 @@ pub(crate) fn spawn(
         .try_clone_reader()
         .map_err(|error| RuntimeError::Pty(error.to_string()))?;
     process.reader = Some(reader);
-    let writer = process
-        .master
-        .as_ref()
-        .ok_or(RuntimeError::Invariant("PTY process has no master handle"))?
-        .take_writer()
-        .map_err(|error| RuntimeError::Pty(error.to_string()))?;
+    let writer = clone_writer(
+        process
+            .master
+            .as_ref()
+            .ok_or(RuntimeError::Invariant("PTY process has no master handle"))?
+            .as_ref(),
+    )?;
     process.writer = Some(writer);
 
     Ok(process)
+}
+
+#[cfg(unix)]
+fn clone_writer(
+    master: &dyn MasterPty,
+) -> Result<Box<dyn Write + Send>, RuntimeError> {
+    let master_fd = master.as_raw_fd().ok_or(RuntimeError::Invariant(
+        "Unix PTY master has no raw file descriptor",
+    ))?;
+    // portable-pty's Unix writer injects a newline and EOF when dropped.
+    // Huterm owns shutdown explicitly, so keep teardown bytes out of history.
+    FileDescriptor::dup(&MasterDescriptor(master_fd))
+        .map(|writer| Box::new(writer) as Box<dyn Write + Send>)
+        .map_err(|error| RuntimeError::Pty(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn clone_writer(
+    master: &dyn MasterPty,
+) -> Result<Box<dyn Write + Send>, RuntimeError> {
+    master
+        .take_writer()
+        .map_err(|error| RuntimeError::Pty(error.to_string()))
 }
 
 #[cfg(unix)]
@@ -467,6 +491,57 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::ErrorKind;
     use std::sync::mpsc::{self, Receiver, Sender};
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_writer_does_not_inject_terminal_input() {
+        let pair = portable_pty::native_pty_system()
+            .openpty(PtySize {
+                rows: 8,
+                cols: 40,
+                pixel_width: 320,
+                pixel_height: 128,
+            })
+            .unwrap();
+        set_nonblocking(pair.master.as_ref()).unwrap();
+        let reader_waiter = ReaderWaiter::new(pair.master.as_ref()).unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let writer = clone_writer(pair.master.as_ref()).unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "printf READY; IFS= read -r line"]);
+        let child = pair.slave.spawn_command(command).unwrap();
+        let mut killer = child.clone_killer();
+        drop(pair.slave);
+
+        let mut ready = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !ready.ends_with(b"READY") {
+            let mut output = [0_u8; 8];
+            match reader.read(&mut output) {
+                Ok(count) => ready.extend_from_slice(&output[..count]),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    reader_waiter.wait(POLL_INTERVAL).unwrap();
+                }
+                result => panic!("shell readiness failed: {result:?}"),
+            }
+            assert!(Instant::now() < deadline, "shell did not become ready");
+        }
+
+        drop(writer);
+
+        reader_waiter.wait(Duration::from_millis(20)).unwrap();
+        let mut output = [0_u8; 8];
+        let result = reader.read(&mut output);
+        let _ = killer.kill();
+        drop(reader);
+        drop(pair.master);
+        assert!(reap_child(child));
+        assert!(
+            matches!(&result, Err(error) if error.kind() == ErrorKind::WouldBlock),
+            "writer drop emitted terminal output: {:?}",
+            result.map(|count| &output[..count])
+        );
+    }
 
     #[derive(Debug)]
     struct ControlledChild {
