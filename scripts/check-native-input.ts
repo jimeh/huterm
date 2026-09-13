@@ -263,6 +263,9 @@ async function checkLegacyEngine(executable: string): Promise<void> {
     if (!stderr.includes('terminal.engine = "alacritty" is deprecated')) {
       throw new Error(`legacy engine launch missing migration warning: ${stderr}`);
     }
+    if (app.exitCode !== null) {
+      throw new Error(`legacy engine launch exited before verification: exit=${app.exitCode} stderr=${stderr}`);
+    }
     console.log(`NATIVE_INPUT_SMOKE legacy-alacritty=ghostty revision=${manifest.revision}`);
   } finally {
     if (app.exitCode === null) app.kill("SIGTERM");

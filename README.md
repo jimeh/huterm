@@ -744,8 +744,6 @@ restoration, and shared GUI/TUI access.
 - True color, text decorations, cursor styles, hyperlinks, clipboard support,
   search, selection, and configurable scrollback.
 - More terminal mouse protocols and shell integration.
-- Configurable Alacritty and `libghostty-vt` terminal engines, with Alacritty
-  selected by default.
 
 ### Desktop clients
 
