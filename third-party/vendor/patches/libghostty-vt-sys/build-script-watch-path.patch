@@ -1,8 +1,8 @@
 diff --git a/build.rs b/build.rs
-index b055034e4bf661da99a97d26d5af9e27120584e0..a4d5e989739e6dfcd88478c218cb43c1f27e5239 100644
+index bd04a5c9553b2e25b5677bfac47ecabe315f5907..1aa5968d74bc523af1c20d2eb4de0b3188956904 100644
 --- a/build.rs
 +++ b/build.rs
-@@ -79,7 +79,7 @@ fn main() {
+@@ -94,7 +94,7 @@ fn main() {
      println!("cargo:rerun-if-env-changed=HOST");
      println!("cargo:rerun-if-env-changed=DEBUG");
      println!("cargo:rerun-if-env-changed=OPT_LEVEL");

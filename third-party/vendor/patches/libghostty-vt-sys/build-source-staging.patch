@@ -1,5 +1,5 @@
 diff --git a/build.rs b/build.rs
-index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..879cb78bf4bcb0d8cdc2ef2da00d06ea025a620f 100644
+index 1aa5968d74bc523af1c20d2eb4de0b3188956904..96b92d120677b1ce7582e4d907d27c63cc09fca0 100644
 --- a/build.rs
 +++ b/build.rs
 @@ -1,4 +1,7 @@
@@ -10,7 +10,7 @@ index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..879cb78bf4bcb0d8cdc2ef2da00d06ea
  use std::path::{Path, PathBuf};
  use std::process::Command;
  
-@@ -108,7 +111,7 @@ fn build_vendored(link_mode: LinkMode) {
+@@ -122,7 +125,7 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
      let host = env::var("HOST").expect("HOST must be set");
  
      // Locate ghostty source: env override > fetch into OUT_DIR.
@@ -19,15 +19,16 @@ index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..879cb78bf4bcb0d8cdc2ef2da00d06ea
          Ok(dir) => {
              let p = PathBuf::from(dir);
              assert!(
-@@ -120,6 +123,7 @@ fn build_vendored(link_mode: LinkMode) {
-         }
+@@ -135,6 +138,8 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
          Err(_) => fetch_ghostty(&out_dir),
      };
-+    let ghostty_dir = stage_build_source(&ghostty_source_dir, &out_dir);
  
++    let ghostty_dir = stage_build_source(&ghostty_source_dir, &out_dir);
++
      // Build libghostty-vt via zig.
      let install_prefix = out_dir.join("ghostty-install");
-@@ -151,6 +155,7 @@ fn build_vendored(link_mode: LinkMode) {
+     let zig_cache_dir = out_dir.join("zig-cache");
+@@ -201,6 +206,7 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
          .arg("--cache-dir")
          .arg(&zig_cache_dir)
          .current_dir(&ghostty_dir);
@@ -35,8 +36,8 @@ index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..879cb78bf4bcb0d8cdc2ef2da00d06ea
  
      // Package managers can provide Ghostty's Zig package cache ahead of time
      // and ask Zig to resolve packages from that immutable store path instead
-@@ -224,6 +229,100 @@ fn build_vendored(link_mode: LinkMode) {
-     emit_include_metadata(&[include_dir]);
+@@ -300,6 +306,100 @@ fn emit_static_link_lib(target: &str) {
+     }
  }
  
 +/// Copy the source into disposable build storage because Zig may write package
@@ -136,7 +137,7 @@ index 4dc1657a5f5c0755dfe4f10d16765206326ddb91..879cb78bf4bcb0d8cdc2ef2da00d06ea
  fn warn_unused_xcframework(lib_dir: &Path) {
      let xcframework = lib_dir.join("ghostty-vt.xcframework");
      if xcframework.exists() {
-@@ -407,3 +506,254 @@ fn zig_target(target: &str) -> String {
+@@ -561,3 +661,254 @@ fn zig_target(target: &str) -> String {
      };
      value.to_owned()
  }

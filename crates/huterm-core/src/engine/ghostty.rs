@@ -21,7 +21,7 @@ use libghostty_vt::terminal::{
     Mode, Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
     SecondaryDeviceAttributes, TertiaryDeviceAttributes,
 };
-use libghostty_vt::{RenderState, Terminal, TerminalOptions};
+use libghostty_vt::{RenderState, Terminal};
 
 impl From<libghostty_vt::Error> for RuntimeError {
     fn from(error: libghostty_vt::Error) -> Self {
@@ -57,11 +57,8 @@ impl TerminalEngine {
         size: GridSize,
         cell: CellSize,
     ) -> Result<Self, RuntimeError> {
-        let mut terminal = Terminal::new(TerminalOptions {
-            cols: size.columns,
-            rows: size.rows,
-            max_scrollback: 16 * 1024 * 1024,
-        })?;
+        let mut terminal = Terminal::new(size.columns, size.rows)?;
+        terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
         terminal.set_glyph_protocol_enabled(false)?;
         terminal.set_apc_max_bytes(Some(0))?;
         let effects = Rc::new(RefCell::new(Vec::new()));
@@ -641,6 +638,60 @@ impl super::links::LinkBuffer for TerminalEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_callbacks_preserve_empty_and_binary_contents() {
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&writes);
+        let mut terminal = Terminal::new(8, 3).unwrap();
+        terminal
+            .on_clipboard_write(move |_, write| {
+                captured.borrow_mut().push(
+                    write
+                        .contents()
+                        .map(|content| content.data.to_vec())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        terminal.vt_write(b"\x1b]52;c;\x07");
+        terminal.vt_write(b"\x1b]52;c;/w==\x07");
+        terminal.vt_write(b"\x1b]1337;Copy=:Zg==\x1b\\");
+        assert_eq!(
+            *writes.borrow(),
+            vec![vec![], vec![vec![255]], vec![b"f".to_vec()]]
+        );
+    }
+
+    #[test]
+    fn oversized_clipboard_capture_is_dropped_and_parser_recovers() {
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&writes);
+        let mut terminal = Terminal::new(8, 3).unwrap();
+        terminal
+            .on_clipboard_write(move |_, write| {
+                captured.borrow_mut().push(
+                    write
+                        .contents()
+                        .map(|content| content.data.to_vec())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        // Feed bounded chunks so the test itself never retains the huge OSC.
+        for prefix in [b"\x1b]52;c;".as_slice(), b"\x1b]1337;Copy=:"] {
+            terminal.vt_write(prefix);
+            for _ in 0..=8192 {
+                terminal.vt_write(&[b'A'; 1024]);
+            }
+            terminal.vt_write(b"\x07");
+        }
+        assert!(writes.borrow().is_empty());
+        terminal.vt_write(b"\x1b]52;c;Zg==\x07");
+        assert_eq!(*writes.borrow(), vec![vec![b"f".to_vec()]]);
+    }
 
     #[test]
     fn linked_native_memset_preserves_rust_byte_fills() {
