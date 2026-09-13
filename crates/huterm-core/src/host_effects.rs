@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use huterm_protocol::{
@@ -12,7 +12,6 @@ const TERMINAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 const PROCESS_EFFECT_LIMIT: usize = 32;
 const PROCESS_BYTE_LIMIT: usize = 32 * 1024 * 1024;
 const TERMINAL_RECIPIENT_LIMIT: usize = 32;
-const PROCESS_RECIPIENT_LIMIT: usize = 256;
 
 /// Connection boundary represented by a host-effect recipient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,7 +51,6 @@ impl HostEffectRecipientOptions {
 #[derive(Clone, Debug)]
 pub struct DesktopHostEffectClient {
     process_budget: Arc<Budget>,
-    recipient_count: Arc<AtomicUsize>,
 }
 
 impl DesktopHostEffectClient {
@@ -64,38 +62,13 @@ impl DesktopHostEffectClient {
                 PROCESS_EFFECT_LIMIT,
                 PROCESS_BYTE_LIMIT,
             )),
-            recipient_count: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    fn try_reserve_recipient(&self) -> Option<RecipientReservation> {
-        self.recipient_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                count
-                    .checked_add(1)
-                    .filter(|next| *next <= PROCESS_RECIPIENT_LIMIT)
-            })
-            .ok()?;
-        Some(RecipientReservation {
-            count: Arc::clone(&self.recipient_count),
-        })
     }
 }
 
 impl Default for DesktopHostEffectClient {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Debug)]
-struct RecipientReservation {
-    count: Arc<AtomicUsize>,
-}
-
-impl Drop for RecipientReservation {
-    fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -185,7 +158,6 @@ struct Registration {
     order: u64,
     process_budget: Arc<Budget>,
     queue: Mutex<VecDeque<PendingHostEffect>>,
-    _process_slot: RecipientReservation,
 }
 
 impl Registration {
@@ -518,7 +490,6 @@ impl HostEffectSink {
         process: &DesktopHostEffectClient,
         options: HostEffectRecipientOptions,
     ) -> Option<HostEffectRecipient> {
-        let process_slot = process.try_reserve_recipient()?;
         let mut state = self
             .inner
             .state
@@ -543,7 +514,6 @@ impl HostEffectSink {
             order: registration_order,
             process_budget: Arc::clone(&process.process_budget),
             queue: Mutex::new(VecDeque::new()),
-            _process_slot: process_slot,
         });
         state.registrations.push(Arc::downgrade(&registration));
         Some(HostEffectRecipient {
@@ -588,6 +558,28 @@ mod tests {
             HostEffect::ClipboardWrite(write) => write.text(),
             effect => panic!("unexpected host effect: {effect:?}"),
         }
+    }
+
+    #[test]
+    fn desktop_clipboard_registrations_do_not_limit_terminal_count() {
+        let process = DesktopHostEffectClient::new();
+        let mut terminals = Vec::new();
+        for id in 1..=300 {
+            let sink = HostEffectSink::new(TerminalId::new(id));
+            let recipient = recipient(
+                &sink,
+                &process,
+                id,
+                HostEffectRecipientOptions::local_desktop(true),
+            );
+            terminals.push((sink, recipient));
+        }
+        let (sink, recipient) = terminals.last().unwrap();
+        assert_eq!(
+            sink.admit_borrowed("last tab"),
+            HostEffectAdmission::Accepted
+        );
+        assert_eq!(text(&recipient.try_next().unwrap()), "last tab");
     }
 
     #[test]
