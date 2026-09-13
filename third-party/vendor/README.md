@@ -192,6 +192,16 @@ crate once a reviewed published GPUI release supplies equivalent native
 sequencing, whole-payload validation, and stale-reply isolation. Rerun both
 platforms' desktop integration smokes when removing it.
 
+## GPUI Taffy security update
+
+The `taffy-grid-security-update` patch changes GPUI's exact Taffy pin from
+0.9.0 to 0.9.2, allowing the workspace lockfile to select `grid` 1.0.1.
+That version fixes unchecked dimension growth described in
+[GHSA-38c5-483c-4qqp](https://github.com/advisories/GHSA-38c5-483c-4qqp).
+Taffy's occupancy matrix does not call the affected growth methods, but the
+update removes the vulnerable dependency from the workspace graph. Remove this
+patch when the selected GPUI release permits a patched `grid` version.
+
 ## GPUI explicit float literals
 
 `explicit-f32-literals` adds `f32` suffixes to the two grid-track literals in
