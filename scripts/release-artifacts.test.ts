@@ -134,6 +134,7 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   expect(packages.find(pkg => pkg.name === "anyhow")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64 and x86_64") })]);
   expect(packages.find(pkg => pkg.name === "arm-only")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64") })]);
   expect(packages.find(pkg => pkg.name === "gpui")?.sourceInfo).toContain("Locally patched runtime crate");
+  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("20c3eae04dee606349eb21e2dd0293b203d47179");
   for (const name of ["Sparkle", "ghostty", "uucode", "highway", "libghostty-vt-sys"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }

@@ -643,6 +643,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn linked_native_memset_preserves_rust_byte_fills() {
+        // Ghostty's exported memset once treated C's int fill as a u8.
+        // Rust may pass -1 for 0xff, corrupting hash-table control bytes.
+        for size in [4, 8, 16, 17, 31, 32, 64, 256] {
+            let bytes = vec![u8::MAX; std::hint::black_box(size)];
+            assert!(
+                bytes.iter().all(|byte| *byte == u8::MAX),
+                "native memset corrupted a {size}-byte fill: {bytes:?}"
+            );
+        }
+    }
+
+    #[test]
     fn split_osc_palette_override_equal_to_default_stays_explicit_until_reset()
     {
         let original = libghostty_vt::style::Palette::default().0[1];

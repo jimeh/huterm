@@ -76,6 +76,17 @@
           "name": "license",
           "file": "patches/libghostty-vt-sys/license.patch",
           "description": "Include the MIT license supplied with the reviewed binding notice."
+        },
+        {
+          "name": "zig-016",
+          "file": "patches/libghostty-vt-sys/zig-0.16.patch",
+          "description": "Backport the aligned Ghostty native revision and generated bindings for Zig 0.16 and Xcode 27.",
+          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/6111c4d72f11f0a1894cf3c5943b9ee25a6d0c61"
+        },
+        {
+          "name": "build-source-staging",
+          "file": "patches/libghostty-vt-sys/build-source-staging.patch",
+          "description": "Build from a disposable OUT_DIR source copy so Zig-generated files cannot modify the verified Ghostty source tree."
         }
       ]
     },
