@@ -277,12 +277,18 @@ the user's tmux server or configuration. Linux reads the CLIPBOARD selection
 through an independent `xclip` process inside the smoke's private Xvfb display.
 The macOS smoke reads exact length-prefixed UTF-8 bytes through a separate
 AppKit helper and restores every saved pasteboard item after success or failure.
+It bundles the `clipboard_smoke` example in a temporary `.app` and uses the
+production desktop startup and Hide command. The helper only observes window
+visibility and clipboard contents: external `NSRunningApplication.hide()`
+requests were refused by the hosted runner even for a live, regular application.
+The tmux shell fixture consumes Huterm's macOS `-l` argument before starting
+tmux, while retaining `-c` delegation for commands tmux launches.
 Install tmux on macOS with `brew install tmux` before running the native task.
 Linux also drives inactive-tab, command-palette, and live permission-reload
 writes through native shortcuts. The macOS smoke covers startup denial and
 hidden-window delivery; those three shortcut variants still need manual macOS
-evidence because the production binary has no in-process event injection and
-CI does not grant Accessibility event-posting permission.
+evidence because the clipboard smoke driver only controls application visibility
+and CI does not grant Accessibility event-posting permission.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,

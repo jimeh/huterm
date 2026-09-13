@@ -1,8 +1,7 @@
 # OSC 52 clipboard writes
 
-Status: implemented locally after Ghostty upgrade commit `44def94` on
-2026-09-13. Linux clipboard acceptance passes; native macOS verification
-remains pending.
+Status: implemented after Ghostty upgrade commit `44def94` on 2026-09-13.
+Linux and native macOS clipboard acceptance pass on both engines.
 This revision retains the earlier Claude review fixes and supersedes the
 proposed custom parser patches and configurable payload cap.
 
@@ -363,7 +362,7 @@ verified fixes for release-only sink initialization, startup permission
 fallback, and smoke synchronization. No additional runtime crates or vendor
 patches were needed beyond the preceding Ghostty upgrade.
 
-- `mise run verify` passed: 123 core tests, 320 GPUI tests, 5 config tests,
+- Initial `mise run verify` passed: 123 core tests, 320 GPUI tests, 5 config tests,
   16 protocol tests, 2 GPUI integration tests, and 357 scripting tests.
   Three existing core benchmarks remain ignored. Focused clipboard tests
   also passed in release mode.
@@ -388,11 +387,14 @@ their budget, and generation checks prevent delivery after revocation.
 Startup fallback preserves an explicit valid deny policy; invalid clipboard
 policy values stop startup. Invalid reloads retain the working configuration.
 
-Native macOS behavior is not proven by these Linux results. The committed
-AppKit witness and `smoke:macos-clipboard` CI step must still verify exact NUL
-handling and hidden-window delivery on macOS. Inactive-tab, palette-focus,
-and reload shortcut variants also need native macOS evidence as described
-in the development guide.
+The [native macOS clipboard CI step][macos-acceptance] passed at `3f58e44`.
+It verified exact Unicode, empty text and NUL, ordered writes, ignored reads,
+invalid UTF-8, copy followed immediately by hiding, writes while hidden,
+startup denial, and real tmux copy/forwarding on both engines. Ghostty's
+OSC 1337 Copy also passed. A dedicated smoke example invokes the production
+Hide command; a separate AppKit witness observes hidden state and clipboard
+bytes. Inactive-tab, palette-focus, and reload shortcut variants still need
+manual native macOS evidence as described in the development guide.
 
 ## Unresolved questions
 
@@ -401,7 +403,8 @@ implementation defaults, distinct from upstream payload limits.
 Making Ghostty the default remains a separate decision; this plan supports both
 engines with their current default unchanged.
 Herdr's installed version and real Copy action have been verified on Linux.
-Native macOS clipboard acceptance remains the outstanding platform check.
+
+[macos-acceptance]: https://github.com/jimeh/huterm/actions/runs/34740217873/job/103678555571
 
 [issue]: https://github.com/jimeh/huterm/issues/80
 [compatibility]: https://github.com/jimeh/huterm/issues/78
