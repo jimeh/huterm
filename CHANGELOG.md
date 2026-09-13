@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/jimeh/huterm/compare/v0.7.2...v0.7.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **build:** upgrade Ghostty and Zig for Xcode 27 ([#107](https://github.com/jimeh/huterm/issues/107)) ([178a8c6](https://github.com/jimeh/huterm/commit/178a8c6cfe7cf3ac1a3c5984a5cdb64a38eb7b05))
+
 ## [0.7.2](https://github.com/jimeh/huterm/compare/v0.7.1...v0.7.2) (2026-09-13)
 
 
