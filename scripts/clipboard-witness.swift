@@ -129,6 +129,12 @@ do {
     guard CommandLine.arguments.count == 3 else { throw WitnessError.usage }
     let command = CommandLine.arguments[1]
     let value = CommandLine.arguments[2]
+    if command == "hide" || command == "unhide" {
+        // Establish the caller's WindowServer connection without taking focus.
+        let helper = NSApplication.shared
+        let policyAccepted = helper.setActivationPolicy(.prohibited)
+        fputs("clipboard-witness caller: policy_accepted=\(policyAccepted) \(describe(NSRunningApplication.current))\n", stderr)
+    }
     let pasteboard = NSPasteboard.general
     switch command {
     case "read":
