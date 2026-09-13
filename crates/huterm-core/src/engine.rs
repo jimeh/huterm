@@ -578,6 +578,13 @@ mod contract_tests {
                 .collect();
             assert_eq!(visible, ["two", "three", "four"]);
             assert_eq!(engine.generation(), generation);
+            assert!(before.cursor.is_none());
+            engine.scroll(ScrollCommand::Absolute(usize::MAX)).unwrap();
+            let clamped = engine.snapshot().unwrap();
+            assert_eq!(clamped.viewport.bottom_offset, clamped.history_size);
+            assert!(clamped.cursor.is_none());
+            assert_eq!(engine.generation(), generation);
+            engine.scroll(ScrollCommand::Absolute(1)).unwrap();
             let range = BufferRange::ordered(
                 BufferPoint {
                     rows_from_live_bottom: 3,
@@ -600,6 +607,21 @@ mod contract_tests {
                             start: range.end,
                             end: range.start
                         }
+                    )
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                engine
+                    .extract_text(
+                        generation,
+                        BufferRange::ordered(
+                            BufferPoint {
+                                rows_from_live_bottom: usize::MAX,
+                                column: 0,
+                            },
+                            range.end,
+                        )
                     )
                     .unwrap(),
                 None
@@ -682,9 +704,8 @@ mod contract_tests {
     }
 
     #[test]
-    fn ghostty_uses_the_last_enabled_mouse_encoding() {
+    fn ghostty_reports_mouse_mode_transitions_without_probe_side_effects() {
         with_engine(|engine| {
-            let inactive_reset = MouseEncoding::Legacy;
             engine
                 .resize(
                     GridSize::clamped(1, 1),
@@ -694,19 +715,44 @@ mod contract_tests {
                     },
                 )
                 .unwrap();
-            for (sequence, encoding) in [
-                ("\x1b[?1002h\x1b[?1006h", MouseEncoding::Sgr),
-                ("\x1b[?1005h", MouseEncoding::Utf8),
-                ("\x1b[?1006l", inactive_reset),
-                ("\x1b[?1005l", MouseEncoding::Legacy),
-                ("\x1b[?1006h\x1bc", MouseEncoding::Legacy),
+            for (sequence, tracking, encoding) in [
+                ("\x1b[?1006h", MouseTracking::Disabled, MouseEncoding::Sgr),
+                ("\x1b[?1000h", MouseTracking::Buttons, MouseEncoding::Sgr),
+                (
+                    "\x1b[?1002h",
+                    MouseTracking::ButtonMotion,
+                    MouseEncoding::Sgr,
+                ),
+                ("\x1b[?1003h", MouseTracking::AllMotion, MouseEncoding::Sgr),
+                ("\x1b[?1000l", MouseTracking::Buttons, MouseEncoding::Sgr),
+                ("\x1b[?1002l", MouseTracking::Buttons, MouseEncoding::Sgr),
+                ("\x1b[?1005h", MouseTracking::Buttons, MouseEncoding::Utf8),
+                ("\x1b[?1006l", MouseTracking::Buttons, MouseEncoding::Legacy),
+                ("\x1b[?1005l", MouseTracking::Buttons, MouseEncoding::Legacy),
+                (
+                    "\x1b[?1003l",
+                    MouseTracking::Disabled,
+                    MouseEncoding::Legacy,
+                ),
+                (
+                    "\x1b[?1002h\x1b[?1006h\x1bc",
+                    MouseTracking::Disabled,
+                    MouseEncoding::Legacy,
+                ),
             ] {
+                let generation = engine.generation();
                 engine.process(sequence.as_bytes()).unwrap();
+                let modes = engine.modes().unwrap();
                 assert_eq!(
-                    engine.modes().unwrap().mouse_encoding,
-                    encoding,
+                    (modes.mouse_tracking, modes.mouse_encoding),
+                    (tracking, encoding),
                     "{sequence:?}"
                 );
+                assert_eq!(engine.generation(), generation + 1, "{sequence:?}");
+                let snapshot = engine.snapshot().unwrap();
+                assert_eq!(snapshot.generation, generation + 1, "{sequence:?}");
+                assert_eq!(snapshot.modes, modes, "{sequence:?}");
+                assert_eq!(engine.generation(), generation + 1, "{sequence:?}");
             }
         });
     }
