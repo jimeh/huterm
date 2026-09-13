@@ -62,12 +62,16 @@ impl PresentationUpdate {
         }
     }
 
-    pub(crate) fn apply(self, engine: &mut TerminalEngine) -> bool {
+    pub(crate) fn apply(
+        self,
+        engine: &mut TerminalEngine,
+    ) -> Result<bool, RuntimeError> {
         self.registration
             .apply_if_current(self.generation, || {
-                engine.update_presentation(self.presentation);
+                engine.update_presentation(self.presentation)
             })
-            .is_some()
+            .transpose()
+            .map(|applied| applied.is_some())
     }
 }
 
@@ -134,7 +138,7 @@ mod tests {
             PresentationUpdate::new(Arc::clone(&registration), 1, changed);
         registration.revoke();
 
-        assert!(!queued.apply(&mut engine));
+        assert!(!queued.apply(&mut engine).unwrap());
         assert_eq!(engine.presentation(), &initial);
     }
 }

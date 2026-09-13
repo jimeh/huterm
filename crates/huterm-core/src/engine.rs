@@ -34,8 +34,8 @@ impl TerminalEngine {
     pub(crate) fn update_presentation(
         &mut self,
         presentation: TerminalPresentation,
-    ) {
-        self.inner.update_presentation(presentation);
+    ) -> Result<(), RuntimeError> {
+        self.inner.update_presentation(presentation)
     }
 
     #[cfg(test)]

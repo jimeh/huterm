@@ -194,6 +194,27 @@ pub enum TerminalAppearance {
     Dark,
 }
 
+/// Classifies a terminal background using relative luminance in sRGB space.
+#[must_use]
+pub fn appearance_for_background(background: Rgb) -> TerminalAppearance {
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(background.red)
+        + 0.7152 * linear(background.green)
+        + 0.0722 * linear(background.blue);
+    if luminance > 0.5 {
+        TerminalAppearance::Light
+    } else {
+        TerminalAppearance::Dark
+    }
+}
+
 /// Theme-controlled terminal colors before application OSC overrides.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalPresentation {

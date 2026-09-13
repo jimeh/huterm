@@ -1630,6 +1630,8 @@ mod tests {
                 opened.tab.terminal_id,
             )
             .unwrap();
+        let generation = opened.client.read_snapshot().unwrap().generation;
+        while opened.client.try_recv_event().unwrap().is_some() {}
         let mut changed = command.presentation.clone();
         changed.background = huterm_protocol::Rgb {
             red: 4,
@@ -1638,6 +1640,22 @@ mod tests {
         };
         controller.update(changed.clone()).unwrap();
         wait_for_presentation(&opened.client, &changed);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(TerminalEvent::Invalidated {
+                generation: invalidated,
+                ..
+            }) = opened.client.try_recv_event().unwrap()
+            {
+                assert_eq!(invalidated, generation);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "presentation update did not invalidate snapshots"
+            );
+            std::thread::yield_now();
+        }
         assert_eq!(
             opened.client.host_effect_sink().admit_borrowed("denied"),
             crate::host_effects::HostEffectAdmission::Denied

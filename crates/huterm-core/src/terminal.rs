@@ -1012,7 +1012,19 @@ fn run_terminal(
                 );
             }
             RuntimeMessage::Presentation(update) => {
-                update.apply(&mut engine);
+                match update.apply(&mut engine) {
+                    Ok(true) => publish_invalidation(
+                        &events,
+                        &invalidation_pending,
+                        terminal_id,
+                        engine.generation(),
+                    ),
+                    Ok(false) => {}
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                    }
+                }
             }
         }
     }
@@ -1722,6 +1734,28 @@ mod tests {
         let started = Instant::now();
         runtime.shutdown().unwrap();
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn ghostty_live_child_queries_seeded_presentation_before_first_snapshot() {
+        let command = command(
+            "stty raw -echo; printf '\\033]10;?\\033\\\\\\033[16t'; bytes=$(dd bs=1 count=34 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'QUERY:%s:DONE' \"$bytes\"",
+        );
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(95), &command).unwrap();
+        let client = runtime.client();
+        assert_eq!(wait_for_exit(&client).code, Some(0));
+        let snapshot = wait_for_text(&client, ":DONE");
+        let text: String =
+            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        assert!(
+            text.contains(concat!(
+                "QUERY:1b5d31303b7267623a653565352f653565352f653565351b5c",
+                "1b5b363b31363b3874:DONE"
+            )),
+            "{text:?}"
+        );
+        runtime.shutdown().unwrap();
     }
 
     #[test]

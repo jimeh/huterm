@@ -19,8 +19,8 @@ use huterm_core::{
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalAppearance, TerminalCommand, TerminalEvent, TerminalInput,
-    TerminalPresentation, TerminalSnapshot, ids,
+    TerminalCommand, TerminalEvent, TerminalInput, TerminalPresentation,
+    TerminalSnapshot, appearance_for_background, ids,
 };
 
 use crate::APP_ID;
@@ -214,7 +214,8 @@ fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
 )]
 struct TerminalView {
     client: RuntimeClient,
-    _presentation: PresentationController,
+    presentation: PresentationController,
+    pending_presentation: Option<TerminalPresentation>,
     host_effects: HostEffectRecipient,
     title: String,
     exited: bool,
@@ -296,6 +297,13 @@ impl TerminalView {
         } = authority;
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
+        let initial_presentation = terminal_presentation(&theme);
+        let (pending_presentation, presentation_status) =
+            match presentation.update(initial_presentation.clone()) {
+                Ok(()) => (None, None),
+                Err(RuntimeError::Busy) => (Some(initial_presentation), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
         let focus_subscription =
             cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
                 view.host_effects.note_focus();
@@ -339,7 +347,8 @@ impl TerminalView {
         };
         TerminalView {
             client,
-            _presentation: presentation,
+            presentation,
+            pending_presentation,
             host_effects,
             input_queue: InputQueue::default(),
             option_as_alt: config.terminal.macos_option_as_alt,
@@ -392,7 +401,7 @@ impl TerminalView {
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
             theme,
-            status: None,
+            status: presentation_status,
             title: String::new(),
             exited: false,
             visible: false,
@@ -639,6 +648,18 @@ impl TerminalView {
         if self.option_as_alt != terminal.macos_option_as_alt {
             self.clear_composition(cx);
             self.option_as_alt = terminal.macos_option_as_alt;
+        }
+    }
+
+    fn publish_presentation(&mut self, theme: &Theme) {
+        let state = terminal_presentation(theme);
+        match self.presentation.update(state.clone()) {
+            Ok(()) => self.pending_presentation = None,
+            Err(RuntimeError::Busy) => self.pending_presentation = Some(state),
+            Err(error) => {
+                self.pending_presentation = None;
+                self.status = Some(error.to_string());
+            }
         }
     }
 
@@ -1486,6 +1507,17 @@ impl TerminalView {
         )
     }
 
+    fn physical_cell_size(&self) -> CellSize {
+        CellSize {
+            width: pixel_count(
+                self.metrics.cell_width * self.metrics.scale_factor,
+            ),
+            height: pixel_count(
+                self.metrics.cell_height * self.metrics.scale_factor,
+            ),
+        }
+    }
+
     fn resize_if_needed(&mut self, window: &Window) {
         let metrics = self.metrics.at_scale(window.scale_factor());
         if metrics != self.metrics {
@@ -1506,14 +1538,7 @@ impl TerminalView {
             self.resize_visibility.activate(Instant::now());
         }
         let size = self.terminal_layout(window).grid;
-        let cell = CellSize {
-            width: pixel_count(
-                self.metrics.cell_width * self.metrics.scale_factor,
-            ),
-            height: pixel_count(
-                self.metrics.cell_height * self.metrics.scale_factor,
-            ),
-        };
+        let cell = self.physical_cell_size();
         if size == self.last_grid_size && self.last_cell_size == Some(cell) {
             return;
         }
@@ -1597,6 +1622,16 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_resize = None;
+                    return self.set_status(error.to_string());
+                }
+            }
+        }
+        if let Some(presentation) = self.pending_presentation.clone() {
+            match self.presentation.update(presentation) {
+                Ok(()) => self.pending_presentation = None,
+                Err(RuntimeError::Busy) => {}
+                Err(error) => {
+                    self.pending_presentation = None;
                     return self.set_status(error.to_string());
                 }
             }
@@ -2171,27 +2206,12 @@ fn terminal_presentation(theme: &Theme) -> TerminalPresentation {
         theme.indexed(u8::try_from(index).expect("palette index fits in u8"))
     });
     let background = theme.background;
-    let linear = |channel: u8| {
-        let value = f64::from(channel) / 255.0;
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let luminance = 0.2126 * linear(background.red)
-        + 0.7152 * linear(background.green)
-        + 0.0722 * linear(background.blue);
     TerminalPresentation {
         foreground: theme.foreground,
         background,
         cursor: theme.cursor,
         palette,
-        appearance: if luminance > 0.5 {
-            TerminalAppearance::Light
-        } else {
-            TerminalAppearance::Dark
-        },
+        appearance: appearance_for_background(background),
     }
 }
 fn shell_arguments(is_macos: bool) -> Vec<String> {
@@ -2395,6 +2415,28 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_presentation_uses_the_resolved_theme_and_shared_appearance() {
+        let theme = Theme {
+            background: huterm_protocol::Rgb {
+                red: 0xff,
+                green: 0xff,
+                blue: 0xff,
+            },
+            ..Theme::default()
+        };
+        let presentation = terminal_presentation(&theme);
+        assert_eq!(presentation.foreground, theme.foreground);
+        assert_eq!(presentation.background, theme.background);
+        assert_eq!(presentation.cursor, theme.cursor);
+        assert_eq!(presentation.palette[0], theme.indexed(0));
+        assert_eq!(presentation.palette[255], theme.indexed(255));
+        assert_eq!(
+            presentation.appearance,
+            huterm_protocol::TerminalAppearance::Light
+        );
+    }
 
     #[test]
     fn terminal_gesture_retains_motion_and_release_under_an_overlay() {

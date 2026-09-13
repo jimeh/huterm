@@ -1568,17 +1568,22 @@ impl WorkspaceView {
         let mut changed_any = false;
         for tab in &self.tabs {
             tab.view.update(cx, |terminal, cx| {
+                let scale_changed =
+                    terminal.metrics.at_scale(window.scale_factor())
+                        != terminal.metrics;
+                let cell_changed = terminal.last_cell_size
+                    != Some(terminal.physical_cell_size());
                 let changed = terminal.tab_presentation != presentation
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets;
-                changed_any |= changed;
+                changed_any |= changed || scale_changed || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
-                if changed {
+                if changed || scale_changed || cell_changed {
                     terminal.resize_if_needed(window);
                     cx.notify();
                 }
@@ -3432,6 +3437,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                         config.terminal,
                                         cx,
                                     );
+                                    view.publish_presentation(&config.theme);
                                     view.theme = config.theme.clone();
                                     cx.notify();
                                 });
