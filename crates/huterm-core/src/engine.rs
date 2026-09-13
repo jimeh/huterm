@@ -5,7 +5,7 @@ use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferRange, CellSize, GridSize, ScrollCommand, TerminalId, TerminalModes,
-    TerminalSnapshot,
+    TerminalPresentation, TerminalSnapshot,
 };
 
 #[derive(Debug)]
@@ -25,10 +25,27 @@ impl TerminalEngine {
         id: TerminalId,
         size: GridSize,
         cell: CellSize,
+        presentation: TerminalPresentation,
     ) -> Result<Self, RuntimeError> {
-        ghostty::TerminalEngine::new(id, size, cell)
+        ghostty::TerminalEngine::new(id, size, cell, presentation)
             .map(Box::new)
             .map(|inner| Self { inner })
+    }
+    pub(crate) fn update_presentation(
+        &mut self,
+        presentation: TerminalPresentation,
+    ) -> Result<(), RuntimeError> {
+        self.inner.update_presentation(presentation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn presentation(&self) -> &TerminalPresentation {
+        self.inner.presentation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cell_size(&self) -> CellSize {
+        self.inner.cell_size()
     }
 
     pub(crate) fn set_host_effect_sink(&mut self, sink: HostEffectSink) {
@@ -121,6 +138,7 @@ mod clipboard_tests {
                 width: 8,
                 height: 16,
             },
+            TerminalPresentation::default(),
         )
         .unwrap();
         engine.set_host_effect_sink(sink);
@@ -322,6 +340,7 @@ mod benchmark {
                     width: 8,
                     height: 16,
                 },
+                TerminalPresentation::default(),
             )
             .unwrap();
             engine.process(b"warmup").unwrap();
@@ -410,6 +429,7 @@ mod benchmark {
             TerminalId::new(1),
             GridSize::clamped(120, 40),
             cell,
+            TerminalPresentation::default(),
         )
         .unwrap();
         engine
@@ -463,6 +483,7 @@ mod contract_tests {
                 width: 8,
                 height: 16,
             },
+            TerminalPresentation::default(),
         )
         .unwrap();
         test(&mut engine);
@@ -815,6 +836,7 @@ mod link_contract_tests {
                 width: 8,
                 height: 16,
             },
+            TerminalPresentation::default(),
         )
         .unwrap();
         test(&mut engine);
@@ -1088,6 +1110,7 @@ mod link_benchmark {
                     width: 8,
                     height: 16,
                 },
+                TerminalPresentation::default(),
             )
             .unwrap();
             engine.process(output.as_bytes()).unwrap();

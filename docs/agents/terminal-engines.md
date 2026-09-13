@@ -23,6 +23,39 @@ explicit clipboard deny on that fallback path. Reload is transactional: an
 invalid file retains the active configuration, while a later successful reload
 without `engine` clears the migration warning. Huterm never rewrites the file.
 
+## Terminal identity and terminfo
+
+Terminal identity remains a client launch concern. The desktop resolves
+`terminal.term` before constructing `TerminalCommand`, and core applies the
+resolved environment before spawning the child. `auto` selects
+`TERM=xterm-huterm` only when the entry exists in the inherited ncurses search
+paths or Huterm's private resources; otherwise it uses `TERM=xterm-256color`.
+The explicit values force either identity for new terminals.
+
+The private entry inherits the indexed `xterm-256color` capabilities that Huterm
+previously advertised, and adds only `Tc` for truecolor-aware consumers. It
+deliberately omits ncurses's
+[`RGB` capability](https://invisible-island.net/ncurses/man/user_caps.5.html#h2-Recognized-Capabilities),
+which would assert that the inherited `setaf` and `setab` strings take direct
+RGB values rather than indexed colors. Its `pairs` value is capped at 32767 so
+native `tic -x` on macOS and Linux emits the portable 16-bit compiled format.
+Package builds compile it on their native host. macOS stores it under
+`Contents/Resources/terminfo`; Linux tarballs and AppImages store it under
+`share/huterm/terminfo` relative to the executable.
+Both locations include the reviewed source and the ncurses redistribution
+notice alongside the compiled entry.
+
+When adding the packaged directory, preserve `TERMINFO` unchanged and append to
+an inherited `TERMINFO_DIRS`. An empty component continues to mean the ncurses
+default directories. Development discovery finds `target/terminfo` relative to
+debug, release, and example executables, so it does not depend on the launch
+working directory.
+
+Run `mise run terminfo:check` to compile and inspect the entry and to capture a
+literal truecolor SGR sequence through an isolated tmux server and real outer
+PTY. The check uses a private socket, empty tmux configuration, and temporary
+state; it never connects to the user's tmux server.
+
 ## Native inputs and policy
 
 The safe Rust bindings and locally patched sys crate are pinned to 0.2.1.
@@ -64,6 +97,33 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
+Core seeds foreground, background, cursor, palette, grid, and physical cell size
+before spawning the child. It answers native OSC 4,
+10/11/12, CSI 14/16/18t, and CSI ?996n queries from that ordered retained state.
+Same-chunk mutations affect later queries in the same input chunk. Explicit OSC
+overrides remain distinct from theme defaults even when their RGB values are
+equal; resets reveal the newest published default without changing terminal
+text. Appearance queries classify the effective terminal background by
+luminance, including an active OSC 11 override; they do not report the operating
+system appearance.
+
+One attachment-scoped `PresentationController` publishes coherent replacements
+for a terminal's defaults. A replacement controller revokes its predecessor,
+and detach, retarget, move, terminal close, and controller drop revoke queued
+updates again when the runtime applies them. This authority is independent of
+clipboard permission. The desktop publishes successful reloads to hidden tabs
+and retries bounded queue pressure; font and display-scale changes use the same
+ordered resize path as visible terminals. Detaching or revoking a controller
+retains the last accepted presentation; it prevents stale future updates rather
+than restoring an older theme.
+
+The current protocol always carries a grid and `CellSize`, but zero cell width
+or height means that physical geometry is unavailable. The runtime then leaves
+CSI 14/16/18 unanswered because Ghostty uses one callback for all three queries;
+it never combines a known grid with unavailable pixel geometry. Desktop windows
+publish nonzero cell dimensions before child spawn. Size replies report only
+the canonical grid geometry, never outer-window or chrome dimensions.
+
 Ghostty's public mode bits do not fully describe active mouse tracking and
 format. The adapter uses a retained native probe with synthetic geometry, then
 Huterm encodes real input at dequeue time. Probe bytes never reach the PTY.
@@ -101,6 +161,13 @@ runs one short launch with legacy `engine = "alacritty"` and requires the
 runtime diagnostic to identify Ghostty and the reviewed revision. Use
 `mise run smoke:manual-integration` for a recorder that never executes dropped
 paths.
+
+`mise run smoke:presentation-queries` drives a production native window and PTY.
+It compares direct OSC 10/11 plus CSI 14/16/18 replies with the rendered grid
+and physical cell metrics, then repeats them after an inactive tab receives a
+theme and font reload without activation. Linux runs this under Xvfb; macOS runs
+it against AppKit. This proves local PTY behavior only. It does not claim a
+Codex UI session, remote SSH host, or Mosh behavior.
 
 Historical plans and measurements may still name Alacritty. They describe the
 state at the time and do not define the shipped runtime after issue #118.

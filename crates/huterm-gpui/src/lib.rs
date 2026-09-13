@@ -31,6 +31,8 @@ mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod terminfo;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod themes;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod ui;
@@ -92,6 +94,13 @@ pub fn run_clipboard_smoke() -> anyhow::Result<()> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
     desktop::fullscreen_smoke::run()
+}
+
+/// Runs the production desktop with terminal presentation query observations.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_presentation_query_smoke() -> anyhow::Result<()> {
+    desktop::presentation_query_smoke::run()
 }
 
 /// Runs the production desktop with the command-palette smoke probe.

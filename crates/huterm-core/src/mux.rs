@@ -5,9 +5,10 @@ pub use lifecycle::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::presentation::PresentationAuthority;
 use crate::{
     DesktopHostEffectClient, HostEffectRecipient, HostEffectRecipientOptions,
-    RuntimeClient, RuntimeError, TerminalRuntime,
+    PresentationController, RuntimeClient, RuntimeError, TerminalRuntime,
 };
 use huterm_protocol::{
     AttachmentId, PaneId, RuntimeId, SessionId, TabId, TerminalCommand,
@@ -131,6 +132,7 @@ pub struct Mux {
     sessions: Vec<Session>,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     terminals: BTreeMap<TerminalId, TerminalRuntime>,
+    presentation_authority: PresentationAuthority,
 }
 impl Default for Mux {
     fn default() -> Self {
@@ -161,6 +163,7 @@ impl Mux {
             sessions: Vec::new(),
             workspaces: BTreeMap::new(),
             terminals: BTreeMap::new(),
+            presentation_authority: PresentationAuthority::default(),
         })
     }
     /// Returns the runtime incarnation used to validate structural targets.
@@ -461,7 +464,7 @@ impl Mux {
         let terminal_id =
             self.workspaces[&source].tabs[source_index].terminal_id;
         if source_session != destination_session {
-            self.invalidate_terminal_host_effects(terminal_id);
+            self.invalidate_terminal_authority(terminal_id);
         }
         self.changed();
         let record = self
@@ -531,7 +534,7 @@ impl Mux {
                 .map(|tab| tab.terminal_id)
                 .collect();
             for terminal_id in terminal_ids {
-                self.invalidate_terminal_host_effects(terminal_id);
+                self.invalidate_terminal_authority(terminal_id);
             }
         }
         self.changed();
@@ -594,16 +597,57 @@ impl Mux {
             .ok_or(MuxError::HostEffectRegistrationUnavailable)
     }
 
-    fn invalidate_terminal_host_effects(&self, terminal_id: TerminalId) {
+    /// Authorizes one validated attachment to publish retained presentation.
+    ///
+    /// A new controller supersedes the terminal's previous controller. Revoking
+    /// a controller retains the last presentation already accepted by runtime.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing attachments, terminals outside the attachment's session,
+    /// or exhausted controller generations.
+    pub fn register_presentation_controller(
+        &mut self,
+        attachment: AttachmentId,
+        terminal_id: TerminalId,
+    ) -> Result<PresentationController, MuxError> {
+        let session = self.attachment_session(attachment)?;
+        let is_member = self.workspaces.values().any(|workspace| {
+            workspace.session_id == session
+                && workspace
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.terminal_id == terminal_id)
+        });
+        if !is_member {
+            return Err(MuxError::TerminalNotInAttachment {
+                terminal: terminal_id,
+                attachment,
+            });
+        }
+        let client = self
+            .terminals
+            .get(&terminal_id)
+            .map(TerminalRuntime::client)
+            .ok_or(MuxError::PresentationControllerUnavailable)?;
+        self.presentation_authority
+            .authorize(attachment, terminal_id, client)
+            .ok_or(MuxError::PresentationControllerUnavailable)
+    }
+
+    fn invalidate_terminal_authority(&mut self, terminal_id: TerminalId) {
         if let Some(runtime) = self.terminals.get(&terminal_id) {
             runtime.host_effect_sink().invalidate_all();
         }
+        self.presentation_authority.invalidate_terminal(terminal_id);
     }
 
-    fn invalidate_attachment_host_effects(&self, attachment: AttachmentId) {
+    fn invalidate_attachment_authority(&mut self, attachment: AttachmentId) {
         for runtime in self.terminals.values() {
             runtime.host_effect_sink().invalidate_attachment(attachment);
         }
+        self.presentation_authority
+            .invalidate_attachment(attachment);
     }
     /// Closes a tab and joins its terminal workers, leaving siblings intact.
     /// # Errors
@@ -626,6 +670,8 @@ impl Mux {
             .ok_or(MuxError::UnknownTab(tab))?;
         let tab = record.tabs.remove(index);
         self.changed();
+        self.presentation_authority
+            .invalidate_terminal(tab.terminal_id);
         if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
             runtime.shutdown()?;
         }
@@ -673,7 +719,7 @@ impl Mux {
             })
             .collect();
         for attachment in invalidated_attachments {
-            self.invalidate_attachment_host_effects(attachment);
+            self.invalidate_attachment_authority(attachment);
         }
         self.attachments.retain(|_, attached| *attached != session);
         let record = self.sessions.remove(index);
@@ -691,6 +737,7 @@ impl Mux {
         terminals: Vec<TerminalId>,
     ) -> Result<(), MuxError> {
         for id in &terminals {
+            self.presentation_authority.invalidate_terminal(*id);
             if let Some(runtime) = self.terminals.get(id) {
                 let _ = runtime.client().close();
             }
@@ -711,6 +758,7 @@ impl Mux {
     pub fn shutdown(&mut self) -> Result<(), MuxError> {
         self.changed();
         self.attachments.clear();
+        self.presentation_authority.invalidate_all();
         self.sessions.clear();
         self.workspaces.clear();
         self.close_terminals(self.terminals.keys().copied().collect())
@@ -747,6 +795,9 @@ pub enum MuxError {
     /// Bounded host-effect recipient registration could not be acquired.
     #[error("host-effect recipient registration is unavailable")]
     HostEffectRegistrationUnavailable,
+    /// Presentation controller registration could not be acquired.
+    #[error("presentation controller registration is unavailable")]
+    PresentationControllerUnavailable,
     /// Structure or job evidence changed since consent was requested.
     #[error("close assessment changed; assess again before closing")]
     StaleClose,
@@ -778,7 +829,9 @@ pub enum MuxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{CellSize, GridSize, TerminalEvent, TerminalInput};
+    use huterm_protocol::{
+        CellSize, GridSize, TerminalEvent, TerminalInput, TerminalPresentation,
+    };
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1283,6 +1336,7 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         }
     }
     fn wait_for_text(client: &RuntimeClient, needle: &str) {
@@ -1537,6 +1591,222 @@ mod tests {
         let closing = final_recipient.try_next().unwrap();
         mux.close_session(first_session).unwrap();
         assert!(!final_recipient.is_current(&closing));
+    }
+
+    #[test]
+    fn presentation_seed_and_controller_follow_attachment_authority() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let mut command = command("read value");
+        command.presentation.foreground = huterm_protocol::Rgb {
+            red: 1,
+            green: 2,
+            blue: 3,
+        };
+        let opened = mux.open_tab(workspace, &command).unwrap();
+        assert_eq!(
+            opened.client.presentation(),
+            Some((
+                command.presentation.clone(),
+                command.grid_size,
+                command.cell_size,
+            ))
+        );
+
+        let attachment = mux.attach_session(session).unwrap();
+        let process = DesktopHostEffectClient::new();
+        let clipboard = mux
+            .register_host_effect_recipient(
+                attachment,
+                opened.tab.terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(false),
+            )
+            .unwrap();
+        let controller = mux
+            .register_presentation_controller(
+                attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        let generation = opened.client.read_snapshot().unwrap().generation;
+        while opened.client.try_recv_event().unwrap().is_some() {}
+        let mut changed = command.presentation.clone();
+        changed.background = huterm_protocol::Rgb {
+            red: 4,
+            green: 5,
+            blue: 6,
+        };
+        controller.update(changed.clone()).unwrap();
+        wait_for_presentation(&opened.client, &changed);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(TerminalEvent::Invalidated {
+                generation: invalidated,
+                ..
+            }) = opened.client.try_recv_event().unwrap()
+            {
+                assert_eq!(invalidated, generation);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "presentation update did not invalidate snapshots"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            opened.client.host_effect_sink().admit_borrowed("denied"),
+            crate::host_effects::HostEffectAdmission::Denied
+        );
+        assert!(clipboard.try_next().is_none());
+
+        mux.detach_session(attachment).unwrap();
+        assert!(matches!(
+            controller.update(command.presentation.clone()),
+            Err(RuntimeError::Stopped)
+        ));
+        assert_eq!(opened.client.presentation().unwrap().0, changed);
+        mux.close_session(session).unwrap();
+    }
+
+    #[test]
+    fn replacement_presentation_controller_rejects_superseded_updates() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let opened = mux.open_tab(workspace, &command("read value")).unwrap();
+        let attachment = mux.attach_session(session).unwrap();
+        let stale = mux
+            .register_presentation_controller(
+                attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        let current = mux
+            .register_presentation_controller(
+                attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        let changed = huterm_protocol::TerminalPresentation {
+            cursor: huterm_protocol::Rgb {
+                red: 7,
+                green: 8,
+                blue: 9,
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            stale.update(changed.clone()),
+            Err(RuntimeError::Stopped)
+        ));
+        current.update(changed.clone()).unwrap();
+        wait_for_presentation(&opened.client, &changed);
+        mux.close_session(session).unwrap();
+        assert!(matches!(
+            current.update(changed),
+            Err(RuntimeError::Stopped)
+        ));
+    }
+
+    #[test]
+    fn presentation_controller_validates_membership_and_structural_changes() {
+        let mut mux = Mux::default();
+        let source = mux.create_session(None).unwrap();
+        let destination = mux.create_session(None).unwrap();
+        let source_workspace = mux.create_workspace(source, None).unwrap();
+        let destination_workspace =
+            mux.create_workspace(destination, None).unwrap();
+        let opened = mux
+            .open_tab(source_workspace, &command("read value"))
+            .unwrap();
+        let source_attachment = mux.attach_session(source).unwrap();
+        let destination_attachment = mux.attach_session(destination).unwrap();
+        assert!(matches!(
+            mux.register_presentation_controller(
+                destination_attachment,
+                opened.tab.terminal_id
+            ),
+            Err(MuxError::TerminalNotInAttachment { .. })
+        ));
+        let mut foreign_mux = Mux::default();
+        let foreign_session = foreign_mux.create_session(None).unwrap();
+        let foreign_attachment =
+            foreign_mux.attach_session(foreign_session).unwrap();
+        assert!(matches!(
+            mux.register_presentation_controller(
+                foreign_attachment,
+                opened.tab.terminal_id
+            ),
+            Err(MuxError::ForeignRuntime(_))
+        ));
+
+        let retargeted = mux
+            .register_presentation_controller(
+                source_attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        mux.retarget_attachment(source_attachment, destination)
+            .unwrap();
+        assert!(matches!(
+            retargeted.update(TerminalPresentation::default()),
+            Err(RuntimeError::Stopped)
+        ));
+
+        let replacement_attachment = mux.attach_session(source).unwrap();
+        let moved = mux
+            .register_presentation_controller(
+                replacement_attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        mux.move_tab(
+            source_workspace,
+            opened.tab.id,
+            destination_workspace,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            moved.update(TerminalPresentation::default()),
+            Err(RuntimeError::Stopped)
+        ));
+
+        let closing = mux
+            .register_presentation_controller(
+                destination_attachment,
+                opened.tab.terminal_id,
+            )
+            .unwrap();
+        mux.close_tab(destination_workspace, opened.tab.id).unwrap();
+        assert!(matches!(
+            closing.update(TerminalPresentation::default()),
+            Err(RuntimeError::Stopped)
+        ));
+        mux.shutdown().unwrap();
+    }
+
+    fn wait_for_presentation(
+        client: &RuntimeClient,
+        expected: &huterm_protocol::TerminalPresentation,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if client
+                .presentation()
+                .is_some_and(|(presentation, _, _)| presentation == *expected)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "terminal presentation did not update"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

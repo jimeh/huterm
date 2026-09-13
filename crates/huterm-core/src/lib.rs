@@ -14,6 +14,7 @@ pub use host_effects::{
 };
 pub use jobs::{JobProcess, JobState};
 mod mux;
+mod presentation;
 mod pty;
 mod terminal;
 
@@ -22,6 +23,7 @@ pub use mux::{
     DEFAULT_SOCKET_NAME, HierarchySnapshot, Mux, MuxError, OpenedTab,
     SelectionTarget, Session, Tab, Workspace,
 };
+pub use presentation::PresentationController;
 pub use terminal::{
     RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
     SnapshotRequest, TerminalRuntime,

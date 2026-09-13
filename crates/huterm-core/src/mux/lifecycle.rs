@@ -166,7 +166,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.attachment_session(attachment)?;
         self.changed();
-        self.invalidate_attachment_host_effects(attachment);
+        self.invalidate_attachment_authority(attachment);
         self.attachments.remove(&attachment);
         Ok(())
     }
@@ -184,7 +184,7 @@ impl Mux {
             return Ok(());
         }
         self.changed();
-        self.invalidate_attachment_host_effects(attachment);
+        self.invalidate_attachment_authority(attachment);
         self.attachments.insert(attachment, session);
         Ok(())
     }
@@ -346,6 +346,7 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         }
     }
     fn ready(client: &RuntimeClient, text: &str) {

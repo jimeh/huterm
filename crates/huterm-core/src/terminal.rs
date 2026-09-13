@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use huterm_protocol::TerminalPresentation;
 use huterm_protocol::{
     BufferRange, CellSize, ExitStatus, GridSize, ScrollCommand,
     TerminalCommand, TerminalEvent, TerminalId, TerminalInput,
@@ -19,6 +21,7 @@ use thiserror::Error;
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
+use crate::presentation::PresentationUpdate;
 use crate::pty::{self, PtyProcess};
 
 const MESSAGE_CAPACITY: usize = 64;
@@ -249,8 +252,33 @@ impl RuntimeClient {
         receiver.recv_timeout(Duration::from_secs(1)).ok()
     }
 
+    #[cfg(test)]
+    pub(crate) fn presentation(
+        &self,
+    ) -> Option<(TerminalPresentation, GridSize, CellSize)> {
+        let (reply, receiver) = mpsc::channel();
+        self.controls
+            .send(RuntimeControl::Presentation(reply))
+            .ok()?;
+        receiver.recv_timeout(Duration::from_secs(1)).ok()
+    }
+
     pub(crate) fn host_effect_sink(&self) -> HostEffectSink {
         self.host_effect_sink.clone()
+    }
+
+    pub(crate) fn update_presentation(
+        &self,
+        update: PresentationUpdate,
+    ) -> Result<(), RuntimeError> {
+        match self
+            .messages
+            .try_send(RuntimeMessage::Presentation(Box::new(update)))
+        {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
+            Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
+        }
     }
 
     /// Requests orderly terminal shutdown.
@@ -419,6 +447,7 @@ impl TerminalRuntime {
                         terminal_id,
                         command.grid_size,
                         command.cell_size,
+                        command.presentation.clone(),
                     )?;
                     engine
                         .set_host_effect_sink(runtime_host_effect_sink.clone());
@@ -555,12 +584,15 @@ enum RuntimeMessage {
         grid: GridSize,
         cell: CellSize,
     },
+    Presentation(Box<PresentationUpdate>),
 }
 
 #[derive(Debug)]
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
     JobContext(Sender<crate::jobs::JobContext>),
+    #[cfg(test)]
+    Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
     PtyEof,
     Snapshot {
         scroll: Option<ScrollCommand>,
@@ -820,6 +852,14 @@ fn run_terminal(
                         }),
                     });
                 }
+                #[cfg(test)]
+                RuntimeControl::Presentation(reply) => {
+                    let _ = reply.send((
+                        engine.presentation().clone(),
+                        engine.size(),
+                        engine.cell_size(),
+                    ));
+                }
                 RuntimeControl::ForegroundJob(reply) => {
                     let busy = !child_exited && {
                         let shell = child
@@ -970,6 +1010,21 @@ fn run_terminal(
                     terminal_id,
                     engine.generation(),
                 );
+            }
+            RuntimeMessage::Presentation(update) => {
+                match update.apply(&mut engine) {
+                    Ok(true) => publish_invalidation(
+                        &events,
+                        &invalidation_pending,
+                        terminal_id,
+                        engine.generation(),
+                    ),
+                    Ok(false) => {}
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                    }
+                }
             }
         }
     }
@@ -1682,6 +1737,28 @@ mod tests {
     }
 
     #[test]
+    fn ghostty_live_child_queries_seeded_presentation_before_first_snapshot() {
+        let command = command(
+            "stty raw -echo; printf '\\033]10;?\\033\\\\\\033[16t'; bytes=$(dd bs=1 count=34 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'QUERY:%s:DONE' \"$bytes\"",
+        );
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(95), &command).unwrap();
+        let client = runtime.client();
+        assert_eq!(wait_for_exit(&client).code, Some(0));
+        let snapshot = wait_for_text(&client, ":DONE");
+        let text: String =
+            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        assert!(
+            text.contains(concat!(
+                "QUERY:1b5d31303b7267623a653565352f653565352f653565351b5c",
+                "1b5b363b31363b3874:DONE"
+            )),
+            "{text:?}"
+        );
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
     fn rejected_engine_initialization_does_not_launch_the_child() {
         let marker = std::env::temp_dir()
             .join(format!("huterm-engine-startup-{}", std::process::id()));
@@ -1852,6 +1929,7 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: TerminalPresentation::default(),
         }
     }
 
@@ -1929,6 +2007,24 @@ mod tests {
             );
         }
         runtime.shutdown().expect("runtime should stop cleanly");
+    }
+
+    #[test]
+    fn pty_runtime_applies_explicit_terminal_environment() {
+        let mut command = command(
+            "printf '%s|%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"$TERMINFO_DIRS\"",
+        );
+        command.environment = vec![
+            ("TERM".into(), "xterm-huterm".into()),
+            ("TERMINFO_DIRS".into(), "/private/terminfo:".into()),
+        ];
+        let runtime = TerminalRuntime::spawn(TerminalId::new(90), &command)
+            .expect("runtime should start");
+        wait_for_text(
+            &runtime.client(),
+            "xterm-huterm|truecolor|Huterm|/private/terminfo:",
+        );
+        runtime.shutdown().unwrap();
     }
 
     #[cfg(unix)]

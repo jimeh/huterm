@@ -10,6 +10,8 @@ pub(crate) mod input_smoke;
 pub(crate) mod integration_smoke;
 #[path = "palette_smoke.rs"]
 pub(crate) mod palette_smoke;
+#[path = "presentation_query_smoke.rs"]
+pub(crate) mod presentation_query_smoke;
 #[path = "quake_smoke.rs"]
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
@@ -32,7 +34,7 @@ use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
-    HostEffectRecipient, HostEffectRecipientOptions, MuxError, OpenedTab,
+    HostEffectRecipientOptions, MuxError, OpenedTab,
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
@@ -92,7 +94,7 @@ impl DesktopRuntime {
             WorkspaceId,
             OpenedTab,
             Option<AttachmentId>,
-            HostEffectRecipient,
+            TerminalViewAuthority,
         ),
         MuxError,
     > {
@@ -152,7 +154,30 @@ impl DesktopRuntime {
                         return Err(error);
                     }
                 };
-                Ok((session, id, tab, created_attachment, recipient))
+                let presentation = match mux.register_presentation_controller(
+                    recipient_attachment,
+                    tab.tab.terminal_id,
+                ) {
+                    Ok(presentation) => presentation,
+                    Err(error) => {
+                        if workspace.is_none() {
+                            let _ = mux.close_session(session);
+                        } else {
+                            let _ = mux.close_tab(id, tab.tab.id);
+                        }
+                        return Err(error);
+                    }
+                };
+                Ok((
+                    session,
+                    id,
+                    tab,
+                    created_attachment,
+                    TerminalViewAuthority {
+                        presentation,
+                        host_effects: recipient,
+                    },
+                ))
             }
             Err(error) => {
                 if workspace.is_none() {
@@ -1545,17 +1570,22 @@ impl WorkspaceView {
         let mut changed_any = false;
         for tab in &self.tabs {
             tab.view.update(cx, |terminal, cx| {
+                let scale_changed =
+                    terminal.metrics.at_scale(window.scale_factor())
+                        != terminal.metrics;
+                let cell_changed = terminal.last_cell_size
+                    != Some(terminal.physical_cell_size());
                 let changed = terminal.tab_presentation != presentation
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets;
-                changed_any |= changed;
+                changed_any |= changed || scale_changed || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
-                if changed {
+                if changed || scale_changed || cell_changed {
                     terminal.resize_if_needed(window);
                     cx.notify();
                 }
@@ -1872,9 +1902,12 @@ impl WorkspaceView {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
         self.check_new_tab_available(cx)?;
-        let command =
-            shell_command(self.metrics.at_scale(window.scale_factor()))
-                .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        let command = shell_command(
+            self.metrics.at_scale(window.scale_factor()),
+            &self.config.theme,
+            self.config.terminal.term,
+        )
+        .map_err(|error| CommandError::Runtime(error.to_string()))?;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         let attachment = self.attachment;
@@ -1894,7 +1927,7 @@ impl WorkspaceView {
                     WorkspaceId,
                     OpenedTab,
                     Option<AttachmentId>,
-                    HostEffectRecipient,
+                    TerminalViewAuthority,
                 ),
                 huterm_core::MuxError,
             > = task.await;
@@ -1912,13 +1945,13 @@ impl WorkspaceView {
                 view.busy = false;
                 if let Some(result) = result.take() {
                     match result {
-                        Ok((_, id, opened, attachment, host_effects)) => {
+                        Ok((_, id, opened, attachment, authority)) => {
                             view.startup_reporter = None;
                             if let Some(attachment) = attachment {
                                 view.attachment = Some(attachment);
                             }
                             view.workspace = Some(id);
-                            host_effects.set_allowed(
+                            authority.host_effects.set_allowed(
                                 view.config
                                     .terminal
                                     .clipboard_write
@@ -1927,7 +1960,7 @@ impl WorkspaceView {
                             let terminal = cx.new(|cx| {
                                 TerminalView::new(
                                     opened.client,
-                                    host_effects,
+                                    authority,
                                     &view.config,
                                     view.family.clone(),
                                     view.metrics
@@ -2003,10 +2036,10 @@ impl WorkspaceView {
                     workspace,
                     opened,
                     attachment,
-                    host_effects,
+                    authority,
                 ))) = result
             {
-                drop(host_effects);
+                drop(authority);
                 cx.background_executor()
                     .spawn(async move {
                         cleanup_runtime.cleanup_spawn(
@@ -3407,6 +3440,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                         config.terminal,
                                         cx,
                                     );
+                                    view.publish_presentation(&config.theme);
                                     view.theme = config.theme.clone();
                                     cx.notify();
                                 });
@@ -4688,6 +4722,7 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         }
     }
 
@@ -4713,7 +4748,7 @@ mod tests {
             "read value; printf '\\033]52;c;ZGVza3RvcABjbGlwYm9hcmQ=\\007'; read value"
                 .into(),
         ];
-        let (session, _, opened, _, recipient) =
+        let (session, _, opened, _, authority) =
             runtime.open_tab(None, None, &command, true).unwrap();
 
         opened
@@ -4722,7 +4757,7 @@ mod tests {
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let pending = loop {
-            if let Some(pending) = recipient.try_next() {
+            if let Some(pending) = authority.host_effects.try_next() {
                 break pending;
             }
             assert!(
@@ -4731,7 +4766,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         };
-        assert!(recipient.is_current(&pending));
+        assert!(authority.host_effects.is_current(&pending));
         let HostEffect::ClipboardWrite(write) = pending.effect() else {
             panic!("unexpected host effect");
         };
@@ -4744,7 +4779,7 @@ mod tests {
     #[test]
     fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
         let runtime = DesktopRuntime::default();
-        let (session, workspace, opened, attachment, _recipient) = runtime
+        let (session, workspace, opened, attachment, _authority) = runtime
             .open_tab(None, None, &lifecycle_command(), true)
             .unwrap();
         let second =
@@ -4760,7 +4795,7 @@ mod tests {
             session
         );
         assert!(runtime.mux.lock().unwrap().tab(opened.tab.id).is_some());
-        let (source, source_workspace, transferred, initial, _recipient) =
+        let (source, source_workspace, transferred, initial, _authority) =
             runtime
                 .open_tab(None, None, &lifecycle_command(), true)
                 .unwrap();
@@ -4789,7 +4824,7 @@ mod tests {
     #[test]
     fn orphaned_publication_never_terminates_a_retargeted_destination() {
         let runtime = DesktopRuntime::default();
-        let (source, workspace, opened, attachment, _recipient) = runtime
+        let (source, workspace, opened, attachment, _authority) = runtime
             .open_tab(None, None, &lifecycle_command(), true)
             .unwrap();
         let destination = runtime
@@ -4917,14 +4952,15 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         };
         assert!(runtime.open_tab(None, None, &command, true).is_err());
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         command.program = "/bin/sh".into();
-        let (session, workspace, first, attachment, _first_recipient) =
+        let (session, workspace, first, attachment, _first_authority) =
             runtime.open_tab(None, None, &command, true).unwrap();
-        let (sibling, _, second, _, _second_recipient) =
+        let (sibling, _, second, _, _second_authority) =
             runtime.open_tab(None, None, &command, true).unwrap();
         assert_ne!(session, sibling);
         command.program = "/huterm-nonexistent-shell".into();
@@ -4978,8 +5014,9 @@ mod tests {
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         };
-        let (_, _, opened, _, _recipient) =
+        let (_, _, opened, _, _authority) =
             runtime.open_tab(None, None, &command, true).unwrap();
         // Hold the structural lock as an already-running spawn would, then
         // queue another spawn and invoke the exact native-hook cleanup method.

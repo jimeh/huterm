@@ -569,6 +569,7 @@ mod tests {
                 environment: Vec::new(),
                 grid_size: GridSize::clamped(20, 10),
                 cell_size: cell,
+                presentation: huterm_protocol::TerminalPresentation::default(),
             },
         ).unwrap();
         let client = runtime.client();

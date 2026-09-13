@@ -57,6 +57,7 @@ kill -KILL $$
                 width: 8,
                 height: 16,
             },
+            presentation: huterm_protocol::TerminalPresentation::default(),
         }
     }
 

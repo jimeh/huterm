@@ -4,7 +4,7 @@ import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 
 const step = process.env.HUTERM_CI_SMOKE_STEP;
 const steps = new Set([
-  "renderer", "linux-desktop", "linux-input", "linux-palette", "linux-integration",
+  "renderer", "presentation-queries", "linux-desktop", "linux-input", "linux-palette", "linux-integration",
   "linux-clipboard", "linux-fullscreen", "linux-quake", "macos-menus", "macos-updater", "macos-input",
   "macos-clipboard",
   "macos-palette", "macos-integration", "macos-quit", "macos-fullscreen", "macos-quake",

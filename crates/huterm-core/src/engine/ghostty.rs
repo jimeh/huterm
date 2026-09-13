@@ -1,5 +1,4 @@
-use std::cell::OnceCell;
-use std::cell::RefCell;
+use std::cell::{Cell as SharedCell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -9,7 +8,8 @@ use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferRange, Cell, CellColor, CellSize, CellStyle, Cursor, CursorShape,
     GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand, TerminalId,
-    TerminalModes, TerminalRow, TerminalSnapshot, Viewport,
+    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
+    Viewport, appearance_for_background,
 };
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{
@@ -17,12 +17,12 @@ use libghostty_vt::render::{
 };
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::Selection;
-use libghostty_vt::style::{RgbColor, StyleColor, Underline};
+use libghostty_vt::style::{Palette, RgbColor, StyleColor, Underline};
 use libghostty_vt::terminal::{
-    ClipboardLocation, ClipboardWriteError, ConformanceLevel,
+    ClipboardLocation, ClipboardWriteError, ColorScheme, ConformanceLevel,
     DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
     PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
-    SecondaryDeviceAttributes, TertiaryDeviceAttributes,
+    SecondaryDeviceAttributes, SizeReportSize, TertiaryDeviceAttributes,
 };
 use libghostty_vt::{RenderState, Terminal};
 
@@ -37,6 +37,8 @@ pub(crate) struct TerminalEngine {
     terminal_id: TerminalId,
     generation: u64,
     size: GridSize,
+    cell: Rc<SharedCell<CellSize>>,
+    presentation: TerminalPresentation,
     terminal: Terminal<'static, 'static>,
     render: RenderState<'static>,
     row_iterator: RowIterator<'static>,
@@ -47,7 +49,8 @@ pub(crate) struct TerminalEngine {
     host_effect_sink: Rc<OnceCell<HostEffectSink>>,
     title_dirty: Rc<std::cell::Cell<bool>>,
     palette_overrides: [bool; 256],
-    palette_dirty: bool,
+    colors_dirty: bool,
+    default_overrides: DefaultOverrides,
     escape_hint: EscapeHint,
     mouse_probe: RefCell<(
         libghostty_vt::mouse::Encoder<'static>,
@@ -56,10 +59,15 @@ pub(crate) struct TerminalEngine {
 }
 
 impl TerminalEngine {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "native callbacks are installed together before ownership starts"
+    )]
     pub(super) fn new(
         terminal_id: TerminalId,
         size: GridSize,
         cell: CellSize,
+        presentation: TerminalPresentation,
     ) -> Result<Self, RuntimeError> {
         let mut terminal = Terminal::new(size.columns, size.rows)?;
         terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
@@ -117,6 +125,30 @@ impl TerminalEngine {
             })
         })?;
         terminal.on_xtversion(|_| Some("Huterm"))?;
+        let reported_cell = Rc::new(SharedCell::new(cell));
+        let size_cell = Rc::clone(&reported_cell);
+        terminal.on_size(move |terminal| {
+            let cell = size_cell.get();
+            if cell.width == 0 || cell.height == 0 {
+                return None;
+            }
+            Some(SizeReportSize {
+                rows: terminal.rows().ok()?,
+                columns: terminal.cols().ok()?,
+                cell_width: u32::from(cell.width),
+                cell_height: u32::from(cell.height),
+            })
+        })?;
+        terminal.on_color_scheme(|terminal| {
+            let background = terminal.bg_color().ok()??;
+            Some(match appearance_for_background(rgb(background)) {
+                huterm_protocol::TerminalAppearance::Light => {
+                    ColorScheme::Light
+                }
+                huterm_protocol::TerminalAppearance::Dark => ColorScheme::Dark,
+            })
+        })?;
+        apply_presentation(&mut terminal, &presentation)?;
         terminal.resize(
             size.columns,
             size.rows,
@@ -127,6 +159,8 @@ impl TerminalEngine {
             terminal_id,
             generation: 0,
             size,
+            cell: reported_cell,
+            presentation,
             terminal,
             render: RenderState::new()?,
             row_iterator: RowIterator::new()?,
@@ -137,7 +171,8 @@ impl TerminalEngine {
             host_effect_sink,
             title_dirty,
             palette_overrides: [false; 256],
-            palette_dirty: false,
+            colors_dirty: false,
+            default_overrides: DefaultOverrides::default(),
             escape_hint: EscapeHint::Ground,
             mouse_probe: RefCell::new((
                 libghostty_vt::mouse::Encoder::new()?,
@@ -155,10 +190,30 @@ impl TerminalEngine {
         &mut self,
         bytes: &[u8],
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
-        self.palette_dirty |= self.escape_hint.observe(bytes);
+        self.colors_dirty |= self.escape_hint.observe(bytes);
         self.terminal.vt_write(bytes);
         self.generation = self.generation.saturating_add(1);
         self.drain_effects()
+    }
+
+    pub(super) fn update_presentation(
+        &mut self,
+        presentation: TerminalPresentation,
+    ) -> Result<(), RuntimeError> {
+        apply_presentation(&mut self.terminal, &presentation)?;
+        self.presentation = presentation;
+        self.colors = None;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn presentation(&self) -> &TerminalPresentation {
+        &self.presentation
+    }
+
+    #[cfg(test)]
+    pub(super) fn cell_size(&self) -> CellSize {
+        self.cell.get()
     }
 
     fn drain_effects(&self) -> Result<Vec<EngineEffect>, RuntimeError> {
@@ -182,6 +237,7 @@ impl TerminalEngine {
             u32::from(cell.height),
         )?;
         self.size = size;
+        self.cell.set(cell);
         self.generation = self.generation.saturating_add(1);
         self.drain_effects()
     }
@@ -286,10 +342,20 @@ impl TerminalEngine {
         Ok(())
     }
 
-    fn refresh_palette_overrides(&mut self) -> Result<(), RuntimeError> {
-        if !self.palette_dirty {
+    fn refresh_color_overrides(&mut self) -> Result<(), RuntimeError> {
+        if !self.colors_dirty {
             return Ok(());
         }
+        self.default_overrides.foreground = probe_default_override(
+            &mut self.terminal,
+            DefaultColor::Foreground,
+        )?;
+        self.default_overrides.background = probe_default_override(
+            &mut self.terminal,
+            DefaultColor::Background,
+        )?;
+        self.default_overrides.cursor =
+            probe_default_override(&mut self.terminal, DefaultColor::Cursor)?;
         let original = self.terminal.default_color_palette()?;
         let before = self.terminal.color_palette()?;
         let mut probe = original;
@@ -305,7 +371,7 @@ impl TerminalEngine {
         {
             *overridden = probed.0[index] == before.0[index];
         }
-        self.palette_dirty = false;
+        self.colors_dirty = false;
         self.colors = None;
         Ok(())
     }
@@ -328,7 +394,7 @@ impl TerminalEngine {
     pub(super) fn snapshot(
         &mut self,
     ) -> Result<TerminalSnapshot, RuntimeError> {
-        self.refresh_palette_overrides()?;
+        self.refresh_color_overrides()?;
         let modes = self.modes()?;
         let (bottom_offset, history_size) = self.viewport_state()?;
         let fg = self.terminal.fg_color()?;
@@ -359,6 +425,7 @@ impl TerminalEngine {
                         bg,
                         &palette,
                         &self.palette_overrides,
+                        self.default_overrides,
                     )?);
                 }
                 let owned = Arc::new(TerminalRow { cells });
@@ -395,7 +462,11 @@ impl TerminalEngine {
             modes,
             viewport: Viewport { bottom_offset },
             history_size,
-            cursor_color: state.cursor_color()?.map(rgb),
+            cursor_color: if self.default_overrides.cursor {
+                state.cursor_color()?.map(rgb)
+            } else {
+                None
+            },
         };
         let mut rows = self.row_iterator.update(&state)?;
         while let Some(row) = rows.next() {
@@ -481,12 +552,96 @@ fn rgb(color: RgbColor) -> Rgb {
     }
 }
 
+fn ghostty_rgb(color: Rgb) -> RgbColor {
+    RgbColor {
+        r: color.red,
+        g: color.green,
+        b: color.blue,
+    }
+}
+
+fn apply_presentation(
+    terminal: &mut Terminal<'_, '_>,
+    presentation: &TerminalPresentation,
+) -> Result<(), RuntimeError> {
+    terminal
+        .set_default_fg_color(Some(ghostty_rgb(presentation.foreground)))?
+        .set_default_bg_color(Some(ghostty_rgb(presentation.background)))?
+        .set_default_cursor_color(Some(ghostty_rgb(presentation.cursor)))?
+        .set_default_color_palette(Some(Palette(
+            presentation.palette.map(ghostty_rgb),
+        )))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum DefaultColor {
+    Foreground,
+    Background,
+    Cursor,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DefaultOverrides {
+    foreground: bool,
+    background: bool,
+    cursor: bool,
+}
+
+fn probe_default_override(
+    terminal: &mut Terminal<'_, '_>,
+    color: DefaultColor,
+) -> Result<bool, RuntimeError> {
+    let (original, before) = match color {
+        DefaultColor::Foreground => {
+            (terminal.default_fg_color()?, terminal.fg_color()?)
+        }
+        DefaultColor::Background => {
+            (terminal.default_bg_color()?, terminal.bg_color()?)
+        }
+        DefaultColor::Cursor => {
+            (terminal.default_cursor_color()?, terminal.cursor_color()?)
+        }
+    };
+    let mut probe = original.unwrap_or(RgbColor { r: 0, g: 0, b: 0 });
+    probe.r ^= 1;
+    match color {
+        DefaultColor::Foreground => {
+            terminal.set_default_fg_color(Some(probe))?;
+        }
+        DefaultColor::Background => {
+            terminal.set_default_bg_color(Some(probe))?;
+        }
+        DefaultColor::Cursor => {
+            terminal.set_default_cursor_color(Some(probe))?;
+        }
+    }
+    let probed = match color {
+        DefaultColor::Foreground => terminal.fg_color(),
+        DefaultColor::Background => terminal.bg_color(),
+        DefaultColor::Cursor => terminal.cursor_color(),
+    };
+    match color {
+        DefaultColor::Foreground => {
+            terminal.set_default_fg_color(original)?;
+        }
+        DefaultColor::Background => {
+            terminal.set_default_bg_color(original)?;
+        }
+        DefaultColor::Cursor => {
+            terminal.set_default_cursor_color(original)?;
+        }
+    }
+    Ok(probed? == before)
+}
+
 fn snapshot_cell(
     cell: &libghostty_vt::render::CellIteration<'_, '_>,
     fg: Option<RgbColor>,
     bg: Option<RgbColor>,
     palette: &libghostty_vt::style::Palette,
     overrides: &[bool; 256],
+    default_overrides: DefaultOverrides,
 ) -> Result<Cell, RuntimeError> {
     let raw = cell.raw_cell()?;
     let style = cell.style()?;
@@ -503,8 +658,11 @@ fn snapshot_cell(
                 }
             }
         };
-    let mut foreground =
-        resolve(style.fg_color, CellColor::DefaultForeground, fg);
+    let mut foreground = resolve(
+        style.fg_color,
+        CellColor::DefaultForeground,
+        default_overrides.foreground.then_some(fg).flatten(),
+    );
     let background_style = match raw.content_tag()? {
         CellContentTag::BgColorPalette => {
             StyleColor::Palette(raw.bg_color_palette()?)
@@ -512,8 +670,11 @@ fn snapshot_cell(
         CellContentTag::BgColorRgb => StyleColor::Rgb(raw.bg_color_rgb()?),
         _ => style.bg_color,
     };
-    let mut background =
-        resolve(background_style, CellColor::DefaultBackground, bg);
+    let mut background = resolve(
+        background_style,
+        CellColor::DefaultBackground,
+        default_overrides.background.then_some(bg).flatten(),
+    );
     if style.inverse {
         std::mem::swap(&mut foreground, &mut background);
     }
@@ -551,24 +712,22 @@ enum EscapeHint {
     Ground,
     Escape,
     Osc,
-    OscEscape,
 }
 impl EscapeHint {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         let mut changed = false;
         for byte in bytes {
             *self = match (&*self, byte) {
-                (Self::Osc | Self::OscEscape, 0x07 | 0x9c)
-                | (Self::OscEscape, b'\\')
+                (Self::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
                 | (Self::Escape, b'c') => {
                     changed = true;
                     Self::Ground
                 }
-                (Self::Osc | Self::OscEscape, 0x18 | 0x1a) => Self::Ground,
-                (Self::Osc | Self::OscEscape, 0x1b) => Self::OscEscape,
-                (Self::Osc | Self::OscEscape, _)
-                | (_, 0x9d)
-                | (Self::Escape, b']') => Self::Osc,
+                (Self::Osc, 0x1b) => {
+                    changed = true;
+                    Self::Escape
+                }
+                (Self::Osc, _) | (_, 0x9d) | (Self::Escape, b']') => Self::Osc,
                 (_, 0x1b) => Self::Escape,
                 _ => Self::Ground,
             };
@@ -684,6 +843,424 @@ impl super::links::LinkBuffer for TerminalEngine {
 mod tests {
     use super::*;
 
+    fn presentation() -> TerminalPresentation {
+        let mut palette = TerminalPresentation::default().palette;
+        palette[1] = Rgb {
+            red: 0xaa,
+            green: 0xbb,
+            blue: 0xcc,
+        };
+        TerminalPresentation {
+            foreground: Rgb {
+                red: 0x11,
+                green: 0x22,
+                blue: 0x33,
+            },
+            background: Rgb {
+                red: 0x44,
+                green: 0x55,
+                blue: 0x66,
+            },
+            cursor: Rgb {
+                red: 0x77,
+                green: 0x88,
+                blue: 0x99,
+            },
+            palette,
+        }
+    }
+
+    fn engine() -> TerminalEngine {
+        TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 9,
+                height: 17,
+            },
+            presentation(),
+        )
+        .unwrap()
+    }
+
+    fn replies(effects: Vec<EngineEffect>) -> Vec<Vec<u8>> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                EngineEffect::PtyWrite(bytes) => Some(bytes),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_queries_report_seeded_colors_size_and_appearance() {
+        let mut engine = engine();
+        let effects = engine
+            .process(
+                b"\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[14t\x1b[16t\x1b[18t\x1b[?996n",
+            )
+            .unwrap();
+        assert_eq!(
+            replies(effects),
+            vec![
+                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:4444/5555/6666\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
+                b"\x1b[4;51;72t".to_vec(),
+                b"\x1b[6;17;9t".to_vec(),
+                b"\x1b[8;3;8t".to_vec(),
+                b"\x1b[?997;1n".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn size_queries_follow_the_existing_ordered_resize_state() {
+        let mut engine = engine();
+        engine
+            .resize(
+                GridSize::clamped(5, 4),
+                CellSize {
+                    width: 11,
+                    height: 19,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
+            vec![
+                b"\x1b[4;76;55t".to_vec(),
+                b"\x1b[6;19;11t".to_vec(),
+                b"\x1b[8;4;5t".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn size_queries_are_silent_until_cell_geometry_is_known() {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 0,
+                height: 0,
+            },
+            presentation(),
+        )
+        .unwrap();
+        assert!(
+            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap())
+                .is_empty()
+        );
+
+        engine
+            .resize(
+                GridSize::clamped(5, 4),
+                CellSize {
+                    width: 11,
+                    height: 19,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
+            vec![
+                b"\x1b[4;76;55t".to_vec(),
+                b"\x1b[6;19;11t".to_vec(),
+                b"\x1b[8;4;5t".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mutations_queries_and_resets_are_ordered_within_one_write() {
+        let mut engine = engine();
+        let effects = engine
+            .process(
+                b"\x1b]4;1;#010203\x1b\\\x1b]4;1;?\x1b\\\x1b]104;1\x1b\\\x1b]4;1;?\x1b\\\x1b]10;#abcdef\x1b\\\x1b]10;?\x1b\\\x1b]110\x1b\\\x1b]10;?\x1b\\\x1b]11;#ffffff\x1b\\\x1b]11;?\x1b\\\x1b[?996n\x1b]111\x1b\\\x1b]11;?\x1b\\\x1b[?996n\x1b]12;#0a0b0c\x1b\\\x1b]12;?\x1b\\\x1b]112\x1b\\\x1b]12;?\x1b\\",
+            )
+            .unwrap();
+        assert_eq!(
+            replies(effects),
+            vec![
+                b"\x1b]4;1;rgb:0101/0202/0303\x1b\\".to_vec(),
+                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:abab/cdcd/efef\x1b\\".to_vec(),
+                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\".to_vec(),
+                b"\x1b[?997;2n".to_vec(),
+                b"\x1b]11;rgb:4444/5555/6666\x1b\\".to_vec(),
+                b"\x1b[?997;1n".to_vec(),
+                b"\x1b]12;rgb:0a0a/0b0b/0c0c\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn osc_dispatch_at_escape_updates_override_state_before_the_next_byte() {
+        let mut engine = engine();
+        engine.process(b"A\x1b[31mB").unwrap();
+        engine
+            .process(
+                b"\x1b]10;#010203\x1b]11;#040506\x1b]12;#070809\x1b]4;1;#0a0b0c\x1b",
+            )
+            .unwrap();
+        let overridden = engine.snapshot().unwrap();
+        assert_eq!(
+            (
+                overridden.rows[0].cells[0].foreground,
+                overridden.rows[0].cells[0].background,
+                overridden.rows[0].cells[1].foreground,
+                overridden.cursor_color,
+            ),
+            (
+                CellColor::Rgb(Rgb {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                }),
+                CellColor::Rgb(Rgb {
+                    red: 4,
+                    green: 5,
+                    blue: 6,
+                }),
+                CellColor::Rgb(Rgb {
+                    red: 10,
+                    green: 11,
+                    blue: 12,
+                }),
+                Some(Rgb {
+                    red: 7,
+                    green: 8,
+                    blue: 9,
+                }),
+            )
+        );
+
+        engine
+            .process(b"]110\x1b]111\x1b]112\x1b]104;1\x1b")
+            .unwrap();
+        let reset = engine.snapshot().unwrap();
+        assert_eq!(
+            (
+                reset.rows[0].cells[0].foreground,
+                reset.rows[0].cells[0].background,
+                reset.rows[0].cells[1].foreground,
+                reset.cursor_color,
+            ),
+            (
+                CellColor::DefaultForeground,
+                CellColor::DefaultBackground,
+                CellColor::Indexed(1),
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn osc_dispatch_at_can_or_sub_updates_override_state_immediately() {
+        for terminator in [0x18, 0x1a] {
+            let mut engine = engine();
+            engine.process(b"A").unwrap();
+            let mut mutation = b"\x1b]10;#010203".to_vec();
+            mutation.push(terminator);
+            engine.process(&mutation).unwrap();
+            assert_eq!(
+                engine.snapshot().unwrap().rows[0].cells[0].foreground,
+                CellColor::Rgb(Rgb {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                }),
+                "terminator={terminator:#x}"
+            );
+
+            let mut reset = b"\x1b]110".to_vec();
+            reset.push(terminator);
+            engine.process(&reset).unwrap();
+            assert_eq!(
+                engine.snapshot().unwrap().rows[0].cells[0].foreground,
+                CellColor::DefaultForeground,
+                "terminator={terminator:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_and_equal_osc_overrides_survive_theme_updates_and_resets() {
+        let mut engine = engine();
+        engine.process(b"A\x1b[31mB").unwrap();
+        let initial = engine.snapshot().unwrap();
+        assert_eq!(
+            initial.rows[0].cells[0].foreground,
+            CellColor::DefaultForeground
+        );
+        assert_eq!(initial.rows[0].cells[1].foreground, CellColor::Indexed(1));
+
+        engine
+            .process(
+                b"\r\x1b[0m\x1b]10;#112233\x1b\\\x1b]11;#ffffff\x1b\\\x1b]12;#778899\x1b\\\x1b]4;1;#aabbcc\x1b\\A",
+            )
+            .unwrap();
+        let overridden = engine.snapshot().unwrap();
+        assert_eq!(
+            overridden.rows[0].cells[0].foreground,
+            CellColor::Rgb(presentation().foreground)
+        );
+        assert_eq!(
+            overridden.rows[0].cells[0].background,
+            CellColor::Rgb(Rgb {
+                red: 0xff,
+                green: 0xff,
+                blue: 0xff,
+            })
+        );
+        assert_eq!(
+            overridden.rows[0].cells[1].foreground,
+            CellColor::Rgb(presentation().palette[1])
+        );
+        assert_eq!(overridden.cursor_color, Some(presentation().cursor));
+
+        let mut changed = presentation();
+        changed.foreground.red = 0xfe;
+        changed.background = Rgb {
+            red: 0x10,
+            green: 0x20,
+            blue: 0x30,
+        };
+        changed.cursor.blue = 0xdc;
+        changed.palette[1].red = 0xcb;
+        let generation = engine.generation();
+        engine.update_presentation(changed.clone()).unwrap();
+        let themed = engine.snapshot().unwrap();
+        assert_eq!(themed.generation, generation);
+        assert!(!Arc::ptr_eq(&overridden.rows[0], &themed.rows[0]));
+        assert_eq!(
+            themed.rows[0].cells[0].foreground,
+            CellColor::Rgb(presentation().foreground)
+        );
+        assert_eq!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
+                    )
+                    .unwrap()
+            ),
+            vec![
+                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
+                b"\x1b[?997;2n".to_vec(),
+            ]
+        );
+
+        assert_eq!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]104;1\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
+                    )
+                    .unwrap()
+            ),
+            vec![
+                b"\x1b]4;1;rgb:cbcb/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:fefe/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:1010/2020/3030\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/dcdc\x1b\\".to_vec(),
+                b"\x1b[?997;1n".to_vec(),
+            ]
+        );
+        let reset = engine.snapshot().unwrap();
+        assert_eq!(
+            reset.rows[0].cells[0].foreground,
+            CellColor::DefaultForeground
+        );
+        assert_eq!(
+            reset.rows[0].cells[0].background,
+            CellColor::DefaultBackground
+        );
+        assert_eq!(reset.rows[0].cells[1].foreground, CellColor::Indexed(1));
+        assert_eq!(reset.cursor_color, None);
+        assert_eq!(engine.presentation(), &changed);
+    }
+
+    #[test]
+    fn split_queries_reply_once_after_completion() {
+        for (query, dispatch_at, expected) in [
+            (
+                b"\x1b]10;?\x1b\\".as_slice(),
+                b"\x1b]10;?\x1b\\".len() - 1,
+                b"\x1b]10;rgb:1111/2222/3333\x1b\\".as_slice(),
+            ),
+            (
+                b"\x1b[14t".as_slice(),
+                b"\x1b[14t".len(),
+                b"\x1b[4;51;72t".as_slice(),
+            ),
+            (
+                b"\x1b[?996n".as_slice(),
+                b"\x1b[?996n".len(),
+                b"\x1b[?997;1n".as_slice(),
+            ),
+        ] {
+            for split in 0..=query.len() {
+                let mut engine = engine();
+                let mut actual =
+                    replies(engine.process(&query[..split]).unwrap());
+                if split < dispatch_at {
+                    assert!(actual.is_empty());
+                }
+                actual
+                    .extend(replies(engine.process(&query[split..]).unwrap()));
+                assert_eq!(
+                    actual,
+                    vec![expected.to_vec()],
+                    "query={query:?} split={split}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_and_unsupported_queries_are_silent() {
+        let mut engine = engine();
+        assert!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]4;999;?\x1b\\\x1b]10;bogus\x1b\\\x1b[15t\x1b[?996;1n"
+                    )
+                    .unwrap()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn osc_104_without_indices_resets_the_complete_palette() {
+        let mut engine = engine();
+        assert_eq!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]4;1;#010203;2;#040506\x1b\\\x1b]104\x1b\\\x1b]4;1;?;2;?\x1b\\"
+                    )
+                    .unwrap()
+            ),
+            vec![concat!(
+                "\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\",
+                "\x1b]4;2;rgb:0000/cdcd/0000\x1b\\"
+            )
+            .as_bytes()
+            .to_vec()]
+        );
+    }
+
     #[test]
     fn clipboard_callbacks_preserve_empty_and_binary_contents() {
         let writes = Rc::new(RefCell::new(Vec::new()));
@@ -773,6 +1350,7 @@ mod tests {
                     width: 8,
                     height: 16,
                 },
+                TerminalPresentation::default(),
             )
             .unwrap();
             engine.process(b"\x1b[31mA").unwrap();

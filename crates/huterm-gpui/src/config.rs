@@ -16,6 +16,9 @@ pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty
 pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 
 [terminal]
+# Terminal identity for new shells: "auto", "xterm-huterm", or
+# "xterm-256color". Auto uses Huterm's packaged entry when available.
+term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
@@ -311,6 +314,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         updates: raw.updates,
         palette: raw.palette,
         terminal: TerminalConfig {
+            term: raw.terminal.term,
             close_on_exit: raw.terminal.close_on_exit,
             clipboard_write: raw.terminal.clipboard_write,
             links: raw.terminal.links,
@@ -366,7 +370,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 133);
+        assert_eq!(fixtures.len(), 137);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -606,6 +610,29 @@ mod tests {
             ))
             .unwrap();
             assert!(!config.terminal.close_on_exit);
+        }
+    }
+
+    #[test]
+    fn terminal_identity_defaults_to_auto_and_accepts_only_supported_values() {
+        use huterm_config::TerminalIdentity;
+
+        assert_eq!(Config::default().terminal.term, TerminalIdentity::Auto);
+        for (value, expected) in [
+            ("auto", TerminalIdentity::Auto),
+            ("xterm-huterm", TerminalIdentity::XtermHuterm),
+            ("xterm-256color", TerminalIdentity::Xterm256Color),
+        ] {
+            assert_eq!(
+                parse(&format!("[terminal]\nterm = '{value}'"))
+                    .unwrap()
+                    .terminal
+                    .term,
+                expected
+            );
+        }
+        for value in ["huterm", "xterm", "AUTO"] {
+            assert!(parse(&format!("[terminal]\nterm = '{value}'")).is_err());
         }
     }
 

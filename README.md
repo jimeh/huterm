@@ -815,6 +815,86 @@ unchanged rows share storage between generations. See
 [the engine guide](docs/agents/terminal-engines.md) for native build inputs,
 benchmarks, and migration behavior.
 
+### Color, size, and appearance queries
+
+Huterm answers the terminal queries commonly used by shells and development
+tools:
+
+- `OSC 4;index;?` for palette indexes 0 through 255.
+- `OSC 10;?`, `OSC 11;?`, and `OSC 12;?` for foreground, background, and
+  cursor colors. `OSC 104`, `OSC 110`, `OSC 111`, and `OSC 112` reset their
+  corresponding overrides.
+- `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` for terminal content pixels, cell
+  pixels, and rows/columns.
+- `CSI ? 996 n` for dark or light appearance.
+
+Replies use the terminal's current effective state. An application color
+override remains an override even when it happens to equal the theme color, so
+later theme reloads do not replace it. Resetting the override exposes the latest
+theme value. Size replies describe the character grid and physical cell size,
+excluding window chrome and padding.
+
+### Terminal identity, tmux, and SSH
+
+New shells use Huterm's private `xterm-huterm` terminfo entry when it is locally
+available. Development tasks compile it into `target/terminfo`; macOS and Linux
+packages carry the compiled entry in their resources. If the entry cannot be
+found, the default `auto` setting safely falls back to `xterm-256color`.
+
+```toml
+[terminal]
+term = "auto" # Or force "xterm-huterm" / "xterm-256color" for new shells.
+```
+
+`xterm-huterm` inherits the established indexed 256-color capability set and
+advertises `Tc`, allowing terminfo consumers such as tmux to retain 24-bit
+color.
+Forcing `xterm-huterm` makes the entry's availability your responsibility. A
+missing entry commonly appears as an "unknown terminal type" error in curses
+applications.
+
+Local discovery says nothing about an SSH server's terminfo database. Use a
+per-command compatibility identity when the remote host lacks the entry:
+
+```sh
+TERM=xterm-256color ssh host
+```
+
+This changes `TERM` for that SSH invocation only. The remote command then uses
+the widely installed `xterm-256color` entry instead of requiring
+`xterm-huterm`.
+
+Or install the local definition into your account on a trusted remote host:
+
+```sh
+infocmp -x xterm-huterm | ssh host 'tic -x -'
+```
+
+Packaged copies of the source are at
+`Huterm.app/Contents/Resources/terminfo/xterm-huterm.terminfo` on macOS and
+`share/huterm/terminfo/xterm-huterm.terminfo` in Linux bundles. You can copy
+that file to a remote host and run `tic -x xterm-huterm.terminfo` there as
+an alternative to exporting the compiled entry with `infocmp`.
+
+Install the entry in the context that will run the application. `sudo`, `su`,
+and container launchers can strip `TERMINFO` or `TERMINFO_DIRS`, change `HOME`,
+or use a different filesystem. Installing into the local user's `~/.terminfo`
+does not make the entry available to root, another user, a container, or a
+remote host. Run `tic` as the target user or inside the target container, then
+check that context with `infocmp -x xterm-huterm`. When installation is not
+appropriate, set `TERM=xterm-256color` for the individual command instead.
+For example, when running a command through `sudo` without installing the entry
+for root, use:
+
+```sh
+sudo env TERM=xterm-256color command
+```
+
+Replace `command` with the program being run as root.
+
+Huterm does not wrap SSH, install files remotely, or change Mosh's terminal
+capability handling.
+
 ## Licensing
 
 Huterm intends to license its own source under the MIT license. The planned

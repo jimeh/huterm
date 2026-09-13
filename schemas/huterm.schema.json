@@ -3356,6 +3356,15 @@
             }
           ],
           "default": "off"
+        },
+        "term": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TerminalIdentity"
+            }
+          ],
+          "default": "auto",
+          "description": "Terminal identity for newly spawned shells."
         }
       },
       "type": "object"
@@ -3472,6 +3481,26 @@
         "right"
       ],
       "type": "string"
+    },
+    "TerminalIdentity": {
+      "description": "Terminal identity advertised to local applications.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Use `xterm-huterm` when its terminfo entry is available.",
+          "type": "string"
+        },
+        {
+          "const": "xterm-huterm",
+          "description": "Advertise Huterm's private terminfo entry.",
+          "type": "string"
+        },
+        {
+          "const": "xterm-256color",
+          "description": "Use the widely installed compatibility entry.",
+          "type": "string"
+        }
+      ]
     },
     "ThemeDefinition": {
       "additionalProperties": false,

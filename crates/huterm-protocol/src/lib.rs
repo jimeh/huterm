@@ -185,6 +185,122 @@ pub struct CellSize {
     pub height: u16,
 }
 
+/// Whether the presented terminal background is predominantly light or dark.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalAppearance {
+    /// Light text area suitable for dark foreground content.
+    Light,
+    /// Dark text area suitable for light foreground content.
+    Dark,
+}
+
+/// Classifies a terminal background using relative luminance in sRGB space.
+#[must_use]
+pub fn appearance_for_background(background: Rgb) -> TerminalAppearance {
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(background.red)
+        + 0.7152 * linear(background.green)
+        + 0.0722 * linear(background.blue);
+    if luminance > 0.5 {
+        TerminalAppearance::Light
+    } else {
+        TerminalAppearance::Dark
+    }
+}
+
+/// Theme-controlled terminal colors before application OSC overrides.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalPresentation {
+    /// Default foreground color.
+    pub foreground: Rgb,
+    /// Default background color.
+    pub background: Rgb,
+    /// Default cursor color.
+    pub cursor: Rgb,
+    /// Default indexed color palette.
+    pub palette: [Rgb; 256],
+}
+
+impl Default for TerminalPresentation {
+    fn default() -> Self {
+        let rgb = |value: u32| {
+            let [_, red, green, blue] = value.to_be_bytes();
+            Rgb { red, green, blue }
+        };
+        let ansi = [
+            rgb(0x0000_0000),
+            rgb(0x00cd_0000),
+            rgb(0x0000_cd00),
+            rgb(0x00cd_cd00),
+            rgb(0x0000_00ee),
+            rgb(0x00cd_00cd),
+            rgb(0x0000_cdcd),
+            rgb(0x00e5_e5e5),
+            rgb(0x007f_7f7f),
+            rgb(0x00ff_0000),
+            rgb(0x0000_ff00),
+            rgb(0x00ff_ff00),
+            rgb(0x005c_5cff),
+            rgb(0x00ff_00ff),
+            rgb(0x0000_ffff),
+            rgb(0x00ff_ffff),
+        ];
+        let palette = std::array::from_fn(|index| {
+            if let Some(color) = ansi.get(index) {
+                return *color;
+            }
+            let index = u8::try_from(index).unwrap_or(u8::MAX);
+            if index >= 232 {
+                let level =
+                    8_u8.saturating_add((index - 232).saturating_mul(10));
+                return Rgb {
+                    red: level,
+                    green: level,
+                    blue: level,
+                };
+            }
+            let value = index - 16;
+            let channel = |component: u8| {
+                if component == 0 {
+                    0
+                } else {
+                    55 + component * 40
+                }
+            };
+            Rgb {
+                red: channel(value / 36),
+                green: channel((value / 6) % 6),
+                blue: channel(value % 6),
+            }
+        });
+        Self {
+            foreground: Rgb {
+                red: 0xe5,
+                green: 0xe5,
+                blue: 0xe5,
+            },
+            background: Rgb {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            cursor: Rgb {
+                red: 0xff,
+                green: 0xff,
+                blue: 0xff,
+            },
+            palette,
+        }
+    }
+}
+
 /// Shared terminal viewport owned by the runtime.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Viewport {
@@ -372,6 +488,8 @@ pub struct TerminalCommand {
     pub grid_size: GridSize,
     /// Initial cell pixel size.
     pub cell_size: CellSize,
+    /// Initial presentation published before the child process starts.
+    pub presentation: TerminalPresentation,
 }
 
 /// RGB color independent of a renderer.

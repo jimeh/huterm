@@ -12,11 +12,15 @@ use gpui::{
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
-use huterm_core::{HostEffectRecipient, Mux, RuntimeClient, RuntimeError};
+use huterm_core::{
+    HostEffectRecipient, Mux, PresentationController, RuntimeClient,
+    RuntimeError,
+};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalSnapshot, ids,
+    TerminalCommand, TerminalEvent, TerminalInput, TerminalPresentation,
+    TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -53,7 +57,8 @@ mod keyboard;
 mod links;
 pub(crate) mod palette;
 pub(crate) use windows::{
-    fullscreen_smoke, integration_smoke, palette_smoke, quake_smoke,
+    fullscreen_smoke, integration_smoke, palette_smoke,
+    presentation_query_smoke, quake_smoke,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
@@ -210,6 +215,8 @@ fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
 )]
 struct TerminalView {
     client: RuntimeClient,
+    presentation: PresentationController,
+    pending_presentation: Option<TerminalPresentation>,
     host_effects: HostEffectRecipient,
     title: String,
     exited: bool,
@@ -269,19 +276,35 @@ struct TerminalView {
     snapshot_sequence: u64,
 }
 
+struct TerminalViewAuthority {
+    presentation: PresentationController,
+    host_effects: HostEffectRecipient,
+}
+
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
     fn new(
         client: RuntimeClient,
-        host_effects: HostEffectRecipient,
+        authority: TerminalViewAuthority,
         config: &Config,
         font_family: String,
         metrics: GridMetrics,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        let TerminalViewAuthority {
+            presentation,
+            host_effects,
+        } = authority;
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
+        let initial_presentation = terminal_presentation(&theme);
+        let (pending_presentation, presentation_status) =
+            match presentation.update(initial_presentation.clone()) {
+                Ok(()) => (None, None),
+                Err(RuntimeError::Busy) => (Some(initial_presentation), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
         let focus_subscription =
             cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
                 view.host_effects.note_focus();
@@ -325,6 +348,8 @@ impl TerminalView {
         };
         TerminalView {
             client,
+            presentation,
+            pending_presentation,
             host_effects,
             input_queue: InputQueue::default(),
             option_as_alt: config.terminal.macos_option_as_alt,
@@ -377,7 +402,7 @@ impl TerminalView {
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
             theme,
-            status: None,
+            status: presentation_status,
             title: String::new(),
             exited: false,
             visible: false,
@@ -624,6 +649,18 @@ impl TerminalView {
         if self.option_as_alt != terminal.macos_option_as_alt {
             self.clear_composition(cx);
             self.option_as_alt = terminal.macos_option_as_alt;
+        }
+    }
+
+    fn publish_presentation(&mut self, theme: &Theme) {
+        let state = terminal_presentation(theme);
+        match self.presentation.update(state.clone()) {
+            Ok(()) => self.pending_presentation = None,
+            Err(RuntimeError::Busy) => self.pending_presentation = Some(state),
+            Err(error) => {
+                self.pending_presentation = None;
+                self.status = Some(error.to_string());
+            }
         }
     }
 
@@ -1471,6 +1508,17 @@ impl TerminalView {
         )
     }
 
+    fn physical_cell_size(&self) -> CellSize {
+        CellSize {
+            width: pixel_count(
+                self.metrics.cell_width * self.metrics.scale_factor,
+            ),
+            height: pixel_count(
+                self.metrics.cell_height * self.metrics.scale_factor,
+            ),
+        }
+    }
+
     fn resize_if_needed(&mut self, window: &Window) {
         let metrics = self.metrics.at_scale(window.scale_factor());
         if metrics != self.metrics {
@@ -1491,14 +1539,7 @@ impl TerminalView {
             self.resize_visibility.activate(Instant::now());
         }
         let size = self.terminal_layout(window).grid;
-        let cell = CellSize {
-            width: pixel_count(
-                self.metrics.cell_width * self.metrics.scale_factor,
-            ),
-            height: pixel_count(
-                self.metrics.cell_height * self.metrics.scale_factor,
-            ),
-        };
+        let cell = self.physical_cell_size();
         if size == self.last_grid_size && self.last_cell_size == Some(cell) {
             return;
         }
@@ -1582,6 +1623,16 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_resize = None;
+                    return self.set_status(error.to_string());
+                }
+            }
+        }
+        if let Some(presentation) = self.pending_presentation.clone() {
+            match self.presentation.update(presentation) {
+                Ok(()) => self.pending_presentation = None,
+                Err(RuntimeError::Busy) => {}
+                Err(error) => {
+                    self.pending_presentation = None;
                     return self.set_status(error.to_string());
                 }
             }
@@ -2118,17 +2169,22 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), chrome_hidden)
 }
 
-fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
+fn shell_command(
+    metrics: GridMetrics,
+    theme: &Theme,
+    identity: huterm_config::TerminalIdentity,
+) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
     let is_macos = cfg!(target_os = "macos");
     let arguments = shell_arguments(is_macos);
-    let environment = locale_environment(
+    let mut environment = locale_environment(
         is_macos && is_packaged_macos(),
         ["LANG", "LC_CTYPE", "LC_ALL"]
             .into_iter()
             .any(|name| std::env::var_os(name).is_some()),
     );
+    environment.extend(crate::terminfo::environment(identity));
     let working_directory = if is_macos {
         config::home_directory()
     } else {
@@ -2144,7 +2200,20 @@ fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
             width: pixel_count(metrics.cell_width * metrics.scale_factor),
             height: pixel_count(metrics.cell_height * metrics.scale_factor),
         },
+        presentation: terminal_presentation(theme),
     })
+}
+
+fn terminal_presentation(theme: &Theme) -> TerminalPresentation {
+    let palette = std::array::from_fn(|index| {
+        theme.indexed(u8::try_from(index).expect("palette index fits in u8"))
+    });
+    TerminalPresentation {
+        foreground: theme.foreground,
+        background: theme.background,
+        cursor: theme.cursor,
+        palette,
+    }
 }
 fn shell_arguments(is_macos: bool) -> Vec<String> {
     if is_macos {
@@ -2347,6 +2416,24 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_presentation_uses_the_resolved_theme() {
+        let theme = Theme {
+            background: huterm_protocol::Rgb {
+                red: 0xff,
+                green: 0xff,
+                blue: 0xff,
+            },
+            ..Theme::default()
+        };
+        let presentation = terminal_presentation(&theme);
+        assert_eq!(presentation.foreground, theme.foreground);
+        assert_eq!(presentation.background, theme.background);
+        assert_eq!(presentation.cursor, theme.cursor);
+        assert_eq!(presentation.palette[0], theme.indexed(0));
+        assert_eq!(presentation.palette[255], theme.indexed(255));
+    }
 
     #[test]
     fn terminal_gesture_retains_motion_and_release_under_an_overlay() {
