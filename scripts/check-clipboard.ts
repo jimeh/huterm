@@ -244,6 +244,19 @@ async function setSentinel(terminal: Terminal, clipboard: Clipboard, value: Buff
   } else clipboard.write(value);
 }
 
+async function emitProcessed(terminal: Terminal, bytes: Uint8Array): Promise<void> {
+  const repliesFile = join(terminal.directory, "replies");
+  const before = (await readFile(repliesFile)).length;
+  const expected = Buffer.from("\x1b[0n", "binary");
+  // DSR is parsed after the candidate sequence, so its reply proves PTY processing.
+  await terminal.emit(Buffer.concat([bytes, Buffer.from("\x1b[5n", "binary")]));
+  await waitFor(async () => {
+    const replies = (await readFile(repliesFile)).subarray(before);
+    return replies.includes(expected);
+  }, "terminal processing status reply");
+  assertClipboardBytes((await readFile(repliesFile)).subarray(before), expected, "terminal processing status reply");
+}
+
 async function checkDirect(
   executable: string,
   witness: string | undefined,
@@ -280,11 +293,11 @@ async function checkDirect(
     const sentinel = Buffer.from(`${engine}-rejection-sentinel`);
     await setSentinel(terminal, clipboard, sentinel);
     const repliesBefore = (await readFile(join(terminal.directory, "replies")).catch(() => Buffer.alloc(0))).length;
-    await terminal.emit(Buffer.from("\x1b]52;c;?\x07", "binary"));
+    await emitProcessed(terminal, Buffer.from("\x1b]52;c;?\x07", "binary"));
     await stableClipboard(clipboard, sentinel, `${engine} ignored-read`);
     const repliesAfter = (await readFile(join(terminal.directory, "replies")).catch(() => Buffer.alloc(0))).length;
-    assert(repliesAfter === repliesBefore, `${engine} OSC 52 read produced ${repliesAfter - repliesBefore} reply bytes`);
-    await terminal.emit(osc52(Buffer.from([0xff])));
+    assert(repliesAfter === repliesBefore + 4, `${engine} OSC 52 read produced ${repliesAfter - repliesBefore - 4} unexpected reply bytes`);
+    await emitProcessed(terminal, osc52(Buffer.from([0xff])));
     await stableClipboard(clipboard, sentinel, `${engine} invalid-utf8`);
 
     if (engine === "ghostty") {
@@ -314,7 +327,7 @@ async function checkDirect(
         const deniedSentinel = Buffer.from(`${engine}-macos-denied-sentinel`);
         await terminal.emit(osc52(deniedSentinel));
         await expectClipboard(clipboard, deniedSentinel, `${engine} macos-denied-sentinel`);
-        await deniedTerminal.emit(osc52(Buffer.from(`${engine}-macos-must-be-denied`)));
+        await emitProcessed(deniedTerminal, osc52(Buffer.from(`${engine}-macos-must-be-denied`)));
         await stableClipboard(clipboard, deniedSentinel, `${engine} macos-permission-deny`);
       } finally {
         await cleanup(deniedTerminal);
@@ -355,7 +368,7 @@ async function checkDirect(
         return replies.subarray(replySize).includes(Buffer.from([0x03]));
       }, "completed reload keymap barrier");
       const denied = Buffer.from(`${engine}-must-be-denied`);
-      await terminal.emit(osc52(denied));
+      await emitProcessed(terminal, osc52(denied));
       await stableClipboard(clipboard, palette, `${engine} permission-deny-reload`);
       const beforePaste = (await readFile(join(terminal.directory, "replies"))).length;
       run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"]);
