@@ -336,19 +336,11 @@ run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-co
 
 [tasks."verify:toolchain"]
 description = "Materialize the pinned Rust toolchain before parallel checks"
-run = ["cargo --version", "rustfmt --version", "cargo clippy --version"]
+run = ["rustc --version", "cargo --version", "rustfmt --version", "cargo clippy --version"]
 
 [tasks."ci:toolchain"]
-description = "Verify CI's Rust toolchain, reinstalling one corrupt bootstrap"
-run = '''
-if mise run verify:toolchain; then
-  exit 0
-fi
-echo "Rust toolchain verification failed; reinstalling it once" >&2
-rustup toolchain uninstall "$RUSTUP_TOOLCHAIN"
-mise install --locked --force --jobs=1 rust
-mise run verify:toolchain
-'''
+description = "Install and verify CI Rust, retrying one failed bootstrap"
+run = "bash scripts/ci-toolchain.sh"
 
 [tasks."verify:parallel"]
 hide = true
@@ -476,7 +468,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/build-exec.sh && bash -n scripts/linux/entrypoint.sh"
+run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/linux/entrypoint.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
