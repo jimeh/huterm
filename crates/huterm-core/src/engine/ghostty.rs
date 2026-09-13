@@ -718,11 +718,11 @@ impl EscapeHint {
         let mut changed = false;
         for byte in bytes {
             *self = match (&*self, byte) {
-                (Self::Osc, 0x07 | 0x9c) | (Self::Escape, b'c') => {
+                (Self::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
+                | (Self::Escape, b'c') => {
                     changed = true;
                     Self::Ground
                 }
-                (Self::Osc, 0x18 | 0x1a) => Self::Ground,
                 (Self::Osc, 0x1b) => {
                     changed = true;
                     Self::Escape
@@ -1058,6 +1058,35 @@ mod tests {
                 None,
             )
         );
+    }
+
+    #[test]
+    fn osc_dispatch_at_can_or_sub_updates_override_state_immediately() {
+        for terminator in [0x18, 0x1a] {
+            let mut engine = engine();
+            engine.process(b"A").unwrap();
+            let mut mutation = b"\x1b]10;#010203".to_vec();
+            mutation.push(terminator);
+            engine.process(&mutation).unwrap();
+            assert_eq!(
+                engine.snapshot().unwrap().rows[0].cells[0].foreground,
+                CellColor::Rgb(Rgb {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                }),
+                "terminator={terminator:#x}"
+            );
+
+            let mut reset = b"\x1b]110".to_vec();
+            reset.push(terminator);
+            engine.process(&reset).unwrap();
+            assert_eq!(
+                engine.snapshot().unwrap().rows[0].cells[0].foreground,
+                CellColor::DefaultForeground,
+                "terminator={terminator:#x}"
+            );
+        }
     }
 
     #[test]

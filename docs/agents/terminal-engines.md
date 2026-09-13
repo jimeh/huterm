@@ -43,8 +43,9 @@ notice alongside the compiled entry.
 
 When adding the packaged directory, preserve `TERMINFO` unchanged and append to
 an inherited `TERMINFO_DIRS`. An empty component continues to mean the ncurses
-default directories. Development discovery uses the compile-time repository
-location, so it does not depend on the launch working directory.
+default directories. Development discovery finds `target/terminfo` relative to
+debug, release, and example executables, so it does not depend on the launch
+working directory.
 
 Run `mise run terminfo:check` to compile and inspect the entry and to capture a
 literal truecolor SGR sequence through an isolated tmux server and real outer
