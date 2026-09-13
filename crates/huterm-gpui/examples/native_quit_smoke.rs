@@ -71,6 +71,7 @@ fn main() {
             width: 8,
             height: 16,
         },
+        presentation: huterm_protocol::TerminalPresentation::default(),
     };
     let runtime = TerminalRuntime::spawn(TerminalId::new(1), &command).unwrap();
     let client = runtime.client();

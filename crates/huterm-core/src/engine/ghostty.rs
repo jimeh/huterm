@@ -9,7 +9,8 @@ use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferRange, Cell, CellColor, CellSize, CellStyle, Cursor, CursorShape,
     GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand, TerminalId,
-    TerminalModes, TerminalRow, TerminalSnapshot, Viewport,
+    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
+    Viewport,
 };
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{
@@ -37,6 +38,8 @@ pub(crate) struct TerminalEngine {
     terminal_id: TerminalId,
     generation: u64,
     size: GridSize,
+    cell: CellSize,
+    presentation: TerminalPresentation,
     terminal: Terminal<'static, 'static>,
     render: RenderState<'static>,
     row_iterator: RowIterator<'static>,
@@ -60,6 +63,7 @@ impl TerminalEngine {
         terminal_id: TerminalId,
         size: GridSize,
         cell: CellSize,
+        presentation: TerminalPresentation,
     ) -> Result<Self, RuntimeError> {
         let mut terminal = Terminal::new(size.columns, size.rows)?;
         terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
@@ -127,6 +131,8 @@ impl TerminalEngine {
             terminal_id,
             generation: 0,
             size,
+            cell,
+            presentation,
             terminal,
             render: RenderState::new()?,
             row_iterator: RowIterator::new()?,
@@ -161,6 +167,23 @@ impl TerminalEngine {
         self.drain_effects()
     }
 
+    pub(super) fn update_presentation(
+        &mut self,
+        presentation: TerminalPresentation,
+    ) {
+        self.presentation = presentation;
+    }
+
+    #[cfg(test)]
+    pub(super) fn presentation(&self) -> &TerminalPresentation {
+        &self.presentation
+    }
+
+    #[cfg(test)]
+    pub(super) fn cell_size(&self) -> CellSize {
+        self.cell
+    }
+
     fn drain_effects(&self) -> Result<Vec<EngineEffect>, RuntimeError> {
         let mut effects = self.effects.borrow_mut();
         if self.title_dirty.replace(false) {
@@ -182,6 +205,7 @@ impl TerminalEngine {
             u32::from(cell.height),
         )?;
         self.size = size;
+        self.cell = cell;
         self.generation = self.generation.saturating_add(1);
         self.drain_effects()
     }
@@ -773,6 +797,7 @@ mod tests {
                     width: 8,
                     height: 16,
                 },
+                TerminalPresentation::default(),
             )
             .unwrap();
             engine.process(b"\x1b[31mA").unwrap();

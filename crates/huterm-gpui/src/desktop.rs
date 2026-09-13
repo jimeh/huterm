@@ -12,11 +12,15 @@ use gpui::{
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
-use huterm_core::{HostEffectRecipient, Mux, RuntimeClient, RuntimeError};
+use huterm_core::{
+    HostEffectRecipient, Mux, PresentationController, RuntimeClient,
+    RuntimeError,
+};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalSnapshot, ids,
+    TerminalAppearance, TerminalCommand, TerminalEvent, TerminalInput,
+    TerminalPresentation, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -210,6 +214,7 @@ fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
 )]
 struct TerminalView {
     client: RuntimeClient,
+    _presentation: PresentationController,
     host_effects: HostEffectRecipient,
     title: String,
     exited: bool,
@@ -269,17 +274,26 @@ struct TerminalView {
     snapshot_sequence: u64,
 }
 
+struct TerminalViewAuthority {
+    presentation: PresentationController,
+    host_effects: HostEffectRecipient,
+}
+
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
     fn new(
         client: RuntimeClient,
-        host_effects: HostEffectRecipient,
+        authority: TerminalViewAuthority,
         config: &Config,
         font_family: String,
         metrics: GridMetrics,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        let TerminalViewAuthority {
+            presentation,
+            host_effects,
+        } = authority;
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
         let focus_subscription =
@@ -325,6 +339,7 @@ impl TerminalView {
         };
         TerminalView {
             client,
+            _presentation: presentation,
             host_effects,
             input_queue: InputQueue::default(),
             option_as_alt: config.terminal.macos_option_as_alt,
@@ -2118,7 +2133,10 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), chrome_hidden)
 }
 
-fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
+fn shell_command(
+    metrics: GridMetrics,
+    theme: &Theme,
+) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
     let is_macos = cfg!(target_os = "macos");
@@ -2144,7 +2162,37 @@ fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
             width: pixel_count(metrics.cell_width * metrics.scale_factor),
             height: pixel_count(metrics.cell_height * metrics.scale_factor),
         },
+        presentation: terminal_presentation(theme),
     })
+}
+
+fn terminal_presentation(theme: &Theme) -> TerminalPresentation {
+    let palette = std::array::from_fn(|index| {
+        theme.indexed(u8::try_from(index).expect("palette index fits in u8"))
+    });
+    let background = theme.background;
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(background.red)
+        + 0.7152 * linear(background.green)
+        + 0.0722 * linear(background.blue);
+    TerminalPresentation {
+        foreground: theme.foreground,
+        background,
+        cursor: theme.cursor,
+        palette,
+        appearance: if luminance > 0.5 {
+            TerminalAppearance::Light
+        } else {
+            TerminalAppearance::Dark
+        },
+    }
 }
 fn shell_arguments(is_macos: bool) -> Vec<String> {
     if is_macos {
