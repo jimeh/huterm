@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/jimeh/huterm/compare/v0.9.0...v0.10.0) (2026-09-13)
+
+
+### Features
+
+* add retained terminal queries and truecolor terminfo ([#121](https://github.com/jimeh/huterm/issues/121)) ([0bca05b](https://github.com/jimeh/huterm/commit/0bca05bcee4541e08fbe74e4f0f1f6e3d5d3e8a2))
+
 ## [0.9.0](https://github.com/jimeh/huterm/compare/v0.8.1...v0.9.0) (2026-09-13)
 
 
