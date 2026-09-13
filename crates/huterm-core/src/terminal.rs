@@ -2009,6 +2009,24 @@ mod tests {
         runtime.shutdown().expect("runtime should stop cleanly");
     }
 
+    #[test]
+    fn pty_runtime_applies_explicit_terminal_environment() {
+        let mut command = command(
+            "printf '%s|%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"$TERMINFO_DIRS\"",
+        );
+        command.environment = vec![
+            ("TERM".into(), "xterm-huterm".into()),
+            ("TERMINFO_DIRS".into(), "/private/terminfo:".into()),
+        ];
+        let runtime = TerminalRuntime::spawn(TerminalId::new(90), &command)
+            .expect("runtime should start");
+        wait_for_text(
+            &runtime.client(),
+            "xterm-huterm|truecolor|Huterm|/private/terminfo:",
+        );
+        runtime.shutdown().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn pty_runtime_should_process_bursty_output_without_poll_delay() {

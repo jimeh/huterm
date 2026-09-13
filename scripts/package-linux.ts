@@ -444,6 +444,7 @@ async function stageBundle(bundle: string, executable: string, architecture: Lin
   }
   await copyMetadata(bundle);
   await copyNotices(bundle, policy);
+  await runInherited("bun", ["scripts/terminfo.ts", "prepare", join(bundle, "share/huterm/terminfo")]);
   const packageManifest: PackageManifest = { version: 1, architecture, releaseCommit, sourceDateEpoch, tools: { appimagetool: tools.tools.appimagetool.version, runtime: tools.tools.runtime.version }, privateLibraries };
   const manifestPath = join(bundle, "share/huterm/package-manifest.json");
   await mkdir(dirname(manifestPath), { recursive: true });
@@ -499,6 +500,7 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
   const policy = await readPackagePolicy();
   const tools = await readToolManifest();
   const binary = join(bundle, "bin/huterm");
+  await runInherited("bun", ["scripts/terminfo.ts", "check", join(bundle, "share/huterm/terminfo")]);
   const binaryHandle = await open(binary, constants.O_RDONLY | constants.O_NOFOLLOW);
   let binaryBytes: Buffer;
   try {
@@ -770,7 +772,7 @@ async function sourceIdentity(): Promise<{ releaseCommit: string; sourceDateEpoc
 
 async function build(version: string, architecture: LinuxArchitecture): Promise<void> {
   if (process.platform !== "linux") throw new Error("Linux packaging requires a Linux host");
-  await requireCommands(["appstreamcli", "curl", "desktop-file-validate", "dpkg-query", "gzip", "ldd", "objdump", "patchelf", "readelf", "tar"]);
+  await requireCommands(["appstreamcli", "curl", "desktop-file-validate", "dpkg-query", "gzip", "infocmp", "ldd", "objdump", "patchelf", "readelf", "tar", "tic", "tput"]);
   const tools = await readToolManifest();
   const policy = await readPackagePolicy();
   const identity = await sourceIdentity();

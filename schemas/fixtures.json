@@ -174,6 +174,30 @@
     "theme": false
   },
   {
+    "name": "terminal identity auto",
+    "toml": "[terminal]\nterm = \"auto\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal identity huterm",
+    "toml": "[terminal]\nterm = \"xterm-huterm\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal identity compatibility",
+    "toml": "[terminal]\nterm = \"xterm-256color\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal identity unknown",
+    "toml": "[terminal]\nterm = \"huterm\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "standalone wrapper",
     "toml": "[theme]\nextends = \"huterm-dark\"\nforeground = \"#123456\"",
     "valid": true,

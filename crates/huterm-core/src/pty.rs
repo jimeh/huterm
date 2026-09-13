@@ -189,12 +189,12 @@ pub(crate) fn spawn(
     let mut builder = CommandBuilder::new(&command.program);
     builder.args(&command.arguments);
     builder.cwd(&command.working_directory);
-    for (key, value) in &command.environment {
-        builder.env(key, value);
-    }
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
     builder.env("TERM_PROGRAM", "Huterm");
+    for (key, value) in &command.environment {
+        builder.env(key, value);
+    }
 
     let child = pair
         .slave

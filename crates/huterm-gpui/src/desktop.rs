@@ -2171,17 +2171,19 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
 fn shell_command(
     metrics: GridMetrics,
     theme: &Theme,
+    identity: huterm_config::TerminalIdentity,
 ) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
     let is_macos = cfg!(target_os = "macos");
     let arguments = shell_arguments(is_macos);
-    let environment = locale_environment(
+    let mut environment = locale_environment(
         is_macos && is_packaged_macos(),
         ["LANG", "LC_CTYPE", "LC_ALL"]
             .into_iter()
             .any(|name| std::env::var_os(name).is_some()),
     );
+    environment.extend(crate::terminfo::environment(identity));
     let working_directory = if is_macos {
         config::home_directory()
     } else {

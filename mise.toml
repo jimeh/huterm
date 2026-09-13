@@ -59,12 +59,12 @@ fi
 
 [tasks.dev]
 description = "Run the native Huterm app"
-depends = ["ghostty:prepare"]
+depends = ["ghostty:prepare", "terminfo:prepare"]
 run = "bash scripts/build-exec.sh cargo run --locked -p huterm"
 
 [tasks.build]
 description = "Build the workspace"
-depends = ["ghostty:prepare"]
+depends = ["ghostty:prepare", "terminfo:prepare"]
 run = "bash scripts/build-exec.sh cargo build --workspace --locked"
 
 [tasks.format]
@@ -310,6 +310,12 @@ for notice in catppuccin folke dracula nordtheme binaryify chriskempson; do
 done
 assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty license"
 assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
+if [ ! -f "$bundle/Contents/Resources/terminfo/x/xterm-huterm" ] && [ ! -f "$bundle/Contents/Resources/terminfo/78/xterm-huterm" ]; then
+  echo "package verification failed: missing Huterm terminfo entry" >&2
+  exit 1
+fi
+assert_file "$bundle/Contents/Resources/terminfo/xterm-huterm.terminfo" "Huterm terminfo source"
+assert_file "$bundle/Contents/Resources/terminfo/LICENSE-ncurses" "ncurses terminfo license"
 if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1
@@ -383,6 +389,18 @@ run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 description = "Verify prepared Ghostty sources against the reviewed tree hash"
 run = "bun scripts/prepare-ghostty.ts --check"
 
+[tasks."terminfo:prepare"]
+description = "Compile and verify Huterm's private terminfo entry"
+run = "bun scripts/terminfo.ts prepare"
+
+[tasks."terminfo:check"]
+description = "Verify terminfo consumers and isolated tmux RGB output"
+depends = ["terminfo:prepare"]
+run = [
+  "bun scripts/terminfo.ts check",
+  "python3 scripts/check-terminfo-tmux.py target/terminfo",
+]
+
 [tasks."sparkle:prepare"]
 description = "Verify pinned Sparkle framework and release tools on macOS"
 run = '''
@@ -401,7 +419,7 @@ fi
 
 [tasks."package:build:macos"]
 hide = true
-depends = ["ghostty:prepare", "package:targets:macos", "icons:check"]
+depends = ["ghostty:prepare", "terminfo:prepare", "package:targets:macos", "icons:check"]
 run = '''
 set -eu
 if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then

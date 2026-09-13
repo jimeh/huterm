@@ -23,6 +23,34 @@ explicit clipboard deny on that fallback path. Reload is transactional: an
 invalid file retains the active configuration, while a later successful reload
 without `engine` clears the migration warning. Huterm never rewrites the file.
 
+## Terminal identity and terminfo
+
+Terminal identity remains a client launch concern. The desktop resolves
+`terminal.term` before constructing `TerminalCommand`, and core applies the
+resolved environment before spawning the child. `auto` selects
+`TERM=xterm-huterm` only when the entry exists in the inherited ncurses search
+paths or Huterm's private resources; otherwise it uses `TERM=xterm-256color`.
+The explicit values force either identity for new terminals.
+
+The private entry inherits `xterm-256color`, Huterm's previous advertised
+baseline, and adds only `RGB` and `Tc`. Its `pairs` value is capped at 32767 so
+native `tic -x` on macOS and Linux emits the portable 16-bit compiled format.
+Package builds compile it on their native host. macOS stores it under
+`Contents/Resources/terminfo`; Linux tarballs and AppImages store it under
+`share/huterm/terminfo` relative to the executable.
+Both locations include the reviewed source and the ncurses redistribution
+notice alongside the compiled entry.
+
+When adding the packaged directory, preserve `TERMINFO` unchanged and append to
+an inherited `TERMINFO_DIRS`. An empty component continues to mean the ncurses
+default directories. Development discovery uses the compile-time repository
+location, so it does not depend on the launch working directory.
+
+Run `mise run terminfo:check` to compile and inspect the entry and to capture a
+literal truecolor SGR sequence through an isolated tmux server and real outer
+PTY. The check uses a private socket, empty tmux configuration, and temporary
+state; it never connects to the user's tmux server.
+
 ## Native inputs and policy
 
 The safe Rust bindings and locally patched sys crate are pinned to 0.2.1.

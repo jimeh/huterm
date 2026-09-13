@@ -31,6 +31,8 @@ mod renderer;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scroll;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod terminfo;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod themes;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod ui;

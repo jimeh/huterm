@@ -1903,6 +1903,7 @@ impl WorkspaceView {
         let command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
+            self.config.terminal.term,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);

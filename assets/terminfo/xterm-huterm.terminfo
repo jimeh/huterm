@@ -1,0 +1,8 @@
+# Keep the previously advertised xterm-256color behavior, adding only the
+# direct-color flags Huterm implements. The pair limit keeps tic's portable
+# 16-bit file format instead of inheriting xterm-256color's 65536 value.
+xterm-huterm|Huterm terminal emulator,
+	pairs#32767,
+	RGB,
+	Tc,
+	use=xterm-256color,

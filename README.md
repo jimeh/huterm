@@ -815,6 +815,46 @@ unchanged rows share storage between generations. See
 [the engine guide](docs/agents/terminal-engines.md) for native build inputs,
 benchmarks, and migration behavior.
 
+### Terminal identity, tmux, and SSH
+
+New shells use Huterm's private `xterm-huterm` terminfo entry when it is locally
+available. Development tasks compile it into `target/terminfo`; macOS and Linux
+packages carry the compiled entry in their resources. If the entry cannot be
+found, the default `auto` setting safely falls back to `xterm-256color`.
+
+```toml
+[terminal]
+term = "auto" # Or force "xterm-huterm" / "xterm-256color" for new shells.
+```
+
+`xterm-huterm` inherits the established 256-color capability set and advertises
+`RGB` and `Tc`, allowing terminfo consumers such as tmux to retain 24-bit color.
+Forcing `xterm-huterm` makes the entry's availability your responsibility. A
+missing entry commonly appears as an "unknown terminal type" error in curses
+applications.
+
+Local discovery says nothing about an SSH server's terminfo database. Use a
+per-command compatibility identity when the remote host lacks the entry:
+
+```sh
+TERM=xterm-256color ssh host
+```
+
+Or install the local definition into your account on a trusted remote host:
+
+```sh
+infocmp -x xterm-huterm | ssh host 'tic -x -'
+```
+
+Packaged copies of the source are at
+`Huterm.app/Contents/Resources/terminfo/xterm-huterm.terminfo` on macOS and
+`share/huterm/terminfo/xterm-huterm.terminfo` in Linux bundles. You can copy
+that file to a remote host and run `tic -x xterm-huterm.terminfo` there as
+an alternative to exporting the compiled entry with `infocmp`.
+
+Huterm does not wrap SSH, install files remotely, or change Mosh's terminal
+capability handling.
+
 ## Licensing
 
 Huterm intends to license its own source under the MIT license. The planned

@@ -27,6 +27,7 @@ pub struct KeybindingEntry {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
+    pub term: TerminalIdentity,
     pub close_on_exit: bool,
     pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
@@ -37,6 +38,7 @@ pub struct TerminalConfig {
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
+            term: TerminalIdentity::Auto,
             close_on_exit: true,
             clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
@@ -44,6 +46,24 @@ impl Default for TerminalConfig {
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
+}
+
+/// Terminal identity advertised to local applications.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum TerminalIdentity {
+    /// Use `xterm-huterm` when its terminfo entry is available.
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    /// Advertise Huterm's private terminfo entry.
+    #[serde(rename = "xterm-huterm")]
+    XtermHuterm,
+    /// Use the widely installed compatibility entry.
+    #[serde(rename = "xterm-256color")]
+    Xterm256Color,
 }
 
 /// Permission for clipboard writes requested by terminal content.
@@ -464,6 +484,8 @@ impl RawKeybinding {
 pub struct RawTerminal {
     /// Deprecated compatibility setting. Huterm always uses Ghostty.
     pub engine: Option<LegacyTerminalEngine>,
+    /// Terminal identity for newly spawned shells.
+    pub term: TerminalIdentity,
     pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
@@ -474,6 +496,7 @@ impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: None,
+            term: TerminalIdentity::Auto,
             clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),
