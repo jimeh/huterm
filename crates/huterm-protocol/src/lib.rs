@@ -79,6 +79,82 @@ scoped_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
 scoped_id!(TabId, "Identifies a tab within a workspace.");
 opaque_id!(PaneId, "Identifies a pane within a tab.");
 opaque_id!(TerminalId, "Identifies a terminal runtime.");
+opaque_id!(
+    HostEffectRecipientId,
+    "Identifies one registered recipient of terminal host effects."
+);
+
+/// Normalized clipboard destination requested by terminal content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardDestination {
+    /// The platform's ordinary system clipboard.
+    System,
+}
+
+/// A write-only clipboard request produced by terminal content.
+pub struct ClipboardWrite {
+    /// Normalized destination selected by the terminal engine.
+    pub destination: ClipboardDestination,
+    text: String,
+}
+
+impl ClipboardWrite {
+    /// Creates a clipboard write from decoded UTF-8 text.
+    #[must_use]
+    pub fn new(destination: ClipboardDestination, text: String) -> Self {
+        Self { destination, text }
+    }
+
+    /// Returns the exact text to write, including embedded NUL bytes.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns the retained allocation capacity charged to delivery budgets.
+    #[must_use]
+    pub fn allocation_capacity(&self) -> usize {
+        self.text.capacity()
+    }
+}
+
+impl std::fmt::Debug for ClipboardWrite {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClipboardWrite")
+            .field("destination", &self.destination)
+            .field("text", &"<redacted>")
+            .finish()
+    }
+}
+
+/// A client-mediated effect requested by terminal content.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum HostEffect {
+    /// Replace the selected clipboard with decoded terminal text.
+    ClipboardWrite(ClipboardWrite),
+}
+
+/// Runtime ordering information for one host effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostEffectOrigin {
+    /// Terminal whose parser produced the request.
+    pub terminal_id: TerminalId,
+    /// Monotonic sequence within this terminal runtime.
+    pub sequence: u64,
+}
+
+/// Recipient selection stamped when an effect is admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostEffectMetadata {
+    /// Runtime ordering information.
+    pub origin: HostEffectOrigin,
+    /// Recipient selected at admission time.
+    pub recipient: HostEffectRecipientId,
+    /// Revocable recipient generation selected at admission time.
+    pub recipient_generation: u64,
+}
 
 /// Terminal grid size in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,6 +663,17 @@ mod tests {
             column: 7,
         };
         assert_eq!(BufferRange::ordered(right, left).start, left);
+    }
+
+    #[test]
+    fn clipboard_write_debug_redacts_payload() {
+        let write = ClipboardWrite::new(
+            ClipboardDestination::System,
+            "secret clipboard text".to_owned(),
+        );
+        let debug = format!("{write:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret clipboard text"));
     }
 }
 

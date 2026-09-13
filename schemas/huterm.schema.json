@@ -20,6 +20,21 @@
       ],
       "type": "string"
     },
+    "ClipboardWritePolicy": {
+      "description": "Permission for clipboard writes requested by terminal content.",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "Allow terminal content to replace the system clipboard.",
+          "type": "string"
+        },
+        {
+          "const": "deny",
+          "description": "Drop terminal-content clipboard writes.",
+          "type": "string"
+        }
+      ]
+    },
     "Config": {
       "additionalProperties": false,
       "description": "Named quake windows. The built-in default profile remains available when omitted. Profile references and display identifiers are resolved at runtime.",
@@ -3301,6 +3316,15 @@
     "RawTerminal": {
       "additionalProperties": false,
       "properties": {
+        "clipboard_write": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ClipboardWritePolicy"
+            }
+          ],
+          "default": "allow",
+          "description": "Allow or deny system clipboard writes requested by terminal content. Reload applies to existing terminals; explicit Copy and Paste commands are unaffected."
+        },
         "close_on_exit": {
           "default": true,
           "type": "boolean"

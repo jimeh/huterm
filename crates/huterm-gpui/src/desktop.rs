@@ -12,11 +12,11 @@ use gpui::{
     Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
-use huterm_core::{Mux, RuntimeClient, RuntimeError};
+use huterm_core::{HostEffectRecipient, Mux, RuntimeClient, RuntimeError};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
-    CommandOutcome, CommandValue, GridSize, Modifiers, TabId, TerminalCommand,
-    TerminalEvent, TerminalInput, TerminalSnapshot, ids,
+    CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
+    TerminalCommand, TerminalEvent, TerminalInput, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -210,6 +210,7 @@ fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
 )]
 struct TerminalView {
     client: RuntimeClient,
+    host_effects: HostEffectRecipient,
     title: String,
     exited: bool,
     visible: bool,
@@ -272,6 +273,7 @@ impl TerminalView {
     #[allow(clippy::too_many_lines)]
     fn new(
         client: RuntimeClient,
+        host_effects: HostEffectRecipient,
         config: &Config,
         font_family: String,
         metrics: GridMetrics,
@@ -282,6 +284,7 @@ impl TerminalView {
         let theme = config.theme.clone();
         let focus_subscription =
             cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
+                view.host_effects.note_focus();
                 if view.visible
                     && view.enqueue_input(TerminalInput::Focus(true))
                 {
@@ -322,6 +325,7 @@ impl TerminalView {
         };
         TerminalView {
             client,
+            host_effects,
             input_queue: InputQueue::default(),
             option_as_alt: config.terminal.macos_option_as_alt,
             composition: composition::Composition::default(),
@@ -532,6 +536,17 @@ impl TerminalView {
     }
 
     fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+        for _ in 0..8 {
+            let Some(pending) = self.host_effects.try_next() else {
+                break;
+            };
+            if let HostEffect::ClipboardWrite(write) = pending.effect() {
+                let item = ClipboardItem::new_string(write.text().to_owned());
+                if self.host_effects.is_current(&pending) {
+                    cx.write_to_clipboard(item);
+                }
+            }
+        }
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
@@ -593,6 +608,22 @@ impl TerminalView {
         self.start_snapshot_if_needed(cx);
         if changed {
             cx.notify();
+        }
+    }
+
+    fn reload_terminal_config(
+        &mut self,
+        terminal: config::TerminalConfig,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.host_effects
+            .set_allowed(terminal.clipboard_write.is_allowed());
+        self.links.disable();
+        self.links_enabled = terminal.links;
+        self.link_modifiers = terminal.link_modifiers;
+        if self.option_as_alt != terminal.macos_option_as_alt {
+            self.clear_composition(cx);
+            self.option_as_alt = terminal.macos_option_as_alt;
         }
     }
 

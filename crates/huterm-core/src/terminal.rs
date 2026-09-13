@@ -17,6 +17,7 @@ use huterm_protocol::{
 use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
+use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::pty::{self, PtyProcess};
 
@@ -38,6 +39,7 @@ pub struct RuntimeClient {
     events: Arc<Mutex<Receiver<TerminalEvent>>>,
     invalidation_pending: Arc<AtomicBool>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
+    host_effect_sink: HostEffectSink,
 }
 
 impl RuntimeClient {
@@ -259,12 +261,17 @@ impl RuntimeClient {
         receiver.recv_timeout(Duration::from_secs(1)).ok()
     }
 
+    pub(crate) fn host_effect_sink(&self) -> HostEffectSink {
+        self.host_effect_sink.clone()
+    }
+
     /// Requests orderly terminal shutdown.
     ///
     /// # Errors
     ///
     /// Returns an error when the terminal has already stopped.
     pub fn close(&self) -> Result<(), RuntimeError> {
+        self.host_effect_sink.close();
         self.closing.store(true, Ordering::Release);
         self.controls
             .send(RuntimeControl::Wake)
@@ -408,6 +415,8 @@ impl TerminalRuntime {
         let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
         let queued_input_bytes = Arc::new(AtomicUsize::new(0));
+        let host_effect_sink = HostEffectSink::new(terminal_id);
+        let runtime_host_effect_sink = host_effect_sink.clone();
 
         let runtime_sender = message_sender.clone();
         let runtime_controls = control_sender.clone();
@@ -419,12 +428,14 @@ impl TerminalRuntime {
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
                 let result = (|| {
-                    let engine = TerminalEngine::new(
+                    let mut engine = TerminalEngine::new(
                         terminal_id,
                         command.grid_size,
                         command.cell_size,
                         command.engine,
                     )?;
+                    engine
+                        .set_host_effect_sink(runtime_host_effect_sink.clone());
                     let process = pty::spawn(&command)?;
                     run_terminal(
                         terminal_id,
@@ -442,6 +453,7 @@ impl TerminalRuntime {
                         &startup_sender,
                     )
                 })();
+                runtime_host_effect_sink.close();
                 if let Err(error) = &result {
                     let _ = startup_sender.send(Err(error.clone()));
                 }
@@ -466,6 +478,7 @@ impl TerminalRuntime {
             events: Arc::new(Mutex::new(event_receiver)),
             invalidation_pending,
             shutdown_groups,
+            host_effect_sink,
         };
         Ok(Self {
             client,
@@ -477,6 +490,10 @@ impl TerminalRuntime {
     #[must_use]
     pub fn client(&self) -> RuntimeClient {
         self.client.clone()
+    }
+
+    pub(crate) fn host_effect_sink(&self) -> HostEffectSink {
+        self.client.host_effect_sink()
     }
 
     /// Stops the child and joins the runtime owner.

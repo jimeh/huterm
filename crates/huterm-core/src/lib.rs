@@ -5,8 +5,13 @@
 mod commands;
 pub use commands::execute;
 mod engine;
+mod host_effects;
 mod input;
 mod jobs;
+pub use host_effects::{
+    DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
+    HostEffectRecipientOptions, PendingHostEffect,
+};
 pub use jobs::{JobProcess, JobState};
 mod mux;
 mod pty;

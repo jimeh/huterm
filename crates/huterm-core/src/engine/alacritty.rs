@@ -1,12 +1,15 @@
 use huterm_protocol::{MouseEncoding, MouseTracking};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term, TermDamage, TermMode};
+use alacritty_terminal::term::{
+    ClipboardType, Config, Term, TermDamage, TermMode,
+};
 use alacritty_terminal::vte::ansi::{
     Color, CursorShape as AlacrittyCursorShape, NamedColor,
 };
@@ -18,15 +21,30 @@ use huterm_protocol::{
 };
 
 #[derive(Clone, Debug)]
-struct EventProxy(Sender<Event>);
+struct EventProxy {
+    events: Sender<Event>,
+    host_effect_sink: Arc<OnceLock<HostEffectSink>>,
+}
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        let _ = self.0.send(event);
+        match event {
+            Event::ClipboardStore(ClipboardType::Clipboard, text) => {
+                if let Some(sink) = self.host_effect_sink.get() {
+                    let _ = sink.admit_owned(text);
+                }
+            }
+            Event::ClipboardStore(ClipboardType::Selection, _)
+            | Event::ClipboardLoad(_, _) => {}
+            event => {
+                let _ = self.events.send(event);
+            }
+        }
     }
 }
 
 use super::EngineEffect;
+use crate::host_effects::HostEffectSink;
 
 pub(crate) struct TerminalEngine {
     terminal_id: TerminalId,
@@ -34,6 +52,7 @@ pub(crate) struct TerminalEngine {
     parser: Processor,
     term: Term<EventProxy>,
     events: Receiver<Event>,
+    host_effect_sink: Arc<OnceLock<HostEffectSink>>,
     retained_rows: Vec<Arc<TerminalRow>>,
 }
 
@@ -55,14 +74,28 @@ impl TerminalEngine {
             scrolling_history: 10_000,
             ..Config::default()
         };
+        let host_effect_sink = Arc::new(OnceLock::new());
         Self {
             terminal_id,
             generation: 0,
             parser: Processor::new(),
-            term: Term::new(config, &dimensions, EventProxy(sender)),
+            term: Term::new(
+                config,
+                &dimensions,
+                EventProxy {
+                    events: sender,
+                    host_effect_sink: Arc::clone(&host_effect_sink),
+                },
+            ),
             events,
+            host_effect_sink,
             retained_rows: Vec::new(),
         }
+    }
+
+    pub(super) fn set_host_effect_sink(&self, sink: HostEffectSink) {
+        let result = self.host_effect_sink.set(sink);
+        debug_assert!(result.is_ok());
     }
 
     pub(crate) fn process(&mut self, bytes: &[u8]) -> Vec<EngineEffect> {
@@ -479,9 +512,34 @@ impl super::links::LinkBuffer for TerminalEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn engine() -> TerminalEngine {
         TerminalEngine::new(TerminalId::new(1), GridSize::clamped(8, 3))
+    }
+
+    #[test]
+    fn event_proxy_keeps_clipboard_payloads_out_of_the_event_channel() {
+        let (events, receiver) = mpsc::channel();
+        let proxy = EventProxy {
+            events,
+            host_effect_sink: Arc::new(OnceLock::new()),
+        };
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback_invoked = Arc::clone(&invoked);
+        proxy.send_event(Event::ClipboardLoad(
+            ClipboardType::Clipboard,
+            Arc::new(move |_| {
+                callback_invoked.store(true, Ordering::Release);
+                "secret".to_owned()
+            }),
+        ));
+        proxy.send_event(Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "write secret".to_owned(),
+        ));
+        assert!(!invoked.load(Ordering::Acquire));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
