@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compiledEntry, prepare, verifyCompiled } from "./terminfo.ts";
+import { compiledEntry, prepare, verifyCapabilities, verifyCompiled } from "./terminfo.ts";
 
 const directories: string[] = [];
 
@@ -28,9 +28,16 @@ describe("Huterm terminfo", () => {
     }
   });
 
-  test("compiles a portable 256-color entry with RGB and Tc", async () => {
+  test("compiles a portable indexed 256-color entry with Tc", async () => {
     const root = await directory();
     await prepare(root);
     await expect(verifyCompiled(root)).resolves.toBeUndefined();
+  });
+
+  test("rejects boolean numeric and string RGB capability forms", () => {
+    const base = "xterm-huterm, colors#256, pairs#32767, Tc,";
+    for (const rgb of ["RGB", "RGB#24", "RGB=8/8/8"]) {
+      expect(() => verifyCapabilities(`${base} ${rgb},`)).toThrow("must not apply RGB semantics");
+    }
   });
 });

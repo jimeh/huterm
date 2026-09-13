@@ -846,8 +846,9 @@ found, the default `auto` setting safely falls back to `xterm-256color`.
 term = "auto" # Or force "xterm-huterm" / "xterm-256color" for new shells.
 ```
 
-`xterm-huterm` inherits the established 256-color capability set and advertises
-`RGB` and `Tc`, allowing terminfo consumers such as tmux to retain 24-bit color.
+`xterm-huterm` inherits the established indexed 256-color capability set and
+advertises `Tc`, allowing terminfo consumers such as tmux to retain 24-bit
+color.
 Forcing `xterm-huterm` makes the entry's availability your responsibility. A
 missing entry commonly appears as an "unknown terminal type" error in curses
 applications.

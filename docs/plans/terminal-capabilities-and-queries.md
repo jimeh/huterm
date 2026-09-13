@@ -110,9 +110,11 @@ grid.
 ## Chunk 3: Terminfo identity and packaging
 
 Audit a conservative `xterm-huterm` source entry against capabilities exposed
-by Huterm. Include the RGB capabilities required by supported terminfo and tmux
-consumers. Do not copy `xterm-ghostty` wholesale: the embedded VT library does
-not provide every Ghostty application feature.
+by Huterm. Retain indexed `setaf`/`setab` behavior and include the `Tc` flag used
+by supported truecolor consumers; do not set ncurses `RGB`, which changes those
+inherited capabilities to direct-color semantics. Do not copy `xterm-ghostty`
+wholesale: the embedded VT library does not provide every Ghostty application
+feature.
 
 Package source and usable compiled terminfo for macOS bundles and Linux tarball
 and AppImage layouts. Use existing resource discovery and packaging

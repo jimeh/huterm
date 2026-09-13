@@ -104,6 +104,11 @@ async function main(executableArgument: string): Promise<void> {
   const childPids = async () => (await readdir(directory))
     .flatMap(name => /^child-(\d+)$/.exec(name)?.[1] ?? [])
     .sort();
+  const queryReplies = (phase: string, pid: string) => waitFor(async () => {
+    const error = await readOptional(join(directory, `error-${phase}-${pid}`));
+    if (error) throw new Error(`${phase} query child failed: ${error}`);
+    return readOptional(join(directory, `replies-${phase}-${pid}`));
+  }, `${phase} query replies`);
   try {
     const firstPid = await waitFor(async () => (await childPids())[0], "first child");
     const initial = await waitFor(async () => {
@@ -112,7 +117,7 @@ async function main(executableArgument: string): Promise<void> {
         && value["tab0.grid"] === value["tab0.layout_grid"] ? value : undefined;
     }, "initial rendered terminal");
     await writeFile(join(directory, `query-initial-${firstPid}`), "query");
-    const initialReplies = await waitFor(() => readOptional(join(directory, `replies-initial-${firstPid}`)), "initial query replies");
+    const initialReplies = await queryReplies("initial", firstPid);
     if (!initialReplies.equals(expectedReplies(initial, 0))) throw new Error(`initial replies differ: ${initialReplies.toString("hex")}`);
 
     await command("new_tab");
@@ -129,7 +134,7 @@ async function main(executableArgument: string): Promise<void> {
     }, "inactive tab theme and font reload");
     if (initial["tab0.cell"] === reloaded["tab0.cell"]) throw new Error("font reload did not change inactive-tab cell pixels");
     await writeFile(join(directory, `query-reload-${firstPid}`), "query");
-    const reloadReplies = await waitFor(() => readOptional(join(directory, `replies-reload-${firstPid}`)), "inactive reload query replies");
+    const reloadReplies = await queryReplies("reload", firstPid);
     if (!reloadReplies.equals(expectedReplies(reloaded, 0))) throw new Error(`reload replies differ: ${reloadReplies.toString("hex")}`);
     console.log(`PRESENTATION_QUERY_SMOKE native=${process.platform} inactive=true initial=${initialReplies.toString("hex")} reload=${reloadReplies.toString("hex")}`);
     await writeFile(join(directory, "stop-all"), "stop");

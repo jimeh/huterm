@@ -12,7 +12,7 @@ function environment(directory: string): Record<string, string> {
   return { ...process.env, TERMINFO: directory } as Record<string, string>;
 }
 
-async function run(command: string, args: string[], env?: Record<string, string>): Promise<string> {
+async function runBytes(command: string, args: string[], env?: Record<string, string>): Promise<Buffer> {
   const child = Bun.spawn([command, ...args], {
     cwd: repoRoot,
     env: env ?? (process.env as Record<string, string>),
@@ -21,12 +21,32 @@ async function run(command: string, args: string[], env?: Record<string, string>
     stderr: "pipe",
   });
   const [stdout, stderr, status] = await Promise.all([
-    new Response(child.stdout).text(),
+    new Response(child.stdout).arrayBuffer(),
     new Response(child.stderr).text(),
     child.exited,
   ]);
   if (status !== 0) throw new Error(`${command} failed (${status}): ${stderr.trim()}`);
-  return stdout;
+  return Buffer.from(stdout);
+}
+
+async function run(command: string, args: string[], env?: Record<string, string>): Promise<string> {
+  return (await runBytes(command, args, env)).toString();
+}
+
+function hasCapability(description: string, name: string): boolean {
+  return new RegExp(`(?:^|[,\\s])${name}(?:[#=][^,\\s]*)?(?=,|\\s)`, "m").test(description);
+}
+
+export function verifyCapabilities(description: string): void {
+  // Numeric values are normalized differently by ncurses releases.
+  if (!/(?:^|[,\s])colors#(?:256|0x100)(?:,|\s)/m.test(description)
+    || !/(?:^|[,\s])pairs#(?:32767|0x7fff)(?:,|\s)/m.test(description)
+    || !hasCapability(description, "Tc")) {
+    throw new Error("compiled xterm-huterm is missing its 256-color or Tc capabilities");
+  }
+  if (hasCapability(description, "RGB")) {
+    throw new Error("compiled xterm-huterm must not apply RGB semantics to indexed setaf/setab");
+  }
 }
 
 export async function compiledEntry(directory: string): Promise<string> {
@@ -52,15 +72,20 @@ export async function verifyCompiled(directory: string): Promise<void> {
     throw new Error("xterm-huterm must use the portable 16-bit terminfo format");
   }
   const description = await run("infocmp", ["-x", terminalName], environment(directory));
-  // Numeric values are normalized differently by ncurses releases.
-  if (!/(?:^|[,\s])colors#(?:256|0x100)(?:,|\s)/m.test(description)
-    || !/(?:^|[,\s])pairs#(?:32767|0x7fff)(?:,|\s)/m.test(description)
-    || !/(?:^|[,\s])RGB(?:,|\s)/m.test(description)
-    || !/(?:^|[,\s])Tc(?:,|\s)/m.test(description)) {
-    throw new Error("compiled xterm-huterm is missing its 256-color or direct-color capabilities");
-  }
+  verifyCapabilities(description);
   const colors = (await run("tput", ["-T", terminalName, "colors"], environment(directory))).trim();
   if (colors !== "256") throw new Error(`tput reported ${JSON.stringify(colors)} colors instead of 256`);
+  for (const [capability, color, expected] of [
+    ["setaf", "1", "\x1b[31m"],
+    ["setab", "4", "\x1b[44m"],
+    ["setaf", "123", "\x1b[38;5;123m"],
+    ["setab", "234", "\x1b[48;5;234m"],
+  ] as const) {
+    const actual = await runBytes("tput", ["-T", terminalName, capability, color], environment(directory));
+    if (!actual.equals(Buffer.from(expected))) {
+      throw new Error(`tput ${capability} ${color} emitted ${actual.toString("hex")} instead of ${Buffer.from(expected).toString("hex")}`);
+    }
+  }
 }
 
 export async function prepare(directory = defaultOutput): Promise<void> {

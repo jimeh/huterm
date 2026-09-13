@@ -32,8 +32,12 @@ resolved environment before spawning the child. `auto` selects
 paths or Huterm's private resources; otherwise it uses `TERM=xterm-256color`.
 The explicit values force either identity for new terminals.
 
-The private entry inherits `xterm-256color`, Huterm's previous advertised
-baseline, and adds only `RGB` and `Tc`. Its `pairs` value is capped at 32767 so
+The private entry inherits the indexed `xterm-256color` capabilities that Huterm
+previously advertised, and adds only `Tc` for truecolor-aware consumers. It
+deliberately omits ncurses's
+[`RGB` capability](https://invisible-island.net/ncurses/man/user_caps.5.html#h2-Recognized-Capabilities),
+which would assert that the inherited `setaf` and `setab` strings take direct
+RGB values rather than indexed colors. Its `pairs` value is capped at 32767 so
 native `tic -x` on macOS and Linux emits the portable 16-bit compiled format.
 Package builds compile it on their native host. macOS stores it under
 `Contents/Resources/terminfo`; Linux tarballs and AppImages store it under
