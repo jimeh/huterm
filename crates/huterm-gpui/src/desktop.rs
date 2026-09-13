@@ -20,7 +20,7 @@ use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
     TerminalCommand, TerminalEvent, TerminalInput, TerminalPresentation,
-    TerminalSnapshot, appearance_for_background, ids,
+    TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -2208,13 +2208,11 @@ fn terminal_presentation(theme: &Theme) -> TerminalPresentation {
     let palette = std::array::from_fn(|index| {
         theme.indexed(u8::try_from(index).expect("palette index fits in u8"))
     });
-    let background = theme.background;
     TerminalPresentation {
         foreground: theme.foreground,
-        background,
+        background: theme.background,
         cursor: theme.cursor,
         palette,
-        appearance: appearance_for_background(background),
     }
 }
 fn shell_arguments(is_macos: bool) -> Vec<String> {
@@ -2420,7 +2418,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_presentation_uses_the_resolved_theme_and_shared_appearance() {
+    fn terminal_presentation_uses_the_resolved_theme() {
         let theme = Theme {
             background: huterm_protocol::Rgb {
                 red: 0xff,
@@ -2435,10 +2433,6 @@ mod tests {
         assert_eq!(presentation.cursor, theme.cursor);
         assert_eq!(presentation.palette[0], theme.indexed(0));
         assert_eq!(presentation.palette[255], theme.indexed(255));
-        assert_eq!(
-            presentation.appearance,
-            huterm_protocol::TerminalAppearance::Light
-        );
     }
 
     #[test]

@@ -226,8 +226,6 @@ pub struct TerminalPresentation {
     pub cursor: Rgb,
     /// Default indexed color palette.
     pub palette: [Rgb; 256],
-    /// Appearance derived from the presented background.
-    pub appearance: TerminalAppearance,
 }
 
 impl Default for TerminalPresentation {
@@ -299,7 +297,6 @@ impl Default for TerminalPresentation {
                 blue: 0xff,
             },
             palette,
-            appearance: TerminalAppearance::Dark,
         }
     }
 }

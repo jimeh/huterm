@@ -859,6 +859,10 @@ per-command compatibility identity when the remote host lacks the entry:
 TERM=xterm-256color ssh host
 ```
 
+This changes `TERM` for that SSH invocation only. The remote command then uses
+the widely installed `xterm-256color` entry instead of requiring
+`xterm-huterm`.
+
 Or install the local definition into your account on a trusted remote host:
 
 ```sh
@@ -870,6 +874,22 @@ Packaged copies of the source are at
 `share/huterm/terminfo/xterm-huterm.terminfo` in Linux bundles. You can copy
 that file to a remote host and run `tic -x xterm-huterm.terminfo` there as
 an alternative to exporting the compiled entry with `infocmp`.
+
+Install the entry in the context that will run the application. `sudo`, `su`,
+and container launchers can strip `TERMINFO` or `TERMINFO_DIRS`, change `HOME`,
+or use a different filesystem. Installing into the local user's `~/.terminfo`
+does not make the entry available to root, another user, a container, or a
+remote host. Run `tic` as the target user or inside the target container, then
+check that context with `infocmp -x xterm-huterm`. When installation is not
+appropriate, set `TERM=xterm-256color` for the individual command instead.
+For example, when running a command through `sudo` without installing the entry
+for root, use:
+
+```sh
+sudo env TERM=xterm-256color command
+```
+
+Replace `command` with the program being run as root.
 
 Huterm does not wrap SSH, install files remotely, or change Mosh's terminal
 capability handling.

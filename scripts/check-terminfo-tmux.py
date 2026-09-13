@@ -8,6 +8,7 @@ import pathlib
 import pty
 import select
 import shlex
+import shutil
 import signal
 import struct
 import subprocess
@@ -26,6 +27,9 @@ def main() -> int:
     terminfo = pathlib.Path(sys.argv[1]).resolve()
     if not any((terminfo / bucket / "xterm-huterm").is_file() for bucket in ("x", "78")):
         raise SystemExit(f"xterm-huterm is missing from {terminfo}")
+    tmux = shutil.which("tmux")
+    if tmux is None:
+        raise SystemExit("tmux executable is unavailable")
 
     with tempfile.TemporaryDirectory(prefix="huterm-tmux-") as state:
         home = pathlib.Path(state, "home")
@@ -52,11 +56,17 @@ def main() -> int:
                 "printf '\\033[38;2;1;2;3mHUTERM_RGB\\033[0m'; "
                 f"IFS= read -r release < {shlex.quote(str(fifo))}"
             )
-            os.execvpe(
-                "tmux",
-                ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-x", "80", "-y", "24", command],
-                environment,
-            )
+            try:
+                os.execve(
+                    tmux,
+                    ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-x", "80", "-y", "24", command],
+                    environment,
+                )
+            except OSError as error:
+                try:
+                    os.write(2, f"could not execute tmux: {error}\n".encode())
+                finally:
+                    os._exit(127)
 
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         output = bytearray()
@@ -105,7 +115,7 @@ def main() -> int:
             except ChildProcessError:
                 pass
             subprocess.run(
-                ["tmux", "-L", socket, "kill-server"],
+                [tmux, "-L", socket, "kill-server"],
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

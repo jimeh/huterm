@@ -92,8 +92,8 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
-Core seeds foreground, background, cursor, palette, appearance, grid, and
-physical cell size before spawning the child. It answers native OSC 4,
+Core seeds foreground, background, cursor, palette, grid, and physical cell size
+before spawning the child. It answers native OSC 4,
 10/11/12, CSI 14/16/18t, and CSI ?996n queries from that ordered retained state.
 Same-chunk mutations affect later queries in the same input chunk. Explicit OSC
 overrides remain distinct from theme defaults even when their RGB values are

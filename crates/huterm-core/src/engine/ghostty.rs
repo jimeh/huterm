@@ -712,24 +712,22 @@ enum EscapeHint {
     Ground,
     Escape,
     Osc,
-    OscEscape,
 }
 impl EscapeHint {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         let mut changed = false;
         for byte in bytes {
             *self = match (&*self, byte) {
-                (Self::Osc | Self::OscEscape, 0x07 | 0x9c)
-                | (Self::OscEscape, b'\\')
-                | (Self::Escape, b'c') => {
+                (Self::Osc, 0x07 | 0x9c) | (Self::Escape, b'c') => {
                     changed = true;
                     Self::Ground
                 }
-                (Self::Osc | Self::OscEscape, 0x18 | 0x1a) => Self::Ground,
-                (Self::Osc | Self::OscEscape, 0x1b) => Self::OscEscape,
-                (Self::Osc | Self::OscEscape, _)
-                | (_, 0x9d)
-                | (Self::Escape, b']') => Self::Osc,
+                (Self::Osc, 0x18 | 0x1a) => Self::Ground,
+                (Self::Osc, 0x1b) => {
+                    changed = true;
+                    Self::Escape
+                }
+                (Self::Osc, _) | (_, 0x9d) | (Self::Escape, b']') => Self::Osc,
                 (_, 0x1b) => Self::Escape,
                 _ => Self::Ground,
             };
@@ -869,7 +867,6 @@ mod tests {
                 blue: 0x99,
             },
             palette,
-            appearance: huterm_protocol::TerminalAppearance::Dark,
         }
     }
 
@@ -1003,6 +1000,67 @@ mod tests {
     }
 
     #[test]
+    fn osc_dispatch_at_escape_updates_override_state_before_the_next_byte() {
+        let mut engine = engine();
+        engine.process(b"A\x1b[31mB").unwrap();
+        engine
+            .process(
+                b"\x1b]10;#010203\x1b]11;#040506\x1b]12;#070809\x1b]4;1;#0a0b0c\x1b",
+            )
+            .unwrap();
+        let overridden = engine.snapshot().unwrap();
+        assert_eq!(
+            (
+                overridden.rows[0].cells[0].foreground,
+                overridden.rows[0].cells[0].background,
+                overridden.rows[0].cells[1].foreground,
+                overridden.cursor_color,
+            ),
+            (
+                CellColor::Rgb(Rgb {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                }),
+                CellColor::Rgb(Rgb {
+                    red: 4,
+                    green: 5,
+                    blue: 6,
+                }),
+                CellColor::Rgb(Rgb {
+                    red: 10,
+                    green: 11,
+                    blue: 12,
+                }),
+                Some(Rgb {
+                    red: 7,
+                    green: 8,
+                    blue: 9,
+                }),
+            )
+        );
+
+        engine
+            .process(b"]110\x1b]111\x1b]112\x1b]104;1\x1b")
+            .unwrap();
+        let reset = engine.snapshot().unwrap();
+        assert_eq!(
+            (
+                reset.rows[0].cells[0].foreground,
+                reset.rows[0].cells[0].background,
+                reset.rows[0].cells[1].foreground,
+                reset.cursor_color,
+            ),
+            (
+                CellColor::DefaultForeground,
+                CellColor::DefaultBackground,
+                CellColor::Indexed(1),
+                None,
+            )
+        );
+    }
+
+    #[test]
     fn default_and_equal_osc_overrides_survive_theme_updates_and_resets() {
         let mut engine = engine();
         engine.process(b"A\x1b[31mB").unwrap();
@@ -1015,7 +1073,7 @@ mod tests {
 
         engine
             .process(
-                b"\r\x1b[0m\x1b]10;#112233\x1b\\\x1b]11;#445566\x1b\\\x1b]12;#778899\x1b\\A",
+                b"\r\x1b[0m\x1b]10;#112233\x1b\\\x1b]11;#ffffff\x1b\\\x1b]12;#778899\x1b\\\x1b]4;1;#aabbcc\x1b\\A",
             )
             .unwrap();
         let overridden = engine.snapshot().unwrap();
@@ -1025,17 +1083,29 @@ mod tests {
         );
         assert_eq!(
             overridden.rows[0].cells[0].background,
-            CellColor::Rgb(presentation().background)
+            CellColor::Rgb(Rgb {
+                red: 0xff,
+                green: 0xff,
+                blue: 0xff,
+            })
+        );
+        assert_eq!(
+            overridden.rows[0].cells[1].foreground,
+            CellColor::Rgb(presentation().palette[1])
         );
         assert_eq!(overridden.cursor_color, Some(presentation().cursor));
 
         let mut changed = presentation();
         changed.foreground.red = 0xfe;
-        changed.background.green = 0xed;
+        changed.background = Rgb {
+            red: 0x10,
+            green: 0x20,
+            blue: 0x30,
+        };
         changed.cursor.blue = 0xdc;
         changed.palette[1].red = 0xcb;
         let generation = engine.generation();
-        engine.update_presentation(changed).unwrap();
+        engine.update_presentation(changed.clone()).unwrap();
         let themed = engine.snapshot().unwrap();
         assert_eq!(themed.generation, generation);
         assert!(!Arc::ptr_eq(&overridden.rows[0], &themed.rows[0]));
@@ -1043,10 +1113,39 @@ mod tests {
             themed.rows[0].cells[0].foreground,
             CellColor::Rgb(presentation().foreground)
         );
+        assert_eq!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
+                    )
+                    .unwrap()
+            ),
+            vec![
+                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
+                b"\x1b[?997;2n".to_vec(),
+            ]
+        );
 
-        engine
-            .process(b"\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\")
-            .unwrap();
+        assert_eq!(
+            replies(
+                engine
+                    .process(
+                        b"\x1b]104;1\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
+                    )
+                    .unwrap()
+            ),
+            vec![
+                b"\x1b]4;1;rgb:cbcb/bbbb/cccc\x1b\\".to_vec(),
+                b"\x1b]10;rgb:fefe/2222/3333\x1b\\".to_vec(),
+                b"\x1b]11;rgb:1010/2020/3030\x1b\\".to_vec(),
+                b"\x1b]12;rgb:7777/8888/dcdc\x1b\\".to_vec(),
+                b"\x1b[?997;1n".to_vec(),
+            ]
+        );
         let reset = engine.snapshot().unwrap();
         assert_eq!(
             reset.rows[0].cells[0].foreground,
@@ -1056,7 +1155,9 @@ mod tests {
             reset.rows[0].cells[0].background,
             CellColor::DefaultBackground
         );
+        assert_eq!(reset.rows[0].cells[1].foreground, CellColor::Indexed(1));
         assert_eq!(reset.cursor_color, None);
+        assert_eq!(engine.presentation(), &changed);
     }
 
     #[test]

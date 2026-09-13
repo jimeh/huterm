@@ -10,16 +10,14 @@ pub(crate) fn environment(identity: TerminalIdentity) -> Vec<(String, String)> {
     let executable = std::env::current_exe().ok();
     environment_from(
         identity,
-        executable.as_deref(),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/terminfo"),
+        private_directories(executable.as_deref(), cfg!(target_os = "macos")),
         |name| std::env::var_os(name),
     )
 }
 
 fn environment_from(
     identity: TerminalIdentity,
-    executable: Option<&Path>,
-    development_directory: PathBuf,
+    private_directories: Vec<PathBuf>,
     get_environment: impl Fn(&str) -> Option<OsString>,
 ) -> Vec<(String, String)> {
     if identity == TerminalIdentity::Xterm256Color {
@@ -29,10 +27,9 @@ fn environment_from(
     let existing = search_directories(&get_environment)
         .into_iter()
         .any(|directory| entry_exists(&directory));
-    let private_directory =
-        private_directories(executable, development_directory)
-            .into_iter()
-            .find(|directory| entry_exists(directory));
+    let private_directory = private_directories
+        .into_iter()
+        .find(|directory| entry_exists(directory));
     let available = existing || private_directory.is_some();
     if identity == TerminalIdentity::Auto && !available {
         return vec![("TERM".into(), COMPATIBILITY_TERM.into())];
@@ -54,22 +51,30 @@ fn environment_from(
 
 fn private_directories(
     executable: Option<&Path>,
-    development_directory: PathBuf,
+    is_macos: bool,
 ) -> Vec<PathBuf> {
     let mut directories = Vec::new();
     if let Some(executable) = executable
         && let Some(binary_directory) = executable.parent()
     {
-        if cfg!(target_os = "macos")
-            && let Some(contents) = binary_directory.parent()
-        {
+        if is_macos && let Some(contents) = binary_directory.parent() {
             directories.push(contents.join("Resources/terminfo"));
         }
         if let Some(bundle) = binary_directory.parent() {
             directories.push(bundle.join("share/huterm/terminfo"));
         }
+        let profile_directory = if binary_directory.file_name()
+            == Some(std::ffi::OsStr::new("examples"))
+        {
+            binary_directory.parent()
+        } else {
+            Some(binary_directory)
+        };
+        if let Some(target_directory) = profile_directory.and_then(Path::parent)
+        {
+            directories.push(target_directory.join("terminfo"));
+        }
     }
-    directories.push(development_directory);
     directories
 }
 
@@ -151,13 +156,11 @@ mod tests {
 
     fn resolved(
         identity: TerminalIdentity,
-        development: PathBuf,
+        private: Vec<PathBuf>,
         values: &[(&str, OsString)],
     ) -> Vec<(String, String)> {
         let values = values.iter().cloned().collect::<BTreeMap<_, _>>();
-        environment_from(identity, None, development, |name| {
-            values.get(name).cloned()
-        })
+        environment_from(identity, private, |name| values.get(name).cloned())
     }
 
     #[test]
@@ -167,7 +170,7 @@ mod tests {
         assert_eq!(
             resolved(
                 TerminalIdentity::Auto,
-                private.0.clone(),
+                vec![private.0.clone()],
                 &[("TERMINFO_DIRS", OsString::from("/custom/one:"))],
             ),
             [
@@ -186,7 +189,7 @@ mod tests {
         assert_eq!(
             resolved(
                 TerminalIdentity::Auto,
-                missing,
+                vec![missing],
                 &[("TERMINFO_DIRS", OsString::from("/missing"))],
             ),
             [("TERM".into(), "xterm-256color".into())]
@@ -201,7 +204,7 @@ mod tests {
         assert_eq!(
             resolved(
                 TerminalIdentity::Auto,
-                missing,
+                vec![missing],
                 &[("TERMINFO", existing.0.clone().into_os_string())],
             ),
             [("TERM".into(), "xterm-huterm".into())]
@@ -215,7 +218,7 @@ mod tests {
         assert_eq!(
             resolved(
                 TerminalIdentity::Auto,
-                private.0.clone(),
+                vec![private.0.clone()],
                 &[
                     ("TERMINFO", OsString::from("b64:encoded-database")),
                     ("TERMINFO_DIRS", OsString::from("/inherited")),
@@ -235,20 +238,17 @@ mod tests {
     fn explicit_identities_force_the_requested_term() {
         let missing = TestDirectory::new().0.join("missing");
         assert_eq!(
-            resolved(TerminalIdentity::XtermHuterm, missing.clone(), &[]),
+            resolved(TerminalIdentity::XtermHuterm, vec![missing.clone()], &[],),
             [("TERM".into(), "xterm-huterm".into())]
         );
         assert_eq!(
-            resolved(TerminalIdentity::Xterm256Color, missing, &[]),
+            resolved(TerminalIdentity::Xterm256Color, vec![missing], &[]),
             [("TERM".into(), "xterm-256color".into())]
         );
     }
 
     #[test]
     fn linux_bundle_discovery_is_relative_to_the_executable() {
-        if !cfg!(target_os = "linux") {
-            return;
-        }
         let bundle = TestDirectory::new();
         let private = bundle.0.join("share/huterm/terminfo");
         fs::create_dir_all(private.join("x")).unwrap();
@@ -261,8 +261,7 @@ mod tests {
         assert_eq!(
             environment_from(
                 TerminalIdentity::Auto,
-                Some(&executable),
-                bundle.0.join("missing-development-tree"),
+                private_directories(Some(&executable), false),
                 |name| values.get(name).cloned(),
             ),
             [
@@ -273,5 +272,58 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn macos_bundle_discovery_is_relative_to_the_executable() {
+        let bundle = TestDirectory::new();
+        let private = bundle.0.join("Contents/Resources/terminfo");
+        fs::create_dir_all(private.join("x")).unwrap();
+        fs::write(private.join("x/xterm-huterm"), b"fixture").unwrap();
+        let executable = bundle.0.join("Contents/MacOS/Huterm");
+        assert_eq!(
+            environment_from(
+                TerminalIdentity::Auto,
+                private_directories(Some(&executable), true),
+                |_| Some(OsString::from("/missing")),
+            ),
+            [
+                ("TERM".into(), "xterm-huterm".into()),
+                (
+                    "TERMINFO_DIRS".into(),
+                    format!("/missing:{}", private.display()),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn development_discovery_is_executable_relative_for_binary_and_example() {
+        let development = TestDirectory::new();
+        let private = development.0.join("target/terminfo");
+        fs::create_dir_all(private.join("x")).unwrap();
+        fs::write(private.join("x/xterm-huterm"), b"fixture").unwrap();
+        for executable in [
+            development.0.join("target/debug/huterm"),
+            development.0.join("target/release/huterm"),
+            development.0.join("target/debug/examples/query-smoke"),
+        ] {
+            assert_eq!(
+                environment_from(
+                    TerminalIdentity::Auto,
+                    private_directories(Some(&executable), false),
+                    |_| Some(OsString::from("/missing")),
+                ),
+                [
+                    ("TERM".into(), "xterm-huterm".into()),
+                    (
+                        "TERMINFO_DIRS".into(),
+                        format!("/missing:{}", private.display()),
+                    ),
+                ],
+                "executable={}",
+                executable.display()
+            );
+        }
     }
 }
