@@ -62,11 +62,6 @@ fn main() {
     }
 
     let command = TerminalCommand {
-        engine: match std::env::args().nth(1).as_deref() {
-            None | Some("alacritty") => huterm_protocol::TerminalEngineKind::Alacritty,
-            Some("ghostty") => huterm_protocol::TerminalEngineKind::Ghostty,
-            Some(other) => panic!("unknown smoke engine: {other}"),
-        },
         program: "/bin/sh".into(),
         arguments: vec!["-c".into(), r#"printf READY; while IFS= read -r value; do printf 'ACK:%s\n' "$value"; done"#.into()],
         working_directory: std::env::current_dir().unwrap(),

@@ -116,6 +116,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let handle = *cx.windows().first().context("palette smoke window")?;
     let invocation = match command {
         "invoke-new-tab" => Some(CommandInvocation::new(ids::NEW_TAB, vec![])),
+        "invoke-reload" => {
+            Some(CommandInvocation::new(ids::RELOAD_CONFIG, vec![]))
+        }
         "invoke-rename-tab" => Some(CommandInvocation::new(
             ids::RENAME_TAB,
             vec![CommandArgument::new(
@@ -244,7 +247,13 @@ fn core_state(
 }
 
 fn read_state(cx: &mut App) -> String {
-    let mut output = format!("windows={}\n", cx.windows().len());
+    let desktop = cx.global::<Desktop>();
+    let mut output = format!(
+        "windows={} config.warning={:?} config.error={:?}\n",
+        cx.windows().len(),
+        desktop.config.warning,
+        desktop.config_error
+    );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
             let Ok(view) = root.downcast::<WorkspaceView>() else {

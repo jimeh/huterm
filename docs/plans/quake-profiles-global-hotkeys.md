@@ -1,5 +1,8 @@
 # Quake profiles and global hotkeys
 
+Historical engine-specific smoke branches in this plan predate issue #118. The
+full scenario matrix now runs unconditionally against Ghostty.
+
 Status: implementation for [issue #41][issue-41]; native macOS CI validation pending.
 
 Deliver one PR for the embedded quake workflow. A configured global shortcut

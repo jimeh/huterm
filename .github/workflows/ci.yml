@@ -405,7 +405,7 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify scroll budgets for both engines
+      - name: Verify Ghostty scroll and link budgets
         run: mise run ci:benchmarks
 
   package:
@@ -498,7 +498,7 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Build and verify native package with both engines
+      - name: Build and verify native package
         run: mise run ${{ matrix.task }}
 
       - name: Upload Linux package evidence on failure

@@ -1,5 +1,8 @@
 # Tab-bar visibility and fullscreen reveal
 
+Historical cross-engine coverage in this plan predates issue #118. The same
+scenarios now run against Ghostty only.
+
 Status: implemented on 2026-09-09. Linux unit and production smoke validation
 passed for both engines. macOS CI and physical display validation remain pending.
 

@@ -155,8 +155,9 @@ Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
 that order. Settings creates the default document without overwriting an
 existing file and opens it with the system editor. Malformed TOML and invalid
 `terminal.engine` values are fatal at startup, before UI creation. With valid
-TOML and a known engine, unrelated settings errors fall back to defaults while
-preserving that engine and showing a diagnostic in the terminal status overlay.
+TOML and a known legacy engine value, unrelated settings errors fall back to
+defaults while preserving the clipboard-write policy. `alacritty` emits a
+migration warning and `ghostty` is accepted silently; both run Ghostty.
 
 Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
 `Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified
@@ -223,19 +224,19 @@ process labels and directory inheritance are not implemented yet.
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
-| Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
-| Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through both engines to an isolated X11 CLIPBOARD selection | CI or implementer |
-| macOS clipboard | `mise run smoke:macos-clipboard` | Exact OSC 52 and tmux writes through both engines, including NUL, with pasteboard preservation | CI or implementer |
+| Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and a raw Ghostty PTY | CI or implementer |
+| Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
+| macOS clipboard | `mise run smoke:macos-clipboard` | Exact OSC 52 and tmux writes through Ghostty, including NUL, with pasteboard preservation | CI or implementer |
 | Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
 | macOS fullscreen | `mise run smoke:macos-fullscreen` | AppKit modes, style/focus restoration, retained tabs, presentation leases, and PTY input/resize | CI or implementer |
 | Linux quake | `mise run smoke:linux-quake` | Native XTest shortcuts, external focus, composited fade pixels, animations, OS grab rollback, and PTY lifecycle | CI or implementer |
 | macOS quake | `mise run smoke:macos-quake` | Native session shortcuts, external AppKit focus, alpha/geometry, Space exit, and PTY lifecycle; requires event-posting permission | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
-| macOS keyboard | `mise run smoke:macos-input` | Native input and composition through both engines | CI or implementer |
-| macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through both engines | CI or implementer |
-| Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Both engines' snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
+| macOS keyboard | `mise run smoke:macos-input` | Native input and composition through Ghostty, plus one legacy-config launch | CI or implementer |
+| macOS Quit | `mise run smoke:macos-quit` | Cancellable AppKit termination through Ghostty | CI or implementer |
+| Scroll benchmark | `mise run ci:benchmarks` on Ubuntu 24.04 | Ghostty snapshot timing, offsets, and queue bounds; paint timing and row reuse when frames arrive | CI or implementer |
 | macOS package | `mise run package:macos` | Universal app metadata, icon, executable, and both architectures | CI or implementer |
-| Linux package | `mise run package:linux` | Native AppImage and relocatable tarball, dependency policy, provenance, payload equality, and both-engine input smoke | CI or implementer |
+| Linux package | `mise run package:linux` | Native AppImage and relocatable tarball, dependency policy, provenance, payload equality, and Ghostty input smoke | CI or implementer |
 
 CI groups format, static analysis, scripts, and Rust tests into one job per
 platform so their setup and debug artifacts are reused. Native desktop smokes,
@@ -344,8 +345,8 @@ preemption, not just per-thread CPU execution.
 On macOS, `mise run package:macos` creates
 `target/release/bundle/Huterm.app` and verifies its identifier, Cargo-derived
 version, Developer Tools category, icon, executable, and arm64/x86_64 slices.
-The task installs both Rust targets, builds each with both terminal engines,
-and uses `lipo` to assemble the universal executable before packaging. It also
+The task installs both Rust targets, builds each with Ghostty, and uses `lipo`
+to assemble the universal executable before packaging. It also
 checks the packaged privacy descriptions and the entitlements used by release
 signing. Local packages remain unsigned. The GitHub release path is documented
 in the [release guide](releases.md).
@@ -359,7 +360,7 @@ the exact commit time as `SOURCE_DATE_EPOCH`, enforces a maximum required glibc
 symbol version of 2.35, writes only origin-relative ELF runpaths, records Debian
 package provenance for privately bundled xkbcommon libraries, and verifies the
 full dependency allowlist. It then extracts both formats into fresh temporary
-directories and runs the exact-byte input smoke with Alacritty and Ghostty.
+directories and runs the exact-byte input smoke with Ghostty.
 
 `mise run package:linux:verify` rechecks existing artifacts without downloading
 tools or rebuilding. It expects the architecture-specific filenames produced by
@@ -401,15 +402,13 @@ the Xcode, Icon Composer, and macOS versions used, since Apple rendering can
 change between releases. `package:macos` also verifies the packaged icon
 metadata and exact resource bytes before release signing.
 
-## Terminal engines
+## Terminal engine
 
-Every build includes both engines; `mise run dev` starts the app. Set
-`[terminal] engine = "ghostty"`
-and reload to use Ghostty for new tabs and windows. Shared scrolling and immutable
-rows apply to both engines. See [the engine guide](terminal-engines.md) for
-pinned native inputs, license coverage, and matched benchmark commands.
+Every terminal uses Ghostty; `mise run dev` starts the app. New configuration
+omits `terminal.engine`. See [the engine guide](terminal-engines.md) for legacy
+value handling, pinned native inputs, license coverage, and benchmark commands.
 
-`check`, `test`, and `verify` exercise both engines and prepare the pinned native
+`check`, `test`, and `verify` exercise Ghostty and prepare its pinned native
 source through Mise. Normal build and packaging tasks do the same.
 Standard setup installs the pinned Bun and Zig tools alongside
 Rust. Repository scripts run on Bun and are type-checked with TypeScript 7;
@@ -432,7 +431,7 @@ GPUI's native window, shortcut matcher, and text input handler. Queue dispatch
 also supplies the real NSApplication.currentEvent used by Option composition.
 The ordinary application entrypoint does not enable the smoke command protocol.
 
-Both Alacritty and Ghostty receive input through a raw, no-echo PTY recorder.
+Ghostty receives input through a raw, no-echo PTY recorder.
 Assertions compare cumulative bytes after a printable barrier, including negative
 assertions for consumed shortcuts and replayed prefixes. Read-only probes wait
 for GPUI pending-input completion, configuration changes, tab readiness, and

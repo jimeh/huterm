@@ -663,8 +663,8 @@ fn set_dispatch_error<T>(
     *status = Some(error.to_string());
 }
 
-/// Binds the startup keymap and returns its reserved keys with the first
-/// diagnostic to show: a config error, a keymap error, or binding conflicts.
+/// Binds the startup keymap and returns its reserved keys with all diagnostics
+/// in precedence order: config error, keymap error, conflicts, then warning.
 ///
 /// A broken binding never blocks startup: defaults apply and the diagnostic
 /// shows like any other non-fatal configuration error.
@@ -676,15 +676,45 @@ pub(super) fn install_startup_keymap(
     let conflicts =
         (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
     let keymap = bind_keymap(cx, compiled);
-    let diagnostic = loaded
-        .error
-        .clone()
-        .or_else(|| {
-            keymap_error
-                .map(|error| format!("{}: {error}", loaded.path.display()))
-        })
-        .or(conflicts);
+    let diagnostic = combine_config_diagnostics([
+        loaded.error.clone(),
+        keymap_error.map(|error| format!("{}: {error}", loaded.path.display())),
+        conflicts,
+        loaded.warning.clone(),
+    ]);
     (keymap, diagnostic)
+}
+
+fn combine_config_diagnostics(
+    diagnostics: [Option<String>; 4],
+) -> Option<String> {
+    diagnostics
+        .into_iter()
+        .flatten()
+        .reduce(|mut combined, diagnostic| {
+            combined.push_str("; ");
+            combined.push_str(&diagnostic);
+            combined
+        })
+}
+
+fn reload_diagnostic(
+    cx: &mut App,
+    config: &Config,
+    compiled: &CompiledKeymap,
+) -> Option<String> {
+    cx.global_mut::<Desktop>()
+        .config_error
+        .clone_from(&config.warning);
+    if let Some(warning) = &config.warning {
+        eprintln!("Huterm configuration warning: {warning}");
+    }
+    combine_config_diagnostics([
+        None,
+        None,
+        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; ")),
+        config.warning.clone(),
+    ])
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
@@ -706,6 +736,9 @@ pub(super) fn run_with_startup(
     }
     if let Some(error) = &loaded.error {
         eprintln!("Huterm configuration error: {error}");
+    }
+    if let Some(warning) = &loaded.warning {
+        eprintln!("Huterm configuration warning: {warning}");
     }
     let runtime = Arc::new(DesktopRuntime::default());
     let app_runtime = Arc::clone(&runtime);
@@ -1839,11 +1872,9 @@ impl WorkspaceView {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
         self.check_new_tab_available(cx)?;
-        let command = shell_command(
-            self.metrics.at_scale(window.scale_factor()),
-            cx.global::<Desktop>().config.engine,
-        )
-        .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        let command =
+            shell_command(self.metrics.at_scale(window.scale_factor()))
+                .map_err(|error| CommandError::Runtime(error.to_string()))?;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         let attachment = self.attachment;
@@ -3334,11 +3365,8 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
                 apply_update_config(cx, &config);
                 cx.global_mut::<Desktop>().config = config.clone();
-                cx.global_mut::<Desktop>().config_error = None;
+                keymap_status = reload_diagnostic(cx, &config, &compiled);
                 quake_windows::reconcile(cx);
-                if !compiled.conflicts.is_empty() {
-                    keymap_status = Some(compiled.conflicts.join("; "));
-                }
                 let keymap = bind_keymap(cx, compiled);
                 cx.global_mut::<Desktop>().keymap = keymap;
                 maybe_exit(cx);
@@ -4191,6 +4219,22 @@ mod tests {
     }
 
     #[test]
+    fn startup_diagnostics_keep_errors_conflicts_and_legacy_warning() {
+        assert_eq!(
+            combine_config_diagnostics([
+                Some("config error".to_owned()),
+                Some("keymap error".to_owned()),
+                Some("binding conflict".to_owned()),
+                Some(config::LEGACY_ALACRITTY_WARNING.to_owned()),
+            ])
+            .as_deref(),
+            Some(
+                "config error; keymap error; binding conflict; terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration."
+            )
+        );
+    }
+
+    #[test]
     fn copy_is_unavailable_without_selection() {
         assert_eq!(
             copy_availability(None),
@@ -4635,7 +4679,6 @@ mod tests {
 
     fn lifecycle_command() -> TerminalCommand {
         TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::default(),
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -4865,7 +4908,6 @@ mod tests {
     fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         let runtime = DesktopRuntime::default();
         let mut command = TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/huterm-nonexistent-shell".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -4927,7 +4969,6 @@ mod tests {
     {
         let runtime = Arc::new(DesktopRuntime::default());
         let command = TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "printf READY; read value".into()],
             working_directory: std::env::current_dir().unwrap(),

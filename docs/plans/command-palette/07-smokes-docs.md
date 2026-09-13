@@ -1,5 +1,8 @@
 # Chunk 7: native smokes and user documentation
 
+Historical cross-engine coverage in this chunk predates issue #118. The same
+palette scenarios now run against Ghostty only.
+
 Part of [the command palette plan](../command-palette.md). Extends the
 platform palette smokes to the plan's "Native smoke coverage" list and
 finishes the README usage text. Requires chunks 1 to 6 merged.

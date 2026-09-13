@@ -6,17 +6,16 @@ use std::path::{Path, PathBuf};
 use crate::themes;
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
-    LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt, RawConfig,
-    TabPosition, TerminalConfig, Theme, UpdateConfig, WindowConfig,
+    LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt,
+    RawConfig, TabPosition, TerminalConfig, Theme, UpdateConfig, WindowConfig,
     keybinding_diagnostic,
 };
-use huterm_protocol::TerminalEngineKind;
+
+pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
 pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 
 [terminal]
-# Changes apply to newly created terminals. Both engines are included in every build.
-engine = "alacritty"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
@@ -82,7 +81,7 @@ name = "huterm-dark"
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Config {
-    pub(super) engine: TerminalEngineKind,
+    pub(super) warning: Option<String>,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) updates: UpdateConfig,
@@ -99,13 +98,14 @@ pub(super) struct LoadedConfig {
     pub(super) config: Config,
     pub(super) path: PathBuf,
     pub(super) error: Option<String>,
+    pub(super) warning: Option<String>,
     pub(super) fatal: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            engine: TerminalEngineKind::Alacritty,
+            warning: None,
             font: FontConfig::default(),
             theme: Theme::default(),
             window: WindowConfig::default(),
@@ -133,23 +133,21 @@ fn load_path(path: PathBuf) -> LoadedConfig {
     match fs::read_to_string(&path) {
         Ok(source) => match parse_at(&source, &path) {
             Ok(config) => LoadedConfig {
+                warning: config.warning.clone(),
                 config,
                 path,
                 error: None,
                 fatal: false,
             },
             Err(error) => {
-                let (engine, clipboard_write, fatal, error) =
+                let (warning, clipboard_write, fatal, error) =
                     match fallback_terminal(&source) {
-                        Ok((engine, clipboard_write)) => {
-                            (engine, clipboard_write, false, error)
+                        Ok((warning, clipboard_write)) => {
+                            (warning, clipboard_write, false, error)
                         }
-                        Err(error) => (
-                            TerminalEngineKind::default(),
-                            ClipboardWritePolicy::default(),
-                            true,
-                            error,
-                        ),
+                        Err(error) => {
+                            (None, ClipboardWritePolicy::default(), true, error)
+                        }
                     };
                 let terminal = TerminalConfig {
                     clipboard_write,
@@ -157,12 +155,13 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 };
                 LoadedConfig {
                     config: Config {
-                        engine,
+                        warning: warning.clone(),
                         terminal,
                         ..Config::default()
                     },
                     fatal,
                     error: Some(format!("{}: {error}", path.display())),
+                    warning,
                     path,
                 }
             }
@@ -172,6 +171,7 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 config: Config::default(),
                 path,
                 error: None,
+                warning: None,
                 fatal: false,
             }
         }
@@ -179,6 +179,7 @@ fn load_path(path: PathBuf) -> LoadedConfig {
             config: Config::default(),
             fatal: false,
             error: Some(format!("{}: {error}", path.display())),
+            warning: None,
             path,
         },
     }
@@ -248,14 +249,14 @@ pub(super) fn reload(path: &Path) -> Result<Config, String> {
 
 fn fallback_terminal(
     source: &str,
-) -> Result<(TerminalEngineKind, ClipboardWritePolicy), ConfigError> {
+) -> Result<(Option<String>, ClipboardWritePolicy), ConfigError> {
     let value: toml::Value =
         toml::from_str(source).map_err(ConfigError::Toml)?;
     let terminal = value.get("terminal");
-    let engine = terminal
+    let warning = terminal
         .and_then(|terminal| terminal.get("engine"))
         .map_or_else(
-            || Ok(TerminalEngineKind::default()),
+            || Ok(None),
             |engine| {
                 parse_engine(engine.as_str().ok_or_else(|| {
                     ConfigError::Engine(
@@ -271,13 +272,13 @@ fn fallback_terminal(
             || Ok(ClipboardWritePolicy::default()),
             |value| value.try_into().map_err(ConfigError::Toml),
         )?;
-    Ok((engine, clipboard_write))
+    Ok((warning, clipboard_write))
 }
 
-fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
+fn parse_engine(name: &str) -> Result<Option<String>, ConfigError> {
     match name {
-        "alacritty" => Ok(TerminalEngineKind::Alacritty),
-        "ghostty" => Ok(TerminalEngineKind::Ghostty),
+        "alacritty" => Ok(Some(LEGACY_ALACRITTY_WARNING.to_owned())),
+        "ghostty" => Ok(None),
         name => Err(ConfigError::Engine(format!(
             "unknown terminal engine {name:?}"
         ))),
@@ -286,7 +287,12 @@ fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
 
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
-    let engine = parse_engine(&raw.terminal.engine)?;
+    let warning = match raw.terminal.engine {
+        Some(LegacyTerminalEngine::Alacritty) => {
+            Some(LEGACY_ALACRITTY_WARNING.to_owned())
+        }
+        Some(LegacyTerminalEngine::Ghostty) | None => None,
+    };
     raw.validate_values()?;
     let directory = path
         .parent()
@@ -300,7 +306,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         .map(|(index, entry)| entry.validate(index + 1))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Config {
-        engine,
+        warning,
         window: raw.window,
         updates: raw.updates,
         palette: raw.palette,
@@ -497,7 +503,7 @@ mod tests {
         let fallback = load_path(path);
         assert!(!fallback.fatal);
         assert!(fallback.error.is_some());
-        assert_eq!(fallback.config.engine, TerminalEngineKind::Ghostty);
+        assert_eq!(fallback.config.warning, None);
         assert_eq!(
             fallback.config.window.macos_fullscreen_mode,
             MacosFullscreenMode::NonNative
@@ -594,38 +600,36 @@ mod tests {
             );
         }
         assert!(parse("[terminal]\nclose_on_exiit = false").is_err());
-        for (name, engine) in [
-            ("alacritty", TerminalEngineKind::Alacritty),
-            ("ghostty", TerminalEngineKind::Ghostty),
-        ] {
+        for name in ["alacritty", "ghostty"] {
             let config = parse(&format!(
                 "[terminal]\nengine = '{name}'\nclose_on_exit = false"
             ))
             .unwrap();
-            assert_eq!(config.engine, engine);
             assert!(!config.terminal.close_on_exit);
         }
     }
 
     #[test]
-    fn both_engines_are_available_and_alacritty_is_default() {
+    fn legacy_engine_values_select_ghostty_and_only_alacritty_warns() {
+        assert_eq!(parse("").unwrap().warning, None);
         assert_eq!(
-            parse("[terminal]\nengine = 'alacritty'").unwrap().engine,
-            TerminalEngineKind::Alacritty
+            parse("[terminal]\nengine = 'ghostty'").unwrap().warning,
+            None
         );
-        assert!(matches!(
-            parse("[terminal]\nengine = 'unknown'"),
-            Err(ConfigError::Engine(_))
-        ));
-        assert_eq!(parse("").unwrap().engine, TerminalEngineKind::Alacritty);
         assert_eq!(
-            parse("[terminal]\nengine = 'ghostty'").unwrap().engine,
-            TerminalEngineKind::Ghostty
+            parse("[terminal]\nengine = 'alacritty'").unwrap().warning,
+            Some(LEGACY_ALACRITTY_WARNING.to_owned())
         );
+        for source in
+            ["[terminal]\nengine = 'unknown'", "[terminal]\nengine = 12"]
+        {
+            assert!(parse(source).is_err(), "{source}");
+        }
     }
 
     #[test]
-    fn config_fallback_preserves_valid_engine_and_clipboard_policy() {
+    fn config_fallback_validates_legacy_engine_and_preserves_clipboard_policy()
+    {
         let directory = test_directory();
         fs::create_dir(&directory).unwrap();
         let file = directory.join("config.toml");
@@ -645,38 +649,40 @@ mod tests {
             assert!(loaded.fatal, "{source}");
             assert!(loaded.error.is_some());
         }
-        for (source, expected_engine, expected_clipboard) in [
+        for (source, warning, expected_clipboard) in [
             (
                 "[terminal]\nengine = 'alacritty'\n[font]\nsize = 'bad'",
-                TerminalEngineKind::Alacritty,
+                Some(LEGACY_ALACRITTY_WARNING),
                 ClipboardWritePolicy::Allow,
             ),
             (
+                "[terminal]\nengine = 'alacritty'\nclipboard_write = 'deny'\n[font]\nsize = 'bad'",
+                Some(LEGACY_ALACRITTY_WARNING),
+                ClipboardWritePolicy::Deny,
+            ),
+            (
                 "[terminal]\nengine = 'ghostty'\n[font]\nsize = 'bad'",
-                TerminalEngineKind::Ghostty,
+                None,
                 ClipboardWritePolicy::Allow,
             ),
             (
                 "[terminal]\nengine = 'ghostty'\nclipboard_write = 'deny'\n[font]\nsize = 'bad'",
-                TerminalEngineKind::Ghostty,
+                None,
                 ClipboardWritePolicy::Deny,
             ),
             (
                 "[terminal]\nclipboard_write = 'deny'\n[font]\nsize = 'bad'",
-                TerminalEngineKind::Alacritty,
+                None,
                 ClipboardWritePolicy::Deny,
             ),
-            (
-                "[font]\nsize = 'bad'",
-                TerminalEngineKind::Alacritty,
-                ClipboardWritePolicy::Allow,
-            ),
+            ("[font]\nsize = 'bad'", None, ClipboardWritePolicy::Allow),
         ] {
             fs::write(&file, source).unwrap();
             let loaded = load_path(file.clone());
             assert!(!loaded.fatal, "{source}");
             assert!(loaded.error.is_some());
-            assert_eq!(loaded.config.engine, expected_engine);
+            assert_eq!(loaded.warning.as_deref(), warning);
+            assert_eq!(loaded.config.warning.as_deref(), warning);
             assert_eq!(
                 loaded.config.terminal.clipboard_write,
                 expected_clipboard

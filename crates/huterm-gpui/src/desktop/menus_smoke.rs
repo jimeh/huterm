@@ -51,6 +51,7 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
         config: config.clone(),
         path: "menu-smoke.toml".into(),
         error: None,
+        warning: None,
         fatal: false,
     };
     let (installed, error) = windows::install_startup_keymap(cx, &loaded);

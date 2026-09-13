@@ -103,7 +103,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
   await writeFile(shell, `#!/bin/sh\nset -m\nsleep 600 &\njob=$!\ntrap 'kill "$job" 2>/dev/null; wait "$job" 2>/dev/null' 0\ntrap 'exit 0' HUP TERM\nprintf 'READY:%s JOB:%s\\n' "$$" "$job"\nwhile IFS= read -r line; do\ncase "$line" in\nexit) exit 0;;\n*) printf 'ACK:%s:%s:' "$line" "$$"; stty size; printf '%s:%s\\n' "$$" "$line" >> ${quote(join(directory, "acks"))};;\nesac\ndone\n`, { mode: 0o700 });
-  const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\nengine = "${engine}"\n[window]\nalways_show_tab_bar = true\nauto_hide_tab_bar_in_fullscreen = true\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
+  const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\n[window]\nalways_show_tab_bar = true\nauto_hide_tab_bar_in_fullscreen = true\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
   await writeFile(config, configText());
   const app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_QUAKE_SMOKE: directory, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
   let diagnostics = "";
@@ -251,7 +251,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await waitFor(async () => ack.test((await current())?.text ?? ""), `retained ${label} PTY ACK with matching rows and columns`);
         console.log(`QUAKE_RESIZE ${engine} ${label} frame=${geometry} grid=${grid} scale=${value.gpui_scale} drawable=${value.drawable ?? "X11"} shell=${identity}`);
       }
-      if (engine === "alacritty") {
+      {
         if (!macos) {
           const monitor = resolve(executable, "..", "quake_monitor");
           let added = false;
@@ -440,12 +440,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         if (focusDuringShow.attempts > 1) console.log(`QUAKE_RETRY ${engine} focus-during-show reason=scheduler-gap`);
         console.log(`QUAKE_FOCUS ${engine} switch-during-show=settled-without-refocus`);
       }
-      for (const fullscreen of engine === "alacritty" ? [false, true] : [false]) {
-        const cases = engine === "alacritty" ? [
+      for (const fullscreen of [false, true]) {
+        const cases = [
           ...["auto","none","fade","slide_top","slide_bottom","slide_left","slide_right","fade_slide_top","fade_slide_bottom","fade_slide_left","fade_slide_right"].map(animation => ({animation, position: "top"})),
           ...["top", "bottom", "left", "right", "center"].map(position => ({animation: "slide", position})),
           ...["bottom", "left", "right", "center"].map(position => ({animation: "auto", position})),
-        ] : [{animation: "slide", position: "center"}];
+        ];
         for (const {animation, position} of cases) {
           const edge = animation === "slide" ? (position === "center" ? "top" : position) : animation === "auto" ? (fullscreen || position === "center" ? undefined : position) : animation.match(/slide_(top|bottom|left|right)$/)?.[1];
           await reload(`hide_on_focus_loss = false\nposition = "${position}"\nwidth = ${position === "center" ? 0.75 : 0.6}\nheight = ${position === "center" ? 0.75 : 0.4}\nfullscreen = ${fullscreen}\nanimation = "${animation}"\nanimation_ms = ${edge || position === "center" ? 1000 : 180}`);
@@ -483,8 +483,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (!(await current())?.text?.includes(`READY:${identity}`)) throw new Error("animation replaced retained PTY");
         }
       }
-      console.log(`QUAKE_ANIMATIONS ${engine} cases=${engine === "alacritty" ? 40 : 1} native-intermediates=passed retained-shell=${identity}`);
-      if (engine === "alacritty") {
+      console.log(`QUAKE_ANIMATIONS ${engine} cases=40 native-intermediates=passed retained-shell=${identity}`);
+      {
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
         await command("app show_quake");await settled(true);
         const opaquePixel = (await current())?.root_pixel;
@@ -738,7 +738,7 @@ export async function checkOrdinaryExit(executable: string, conflict = false, un
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-no-grabs-"));
   const config = join(directory,"config.toml");
   const shell = join(directory,"shell");
-  const ordinaryConfig = "[terminal]\nengine = 'alacritty'\n";
+  const ordinaryConfig = "[terminal]\n";
   await writeFile(config, ordinaryConfig + (conflict || unregister ? `[[global_keybinding]]\nkey = 'ctrl-alt-${unregister ? "u" : "l"}'\ncommand = 'toggle_quake'\n` : ""));
   await writeFile(shell, "#!/bin/sh\nprintf 'ORDINARY_READY\\n'\nwhile IFS= read -r line; do :; done\n", {mode:0o700});
   const app = Bun.spawn([executable], {env:{...process.env,WAYLAND_DISPLAY:undefined,HUTERM_CONFIG_FILE:config,HUTERM_QUAKE_SMOKE:directory,SHELL:shell},stdout:"ignore",stderr:"pipe"});
@@ -791,7 +791,7 @@ if (import.meta.main) {
     if (wm) await waitFor(async () => run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).includes("window id"), "EWMH window manager");
     await checkHidden(executable);
     if (!process.env.HUTERM_QUAKE_ONLY_HIDDEN) {
-      for (const engine of ["alacritty", "ghostty"]) await check(executable, engine, witnessExecutable);
+      await check(executable, "ghostty", witnessExecutable);
       await checkOrdinaryExit(executable);
       await checkOrdinaryExit(executable, false, true);
     }

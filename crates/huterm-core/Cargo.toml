@@ -11,7 +11,6 @@ version = "0.8.1"
 # Keep the native binding/build pin aligned with scripts/ghostty-source.json.
 libghostty-vt = { version = "=0.2.1", default-features = false }
 libghostty-vt-sys = { version = "=0.2.1" }
-alacritty_terminal.workspace = true
 async-channel.workspace = true
 huterm-protocol.workspace = true
 portable-pty.workspace = true

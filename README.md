@@ -33,17 +33,17 @@ Huterm is based on four decisions:
   behavior. It will initially use `portable-pty` for the operating-system
   implementation.
 - The runtime owns canonical terminal state and the shared scroll position.
-  Upstream `alacritty_terminal` is the default engine; every build also
-  provides `libghostty-vt` behind the same snapshot and input boundary.
+  Every terminal uses `libghostty-vt` behind Huterm's private snapshot and
+  input boundary.
 - Clients render Huterm-owned terminal snapshots. The first client uses GPUI;
   a text-based terminal client can use the same model later.
 - Huterm application code targets the MIT license. Dependencies may use other
   compatible permissive licenses. GPL-covered Zed application code is outside
   the project boundary.
 
-Both engines stay behind the runtime's private emulator module and expose the
-same Huterm-owned snapshot and input boundary. PTY ownership, workspaces, and
-GPUI rendering are shared.
+The Ghostty adapter stays behind the runtime's private emulator module. PTY
+ownership, workspaces, and GPUI rendering remain independent of native emulator
+types.
 
 ## Current desktop
 
@@ -707,8 +707,8 @@ On macOS, build a universal application bundle with:
 mise run package:macos
 ```
 
-The package task installs both Rust targets, builds both terminal engines for
-arm64 and x86_64, and combines the executables into
+The package task installs both Rust targets, builds Ghostty for arm64 and
+x86_64, and combines the executables into
 `target/release/bundle/Huterm.app`. This local package deliberately excludes
 Sparkle and production update metadata. It checks that exclusion along with the
 macOS privacy descriptions and release entitlements, but does not sign or
@@ -744,8 +744,6 @@ restoration, and shared GUI/TUI access.
 - True color, text decorations, cursor styles, hyperlinks, clipboard support,
   search, selection, and configurable scrollback.
 - More terminal mouse protocols and shell integration.
-- Configurable Alacritty and `libghostty-vt` terminal engines, with Alacritty
-  selected by default.
 
 ### Desktop clients
 
@@ -797,26 +795,25 @@ Terminal scroll position is shared across views for the engine experiment.
 Tab-bar orientation is a client preference, not workspace state. See
 [CONTEXT.md](CONTEXT.md) for the full glossary.
 
-## Terminal engines
+## Terminal engine
 
-Every build includes both engines, with Alacritty as the default. Run
-`mise run dev`, then choose the engine for new terminals in your configuration:
+Every terminal uses Ghostty. Run `mise run dev`; generated configuration omits
+an engine selector. Existing explicit values remain accepted for migration:
 
 ```toml
 [terminal]
-engine = "ghostty" # Or "alacritty".
+engine = "alacritty" # Deprecated; still launches Ghostty and reports a warning.
 ```
 
-Reloading configuration changes subsequently created tabs and windows. Existing
-terminals retain their captured engine, child process, and history. Pending
-terminal creation retains its captured engine choice across reloads.
-Unknown engine names are explicit configuration errors. Normal build tasks
-prepare verified Ghostty source and use the pinned Zig toolchain.
+Explicit `"ghostty"` is also accepted without warning. Unknown or non-string
+values remain configuration errors, and failed reloads retain the active
+configuration. Normal build tasks prepare verified Ghostty source and use the
+pinned Zig toolchain.
 
 Each terminal owns one shared viewport. Snapshots remain complete and immutable;
-unchanged rows share storage between generations. Both engines use the existing
-GPUI renderer. See [the engine guide](docs/agents/terminal-engines.md) for
-native build inputs, benchmarks, and known engine differences.
+unchanged rows share storage between generations. See
+[the engine guide](docs/agents/terminal-engines.md) for native build inputs,
+benchmarks, and migration behavior.
 
 ## Licensing
 

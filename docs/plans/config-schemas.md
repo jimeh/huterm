@@ -1,5 +1,8 @@
 # Configuration schemas and release assets
 
+Superseded engine detail: issue #118 retained `terminal.engine` only as a
+deprecated compatibility field. Generated configurations now omit it.
+
 Status: implemented, local verification complete. Written on 2026-09-09 for
 [issue #33](https://github.com/jimeh/huterm/issues/33).
 

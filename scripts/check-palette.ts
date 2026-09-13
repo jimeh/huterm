@@ -140,10 +140,7 @@ exec ${quote(process.execPath)} ${quote(recorder)}
 `,
     { mode: 0o700 },
   );
-  await writeFile(
-    config,
-    `[terminal]
-engine = "${engine}"
+  const configDocument = `[terminal]
 close_on_exit = false
 
 [quake.profiles.logs]
@@ -152,8 +149,8 @@ position = "bottom"
 [[keybinding]]
 key = "${process.platform === "darwin" ? "cmd-shift-o" : "ctrl-shift-o"}"
 command = "select_tab"
-`,
-  );
+`;
+  await writeFile(config, configDocument);
   const app = Bun.spawn([executable], {
     env: {
       ...process.env,
@@ -518,6 +515,32 @@ command = "select_tab"
       }
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
+
+    // Production reload preserves the active legacy warning after a rejected
+    // file and clears it only after a subsequent valid engine-free reload.
+    await writeFile(
+      config,
+      configDocument.replace("[terminal]", '[terminal]\nengine = "alacritty"'),
+    );
+    await command("invoke-reload");
+    await state(
+      'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.status=Some("terminal.engine = \\"alacritty\\" is deprecated',
+    );
+    await writeFile(
+      config,
+      configDocument.replace("[terminal]", '[terminal]\nengine = "unknown"'),
+    );
+    await command("invoke-reload");
+    await state(
+      'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.status=Some("Config reload failed:',
+    );
+    await writeFile(config, configDocument);
+    await command("invoke-reload");
+    await state("config.warning=None", "config.error=None", "w0.status=None");
 
     // Existing modal routing, pointer isolation, and macOS composition coverage.
     await typeText("A");
@@ -971,12 +994,8 @@ if (import.meta.main) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
     const checks = async (wm?: X11Process) => {
-      const completed: string[] = [];
-      for (const engine of ["alacritty", "ghostty"]) {
-        await checkPalette(executable, engine, wm);
-        completed.push(engine);
-      }
-      console.log(`PALETTE_SMOKE_ALL engines=${completed.join(",")}`);
+      await checkPalette(executable, "ghostty", wm);
+      console.log("PALETTE_SMOKE_ALL engine=ghostty");
     };
     if (process.platform === "darwin") await checks();
     else await withOpenbox(checks);

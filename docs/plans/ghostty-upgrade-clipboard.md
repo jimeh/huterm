@@ -1,5 +1,8 @@
 # Ghostty upgrade for upstream clipboard handling
 
+Issue #118 later made this Ghostty integration the only terminal engine. The
+upgrade evidence and clipboard behavior recorded here remain applicable.
+
 Upgrade the Rust bindings to upstream revision
 `5988a0b78b4aa804d1c12e66bbfe662bd97d81c0` and its native Ghostty pin
 `22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018`. This brings upstream OSC allocation

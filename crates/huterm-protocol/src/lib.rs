@@ -192,27 +192,6 @@ pub struct Viewport {
     pub bottom_offset: usize,
 }
 
-/// Emulator selected once when a terminal starts.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TerminalEngineKind {
-    /// Alacritty 0.26.0, available in every build.
-    #[default]
-    Alacritty,
-    /// Ghostty via libghostty-vt, available in every Huterm build.
-    Ghostty,
-}
-
-impl TerminalEngineKind {
-    /// Stable configuration and benchmark name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Alacritty => "alacritty",
-            Self::Ghostty => "ghostty",
-        }
-    }
-}
-
 /// Ordered movement of the shared terminal viewport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScrollCommand {
@@ -381,8 +360,6 @@ pub enum TerminalInput {
 /// A command used to start a terminal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalCommand {
-    /// Engine captured at creation; existing terminals retain their engine.
-    pub engine: TerminalEngineKind,
     /// Executable path.
     pub program: PathBuf,
     /// Arguments excluding the executable itself.

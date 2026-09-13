@@ -462,7 +462,8 @@ impl RawKeybinding {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct RawTerminal {
-    pub engine: String,
+    /// Deprecated compatibility setting. Huterm always uses Ghostty.
+    pub engine: Option<LegacyTerminalEngine>,
     pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
@@ -472,7 +473,7 @@ pub struct RawTerminal {
 impl Default for RawTerminal {
     fn default() -> Self {
         Self {
-            engine: "alacritty".into(),
+            engine: None,
             clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),
@@ -480,6 +481,14 @@ impl Default for RawTerminal {
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum LegacyTerminalEngine {
+    Alacritty,
+    Ghostty,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

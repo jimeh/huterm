@@ -217,7 +217,7 @@ async function launch(
   const shell = join(directory, "shell");
   const config = join(directory, "config.toml");
   run(["mkfifo", control]);
-  await writeFile(config, `[terminal]\nengine = "${engine}"\nclose_on_exit = false\nclipboard_write = "${permission}"\n`);
+  await writeFile(config, `[terminal]\nclose_on_exit = false\nclipboard_write = "${permission}"\n`);
   await writeFile(inner, `#!/bin/sh
 if ! mkdir ${quote(primary)} 2>/dev/null; then
   printf ready >${quote(join(directory, "secondary-ready"))}
@@ -362,7 +362,7 @@ async function checkDirect(
     await emitProcessed(terminal, osc52(Buffer.from([0xff])));
     await stableClipboard(clipboard, sentinel, `${engine} invalid-utf8`);
 
-    if (engine === "ghostty") {
+    {
       const extension = Buffer.from("Ghostty OSC 1337: ✓");
       await terminal.emit(osc1337(extension));
       await expectClipboard(clipboard, extension, `${engine} osc1337`);
@@ -421,7 +421,7 @@ async function checkDirect(
         return replies.includes(Buffer.from("b"));
       }, "primary tab input focus");
 
-      await writeFile(terminal.config, `[terminal]\nengine = "${engine}"\nclose_on_exit = false\nclipboard_write = "deny"\n[[keybinding]]\nkey = "ctrl-shift-c"\ncommand = "unbind"\n`);
+      await writeFile(terminal.config, `[terminal]\nclose_on_exit = false\nclipboard_write = "deny"\n[[keybinding]]\nkey = "ctrl-shift-c"\ncommand = "unbind"\n`);
       const replySize = (await readFile(join(terminal.directory, "replies")).catch(() => Buffer.alloc(0))).length;
       run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+comma"]);
       // This chord reaches the PTY only after the new keymap has been applied.
@@ -542,14 +542,12 @@ async function main(): Promise<void> {
       process.on("SIGINT", interrupted);
     }
     const checks = async (wm?: X11Process) => {
-      for (const engine of ["alacritty", "ghostty"]) {
-        await checkDirect(executable, witness, engine, wm);
-        await checkTmux(executable, witness, engine, wm);
-      }
+      await checkDirect(executable, witness, "ghostty", wm);
+      await checkTmux(executable, witness, "ghostty", wm);
     };
     if (macos) await checks();
     else await withOpenbox(checks);
-    console.log("CLIPBOARD_SMOKE all-engines-ok");
+    console.log("CLIPBOARD_SMOKE ghostty-ok");
   } finally {
     if (archive) {
       restore();

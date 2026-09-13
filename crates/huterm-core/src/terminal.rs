@@ -31,7 +31,6 @@ const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
     terminal_id: TerminalId,
-    engine: huterm_protocol::TerminalEngineKind,
     messages: SyncSender<RuntimeMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
@@ -49,21 +48,10 @@ impl RuntimeClient {
         self.terminal_id
     }
 
-    /// Returns the engine captured when this terminal was created.
-    #[must_use]
-    pub fn engine(&self) -> huterm_protocol::TerminalEngineKind {
-        self.engine
-    }
-
     /// Returns the immutable engine version used by this terminal.
     #[must_use]
     pub fn engine_revision(&self) -> &'static str {
-        match self.engine {
-            huterm_protocol::TerminalEngineKind::Alacritty => "0.26.0",
-            huterm_protocol::TerminalEngineKind::Ghostty => {
-                crate::GHOSTTY_REVISION
-            }
-        }
+        crate::GHOSTTY_REVISION
     }
 
     /// Sends structured input using emulator modes owned by the runtime.
@@ -405,7 +393,6 @@ impl TerminalRuntime {
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
         let command = command.clone();
-        let engine_kind = command.engine;
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
@@ -432,7 +419,6 @@ impl TerminalRuntime {
                         terminal_id,
                         command.grid_size,
                         command.cell_size,
-                        command.engine,
                     )?;
                     engine
                         .set_host_effect_sink(runtime_host_effect_sink.clone());
@@ -470,7 +456,6 @@ impl TerminalRuntime {
         }
         let client = RuntimeClient {
             terminal_id,
-            engine: engine_kind,
             messages: message_sender,
             controls: control_sender,
             closing,
@@ -1326,16 +1311,11 @@ mod tests {
     }
 
     #[test]
-    fn pty_meta_characters_preserve_exact_bytes_and_input_order() {
-        meta_roundtrip(huterm_protocol::TerminalEngineKind::Alacritty);
-    }
-
-    #[test]
     fn ghostty_meta_characters_preserve_exact_bytes_and_input_order() {
-        meta_roundtrip(huterm_protocol::TerminalEngineKind::Ghostty);
+        meta_roundtrip();
     }
 
-    fn meta_roundtrip(kind: huterm_protocol::TerminalEngineKind) {
+    fn meta_roundtrip() {
         use std::fmt::Write as _;
         let expected =
             "\x1br\x1bR\x1b3\x1b<\x1b\x12\x1b \x1bλ®paste".as_bytes();
@@ -1343,8 +1323,7 @@ mod tests {
             "stty raw -echo; printf READY; bytes=$(dd bs=1 count={} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:DONE' \"$bytes\"",
             expected.len(),
         );
-        let mut command = command(&script);
-        command.engine = kind;
+        let command = command(&script);
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(94), &command).unwrap();
         let client = runtime.client();
@@ -1377,11 +1356,7 @@ mod tests {
     fn concurrent_clean_exits_reap_without_close_assessments() {
         let runtimes: Vec<_> = (100..104)
             .map(|id| {
-                let mut command = command("printf READY; read line; exit 0");
-                if id % 2 == 0 {
-                    command.engine =
-                        huterm_protocol::TerminalEngineKind::Ghostty;
-                }
+                let command = command("printf READY; read line; exit 0");
                 TerminalRuntime::spawn(TerminalId::new(id), &command).unwrap()
             })
             .collect();
@@ -1464,14 +1439,10 @@ mod tests {
 
     #[test]
     fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
-        for kind in [
-            huterm_protocol::TerminalEngineKind::Alacritty,
-            huterm_protocol::TerminalEngineKind::Ghostty,
-        ] {
-            let mut command = command(
+        {
+            let command = command(
                 "stty -echo; printf 'https://x.test READY'; read line; printf ' ACK:%s' \"$line\"",
             );
-            command.engine = kind;
             let runtime =
                 TerminalRuntime::spawn(TerminalId::new(99), &command).unwrap();
             let client = runtime.client();
@@ -1589,21 +1560,15 @@ mod tests {
     }
 
     #[test]
-    fn exited_runtime_discards_late_input_and_replies_but_keeps_history() {
-        exited_history(huterm_protocol::TerminalEngineKind::Alacritty);
-    }
-
-    #[test]
     fn ghostty_exited_runtime_discards_late_input_and_replies_but_keeps_history()
      {
-        exited_history(huterm_protocol::TerminalEngineKind::Ghostty);
+        exited_history();
     }
 
-    fn exited_history(engine: huterm_protocol::TerminalEngineKind) {
-        let mut command = command(
+    fn exited_history() {
+        let command = command(
             "i=0; while [ $i -lt 40 ]; do printf 'history\\n'; i=$((i + 1)); done; printf '\\033[?1004hFINAL'; exit 0",
         );
-        command.engine = engine;
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
         let client = runtime.client();
@@ -1700,10 +1665,9 @@ mod tests {
 
     #[test]
     fn ghostty_runtime_round_trips_and_closes_a_live_child() {
-        let mut command = command(
+        let command = command(
             "printf READY; read line; printf 'GHOSTTY:%s' \"$line\"; sleep 30",
         );
-        command.engine = huterm_protocol::TerminalEngineKind::Ghostty;
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(92), &command).unwrap();
         let client = runtime.client();
@@ -1723,7 +1687,6 @@ mod tests {
             .join(format!("huterm-engine-startup-{}", std::process::id()));
         let mut command =
             command(&format!("touch {}; sleep 30", marker.display()));
-        command.engine = huterm_protocol::TerminalEngineKind::Ghostty;
         // Zero dimensions fail native initialization before the child starts.
         command.grid_size = GridSize {
             columns: 0,
@@ -1763,16 +1726,11 @@ mod tests {
     }
 
     #[test]
-    fn pty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
-        mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Alacritty);
-    }
-
-    #[test]
     fn ghostty_mouse_reports_preserve_keyboard_order_and_disable_silence() {
-        mouse_reports_roundtrip(huterm_protocol::TerminalEngineKind::Ghostty);
+        mouse_reports_roundtrip();
     }
 
-    fn mouse_reports_roundtrip(kind: huterm_protocol::TerminalEngineKind) {
+    fn mouse_reports_roundtrip() {
         use huterm_protocol::{
             Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
             MouseTracking,
@@ -1782,12 +1740,10 @@ mod tests {
             "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; bytes=$(dd bs=1 count={} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:DONE\\033[?1000lDISABLED' \"$bytes\"; byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'SILENT:%s:END' \"$byte\"",
             expected.len(),
         );
-        let mut command = command(&script);
-        command.engine = kind;
+        let command = command(&script);
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
         let client = runtime.client();
-        assert_eq!(client.engine(), kind);
         let ready = wait_for_text(&client, "READY");
         assert_eq!(ready.modes.mouse_tracking, MouseTracking::Buttons);
         let mouse = |action| {
@@ -1886,7 +1842,6 @@ mod tests {
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: PathBuf::from("/bin/sh"),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir()
