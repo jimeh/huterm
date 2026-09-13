@@ -58,10 +58,10 @@ pub(crate) use windows::{
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
 mod windows;
-#[cfg(target_os = "macos")]
-pub(crate) use windows::input_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 pub(crate) use windows::updater_smoke;
+#[cfg(target_os = "macos")]
+pub(crate) use windows::{clipboard_smoke, input_smoke};
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()

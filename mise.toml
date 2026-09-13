@@ -662,9 +662,9 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 command -v tmux >/dev/null || { echo "Clipboard smoke requires tmux" >&2; exit 1; }
-bash scripts/build-exec.sh cargo build --locked -p huterm --bin huterm
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example clipboard_smoke
 mise run build:swift
-bun scripts/check-clipboard.ts target/debug/huterm target/debug/clipboard-witness
+bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
 '''
 
 [tasks."smoke:linux-clipboard"]
@@ -733,13 +733,13 @@ run = '''
 set -eu
 case "$(uname -s)" in
   Darwin)
-    bash scripts/build-exec.sh cargo build --locked -p huterm --bin huterm
     bash scripts/build-exec.sh cargo build --locked --features macos-updater --example native_updater_smoke
     bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --features macos-updater --example native_menus_smoke
     bash scripts/build-exec.sh cargo build --locked \
       -p huterm-gpui \
       --example renderer_smoke \
       --example native_input_smoke \
+      --example clipboard_smoke \
       --example integration_smoke \
       --example native_quit_smoke \
       --example fullscreen_smoke \
@@ -799,7 +799,7 @@ case "$(uname -s)" in
     fi
     if run_smoke_step macos-clipboard; then
       command -v tmux >/dev/null || { echo "Clipboard smoke requires tmux" >&2; exit 1; }
-      bun scripts/check-clipboard.ts target/debug/huterm target/debug/clipboard-witness
+      bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
     fi
     if run_smoke_step macos-palette; then
       bun scripts/check-palette.ts target/debug/examples/palette_smoke

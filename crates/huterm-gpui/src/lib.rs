@@ -80,6 +80,13 @@ pub fn run_native_input_smoke() -> anyhow::Result<()> {
     desktop::input_smoke::run()
 }
 
+/// Runs the production desktop with the clipboard visibility command probe.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_clipboard_smoke() -> anyhow::Result<()> {
+    desktop::clipboard_smoke::run()
+}
+
 /// Runs the production desktop with the fullscreen smoke command probe.
 #[doc(hidden)]
 #[cfg(any(target_os = "macos", target_os = "linux"))]

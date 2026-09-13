@@ -11,22 +11,19 @@ enum WitnessError: Error, CustomStringConvertible {
     case invalidArchive
     case missingProcess(String)
     case notReady(String)
-    case operationRefused(String, String)
     case stateTimeout(String, String, String)
     case pasteboardWrite
 
     var description: String {
         switch self {
         case .usage:
-            return "usage: clipboard-witness <read|save|restore> <file> | <ready|hide|unhide> <pid>"
+            return "usage: clipboard-witness <read|save|restore> <file> | <ready|hidden|visible> <pid>"
         case .invalidArchive:
             return "clipboard archive contains an invalid pasteboard type"
         case let .missingProcess(value):
             return "no running application has pid \(value)"
         case let .notReady(details):
             return "application is not ready: \(details)"
-        case let .operationRefused(operation, details):
-            return "application refused \(operation): \(details)"
         case let .stateTimeout(operation, expected, details):
             return "timed out after \(operation), expected \(expected): \(details)"
         case .pasteboardWrite:
@@ -129,12 +126,6 @@ do {
     guard CommandLine.arguments.count == 3 else { throw WitnessError.usage }
     let command = CommandLine.arguments[1]
     let value = CommandLine.arguments[2]
-    if command == "hide" || command == "unhide" {
-        // Establish the caller's WindowServer connection without taking focus.
-        let helper = NSApplication.shared
-        let policyAccepted = helper.setActivationPolicy(.prohibited)
-        fputs("clipboard-witness caller: policy_accepted=\(policyAccepted) \(describe(NSRunningApplication.current))\n", stderr)
-    }
     let pasteboard = NSPasteboard.general
     switch command {
     case "read":
@@ -155,26 +146,18 @@ do {
               hasOnScreenWindow(app.processIdentifier) else {
             throw WitnessError.notReady(describe(app))
         }
-    case "hide":
-        let app = try runningApplication(value)
-        guard app.hide() else {
-            throw WitnessError.operationRefused("hide", describe(app))
-        }
+    case "hidden":
         try waitForState(
             value,
-            operation: "hide",
+            operation: "hidden-state observation",
             expected: "hidden=true and on_screen_window=false"
         ) { current in
             current.isHidden && !hasOnScreenWindow(current.processIdentifier)
         }
-    case "unhide":
-        let app = try runningApplication(value)
-        guard app.unhide() else {
-            throw WitnessError.operationRefused("unhide", describe(app))
-        }
+    case "visible":
         try waitForState(
             value,
-            operation: "unhide",
+            operation: "visible-state observation",
             expected: "hidden=false and on_screen_window=true"
         ) { current in
             !current.isHidden && hasOnScreenWindow(current.processIdentifier)

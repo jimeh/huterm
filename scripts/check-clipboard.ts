@@ -1,5 +1,5 @@
 /** Verify OSC 52 writes through production Huterm and an independent OS clipboard client. */
-import { chmod, copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { constants, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -187,6 +187,7 @@ type Terminal = {
   config: string;
   control: string;
   directory: string;
+  command: (command: "hide" | "show") => Promise<void>;
   emit: (bytes: Uint8Array) => Promise<void>;
   logs: Promise<string[]>;
   socket?: string;
@@ -242,6 +243,7 @@ exec ${privateTmuxArgs(socket!, "new-session", "-s", "clipboard", inner).map(quo
       TMUX: undefined,
       TMUX_PANE: undefined,
       HUTERM_CONFIG_FILE: config,
+      HUTERM_CLIPBOARD_SMOKE: macos ? directory : undefined,
       SHELL: shell,
     },
   });
@@ -258,11 +260,26 @@ exec ${privateTmuxArgs(socket!, "new-session", "-s", "clipboard", inner).map(quo
     await rm(directory, { recursive: true, force: true });
     throw error;
   }
-  let sequence = 0;
+  let payloadSequence = 0;
+  let commandSequence = 0;
   return {
     app, config, control, directory, logs, socket,
+    async command(command: "hide" | "show") {
+      assert(macos, "application visibility commands require macOS");
+      const id = commandSequence++;
+      const commandPath = join(directory, `command-${id}`);
+      await writeFile(`${commandPath}.tmp`, command);
+      await rename(`${commandPath}.tmp`, commandPath);
+      const resultPath = join(directory, `result-${id}`);
+      await waitFor(async () => {
+        assert(app.exitCode === null && app.signalCode === null, `${engine} Huterm exited during ${command}`);
+        return Bun.file(resultPath).exists();
+      }, `${engine} ${command} command result`, 4_000);
+      const result = await readFile(resultPath, "utf8");
+      if (result.startsWith("error:")) throw new Error(`${engine} ${command} failed: ${result}`);
+    },
     async emit(bytes: Uint8Array) {
-      const payload = join(directory, `payload-${sequence++}`);
+      const payload = join(directory, `payload-${payloadSequence++}`);
       await writeFile(payload, bytes);
       await sendControl(control, `${payload}\n`);
     },
@@ -349,14 +366,18 @@ async function checkDirect(
     await terminal.emit(osc52(switchAway));
     if (macos) {
       assert(witness, "macOS clipboard witness is required");
-      run([witness, "hide", String(terminal.app.pid)]);
+      await terminal.command("hide");
+      run([witness, "hidden", String(terminal.app.pid)]);
       await expectClipboard(clipboard, switchAway, `${engine} copy-then-hide`);
-      run([witness, "unhide", String(terminal.app.pid)]);
-      run([witness, "hide", String(terminal.app.pid)]);
+      await terminal.command("show");
+      run([witness, "visible", String(terminal.app.pid)]);
+      await terminal.command("hide");
+      run([witness, "hidden", String(terminal.app.pid)]);
       const hidden = Buffer.from(`${engine}-hidden-window`);
       await terminal.emit(osc52(hidden));
       await expectClipboard(clipboard, hidden, `${engine} hidden-window`);
-      run([witness, "unhide", String(terminal.app.pid)]);
+      await terminal.command("show");
+      run([witness, "visible", String(terminal.app.pid)]);
 
       const deniedTerminal = await launch(executable, engine, false, "deny");
       try {
@@ -483,7 +504,9 @@ async function checkTmux(
 
 async function main(): Promise<void> {
   assert(process.platform === "linux" || macos, "clipboard smoke requires Linux or macOS");
-  const sourceExecutable = resolve(Bun.argv[2] ?? "target/debug/huterm");
+  const sourceExecutable = resolve(
+    Bun.argv[2] ?? (macos ? "target/debug/examples/clipboard_smoke" : "target/debug/huterm"),
+  );
   const witness = macos ? resolve(Bun.argv[3] ?? "target/debug/clipboard-witness") : undefined;
   const macosDirectory = macos ? await mkdtemp(join(tmpdir(), "huterm-pasteboard-")) : undefined;
   const archive = macosDirectory ? join(macosDirectory, "pasteboard.plist") : undefined;
