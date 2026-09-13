@@ -282,6 +282,41 @@ the application's current mode. An invalid, non-UTF-8, control-containing, or
 oversized path rejects the whole drop. Exited terminals and confirmation dialogs
 do not accept file drops.
 
+### Application clipboard writes
+
+Terminal applications may write UTF-8 text to the system clipboard with OSC
+52. Huterm accepts the empty selector or `c`, preserves empty text and embedded
+NUL bytes, and ignores clipboard read requests. Both BEL and ST terminate OSC
+52 writes. Ghostty also accepts its OSC 1337 `Copy` extension. The upstream
+engines retain their own parsing and allocation limits; Huterm drops writes
+that cannot fit its bounded delivery queues instead of truncating them.
+Those queues retain at most 8 writes/16 MiB per terminal and 32 writes/32 MiB
+across the desktop process. Ghostty caps encoded OSC capture at 8 MiB;
+Alacritty has no equivalent parser limit.
+
+Clipboard writes are allowed by default. Set this policy to deny them without
+disabling explicit Copy or Paste commands:
+
+```toml
+[terminal]
+clipboard_write = "deny" # "allow" or "deny"
+```
+
+Reload applies the policy to existing terminals and cancels writes that have
+not reached the platform clipboard. Invalid reloads retain the last valid
+policy. Startup preserves an explicit `deny` when falling back from unrelated
+settings errors; an invalid clipboard policy stops startup.
+A local attached view remains eligible while its tab is inactive or
+its window is hidden, minimized, or unfocused, so background terminal output
+may replace the clipboard. Use `deny` if that behavior is unwanted. Detached,
+read-only, TUI, and remote clients cannot receive clipboard writes, and dropped
+writes are not retried or replayed after reconnecting.
+
+With tmux, `set-clipboard external` allows tmux copy-mode and `set-buffer -w`
+writes while blocking OSC 52 emitted by applications inside tmux. Use
+`set-clipboard on` if applications inside tmux should also reach the system
+clipboard.
+
 ### Option and Alt as Meta
 
 On macOS, set this to use either Option key for terminal Meta chords in Emacs,

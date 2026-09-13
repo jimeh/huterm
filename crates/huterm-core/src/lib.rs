@@ -5,8 +5,13 @@
 mod commands;
 pub use commands::execute;
 mod engine;
+mod host_effects;
 mod input;
 mod jobs;
+pub use host_effects::{
+    DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
+    HostEffectRecipientOptions, PendingHostEffect,
+};
 pub use jobs::{JobProcess, JobState};
 mod mux;
 mod pty;
@@ -23,4 +28,4 @@ pub use terminal::{
 };
 
 /// Immutable native revision used by the Ghostty adapter.
-pub const GHOSTTY_REVISION: &str = "20c3eae04dee606349eb21e2dd0293b203d47179";
+pub const GHOSTTY_REVISION: &str = "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018";

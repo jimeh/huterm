@@ -166,6 +166,7 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.attachment_session(attachment)?;
         self.changed();
+        self.invalidate_attachment_host_effects(attachment);
         self.attachments.remove(&attachment);
         Ok(())
     }
@@ -177,9 +178,13 @@ impl Mux {
         attachment: AttachmentId,
         session: SessionId,
     ) -> Result<(), MuxError> {
-        self.attachment_session(attachment)?;
+        let current = self.attachment_session(attachment)?;
         self.select_session(session)?;
+        if current == session {
+            return Ok(());
+        }
         self.changed();
+        self.invalidate_attachment_host_effects(attachment);
         self.attachments.insert(attachment, session);
         Ok(())
     }

@@ -261,6 +261,9 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     definitions["RawTerminal"]["properties"]["engine"]["description"] = json!(
         "Terminal engine. Both ship in every build; reload changes newly created terminals only."
     );
+    definitions["RawTerminal"]["properties"]["clipboard_write"]["description"] = json!(
+        "Allow or deny system clipboard writes requested by terminal content. Reload applies to existing terminals; explicit Copy and Paste commands are unaffected."
+    );
     Ok([
         (
             CONFIG_ASSET,

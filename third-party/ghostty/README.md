@@ -3,11 +3,11 @@
 These notices accompany the statically linked Ghostty VT engine.
 `provenance.json` records the origin and checksum of each notice.
 
-The Rust wrappers are libghostty-vt and libghostty-vt-sys 0.2.1. Their source
-revision is 46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0, with the sys crate's
-[reviewed patch stack](../vendor/README.md#libghostty-vt-sys-cpu-backport)
-including the Zig 0.16 migration. The native source is Ghostty
-20c3eae04dee606349eb21e2dd0293b203d47179, built with Zig 0.16.0.
+Both Rust wrappers use published 0.2.1 archives with the matched upstream
+revision `5988a0b78b4aa804d1c12e66bbfe662bd97d81c0` applied through the
+[reviewed patch stack](../vendor/README.md#matched-libghostty-upstream-upgrade).
+The native source is Ghostty `22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018`, built
+with Zig 0.16.0.
 
 The VT build includes Ghostty, uucode 0.2.0 at
 2826a37a4562284fdacd8fa029d49509cc9bffcd (including Unicode and UTF-8 helper
@@ -24,6 +24,6 @@ upstream package manifests. No native Ghostty renderer or font stack is linked.
 Huterm's Rust terminal graphics port has [separate notices](../terminal-graphics/README.md).
 
 The sys crate selects static linking and maps release builds to ReleaseFast.
-Huterm backports the CPU option into the pinned sys crate and forces a portable
-baseline target. See [the patch provenance](../vendor/README.md).
+The upstream sys crate supplies a CPU option; Huterm forces a portable baseline
+target. See [the patch provenance](../vendor/README.md).
 Record CPU and optimization when comparing measurements.

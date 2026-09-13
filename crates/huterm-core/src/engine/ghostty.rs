@@ -1,8 +1,10 @@
+use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::EngineEffect;
+use crate::host_effects::{HostEffectAdmission, HostEffectSink};
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferRange, Cell, CellColor, CellSize, CellStyle, Cursor, CursorShape,
@@ -17,11 +19,12 @@ use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, StyleColor, Underline};
 use libghostty_vt::terminal::{
-    ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
-    Mode, Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
+    ClipboardLocation, ClipboardWriteError, ConformanceLevel,
+    DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
+    PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
     SecondaryDeviceAttributes, TertiaryDeviceAttributes,
 };
-use libghostty_vt::{RenderState, Terminal, TerminalOptions};
+use libghostty_vt::{RenderState, Terminal};
 
 impl From<libghostty_vt::Error> for RuntimeError {
     fn from(error: libghostty_vt::Error) -> Self {
@@ -41,6 +44,7 @@ pub(crate) struct TerminalEngine {
     retained_rows: Vec<Arc<TerminalRow>>,
     colors: Option<(Option<RgbColor>, Option<RgbColor>, [RgbColor; 256])>,
     effects: Rc<RefCell<Vec<EngineEffect>>>,
+    host_effect_sink: Rc<OnceCell<HostEffectSink>>,
     title_dirty: Rc<std::cell::Cell<bool>>,
     palette_overrides: [bool; 256],
     palette_dirty: bool,
@@ -57,13 +61,27 @@ impl TerminalEngine {
         size: GridSize,
         cell: CellSize,
     ) -> Result<Self, RuntimeError> {
-        let mut terminal = Terminal::new(TerminalOptions {
-            cols: size.columns,
-            rows: size.rows,
-            max_scrollback: 16 * 1024 * 1024,
-        })?;
+        let mut terminal = Terminal::new(size.columns, size.rows)?;
+        terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
         terminal.set_glyph_protocol_enabled(false)?;
         terminal.set_apc_max_bytes(Some(0))?;
+        let host_effect_sink = Rc::new(OnceCell::new());
+        let clipboard_sink = Rc::clone(&host_effect_sink);
+        terminal.on_clipboard_write(move |_, write| {
+            if write.location() != ClipboardLocation::Standard {
+                return Err(ClipboardWriteError::Unsupported);
+            }
+            let mut contents = write.contents();
+            let Some(content) = contents.next() else {
+                return admit_clipboard(&clipboard_sink, "");
+            };
+            if content.mime != "text/plain" || contents.next().is_some() {
+                return Err(ClipboardWriteError::Unsupported);
+            }
+            let text = std::str::from_utf8(content.data)
+                .map_err(|_| ClipboardWriteError::InvalidData)?;
+            admit_clipboard(&clipboard_sink, text)
+        })?;
         let effects = Rc::new(RefCell::new(Vec::new()));
         let write_effects = Rc::clone(&effects);
         terminal.on_pty_write(move |_, bytes| {
@@ -116,6 +134,7 @@ impl TerminalEngine {
             retained_rows: Vec::new(),
             colors: None,
             effects,
+            host_effect_sink,
             title_dirty,
             palette_overrides: [false; 256],
             palette_dirty: false,
@@ -125,6 +144,11 @@ impl TerminalEngine {
                 libghostty_vt::mouse::Event::new()?,
             )),
         })
+    }
+
+    pub(super) fn set_host_effect_sink(&self, sink: HostEffectSink) {
+        let result = self.host_effect_sink.set(sink);
+        debug_assert!(result.is_ok());
     }
 
     pub(super) fn process(
@@ -431,6 +455,24 @@ impl TerminalEngine {
     }
 }
 
+fn admit_clipboard(
+    sink: &OnceCell<HostEffectSink>,
+    text: &str,
+) -> Result<(), ClipboardWriteError> {
+    let Some(sink) = sink.get() else {
+        return Ok(());
+    };
+    match sink.admit_borrowed(text) {
+        HostEffectAdmission::Accepted => Ok(()),
+        HostEffectAdmission::Full | HostEffectAdmission::Contended => {
+            Err(ClipboardWriteError::Busy)
+        }
+        HostEffectAdmission::NoRecipient
+        | HostEffectAdmission::Denied
+        | HostEffectAdmission::Closed => Err(ClipboardWriteError::Denied),
+    }
+}
+
 fn rgb(color: RgbColor) -> Rgb {
     Rgb {
         red: color.r,
@@ -641,6 +683,66 @@ impl super::links::LinkBuffer for TerminalEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_callbacks_preserve_empty_and_binary_contents() {
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&writes);
+        let mut terminal = Terminal::new(8, 3).unwrap();
+        terminal
+            .on_clipboard_write(move |_, write| {
+                captured.borrow_mut().push(
+                    write
+                        .contents()
+                        .map(|content| content.data.to_vec())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        terminal.vt_write(b"\x1b]52;c;\x07");
+        terminal.vt_write(b"\x1b]52;c;/w==\x07");
+        terminal.vt_write(b"\x1b]1337;Copy=:Zg==\x1b\\");
+        assert_eq!(
+            *writes.borrow(),
+            vec![vec![], vec![vec![255]], vec![b"f".to_vec()]]
+        );
+    }
+
+    #[test]
+    fn oversized_clipboard_capture_is_dropped_and_parser_recovers() {
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&writes);
+        let mut terminal = Terminal::new(8, 3).unwrap();
+        terminal
+            .on_clipboard_write(move |_, write| {
+                captured.borrow_mut().push(
+                    write
+                        .contents()
+                        .map(|content| content.data.to_vec())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            })
+            .unwrap();
+        // Feed bounded chunks so the test itself never retains the huge OSC.
+        // Cancellation and reset must not dispatch the rejected prefix.
+        for (prefix, ending) in [
+            (b"\x1b]52;c;".as_slice(), b"\x07".as_slice()),
+            (b"\x1b]1337;Copy=:", b"\x07"),
+            (b"\x1b]52;c;".as_slice(), b"\x18".as_slice()),
+            (b"\x1b]1337;Copy=:", b"\x1bc"),
+        ] {
+            terminal.vt_write(prefix);
+            for _ in 0..=8192 {
+                terminal.vt_write(&[b'A'; 1024]);
+            }
+            terminal.vt_write(ending);
+            assert!(writes.borrow().is_empty());
+        }
+        terminal.vt_write(b"\x1b]52;c;Zg==\x07");
+        assert_eq!(*writes.borrow(), vec![vec![b"f".to_vec()]]);
+    }
 
     #[test]
     fn linked_native_memset_preserves_rust_byte_fills() {

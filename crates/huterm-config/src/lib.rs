@@ -28,6 +28,7 @@ pub struct KeybindingEntry {
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     pub close_on_exit: bool,
+    pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
@@ -37,10 +38,33 @@ impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             close_on_exit: true,
+            clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
+    }
+}
+
+/// Permission for clipboard writes requested by terminal content.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ClipboardWritePolicy {
+    /// Allow terminal content to replace the system clipboard.
+    #[default]
+    Allow,
+    /// Drop terminal-content clipboard writes.
+    Deny,
+}
+
+impl ClipboardWritePolicy {
+    /// Returns whether terminal-content clipboard writes are allowed.
+    #[must_use]
+    pub const fn is_allowed(self) -> bool {
+        matches!(self, Self::Allow)
     }
 }
 
@@ -439,6 +463,7 @@ impl RawKeybinding {
 #[serde(default, deny_unknown_fields)]
 pub struct RawTerminal {
     pub engine: String,
+    pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub close_on_exit: bool,
@@ -448,6 +473,7 @@ impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: "alacritty".into(),
+            clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),
             close_on_exit: TerminalConfig::default().close_on_exit,
@@ -616,6 +642,26 @@ mod tests {
         );
 
         assert!(toml::from_str::<RawConfig>("[palette]\nvim = true").is_err());
+    }
+
+    #[test]
+    fn clipboard_write_policy_defaults_to_allow_and_rejects_unknown_values() {
+        let defaults: RawConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            defaults.terminal.clipboard_write,
+            ClipboardWritePolicy::Allow
+        );
+
+        let denied: RawConfig =
+            toml::from_str("[terminal]\nclipboard_write = 'deny'").unwrap();
+        assert_eq!(denied.terminal.clipboard_write, ClipboardWritePolicy::Deny);
+
+        assert!(
+            toml::from_str::<RawConfig>(
+                "[terminal]\nclipboard_write = 'prompt'"
+            )
+            .is_err()
+        );
     }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

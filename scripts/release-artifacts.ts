@@ -424,7 +424,7 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
   for (const [name, expectedVersion] of [
     ["huterm", version],
     ["Sparkle", "2.9.6"],
-    ["ghostty", "20c3eae04dee606349eb21e2dd0293b203d47179"],
+    ["ghostty", "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018"],
     ["uucode", "0.2.0"],
     ["highway", "66486a10623fa0d72fe91260f96c892e41aceb06"],
     ["gpui", "0.2.2"],

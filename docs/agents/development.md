@@ -39,7 +39,7 @@ headless smoke test:
 ```sh
 sudo apt-get install --no-install-recommends \
   libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb \
-  xdotool x11-xkb-utils x11-utils openbox xcompmgr
+  xdotool x11-xkb-utils x11-utils openbox xcompmgr xclip tmux
 ```
 
 These packages are tracked by apt and can be removed with `sudo apt-get remove`
@@ -224,6 +224,8 @@ process labels and directory inheritance are not implemented yet.
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and raw PTYs with both engines | CI or implementer |
+| Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through both engines to an isolated X11 CLIPBOARD selection | CI or implementer |
+| macOS clipboard | `mise run smoke:macos-clipboard` | Exact OSC 52 and tmux writes through both engines, including NUL, with pasteboard preservation | CI or implementer |
 | Linux fullscreen | `mise run smoke:linux-fullscreen` | Openbox EWMH property, geometry, PTY input/resize, ignored-request timeout, and Quit capture | CI or implementer |
 | macOS fullscreen | `mise run smoke:macos-fullscreen` | AppKit modes, style/focus restoration, retained tabs, presentation leases, and PTY input/resize | CI or implementer |
 | Linux quake | `mise run smoke:linux-quake` | Native XTest shortcuts, external focus, composited fade pixels, animations, OS grab rollback, and PTY lifecycle | CI or implementer |
@@ -268,6 +270,25 @@ supervisor forwards termination to its private process group, escalates to KILL,
 and removes remaining group members on exit. It does not retry failed assertions.
 To reproduce one supervised step after building, run
 `HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step`.
+
+The clipboard smokes require tmux on both platforms and `xclip` on Linux. They
+start a clean tmux server on a private named socket and never inspect or modify
+the user's tmux server or configuration. Linux reads the CLIPBOARD selection
+through an independent `xclip` process inside the smoke's private Xvfb display.
+The macOS smoke reads exact length-prefixed UTF-8 bytes through a separate
+AppKit helper and restores every saved pasteboard item after success or failure.
+It bundles the `clipboard_smoke` example in a temporary `.app` and uses the
+production desktop startup and Hide command. The helper only observes window
+visibility and clipboard contents: external `NSRunningApplication.hide()`
+requests were refused by the hosted runner even for a live, regular application.
+The tmux shell fixture consumes Huterm's macOS `-l` argument before starting
+tmux, while retaining `-c` delegation for commands tmux launches.
+Install tmux on macOS with `brew install tmux` before running the native task.
+Linux also drives inactive-tab, command-palette, and live permission-reload
+writes through native shortcuts. The macOS smoke covers startup denial and
+hidden-window delivery; those three shortcut variants still need manual macOS
+evidence because the clipboard smoke driver only controls application visibility
+and CI does not grant Accessibility event-posting permission.
 
 The hosted macOS runner may choose a different on-screen window origin after
 leaving a native fullscreen Space. The smoke requires restored size, style,

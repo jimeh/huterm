@@ -5,7 +5,10 @@ pub use lifecycle::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{RuntimeClient, RuntimeError, TerminalRuntime};
+use crate::{
+    DesktopHostEffectClient, HostEffectRecipient, HostEffectRecipientOptions,
+    RuntimeClient, RuntimeError, TerminalRuntime,
+};
 use huterm_protocol::{
     AttachmentId, PaneId, RuntimeId, SessionId, TabId, TerminalCommand,
     TerminalId, WorkspaceId,
@@ -453,6 +456,13 @@ impl Mux {
         if source == destination && source_index == target_index {
             return Ok(());
         }
+        let source_session = self.workspaces[&source].session_id;
+        let destination_session = self.workspaces[&destination].session_id;
+        let terminal_id =
+            self.workspaces[&source].tabs[source_index].terminal_id;
+        if source_session != destination_session {
+            self.invalidate_terminal_host_effects(terminal_id);
+        }
         self.changed();
         let record = self
             .workspaces
@@ -514,6 +524,16 @@ impl Mux {
         if source == destination && source_index == target_index {
             return Ok(());
         }
+        if source != destination {
+            let terminal_ids: Vec<_> = self.workspaces[&workspace]
+                .tabs
+                .iter()
+                .map(|tab| tab.terminal_id)
+                .collect();
+            for terminal_id in terminal_ids {
+                self.invalidate_terminal_host_effects(terminal_id);
+            }
+        }
         self.changed();
         self.sessions[source_session]
             .workspaces
@@ -536,6 +556,54 @@ impl Mux {
         self.terminals
             .get(&terminal_id)
             .map(TerminalRuntime::client)
+    }
+
+    /// Registers one validated attachment view to receive host effects from a terminal.
+    ///
+    /// # Errors
+    /// Rejects missing attachments, terminals outside the attachment's session,
+    /// or exhausted bounded registration capacity.
+    pub fn register_host_effect_recipient(
+        &self,
+        attachment: AttachmentId,
+        terminal_id: TerminalId,
+        process: &DesktopHostEffectClient,
+        options: HostEffectRecipientOptions,
+    ) -> Result<HostEffectRecipient, MuxError> {
+        let session = self.attachment_session(attachment)?;
+        let is_member = self.workspaces.values().any(|workspace| {
+            workspace.session_id == session
+                && workspace
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.terminal_id == terminal_id)
+        });
+        if !is_member {
+            return Err(MuxError::TerminalNotInAttachment {
+                terminal: terminal_id,
+                attachment,
+            });
+        }
+        self.terminals
+            .get(&terminal_id)
+            .and_then(|runtime| {
+                runtime
+                    .host_effect_sink()
+                    .register(attachment, process, options)
+            })
+            .ok_or(MuxError::HostEffectRegistrationUnavailable)
+    }
+
+    fn invalidate_terminal_host_effects(&self, terminal_id: TerminalId) {
+        if let Some(runtime) = self.terminals.get(&terminal_id) {
+            runtime.host_effect_sink().invalidate_all();
+        }
+    }
+
+    fn invalidate_attachment_host_effects(&self, attachment: AttachmentId) {
+        for runtime in self.terminals.values() {
+            runtime.host_effect_sink().invalidate_attachment(attachment);
+        }
     }
     /// Closes a tab and joins its terminal workers, leaving siblings intact.
     /// # Errors
@@ -597,6 +665,16 @@ impl Mux {
             .position(|s| s.id == session)
             .ok_or(MuxError::UnknownSession(session))?;
         self.changed();
+        let invalidated_attachments: Vec<_> = self
+            .attachments
+            .iter()
+            .filter_map(|(attachment, attached)| {
+                (*attached == session).then_some(*attachment)
+            })
+            .collect();
+        for attachment in invalidated_attachments {
+            self.invalidate_attachment_host_effects(attachment);
+        }
         self.attachments.retain(|_, attached| *attached != session);
         let record = self.sessions.remove(index);
         let terminals = record
@@ -656,6 +734,19 @@ pub enum MuxError {
     /// Attachment no longer exists.
     #[error("attachment {0:?} does not exist")]
     UnknownAttachment(AttachmentId),
+    /// Terminal does not belong to the attachment's current session.
+    #[error(
+        "terminal {terminal:?} does not belong to attachment {attachment:?}"
+    )]
+    TerminalNotInAttachment {
+        /// Requested terminal.
+        terminal: TerminalId,
+        /// Validated attachment.
+        attachment: AttachmentId,
+    },
+    /// Bounded host-effect recipient registration could not be acquired.
+    #[error("host-effect recipient registration is unavailable")]
+    HostEffectRegistrationUnavailable,
     /// Structure or job evidence changed since consent was requested.
     #[error("close assessment changed; assess again before closing")]
     StaleClose,
@@ -1318,6 +1409,135 @@ mod tests {
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
             Err(nix::errno::Errno::ESRCH)
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercise one recipient across all membership-preserving and invalidating transitions"
+    )]
+    fn host_effect_authority_tracks_attachment_and_terminal_membership() {
+        use crate::host_effects::HostEffectAdmission;
+
+        let mut mux = Mux::default();
+        let first_session = mux.create_session(None).unwrap();
+        let second_session = mux.create_session(None).unwrap();
+        let first_workspace =
+            mux.create_workspace(first_session, None).unwrap();
+        let same_session_workspace =
+            mux.create_workspace(first_session, None).unwrap();
+        let second_workspace =
+            mux.create_workspace(second_session, None).unwrap();
+        let opened = mux
+            .open_tab(first_workspace, &command("read value"))
+            .unwrap();
+        let terminal_id = opened.tab.terminal_id;
+        let first_attachment = mux.attach_session(first_session).unwrap();
+        let second_attachment = mux.attach_session(second_session).unwrap();
+        let process = DesktopHostEffectClient::new();
+
+        assert!(matches!(
+            mux.register_host_effect_recipient(
+                second_attachment,
+                terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(true),
+            ),
+            Err(MuxError::TerminalNotInAttachment { .. })
+        ));
+        let first_recipient = mux
+            .register_host_effect_recipient(
+                first_attachment,
+                terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(true),
+            )
+            .unwrap();
+        let sink = opened.client.host_effect_sink();
+        assert_eq!(
+            sink.admit_borrowed("same session"),
+            HostEffectAdmission::Accepted
+        );
+        let same_session = first_recipient.try_next().unwrap();
+        mux.move_tab(
+            first_workspace,
+            opened.tab.id,
+            same_session_workspace,
+            None,
+        )
+        .unwrap();
+        assert!(first_recipient.is_current(&same_session));
+
+        assert_eq!(
+            sink.admit_borrowed("cross session"),
+            HostEffectAdmission::Accepted
+        );
+        mux.move_tab(
+            same_session_workspace,
+            opened.tab.id,
+            second_workspace,
+            None,
+        )
+        .unwrap();
+        assert!(first_recipient.try_next().is_none());
+        assert!(!first_recipient.is_current(&same_session));
+
+        let second_recipient = mux
+            .register_host_effect_recipient(
+                second_attachment,
+                terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(true),
+            )
+            .unwrap();
+        assert_eq!(
+            sink.admit_borrowed("workspace move"),
+            HostEffectAdmission::Accepted
+        );
+        let workspace_move = second_recipient.try_next().unwrap();
+        mux.move_workspace(
+            second_session,
+            second_workspace,
+            first_session,
+            None,
+        )
+        .unwrap();
+        assert!(!second_recipient.is_current(&workspace_move));
+
+        mux.retarget_attachment(second_attachment, first_session)
+            .unwrap();
+        let retargeted = mux
+            .register_host_effect_recipient(
+                second_attachment,
+                terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(true),
+            )
+            .unwrap();
+        assert_eq!(
+            sink.admit_borrowed("same target"),
+            HostEffectAdmission::Accepted
+        );
+        let same_target = retargeted.try_next().unwrap();
+        mux.retarget_attachment(second_attachment, first_session)
+            .unwrap();
+        assert!(retargeted.is_current(&same_target));
+
+        mux.detach_session(second_attachment).unwrap();
+        assert!(!retargeted.is_current(&same_target));
+        let final_attachment = mux.attach_session(first_session).unwrap();
+        let final_recipient = mux
+            .register_host_effect_recipient(
+                final_attachment,
+                terminal_id,
+                &process,
+                HostEffectRecipientOptions::local_desktop(true),
+            )
+            .unwrap();
+        assert_eq!(sink.admit_borrowed("close"), HostEffectAdmission::Accepted);
+        let closing = final_recipient.try_next().unwrap();
+        mux.close_session(first_session).unwrap();
+        assert!(!final_recipient.is_current(&closing));
     }
 
     #[test]

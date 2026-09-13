@@ -16,6 +16,7 @@ pre-commit:
       exclude:
         - "third-party/vendor/gpui-0.2.2/**"
         - "third-party/vendor/global-hotkey-0.8.0/**"
+        - "third-party/vendor/libghostty-vt-0.2.1/**"
       run: mise run lint:docs:files {staged_files}
 
     - name: workflows

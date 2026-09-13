@@ -2,6 +2,7 @@ mod alacritty;
 mod ghostty;
 mod links;
 
+use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferRange, CellSize, GridSize, ScrollCommand, TerminalEngineKind,
@@ -39,6 +40,14 @@ impl TerminalEngine {
             }
         }
     }
+
+    pub(crate) fn set_host_effect_sink(&mut self, sink: HostEffectSink) {
+        match self {
+            Self::Alacritty(engine) => engine.set_host_effect_sink(sink),
+            Self::Ghostty(engine) => engine.set_host_effect_sink(sink),
+        }
+    }
+
     pub(crate) fn requested_viewport(
         &self,
         scroll: Option<ScrollCommand>,
@@ -148,6 +157,185 @@ impl TerminalEngine {
                 Ok(engine.extract_text(generation, range))
             }
             Self::Ghostty(engine) => engine.extract_text(generation, range),
+        }
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use huterm_protocol::HostEffect;
+
+    fn engine_with_recipient(
+        kind: TerminalEngineKind,
+    ) -> (TerminalEngine, crate::host_effects::HostEffectRecipient) {
+        let terminal_id = TerminalId::new(1);
+        let (sink, recipient) = crate::host_effects::test_fixture(terminal_id);
+        let mut engine = TerminalEngine::new(
+            terminal_id,
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+            kind,
+        )
+        .unwrap();
+        engine.set_host_effect_sink(sink);
+        (engine, recipient)
+    }
+
+    fn drain_text(
+        recipient: &crate::host_effects::HostEffectRecipient,
+    ) -> Vec<String> {
+        let mut text = Vec::new();
+        while let Some(pending) = recipient.try_next() {
+            match pending.effect() {
+                HostEffect::ClipboardWrite(write) => {
+                    text.push(write.text().to_owned());
+                }
+                _ => panic!("unexpected host effect"),
+            }
+        }
+        text
+    }
+
+    fn each_engine(
+        mut test: impl FnMut(
+            TerminalEngineKind,
+            &mut TerminalEngine,
+            &crate::host_effects::HostEffectRecipient,
+        ),
+    ) {
+        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
+        {
+            let (mut engine, recipient) = engine_with_recipient(kind);
+            test(kind, &mut engine, &recipient);
+        }
+    }
+
+    #[test]
+    fn osc52_writes_preserve_order_unicode_empty_and_nul() {
+        each_engine(|kind, engine, recipient| {
+            engine
+                .process(
+                    b"\x1b]52;;dG11eA==\x07\x1b]52;c;\x07\x1b]52;c;YQBi\x1b\\\x1b]52;c;5LiW55WM8J+Zgg==\x07",
+                )
+                .unwrap();
+            assert_eq!(
+                drain_text(recipient),
+                ["tmux", "", "a\0b", "世界🙂"],
+                "{kind:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn osc52_bel_and_st_complete_at_every_read_split() {
+        for terminator in ["\x07", "\x1b\\"] {
+            let sequence = format!("\x1b]52;c;5LiW55WM8J+Zgg=={terminator}");
+            for split in 0..=sequence.len() {
+                each_engine(|kind, engine, recipient| {
+                    engine.process(&sequence.as_bytes()[..split]).unwrap();
+                    engine.process(&sequence.as_bytes()[split..]).unwrap();
+                    assert_eq!(
+                        drain_text(recipient),
+                        ["世界🙂"],
+                        "{kind:?} split={split} terminator={terminator:?}"
+                    );
+                });
+            }
+            each_engine(|kind, engine, recipient| {
+                for byte in sequence.as_bytes() {
+                    engine.process(std::slice::from_ref(byte)).unwrap();
+                }
+                assert_eq!(
+                    drain_text(recipient),
+                    ["世界🙂"],
+                    "{kind:?} byte-at-a-time terminator={terminator:?}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn osc52_reads_selection_and_invalid_utf8_are_ignored() {
+        each_engine(|kind, engine, recipient| {
+            let effects = engine
+                .process(
+                    b"\x1b]52;c;?\x07\x1b]52;p;c2VsZWN0aW9u\x07\x1b]52;c;/w==\x07",
+                )
+                .unwrap();
+            assert!(recipient.try_next().is_none(), "{kind:?}");
+            assert!(
+                !effects
+                    .iter()
+                    .any(|effect| matches!(effect, EngineEffect::PtyWrite(_))),
+                "{kind:?} replied to a clipboard read"
+            );
+        });
+    }
+
+    #[test]
+    fn stalled_recipient_keeps_only_the_terminal_effect_budget() {
+        each_engine(|kind, engine, recipient| {
+            let mut input = Vec::new();
+            for _ in 0..100 {
+                input.extend_from_slice(b"\x1b]52;c;dmFsdWU=\x07");
+            }
+            input.extend_from_slice(b"\x1b]2;still-running\x07");
+            let effects = engine.process(&input).unwrap();
+            assert_eq!(drain_text(recipient).len(), 8, "{kind:?}");
+            assert!(
+                effects.iter().any(|effect| {
+                    matches!(effect, EngineEffect::Title(title) if title == "still-running")
+                }),
+                "{kind:?} did not process later non-clipboard output"
+            );
+        });
+    }
+
+    #[test]
+    fn ghostty_keeps_osc1337_copy_support() {
+        let (mut engine, recipient) =
+            engine_with_recipient(TerminalEngineKind::Ghostty);
+        engine.process(b"\x1b]1337;Copy=:aHV0ZXJt\x07").unwrap();
+        assert_eq!(drain_text(&recipient), ["huterm"]);
+    }
+
+    #[test]
+    fn osc52_preserves_upstream_selector_and_malformed_input_behavior() {
+        for (name, sequence, alacritty, ghostty) in [
+            ("malformed", b"\x1b]52;c;!!!!\x07".as_slice(), None, None),
+            ("extra", b"\x1b]52;c;Zm9v;extra\x07", Some("foo"), None),
+            ("selector-list", b"\x1b]52;c,p;Zm9v\x07", Some("foo"), None),
+            ("unknown-selector", b"\x1b]52;x;Zm9v\x07", None, Some("foo")),
+        ] {
+            each_engine(|kind, engine, recipient| {
+                engine.process(sequence).unwrap();
+                let expected = match kind {
+                    TerminalEngineKind::Alacritty => alacritty,
+                    TerminalEngineKind::Ghostty => ghostty,
+                };
+                assert_eq!(
+                    drain_text(recipient),
+                    expected.into_iter().collect::<Vec<_>>(),
+                    "{kind:?} {name}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn osc52_can_and_sub_finish_the_valid_prefix_once() {
+        for cancellation in ['\x18', '\x1a'] {
+            each_engine(|kind, engine, recipient| {
+                let sequence = format!(
+                    "\x1b]52;c;Zm9v{cancellation}\x07\x1b]52;c;YmFy\x07"
+                );
+                engine.process(sequence.as_bytes()).unwrap();
+                assert_eq!(drain_text(recipient), ["foo", "bar"], "{kind:?}");
+            });
         }
     }
 }

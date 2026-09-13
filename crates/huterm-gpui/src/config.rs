@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use crate::themes;
 pub(super) use huterm_config::{
-    ConfigError, FontConfig, KeybindingEntry, LinkModifiers,
-    MacosFullscreenMode, MacosOptionAsAlt, RawConfig, TabPosition,
-    TerminalConfig, Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
+    ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
+    LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt, RawConfig,
+    TabPosition, TerminalConfig, Theme, UpdateConfig, WindowConfig,
+    keybinding_diagnostic,
 };
 use huterm_protocol::TerminalEngineKind;
 
@@ -19,6 +20,9 @@ engine = "alacritty"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
+# Allow terminal content such as tmux to replace the system clipboard.
+# Reload applies this to existing terminals: "allow" or "deny".
+clipboard_write = "allow"
 # Send Option character chords as terminal Meta: "off" or "both".
 # Reload applies this to existing terminals. Linux always uses Alt as Meta.
 macos_option_as_alt = "off"
@@ -135,13 +139,26 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 fatal: false,
             },
             Err(error) => {
-                let (engine, fatal, error) = match fallback_engine(&source) {
-                    Ok(engine) => (engine, false, error),
-                    Err(error) => (TerminalEngineKind::default(), true, error),
+                let (engine, clipboard_write, fatal, error) =
+                    match fallback_terminal(&source) {
+                        Ok((engine, clipboard_write)) => {
+                            (engine, clipboard_write, false, error)
+                        }
+                        Err(error) => (
+                            TerminalEngineKind::default(),
+                            ClipboardWritePolicy::default(),
+                            true,
+                            error,
+                        ),
+                    };
+                let terminal = TerminalConfig {
+                    clipboard_write,
+                    ..TerminalConfig::default()
                 };
                 LoadedConfig {
                     config: Config {
                         engine,
+                        terminal,
                         ..Config::default()
                     },
                     fatal,
@@ -229,18 +246,32 @@ pub(super) fn reload(path: &Path) -> Result<Config, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn fallback_engine(source: &str) -> Result<TerminalEngineKind, ConfigError> {
+fn fallback_terminal(
+    source: &str,
+) -> Result<(TerminalEngineKind, ClipboardWritePolicy), ConfigError> {
     let value: toml::Value =
         toml::from_str(source).map_err(ConfigError::Toml)?;
-    let Some(engine) = value
-        .get("terminal")
+    let terminal = value.get("terminal");
+    let engine = terminal
         .and_then(|terminal| terminal.get("engine"))
-    else {
-        return Ok(TerminalEngineKind::default());
-    };
-    parse_engine(engine.as_str().ok_or_else(|| {
-        ConfigError::Engine("terminal.engine must be a string".into())
-    })?)
+        .map_or_else(
+            || Ok(TerminalEngineKind::default()),
+            |engine| {
+                parse_engine(engine.as_str().ok_or_else(|| {
+                    ConfigError::Engine(
+                        "terminal.engine must be a string".into(),
+                    )
+                })?)
+            },
+        )?;
+    let clipboard_write = terminal
+        .and_then(|terminal| terminal.get("clipboard_write"))
+        .cloned()
+        .map_or_else(
+            || Ok(ClipboardWritePolicy::default()),
+            |value| value.try_into().map_err(ConfigError::Toml),
+        )?;
+    Ok((engine, clipboard_write))
 }
 
 fn parse_engine(name: &str) -> Result<TerminalEngineKind, ConfigError> {
@@ -275,6 +306,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         palette: raw.palette,
         terminal: TerminalConfig {
             close_on_exit: raw.terminal.close_on_exit,
+            clipboard_write: raw.terminal.clipboard_write,
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
@@ -526,6 +558,26 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_write_policy_reload_rejects_invalid_values_without_fallback() {
+        let directory = test_directory();
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(&path, "[terminal]\nclipboard_write = 'deny'").unwrap();
+        let working = reload(&path).unwrap();
+        assert_eq!(
+            working.terminal.clipboard_write,
+            ClipboardWritePolicy::Deny
+        );
+        fs::write(&path, "[terminal]\nclipboard_write = 'prompt'").unwrap();
+        assert!(reload(&path).is_err());
+        assert_eq!(
+            working.terminal.clipboard_write,
+            ClipboardWritePolicy::Deny
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn terminal_close_on_exit_defaults_true_and_requires_a_boolean() {
         assert!(Config::default().terminal.close_on_exit);
         assert!(parse("").unwrap().terminal.close_on_exit);
@@ -573,14 +625,18 @@ mod tests {
     }
 
     #[test]
-    fn config_fallback_preserves_only_a_valid_engine_choice() {
+    fn config_fallback_preserves_valid_engine_and_clipboard_policy() {
         let directory = test_directory();
         fs::create_dir(&directory).unwrap();
         let file = directory.join("config.toml");
         for source in [
             "[terminal]\nengine = 'unknown'",
             "[terminal]\nengine = 12",
+            "[terminal]\nclipboard_write = 'prompt'",
+            "[terminal]\nclipboard_write = 1",
             "[terminal]\nengine = 'unknown'\n[font]\nsize =",
+            "[terminal]\nclipboard_write = 'prompt'\n[font]\nsize = 'bad'",
+            "[terminal]\nclipboard_write = 1\n[font]\nsize = 'bad'",
             "[terminal]\nengine = 'ghostty'\n[font]\nsize =",
             "[font]\nsize =",
         ] {
@@ -589,27 +645,43 @@ mod tests {
             assert!(loaded.fatal, "{source}");
             assert!(loaded.error.is_some());
         }
-        for (source, expected, fatal) in [
+        for (source, expected_engine, expected_clipboard) in [
             (
                 "[terminal]\nengine = 'alacritty'\n[font]\nsize = 'bad'",
                 TerminalEngineKind::Alacritty,
-                false,
+                ClipboardWritePolicy::Allow,
             ),
             (
                 "[terminal]\nengine = 'ghostty'\n[font]\nsize = 'bad'",
                 TerminalEngineKind::Ghostty,
-                false,
+                ClipboardWritePolicy::Allow,
             ),
-            ("[font]\nsize = 'bad'", TerminalEngineKind::Alacritty, false),
+            (
+                "[terminal]\nengine = 'ghostty'\nclipboard_write = 'deny'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Ghostty,
+                ClipboardWritePolicy::Deny,
+            ),
+            (
+                "[terminal]\nclipboard_write = 'deny'\n[font]\nsize = 'bad'",
+                TerminalEngineKind::Alacritty,
+                ClipboardWritePolicy::Deny,
+            ),
+            (
+                "[font]\nsize = 'bad'",
+                TerminalEngineKind::Alacritty,
+                ClipboardWritePolicy::Allow,
+            ),
         ] {
             fs::write(&file, source).unwrap();
             let loaded = load_path(file.clone());
-            assert_eq!(loaded.fatal, fatal, "{source}");
+            assert!(!loaded.fatal, "{source}");
             assert!(loaded.error.is_some());
-            if !fatal {
-                assert_eq!(loaded.config.engine, expected);
-                assert_eq!(loaded.config.font, Config::default().font);
-            }
+            assert_eq!(loaded.config.engine, expected_engine);
+            assert_eq!(
+                loaded.config.terminal.clipboard_write,
+                expected_clipboard
+            );
+            assert_eq!(loaded.config.font, Config::default().font);
         }
         fs::remove_dir_all(directory).unwrap();
     }

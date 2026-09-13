@@ -62,10 +62,10 @@
       },
       "patches": [
         {
-          "name": "cpu-target",
-          "file": "patches/libghostty-vt-sys/cpu-target.patch",
-          "description": "Backport configurable CPU targeting.",
-          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/f720ad74a66e333181986fd5008f34c0a788a119"
+          "name": "upstream-20260901",
+          "file": "patches/libghostty-vt-sys/upstream-20260901.patch",
+          "description": "Upgrade to the matched upstream bindings and native pin, including clipboard callback safety.",
+          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/5988a0b78b4aa804d1c12e66bbfe662bd97d81c0"
         },
         {
           "name": "build-script-watch-path",
@@ -76,12 +76,6 @@
           "name": "license",
           "file": "patches/libghostty-vt-sys/license.patch",
           "description": "Include the MIT license supplied with the reviewed binding notice."
-        },
-        {
-          "name": "zig-016",
-          "file": "patches/libghostty-vt-sys/zig-0.16.patch",
-          "description": "Backport the aligned Ghostty native revision and generated bindings for Zig 0.16 and Xcode 27.",
-          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/6111c4d72f11f0a1894cf3c5943b9ee25a6d0c61"
         },
         {
           "name": "build-source-staging",
@@ -105,6 +99,25 @@
           "name": "macos-exclusive-registration",
           "file": "patches/global-hotkey/macos-exclusive-registration.patch",
           "description": "Use exclusive Carbon hotkey registration so conflicting macOS grabs fail instead of succeeding without event delivery."
+        }
+      ]
+    },
+    {
+      "name": "libghostty-vt",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/libghostty-vt/libghostty-vt-0.2.1.crate",
+      "sha256": "6219ed1c364b3ef5815fb0fd2acc0662f792adc706dabf59b7ca89280ee6d066",
+      "upstream": {
+        "repository": "https://github.com/Uzaaft/libghostty-rs",
+        "revision": "46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0",
+        "path": "crates/libghostty-vt"
+      },
+      "patches": [
+        {
+          "name": "upstream-20260901",
+          "file": "patches/libghostty-vt/upstream-20260901.patch",
+          "description": "Upgrade to the matched upstream bindings and native pin, including clipboard callback safety.",
+          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/5988a0b78b4aa804d1c12e66bbfe662bd97d81c0"
         }
       ]
     }

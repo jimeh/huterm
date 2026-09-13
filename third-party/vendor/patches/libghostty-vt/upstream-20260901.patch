@@ -1,0 +1,2111 @@
+diff --git a/src/alloc.rs b/src/alloc.rs
+index 591ded98d8daf4ab830076fdbc32231542b09053..8df25043ad5ecc9aa6abed61e09c3471b9e549fd 100644
+--- a/src/alloc.rs
++++ b/src/alloc.rs
+@@ -366,3 +366,77 @@ unsafe extern "C" fn _remap<A: alloc::Allocator>(
+ unsafe fn get_allocator<'a, A: alloc::Allocator>(ptr: *mut c_void) -> Option<&'a A> {
+     unsafe { ptr.cast::<A>().as_ref() }
+ }
++
++#[cfg(test)]
++mod tests {
++    use std::ptr::NonNull;
++
++    use super::{_global_alloc, _global_free, _global_remap};
++
++    // These tests stay entirely within Rust-owned allocator callbacks so Miri can
++    // validate the pointer and initialization flow without executing Ghostty.
++
++    #[test]
++    fn global_allocator_respects_requested_alignment() {
++        let len = 16usize;
++        let alignment_log2 = 4u8;
++        let expected_alignment = 1usize << alignment_log2;
++
++        let raw = unsafe { _global_alloc(std::ptr::null_mut(), len, alignment_log2, 0) };
++        let mem = NonNull::new(raw.cast::<u8>()).expect("global allocator returned null");
++
++        assert_eq!((mem.as_ptr() as usize) % expected_alignment, 0);
++
++        unsafe {
++            _global_free(
++                std::ptr::null_mut(),
++                mem.as_ptr().cast(),
++                len,
++                alignment_log2,
++                0,
++            )
++        };
++    }
++
++    #[test]
++    fn global_allocator_round_trip_preserves_written_bytes() {
++        let initial_len = 16usize;
++        let new_len = 32usize;
++        let alignment_log2 = 3u8;
++
++        let raw = unsafe { _global_alloc(std::ptr::null_mut(), initial_len, alignment_log2, 0) };
++        let mem = NonNull::new(raw.cast::<u8>()).expect("global allocator returned null");
++
++        let initial = unsafe { std::slice::from_raw_parts_mut(mem.as_ptr(), initial_len) };
++        for (index, byte) in initial.iter_mut().enumerate() {
++            *byte = index as u8;
++        }
++
++        let raw = unsafe {
++            _global_remap(
++                std::ptr::null_mut(),
++                mem.as_ptr().cast(),
++                initial_len,
++                alignment_log2,
++                new_len,
++                0,
++            )
++        };
++        let mem = NonNull::new(raw.cast::<u8>()).expect("global remap returned null");
++
++        let grown = unsafe { std::slice::from_raw_parts(mem.as_ptr(), new_len) };
++        for (index, byte) in grown[..initial_len].iter().copied().enumerate() {
++            assert_eq!(byte, index as u8);
++        }
++
++        unsafe {
++            _global_free(
++                std::ptr::null_mut(),
++                mem.as_ptr().cast(),
++                new_len,
++                alignment_log2,
++                0,
++            )
++        };
++    }
++}
+diff --git a/src/error.rs b/src/error.rs
+index 39c87d1894b0c229870dcc7522dac9fbf85a166f..7f3c17c73bac73a41f16d8acc040583762bede87 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -18,6 +18,10 @@ pub enum Error {
+         /// Required minimum size of the buffer.
+         required: usize,
+     },
++    /// Operation failed while reading from or writing to external I/O.
++    IoError,
++    /// Operation failed because encoded input exceeded a configured limit.
++    LimitExceeded,
+ }
+ 
+ impl std::fmt::Display for Error {
+@@ -28,6 +32,8 @@ impl std::fmt::Display for Error {
+             Self::OutOfSpace { required } => {
+                 write!(f, "out of space, {required} bytes required")
+             }
++            Self::IoError => write!(f, "external IO error"),
++            Self::LimitExceeded => write!(f, "encoded input exceeded configured limit"),
+         }
+     }
+ }
+@@ -39,6 +45,8 @@ pub(crate) fn from_result(code: ffi::Result::Type) -> Result<()> {
+         ffi::Result::SUCCESS => Ok(()),
+         ffi::Result::OUT_OF_MEMORY => Err(Error::OutOfMemory),
+         ffi::Result::OUT_OF_SPACE => Err(Error::OutOfSpace { required: 0 }),
++        ffi::Result::IO_ERROR => Err(Error::IoError),
++        ffi::Result::LIMIT_EXCEEDED => Err(Error::LimitExceeded),
+         _ => Err(Error::InvalidValue),
+     }
+ }
+@@ -53,6 +61,8 @@ pub(crate) fn from_optional_result_uninit<T>(
+         ffi::Result::OUT_OF_MEMORY => Err(Error::OutOfMemory),
+         ffi::Result::OUT_OF_SPACE => Err(Error::OutOfSpace { required: 0 }),
+         ffi::Result::NO_VALUE => Ok(None),
++        ffi::Result::IO_ERROR => Err(Error::IoError),
++        ffi::Result::LIMIT_EXCEEDED => Err(Error::LimitExceeded),
+         _ => Err(Error::InvalidValue),
+     }
+ }
+@@ -64,6 +74,8 @@ pub(crate) fn from_optional_result<T>(code: ffi::Result::Type, v: T) -> Result<O
+         ffi::Result::OUT_OF_MEMORY => Err(Error::OutOfMemory),
+         ffi::Result::OUT_OF_SPACE => Err(Error::OutOfSpace { required: 0 }),
+         ffi::Result::NO_VALUE => Ok(None),
++        ffi::Result::IO_ERROR => Err(Error::IoError),
++        ffi::Result::LIMIT_EXCEEDED => Err(Error::LimitExceeded),
+         _ => Err(Error::InvalidValue),
+     }
+ }
+@@ -73,6 +85,8 @@ pub(crate) fn from_result_with_len(code: ffi::Result::Type, len: usize) -> Resul
+         ffi::Result::SUCCESS => Ok(len),
+         ffi::Result::OUT_OF_MEMORY => Err(Error::OutOfMemory),
+         ffi::Result::OUT_OF_SPACE => Err(Error::OutOfSpace { required: len }),
++        ffi::Result::IO_ERROR => Err(Error::IoError),
++        ffi::Result::LIMIT_EXCEEDED => Err(Error::LimitExceeded),
+         _ => Err(Error::InvalidValue),
+     }
+ }
+@@ -86,6 +100,8 @@ pub(crate) fn from_optional_result_with_len(
+         ffi::Result::OUT_OF_MEMORY => Err(Error::OutOfMemory),
+         ffi::Result::OUT_OF_SPACE => Err(Error::OutOfSpace { required: len }),
+         ffi::Result::NO_VALUE => Ok(None),
++        ffi::Result::IO_ERROR => Err(Error::IoError),
++        ffi::Result::LIMIT_EXCEEDED => Err(Error::LimitExceeded),
+         _ => Err(Error::InvalidValue),
+     }
+ }
+diff --git a/src/io.rs b/src/io.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ee14812ed61d80db9133646f0f52202dd73fd49
+--- /dev/null
++++ b/src/io.rs
+@@ -0,0 +1,60 @@
++//! Adapters from standard library IO traits to libghostty objects.
++use std::io::{Read, Write};
++
++use crate::ffi;
++
++/// Adapt a [`std::io::Write`] to a libghostty-friendly Writer object.
++pub fn to_writer<W: Write>(w: &mut W) -> ffi::Writer {
++    unsafe extern "C" fn trampoline<W: Write>(
++        userdata: *mut ::std::os::raw::c_void,
++        data: *const u8,
++        len: usize,
++    ) -> bool {
++        // SAFETY: This trampoline should be inaccessible outside
++        // of the writer interface, so it should be safe to assume
++        // the userdata is the writer we need
++        let w: &mut W = unsafe { &mut *userdata.cast::<W>() };
++
++        // SAFETY: We trust libghostty to give us valid data
++        let data = unsafe { std::slice::from_raw_parts(data, len) };
++
++        w.write_all(data).is_ok()
++    }
++
++    ffi::Writer {
++        userdata: std::ptr::from_mut(w).cast(),
++        write: Some(trampoline::<W>),
++    }
++}
++
++/// Adapt a [`std::io::Read`] to a libghostty-friendly Reader object.
++pub fn to_reader<R: Read>(r: &mut R) -> ffi::Reader {
++    unsafe extern "C" fn trampoline<R: Read>(
++        userdata: *mut ::std::os::raw::c_void,
++        buffer: *mut u8,
++        capacity: usize,
++        out_read: *mut usize,
++    ) -> bool {
++        // SAFETY: This trampoline should be inaccessible outside
++        // of the writer interface, so it should be safe to assume
++        // the userdata is the writer we need
++        let r: &mut R = unsafe { &mut *userdata.cast::<R>() };
++
++        // SAFETY: We trust libghostty to give us valid data
++        let buf = unsafe { std::slice::from_raw_parts_mut(buffer, capacity) };
++
++        match r.read(buf) {
++            // SAFETY: Ditto
++            Ok(len) => unsafe {
++                *out_read = len;
++                true
++            },
++            Err(_) => false,
++        }
++    }
++
++    ffi::Reader {
++        userdata: std::ptr::from_mut(r).cast(),
++        read: Some(trampoline::<R>),
++    }
++}
+diff --git a/src/kitty/graphics.rs b/src/kitty/graphics.rs
+index 2b7586bd6e535ba69ca805badfcf65dfb642591a..9e27b08aa15a679705704e9f11a85c373441109a 100644
+--- a/src/kitty/graphics.rs
++++ b/src/kitty/graphics.rs
+@@ -71,7 +71,6 @@
+ //! ```
+ //! use libghostty_vt::{
+ //!     Terminal,
+-//!     TerminalOptions,
+ //!     alloc::{Allocator, Bytes},
+ //!     kitty::graphics,
+ //! };
+@@ -109,79 +108,75 @@
+ //! fn main() -> Result<(), Box<dyn std::error::Error>> {
+ //!     graphics::set_png_decoder(Some(Box::new(StubPngDecoder)))?;
+ //!
+-//!     let mut terminal = Terminal::new(TerminalOptions {
+-//!        cols: 80,
+-//!        rows: 24,
+-//!        max_scrollback: 0
+-//!    })?;
++//!     let mut terminal = Terminal::new(80, 24)?;
+ //!
+-//!    // Set cell pixel dimensions so kitty graphics can compute grid sizes.
+-//!    terminal.resize(80, 24, 8, 16)?;
++//!     // Set cell pixel dimensions so kitty graphics can compute grid sizes.
++//!     terminal.resize(80, 24, 8, 16)?;
+ //!
+-//!    // Set a storage limit (64MiB) to enable Kitty graphics.
+-//!    terminal.set_kitty_image_storage_limit(64 * 1024 * 1024)?;
++//!     // Set a storage limit (64MiB) to enable Kitty graphics.
++//!     terminal.set_kitty_image_storage_limit(64 * 1024 * 1024)?;
+ //!
+-//!    // Install pty_write to see the protocol response.
+-//!    terminal.on_pty_write(|_, data| println!("{}", data.escape_ascii()))?;
++//!     // Install pty_write to see the protocol response.
++//!     terminal.on_pty_write(|_, data| println!("{}", data.escape_ascii()))?;
+ //!
+-//!    // Send a Kitty graphics command with an inline 1x1 PNG image.
+-//!    //
+-//!    // The escape sequence is:
+-//!    //   ESC _G a=T,f=100,q=1; <base64 PNG data> ESC \
+-//!    //
+-//!    // Where:
+-//!    //   a=T   — transmit and display
+-//!    //   f=100 — PNG format
+-//!    //   q=1   — request a response (q=0 would suppress it)
+-//!    println!("Sending Kitty graphics PNG image:");
+-//!    terminal.vt_write(
+-//!      b"\x1b_Ga=T,f=100,q=1;\
+-//!       iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\
+-//!       DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\
+-//!      \x1b\\"
+-//!    );
++//!     // Send a Kitty graphics command with an inline 1x1 PNG image.
++//!     //
++//!     // The escape sequence is:
++//!     //   ESC _G a=T,f=100,q=1; <base64 PNG data> ESC \
++//!     //
++//!     // Where:
++//!     //   a=T   — transmit and display
++//!     //   f=100 — PNG format
++//!     //   q=1   — request a response (q=0 would suppress it)
++//!     println!("Sending Kitty graphics PNG image:");
++//!     terminal.vt_write(
++//!       b"\x1b_Ga=T,f=100,q=1;\
++//!        iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\
++//!        DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\
++//!       \x1b\\"
++//!     );
+ //!
+-//!    let graphics = terminal.kitty_graphics()?;
+-//!    let mut iter = graphics::PlacementIterator::new()?;
+-//!    let mut placements = iter.update(&graphics)?;
++//!     let graphics = terminal.kitty_graphics()?;
++//!     let mut iter = graphics::PlacementIterator::new()?;
++//!     let mut placements = iter.update(&graphics)?;
+ //!
+-//!    let mut placement_count = 0usize;
+-//!    while let Some(placement) = placements.next() {
+-//!        placement_count += 1;
+-//!        let image_id = placement.image_id()?;
+-//!        println!(
+-//!            "  placement #{}: image_id={} placement_id={} virtual={} z={}",
+-//!            placement_count,
+-//!            image_id,
+-//!            placement.placement_id()?,
+-//!            placement.is_virtual()?,
+-//!            placement.z()?,
+-//!       );
++//!     let mut placement_count = 0usize;
++//!     while let Some(placement) = placements.next() {
++//!         placement_count += 1;
++//!         let image_id = placement.image_id()?;
++//!         println!(
++//!             "  placement #{}: image_id={} placement_id={} virtual={} z={}",
++//!             placement_count,
++//!             image_id,
++//!             placement.placement_id()?,
++//!             placement.is_virtual()?,
++//!             placement.z()?,
++//!        );
+ //!
+-//!       // Look up the image and print its properties.
+-//!       let image = graphics.image(image_id).unwrap();
+-//!       println!(
+-//!           "    image: number={} size={}x{} format={:?} data_len={}",
+-//!           image.number()?,
+-//!           image.width()?,
+-//!           image.height()?,
+-//!           image.format()?,
+-//!           image.data()?.len(),
+-//!       );
++//!        // Look up the image and print its properties.
++//!        let image = graphics.image(image_id).unwrap();
++//!        println!(
++//!            "    image: number={} size={}x{} format={:?} data_len={}",
++//!            image.number()?,
++//!            image.width()?,
++//!            image.height()?,
++//!            image.format()?,
++//!            image.data()?.unwrap().len(),
++//!        );
+ //!
+-//!       let pixel_size = placement.pixel_size(&image, &terminal)?;
+-//!       println!(
+-//!           "    rendered pixel size: {}x{}",
+-//!           pixel_size.width, pixel_size.height,
+-//!       );
+-//!       let grid_size = placement.grid_size(&image, &terminal)?;
+-//!       println!(
+-//!           "    grid size: {} cols x {} rows",
+-//!           grid_size.cols, grid_size.rows,
+-//!       );
+-//!    }
+-//!    println!("Total placements: {placement_count}");
+-//!    Ok(())
++//!        let pixel_size = placement.pixel_size(&image, &terminal)?;
++//!        println!(
++//!            "    rendered pixel size: {}x{}",
++//!            pixel_size.width, pixel_size.height,
++//!        );
++//!        let grid_size = placement.grid_size(&image, &terminal)?;
++//!        println!(
++//!            "    grid size: {} cols x {} rows",
++//!            grid_size.cols, grid_size.rows,
++//!        );
++//!     }
++//!     println!("Total placements: {placement_count}");
++//!     Ok(())
+ //! }
+ //! ```
+ //!
+@@ -190,7 +185,9 @@
+ 
+ use std::{
+     cell::RefCell,
++    ffi::OsStr,
+     mem::{ManuallyDrop, MaybeUninit},
++    path::Path,
+ };
+ 
+ use crate::{
+@@ -261,10 +258,35 @@ impl Terminal<'_, '_> {
+     pub fn is_kitty_image_from_file_allowed(&self) -> Result<bool> {
+         self.get(ffi::TerminalData::KITTY_IMAGE_MEDIUM_FILE)
+     }
+-    /// Whether the temporary file medium is enabled for Kitty image loading
+-    /// on the active screen.
+-    pub fn is_kitty_image_from_temp_file_allowed(&self) -> Result<bool> {
+-        self.get(ffi::TerminalData::KITTY_IMAGE_MEDIUM_TEMP_FILE)
++    /// The directory allowed for Kitty image loading via the temporary file
++    /// medium on the active screen, or `None` when the medium is disabled.
++    ///
++    /// Returns a borrowed path, valid until the next mutating terminal call
++    /// (e.g. [`Terminal::vt_write`] or [`Terminal::reset`]).
++    pub fn kitty_image_temp_file_dir(&self) -> Result<Option<&Path>> {
++        let str = self.get::<ffi::String>(ffi::TerminalData::KITTY_IMAGE_MEDIUM_TEMP_FILE)?;
++        if str.len == 0 {
++            return Ok(None);
++        }
++        // SAFETY: We trust libghostty to return a valid borrowed string,
++        // while we uphold that no mutation could happen during its lifetime.
++        let bytes = unsafe { std::slice::from_raw_parts(str.ptr, str.len) };
++        // SAFETY:
++        // Whilst the `OsStr::from_encoded_bytes_unchecked` function states that the
++        // exact OsStr encoding format is an implementation detail and no external bytes
++        // should rely on which exact encoding is used... In reality this should always
++        // work without issue, since both Zig and Rust basically share the same underlying
++        // string format.
++        //
++        // On Unix-like platforms, both Zig and Rust agree that a file path is just an
++        // arbitrary sequence of bytes without any NULs in between. The tricky part is
++        // that Windows uses (noncompliant) UTF-16 file paths natively and it just so
++        // happens both Zig and Rust use WTF-8 as a workaround against that whole can
++        // of worms, though in Rust it's more of an implementation detail.
++        // The Kitty graphics protocol itself is poorly defined on Windows, but for all
++        // intents and purposes, the bytes are always valid `OsStr`s and `Path`s.
++        let os_str = unsafe { OsStr::from_encoded_bytes_unchecked(bytes) };
++        Ok(Some(Path::new(os_str)))
+     }
+     /// Whether the shared memory medium is enabled for Kitty image loading
+     /// on the active screen.
+@@ -287,11 +309,22 @@ impl Terminal<'_, '_> {
+         self.set(ffi::TerminalOption::KITTY_IMAGE_MEDIUM_FILE, &allowed)?;
+         Ok(self)
+     }
+-    /// Enable or disable Kitty image loading via the temporary file medium.
++    /// Enable Kitty image loading via the temporary file medium, restricted
++    /// to the given directory. A `None` value disables the medium. The
++    /// string is copied into the terminal.
+     ///
+     /// Has no effect when Kitty graphics are disabled at build time.
+-    pub fn set_kitty_image_from_temp_file_allowed(&mut self, allowed: bool) -> Result<&mut Self> {
+-        self.set(ffi::TerminalOption::KITTY_IMAGE_MEDIUM_TEMP_FILE, &allowed)?;
++    pub fn set_kitty_image_temp_file_dir(&mut self, dir: Option<&Path>) -> Result<&mut Self> {
++        // GhosttyString carries UTF-8, so reject paths that
++        // [`Terminal::kitty_image_temp_file_dir`] could never read back.
++        let dir = dir
++            .map(|dir| dir.to_str().ok_or(Error::InvalidValue))
++            .transpose()?
++            .map(ffi::String::from);
++        self.set_optional(
++            ffi::TerminalOption::KITTY_IMAGE_MEDIUM_TEMP_FILE,
++            dir.as_ref(),
++        )?;
+         Ok(self)
+     }
+     /// Enable or disable Kitty image loading via the shared memory medium.
+@@ -388,16 +421,21 @@ impl<'t> Image<'t> {
+     pub fn height(&self) -> Result<u32> {
+         self.get(ffi::KittyGraphicsImageData::HEIGHT)
+     }
+-    /// Generation stamp assigned when this image was added to or replaced in the storage.
++
++    /// Generation stamp assigned when this image was added to (or replaced in)
++    /// the storage.
+     ///
+     /// A changed generation for a given image ID means the pixel contents may
+     /// have changed even when the dimensions, format, and data length are
+-    /// identical, for example a retransmission of the same image ID, so texture
++    /// identical (e.g. a retransmission of the same image ID), so texture
+     /// caches must key staleness on this value rather than on size heuristics.
+     ///
+-    /// Stamps are unique and monotonically increasing process-wide and are drawn
+-    /// from the same sequence as [`Graphics::generation`]. Never zero for a
+-    /// stored image, so zero can be used as an empty sentinel by callers.
++    /// Stamps are unique and monotonically increasing process-wide and are
++    /// drawn from the same sequence as [`Graphics::generation`]. Never zero
++    /// for a stored image, so zero can be used as an "empty" sentinel by
++    /// callers. Pending payload completion preserves this value to retain
++    /// image age; consumers detect that completion through
++    /// [`Graphics::generation`] and retry [`Image::data`].
+     pub fn generation(&self) -> Result<u64> {
+         self.get(ffi::KittyGraphicsImageData::GENERATION)
+     }
+@@ -411,15 +449,29 @@ impl<'t> Image<'t> {
+         self.get::<ffi::KittyImageCompression::Type>(ffi::KittyGraphicsImageData::COMPRESSION)
+             .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))
+     }
++
+     /// Borrowed pointer to the raw pixel data.
+     ///
+     /// Valid as long as the underlying terminal is not mutated.
+-    pub fn data(&self) -> Result<&'t [u8]> {
++    ///
++    /// Returns `None` when the image metadata is resident but its pixel
++    /// payload is pending.
++    ///
++    /// The data is always fully decoded, uncompressed pixels in the format
++    /// reported by [`Image::format`]: zlib payloads are inflated and PNG
++    /// payloads are decoded to RGBA at transmission time, before the image
++    /// is stored. Consumers can upload this directly to the GPU without any
++    /// decode step.
++    pub fn data(&self) -> Result<Option<&'t [u8]>> {
+         let ptr = self.get::<*const u8>(ffi::KittyGraphicsImageData::DATA_PTR)?;
++        if ptr.is_null() {
++            return Ok(None);
++        }
++
+         let len = self.get::<usize>(ffi::KittyGraphicsImageData::DATA_LEN)?;
+ 
+         // SAFETY: We trust libghostty to return valid results
+-        Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
++        Ok(Some(unsafe { std::slice::from_raw_parts(ptr, len) }))
+     }
+ }
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 559a4bd26f4b09a1861e6009acf29ab8f8674464..36ffdc0920bb4053776c6319d2f73c7e4e9633c3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -98,6 +98,7 @@ pub mod build_info;
+ pub mod error;
+ pub mod fmt;
+ pub mod focus;
++pub(crate) mod io;
+ pub mod key;
+ pub mod kitty;
+ pub mod log;
+@@ -108,6 +109,7 @@ pub mod render;
+ pub mod screen;
+ pub mod selection;
+ pub mod sgr;
++pub mod snapshot;
+ pub mod style;
+ pub mod unicode;
+ 
+@@ -116,7 +118,7 @@ pub use crate::{
+     error::Error,
+     log::{Logger, set_logger},
+     render::RenderState,
+-    terminal::{Options as TerminalOptions, Terminal},
++    terminal::Terminal,
+ };
+ 
+ pub(crate) fn sys_set<T>(opt: ffi::SysOption::Type, val: *const T) -> error::Result<()> {
+diff --git a/src/render.rs b/src/render.rs
+index 267b02f2a61b47eadc77d33791a9fa8921e84881..8f80d5151462e17fcf54d208852ea8102622e6a0 100644
+--- a/src/render.rs
++++ b/src/render.rs
+@@ -58,14 +58,9 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// // Create a terminal and render state, then update the render state
+ /// // from the terminal. The render state captures a snapshot of everything
+ /// // needed to draw a frame.
+-/// use libghostty_vt::{Terminal, TerminalOptions, RenderState};
+-///
+-/// let mut terminal = Terminal::new(TerminalOptions {
+-///     cols: 40,
+-///     rows: 5,
+-///     max_scrollback: 10000,
+-/// }).unwrap();
++/// use libghostty_vt::{Terminal, RenderState};
+ ///
++/// let mut terminal = Terminal::new(40, 5).unwrap();
+ /// let mut render_state = RenderState::new().unwrap();
+ ///
+ /// // Feed some styled content into the terminal.
+@@ -79,14 +74,10 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// ## Splitting an update
+ ///
+ /// ```rust
+-/// use libghostty_vt::{RenderState, Terminal, TerminalOptions};
++/// use libghostty_vt::{RenderState, Terminal};
+ ///
+ /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+-/// let terminal = Terminal::new(TerminalOptions {
+-///     cols: 80,
+-///     rows: 25,
+-///     max_scrollback: 10000,
+-/// })?;
++/// let terminal = Terminal::new(80, 25)?;
+ /// let mut render_state = RenderState::new()?;
+ ///
+ /// // Use `update` unless you need to minimize how long terminal access is
+@@ -107,12 +98,8 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// ```rust
+ /// // Check the global dirty state to decide how much work the renderer
+ /// // needs to do. After rendering, reset it to false.
+-/// # use libghostty_vt::{Terminal, TerminalOptions, RenderState, render::Dirty};
+-/// # let terminal = Terminal::new(TerminalOptions {
+-/// #     cols: 80,
+-/// #     rows: 25,
+-/// #     max_scrollback: 10000,
+-/// # }).unwrap();
++/// # use libghostty_vt::{Terminal, RenderState, render::Dirty};
++/// # let terminal = Terminal::new(80, 25).unwrap();
+ /// # let mut render_state = RenderState::new().unwrap();
+ /// let snapshot = render_state.update(&terminal).unwrap();
+ ///
+@@ -128,12 +115,8 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// ```rust
+ /// // Retrieve colors (background, foreground, palette) from the render
+ /// // state. These are needed to resolve palette-indexed cell colors.
+-/// # use libghostty_vt::{Terminal, TerminalOptions, RenderState};
+-/// # let terminal = Terminal::new(TerminalOptions {
+-/// #     cols: 80,
+-/// #     rows: 25,
+-/// #     max_scrollback: 10000,
+-/// # }).unwrap();
++/// # use libghostty_vt::{Terminal, RenderState};
++/// # let terminal = Terminal::new(80, 25).unwrap();
+ /// # let mut render_state = RenderState::new().unwrap();
+ /// let snapshot = render_state.update(&terminal).unwrap();
+ /// let colors = snapshot.colors().unwrap();
+@@ -153,12 +136,8 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// ```rust
+ /// // Read cursor position and visual style from the render state.
+ /// use libghostty_vt::render::CursorViewport;
+-/// # use libghostty_vt::{Terminal, TerminalOptions, RenderState};
+-/// # let terminal = Terminal::new(TerminalOptions {
+-/// #     cols: 80,
+-/// #     rows: 25,
+-/// #     max_scrollback: 10000,
+-/// # }).unwrap();
++/// # use libghostty_vt::{Terminal, RenderState};
++/// # let terminal = Terminal::new(80, 25).unwrap();
+ /// # let mut render_state = RenderState::new().unwrap();
+ /// let snapshot = render_state.update(&terminal).unwrap();
+ ///
+@@ -176,15 +155,11 @@ pub use ffi::RenderStateRowSelection as RowSelection;
+ /// // Iterate rows via the row iterator. For each dirty row, iterate its
+ /// // cells, read codepoints/graphemes and styles, and emit ANSI-colored
+ /// // output as a simple "renderer".
+-/// use libghostty_vt::{Terminal, TerminalOptions, RenderState};
++/// use libghostty_vt::{Terminal, RenderState};
+ /// use libghostty_vt::style::Underline;
+ ///
+ /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+-/// # let terminal = Terminal::new(TerminalOptions {
+-/// #     cols: 80,
+-/// #     rows: 25,
+-/// #     max_scrollback: 10000,
+-/// # }).unwrap();
++/// # let terminal = Terminal::new(80, 25).unwrap();
+ /// # let mut render_state = RenderState::new()?;
+ /// use libghostty_vt::render::{RowIterator, CellIterator};
+ ///
+@@ -979,7 +954,7 @@ pub enum CursorVisualStyle {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::terminal::{Options, Terminal};
++    use crate::terminal::Terminal;
+ 
+     /// Guards the `set_dirty` → `update` → `dirty()` round-trip. If
+     /// `Snapshot::set(value: &T)` calls `from_ref(&value)`, the result has
+@@ -988,12 +963,7 @@ mod tests {
+     /// propagates them, and `dirty()` fails enum decoding.
+     #[test]
+     fn dirty_decodes_after_set_dirty_then_update() {
+-        let terminal = Terminal::new(Options {
+-            cols: 8,
+-            rows: 3,
+-            max_scrollback: 0,
+-        })
+-        .unwrap();
++        let terminal = Terminal::new(8, 3).unwrap();
+         let mut state = RenderState::new().unwrap();
+ 
+         state
+diff --git a/src/screen.rs b/src/screen.rs
+index 329ec067b878cfb50820dfc974b1faa15182b57a..67170fe63933071af56d1dcad8352b4ae3100a42 100644
+--- a/src/screen.rs
++++ b/src/screen.rs
+@@ -15,7 +15,7 @@ use crate::{
+ /// Terminal screen identifier.
+ ///
+ /// Identifies which screen buffer is active in the terminal.
+-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, int_enum::IntEnum)]
+ #[repr(u32)]
+ pub enum Screen {
+     /// The primary (normal) screen.
+diff --git a/src/selection.rs b/src/selection.rs
+index 14b1dae52f9938e4423b715014bac64357449ac9..dafb319717d484a247c597daf3d4c906d48fba35 100644
+--- a/src/selection.rs
++++ b/src/selection.rs
+@@ -198,6 +198,21 @@ impl<'t> Selection<'t> {
+ 
+ /// Methods related to [selections](crate::selection).
+ impl Terminal<'_, '_> {
++    /// Get the active screen's current selection.
++    ///
++    /// On success, returns an untracked snapshot of the terminal-owned selection.
++    /// The [`Selection`] object is caller-owned and may be kept, but the grid
++    /// references inside it are untracked borrowed references into the active screen.
++    /// They are only valid until the next mutating terminal call, such as
++    /// the various `Terminal::set_*` methods, [`Terminal::vt_write`],
++    /// [`Terminal::resize`], or [`Terminal::reset`].
++    ///
++    /// Returns `Ok(None)` when there is no active selection.
++    pub fn selection(&self) -> Result<Option<Selection<'_>>> {
++        self.get_optional::<ffi::Selection>(ffi::TerminalData::SELECTION)
++            .map(|v| v.map(|raw| unsafe { Selection::from_raw(raw) }))
++    }
++
+     /// Set the active screen selection.
+     ///
+     /// The selection's grid references must be valid for this terminal's
+@@ -301,9 +316,8 @@ impl Terminal<'_, '_> {
+     ///     screen::GridRef,
+     ///     selection::{Selection, SelectWordBetweenOptions},
+     /// };
+-    /// # use libghostty_vt::TerminalOptions;
+     /// # fn main() -> libghostty_vt::error::Result<()> {
+-    /// # let terminal = Terminal::new(TerminalOptions { cols: 80, rows: 24, max_scrollback: 0 }).unwrap();
++    /// # let terminal = Terminal::new(80, 24).unwrap();
+     ///
+     /// // Double-click-and-drag style selection. Suppose the user double-clicks
+     /// // "git" and drags to "status". The pointer may pass over whitespace, so
+diff --git a/src/snapshot.rs b/src/snapshot.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..97e85a4610d588f553b2823d62e08a2c4bb5dc29
+--- /dev/null
++++ b/src/snapshot.rs
+@@ -0,0 +1,494 @@
++//! Encode and restore the complete state of a terminal via a binary format.
++//!
++//! A snapshot is an ordered, authenticated record stream. Its READY checkpoint
++//! contains enough state to render and resume the terminal, including any
++//! unfinished VT parser input. Older scrollback pages follow READY and the
++//! FINISH checkpoint authenticates the complete snapshot.
++//!
++//! End-of-file before an operation's required READY or FINISH checkpoint is
++//! malformed, truncated snapshot data and returns [`Error::InvalidValue`].
++//! [`Error::IoError`] is reserved for reader errors.
++//!
++//! Decoding is done with the dedicated [`Decoder`] struct; encoding, meanwhile,
++//! is supported by methods on [`Terminal`] like [`Terminal::encode_snapshot`].
++//!
++//! # Format
++//!
++//! Every integer is unsigned and little-endian.
++//! The stream begins with this fixed ten-byte envelope:
++//!
++//! ```text
++//! byte  0               8       10
++//!       +---------------+--------+
++//!       | "GHOSTSNP"    | version|
++//!       | 8-byte magic  | u16    |
++//!       +---------------+--------+
++//! ```
++//!
++//! The envelope is followed by independently checksummed records. A record's
++//! CRC32C covers its encoded tag and payload length followed by its payload;
++//! it does not cover the CRC field itself.
++//!
++//! ```text
++//! byte  0       2             6          10             10 + payload_len
++//!       +-------+-------------+-----------+----------------+
++//!       | tag   | payload_len | CRC32C    | payload        |
++//!       | u16   | u32         | u32       | payload_len B  |
++//!       +-------+-------------+-----------+----------------+
++//!       \____________________/             \______________/
++//!          CRC prefix                         CRC suffix
++//! ```
++//!
++//! Record groups occur in this strict order. SCREEN and HISTORY groups contain
++//! one entry for each screen declared by TERMINAL. Each manifest is followed by
++//! the number of PAGE records it declares. Active SCREEN pages make the terminal
++//! renderable; HISTORY pages are older scrollback ordered newest to oldest so
++//! an incremental decoder can prepend them as they arrive.
++//!
++//! ```text
++//!
++//! +---------------- TERMINAL ----------------+
++//! | terminal-wide state and screen count     |
++//! +----------------- SCREEN -----------------+  repeated per screen
++//! | active-screen manifest                   |
++//! +------------------ PAGE ------------------+  repeated per manifest
++//! | active screen rows                       |
++//! +------------- CONTINUATION ---------------+
++//! | unfinished VT/UTF-8 input, or ground     |
++//! +------------------ READY -----------------+
++//! | BLAKE3-256 of every preceding byte       |  ready() returns here
++//! +----------------- HISTORY ----------------+  repeated per screen
++//! | scrollback manifest                      |
++//! +------------------ PAGE ------------------+  next() consumes one page
++//! | older screen rows                        |
++//! +------------------ FINISH ----------------+
++//! | BLAKE3-256 of every preceding byte       |  next() returns NO_VALUE
++//! +------------------------------------------+
++//! | trailing transport bytes (not consumed) |
++//! +------------------------------------------+
++//! ```
++//!
++//! READY authenticates the renderable prefix through CONTINUATION. FINISH
++//! authenticates READY and every history record as well as the earlier prefix.
++//! Thus record CRC32C detects local corruption while the BLAKE3 checkpoints
++//! also bind the ordering and completeness of the record stream.
++//!
++//! Snapshot format version 1 is a work in progress and does not yet carry a
++//! binary-compatibility guarantee.
++//!
++//! ## See also
++//!
++//! [Snapshot format and Zig codec documentation](https://github.com/ghostty-org/ghostty/blob/main/src/terminal/snapshot/main.zig)
++use std::{
++    io::{Read, Write},
++    marker::PhantomData,
++    mem::MaybeUninit,
++    ptr::NonNull,
++};
++
++use crate::{
++    alloc::{Allocator, Bytes, Object},
++    error::{
++        Error, Result, from_optional_result, from_optional_result_uninit,
++        from_optional_result_with_len, from_result,
++    },
++    ffi::{self, SnapshotDecoderData as Data, SnapshotDecoderOption as Opt},
++    screen::Screen,
++    terminal::Terminal,
++};
++
++/// Snapshot-related methods.
++impl Terminal<'_, '_> {
++    /// Encode a complete terminal snapshot to a writer.
++    ///
++    /// The terminal's persistent VT stream supplies the continuation bytes
++    /// needed to reconstruct unfinished parser state. The caller must prevent
++    /// concurrent writes or other terminal mutation for the duration of this
++    /// call. The writer callback must not call terminal APIs with the same
++    /// terminal handle. A terminal can be encoded with tracking disabled when
++    /// its VT parser and UTF-8 decoder are both at ground. If either is
++    /// unfinished, tracking must have been enabled before the input that
++    ///produced that state was written; otherwise this returns
++    /// [`Error::InvalidValue`].
++    ///
++    /// Encoding begins at the writer's current position. If an error occurs,
++    /// the writer may contain a partial snapshot without a valid FINISH
++    /// checkpoint. Calls to the writer are synchronous; this function does not
++    /// flush or make the caller's destination durable.
++    ///
++    /// # Errors
++    ///
++    /// This function returns [`Error::IoError`] if the writer rejects output,
++    /// [`Error::LimitExceeded`] if output accounting overflows, or another
++    /// error code on failure.
++    pub fn encode_snapshot<W: Write>(&mut self, writer: &mut W) -> Result<()> {
++        let writer = crate::io::to_writer(writer);
++        let result = unsafe { ffi::ghostty_snapshot_encode(self.inner.as_raw(), writer) };
++        from_result(result)
++    }
++
++    /// Encode a complete terminal snapshot to an allocated buffer.
++    ///
++    /// The returned buffer is allocated with allocator, or the default
++    /// allocator when allocator is `None`.
++    ///
++    /// A terminal can be encoded with tracking disabled when its VT parser
++    /// and UTF-8 decoder are both at ground. If either is unfinished, tracking
++    /// must have been enabled before the input that produced that state was
++    /// written; otherwise this returns [`Error::InvalidValue`].
++    pub fn encode_snapshot_alloc<'a, 'ctx: 'a>(
++        &self,
++        alloc: Option<&'a Allocator<'ctx>>,
++    ) -> Result<Option<Bytes<'a>>> {
++        let mut out = std::ptr::null_mut();
++        let mut out_len = 0usize;
++        let alloc = alloc.map_or(std::ptr::null(), |v| v.to_raw());
++
++        let result = unsafe {
++            ffi::ghostty_snapshot_encode_alloc(
++                self.inner.as_raw(),
++                alloc,
++                &raw mut out,
++                &raw mut out_len,
++            )
++        };
++
++        let out = from_optional_result(result, out)?;
++        Ok(out
++            .and_then(NonNull::new)
++            .map(|ptr| unsafe { Bytes::from_raw_parts(ptr, out_len, alloc) }))
++    }
++
++    /// Encode a complete terminal snapshot to a caller-provided buffer.
++    ///
++    /// Pass an empty `buf` to query the required size. A size query returns
++    /// [`Error::OutOfSpace`] with the required size, including zero when the
++    /// stream is at ground. If a non-empty buffer is too small, the function
++    /// has the same result and reports the full required size.
++    ///
++    /// A terminal can be encoded with tracking disabled when its VT parser
++    /// and UTF-8 decoder are both at ground. If either is unfinished, tracking
++    /// must have been enabled before the input that produced that state was
++    /// written; otherwise this returns [`Error::InvalidValue`].
++    pub fn encode_snapshot_buf(&self, buf: &mut [u8]) -> Result<Option<usize>> {
++        let mut written = 0usize;
++
++        let result = unsafe {
++            ffi::ghostty_snapshot_encode_buf(
++                self.inner.as_raw(),
++                buf.as_mut_ptr(),
++                buf.len(),
++                &raw mut written,
++            )
++        };
++
++        from_optional_result_with_len(result, written)
++    }
++}
++
++/// Opaque handle to a terminal snapshot decoder.
++#[derive(Debug)]
++pub struct Decoder<'alloc, 'r> {
++    inner: Object<'alloc, ffi::SnapshotDecoderImpl>,
++    _phan: PhantomData<&'r mut ffi::Reader>,
++}
++
++impl<'alloc, 'r> Decoder<'alloc, 'r> {
++    /// Create a snapshot decoder that reads from a caller-provided reader.
++    ///
++    /// Reads are synchronous and occur only during ready, next, or decode calls.
++    /// A zero-byte successful read is permanent end-of-file, not temporary
++    /// starvation; nonblocking sources must wait outside the decoder or block
++    /// in their callback. Reading zero bytes before a required checkpoint
++    /// reports truncated snapshot data as [`Error::InvalidValue`].
++    pub fn new<R: Read>(r: &'r mut R) -> Result<Self> {
++        // SAFETY: A NULL allocator is always valid
++        unsafe { Self::new_inner(std::ptr::null(), r) }
++    }
++
++    /// Create a new snapshot decoder that reads from a caller-provided reader
++    /// with a custom allocator.
++    ///
++    /// Reads are synchronous and occur only during ready, next, or decode calls.
++    /// A zero-byte successful read is permanent end-of-file, not temporary
++    /// starvation; nonblocking sources must wait outside the decoder or block
++    /// in their callback. The read callback must not call APIs on or drop the
++    /// decoder that owns it. Reading zero bytes before a required checkpoint
++    /// reports truncated snapshot data as [`Error::InvalidValue`].
++    ///
++    /// See the [crate-level documentation](crate#memory-management-and-lifetimes)
++    /// regarding custom memory management and lifetimes.
++    pub fn new_with_alloc<'ctx: 'alloc, R: Read>(
++        alloc: &'alloc Allocator<'ctx>,
++        r: &'r mut R,
++    ) -> Result<Self> {
++        // SAFETY: Borrow checking should forbid invalid allocators
++        unsafe { Self::new_inner(alloc.to_raw(), r) }
++    }
++
++    unsafe fn new_inner<R: Read>(alloc: *const ffi::Allocator, r: &'r mut R) -> Result<Self> {
++        let reader = crate::io::to_reader(r);
++        let mut raw: ffi::SnapshotDecoder = std::ptr::null_mut();
++        let result = unsafe { ffi::ghostty_snapshot_decoder_new(alloc, &raw mut raw, reader) };
++        from_result(result)?;
++        Ok(Self {
++            inner: Object::new(raw)?,
++            _phan: PhantomData,
++        })
++    }
++
++    /// Create a snapshot decoder over a borrowed byte buffer.
++    ///
++    /// The bytes are not copied. Bytes after FINISH are not consumed;
++    /// query [`Decoder::source_offset`] to locate them.
++    pub fn new_buf(buf: &'r [u8]) -> Result<Self> {
++        // SAFETY: A NULL allocator is always valid
++        unsafe { Self::new_buf_inner(std::ptr::null(), buf) }
++    }
++
++    /// Create a new snapshot decoder over a borrowed byte buffer
++    /// with a custom allocator.
++    ///
++    /// The bytes are not copied. Bytes after FINISH are not consumed;
++    /// query [`Decoder::source_offset`] to locate them.
++    ///
++    /// See the [crate-level documentation](crate#memory-management-and-lifetimes)
++    /// regarding custom memory management and lifetimes.
++    pub fn new_buf_with_alloc<'ctx: 'alloc>(
++        alloc: &'alloc Allocator<'ctx>,
++        buf: &'r [u8],
++    ) -> Result<Self> {
++        // SAFETY: Borrow checking should forbid invalid allocators
++        unsafe { Self::new_buf_inner(alloc.to_raw(), buf) }
++    }
++
++    unsafe fn new_buf_inner(alloc: *const ffi::Allocator, buf: &[u8]) -> Result<Self> {
++        let mut raw: ffi::SnapshotDecoder = std::ptr::null_mut();
++        let result = unsafe {
++            ffi::ghostty_snapshot_decoder_new_buf(alloc, &raw mut raw, buf.as_ptr(), buf.len())
++        };
++        from_result(result)?;
++        Ok(Self {
++            inner: Object::new(raw)?,
++            _phan: PhantomData,
++        })
++    }
++
++    /// Decode and authenticate one complete snapshot.
++    ///
++    /// This is the one-shot form of READY followed by all history pages
++    /// through FINISH. It may only be called before decoding starts. Bytes
++    /// following FINISH are left unread. On success this returns a
++    /// caller-owned terminal with its persistent VT stream restored.
++    /// Continuation tracking on the returned terminal is disabled and
++    /// [`Terminal::continuation_max_bytes`] returns zero.
++    ///
++    /// A decoding, I/O, or allocation error after input consumption begins
++    /// poisons the decoder, after which it must be dropped. An invalid
++    /// argument or lifecycle error detected before the operation consumes
++    /// input does not poison it.    
++    pub fn decode<'cb>(self) -> Result<Terminal<'alloc, 'cb>> {
++        let mut raw: ffi::Terminal = std::ptr::null_mut();
++        let result = unsafe { ffi::ghostty_snapshot_decoder_decode(self.inner.as_raw(), &mut raw) };
++        from_result(result)?;
++        unsafe { Terminal::from_raw(raw) }
++    }
++
++    /// Decode and authenticate the renderable snapshot prefix through READY.
++    ///
++    /// On success, terminal receives a caller-owned terminal with its
++    /// persistent VT stream already restored from the snapshot continuation.
++    /// The terminal is immediately usable for rendering and live input.
++    /// Older scrollback remains to be restored with [`IncrementalDecoder::next`].
++    ///
++    /// The restored parser state may be unfinished, but terminal continuation
++    /// tracking is disabled; [`Terminal::continuation_max_bytes`]
++    /// returns zero. The decoder's continuation option is an input limit,
++    /// not terminal runtime policy.
++    ///
++    /// A decoding, I/O, or allocation error after input consumption begins
++    /// poisons the decoder, after which it must be dropped. An invalid
++    /// argument or lifecycle error detected before the operation consumes
++    /// input does not poison it.    
++    pub fn ready<'cb>(self) -> Result<IncrementalDecoder<'alloc, 'r, 'cb>> {
++        let mut raw: ffi::Terminal = std::ptr::null_mut();
++        let result = unsafe { ffi::ghostty_snapshot_decoder_ready(self.inner.as_raw(), &mut raw) };
++        from_result(result)?;
++        Ok(IncrementalDecoder {
++            decoder: self,
++            terminal: unsafe { Terminal::from_raw(raw)? },
++        })
++    }
++
++    fn get<T>(&self, tag: Data::Type) -> Result<T> {
++        let mut value = MaybeUninit::<T>::zeroed();
++        let result = unsafe {
++            ffi::ghostty_snapshot_decoder_get(self.inner.as_raw(), tag, value.as_mut_ptr().cast())
++        };
++        from_result(result)?;
++        // SAFETY: Value should be initialized after successful call.
++        Ok(unsafe { value.assume_init() })
++    }
++    fn get_optional<T>(&self, tag: Data::Type) -> Result<Option<T>> {
++        let mut value = MaybeUninit::<T>::zeroed();
++        let result = unsafe {
++            ffi::ghostty_snapshot_decoder_get(self.inner.as_raw(), tag, value.as_mut_ptr().cast())
++        };
++        from_optional_result_uninit(result, value)
++    }
++    fn set<T>(&self, tag: Opt::Type, v: &T) -> Result<()> {
++        let result = unsafe {
++            ffi::ghostty_snapshot_decoder_set(
++                self.inner.as_raw(),
++                tag,
++                std::ptr::from_ref(v).cast(),
++            )
++        };
++        from_result(result)
++    }
++
++    /// Current maximum accepted continuation size.
++    ///
++    /// This value is available in every non-failed decoder state.
++    pub fn max_continuation_bytes(&self) -> Result<usize> {
++        self.get(Data::MAX_CONTINUATION_BYTES)
++    }
++
++    /// Largest non-ground continuation the decoder will accept.
++    ///
++    /// A value of zero accepts only snapshots whose VT parser is in the ground
++    /// state. The decoder default matches the largest built-in APC protocol
++    /// buffer limit, currently 65 MiB.
++    ///
++    /// This is an input validation limit only. It does not configure continuation
++    /// tracking on a terminal returned by the decoder.
++    pub fn set_max_continuation_bytes(&mut self, v: usize) -> Result<&mut Self> {
++        self.set(Opt::MAX_CONTINUATION_BYTES, &v)?;
++        Ok(self)
++    }
++
++    /// Number of snapshot source bytes consumed so far.
++    ///
++    /// At FINISH this identifies the first byte after the snapshot. Trailing
++    /// bytes are not consumed. This value is unavailable after a decoding
++    /// error, because the decoder can no longer guarantee its source position.
++    pub fn source_offset(&self) -> Result<usize> {
++        self.get(Data::SOURCE_OFFSET)
++    }
++    /// Advisory complete logical history extent for the primary screen.
++    ///
++    /// The value counts rows before the active area, including any resident
++    /// overlap carried before READY. It becomes available after READY validates.
++    pub fn history_rows_primary(&self) -> Result<u64> {
++        self.get(Data::HISTORY_ROWS_PRIMARY)
++    }
++    /// Advisory complete logical history extent for the alternate screen.
++    ///
++    /// The value has the same semantics and lifetime as [`Decoder::history_rows_primary`]
++    /// Querying it returns `Ok(None)` when the snapshot does not declare an
++    /// alternate screen.
++    pub fn history_rows_alternate(&self) -> Result<Option<u64>> {
++        self.get_optional(Data::HISTORY_ROWS_ALTERNATE)
++    }
++}
++
++impl Drop for Decoder<'_, '_> {
++    fn drop(&mut self) {
++        unsafe {
++            ffi::ghostty_snapshot_decoder_free(self.inner.as_raw());
++        }
++    }
++}
++
++/// A [`Decoder`] that incrementally decodes history and appends it to the
++/// terminal, obtained by calling [`Decoder::ready`].
++///
++/// Call [`IncrementalDecoder::next`] repeatedly until `Ok(None)` is returned
++/// to keep decoding history from the snapshot.
++///
++/// The terminal is accessible for use during the decode process via methods
++/// like [`IncrementalDecoder::terminal`] and [`IncrementalDecoder::terminal_mut`],
++/// while obtaining ownership of the terminal requires halting the decode
++/// process via [`IncrementalDecoder::into_terminal`].
++#[derive(Debug)]
++pub struct IncrementalDecoder<'alloc, 'r, 'cb> {
++    // Drop order is significant here.
++    // First drop the decoder, then the terminal.
++    decoder: Decoder<'alloc, 'r>,
++    terminal: Terminal<'alloc, 'cb>,
++}
++
++impl<'alloc, 'r, 'cb> IncrementalDecoder<'alloc, 'r, 'cb> {
++    /// Decode one history page into the terminal returned by READY.
++    ///
++    /// Each `Ok(Some(progress))` result consumes and authenticates one PAGE
++    /// record. Query the values on the returned `progress` before
++    /// calling [`IncrementalDecoder::next`] again.
++    ///
++    /// `Ok(None)` means FINISH was validated; repeated calls after FINISH
++    /// also return `Ok(None)`.
++    ///
++    /// The terminal may be rendered, resized, and fed live PTY input between
++    /// calls. If a history page can no longer be applied safely, it is still
++    /// consumed and authenticated and progress reports zero rows. The decoder
++    /// applies history to the terminal produced by its READY operation.
++    ///
++    /// A decoding error invalidates the decoder's source position. The terminal
++    /// remains usable with its already-restored history, but the decoder can
++    /// only be dropped.
++    pub fn next<'d>(&'d mut self) -> Result<Option<Progress<'alloc, 'r, 'd>>> {
++        let result = unsafe { ffi::ghostty_snapshot_decoder_next(self.decoder.inner.as_raw()) };
++        from_optional_result(
++            result,
++            Progress {
++                decoder: &self.decoder,
++            },
++        )
++    }
++
++    /// Return a shared reference to the terminal being decoded.
++    pub fn terminal(&self) -> &Terminal<'alloc, 'cb> {
++        &self.terminal
++    }
++    /// Return an exclusive reference to the terminal being decoded.
++    pub fn terminal_mut(&mut self) -> &mut Terminal<'alloc, 'cb> {
++        &mut self.terminal
++    }
++    /// Stop decoding and obtain the final, fully decoded terminal.
++    pub fn into_terminal(self) -> Terminal<'alloc, 'cb> {
++        self.terminal
++    }
++}
++
++/// The current progress of the decode process.
++#[derive(Debug, Clone, Copy)]
++pub struct Progress<'alloc, 'r, 'd> {
++    decoder: &'d Decoder<'alloc, 'r>,
++}
++
++impl<'alloc, 'r, 'd> Progress<'alloc, 'r, 'd> {
++    /// Screen associated with the most recently decoded history page.
++    pub fn screen(&self) -> Result<Screen> {
++        self.decoder
++            .get::<ffi::TerminalScreen::Type>(Data::PROGRESS_SCREEN)
++            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))
++    }
++    /// Rows prepended by the most recently decoded history page.
++    ///
++    /// Zero means the page was consumed and authenticated but could not be
++    /// applied to the live terminal.
++    pub fn rows(&self) -> Result<usize> {
++        self.decoder.get(Data::PROGRESS_ROWS)
++    }
++    /// Page records remaining in the same screen's HISTORY sequence.
++    ///
++    /// This is not a count of all pages remaining in the snapshot.
++    pub fn remaining(&self) -> Result<u32> {
++        self.decoder.get(Data::PROGRESS_REMAINING)
++    }
++
++    /// Get a reference to the underlying decoder.
++    pub fn as_decoder(self) -> &'d Decoder<'alloc, 'r> {
++        self.decoder
++    }
++}
+diff --git a/src/terminal.rs b/src/terminal.rs
+index 0126d719db092d305c89cafca6037182a7ac5cba..fcc79c0dc20517eda1fa2cab15e27e6411ee20ba 100644
+--- a/src/terminal.rs
++++ b/src/terminal.rs
+@@ -1,10 +1,13 @@
+ //! Types and functions around terminal state management.
+ 
+-use std::{marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
++use std::{io::Write, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+ 
+ use crate::{
+-    alloc::{Allocator, Object},
+-    error::{Error, Result, from_optional_result_uninit, from_result, from_result_with_len},
++    alloc::{Allocator, Bytes, Object},
++    error::{
++        Error, Result, from_optional_result, from_optional_result_uninit,
++        from_optional_result_with_len, from_result, from_result_with_len,
++    },
+     ffi::{self, TerminalData as Data, TerminalOption as Opt},
+     key,
+     screen::{GridRef, Screen, TrackedGridRef},
+@@ -25,14 +28,10 @@ pub use ffi::{SizeReportSize, TerminalScrollbar as Scrollbar};
+ /// ## Example: VT stream processing
+ ///
+ /// ```
+-/// use libghostty_vt::{Terminal, TerminalOptions};
++/// use libghostty_vt::Terminal;
+ ///
+ /// // Create a terminal
+-/// let mut terminal = Terminal::new(TerminalOptions {
+-///     cols: 80,
+-///     rows: 24,
+-///     max_scrollback: 0,
+-/// }).unwrap();
++/// let mut terminal = Terminal::new(80, 24).unwrap();
+ ///
+ /// // Feed VT data into the terminal
+ /// terminal.vt_write(b"Hello, World!\r\n");
+@@ -96,7 +95,7 @@ pub use ffi::{SizeReportSize, TerminalScrollbar as Scrollbar};
+ ///
+ /// ```rust
+ /// use std::cell::Cell;
+-/// use libghostty_vt::{Terminal, TerminalOptions};
++/// use libghostty_vt::Terminal;
+ ///
+ /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+ /// // Set up a simple bell counter.
+@@ -110,12 +109,7 @@ pub use ffi::{SizeReportSize, TerminalScrollbar as Scrollbar};
+ /// // during the lifetime of the terminal.
+ /// let bell_count = Cell::new(0usize);
+ ///
+-/// let mut terminal = Terminal::new(TerminalOptions {
+-///     cols: 80,
+-///     rows: 24,
+-///     max_scrollback: 0,
+-/// })?;
+-///
++/// let mut terminal = Terminal::new(80, 24)?;
+ /// terminal
+ ///     .on_pty_write(|_term, data| {
+ ///         println!("Replying {} bytes to the PTY", data.len());
+@@ -234,27 +228,6 @@ pub struct Terminal<'alloc: 'cb, 'cb> {
+     vtable: Box<VTable<'alloc, 'cb>>,
+ }
+ 
+-/// Terminal initialization options.
+-#[derive(Clone, Copy, Debug)]
+-pub struct Options {
+-    /// Terminal width in cells. Must be greater than zero.
+-    pub cols: u16,
+-    /// Terminal height in cells. Must be greater than zero.
+-    pub rows: u16,
+-    /// Maximum number of lines to keep in scrollback history.
+-    pub max_scrollback: usize,
+-}
+-
+-impl From<Options> for ffi::TerminalOptions {
+-    fn from(value: Options) -> Self {
+-        Self {
+-            cols: value.cols,
+-            rows: value.rows,
+-            max_scrollback: value.max_scrollback,
+-        }
+-    }
+-}
+-
+ /// Default visual style used when the cursor style is reset.
+ #[repr(u32)]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, int_enum::IntEnum)]
+@@ -272,27 +245,40 @@ pub enum CursorStyle {
+ 
+ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+     /// Create a new terminal instance.
+-    pub fn new(opts: Options) -> Result<Self> {
++    ///
++    /// The terminal starts with various reasonable defaults e.g. around
++    /// scrollback limits. Use the `Terminal::set_*` family of methods
++    /// to change any options prior to using the terminal.
++    pub fn new(cols: u16, rows: u16) -> Result<Self> {
+         // SAFETY: A NULL allocator is always valid
+-        unsafe { Self::new_inner(std::ptr::null(), opts) }
++        unsafe { Self::new_inner(std::ptr::null(), cols, rows) }
+     }
+ 
+     /// Create a new terminal instance with a custom allocator.
+     ///
++    /// The terminal starts with various reasonable defaults e.g. around
++    /// scrollback limits. Use the `Terminal::set_*` family of methods
++    /// to change any options prior to using the terminal.
++    ///
+     /// See the [crate-level documentation](crate#memory-management-and-lifetimes)
+     /// regarding custom memory management and lifetimes.
+     pub fn new_with_alloc<'ctx: 'alloc>(
+         alloc: &'alloc Allocator<'ctx>,
+-        opts: Options,
++        cols: u16,
++        rows: u16,
+     ) -> Result<Self> {
+         // SAFETY: Borrow checking should forbid invalid allocators
+-        unsafe { Self::new_inner(alloc.to_raw(), opts) }
++        unsafe { Self::new_inner(alloc.to_raw(), cols, rows) }
+     }
+ 
+-    unsafe fn new_inner(alloc: *const ffi::Allocator, opts: Options) -> Result<Self> {
++    unsafe fn new_inner(alloc: *const ffi::Allocator, cols: u16, rows: u16) -> Result<Self> {
+         let mut raw: ffi::Terminal = std::ptr::null_mut();
+-        let result = unsafe { ffi::ghostty_terminal_new(alloc, &raw mut raw, opts.into()) };
++        let result = unsafe { ffi::ghostty_terminal_new(alloc, &raw mut raw, cols, rows) };
+         from_result(result)?;
++        unsafe { Self::from_raw(raw) }
++    }
++
++    pub(crate) unsafe fn from_raw(raw: ffi::Terminal) -> Result<Self> {
+         Ok(Self {
+             inner: Object::new(raw)?,
+             vtable: Box::new(VTable::default()),
+@@ -445,18 +431,63 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+ 
+     /// Get the current value of a terminal mode.
+     pub fn mode(&self, mode: Mode) -> Result<bool> {
+-        let mut value = false;
++        let mut mode = ffi::TerminalModeConfig {
++            mode: mode.into(),
++            value: false,
++        };
++
+         let result = unsafe {
+-            ffi::ghostty_terminal_mode_get(self.inner.as_raw(), mode.into(), &raw mut value)
++            ffi::ghostty_terminal_get(
++                self.inner.as_raw(),
++                Data::MODE,
++                &raw mut mode as *mut std::ffi::c_void,
++            )
+         };
+         from_result(result)?;
+-        Ok(value)
++        Ok(mode.value)
+     }
+ 
+-    /// Set the value of a terminal mode.
++    /// Set the current value of a terminal mode.
++    ///
++    /// This does not change the value restored by a full terminal reset (RIS).
+     pub fn set_mode(&mut self, mode: Mode, value: bool) -> Result<&mut Self> {
+-        let result =
+-            unsafe { ffi::ghostty_terminal_mode_set(self.inner.as_raw(), mode.into(), value) };
++        let mode = ffi::TerminalModeConfig {
++            mode: mode.into(),
++            value,
++        };
++
++        let result = unsafe {
++            ffi::ghostty_terminal_set(
++                self.inner.as_raw(),
++                Opt::MODE,
++                &raw const mode as *const std::ffi::c_void,
++            )
++        };
++        from_result(result)?;
++        Ok(self)
++    }
++
++    /// Set the reset default for a terminal mode.
++    ///
++    /// This unconditionally updates both the current value and the value
++    /// restored by a full terminal reset (RIS).
++    ///
++    /// Some recognized modes represent transitions or mirror additional
++    /// terminal state and cannot safely be configured as reset defaults.
++    /// Those modes return [`Error::InvalidValue`].
++    pub fn set_default_mode(&mut self, mode: Mode, value: bool) -> Result<&mut Self> {
++        let mode = ffi::TerminalModeConfig {
++            mode: mode.into(),
++            value,
++        };
++
++        let result = unsafe {
++            ffi::ghostty_terminal_set(
++                self.inner.as_raw(),
++                Opt::MODE_DEFAULT,
++                &raw const mode as *const std::ffi::c_void,
++            )
++        };
+         from_result(result)?;
+         Ok(self)
+     }
+@@ -506,6 +537,140 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+         Ok(CompressionActivity(value))
+     }
+ 
++    /// The configured maximum retained VT continuation size in bytes.
++    ///
++    /// A value of zero means continuation tracking is disabled. This reports
++    /// the configured limit even when a current unfinished continuation is
++    /// temporarily unavailable.
++    pub fn continuation_max_bytes(&self) -> Result<usize> {
++        self.get(Data::CONTINUATION_MAX_BYTES)
++    }
++
++    /// Set the maximum number of replay-safe VT continuation bytes retained.
++    ///
++    /// Continuation bytes reconstruct an escape sequence or UTF-8 codepoint
++    /// which was unfinished at the end of the most recent [`Terminal::vt_write`]
++    /// call. They are used automatically by terminal snapshots and may also be
++    /// exported directly with the continuation APIs.
++    ///
++    /// Tracking is disabled by default. A nonzero value enables tracking and
++    /// sets its byte limit. Passing zero disables tracking. Lowering the limit
++    /// below an already-retained continuation, or enabling tracking while the
++    /// parser is already unfinished, makes the current continuation unavailable
++    /// because earlier bytes cannot be reconstructed. Tracking recovers
++    /// automatically after a later write reaches the ground state or contains
++    /// a fresh replay start.
++    pub fn set_continuation_max_bytes(&mut self, v: usize) -> Result<&mut Self> {
++        self.set(Opt::CONTINUATION_MAX_BYTES, &v)?;
++        Ok(self)
++    }
++
++    /// Write the terminal's replay-safe VT continuation to a callback writer.
++    ///
++    /// The continuation is the exact byte suffix needed to reconstruct
++    /// unfinished VT parser or UTF-8 decoder state in an equivalent terminal.
++    /// It is empty when the stream is at ground. The callback is invoked
++    /// synchronously and may be called more than once. It must not call
++    /// terminal APIs with the same terminal handle.
++    ///
++    /// Continuation tracking must have been enabled by calling
++    /// [`Terminal::set_continuation_max_bytes`] with a nonzero value before
++    /// the input that produced the continuation was written.    
++    ///
++    /// # Errors
++    ///
++    /// This function returns [`Error::IoError`] if the callback rejects a
++    /// write, [`Error::LimitExceeded`] if output accounting overflows, or
++    /// [`Error::InvalidValue`] if an argument is invalid, tracking is disabled,
++    /// or the current continuation is unavailable.
++    pub fn continuation_write<W: Write>(&mut self, writer: &mut W) -> Result<()> {
++        let writer = crate::io::to_writer(writer);
++        let result =
++            unsafe { ffi::ghostty_terminal_continuation_write(self.inner.as_raw(), writer) };
++        from_result(result)
++    }
++
++    /// Return an allocated copy of the terminal's replay-safe VT continuation.
++    ///
++    /// The returned bytes are allocated with allocator, or the default allocator
++    /// when allocator is `None`. An empty continuation is a successful zero-length
++    /// allocation. Continuation tracking must have been enabled by callling
++    /// [`Terminal::set_continuation_max_bytes`] to a nonzero value before the
++    /// input that produced the continuation was written.
++    ///
++    /// The caller must serialize this operation with all other access to the same
++    /// terminal.
++    ///
++    /// # Errors
++    ///
++    /// This function returns [`Error::OutOfMemory`] on allocation failure, or
++    /// [`Error::InvalidValue`] if an argument is invalid, tracking is disabled,
++    /// or the current continuation is unavailable.
++    pub fn continuation_alloc<'a, 'ctx: 'a>(
++        &self,
++        alloc: Option<&'a Allocator<'ctx>>,
++    ) -> Result<Option<Bytes<'a>>> {
++        let mut out = std::ptr::null_mut();
++        let mut out_len = 0usize;
++        let alloc = alloc.map_or(std::ptr::null(), |v| v.to_raw());
++
++        let result = unsafe {
++            ffi::ghostty_terminal_continuation_alloc(
++                self.inner.as_raw(),
++                alloc,
++                &raw mut out,
++                &raw mut out_len,
++            )
++        };
++
++        let out = from_optional_result(result, out)?;
++        Ok(out
++            .and_then(NonNull::new)
++            .map(|ptr| unsafe { Bytes::from_raw_parts(ptr, out_len, alloc) }))
++    }
++
++    /// Copy the terminal's replay-safe VT continuation into a caller buffer.
++    ///
++    /// Pass an empty `buf` to query the required size. A size query returns
++    /// [`Error::OutOfSpace`] with the required size, including zero when the
++    /// stream is at ground. If a non-empty buffer is too small, the function
++    /// has the same result and reports the full required size.
++    ///
++    /// Continuation tracking must have been enabled by callling
++    /// [`Terminal::set_continuation_max_bytes`] to a nonzero value before the
++    /// input that produced the continuation was written.
++    ///
++    /// The caller must serialize this operation with all other access to the same
++    /// terminal.
++    ///
++    /// # Errors
++    ///
++    /// This function returns [`Error::OutOfSpace`] for a size query or
++    /// insufficient buffer, or [`Error::InvalidValue`] if an argument is invalid,
++    /// tracking is disabled, or the current continuation is unavailable.
++    pub fn continuation_buf(&self, buf: &mut [u8]) -> Result<Option<usize>> {
++        let mut written = 0usize;
++        // The C API uses a NULL pointer to distinguish an explicit size query
++        // from a zero-capacity destination. Rust empty slices have a non-NULL
++        // dangling pointer, so translate that representation at this boundary.
++        let buf_ptr = if buf.is_empty() {
++            std::ptr::null_mut()
++        } else {
++            buf.as_mut_ptr()
++        };
++
++        let result = unsafe {
++            ffi::ghostty_terminal_continuation_buf(
++                self.inner.as_raw(),
++                buf_ptr,
++                buf.len(),
++                &raw mut written,
++            )
++        };
++
++        from_optional_result_with_len(result, written)
++    }
++
+     pub(crate) fn get<T>(&self, tag: ffi::TerminalData::Type) -> Result<T> {
+         let mut value = MaybeUninit::<T>::zeroed();
+         let result = unsafe {
+@@ -561,11 +726,88 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+     pub fn rows(&self) -> Result<u16> {
+         self.get(Data::ROWS)
+     }
+-    /// Get the cursor column position (inner-indexed).
++    /// Get the total width of the terminal in pixels.
++    ///
++    /// This is `cols * cell_width_px` as set by [`Terminal::resize`].
++    pub fn width_px(&self) -> Result<u32> {
++        self.get(Data::WIDTH_PX)
++    }
++    /// Get the total height of the terminal in pixels.
++    ///
++    /// This is `rows * cell_height_px` as set by [`Terminal::resize`].
++    pub fn height_px(&self) -> Result<u32> {
++        self.get(Data::HEIGHT_PX)
++    }
++
++    /// The configured maximum scrollback allocation in bytes.
++    ///
++    /// This always reports the primary screen's configured value, including
++    /// while an alternate screen is active.
++    ///
++    /// Returns `None` when the configured byte limit is unlimited.
++    pub fn scrollback_max_bytes(&self) -> Result<Option<usize>> {
++        self.get_optional(Data::SCROLLBACK_MAX_BYTES)
++    }
++
++    /// Set the maximum scrollback allocation in bytes.
++    ///
++    /// This is an estimate. Internally, libghostty only prunes bytes up
++    /// to a "page"-granularity. A page is the minimum allocated unit of
++    /// grid space within Ghostty. A page at the time of writing these docs
++    /// is about 400KB, so the byte limit will be within this delta.
++    ///
++    /// This works alongside the line limit configuration. If both are set,
++    /// the first-reached limit is used first. Both limits are dependent
++    /// on external state (byte limit can be reached with less lines if
++    /// more styles are used for example, line limit can be reached with
++    /// a narrower terminal viewport). So, they are useful together.
++    ///
++    /// Lowering the limit immediately removes eligible complete historical
++    /// pages. A value of zero disables scrollback and erases retained history.
++    /// A `None` value removes the byte limit.
++    pub fn set_scrollback_max_bytes(&mut self, v: Option<usize>) -> Result<&mut Self> {
++        self.set_optional(Opt::SCROLLBACK_MAX_BYTES, v.as_ref())?;
++        Ok(self)
++    }
++
++    /// The configured maximum number of physical scrollback lines.
++    ///
++    /// This always reports the primary screen's configured value, including
++    /// while an alternate screen is active.
++    ///
++    /// Returns `None` when the configured line limit is unlimited.
++    pub fn scrollback_max_lines(&self) -> Result<Option<usize>> {
++        self.get_optional(Data::SCROLLBACK_MAX_LINES)
++    }
++
++    /// Set the maximum number of physical lines retained in scrollback.
++    ///
++    /// This is an estimate. Internally, libghostty only prunes lines up
++    /// to a "page"-granularity. A page is the minimum allocated unit of
++    /// grid space within Ghostty. As a result, the actual available scrollback
++    /// lines will almost always be higher than configured. The magnitude
++    /// of the difference depends on the number of used styles, graphemes, etc.
++    /// since the row-count in a page is dynamic based on that. In general,
++    /// it ranges from dozens to a hundred or so lines.
++    ///
++    /// This works alongside the byte limit configuration. If both are set,
++    /// the first-reached limit is used first. Both limits are dependent
++    /// on external state (byte limit can be reached with less lines if
++    /// more styles are used for example, line limit can be reached with
++    /// a narrower terminal viewport). So, they are useful together.
++    ///
++    /// Lowering the limit immediately removes eligible complete historical
++    /// pages. A `None` value pointer removes the line limit.
++    pub fn set_scrollback_max_lines(&mut self, v: Option<usize>) -> Result<&mut Self> {
++        self.set_optional(Opt::SCROLLBACK_MAX_LINES, v.as_ref())?;
++        Ok(self)
++    }
++
++    /// Get the cursor column position (0-indexed).
+     pub fn cursor_x(&self) -> Result<u16> {
+         self.get(Data::CURSOR_X)
+     }
+-    /// Get the cursor row position within the active area (inner-indexed).
++    /// Get the cursor row position within the active area (0-indexed).
+     pub fn cursor_y(&self) -> Result<u16> {
+         self.get(Data::CURSOR_Y)
+     }
+@@ -592,24 +834,49 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+ 
+     /// Get the scrollbar state for the terminal viewport.
+     ///
+-    /// This may be expensive to calculate depending on where the viewport is
+-    /// (arbitrary pins are expensive). The caller should take care to only call
+-    /// this as needed and not too frequently.
++    /// This is amortized `O(1)`: the total is maintained incrementally as
++    /// the terminal is modified and the viewport offset is cached. The
++    /// first read after the viewport moves to an arbitrary position that
++    /// isn't an absolute row (e.g. scrolling to a selection) may cost
++    /// `O(pages)` to compute the offset, after which it is cached again.
++    ///
++    /// There is intentionally no change notification for scroll state.
++    /// Callers building scrollbars should poll this once per frame or
++    /// per write batch and diff the result to detect changes; this is
++    /// what Ghostty's own renderer does.
+     pub fn scrollbar(&self) -> Result<Scrollbar> {
+         self.get(Data::SCROLLBAR)
+     }
+     /// Get the currently active screen.
+     pub fn active_screen(&self) -> Result<Screen> {
+-        self.get(Data::ACTIVE_SCREEN)
++        self.get::<ffi::TerminalScreen::Type>(Data::ACTIVE_SCREEN)
++            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))
++    }
++    /// Whether the viewport is currently pinned to the active area.
++    ///
++    /// This is true when the viewport is following the active terminal area,
++    /// and false when the user has scrolled into history.
++    pub fn viewport_active(&self) -> Result<bool> {
++        self.get(Data::VIEWPORT_ACTIVE)
+     }
+     /// Get whether any mouse tracking mode is active.
+     ///
+-    /// Returns true if any of the mouse tracking modes (X1inner, normal, button,
++    /// Returns true if any of the mouse tracking modes (X10, normal, button,
+     /// or any-event) are enabled.
+     pub fn is_mouse_tracking(&self) -> Result<bool> {
+         self.get(Data::MOUSE_TRACKING)
+     }
+-    /// Get the terminal title as set by escape sequences (e.g. OSC inner/2).
++    /// Whether VT processing encountered a non-gracefully handled error that
++    /// may have prevented a terminal-owned semantic update.
++    ///
++    /// Processing remains best-effort, and [`Terminal::reset`] does not clear
++    /// this flag; it is purely informational. Gracefully handled protocol
++    /// failures, configured limits, malformed or unsupported input, and
++    /// failures limited to external effects or query responses do not set it.
++    pub fn vt_processing_error(&self) -> Result<bool> {
++        self.get(Data::VT_PROCESSING_ERROR)
++    }
++    /// Get the terminal title as set by escape sequences (e.g. OSC 0/2).
+     ///
+     /// Returns a borrowed string, valid until the next call to
+     /// [`Terminal::vt_write`] or [`Terminal::reset`]. An empty string is
+@@ -618,7 +885,7 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+         let str = self.get::<ffi::String>(Data::TITLE)?;
+         // SAFETY: We trust libghostty to return a valid borrowed string,
+         // while we uphold that no mutation could happen during its lifetime.
+-        let str = unsafe { std::slice::from_raw_parts(str.ptr, str.len) };
++        let str = unsafe { str.to_bytes() };
+         std::str::from_utf8(str).map_err(|_| Error::InvalidValue)
+     }
+ 
+@@ -631,7 +898,7 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+         let str = self.get::<ffi::String>(Data::PWD)?;
+         // SAFETY: We trust libghostty to return a valid borrowed string,
+         // while we uphold that no mutation could happen during its lifetime.
+-        let str = unsafe { std::slice::from_raw_parts(str.ptr, str.len) };
++        let str = unsafe { str.to_bytes() };
+         std::str::from_utf8(str).map_err(|_| Error::InvalidValue)
+     }
+     /// The total number of rows in the active screen including scrollback.
+@@ -728,7 +995,7 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+     /// This prevents malicious input from causing unbounded memory allocation.
+     /// A `None` value removes all overrides, reverting to the built-in defaults.
+     pub fn set_apc_max_bytes(&mut self, max: Option<usize>) -> Result<&mut Self> {
+-        self.set_optional(ffi::TerminalOption::APC_MAX_BYTES, max.as_ref())?;
++        self.set_optional(Opt::APC_MAX_BYTES, max.as_ref())?;
+         Ok(self)
+     }
+ 
+@@ -737,7 +1004,19 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+     /// Disabling the protocol makes the terminal ignore Glyph Protocol APC
+     /// sequences and clears the session's glyph glossary.
+     pub fn set_glyph_protocol_enabled(&mut self, enabled: bool) -> Result<&mut Self> {
+-        self.set(ffi::TerminalOption::GLYPH_PROTOCOL, &enabled)?;
++        self.set(Opt::GLYPH_PROTOCOL, &enabled)?;
++        Ok(self)
++    }
++
++    /// Enable window title reports in response to `CSI 21 t`.
++    ///
++    /// This is disabled by default because a running program can set a title
++    /// and query it back into the pty input stream, potentially injecting
++    /// commands that execute after user interaction.
++    ///
++    /// Passing `false` disables title reporting.
++    pub fn set_title_report_enabled(&mut self, enabled: bool) -> Result<&mut Self> {
++        self.set(Opt::TITLE_REPORT, &enabled)?;
+         Ok(self)
+     }
+ }
+@@ -952,6 +1231,7 @@ impl Mode {
+     pub const SYNC_OUTPUT: Self = Self::new(2026, ModeKind::Dec);
+     pub const GRAPHEME_CLUSTER: Self = Self::new(2027, ModeKind::Dec);
+     pub const COLOR_SCHEME_REPORT: Self = Self::new(2031, ModeKind::Dec);
++    pub const VISIBILITY_REPORT: Self = Self::new(2033, ModeKind::Dec);
+     pub const IN_BAND_RESIZE: Self = Self::new(2048, ModeKind::Dec);
+ }
+ 
+@@ -1264,12 +1544,25 @@ impl<'t> ClipboardWrite<'t> {
+             .unwrap_or(ClipboardLocation::Standard)
+     }
+     /// Get an iterator into a borrowed array of MIME representations.
++    ///
++    /// The iterator is empty for a write carrying no representations, which
++    /// requests that the destination be cleared (e.g. OSC 52 with an empty
++    /// payload).
+     pub fn contents(&self) -> ClipboardContents<'t> {
+-        // SAFETY: We trust libghostty to give us a valid pointer and length
++        // SAFETY: We trust libghostty to give us a valid pointer
+         // within the lifetime of the callback.
+-        ClipboardContents(unsafe {
+-            std::slice::from_raw_parts((*self.ptr).contents, (*self.ptr).contents_len).iter()
+-        })
++        let raw = unsafe { *self.ptr };
++        // The C API declares `contents` optional and sends null for a write
++        // carrying no representations (the "clear the clipboard" shape);
++        // `from_raw_parts` requires a non-null pointer even at length zero.
++        let contents: &'t [ffi::ClipboardContent] = if raw.contents.is_null() {
++            &[]
++        } else {
++            // SAFETY: We trust libghostty to give us a valid pointer and
++            // length within the lifetime of the callback.
++            unsafe { std::slice::from_raw_parts(raw.contents, raw.contents_len) }
++        };
++        ClipboardContents(contents.iter())
+     }
+ }
+ 
+@@ -1309,7 +1602,7 @@ pub struct ClipboardContent<'t> {
+     /// MIME type of the representation.
+     pub mime: &'t str,
+     /// Decoded, binary-safe representation data.
+-    pub data: &'t str,
++    pub data: &'t [u8],
+ }
+ impl<'t> ClipboardContent<'t> {
+     /// # Safety
+@@ -1320,8 +1613,14 @@ impl<'t> ClipboardContent<'t> {
+         // SAFETY: Upheld by caller
+         unsafe {
+             Self {
+-                mime: value.mime.to_str(),
+-                data: value.data.to_str(),
++                // Ghostty currently only emits ASCII mime types, but the C
++                // API does not guarantee UTF-8, so validate rather than
++                // trust; fall back to the opaque-bytes mime type.
++                mime: std::str::from_utf8(value.mime.to_bytes())
++                    .unwrap_or("application/octet-stream"),
++                // The data is binary-safe per the C API (e.g. an image/png
++                // representation), so it must not be exposed as `str`.
++                data: value.data.to_bytes(),
+             }
+         }
+     }
+@@ -1361,6 +1660,86 @@ pub enum ClipboardWriteError {
+     IoError = ffi::ClipboardWriteResult::IO_ERROR,
+ }
+ 
++/// A request to show a desktop notification.
++#[derive(Debug, Copy, Clone)]
++pub struct DesktopNotification<'t> {
++    ptr: *const ffi::TerminalDesktopNotification,
++    _phan: PhantomData<&'t ()>,
++}
++
++impl<'t> DesktopNotification<'t> {
++    unsafe fn from_raw(raw: *const ffi::TerminalDesktopNotification) -> Self {
++        Self {
++            ptr: raw,
++            _phan: PhantomData,
++        }
++    }
++
++    /// Get the notification title, or an empty string when the protocol omits it.
++    pub fn title(self) -> &'t str {
++        // SAFETY: We trust libghostty to give us a valid underlying ptr
++        // AND that the title contains to a valid UTF-8 string.
++        unsafe { (*self.ptr).title.to_str() }
++    }
++    /// Notification body.
++    pub fn body(self) -> &'t str {
++        // SAFETY: We trust libghostty to give us a valid underlying ptr
++        // AND that the title contains to a valid UTF-8 string.
++        unsafe { (*self.ptr).body.to_str() }
++    }
++}
++
++/// A progress report emitted by the running program.
++#[derive(Debug, Copy, Clone)]
++pub struct ProgressReport<'t> {
++    ptr: *const ffi::TerminalProgressReport,
++    _phan: PhantomData<&'t ()>,
++}
++
++impl<'t> ProgressReport<'t> {
++    unsafe fn from_raw(raw: *const ffi::TerminalProgressReport) -> Self {
++        Self {
++            ptr: raw,
++            _phan: PhantomData,
++        }
++    }
++
++    /// Literal progress state reported by the running program.
++    pub fn state(self) -> Result<ProgressState> {
++        // SAFETY: We trust libghostty to give us a valid underlying ptr
++        unsafe { *self.ptr }
++            .state
++            .try_into()
++            .map_err(|_| Error::InvalidValue)
++    }
++
++    /// Progress percentage from 0 through 100, or `None` when omitted.
++    pub fn progress(self) -> Option<u8> {
++        // SAFETY: We trust libghostty to give us a valid underlying ptr
++        match unsafe { *self.ptr }.progress {
++            ..=-1 => None,
++            v => Some(v as u8),
++        }
++    }
++}
++
++/// State of a terminal progress report.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, int_enum::IntEnum)]
++#[repr(u32)]
++#[non_exhaustive]
++pub enum ProgressState {
++    /// Remove any visible progress indication.
++    Remove = ffi::TerminalProgressState::REMOVE,
++    /// Show determinate progress.
++    Set = ffi::TerminalProgressState::SET,
++    /// Show a failed progress state.
++    Error = ffi::TerminalProgressState::ERROR,
++    /// Show indeterminate progress.
++    Indeterminate = ffi::TerminalProgressState::INDETERMINATE,
++    /// Show paused progress.
++    Pause = ffi::TerminalProgressState::PAUSE,
++}
++
+ //---------------------------------------
+ // Callbacks
+ //---------------------------------------
+@@ -1667,7 +2046,6 @@ handlers! {
+ 
+     /// Call the given function when the running program performs a clipboard write.
+     ///
+-    ///
+     /// Protocol details such as OSC 52 selectors, base64 encoding, multipart
+     /// chunks, aliases, and terminators are normalized before this callback is
+     /// invoked. OSC 52 and iTerm2 OSC 1337 Copy writes therefore use the same
+@@ -1688,6 +2066,32 @@ handlers! {
+             Err(e) => e.into()
+         }
+     }
++
++    /// Callback invoked when the running program requests a desktop
++    /// notification via OSC 9 or OSC 777.
++    pub fn on_desktop_notification(
++        &mut self,
++        tag = DESKTOP_NOTIFICATION,
++        from = GhosttyTerminalDesktopNotificationFn(
++            notif: *const ffi::TerminalDesktopNotification
++        ),
++        to = <'t>DesktopNotificationFn(DesktopNotification<'t>),
++    ) |term, func| {
++        func(&term, unsafe { DesktopNotification::from_raw(notif) });
++    }
++
++    /// Call the given function when the running program reports progress
++    /// via OSC 9;4.
++    pub fn on_progress_report(
++        &mut self,
++        tag = PROGRESS_REPORT,
++        from = GhosttyTerminalProgressReportFn(
++            progress: *const ffi::TerminalProgressReport
++        ),
++        to = <'t>ProgressReportFn(ProgressReport<'t>),
++    ) |term, func| {
++        func(&term, unsafe { ProgressReport::from_raw(progress) });
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -1700,12 +2104,7 @@ mod tests {
+ 
+     #[inline(never)]
+     fn build_terminal<'cb>(callback_count: &'cb RefCell<usize>) -> Terminal<'static, 'cb> {
+-        let mut terminal = Terminal::new(Options {
+-            cols: 80,
+-            rows: 24,
+-            max_scrollback: 1000,
+-        })
+-        .expect("terminal should initialize");
++        let mut terminal = Terminal::new(80, 24).expect("terminal should initialize");
+ 
+         terminal
+             .on_device_attributes(move |_term| {
+@@ -1777,12 +2176,7 @@ mod tests {
+         let captured_title: RefCell<String> = RefCell::new(String::new());
+         let callback_count: Cell<usize> = Cell::new(0);
+ 
+-        let mut terminal = Terminal::new(Options {
+-            cols: 80,
+-            rows: 24,
+-            max_scrollback: 0,
+-        })
+-        .expect("terminal should initialize");
++        let mut terminal = Terminal::new(80, 24).expect("terminal should initialize");
+ 
+         terminal
+             .on_title_changed(|term| {
+@@ -1812,12 +2206,7 @@ mod tests {
+         let captured_pwd: RefCell<String> = RefCell::new(String::new());
+         let callback_count: Cell<usize> = Cell::new(0);
+ 
+-        let mut terminal = Terminal::new(Options {
+-            cols: 80,
+-            rows: 24,
+-            max_scrollback: 0,
+-        })
+-        .expect("terminal should initialize");
++        let mut terminal = Terminal::new(80, 24).expect("terminal should initialize");
+ 
+         terminal
+             .on_pwd_changed(|term| {
+@@ -1838,12 +2227,7 @@ mod tests {
+ 
+     #[test]
+     fn default_cursor_reset_uses_configured_style_and_blink() {
+-        let mut terminal = Terminal::new(Options {
+-            cols: 80,
+-            rows: 24,
+-            max_scrollback: 0,
+-        })
+-        .expect("terminal should initialize");
++        let mut terminal = Terminal::new(80, 24).expect("terminal should initialize");
+         let mut render_state = RenderState::new().expect("render state should initialize");
+ 
+         terminal
+@@ -1872,12 +2256,7 @@ mod tests {
+ 
+     #[test]
+     fn glyph_protocol_enabled_setting_updates() {
+-        let mut terminal = Terminal::new(Options {
+-            cols: 80,
+-            rows: 24,
+-            max_scrollback: 0,
+-        })
+-        .expect("terminal should initialize");
++        let mut terminal = Terminal::new(80, 24).expect("terminal should initialize");
+ 
+         terminal
+             .set_glyph_protocol_enabled(false)
+@@ -1901,12 +2280,7 @@ mod tests {
+     }
+ 
+     fn tiny_terminal() -> Terminal<'static, 'static> {
+-        Terminal::new(Options {
+-            cols: 8,
+-            rows: 3,
+-            max_scrollback: 100,
+-        })
+-        .expect("terminal should initialize")
++        Terminal::new(8, 3).expect("terminal should initialize")
+     }
+ 
+     fn codepoint_at_tracked_ref(terminal: &Terminal<'_, '_>, tracked: &TrackedGridRef) -> u32 {
+@@ -2043,3 +2417,84 @@ mod tests {
+         );
+     }
+ }
++
++/// Soundness regression tests for
++/// <https://github.com/Uzaaft/libghostty-rs/issues/74>.
++///
++/// These tests are gated on `cfg(miri)` because they construct the exact
++/// shapes the C API produces and feed them into the safe wrappers, which was
++/// UB before the wrappers stopped building slices and `&str` from unvalidated
++/// FFI input. Run with:
++///
++/// ```sh
++/// cargo +nightly miri test -p libghostty-vt miri_soundness
++/// ```
++#[cfg(all(test, miri))]
++mod miri_soundness {
++    use super::*;
++
++    /// The C trampoline declares `contents: ?[*]const ClipboardContent` and
++    /// sends `contents = NULL, contents_len = 0` for a write carrying no
++    /// representations (e.g. OSC 52 with an empty payload, the documented
++    /// "clear the clipboard" shape). `slice::from_raw_parts` requires a
++    /// non-null pointer even at length zero, so `contents()` used to be UB
++    /// here; it must yield an empty iterator so hosts can observe "clear".
++    #[test]
++    fn clipboard_write_with_no_representations() {
++        let raw = ffi::ClipboardWrite {
++            size: std::mem::size_of::<ffi::ClipboardWrite>(),
++            location: ffi::ClipboardLocation::STANDARD,
++            contents: std::ptr::null(),
++            contents_len: 0,
++        };
++        // SAFETY: `raw` outlives the borrow, matching the callback contract.
++        let write = unsafe { ClipboardWrite::from_raw(&raw) };
++        assert_eq!(write.contents().count(), 0);
++    }
++
++    /// OSC 52 payloads are base64-decoded arbitrary bytes ("binary-safe" per
++    /// the C header), but `ClipboardContent` used to expose them as `&str`
++    /// built with `str::from_utf8_unchecked` in the sys crate, so decoding
++    /// the invalid `&str` entered unreachable code in std's UTF-8 decoder.
++    /// The data is exposed as `&[u8]` now; check it round-trips verbatim.
++    #[test]
++    fn clipboard_content_with_non_utf8_data() {
++        // OSC 52 payload "//4=" base64-decodes to FF FE, which is not UTF-8.
++        let data = [0xFF_u8, 0xFE];
++        let raw = ffi::ClipboardContent {
++            mime: ffi::String::from("text/plain"),
++            data: ffi::String {
++                ptr: data.as_ptr(),
++                len: data.len(),
++            },
++        };
++        // SAFETY: `data` outlives the borrow, matching the callback contract.
++        let content = unsafe { ClipboardContent::from_raw(&raw) };
++        assert_eq!(content.mime, "text/plain");
++        assert_eq!(content.data, &data);
++    }
++
++    /// `mime` stays `&str`, so it must be validated rather than trusted:
++    /// a non-UTF-8 mime string falls back to the opaque-bytes mime type
++    /// instead of producing an invalid `&str`.
++    #[test]
++    fn clipboard_content_with_non_utf8_mime() {
++        let mime = [0xFF_u8, 0xFE];
++        let data = *b"hello";
++        let raw = ffi::ClipboardContent {
++            mime: ffi::String {
++                ptr: mime.as_ptr(),
++                len: mime.len(),
++            },
++            data: ffi::String {
++                ptr: data.as_ptr(),
++                len: data.len(),
++            },
++        };
++        // SAFETY: `mime` and `data` outlive the borrow, matching the
++        // callback contract.
++        let content = unsafe { ClipboardContent::from_raw(&raw) };
++        assert_eq!(content.mime, "application/octet-stream");
++        assert_eq!(content.data, b"hello");
++    }
++}

@@ -440,7 +440,7 @@ Give confirmation dialogs an explicit viewport-clamped width before measuring
 wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
 let buttons escape the panel; keep text and button containers nonshrinking.
 Ghostty builds use libghostty-vt/sys 0.2.1, native revision
-`20c3eae04dee606349eb21e2dd0293b203d47179`, and Zig 0.16.0. Keep its
+`22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018`, and Zig 0.16.0. Keep its
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
@@ -449,8 +449,10 @@ the binding versions, and bundled notices aligned. All builds include both
 engines and require the pinned Zig toolchain. Native source dependencies use
 Zig's content hashes; their notices are in `third-party/ghostty` because they
 are outside Cargo's license audit.
-At this native pin `max_scrollback` is bytes despite the published binding/header
-claiming lines. The adapter uses 16 MiB and reports actual retained rows.
+Both Rust crates include upstream revision
+`5988a0b78b4aa804d1c12e66bbfe662bd97d81c0` over their published 0.2.1 archives.
+Set history through `set_scrollback_max_bytes`; the adapter retains its 16 MiB
+budget and reports actual retained rows.
 Ghostty color-only OSC updates can leave render rows clean. Compare effective
 colors and retain explicit palette override information before consuming damage.
 Its API lacks the override mask; the adapter probes changed defaults after
