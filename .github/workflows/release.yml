@@ -135,8 +135,11 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
 
       - name: Validate checked-out source and versions
         run: bun scripts/release.ts validate-build
@@ -186,7 +189,7 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun zig syft pipx:spdx-tools
+          install_args: bun zig syft pipx:spdx-tools
           minimum_release_age: 3d
 
       - name: Materialize Rust toolchain
@@ -286,8 +289,11 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun zig
+          install_args: bun zig
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -377,8 +383,11 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun zig
+          install_args: bun zig
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -453,8 +462,11 @@ jobs:
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: false
-          install_args: rust bun
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
 
       - name: Revalidate checked-out source and versions
         run: bun scripts/release.ts validate-build

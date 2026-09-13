@@ -132,8 +132,10 @@ tools for each job. `mise.lock` also records the Rust version, so run
 fails to resolve the tool.
 
 Keep `verify:toolchain` as a serial preflight before `verify:parallel`. CI uses
-`ci:toolchain`, which runs that preflight and reinstalls the Rust toolchain once
-if rustup reports a corrupt component immediately after installation. Mise's CI
+`ci:toolchain` to install Rust serially, run that preflight, and retry one clean
+installation if either installation or verification fails. Keep Rust and Cargo
+tools out of the Mise action install list so an early failure cannot skip this
+recovery; install Cargo tools only after the bootstrap succeeds. Mise's CI
 cache can restore its Rust install symlink without the corresponding rustup
 toolchain, and parallel Cargo invocations then race while materializing it.
 On GitHub-hosted macOS runners, set `RUSTUP_HOME` and `CARGO_HOME` under
