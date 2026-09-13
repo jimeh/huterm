@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/jimeh/huterm/compare/v0.7.1...v0.7.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* **ci:** forward repository Sparkle signing secret ([#109](https://github.com/jimeh/huterm/issues/109)) ([2d65513](https://github.com/jimeh/huterm/commit/2d65513fdfe048a6e59930990cc46c4c13fbebe9))
+
 ## [0.7.1](https://github.com/jimeh/huterm/compare/v0.7.0...v0.7.1) (2026-09-12)
 
 
