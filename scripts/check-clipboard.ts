@@ -113,6 +113,15 @@ export function privateTmuxArgs(socket: string, ...args: string[]): string[] {
   return ["tmux", "-L", socket, "-f", "/dev/null", ...args];
 }
 
+export function tmuxShellWrapper(socket: string, inner: string): string {
+  return `#!/bin/sh
+# Huterm starts login shells on macOS; tmux invokes SHELL with -c.
+if [ "\${1-}" = -l ]; then shift; fi
+if [ "$#" -gt 0 ]; then exec /bin/sh "$@"; fi
+exec ${privateTmuxArgs(socket, "new-session", "-s", "clipboard", inner).map(quote).join(" ")}
+`;
+}
+
 class Clipboard {
   constructor(private readonly witness?: string) {}
 
@@ -228,10 +237,7 @@ done
 `, { mode: 0o700 });
   const socket = tmuxMode ? `huterm_clipboard_${process.pid}_${basename(directory).replaceAll("-", "_")}` : undefined;
   await writeFile(shell, tmuxMode
-    ? `#!/bin/sh
-if [ "$#" -gt 0 ]; then exec /bin/sh "$@"; fi
-exec ${privateTmuxArgs(socket!, "new-session", "-s", "clipboard", inner).map(quote).join(" ")}
-`
+    ? tmuxShellWrapper(socket!, inner)
     : `#!/bin/sh\nexec ${quote(inner)}\n`, { mode: 0o700 });
   const app = Bun.spawn([executable], {
     stdin: "ignore",

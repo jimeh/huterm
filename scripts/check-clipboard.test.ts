@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { assertClipboardBytes, decodeClipboardRead, privateTmuxArgs } from "./check-clipboard";
+import { assertClipboardBytes, decodeClipboardRead, privateTmuxArgs, tmuxShellWrapper } from "./check-clipboard";
 
 function framed(value: Uint8Array): Buffer {
   const result = Buffer.alloc(8 + value.length);
@@ -41,5 +44,35 @@ describe("private tmux command", () => {
   test("rejects names that could address a path or option", () => {
     expect(() => privateTmuxArgs("../default", "kill-server")).toThrow("invalid private tmux socket");
     expect(() => privateTmuxArgs("-Ldefault", "kill-server")).toThrow("invalid private tmux socket");
+  });
+});
+
+describe("private tmux shell wrapper", () => {
+  test("starts tmux for plain and login shells and delegates command invocations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "huterm-osc52-tmux-wrapper-"));
+    try {
+      const wrapper = join(directory, "shell");
+      const inner = join(directory, "inner shell's fixture");
+      await writeFile(wrapper, tmuxShellWrapper("huterm_test_wrapper", inner), { mode: 0o700 });
+      await writeFile(join(directory, "tmux"), '#!/bin/sh\nprintf "tmux\\n"; printf "%s\\n" "$@"\n', { mode: 0o700 });
+      const invoke = (args: string[]) => Bun.spawnSync([wrapper, ...args], {
+        env: { PATH: directory, HOME: directory },
+        stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 2_000,
+      });
+      for (const args of [[], ["-l"]]) {
+        const result = invoke(args);
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout.toString()).toBe([
+          ...privateTmuxArgs("huterm_test_wrapper", "new-session", "-s", "clipboard", inner), "",
+        ].join("\n"));
+      }
+      for (const args of [["-c"], ["-l", "-c"]]) {
+        const result = invoke([...args, 'printf "%s" "$1"; exit 7', "fixture", "command with spaces"]);
+        expect(result.exitCode).toBe(7);
+        expect(result.stdout.toString()).toBe("command with spaces");
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
