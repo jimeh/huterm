@@ -1,12 +1,11 @@
-mod alacritty;
 mod ghostty;
 mod links;
 
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, CellSize, GridSize, ScrollCommand, TerminalEngineKind,
-    TerminalId, TerminalModes, TerminalSnapshot,
+    BufferRange, CellSize, GridSize, ScrollCommand, TerminalId, TerminalModes,
+    TerminalSnapshot,
 };
 
 #[derive(Debug)]
@@ -17,9 +16,8 @@ pub(crate) enum EngineEffect {
 }
 
 #[derive(Debug)]
-pub(crate) enum TerminalEngine {
-    Alacritty(Box<alacritty::TerminalEngine>),
-    Ghostty(Box<ghostty::TerminalEngine>),
+pub(crate) struct TerminalEngine {
+    inner: Box<ghostty::TerminalEngine>,
 }
 
 impl TerminalEngine {
@@ -27,35 +25,21 @@ impl TerminalEngine {
         id: TerminalId,
         size: GridSize,
         cell: CellSize,
-        kind: TerminalEngineKind,
     ) -> Result<Self, RuntimeError> {
-        match kind {
-            TerminalEngineKind::Alacritty => Ok(Self::Alacritty(Box::new(
-                alacritty::TerminalEngine::new(id, size),
-            ))),
-            TerminalEngineKind::Ghostty => {
-                ghostty::TerminalEngine::new(id, size, cell)
-                    .map(Box::new)
-                    .map(Self::Ghostty)
-            }
-        }
+        ghostty::TerminalEngine::new(id, size, cell)
+            .map(Box::new)
+            .map(|inner| Self { inner })
     }
 
     pub(crate) fn set_host_effect_sink(&mut self, sink: HostEffectSink) {
-        match self {
-            Self::Alacritty(engine) => engine.set_host_effect_sink(sink),
-            Self::Ghostty(engine) => engine.set_host_effect_sink(sink),
-        }
+        self.inner.set_host_effect_sink(sink);
     }
 
     pub(crate) fn requested_viewport(
         &self,
         scroll: Option<ScrollCommand>,
     ) -> Result<huterm_protocol::Viewport, RuntimeError> {
-        let (current, history) = match self {
-            Self::Alacritty(engine) => engine.viewport_state(),
-            Self::Ghostty(engine) => engine.viewport_state()?,
-        };
+        let (current, history) = self.inner.viewport_state()?;
         let offset = match scroll {
             None => current,
             Some(ScrollCommand::Live) => 0,
@@ -75,76 +59,41 @@ impl TerminalEngine {
         &mut self,
         bytes: &[u8],
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => Ok(engine.process(bytes)),
-            Self::Ghostty(engine) => engine.process(bytes),
-        }
+        self.inner.process(bytes)
     }
     pub(crate) fn resize(
         &mut self,
         size: GridSize,
         cell: CellSize,
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => {
-                let _ = cell;
-                engine.resize(size);
-                Ok(engine.drain_effects())
-            }
-            Self::Ghostty(engine) => engine.resize(size, cell),
-        }
+        self.inner.resize(size, cell)
     }
     pub(crate) fn size(&self) -> GridSize {
-        match self {
-            Self::Alacritty(engine) => engine.size(),
-            Self::Ghostty(engine) => engine.size(),
-        }
+        self.inner.size()
     }
     pub(crate) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => Ok(engine.modes()),
-            Self::Ghostty(engine) => engine.modes(),
-        }
+        self.inner.modes()
     }
     pub(crate) fn generation(&self) -> u64 {
-        match self {
-            Self::Alacritty(engine) => engine.generation(),
-            Self::Ghostty(engine) => engine.generation(),
-        }
+        self.inner.generation()
     }
     pub(crate) fn scroll(
         &mut self,
         scroll: ScrollCommand,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => {
-                engine.scroll(scroll);
-                Ok(())
-            }
-            Self::Ghostty(engine) => engine.scroll(scroll),
-        }
+        self.inner.scroll(scroll)
     }
     pub(crate) fn snapshot(
         &mut self,
     ) -> Result<TerminalSnapshot, RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => Ok(engine.snapshot()),
-            Self::Ghostty(engine) => engine.snapshot(),
-        }
+        self.inner.snapshot()
     }
     pub(crate) fn lookup_link(
         &self,
         snapshot: &TerminalSnapshot,
         point: huterm_protocol::MousePosition,
     ) -> huterm_protocol::LinkLookup {
-        match self {
-            Self::Alacritty(engine) => {
-                links::resolve(engine.as_ref(), snapshot, point)
-            }
-            Self::Ghostty(engine) => {
-                links::resolve(engine.as_ref(), snapshot, point)
-            }
-        }
+        links::resolve(self.inner.as_ref(), snapshot, point)
     }
 
     pub(crate) fn extract_text(
@@ -152,12 +101,7 @@ impl TerminalEngine {
         generation: u64,
         range: BufferRange,
     ) -> Result<Option<String>, RuntimeError> {
-        match self {
-            Self::Alacritty(engine) => {
-                Ok(engine.extract_text(generation, range))
-            }
-            Self::Ghostty(engine) => engine.extract_text(generation, range),
-        }
+        self.inner.extract_text(generation, range)
     }
 }
 
@@ -166,9 +110,8 @@ mod clipboard_tests {
     use super::*;
     use huterm_protocol::HostEffect;
 
-    fn engine_with_recipient(
-        kind: TerminalEngineKind,
-    ) -> (TerminalEngine, crate::host_effects::HostEffectRecipient) {
+    fn engine_with_recipient()
+    -> (TerminalEngine, crate::host_effects::HostEffectRecipient) {
         let terminal_id = TerminalId::new(1);
         let (sink, recipient) = crate::host_effects::test_fixture(terminal_id);
         let mut engine = TerminalEngine::new(
@@ -178,7 +121,6 @@ mod clipboard_tests {
                 width: 8,
                 height: 16,
             },
-            kind,
         )
         .unwrap();
         engine.set_host_effect_sink(sink);
@@ -200,33 +142,25 @@ mod clipboard_tests {
         text
     }
 
-    fn each_engine(
+    fn with_engine(
         mut test: impl FnMut(
-            TerminalEngineKind,
             &mut TerminalEngine,
             &crate::host_effects::HostEffectRecipient,
         ),
     ) {
-        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
-        {
-            let (mut engine, recipient) = engine_with_recipient(kind);
-            test(kind, &mut engine, &recipient);
-        }
+        let (mut engine, recipient) = engine_with_recipient();
+        test(&mut engine, &recipient);
     }
 
     #[test]
     fn osc52_writes_preserve_order_unicode_empty_and_nul() {
-        each_engine(|kind, engine, recipient| {
+        with_engine(|engine, recipient| {
             engine
                 .process(
                     b"\x1b]52;;dG11eA==\x07\x1b]52;c;\x07\x1b]52;c;YQBi\x1b\\\x1b]52;c;5LiW55WM8J+Zgg==\x07",
                 )
                 .unwrap();
-            assert_eq!(
-                drain_text(recipient),
-                ["tmux", "", "a\0b", "世界🙂"],
-                "{kind:?}"
-            );
+            assert_eq!(drain_text(recipient), ["tmux", "", "a\0b", "世界🙂"]);
         });
     }
 
@@ -235,24 +169,24 @@ mod clipboard_tests {
         for terminator in ["\x07", "\x1b\\"] {
             let sequence = format!("\x1b]52;c;5LiW55WM8J+Zgg=={terminator}");
             for split in 0..=sequence.len() {
-                each_engine(|kind, engine, recipient| {
+                with_engine(|engine, recipient| {
                     engine.process(&sequence.as_bytes()[..split]).unwrap();
                     engine.process(&sequence.as_bytes()[split..]).unwrap();
                     assert_eq!(
                         drain_text(recipient),
                         ["世界🙂"],
-                        "{kind:?} split={split} terminator={terminator:?}"
+                        "split={split} terminator={terminator:?}"
                     );
                 });
             }
-            each_engine(|kind, engine, recipient| {
+            with_engine(|engine, recipient| {
                 for byte in sequence.as_bytes() {
                     engine.process(std::slice::from_ref(byte)).unwrap();
                 }
                 assert_eq!(
                     drain_text(recipient),
                     ["世界🙂"],
-                    "{kind:?} byte-at-a-time terminator={terminator:?}"
+                    "byte-at-a-time terminator={terminator:?}"
                 );
             });
         }
@@ -260,67 +194,62 @@ mod clipboard_tests {
 
     #[test]
     fn osc52_reads_selection_and_invalid_utf8_are_ignored() {
-        each_engine(|kind, engine, recipient| {
+        with_engine(|engine, recipient| {
             let effects = engine
                 .process(
                     b"\x1b]52;c;?\x07\x1b]52;p;c2VsZWN0aW9u\x07\x1b]52;c;/w==\x07",
                 )
                 .unwrap();
-            assert!(recipient.try_next().is_none(), "{kind:?}");
+            assert!(recipient.try_next().is_none());
             assert!(
                 !effects
                     .iter()
                     .any(|effect| matches!(effect, EngineEffect::PtyWrite(_))),
-                "{kind:?} replied to a clipboard read"
+                "Ghostty replied to a clipboard read"
             );
         });
     }
 
     #[test]
     fn stalled_recipient_keeps_only_the_terminal_effect_budget() {
-        each_engine(|kind, engine, recipient| {
+        with_engine(|engine, recipient| {
             let mut input = Vec::new();
             for _ in 0..100 {
                 input.extend_from_slice(b"\x1b]52;c;dmFsdWU=\x07");
             }
             input.extend_from_slice(b"\x1b]2;still-running\x07");
             let effects = engine.process(&input).unwrap();
-            assert_eq!(drain_text(recipient).len(), 8, "{kind:?}");
+            assert_eq!(drain_text(recipient).len(), 8);
             assert!(
                 effects.iter().any(|effect| {
                     matches!(effect, EngineEffect::Title(title) if title == "still-running")
                 }),
-                "{kind:?} did not process later non-clipboard output"
+                "Ghostty did not process later non-clipboard output"
             );
         });
     }
 
     #[test]
     fn ghostty_keeps_osc1337_copy_support() {
-        let (mut engine, recipient) =
-            engine_with_recipient(TerminalEngineKind::Ghostty);
+        let (mut engine, recipient) = engine_with_recipient();
         engine.process(b"\x1b]1337;Copy=:aHV0ZXJt\x07").unwrap();
         assert_eq!(drain_text(&recipient), ["huterm"]);
     }
 
     #[test]
     fn osc52_preserves_upstream_selector_and_malformed_input_behavior() {
-        for (name, sequence, alacritty, ghostty) in [
-            ("malformed", b"\x1b]52;c;!!!!\x07".as_slice(), None, None),
-            ("extra", b"\x1b]52;c;Zm9v;extra\x07", Some("foo"), None),
-            ("selector-list", b"\x1b]52;c,p;Zm9v\x07", Some("foo"), None),
-            ("unknown-selector", b"\x1b]52;x;Zm9v\x07", None, Some("foo")),
+        for (name, sequence, expected) in [
+            ("malformed", b"\x1b]52;c;!!!!\x07".as_slice(), None),
+            ("extra", b"\x1b]52;c;Zm9v;extra\x07", None),
+            ("selector-list", b"\x1b]52;c,p;Zm9v\x07", None),
+            ("unknown-selector", b"\x1b]52;x;Zm9v\x07", Some("foo")),
         ] {
-            each_engine(|kind, engine, recipient| {
+            with_engine(|engine, recipient| {
                 engine.process(sequence).unwrap();
-                let expected = match kind {
-                    TerminalEngineKind::Alacritty => alacritty,
-                    TerminalEngineKind::Ghostty => ghostty,
-                };
                 assert_eq!(
                     drain_text(recipient),
                     expected.into_iter().collect::<Vec<_>>(),
-                    "{kind:?} {name}"
+                    "{name}"
                 );
             });
         }
@@ -329,12 +258,12 @@ mod clipboard_tests {
     #[test]
     fn osc52_can_and_sub_finish_the_valid_prefix_once() {
         for cancellation in ['\x18', '\x1a'] {
-            each_engine(|kind, engine, recipient| {
+            with_engine(|engine, recipient| {
                 let sequence = format!(
                     "\x1b]52;c;Zm9v{cancellation}\x07\x1b]52;c;YmFy\x07"
                 );
                 engine.process(sequence.as_bytes()).unwrap();
-                assert_eq!(drain_text(recipient), ["foo", "bar"], "{kind:?}");
+                assert_eq!(drain_text(recipient), ["foo", "bar"]);
             });
         }
     }
@@ -354,11 +283,6 @@ mod benchmark {
         reason = "benchmark fixtures, timing, and output checks remain together"
     )]
     fn engine_benchmark() {
-        let kind = match std::env::var("HUTERM_BENCH_ENGINE").as_deref() {
-            Ok("ghostty") => TerminalEngineKind::Ghostty,
-            Ok("alacritty") | Err(_) => TerminalEngineKind::Alacritty,
-            Ok(name) => panic!("unknown benchmark engine {name}"),
-        };
         for (name, first, second, expected) in [
             (
                 "ascii",
@@ -398,7 +322,6 @@ mod benchmark {
                     width: 8,
                     height: 16,
                 },
-                kind,
             )
             .unwrap();
             engine.process(b"warmup").unwrap();
@@ -459,13 +382,8 @@ mod benchmark {
             processing.sort_unstable();
             snapshots.sort_unstable();
             println!(
-                "engine={} revision={} fixture={name} bytes={} iterations=200 process_ns_p50={} process_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={} rebuilt_rows={} reused_rows={} history={} combined_ns_p50={} combined_ns_p95={} process_bytes_per_second={}",
-                kind.name(),
-                if kind == TerminalEngineKind::Alacritty {
-                    "0.26.0"
-                } else {
-                    crate::GHOSTTY_REVISION
-                },
+                "engine=ghostty revision={} fixture={name} bytes={} iterations=200 process_ns_p50={} process_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={} rebuilt_rows={} reused_rows={} history={} combined_ns_p50={} combined_ns_p95={} process_bytes_per_second={}",
+                crate::GHOSTTY_REVISION,
                 first.len(),
                 processing[100],
                 processing[190],
@@ -484,13 +402,6 @@ mod benchmark {
     #[test]
     #[ignore = "release benchmark; run through mise run bench:engine"]
     fn engine_benchmark_resize() {
-        let kind = if std::env::var("HUTERM_BENCH_ENGINE").as_deref()
-            == Ok("ghostty")
-        {
-            TerminalEngineKind::Ghostty
-        } else {
-            TerminalEngineKind::Alacritty
-        };
         let cell = CellSize {
             width: 8,
             height: 16,
@@ -499,7 +410,6 @@ mod benchmark {
             TerminalId::new(1),
             GridSize::clamped(120, 40),
             cell,
-            kind,
         )
         .unwrap();
         engine
@@ -531,12 +441,8 @@ mod benchmark {
         resizing.sort_unstable();
         snapshots.sort_unstable();
         println!(
-            "engine={} fixture=resize-reflow iterations=200 columns=100/120 rows=40 resize_ns_p50={} resize_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={}",
-            kind.name(),
-            resizing[100],
-            resizing[190],
-            snapshots[100],
-            snapshots[190]
+            "engine=ghostty fixture=resize-reflow iterations=200 columns=100/120 rows=40 resize_ns_p50={} resize_ns_p95={} snapshot_ns_p50={} snapshot_ns_p95={}",
+            resizing[100], resizing[190], snapshots[100], snapshots[190]
         );
     }
 }
@@ -549,26 +455,22 @@ mod contract_tests {
     };
     use std::sync::Arc;
 
-    fn each_engine(mut test: impl FnMut(&mut TerminalEngine)) {
-        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
-        {
-            let mut engine = TerminalEngine::new(
-                TerminalId::new(1),
-                GridSize::clamped(8, 3),
-                CellSize {
-                    width: 8,
-                    height: 16,
-                },
-                kind,
-            )
-            .unwrap();
-            test(&mut engine);
-        }
+    fn with_engine(mut test: impl FnMut(&mut TerminalEngine)) {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        )
+        .unwrap();
+        test(&mut engine);
     }
 
     #[test]
-    fn engines_preserve_style_unicode_defaults_and_dynamic_colors() {
-        each_engine(|engine| {
+    fn ghostty_preserves_style_unicode_defaults_and_dynamic_colors() {
+        with_engine(|engine| {
             engine
                 .process("A\x1b[31;1;4m界e\u{301}".as_bytes())
                 .unwrap();
@@ -602,8 +504,37 @@ mod contract_tests {
     }
 
     #[test]
-    fn engines_publish_sparse_rows_metadata_and_skipped_generations() {
-        each_engine(|engine| {
+    fn ghostty_preserves_defaults_true_color_indexed_and_reverse_video() {
+        with_engine(|engine| {
+            engine.process(b"D\x1b[38;2;1;2;3;48;5;4;7mR").unwrap();
+
+            let snapshot = engine.snapshot().unwrap();
+            assert_eq!(
+                snapshot.rows[0].cells[0].foreground,
+                CellColor::DefaultForeground
+            );
+            assert_eq!(
+                snapshot.rows[0].cells[0].background,
+                CellColor::DefaultBackground
+            );
+            assert_eq!(
+                snapshot.rows[0].cells[1].foreground,
+                CellColor::Indexed(4)
+            );
+            assert_eq!(
+                snapshot.rows[0].cells[1].background,
+                CellColor::Rgb(Rgb {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn ghostty_publishes_sparse_rows_metadata_and_skipped_generations() {
+        with_engine(|engine| {
             engine.process(b"one\r\ntwo\r\nthree").unwrap();
             let before = engine.snapshot().unwrap();
             engine.process(b"\x1b[2;1HX").unwrap();
@@ -625,8 +556,8 @@ mod contract_tests {
     }
 
     #[test]
-    fn engines_preserve_shared_scrollback_and_generation_checked_selection() {
-        each_engine(|engine| {
+    fn ghostty_preserves_shared_scrollback_and_generation_checked_selection() {
+        with_engine(|engine| {
             engine
                 .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive")
                 .unwrap();
@@ -687,7 +618,7 @@ mod contract_tests {
 
     #[test]
     fn relative_scroll_expectation_uses_runtime_state_before_the_command() {
-        each_engine(|engine| {
+        with_engine(|engine| {
             engine
                 .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive")
                 .unwrap();
@@ -714,9 +645,10 @@ mod contract_tests {
     }
 
     #[test]
-    fn engines_resize_reflow_and_preserve_soft_wrapped_selection() {
-        each_engine(|engine| {
+    fn ghostty_resizes_reflows_and_preserves_soft_wrapped_selection() {
+        with_engine(|engine| {
             engine.process("abcdef界e\u{301}Z".as_bytes()).unwrap();
+            let generation = engine.generation();
             let range = BufferRange::ordered(
                 BufferPoint {
                     rows_from_live_bottom: 2,
@@ -728,10 +660,7 @@ mod contract_tests {
                 },
             );
             assert_eq!(
-                engine
-                    .extract_text(engine.generation(), range)
-                    .unwrap()
-                    .as_deref(),
+                engine.extract_text(generation, range).unwrap().as_deref(),
                 Some("abcdef界e\u{301}Z")
             );
             engine
@@ -744,21 +673,18 @@ mod contract_tests {
                 )
                 .unwrap();
             let snapshot = engine.snapshot().unwrap();
+            assert_eq!(snapshot.generation, generation + 1);
             assert_eq!(snapshot.size, GridSize::clamped(12, 4));
             assert_eq!(snapshot.rows.len(), 4);
             assert!(snapshot.rows.iter().all(|row| row.cells.len() == 12));
+            assert_eq!(engine.extract_text(generation, range).unwrap(), None);
         });
     }
 
     #[test]
-    fn engines_use_the_last_enabled_mouse_encoding() {
-        each_engine(|engine| {
-            let inactive_reset =
-                if matches!(engine, TerminalEngine::Alacritty(_)) {
-                    MouseEncoding::Utf8
-                } else {
-                    MouseEncoding::Legacy
-                };
+    fn ghostty_uses_the_last_enabled_mouse_encoding() {
+        with_engine(|engine| {
+            let inactive_reset = MouseEncoding::Legacy;
             engine
                 .resize(
                     GridSize::clamped(1, 1),
@@ -786,13 +712,9 @@ mod contract_tests {
     }
 
     #[test]
-    fn engines_answer_primary_device_attributes_conservatively() {
-        each_engine(|engine| {
-            let expected = if matches!(engine, TerminalEngine::Alacritty(_)) {
-                b"\x1b[?6c".as_slice()
-            } else {
-                b"\x1b[?62;22c".as_slice()
-            };
+    fn ghostty_answers_primary_device_attributes_conservatively() {
+        with_engine(|engine| {
+            let expected = b"\x1b[?62;22c".as_slice();
             let effects = engine.process(b"\x1b[c").unwrap();
             let replies: Vec<_> = effects
                 .iter()
@@ -806,16 +728,16 @@ mod contract_tests {
     }
 
     #[test]
-    fn engines_do_not_advertise_unsupported_kitty_keyboard_input() {
-        each_engine(|engine| {
+    fn ghostty_does_not_advertise_unsupported_kitty_keyboard_input() {
+        with_engine(|engine| {
             let effects = engine.process(b"\x1b[?u\x1b[>31u\x1b[?u").unwrap();
             assert!(!effects.iter().any(|effect| matches!(effect, EngineEffect::PtyWrite(bytes) if bytes.ends_with(b"u"))));
         });
     }
 
     #[test]
-    fn engines_report_modes_and_owned_effects() {
-        each_engine(|engine| {
+    fn ghostty_reports_modes_and_owned_effects() {
+        with_engine(|engine| {
             let effects = engine.process(b"\x1b]2;contract\x07\x07\x1b[6n\x1b[?1002h\x1b[?1006h\x1b[?1004h").unwrap();
             assert!(
                 effects
@@ -839,25 +761,21 @@ mod link_contract_tests {
         LinkLookup, LinkSource, MousePosition, TerminalLink,
     };
 
-    fn each_engine(mut test: impl FnMut(&mut TerminalEngine)) {
-        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
-        {
-            let mut engine = TerminalEngine::new(
-                TerminalId::new(1),
-                GridSize::clamped(8, 3),
-                CellSize {
-                    width: 8,
-                    height: 16,
-                },
-                kind,
-            )
-            .unwrap();
-            test(&mut engine);
-        }
+    fn with_engine(mut test: impl FnMut(&mut TerminalEngine)) {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        )
+        .unwrap();
+        test(&mut engine);
     }
     #[test]
     fn osc8_native_destination_boundaries_never_return_truncated_targets() {
-        each_engine(|engine| {
+        with_engine(|engine| {
             for length in [2046, 2047, 8021] {
                 engine.process(b"\x1bc").unwrap();
                 let destination =
@@ -876,8 +794,7 @@ mod link_contract_tests {
                     &snapshot,
                     MousePosition { row: 0, column: 1 },
                 );
-                if matches!(engine, TerminalEngine::Ghostty(_)) && length > 2046
-                {
+                if length > 2046 {
                     assert_eq!(result, LinkLookup::NoMatch);
                 } else {
                     let LinkLookup::Match(link) = result else {
@@ -904,7 +821,7 @@ mod link_contract_tests {
 
     #[test]
     fn link_lookup_resolves_offscreen_prefix_and_suffix_without_scrolling() {
-        each_engine(|engine| {
+        with_engine(|engine| {
             let url = "https://example.test/abcdefghijklmnopqrstuvxyz";
             engine.process(url.as_bytes()).unwrap();
             let snapshot = engine.snapshot().unwrap();
@@ -928,7 +845,7 @@ mod link_contract_tests {
 
     #[test]
     fn link_lookup_drops_evicted_prefix_and_preserves_future_damage() {
-        each_engine(|engine| {
+        with_engine(|engine| {
             engine
                 .process(b"https://example.test/abcdefghijklmnopqrstuvwxyz")
                 .unwrap();
@@ -957,7 +874,7 @@ mod link_contract_tests {
 
     #[test]
     fn link_lookup_explicit_target_precedes_label_and_preserves_wide_spacer() {
-        each_engine(|engine| {
+        with_engine(|engine| {
             engine.process(b"\x1b]8;;https://destination.test/path\x1b\\http://x\x1b]8;;\x1b\\").unwrap();
             let link = matched(engine, 0, 0);
             assert_eq!(link.destination, "https://destination.test/path");
@@ -983,7 +900,7 @@ mod link_contract_tests {
     #[test]
     fn link_lookup_hard_breaks_controls_out_of_grid_and_scan_limits_are_not_targets()
      {
-        each_engine(|engine| {
+        with_engine(|engine| {
             engine.process(b"https://\r\nexample.test").unwrap();
             let snapshot = engine.snapshot().unwrap();
             assert_eq!(
@@ -1032,7 +949,7 @@ mod link_contract_tests {
     #[test]
     fn link_lookup_observes_offscreen_target_mutation_resize_and_alternate_screen()
      {
-        each_engine(|engine| {
+        with_engine(|engine| {
             engine
                 .process(b"\x1b]8;;https://first.test\x1b\\label\x1b]8;;\x1b\\")
                 .unwrap();
@@ -1075,97 +992,88 @@ mod link_benchmark {
     #[test]
     #[ignore = "release benchmark; use mise run bench:links"]
     fn bounded_link_lookup_elapsed_time() {
-        for kind in [TerminalEngineKind::Alacritty, TerminalEngineKind::Ghostty]
-        {
-            let long_url =
-                format!("https://example.test/{}", "http".repeat(3000));
-            let punctuation =
-                format!("https://example.test/{}", ")".repeat(12000));
-            let explicit = format!("https://example.test/{}", "a".repeat(1900));
-            let fixtures = [
-                (
-                    "short",
-                    "https://example.test/path".to_owned(),
-                    "https://example.test/path".to_owned(),
-                    false,
+        let long_url = format!("https://example.test/{}", "http".repeat(3000));
+        let punctuation = format!("https://example.test/{}", ")".repeat(12000));
+        let explicit = format!("https://example.test/{}", "a".repeat(1900));
+        let fixtures = [
+            (
+                "short",
+                "https://example.test/path".to_owned(),
+                "https://example.test/path".to_owned(),
+                false,
+            ),
+            ("wrapped-prefixes", long_url.clone(), long_url, false),
+            (
+                "unmatched-punctuation",
+                punctuation,
+                "https://example.test/".to_owned(),
+                false,
+            ),
+            (
+                "long-OSC8-destination",
+                format!(
+                    "\x1b]8;;{explicit}\x1b\\{}\x1b]8;;\x1b\\",
+                    "label".repeat(40)
                 ),
-                ("wrapped-prefixes", long_url.clone(), long_url, false),
-                (
-                    "unmatched-punctuation",
-                    punctuation,
-                    "https://example.test/".to_owned(),
-                    false,
+                explicit,
+                false,
+            ),
+            (
+                "long-OSC8-label",
+                format!(
+                    "\x1b]8;;https://example.test/\x1b\\{}\x1b]8;;\x1b\\",
+                    "label".repeat(2400)
                 ),
-                (
-                    "long-OSC8-destination",
-                    format!(
-                        "\x1b]8;;{explicit}\x1b\\{}\x1b]8;;\x1b\\",
-                        "label".repeat(40)
-                    ),
-                    explicit,
-                    false,
-                ),
-                (
-                    "long-OSC8-label",
-                    format!(
-                        "\x1b]8;;https://example.test/\x1b\\{}\x1b]8;;\x1b\\",
-                        "label".repeat(2400)
-                    ),
-                    "https://example.test/".to_owned(),
-                    false,
-                ),
-                (
-                    "scan-limit",
-                    format!("https://example.test/{}", "x".repeat(20000)),
-                    String::new(),
-                    true,
-                ),
-            ];
-            for (name, output, destination, limited) in fixtures {
-                let mut engine = TerminalEngine::new(
-                    TerminalId::new(1),
-                    GridSize::clamped(120, 40),
-                    CellSize {
-                        width: 8,
-                        height: 16,
-                    },
-                    kind,
-                )
-                .unwrap();
-                engine.process(output.as_bytes()).unwrap();
-                engine.scroll(ScrollCommand::Absolute(usize::MAX)).unwrap();
-                let snapshot = engine.snapshot().unwrap();
-                let mut samples = Vec::new();
-                for _ in 0..100 {
-                    let started = Instant::now();
-                    let lookup = engine.lookup_link(
-                        &snapshot,
-                        MousePosition { row: 0, column: 3 },
-                    );
-                    samples.push(started.elapsed().as_micros());
-                    if limited {
-                        assert_eq!(lookup, LinkLookup::ScanLimit, "{name}");
-                    } else {
-                        let LinkLookup::Match(link) = lookup else {
-                            panic!("{kind:?} {name}: {lookup:?}")
-                        };
-                        assert_eq!(link.destination, destination, "{name}");
-                    }
+                "https://example.test/".to_owned(),
+                false,
+            ),
+            (
+                "scan-limit",
+                format!("https://example.test/{}", "x".repeat(20000)),
+                String::new(),
+                true,
+            ),
+        ];
+        for (name, output, destination, limited) in fixtures {
+            let mut engine = TerminalEngine::new(
+                TerminalId::new(1),
+                GridSize::clamped(120, 40),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .unwrap();
+            engine.process(output.as_bytes()).unwrap();
+            engine.scroll(ScrollCommand::Absolute(usize::MAX)).unwrap();
+            let snapshot = engine.snapshot().unwrap();
+            let mut samples = Vec::new();
+            for _ in 0..100 {
+                let started = Instant::now();
+                let lookup = engine.lookup_link(
+                    &snapshot,
+                    MousePosition { row: 0, column: 3 },
+                );
+                samples.push(started.elapsed().as_micros());
+                if limited {
+                    assert_eq!(lookup, LinkLookup::ScanLimit, "{name}");
+                } else {
+                    let LinkLookup::Match(link) = lookup else {
+                        panic!("{name}: {lookup:?}")
+                    };
+                    assert_eq!(link.destination, destination, "{name}");
                 }
-                samples.sort_unstable();
-                assert!(
-                    samples[95] <= 5000,
-                    "{kind:?} {name} p95 exceeded 5 ms: {} us",
-                    samples[95]
-                );
-                println!(
-                    "link-benchmark engine={} fixture={name} samples=100 p50_us={} p95_us={} max_us={}",
-                    kind.name(),
-                    samples[50],
-                    samples[95],
-                    samples[99]
-                );
             }
+            samples.sort_unstable();
+            assert!(
+                samples[95] <= 5000,
+                "{name} p95 exceeded 5 ms: {} us",
+                samples[95]
+            );
+            println!(
+                "link-benchmark engine=ghostty fixture={name} samples=100 p50_us={} p95_us={} max_us={}",
+                samples[50], samples[95], samples[99]
+            );
         }
     }
 }

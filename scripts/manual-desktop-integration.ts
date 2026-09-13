@@ -3,9 +3,7 @@ import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const engine = Bun.argv[2] ?? "alacritty";
-if (!["alacritty", "ghostty"].includes(engine))
-  throw new Error("Choose alacritty or ghostty");
+const engine = "ghostty";
 const directory = await mkdtemp(join(tmpdir(), "huterm-manual-drop-"));
 const files = join(directory, "files");
 await mkdir(files);
@@ -15,7 +13,7 @@ await symlink(join(files, "folder with spaces"), join(files, "symlink"));
 const config = join(directory, "config.toml");
 await writeFile(
   config,
-  `[terminal]\nengine="${engine}"\nclose_on_exit=false\n`,
+  `[terminal]\nclose_on_exit=false\n`,
 );
 const bytes = join(directory, "bytes");
 const recorder = join(directory, "recorder.ts");

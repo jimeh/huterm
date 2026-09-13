@@ -23,7 +23,8 @@ export function checkNativeInputBytes(actual: Uint8Array, expected: string, labe
   }
 }
 
-async function checkInput(executable: string, engine: string): Promise<void> {
+async function checkInput(executable: string): Promise<void> {
+  const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-native-input-"));
   const ready = join(directory, "ready");
   const bytes = join(directory, "bytes");
@@ -53,7 +54,7 @@ key = "ctrl-h alt-r alt-f"
 command = "copy"
 `;
   async function configure(policy: string, withConditional = true) {
-    await writeFile(config, `[terminal]\nengine = "${engine}"\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n${bindings}${withConditional ? conditional : ""}`);
+    await writeFile(config, `[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n${bindings}${withConditional ? conditional : ""}`);
   }
   await configure("off");
   const recorder = join(directory, "recorder.ts");
@@ -232,9 +233,50 @@ exec ${quote(process.execPath)} ${quote(recorder)}
   }
 }
 
+async function checkLegacyEngine(executable: string): Promise<void> {
+  const manifest = await Bun.file(join(import.meta.dir, "ghostty-source.json")).json() as { revision: string };
+  const expected = `huterm-engine engine=ghostty revision=${manifest.revision}`;
+  const directory = await mkdtemp(join(tmpdir(), "huterm-legacy-engine-"));
+  const ready = join(directory, "ready");
+  const shell = join(directory, "shell");
+  const config = join(directory, "config.toml");
+  await writeFile(config, '[terminal]\nengine = "alacritty"\nclose_on_exit = false\n');
+  await writeFile(shell, `#!/bin/sh\nprintf READY > ${quote(ready)}\nexec sleep 30\n`, { mode: 0o700 });
+  const app = Bun.spawn([executable], {
+    env: {
+      ...process.env,
+      HUTERM_CONFIG_FILE: config,
+      HUTERM_ENGINE_DIAGNOSTIC: "1",
+      HUTERM_INPUT_SMOKE: directory,
+      SHELL: shell,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  let stderr = "";
+  const stderrTask = (async () => {
+    for await (const chunk of app.stderr) stderr += Buffer.from(chunk).toString();
+  })();
+  try {
+    await waitFor(() => Bun.file(ready).exists(), "legacy engine launch");
+    await waitFor(async () => stderr.includes(expected), "Ghostty runtime diagnostic");
+    if (!stderr.includes('terminal.engine = "alacritty" is deprecated')) {
+      throw new Error(`legacy engine launch missing migration warning: ${stderr}`);
+    }
+    console.log(`NATIVE_INPUT_SMOKE legacy-alacritty=ghostty revision=${manifest.revision}`);
+  } finally {
+    if (app.exitCode === null) app.kill("SIGTERM");
+    await app.exited;
+    await stderrTask;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 if (import.meta.main) {
   if (process.platform !== "darwin") console.log("Native input smoke requires macOS");
-  else for (const engine of ["alacritty", "ghostty"]) {
-    await checkInput(resolve(Bun.argv[2] ?? "target/debug/examples/native_input_smoke"), engine);
+  else {
+    const executable = resolve(Bun.argv[2] ?? "target/debug/examples/native_input_smoke");
+    await checkInput(executable);
+    await checkLegacyEngine(executable);
   }
 }

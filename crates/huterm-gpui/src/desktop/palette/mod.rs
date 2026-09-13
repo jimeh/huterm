@@ -2230,9 +2230,7 @@ mod tests {
     use crate::config::KeybindingEntry;
     use crate::keymap::{Platform, compile};
     use huterm_core::Mux;
-    use huterm_protocol::{
-        CellSize, GridSize, RuntimeId, TerminalCommand, TerminalEngineKind,
-    };
+    use huterm_protocol::{CellSize, GridSize, RuntimeId, TerminalCommand};
 
     fn target() -> PaletteTarget {
         PaletteTarget {
@@ -2250,7 +2248,6 @@ mod tests {
 
     fn terminal_command() -> TerminalCommand {
         TerminalCommand {
-            engine: TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "read value".into()],
             working_directory: std::env::current_dir().unwrap(),

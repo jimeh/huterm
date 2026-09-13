@@ -1,5 +1,8 @@
 # Configurable terminal engines and incremental snapshots
 
+Superseded engine decision: issue #118 removed runtime engine selection. Every
+launch now uses Ghostty; this plan remains a record of the earlier experiment.
+
 Status: implemented. The later decision to include both engines in every build
 supersedes this plan's optional-feature build controls; Alacritty remains the
 default. Current build instructions, validation, and measured results are in

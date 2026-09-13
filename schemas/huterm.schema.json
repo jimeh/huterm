@@ -3330,8 +3330,8 @@
           "type": "boolean"
         },
         "engine": {
-          "default": "alacritty",
-          "description": "Terminal engine. Both ship in every build; reload changes newly created terminals only.",
+          "deprecated": true,
+          "description": "Deprecated compatibility setting. Both legacy values use Ghostty; remove this field.",
           "enum": [
             "alacritty",
             "ghostty"

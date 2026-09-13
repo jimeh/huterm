@@ -1,5 +1,8 @@
 # Terminal Meta input and menu shortcut verification
 
+Historical cross-engine coverage in this plan predates issue #118. Ghostty is
+now the only runtime engine; the input contract remains unchanged.
+
 Status: implemented, with native keyboard verification and PR review recorded
 separately in the delivery evidence. Left/right Option remains deferred.
 

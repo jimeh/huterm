@@ -1,5 +1,8 @@
 # OSC 52 clipboard writes
 
+Historical cross-engine coverage in this plan predates issue #118. Ghostty is
+now the only runtime engine; clipboard authority and behavior remain unchanged.
+
 Status: implemented after Ghostty upgrade commit `44def94` on 2026-09-13.
 Linux and native macOS clipboard acceptance pass on both engines.
 This revision retains the earlier Claude review fixes and supersedes the

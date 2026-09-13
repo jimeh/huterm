@@ -402,10 +402,10 @@ impl TerminalView {
     fn start_initial_snapshot(&mut self, cx: &mut Context<'_, Self>) {
         if std::env::var_os("HUTERM_SCROLL_BENCH").is_some()
             || std::env::var_os("HUTERM_RENDER_BENCH").is_some()
+            || std::env::var_os("HUTERM_ENGINE_DIAGNOSTIC").is_some()
         {
             eprintln!(
-                "huterm-engine engine={} revision={} snapshot=shared-rows native_optimize=ReleaseFast compression=disabled",
-                self.client.engine().name(),
+                "huterm-engine engine=ghostty revision={} snapshot=shared-rows native_optimize=ReleaseFast compression=disabled",
                 self.client.engine_revision()
             );
         }
@@ -2118,10 +2118,7 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
     titlebar_inset(cfg!(target_os = "macos"), chrome_hidden)
 }
 
-fn shell_command(
-    metrics: GridMetrics,
-    engine: huterm_protocol::TerminalEngineKind,
-) -> anyhow::Result<TerminalCommand> {
+fn shell_command(metrics: GridMetrics) -> anyhow::Result<TerminalCommand> {
     let shell =
         std::env::var_os("SHELL").map_or_else(default_shell, PathBuf::from);
     let is_macos = cfg!(target_os = "macos");
@@ -2138,7 +2135,6 @@ fn shell_command(
         std::env::current_dir()?
     };
     Ok(TerminalCommand {
-        engine,
         program: shell,
         arguments,
         working_directory,

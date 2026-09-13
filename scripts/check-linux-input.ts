@@ -36,7 +36,8 @@ async function waitFor(check: () => Promise<boolean>, label: string): Promise<vo
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function checkInput(executable: string, engine: string): Promise<void> {
+async function checkInput(executable: string): Promise<void> {
+  const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-x11-input-"));
   const ready = join(directory, "ready");
   const complete = join(directory, "complete");
@@ -51,7 +52,6 @@ timeout --foreground 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/
 printf COMPLETE > ${quote(complete)}
 `, { mode: 0o700 });
   await writeFile(config, `[terminal]
-engine = "${engine}"
 close_on_exit = false
 [[keybinding]]
 key = "alt-3"
@@ -129,6 +129,6 @@ if (import.meta.main) {
   } else {
     const executable = resolve(Bun.argv[2] ?? "target/debug/huterm");
     run(["setxkbmap", "-layout", "us"]);
-    for (const engine of ["alacritty", "ghostty"]) await checkInput(executable, engine);
+    await checkInput(executable);
   }
 }

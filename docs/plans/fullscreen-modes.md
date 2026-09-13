@@ -1,5 +1,8 @@
 # Native and non-native fullscreen
 
+Historical cross-engine scenarios in this plan predate issue #118. They now run
+unconditionally against Ghostty.
+
 Status: proposed.
 
 Keep published GPUI 0.2.2 for this delivery. Implement a small local AppKit

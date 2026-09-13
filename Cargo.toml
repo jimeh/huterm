@@ -10,7 +10,6 @@ repository = "https://github.com/jimeh/huterm"
 rust-version = "1.88"
 
 [workspace.dependencies]
-alacritty_terminal = { version = "=0.26.0", default-features = false }
 anyhow = "1.0.104"
 async-channel = "=2.5.0"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "x11"] }

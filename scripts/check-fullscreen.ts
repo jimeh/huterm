@@ -94,7 +94,7 @@ writeFileSync(${JSON.stringify(rawReady)}, "ready");
 setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
 for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
 `);
-  const configText = (mode: string) => `[terminal]\nengine = "${engine}"\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
+  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do
@@ -494,7 +494,7 @@ done
       console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit native-timeout retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
-    if (macos && engine === "alacritty" && !frameProbe) {
+    if (macos && !frameProbe) {
       await accepted("0 toggle_fullscreen");
       const released = await stable("Windowed");
       if (released["w0.options"] !== original["w0.options"]) throw new Error("final non-native lease was not released");
@@ -540,16 +540,14 @@ if (import.meta.main) {
   const executable = resolve(Bun.argv[2] ?? "target/debug/examples/fullscreen_smoke");
   if (process.platform === "linux") {
     run(["setxkbmap", "-layout", "us"]);
-    await check(executable, "alacritty", true);
+    await check(executable, "ghostty", true);
     const wm = Bun.spawn(["openbox", "--sm-disable"], { stdout: "ignore", stderr: "pipe" });
     try {
       await waitFor(async () => run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).includes("window id"), "Openbox EWMH readiness");
-      for (const engine of ["alacritty", "ghostty"]) await check(executable, engine, false);
+      await check(executable, "ghostty", false);
     } finally { wm.kill(); await wm.exited; process.stderr.write(await new Response(wm.stderr).text()); }
   } else if (process.platform === "darwin") {
-    for (const engine of ["alacritty", "ghostty"]) {
-      await check(executable, engine, false);
-      await check(executable, engine, false, true);
-    }
+    await check(executable, "ghostty", false);
+    await check(executable, "ghostty", false, true);
   } else throw new Error("fullscreen smoke requires macOS or X11 Linux");
 }

@@ -714,8 +714,9 @@ async function runPackageSmoke(executable: string, evidenceDirectory?: string, e
   if (evidenceDirectory) await mkdir(evidenceDirectory, { recursive: true });
   await runInherited("xvfb-run", ["-a", "-s", "-screen 0 1280x800x24 -noreset", "bun", "scripts/check-linux-input.ts", executable], { env: { ...env, HUTERM_PACKAGE_MAPS_DIR: evidenceDirectory } });
   if (evidenceDirectory) {
-    for (const engine of ["alacritty", "ghostty"]) {
-      const maps = await readFile(join(evidenceDirectory, `${engine}.maps`), "utf8");
+    {
+      const engine = "ghostty";
+      const maps = await readFile(join(evidenceDirectory, "ghostty.maps"), "utf8");
       for (const library of ["libxkbcommon.so.0", "libxkbcommon-x11.so.0", "libxcb-xkb.so.1"]) {
         const line = maps.split(/\r?\n/).find(item => item.includes(`/${library}`));
         if (!line?.includes("/lib/huterm/")) throw new Error(`${engine} loaded ${library} outside the private bundle`);

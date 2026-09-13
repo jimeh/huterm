@@ -18,7 +18,7 @@ Keep view destruction and detachment separate from explicit close.
 ## Boundaries that must hold
 
 - `huterm-protocol` owns dependency-neutral IDs, input, lifecycle events, and
-  immutable snapshots. Its public types must not expose GPUI, Alacritty, or
+  immutable snapshots. Its public types must not expose GPUI, Ghostty, or
   `portable-pty` types. `mise run architecture` enforces its empty dependency
   set.
 - `huterm-core` alone owns PTYs and canonical emulator state. One runtime
@@ -27,9 +27,9 @@ Keep view destruction and detachment separate from explicit close.
 - `huterm-gpui` owns macOS/Linux window state, rendering, key translation,
   focus, selection gestures, and scrollbar animation. The terminal runtime owns
   the shared viewport; clients send ordered scroll commands.
-- Alacritty is the default; every build includes `libghostty-vt`, which shares
-  the same owned rows and PTY/input runtime. Do not use either engine's
-  application or PTY event loop.
+- Every terminal uses `libghostty-vt` behind core's private concrete wrapper.
+  Do not expose native handles outside core or use Ghostty's application or PTY
+  event loop. Keep engine selection out of runtime and protocol APIs.
   Do not copy or depend on GPL-covered Zed application or terminal-view code.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
@@ -257,7 +257,7 @@ keymap lists unconditional user bindings first and conditional ones last.
 GPUI's `Not` predicate checks every ancestor context, so
 `Terminal && !confirming` works across the Workspace and Terminal stack.
 Derive scrollbar geometry and label text from the displayed snapshot offset.
-Growing the grid pulls rows out of Alacritty history. Let the runtime engine
+Growing the grid pulls rows out of terminal history. Let the runtime engine
 anchor its shared viewport across output and resize; never also compensate the
 client's offset for history growth or shrinkage. Offset zero follows live output.
 Protocol selection ranges include both endpoints. Keep a mouse-down anchor
@@ -335,11 +335,12 @@ read other windows through their view entities, never through
 `AnyWindowHandle`, and pass `Outside` only from async tasks or smoke commands
 with no window update in progress.
 
-Alacritty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
-enabled format wins. Project its current bits rather than retaining independent
-client format flags. Encode mouse events at dequeue time against live modes and
-dimensions. GPUI owns physical-button lifetimes and may admit one overflow
-release per accepted button, consuming ownership before enqueueing the release.
+Ghostty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
+enabled format wins. Read its active behavior through the retained native probe
+rather than retaining independent client flags. Encode mouse events at dequeue
+time against live modes and dimensions. GPUI owns physical-button lifetimes and
+may admit one overflow release per accepted button, consuming ownership before
+enqueueing the release.
 GPUI's X11 backend remaps Shift vertical wheel lines to horizontal-only deltas.
 Restore those deltas to vertical only on the local scroll path on Linux. Leave
 application horizontal wheel reports and macOS deltas unchanged until native
@@ -447,8 +448,8 @@ Ghostty builds use libghostty-vt/sys 0.2.1, native revision
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
 full native source tree against `scripts/ghostty-source.json`. Keep that source,
-the binding versions, and bundled notices aligned. All builds include both
-engines and require the pinned Zig toolchain. Native source dependencies use
+the binding versions, and bundled notices aligned. All builds require the
+pinned Ghostty source and Zig toolchain. Native source dependencies use
 Zig's content hashes; their notices are in `third-party/ghostty` because they
 are outside Cargo's license audit.
 Both Rust crates include upstream revision
@@ -470,7 +471,7 @@ Ghostty's public mode bits can disagree with its active mouse format/tracking.
 Read the active behavior through the retained native mouse probe, with synthetic
 200x200 geometry independent of the real grid, then feed Huterm's shared encoder.
 Never send probe output to the PTY. At the selected native pin, disabling an
-inactive format resets to legacy encoding; Alacritty preserves the active format.
+inactive format resets to legacy encoding.
 
 Shared relative scroll requests can follow output that advances the runtime
 viewport. Benchmark expected offsets use command plus pre-operation runtime
@@ -478,9 +479,11 @@ viewport/history; retain the client prediction separately. Clamp pending relativ
 UI intents after an authoritative completion so a saturated history boundary
 does not leave scroll debt that affects later reversal.
 
-Treat malformed TOML and invalid engine choices as fatal at startup.
-For valid TOML with a known engine, fallback from unrelated settings
-errors must preserve that engine. Fatal snapshot errors set the runtime closing
+Treat malformed TOML and invalid legacy engine values as fatal at startup.
+Omitted and explicit `ghostty` values are silent; explicit `alacritty` launches
+Ghostty with the migration warning. For valid TOML, fallback from unrelated
+settings errors must preserve clipboard policy and the migration diagnostic.
+Fatal snapshot errors set the runtime closing
 gate; latch client snapshot failure so pending scroll or invalidation cannot
 create an immediate retry loop. Set Ghostty device attributes explicitly: the
 pinned native implementation answers a callback returning None despite binding

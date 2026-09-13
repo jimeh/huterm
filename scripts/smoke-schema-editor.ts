@@ -109,7 +109,7 @@ try {
   send({ method: "textDocument/didOpen", params: { textDocument: { uri: engineUri, languageId: "toml", version: 1, text: `#:schema ${schema}\n[terminal]\nengine = "unknown"\n` } } });
   await diagnostic;
   requireLabels(await completions(engineUri, 2, 12), ["alacritty", "ghostty"]);
-  console.log("engine: alacritty and ghostty complete; unknown engine diagnosed");
+  console.log("legacy engine: alacritty and ghostty complete; unknown engine diagnosed");
   await request("shutdown", null);
   send({ method: "exit" });
 } finally {

@@ -85,7 +85,7 @@ async function check(executable: string, engine: string, wm?: X11Process) {
   const recorder = join(directory, "recorder.ts");
   await writeFile(
     config,
-    `[terminal]\nengine="${engine}"\nclose_on_exit=false\n`,
+    `[terminal]\nclose_on_exit=false\n`,
   );
   await writeFile(
     recorder,
@@ -426,7 +426,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       "temporary tab removed",
     );
 
-    // Removing the second tab grows the grid. Engines may pull history into
+    // Removing the second tab grows the grid. The engine may pull history into
     // the visible rows, and the old screen pointer no longer names row zero.
     await display(`\x1b[2J\x1b[H${url}`);
     await mouse(5, 2, 0);
@@ -435,13 +435,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
 
     await writeFile(
       config,
-      `[terminal]\nengine="${engine}"\nclose_on_exit=false\nlinks=false\n`,
+      `[terminal]\nclose_on_exit=false\nlinks=false\n`,
     );
     await commandFile("reload_config");
     await hover("");
     await writeFile(
       config,
-      `[terminal]\nengine="${engine}"\nclose_on_exit=false\nlinks=true\n`,
+      `[terminal]\nclose_on_exit=false\nlinks=true\n`,
     );
     await commandFile("reload_config");
     await modifiers(command);
@@ -884,8 +884,7 @@ export async function withOpenbox(check: (wm: X11Process) => Promise<void>, time
 }
 if (import.meta.main) {
   const checks = async (wm?: X11Process) => {
-    for (const engine of ["alacritty", "ghostty"])
-      await check(resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"), engine, wm);
+    await check(resolve(Bun.argv[2] ?? "target/debug/examples/integration_smoke"), "ghostty", wm);
   };
   if (macos) await checks();
   else await withOpenbox(checks);

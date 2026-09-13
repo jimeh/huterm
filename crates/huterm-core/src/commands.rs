@@ -82,12 +82,11 @@ mod tests {
     use super::*;
     use huterm_protocol::{
         CellSize, CommandArgument, CommandValue, GridSize, TabId,
-        TerminalCommand, TerminalEngineKind,
+        TerminalCommand,
     };
 
     fn command() -> TerminalCommand {
         TerminalCommand {
-            engine: TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), "read value".into()],
             working_directory: std::env::current_dir().unwrap(),

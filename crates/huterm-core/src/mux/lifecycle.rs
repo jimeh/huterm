@@ -337,7 +337,6 @@ mod tests {
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::default(),
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir().unwrap(),
@@ -618,23 +617,17 @@ mod tests {
     }
 
     #[test]
-    fn root_exit_completes_the_terminal_even_with_a_surviving_slave_holder() {
-        exited_holder(huterm_protocol::TerminalEngineKind::Alacritty);
-    }
-
-    #[test]
     fn ghostty_root_exit_completes_the_terminal_even_with_a_surviving_slave_holder()
      {
-        exited_holder(huterm_protocol::TerminalEngineKind::Ghostty);
+        exited_holder();
     }
 
-    fn exited_holder(engine: huterm_protocol::TerminalEngineKind) {
+    fn exited_holder() {
         let fixture = super::holder_fixture::HolderFixture::new();
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
         let workspace = mux.create_workspace(session, None).unwrap();
-        let mut command = fixture.command();
-        command.engine = engine;
+        let command = fixture.command();
         let opened = mux.open_tab(workspace, &command).unwrap();
         let helper = fixture.wait_ready();
         let root = opened.client.job_context().unwrap().shell.unwrap();

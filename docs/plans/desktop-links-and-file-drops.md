@@ -1,5 +1,8 @@
 # Clickable terminal links and file drops
 
+Historical engine coverage in this plan predates issue #118. The shipped
+runtime now uses Ghostty only; the link and file-drop contracts remain active.
+
 Status: proposed implementation plan, following read-only investigation on
 2026-09-09. Product implementation has not started.
 

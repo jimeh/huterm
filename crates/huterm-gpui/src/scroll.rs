@@ -562,7 +562,6 @@ mod tests {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(1),
             &TerminalCommand {
-                engine: huterm_protocol::TerminalEngineKind::Alacritty,
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(),
                     "i=0; while [ $i -lt 100 ]; do printf 'ROW-%03d\\n' $i; i=$((i+1)); done; printf READY; read line".into()],

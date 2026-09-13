@@ -326,6 +326,7 @@ impl HostEffectSink {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_owned(&self, text: String) -> HostEffectAdmission {
         let bytes = text.capacity();
         self.admit(bytes, || text)

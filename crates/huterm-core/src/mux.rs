@@ -1274,7 +1274,6 @@ mod tests {
 
     fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
-            engine: huterm_protocol::TerminalEngineKind::Alacritty,
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), script.into()],
             working_directory: std::env::current_dir().unwrap(),
