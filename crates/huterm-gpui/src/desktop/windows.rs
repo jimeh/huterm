@@ -10,6 +10,8 @@ pub(crate) mod input_smoke;
 pub(crate) mod integration_smoke;
 #[path = "palette_smoke.rs"]
 pub(crate) mod palette_smoke;
+#[path = "presentation_query_smoke.rs"]
+pub(crate) mod presentation_query_smoke;
 #[path = "quake_smoke.rs"]
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]

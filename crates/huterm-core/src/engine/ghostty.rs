@@ -128,11 +128,15 @@ impl TerminalEngine {
         let reported_cell = Rc::new(SharedCell::new(cell));
         let size_cell = Rc::clone(&reported_cell);
         terminal.on_size(move |terminal| {
+            let cell = size_cell.get();
+            if cell.width == 0 || cell.height == 0 {
+                return None;
+            }
             Some(SizeReportSize {
                 rows: terminal.rows().ok()?,
                 columns: terminal.cols().ok()?,
-                cell_width: u32::from(size_cell.get().width),
-                cell_height: u32::from(size_cell.get().height),
+                cell_width: u32::from(cell.width),
+                cell_height: u32::from(cell.height),
             })
         })?;
         terminal.on_color_scheme(|terminal| {
@@ -918,6 +922,42 @@ mod tests {
     #[test]
     fn size_queries_follow_the_existing_ordered_resize_state() {
         let mut engine = engine();
+        engine
+            .resize(
+                GridSize::clamped(5, 4),
+                CellSize {
+                    width: 11,
+                    height: 19,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
+            vec![
+                b"\x1b[4;76;55t".to_vec(),
+                b"\x1b[6;19;11t".to_vec(),
+                b"\x1b[8;4;5t".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn size_queries_are_silent_until_cell_geometry_is_known() {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 0,
+                height: 0,
+            },
+            presentation(),
+        )
+        .unwrap();
+        assert!(
+            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap())
+                .is_empty()
+        );
+
         engine
             .resize(
                 GridSize::clamped(5, 4),

@@ -57,7 +57,8 @@ mod keyboard;
 mod links;
 pub(crate) mod palette;
 pub(crate) use windows::{
-    fullscreen_smoke, integration_smoke, palette_smoke, quake_smoke,
+    fullscreen_smoke, integration_smoke, palette_smoke,
+    presentation_query_smoke, quake_smoke,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;

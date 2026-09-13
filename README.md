@@ -815,6 +815,25 @@ unchanged rows share storage between generations. See
 [the engine guide](docs/agents/terminal-engines.md) for native build inputs,
 benchmarks, and migration behavior.
 
+### Color, size, and appearance queries
+
+Huterm answers the terminal queries commonly used by shells and development
+tools:
+
+- `OSC 4;index;?` for palette indexes 0 through 255.
+- `OSC 10;?`, `OSC 11;?`, and `OSC 12;?` for foreground, background, and
+  cursor colors. `OSC 104`, `OSC 110`, `OSC 111`, and `OSC 112` reset their
+  corresponding overrides.
+- `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` for terminal content pixels, cell
+  pixels, and rows/columns.
+- `CSI ? 996 n` for dark or light appearance.
+
+Replies use the terminal's current effective state. An application color
+override remains an override even when it happens to equal the theme color, so
+later theme reloads do not replace it. Resetting the override exposes the latest
+theme value. Size replies describe the character grid and physical cell size,
+excluding window chrome and padding.
+
 ### Terminal identity, tmux, and SSH
 
 New shells use Huterm's private `xterm-huterm` terminfo entry when it is locally

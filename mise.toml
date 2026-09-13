@@ -316,6 +316,7 @@ if [ ! -f "$bundle/Contents/Resources/terminfo/x/xterm-huterm" ] && [ ! -f "$bun
 fi
 assert_file "$bundle/Contents/Resources/terminfo/xterm-huterm.terminfo" "Huterm terminfo source"
 assert_file "$bundle/Contents/Resources/terminfo/LICENSE-ncurses" "ncurses terminfo license"
+bun scripts/terminfo.ts check "$bundle/Contents/Resources/terminfo"
 if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1
@@ -348,7 +349,7 @@ run = "bash scripts/ci-toolchain.sh"
 
 [tasks."verify:parallel"]
 hide = true
-depends = ["check", "test", "license", "audit:scripts", "ci:workflows", "vendor:check"]
+depends = ["check", "test", "terminfo:check", "license", "audit:scripts", "ci:workflows", "vendor:check"]
 
 [tasks."verify:platform:parallel"]
 hide = true
@@ -581,6 +582,19 @@ bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example fullscr
 xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-fullscreen.ts target/debug/examples/fullscreen_smoke
 '''
 
+[tasks."smoke:presentation-queries"]
+description = "Verify production-window terminal color and geometry queries"
+depends = ["ghostty:prepare", "terminfo:prepare"]
+run = '''
+set -eu
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example presentation_query_smoke
+case "$(uname -s)" in
+  Darwin) bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke ;;
+  Linux) xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke ;;
+  *) echo "Presentation query smoke requires Linux or macOS" >&2; exit 1 ;;
+esac
+'''
+
 [tasks."smoke:linux-quake"]
 depends = ["ghostty:prepare"]
 description = "Verify global X11 quake shortcuts, focus, animation, and retained PTYs"
@@ -720,7 +734,7 @@ run = "mise run test:rust"
 [tasks."ci:smoke"]
 description = "Run CI desktop smokes for the current platform"
 depends = ["verify:toolchain"]
-run = ["mise run ghostty:prepare", "mise run sparkle:prepare", "mise run ci:smoke:build", "mise run ci:smoke:run"]
+run = ["mise run ghostty:prepare", "mise run terminfo:check", "mise run sparkle:prepare", "mise run ci:smoke:build", "mise run ci:smoke:run"]
 
 [tasks."ci:smoke:build"]
 description = "Compile CI desktop smoke binaries for the current platform"
@@ -737,6 +751,7 @@ case "$(uname -s)" in
       --example clipboard_smoke \
       --example integration_smoke \
       --example native_quit_smoke \
+      --example presentation_query_smoke \
       --example fullscreen_smoke \
       --example palette_smoke \
       --example quake_smoke
@@ -749,6 +764,7 @@ case "$(uname -s)" in
       --bin huterm \
       --example renderer_smoke \
       --example integration_smoke \
+      --example presentation_query_smoke \
       --example xdnd_source \
       --example fullscreen_smoke \
       --example palette_smoke \
@@ -776,12 +792,15 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|macos-menus|macos-updater|macos-input|macos-clipboard|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-clipboard|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
     if run_smoke_step renderer; then
       bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
+    fi
+    if run_smoke_step presentation-queries; then
+      bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke
     fi
     if run_smoke_step macos-menus; then
       bun scripts/check-native-menus.ts target/debug/examples/native_menus_smoke
@@ -815,14 +834,14 @@ case "$(uname -s)" in
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-integration|linux-fullscreen|linux-quake) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
     # The renderer and basic desktop launch do not use a window manager.
     smoke_tools="xvfb-run"
     case "$smoke_step" in
-      renderer|linux-desktop) ;;
+      renderer|presentation-queries|linux-desktop) ;;
       *) smoke_tools="$smoke_tools openbox xcompmgr xprop xdotool xwininfo xmessage setxkbmap stdbuf" ;;
     esac
     case "$smoke_step" in
@@ -838,6 +857,11 @@ case "$(uname -s)" in
     if run_smoke_step renderer; then
       xvfb-run -a -e "$evidence_dir/renderer-xvfb.log" -s '-screen 0 1280x960x24 -noreset' \
         bun scripts/check-renderer.ts target/debug/examples/renderer_smoke
+    fi
+
+    if run_smoke_step presentation-queries; then
+      xvfb-run -a -e "$evidence_dir/presentation-queries-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke
     fi
 
     if run_smoke_step linux-desktop; then
