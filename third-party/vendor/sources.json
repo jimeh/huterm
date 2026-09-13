@@ -47,6 +47,12 @@
           "name": "macos-offscreen-frame",
           "file": "patches/gpui/macos-offscreen-frame.patch",
           "description": "Expose per-window opt-in to unconstrained offscreen frames while preserving normal AppKit constraints by default."
+        },
+        {
+          "name": "taffy-grid-security-update",
+          "file": "patches/gpui/taffy-grid-security-update.patch",
+          "description": "Update Taffy to 0.9.2 so the workspace can resolve grid 1.0.1 with checked dimension growth.",
+          "upstream": "https://github.com/advisories/GHSA-38c5-483c-4qqp"
         }
       ]
     },

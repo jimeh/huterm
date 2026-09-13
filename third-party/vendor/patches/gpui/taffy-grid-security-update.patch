@@ -1,0 +1,26 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 384306367bc014b4492155ced3598c2baafe85d0..8f075abb04c297c728a58b9d9fa61f6424176250 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -386,7 +386,7 @@ version = "0.2.2"
+ package = "gpui_sum_tree"
+ 
+ [dependencies.taffy]
+-version = "=0.9.0"
++version = "=0.9.2"
+ 
+ [dependencies.thiserror]
+ version = "2.0.12"
+diff --git a/Cargo.toml.orig b/Cargo.toml.orig
+index af23a336f6230a16040cd98f1f3377c817af05fb..e2960df71c8cf13698aacb914861e84c0364342b 100644
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -127,7 +127,7 @@ smol.workspace = true
+ stacksafe.workspace = true
+ strum.workspace = true
+ sum_tree.workspace = true
+-taffy = "=0.9.0"
++taffy = "=0.9.2"
+ thiserror.workspace = true
+ util.workspace = true
+ uuid.workspace = true
