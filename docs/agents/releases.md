@@ -20,7 +20,7 @@ Issues, and Pull requests. Add these GitHub Actions variables:
 - `APPLE_NOTARIZATION_KEY_ID`: ten-character App Store Connect API key ID.
 - `APPLE_NOTARIZATION_ISSUER_ID`: App Store Connect API issuer UUID.
 
-Add these GitHub Actions secrets:
+Add these GitHub Actions repository secrets:
 
 - `RELEASE_BOT_PRIVATE_KEY`: PEM private key downloaded for the GitHub App.
 - `MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`: base64-encoded Developer ID
@@ -28,16 +28,20 @@ Add these GitHub Actions secrets:
 - `MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD`: password for the PKCS#12 file.
 - `APPLE_NOTARIZATION_KEY_P8_BASE64`: base64-encoded App Store Connect API `.p8`
   file.
+- `SPARKLE_EDDSA_PRIVATE_KEY`: exported Sparkle private key for appcast signing.
 
 The Developer ID certificate must belong to `APPLE_TEAM_ID`. The App Store
 Connect key must match the configured key and issuer IDs and have permission to
-submit notarization requests. Keep all four secret values out of the repository
+submit notarization requests. Keep all secret values out of the repository
 and workflow logs.
 
 Create a protected GitHub Environment named `release`. Restrict it to the
-production branch and recovery tags, then add `SPARKLE_EDDSA_PRIVATE_KEY` as an
-environment secret. Build and assembly jobs cannot read it. Only the publishing
-job enters the environment.
+production branch and recovery tags. Only the publishing job enters the
+environment. Release Please explicitly forwards `SPARKLE_EDDSA_PRIVATE_KEY` to
+the reusable release workflow, which exposes it only to the appcast signing
+step. Repository secrets can also be referenced by other repository workflows.
+Do not keep an environment secret with the same name: it would override the
+repository secret in the publishing job.
 
 ## Sparkle signing authority
 
@@ -56,18 +60,18 @@ sparkle_key_dir="$(mktemp -d)"
 
 Commit `assets/macos/SparklePublicKey`. The release package injects it as
 `SUPublicEDKey`; the source `assets/macos/Info.plist` remains Sparkle-free. Store
-the exact exported private-key contents as the protected
-`SPARKLE_EDDSA_PRIVATE_KEY` environment secret and keep an encrypted offline
+the exact exported private-key contents as the
+`SPARKLE_EDDSA_PRIVATE_KEY` repository secret and keep an encrypted offline
 recovery copy. Ordinary builds and `mise run package:macos` need neither key.
 
 ```sh
-gh secret set --repo jimeh/huterm --env release \
+gh secret set --repo jimeh/huterm \
   SPARKLE_EDDSA_PRIVATE_KEY \
   < "$sparkle_key_dir/huterm-sparkle-private-key"
 ```
 
 After checking the secret name with
-`gh secret list --repo jimeh/huterm --env release`, delete the transient export.
+`gh secret list --repo jimeh/huterm`, delete the transient export.
 GitHub never returns the secret value. Keep the Keychain item created by
 `generate_keys` unless deliberately transferring update authority to another
 trusted Mac.
