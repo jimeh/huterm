@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/jimeh/huterm/compare/v0.7.3...v0.8.0) (2026-09-13)
+
+
+### Features
+
+* support OSC 52 clipboard writes from terminal applications ([#114](https://github.com/jimeh/huterm/issues/114)) ([b6ccbee](https://github.com/jimeh/huterm/commit/b6ccbee60c8d20c229c27ccbb9c2f296c2e96a54))
+
+
+### Bug Fixes
+
+* prevent PTY teardown from altering retained history ([#112](https://github.com/jimeh/huterm/issues/112)) ([da65305](https://github.com/jimeh/huterm/commit/da65305370933519509b90b26d01aa109acb6449))
+
 ## [0.7.3](https://github.com/jimeh/huterm/compare/v0.7.2...v0.7.3) (2026-09-13)
 
 
