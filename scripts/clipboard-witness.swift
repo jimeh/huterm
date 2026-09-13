@@ -9,17 +9,26 @@ struct PasteboardArchive: Codable {
 enum WitnessError: Error, CustomStringConvertible {
     case usage
     case invalidArchive
-    case invalidProcess(String)
+    case missingProcess(String)
+    case notReady(String)
+    case operationRefused(String, String)
+    case stateTimeout(String, String, String)
     case pasteboardWrite
 
     var description: String {
         switch self {
         case .usage:
-            return "usage: clipboard-witness <read|save|restore> <file> | <ready|hide|activate> <pid>"
+            return "usage: clipboard-witness <read|save|restore> <file> | <ready|hide|unhide> <pid>"
         case .invalidArchive:
             return "clipboard archive contains an invalid pasteboard type"
-        case let .invalidProcess(value):
+        case let .missingProcess(value):
             return "no running application has pid \(value)"
+        case let .notReady(details):
+            return "application is not ready: \(details)"
+        case let .operationRefused(operation, details):
+            return "application refused \(operation): \(details)"
+        case let .stateTimeout(operation, expected, details):
+            return "timed out after \(operation), expected \(expected): \(details)"
         case .pasteboardWrite:
             return "failed to write the macOS pasteboard"
         }
@@ -59,9 +68,61 @@ func writeLengthPrefixed(_ data: Data?) throws {
 
 func runningApplication(_ value: String) throws -> NSRunningApplication {
     guard let pid = Int32(value), let app = NSRunningApplication(processIdentifier: pid) else {
-        throw WitnessError.invalidProcess(value)
+        throw WitnessError.missingProcess(value)
     }
     return app
+}
+
+func hasOnScreenWindow(_ pid: Int32) -> Bool {
+    let windows = CGWindowListCopyWindowInfo(
+        [.optionOnScreenOnly, .excludeDesktopElements],
+        kCGNullWindowID
+    ) as? [[String: Any]] ?? []
+    return windows.contains {
+        ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+    }
+}
+
+func activationPolicy(_ policy: NSApplication.ActivationPolicy) -> String {
+    switch policy {
+    case .regular: return "regular"
+    case .accessory: return "accessory"
+    case .prohibited: return "prohibited"
+    @unknown default: return "unknown(\(policy.rawValue))"
+    }
+}
+
+func describe(_ app: NSRunningApplication) -> String {
+    let bundle = app.bundleURL?.path ?? "<none>"
+    let executable = app.executableURL?.path ?? "<none>"
+    return [
+        "pid=\(app.processIdentifier)",
+        "policy=\(activationPolicy(app.activationPolicy))",
+        "finished=\(app.isFinishedLaunching)",
+        "terminated=\(app.isTerminated)",
+        "hidden=\(app.isHidden)",
+        "active=\(app.isActive)",
+        "on_screen_window=\(hasOnScreenWindow(app.processIdentifier))",
+        "bundle=\(bundle)",
+        "executable=\(executable)",
+    ].joined(separator: " ")
+}
+
+func waitForState(
+    _ value: String,
+    operation: String,
+    expected: String,
+    check: (NSRunningApplication) -> Bool
+) throws {
+    let deadline = Date(timeIntervalSinceNow: 3)
+    while true {
+        let app = try runningApplication(value)
+        if check(app) { return }
+        if Date() >= deadline {
+            throw WitnessError.stateTimeout(operation, expected, describe(app))
+        }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+    }
 }
 
 do {
@@ -80,21 +141,37 @@ do {
         let data = try Data(contentsOf: URL(fileURLWithPath: value))
         try restore(PropertyListDecoder().decode(PasteboardArchive.self, from: data), to: pasteboard)
     case "ready":
-        let pid = try runningApplication(value).processIdentifier
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        guard windows.contains(where: {
-            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
-        }) else {
-            throw WitnessError.invalidProcess(value)
+        let app = try runningApplication(value)
+        guard app.isFinishedLaunching,
+              !app.isTerminated,
+              app.activationPolicy == .regular,
+              app.bundleURL != nil,
+              hasOnScreenWindow(app.processIdentifier) else {
+            throw WitnessError.notReady(describe(app))
         }
     case "hide":
         let app = try runningApplication(value)
-        guard app.hide() else { throw WitnessError.invalidProcess(value) }
-    case "activate":
+        guard app.hide() else {
+            throw WitnessError.operationRefused("hide", describe(app))
+        }
+        try waitForState(
+            value,
+            operation: "hide",
+            expected: "hidden=true and on_screen_window=false"
+        ) { current in
+            current.isHidden && !hasOnScreenWindow(current.processIdentifier)
+        }
+    case "unhide":
         let app = try runningApplication(value)
-        let options: NSApplication.ActivationOptions = [.activateAllWindows, .activateIgnoringOtherApps]
-        guard app.activate(options: options) else {
-            throw WitnessError.invalidProcess(value)
+        guard app.unhide() else {
+            throw WitnessError.operationRefused("unhide", describe(app))
+        }
+        try waitForState(
+            value,
+            operation: "unhide",
+            expected: "hidden=false and on_screen_window=true"
+        ) { current in
+            !current.isHidden && hasOnScreenWindow(current.processIdentifier)
         }
     default:
         throw WitnessError.usage

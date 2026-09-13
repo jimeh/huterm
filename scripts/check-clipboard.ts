@@ -1,8 +1,8 @@
 /** Verify OSC 52 writes through production Huterm and an independent OS clipboard client. */
-import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { constants, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
 
 const macos = process.platform === "darwin";
@@ -10,6 +10,31 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 type Child = ReturnType<typeof Bun.spawn<"ignore", "pipe", "pipe">>;
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
+
+async function assembleMacosApp(executable: string, directory: string): Promise<string> {
+  const contents = join(directory, "Huterm Clipboard Smoke.app", "Contents");
+  const macosDirectory = join(contents, "MacOS");
+  const bundleExecutable = join(macosDirectory, "huterm");
+  await mkdir(macosDirectory, { recursive: true });
+  await copyFile(executable, bundleExecutable);
+  await chmod(bundleExecutable, 0o755);
+  await writeFile(join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>Huterm Clipboard Smoke</string>
+  <key>CFBundleExecutable</key><string>huterm</string>
+  <key>CFBundleIdentifier</key><string>app.huterm.clipboard-smoke</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Huterm Clipboard Smoke</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleVersion</key><string>0</string>
+</dict>
+</plist>
+`);
+  return bundleExecutable;
+}
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -41,6 +66,22 @@ async function waitFor(
   while (!(await check())) {
     if (performance.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
     await Bun.sleep(20);
+  }
+}
+
+async function waitForMacosWindowReady(witness: string, app: Child, label: string): Promise<void> {
+  let diagnostic = "";
+  try {
+    await waitFor(() => {
+      const result = Bun.spawnSync([witness, "ready", String(app.pid)], {
+        stdout: "pipe", stderr: "pipe", timeout: 2_000,
+      });
+      diagnostic = result.stderr.toString().trim();
+      return result.exitCode === 0;
+    }, label);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}${diagnostic ? `; last witness: ${diagnostic}` : ""}`);
   }
 }
 
@@ -273,9 +314,7 @@ async function checkDirect(
       run(["xdotool", "windowfocus", "--sync", windowId]);
     } else {
       assert(witness, "macOS clipboard witness is required");
-      await waitFor(() => Bun.spawnSync([witness, "ready", String(terminal.app.pid)], {
-        stdout: "pipe", stderr: "pipe", timeout: 2_000,
-      }).exitCode === 0, `${engine} AppKit window readiness`);
+      await waitForMacosWindowReady(witness, terminal.app, `${engine} AppKit window readiness`);
     }
     const unicode = Buffer.from("Huterm OSC 52: λ 日本語 🚀");
     await terminal.emit(osc52(unicode, ""));
@@ -312,18 +351,16 @@ async function checkDirect(
       assert(witness, "macOS clipboard witness is required");
       run([witness, "hide", String(terminal.app.pid)]);
       await expectClipboard(clipboard, switchAway, `${engine} copy-then-hide`);
-      run([witness, "activate", String(terminal.app.pid)]);
+      run([witness, "unhide", String(terminal.app.pid)]);
       run([witness, "hide", String(terminal.app.pid)]);
       const hidden = Buffer.from(`${engine}-hidden-window`);
       await terminal.emit(osc52(hidden));
       await expectClipboard(clipboard, hidden, `${engine} hidden-window`);
-      run([witness, "activate", String(terminal.app.pid)]);
+      run([witness, "unhide", String(terminal.app.pid)]);
 
       const deniedTerminal = await launch(executable, engine, false, "deny");
       try {
-        await waitFor(() => Bun.spawnSync([witness, "ready", String(deniedTerminal.app.pid)], {
-          stdout: "pipe", stderr: "pipe", timeout: 2_000,
-        }).exitCode === 0, `${engine} denied AppKit window readiness`);
+        await waitForMacosWindowReady(witness, deniedTerminal.app, `${engine} denied AppKit window readiness`);
         const deniedSentinel = Buffer.from(`${engine}-macos-denied-sentinel`);
         await terminal.emit(osc52(deniedSentinel));
         await expectClipboard(clipboard, deniedSentinel, `${engine} macos-denied-sentinel`);
@@ -402,9 +439,7 @@ async function checkTmux(
   try {
     if (macos) {
       assert(witness, "macOS clipboard witness is required");
-      await waitFor(() => Bun.spawnSync([witness, "ready", String(terminal.app.pid)], {
-        stdout: "pipe", stderr: "pipe", timeout: 2_000,
-      }).exitCode === 0, `${engine} tmux AppKit window readiness`);
+      await waitForMacosWindowReady(witness, terminal.app, `${engine} tmux AppKit window readiness`);
     } else {
       assert(wm, "Linux clipboard smoke requires Openbox");
       await discoverX11Window(terminal.app, wm);
@@ -448,12 +483,14 @@ async function checkTmux(
 
 async function main(): Promise<void> {
   assert(process.platform === "linux" || macos, "clipboard smoke requires Linux or macOS");
-  const executable = resolve(Bun.argv[2] ?? "target/debug/huterm");
+  const sourceExecutable = resolve(Bun.argv[2] ?? "target/debug/huterm");
   const witness = macos ? resolve(Bun.argv[3] ?? "target/debug/clipboard-witness") : undefined;
-  const archive = macos ? join(await mkdtemp(join(tmpdir(), "huterm-pasteboard-")), "pasteboard.plist") : undefined;
+  const macosDirectory = macos ? await mkdtemp(join(tmpdir(), "huterm-pasteboard-")) : undefined;
+  const archive = macosDirectory ? join(macosDirectory, "pasteboard.plist") : undefined;
+  let archived = false;
   let restored = false;
   const restore = () => {
-    if (!archive || restored) return;
+    if (!archive || !archived || restored) return;
     run([witness!, "restore", archive]);
     restored = true;
   };
@@ -461,16 +498,20 @@ async function main(): Promise<void> {
     try { restore(); }
     catch (error) { console.error(`Clipboard restore failed; archive retained at ${archive}: ${error}`); }
     finally {
-      if (archive && restored) rmSync(dirname(archive), { recursive: true, force: true });
+      if (macosDirectory && (!archived || restored)) rmSync(macosDirectory, { recursive: true, force: true });
       process.exit(143);
     }
   };
-  if (archive) {
-    run([witness!, "save", archive]);
-    process.on("SIGTERM", interrupted);
-    process.on("SIGINT", interrupted);
-  }
   try {
+    const executable = macosDirectory
+      ? await assembleMacosApp(sourceExecutable, macosDirectory)
+      : sourceExecutable;
+    if (archive) {
+      run([witness!, "save", archive]);
+      archived = true;
+      process.on("SIGTERM", interrupted);
+      process.on("SIGINT", interrupted);
+    }
     const checks = async (wm?: X11Process) => {
       for (const engine of ["alacritty", "ghostty"]) {
         await checkDirect(executable, witness, engine, wm);
@@ -483,7 +524,7 @@ async function main(): Promise<void> {
   } finally {
     if (archive) {
       restore();
-      await rm(dirname(archive), { recursive: true, force: true });
+      await rm(macosDirectory!, { recursive: true, force: true });
     }
   }
 }
