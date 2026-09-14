@@ -440,6 +440,8 @@ pub(super) struct CommandPalette {
     scrollbar_hovering: bool,
     /// Pointer distance from the thumb's top while dragging it.
     scrollbar_drag: Option<f32>,
+    /// Monotonic acknowledgement for native smoke-test wheel input.
+    wheel_events: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -509,6 +511,7 @@ impl CommandPalette {
             scrollbar_expansion: ScrollbarExpansion::default(),
             scrollbar_hovering: false,
             scrollbar_drag: None,
+            wheel_events: 0,
             _subscriptions: vec![subscription],
         };
         let requested = request.and_then(|request| {
@@ -680,6 +683,12 @@ impl CommandPalette {
     /// Reveals the list scrollbar; the window pump fades it out.
     fn show_scrollbar(&mut self) {
         self.indicator.activate(Instant::now());
+    }
+
+    fn observe_scroll_wheel(&mut self, cx: &mut Context<'_, Self>) {
+        self.wheel_events = self.wheel_events.saturating_add(1);
+        self.show_scrollbar();
+        cx.notify();
     }
 
     /// Advances the scrollbar fade and expansion from the window refresh
@@ -1282,10 +1291,11 @@ impl CommandPalette {
                 )
             });
         format!(
-            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1}",
+            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={}",
             self.input.read(cx).text(),
             self.diagnostic,
             self.scrollbar_drag.is_some(),
+            self.wheel_events,
         )
     }
 
@@ -1564,8 +1574,7 @@ impl CommandPalette {
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(
                 |palette, _: &ScrollWheelEvent, _, cx| {
-                    palette.show_scrollbar();
-                    cx.notify();
+                    palette.observe_scroll_wheel(cx);
                 },
             ));
         if search.results.is_empty() {
@@ -1840,8 +1849,7 @@ impl CommandPalette {
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(
                 |palette, _: &ScrollWheelEvent, _, cx| {
-                    palette.show_scrollbar();
-                    cx.notify();
+                    palette.observe_scroll_wheel(cx);
                 },
             ));
         if is_identity(slot.spec.kind) {

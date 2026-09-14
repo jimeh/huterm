@@ -812,12 +812,27 @@ command = "select_tab"
     await assertScrollbarClickAndOutsideDrag();
     await movePointerToRow(0);
     if (process.platform === "linux") {
-      const beforeOffset = paletteNumber(await state("w0.palette=true"), "scroll_offset");
+      const beforeWheel = await state("w0.palette=true");
+      const beforeOffset = paletteNumber(beforeWheel, "scroll_offset");
+      const beforeWheelEvents = paletteNumber(beforeWheel, "wheel_events");
       run(["xdotool", "click", "5"]);
       await waitFor(async () => {
-        const current = await readFile(join(directory, "state"), "utf8").catch(() => "");
-        return current.includes("scroll_offset=")
-          && paletteNumber(current, "scroll_offset") > beforeOffset;
+        const current = await readFile(join(directory, "state"), "utf8").catch(
+          () => "",
+        );
+        return (
+          current.includes("wheel_events=") &&
+          paletteNumber(current, "wheel_events") > beforeWheelEvents
+        );
+      }, "palette wheel event acknowledgement");
+      await waitFor(async () => {
+        const current = await readFile(join(directory, "state"), "utf8").catch(
+          () => "",
+        );
+        return (
+          current.includes("scroll_offset=") &&
+          paletteNumber(current, "scroll_offset") > beforeOffset
+        );
       }, "palette wheel scroll");
       await inputBarrier("palette wheel input barrier");
     }
