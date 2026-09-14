@@ -311,10 +311,12 @@ done
         await waitFor(async () => (await state())["w0.text"]?.includes("MOUSE_READY") === true, "application mouse mode");
         await move(centerX + 10, topInset + 12);
         await pointerInput(centerX + 10, topInset + 12);
-        await accepted("0 input_barrier");
-        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength >= 1, "overlay input barrier");
+        // This key crosses the native application event queue after the injected
+        // pointer events, then crosses the terminal input queue before its bytes.
+        await input("B");
+        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength >= 2, "overlay input barrier");
         const blocked = Buffer.from(await Bun.file(rawBytes).arrayBuffer());
-        if (!blocked.equals(Buffer.from("\x1f"))) throw new Error(`overlay leaked pointer or wheel input to PTY: ${blocked.toString("hex")}`);
+        if (!blocked.equals(Buffer.from("B\r"))) throw new Error(`overlay leaked pointer or wheel input to PTY: ${blocked.toString("hex")}`);
         await move(centerX, centerY);
         await pointerInput(centerX, centerY);
         await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength > blocked.length, "terminal outside overlay receives mouse input");
