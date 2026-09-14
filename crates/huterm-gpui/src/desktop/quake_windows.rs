@@ -310,7 +310,7 @@ impl Presentation {
         self.observed_fullscreen
     }
     fn tab_fullscreen_context(&self) -> bool {
-        !self.regular && self.profile.fullscreen
+        self.observed_fullscreen || (!self.regular && self.profile.fullscreen)
     }
     pub fn visible(&self) -> bool {
         self.transition.visible()
