@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/jimeh/huterm/compare/v0.10.0...v0.10.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* preserve fullscreen Quake terminal layout ([#124](https://github.com/jimeh/huterm/issues/124)) ([879da3d](https://github.com/jimeh/huterm/commit/879da3daa851f40aee97b9352cc5e88074c996e2))
+
 ## [0.10.0](https://github.com/jimeh/huterm/compare/v0.9.0...v0.10.0) (2026-09-13)
 
 
