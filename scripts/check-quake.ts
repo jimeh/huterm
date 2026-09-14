@@ -282,7 +282,14 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         }
         await reload('fullscreen = true\nanimation = "none"\nhide_on_focus_loss = false');
         await command("app show_quake");await settled(true);
-        const fullscreenBefore = (await current())!;
+        const fullscreenInitial = (await current())!;
+        await command("app hide_quake");await settled(false);
+        await command("app show_quake");await settled(true);
+        const fullscreenResummoned = (await current())!;
+        for (const field of ["grid", "resize_requests", "terminal_top", "tab_presentation"] as const) {
+          if (fullscreenResummoned[field] !== fullscreenInitial[field]) throw new Error(`fullscreen resummon changed ${field}: ${fullscreenInitial[field]} -> ${fullscreenResummoned[field]}`);
+        }
+        const fullscreenBefore = fullscreenResummoned;
         const propertyEvents: string[] = [];
         const spy = macos ? undefined : Bun.spawn(["stdbuf", "-oL", "xprop", "-spy", "-id", fullscreenBefore.native_id!, "_NET_WM_STATE"], {stdout: "pipe", stderr: "pipe"});
         const spying = spy ? (async () => {
