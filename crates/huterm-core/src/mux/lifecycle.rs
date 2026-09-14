@@ -9,6 +9,8 @@ use super::{
 use crate::JobState;
 use std::time::{Duration, Instant};
 
+const CLOSE_ASSESSMENT_MAX_AGE: Duration = Duration::from_secs(2);
+
 /// Explicit scope requested by a desktop lifecycle operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CloseRequest {
@@ -285,7 +287,23 @@ impl Mux {
         confirmed: bool,
         before_teardown: impl FnOnce(&Self),
     ) -> Result<(), MuxError> {
-        self.validate_close(consent, current, confirmed)?;
+        self.commit_close_with_clock(
+            consent,
+            current,
+            confirmed,
+            before_teardown,
+            Instant::now,
+        )
+    }
+    fn commit_close_with_clock(
+        &mut self,
+        consent: &CloseAssessment,
+        current: &CloseAssessment,
+        confirmed: bool,
+        before_teardown: impl FnOnce(&Self),
+        mut now: impl FnMut() -> Instant,
+    ) -> Result<(), MuxError> {
+        self.validate_close_at(consent, current, confirmed, now())?;
         before_teardown(self);
         current.record_cleanup_groups();
         match current.ticket.effect {
@@ -308,6 +326,15 @@ impl Mux {
         current: &CloseAssessment,
         confirmed: bool,
     ) -> Result<(), MuxError> {
+        self.validate_close_at(consent, current, confirmed, Instant::now())
+    }
+    fn validate_close_at(
+        &self,
+        consent: &CloseAssessment,
+        current: &CloseAssessment,
+        confirmed: bool,
+        now: Instant,
+    ) -> Result<(), MuxError> {
         let ticket = &current.ticket;
         if ticket.runtime != self.runtime_id
             || ticket.revision != self.revision
@@ -319,7 +346,8 @@ impl Mux {
             || !current.jobs.iter().zip(&consent.jobs).all(
                 |(current, consent)| crate::jobs::covered_by(current, consent),
             )
-            || current.checked_at.elapsed() > Duration::from_secs(2)
+            || now.saturating_duration_since(current.checked_at)
+                > CLOSE_ASSESSMENT_MAX_AGE
         {
             return Err(MuxError::StaleClose);
         }
@@ -743,6 +771,8 @@ mod tests {
 
     #[test]
     fn accepted_capture_precedes_teardown_without_a_second_freshness_check() {
+        use std::cell::Cell;
+
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
         let assessment = mux
@@ -750,13 +780,25 @@ mod tests {
             .unwrap()
             .check_jobs();
         let mut captured = None;
-        mux.commit_close_with(&assessment, &assessment, false, |mux| {
-            captured = Some(mux.capture_hierarchy());
-            // Cross the freshness deadline after validation. Capture must not
-            // leave a half-accepted quit when teardown follows this callback.
-            std::thread::sleep(Duration::from_millis(2100));
-        })
+        let clock_reads = Cell::new(0);
+        mux.commit_close_with_clock(
+            &assessment,
+            &assessment,
+            false,
+            |mux| captured = Some(mux.capture_hierarchy()),
+            || {
+                let read = clock_reads.get();
+                clock_reads.set(read + 1);
+                assessment.checked_at
+                    + if read == 0 {
+                        CLOSE_ASSESSMENT_MAX_AGE
+                    } else {
+                        CLOSE_ASSESSMENT_MAX_AGE + Duration::from_millis(1)
+                    }
+            },
+        )
         .unwrap();
+        assert_eq!(clock_reads.get(), 1, "teardown rechecked freshness");
         assert_eq!(captured.unwrap().sessions[0].id, session);
         assert!(mux.sessions().is_empty());
     }

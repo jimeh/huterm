@@ -311,11 +311,13 @@ done
         await waitFor(async () => (await state())["w0.text"]?.includes("MOUSE_READY") === true, "application mouse mode");
         await move(centerX + 10, topInset + 12);
         await pointerInput(centerX + 10, topInset + 12);
-        await Bun.sleep(150);
-        if ((await Bun.file(rawBytes).arrayBuffer()).byteLength !== 0) throw new Error("overlay leaked pointer or wheel input to PTY");
+        await accepted("0 input_barrier");
+        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength >= 1, "overlay input barrier");
+        const blocked = Buffer.from(await Bun.file(rawBytes).arrayBuffer());
+        if (!blocked.equals(Buffer.from("\x1f"))) throw new Error(`overlay leaked pointer or wheel input to PTY: ${blocked.toString("hex")}`);
         await move(centerX, centerY);
         await pointerInput(centerX, centerY);
-        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength > 0, "terminal outside overlay receives mouse input");
+        await waitFor(async () => (await Bun.file(rawBytes).arrayBuffer()).byteLength > blocked.length, "terminal outside overlay receives mouse input");
         const beforeDrag = (await Bun.file(rawBytes).arrayBuffer()).byteLength;
         if (macos) {
           await accepted(`native\tmouse\t3\t${centerX}\t${centerY}\t0`);
@@ -369,7 +371,7 @@ done
     } else if (noWm) {
       run(["xdotool", "key", "F11"]);
       await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "ignored EWMH timeout");
-      await Bun.sleep(100);
+      await waitFor(async () => stderr.includes("Fullscreen transition timed out"), "fullscreen timeout diagnostic");
       assertTimeout(await state(), stderr);
       console.log("FULLSCREEN_SMOKE no-ewmh one-status-error pending-cleared");
     } else {
@@ -467,7 +469,7 @@ done
         await stable("Windowed");
         await waitForRestored(beforeSimple, true);
         await accepted(`native\t5\t${(1 << 18) | (1 << 17)}\tg\tg`);
-        await Bun.sleep(100);
+        await pty("inactivebinding");
         if ((await state())["w0.tabs"] !== "3") throw new Error("fullscreen binding remained active after exit");
         await accepted("0 toggle_fullscreen toggle_fullscreen toggle_non_native_fullscreen");
         await stable("NonNative");

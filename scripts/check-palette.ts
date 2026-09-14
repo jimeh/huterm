@@ -168,6 +168,7 @@ command = "select_tab"
   ]);
   let sequence = 0;
   let windowId = "";
+  let expectedTerminalBytes = Buffer.alloc(0);
 
   async function state(...expected: string[]): Promise<string> {
     let current = "";
@@ -271,8 +272,12 @@ command = "select_tab"
     }
   }
 
-  async function terminalBytes(expected: string): Promise<void> {
-    const wanted = Buffer.from(expected);
+  async function terminalBytes(appended: string): Promise<void> {
+    expectedTerminalBytes = Buffer.concat([
+      expectedTerminalBytes,
+      Buffer.from(appended),
+    ]);
+    const wanted = expectedTerminalBytes;
     await waitFor(async () => {
       const actual = await readFile(bytes).catch(() => Buffer.alloc(0));
       return actual.length >= wanted.length;
@@ -281,6 +286,30 @@ command = "select_tab"
     if (!actual.equals(wanted)) {
       throw new Error(
         `${engine}: expected terminal ${wanted.toString("hex")}, got ${actual.toString("hex")}`,
+      );
+    }
+  }
+
+  async function inputBarrier(label: string): Promise<void> {
+    const before = await readFile(bytes).catch(() => Buffer.alloc(0));
+    if (!before.equals(expectedTerminalBytes)) {
+      throw new Error(
+        `${engine}: ${label} started with unexpected terminal bytes: expected=${expectedTerminalBytes.toString("hex")} actual=${before.toString("hex")}`,
+      );
+    }
+    await command("input-barrier");
+    expectedTerminalBytes = Buffer.concat([
+      expectedTerminalBytes,
+      Buffer.from("\x1f"),
+    ]);
+    await waitFor(async () => {
+      const actual = await readFile(bytes).catch(() => Buffer.alloc(0));
+      return actual.length >= expectedTerminalBytes.length;
+    }, label);
+    const after = await readFile(bytes);
+    if (!after.equals(expectedTerminalBytes)) {
+      throw new Error(
+        `${engine}: ${label} observed unexpected terminal input: expected=${expectedTerminalBytes.toString("hex")} actual=${after.toString("hex")}`,
       );
     }
   }
@@ -481,19 +510,8 @@ command = "select_tab"
     await writeFile(enableMouse, "enable");
     await waitFor(() => Bun.file(mouseReady).exists(), "mouse tracking enable");
     await state("mouse=AllMotion");
-    const before = await readFile(bytes).catch(() => Buffer.alloc(0));
-    if (process.platform === "darwin") {
-      await command("native\tmouse\t5\t0.5\t300");
-    } else {
-      run(["xdotool", "mousemove", "--window", windowId, "640", "400"]);
-    }
-    await Bun.sleep(100);
-    const after = await readFile(bytes).catch(() => Buffer.alloc(0));
-    if (!after.equals(before)) {
-      throw new Error(
-        `${engine}: overlay pointer motion reached terminal: before=${before.toString("hex")} after=${after.toString("hex")}`,
-      );
-    }
+    await movePointerToRow(0);
+    await inputBarrier("overlay pointer input barrier");
   }
 
   try {
@@ -582,7 +600,7 @@ command = "select_tab"
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
     await typeText("e");
-    await terminalBytes("Ae");
+    await terminalBytes("e");
 
     // 2. Enter accepts the default optional quake profile; Tab exposes both.
     await shortcut("palette");
@@ -641,7 +659,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(2, ['name=Some("once")']);
     await typeText("B");
-    await terminalBytes("AeB");
+    await terminalBytes("B");
 
     // 4. Tab commits the name, then Up selects the other tab target.
     await shortcut("new-tab");
@@ -714,7 +732,7 @@ command = "select_tab"
       "w0.terminal_focused=true",
       "ACK:palettecancelproofx",
     );
-    await terminalBytes("AeBpalettecancelproofx\r");
+    await terminalBytes("palettecancelproofx\r");
     await selectTabIndex(2);
     await state(
       "w0.palette=false",
@@ -793,22 +811,19 @@ command = "select_tab"
     }
     await assertScrollbarClickAndOutsideDrag();
     await movePointerToRow(0);
-    const beforeWheel = await readFile(bytes).catch(() => Buffer.alloc(0));
     if (process.platform === "linux") {
+      const beforeOffset = paletteNumber(await state("w0.palette=true"), "scroll_offset");
       run(["xdotool", "click", "5"]);
-      await state("w0.palette=true");
-      await Bun.sleep(100);
-      const afterWheel = await readFile(bytes).catch(() => Buffer.alloc(0));
-      if (!afterWheel.equals(beforeWheel)) {
-        throw new Error(
-          `${engine}: palette wheel reached terminal: before=${beforeWheel.toString("hex")} after=${afterWheel.toString("hex")}`,
-        );
-      }
+      await waitFor(async () => {
+        const current = await readFile(join(directory, "state"), "utf8").catch(() => "");
+        return paletteNumber(current, "scroll_offset") > beforeOffset;
+      }, "palette wheel scroll");
+      await inputBarrier("palette wheel input barrier");
     }
     await clickOverlay();
     await state("w0.palette=false", "w0.terminal_focused=true");
     await typeText("C");
-    await terminalBytes("AeBpalettecancelproofx\rC");
+    await terminalBytes("C");
 
     // 8. Copy stays visible but unavailable without a selection.
     await shortcut("palette");
@@ -888,7 +903,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(3, ['name=Some("explicit")'], ['name=Some("canceled")']);
     await typeText("D");
-    await terminalBytes("AeBpalettecancelproofx\rCD");
+    await terminalBytes("D");
 
     await shortcut("palette");
     await command("busy-on");

@@ -1996,17 +1996,17 @@ mod tests {
             .read_snapshot()
             .expect("final snapshot should remain available after exit");
         assert!(final_snapshot.generation >= snapshot.generation);
-        thread::sleep(Duration::from_millis(25));
-        while let Some(event) = client
-            .try_recv_event()
-            .expect("event receiver should remain available")
-        {
-            assert!(
-                !matches!(event, TerminalEvent::Failed { .. }),
-                "normal child exit should not report a runtime failure"
-            );
-        }
         runtime.shutdown().expect("runtime should stop cleanly");
+        loop {
+            match client.try_recv_event() {
+                Ok(Some(event)) => assert!(
+                    !matches!(event, TerminalEvent::Failed { .. }),
+                    "normal child exit should not report a runtime failure"
+                ),
+                Ok(None) | Err(RuntimeError::Stopped) => break,
+                Err(error) => panic!("event receiver failed: {error}"),
+            }
+        }
     }
 
     #[test]

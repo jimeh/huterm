@@ -507,8 +507,12 @@ mod tests {
         let reader_waiter = ReaderWaiter::new(pair.master.as_ref()).unwrap();
         let mut reader = pair.master.try_clone_reader().unwrap();
         let writer = clone_writer(pair.master.as_ref()).unwrap();
+        let mut probe_writer = clone_writer(pair.master.as_ref()).unwrap();
         let mut command = CommandBuilder::new("/bin/sh");
-        command.args(["-c", "printf READY; IFS= read -r line"]);
+        command.args([
+            "-c",
+            "printf READY; IFS= read -r line; printf ':%s' \"$line\"",
+        ]);
         let child = pair.slave.spawn_command(command).unwrap();
         let mut killer = child.clone_killer();
         drop(pair.slave);
@@ -528,18 +532,37 @@ mod tests {
         }
 
         drop(writer);
+        probe_writer.write_all(b"PROBE\n").unwrap();
+        probe_writer.flush().unwrap();
 
-        reader_waiter.wait(Duration::from_millis(20)).unwrap();
-        let mut output = [0_u8; 8];
-        let result = reader.read(&mut output);
+        let mut observed = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !observed
+            .windows(b":PROBE".len())
+            .any(|window| window == b":PROBE")
+            && Instant::now() < deadline
+        {
+            let mut output = [0_u8; 32];
+            match reader.read(&mut output) {
+                Ok(0) => break,
+                Ok(count) => observed.extend_from_slice(&output[..count]),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    reader_waiter.wait(POLL_INTERVAL).unwrap();
+                }
+                Err(_) => break,
+            }
+        }
         let _ = killer.kill();
+        drop(probe_writer);
         drop(reader);
         drop(pair.master);
         assert!(reap_child(child));
         assert!(
-            matches!(&result, Err(error) if error.kind() == ErrorKind::WouldBlock),
-            "writer drop emitted terminal output: {:?}",
-            result.map(|count| &output[..count])
+            observed
+                .windows(b":PROBE".len())
+                .any(|window| window == b":PROBE"),
+            "writer drop changed the shell's next input before the probe: {:?}",
+            String::from_utf8_lossy(&observed)
         );
     }
 

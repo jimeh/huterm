@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, ensure};
 use gpui::{App, Bounds, Pixels, WindowBounds};
-use huterm_protocol::{CommandInvocation, lookup};
+use huterm_protocol::{CommandInvocation, TerminalInput, lookup};
 
 use super::{Desktop, WorkspaceView};
 
@@ -126,6 +126,28 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let mut outcomes = Vec::new();
     // Multiple commands in one file deliberately share a single GPUI turn.
     for name in fields {
+        if name == "input_barrier" {
+            let handle = cx
+                .windows()
+                .get(index)
+                .copied()
+                .context("input barrier window")?;
+            handle.update(cx, |root, _, cx| {
+                let view = root
+                    .downcast::<WorkspaceView>()
+                    .ok()
+                    .context("workspace root")?;
+                view.read(cx)
+                    .active_view()
+                    .context("active terminal")?
+                    .read(cx)
+                    .client
+                    .send_input(TerminalInput::Text("\x1f".into()))?;
+                Ok::<_, anyhow::Error>(())
+            })??;
+            outcomes.push("input barrier queued".to_owned());
+            continue;
+        }
         if matches!(name, "confirm_close" | "cancel_close") {
             let handle = cx
                 .windows()
