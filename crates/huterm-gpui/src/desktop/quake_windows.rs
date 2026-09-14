@@ -309,6 +309,9 @@ impl Presentation {
     pub fn fullscreen_context(&self) -> bool {
         self.observed_fullscreen
     }
+    fn tab_fullscreen_context(&self) -> bool {
+        self.observed_fullscreen || (!self.regular && self.profile.fullscreen)
+    }
     pub fn visible(&self) -> bool {
         self.transition.visible()
     }
@@ -1375,6 +1378,12 @@ impl WorkspaceView {
         self.quake.as_ref().map_or_else(
             || self.fullscreen.fullscreen_context(),
             Presentation::fullscreen_context,
+        )
+    }
+    pub(super) fn tab_fullscreen_context(&self) -> bool {
+        self.quake.as_ref().map_or_else(
+            || self.fullscreen.fullscreen_context(),
+            Presentation::tab_fullscreen_context,
         )
     }
     pub(super) fn quake_visible(&self) -> bool {

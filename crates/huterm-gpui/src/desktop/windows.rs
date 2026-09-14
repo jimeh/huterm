@@ -1538,7 +1538,7 @@ impl WorkspaceView {
         Presentation::resolve(
             self.tabs.len(),
             self.config.window.always_show_tab_bar,
-            self.fullscreen_context(),
+            self.tab_fullscreen_context(),
             self.config.window.auto_hide_tab_bar_in_fullscreen,
         )
     }
@@ -1604,7 +1604,7 @@ impl WorkspaceView {
         let position = self.config.window.tab_position;
         let context = (
             position,
-            self.fullscreen_context(),
+            self.tab_fullscreen_context(),
             self.config.window.auto_hide_tab_bar_in_fullscreen,
         );
         if self.reveal_context != Some(context) {
