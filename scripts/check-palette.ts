@@ -816,7 +816,8 @@ command = "select_tab"
       run(["xdotool", "click", "5"]);
       await waitFor(async () => {
         const current = await readFile(join(directory, "state"), "utf8").catch(() => "");
-        return paletteNumber(current, "scroll_offset") > beforeOffset;
+        return current.includes("scroll_offset=")
+          && paletteNumber(current, "scroll_offset") > beforeOffset;
       }, "palette wheel scroll");
       await inputBarrier("palette wheel input barrier");
     }
