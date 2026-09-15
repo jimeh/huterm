@@ -213,16 +213,25 @@ Terminal padding defaults to 4 logical points on each side. Add or adjust the
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
-tab_position = "top" # top, bottom, left, or right
-always_show_tab_bar = false
-auto_hide_tab_bar_in_fullscreen = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
+
+[tabs]
+position = "top" # top, bottom, left, or right
+always_show = false
+auto_hide_in_fullscreen = false
+style = "strip" # strip or pill
+width = "fill" # fill or fit
+min_width = 96.0 # logical points; fit only
+max_width = 240.0 # logical points; fit only
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+The `style`, `width`, `min_width`, and `max_width` tab settings are accepted and
+validated now but do not change rendering yet.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores

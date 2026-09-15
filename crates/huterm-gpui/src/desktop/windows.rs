@@ -1013,9 +1013,7 @@ fn initial_window_size(
     size(
         metrics.cell_width * f32::from(INITIAL_COLUMNS)
             + px(config.window.padding_x * 2.0)
-            + if config.window.always_show_tab_bar
-                && config.window.tab_position.vertical()
-            {
+            + if config.tabs.always_show && config.tabs.position.vertical() {
                 SIDEBAR_WIDTH
             } else {
                 px(0.0)
@@ -1023,9 +1021,7 @@ fn initial_window_size(
         metrics.cell_height * f32::from(INITIAL_ROWS)
             + px(config.window.padding_y * 2.0)
             + titlebar_inset(cfg!(target_os = "macos"), false)
-            + if !config.window.always_show_tab_bar
-                || config.window.tab_position.vertical()
-            {
+            + if !config.tabs.always_show || config.tabs.position.vertical() {
                 px(0.0)
             } else {
                 TAB_HEIGHT
@@ -1537,9 +1533,9 @@ impl WorkspaceView {
     fn presentation(&self) -> Presentation {
         Presentation::resolve(
             self.tabs.len(),
-            self.config.window.always_show_tab_bar,
+            self.config.tabs.always_show,
             self.tab_fullscreen_context(),
-            self.config.window.auto_hide_tab_bar_in_fullscreen,
+            self.config.tabs.auto_hide_in_fullscreen,
         )
     }
 
@@ -1547,13 +1543,13 @@ impl WorkspaceView {
         ChromeLayout::with_safe_area(
             window.viewport_size(),
             terminal_top(self.chrome_hidden()),
-            self.config.window.tab_position,
+            self.config.tabs.position,
             self.sidebar_width,
             self.fullscreen_insets,
         )
         .present(
             self.presentation(),
-            self.config.window.tab_position,
+            self.config.tabs.position,
             self.reveal.progress,
         )
     }
@@ -1601,11 +1597,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let position = self.config.window.tab_position;
+        let position = self.config.tabs.position;
         let context = (
             position,
             self.tab_fullscreen_context(),
-            self.config.window.auto_hide_tab_bar_in_fullscreen,
+            self.config.tabs.auto_hide_in_fullscreen,
         );
         if self.reveal_context != Some(context) {
             self.reveal = Reveal::default();
@@ -1659,7 +1655,7 @@ impl WorkspaceView {
     }
 
     fn tab_strip(&self, window: &Window) -> TabStrip {
-        let position = self.config.window.tab_position;
+        let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
         TabStrip::new(
             layout.tabs,
@@ -1697,7 +1693,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let desired = if self.config.window.tab_position == TabPosition::Left {
+        let desired = if self.config.tabs.position == TabPosition::Left {
             pointer.x
         } else {
             window.viewport_size().width - pointer.x
@@ -3153,7 +3149,7 @@ impl WorkspaceView {
             workspace: self.workspace,
             active: self.active,
             bounds: self.bounds,
-            tab_position: self.config.window.tab_position,
+            tab_position: self.config.tabs.position,
             sidebar_width: self.sidebar_width,
             tab_scroll: self.tab_scroll,
         })
@@ -3436,6 +3432,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                     view.font_size = metrics.font_size;
                                     view.metrics = metrics;
                                     view.window_config = config.window;
+                                    view.tabs_config = config.tabs;
                                     view.reload_terminal_config(
                                         config.terminal,
                                         cx,
@@ -3612,7 +3609,7 @@ impl Render for WorkspaceView {
         if self.reveal.progress > 0.0 && self.reveal.progress < 1.0 {
             window.request_animation_frame();
         }
-        let position = self.config.window.tab_position;
+        let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);

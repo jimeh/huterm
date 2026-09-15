@@ -3482,6 +3482,70 @@
       ],
       "type": "string"
     },
+    "TabStyle": {
+      "enum": [
+        "strip",
+        "pill"
+      ],
+      "type": "string"
+    },
+    "TabWidth": {
+      "enum": [
+        "fill",
+        "fit"
+      ],
+      "type": "string"
+    },
+    "TabsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "always_show": {
+          "default": false,
+          "type": "boolean"
+        },
+        "auto_hide_in_fullscreen": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_width": {
+          "default": 240.0,
+          "format": "float",
+          "maximum": 600,
+          "type": "number"
+        },
+        "min_width": {
+          "default": 96.0,
+          "format": "float",
+          "minimum": 48,
+          "type": "number"
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabPosition"
+            }
+          ],
+          "default": "top"
+        },
+        "style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabStyle"
+            }
+          ],
+          "default": "strip"
+        },
+        "width": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabWidth"
+            }
+          ],
+          "default": "fill"
+        }
+      },
+      "type": "object"
+    },
     "TerminalIdentity": {
       "description": "Terminal identity advertised to local applications.",
       "oneOf": [
@@ -3625,14 +3689,6 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
-        "always_show_tab_bar": {
-          "default": false,
-          "type": "boolean"
-        },
-        "auto_hide_tab_bar_in_fullscreen": {
-          "default": false,
-          "type": "boolean"
-        },
         "macos_fullscreen_mode": {
           "allOf": [
             {
@@ -3658,14 +3714,6 @@
           "maximum": 256,
           "minimum": 0,
           "type": "number"
-        },
-        "tab_position": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TabPosition"
-            }
-          ],
-          "default": "top"
         }
       },
       "type": "object"
@@ -3704,6 +3752,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/Config"
+        }
+      ]
+    },
+    "tabs": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/TabsConfig"
         }
       ]
     },
