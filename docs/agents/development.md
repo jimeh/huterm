@@ -203,11 +203,18 @@ stays visible at the bottom when tabs overflow.
 
 `[tabs].style = "strip"`, the default, merges the active tab into the terminal
 with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
-dividers, with an accent bar inside the active pill's left edge. Left and right
-placement ignore `style` and use one row style with the same inset accent bar.
-While the bar is visible or revealing, the macOS titlebar and the non-native
-fullscreen safe area above a notch use the tab bar background; otherwise they
-use the terminal background.
+dividers; `pill_accent = true` adds an accent bar inside the active pill's left
+edge and widens every pill's left padding to keep titles aligned. Left and
+right placement ignore `style` and use one row style with an inset accent bar.
+With a titlebar or notch safe area above vertical tabs, a border also runs
+along the terminal's top edge, joining the bar's edge so the titlebar and bar
+form one surface around the terminal. The corner where they meet is rounded by
+the smaller window padding, capped at 12 points, so the arc never covers a
+cell.
+While a top, left, or right bar is visible or revealing, the macOS titlebar
+and the non-native fullscreen safe area above a notch use the tab bar
+background; otherwise, including for a bottom bar, they use the terminal
+background.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600

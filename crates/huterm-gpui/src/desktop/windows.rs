@@ -3503,6 +3503,17 @@ fn path_for_status(cx: &App) -> String {
     cx.global::<Desktop>().config_path.display().to_string()
 }
 
+/// Largest corner radius the rounded terminal corner may use, so wide padding
+/// does not produce an oversized arc.
+const TERMINAL_CORNER_RADIUS_LIMIT: Pixels = px(12.0);
+
+/// The rounded terminal corner stays inside the window padding, so the arc
+/// never covers a cell.
+fn terminal_corner_radius(window: huterm_config::WindowConfig) -> Pixels {
+    px(window.padding_x.min(window.padding_y).max(0.0).floor())
+        .min(TERMINAL_CORNER_RADIUS_LIMIT)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
@@ -3576,6 +3587,50 @@ impl ChromeLayout {
                 Bounds::new(tabs.origin, size(line, tabs.size.height))
             }
         }
+    }
+
+    /// The one-point line where the terminal meets the top chrome (the macOS
+    /// titlebar or the safe area above a notch) beside a vertical tab bar. It
+    /// joins the bar's terminal edge so the titlebar and bar read as one
+    /// surface around the terminal.
+    fn top_chrome_border(
+        &self,
+        position: TabPosition,
+        top_chrome: Pixels,
+    ) -> Option<Bounds<Pixels>> {
+        if !position.vertical() || top_chrome <= px(0.0) {
+            return None;
+        }
+        let terminal = self.terminal;
+        Some(Bounds::new(
+            point(terminal.origin.x, top_chrome - px(1.0)),
+            size(terminal.size.width, px(1.0)),
+        ))
+    }
+
+    /// The square patch that rounds the terminal's top corner beside a
+    /// vertical tab bar. It extends one point into the top chrome and bar so
+    /// its border continues the straight lines around the terminal.
+    fn terminal_corner(
+        &self,
+        position: TabPosition,
+        top_chrome: Pixels,
+        radius: Pixels,
+    ) -> Option<Bounds<Pixels>> {
+        if !position.vertical() || top_chrome <= px(0.0) || radius <= px(0.0) {
+            return None;
+        }
+        let terminal = self.terminal;
+        let extent = radius + px(1.0);
+        let x = if position == TabPosition::Left {
+            terminal.origin.x - px(1.0)
+        } else {
+            terminal.right() - radius
+        };
+        Some(Bounds::new(
+            point(x, top_chrome - px(1.0)),
+            size(extent, extent),
+        ))
     }
 
     fn sidebar_resize_handle(&self, position: TabPosition) -> Bounds<Pixels> {
@@ -3788,6 +3843,7 @@ impl Render for WorkspaceView {
                     .h(top_chrome)
                     .bg(
                         if top_chrome_uses_bar(
+                            position,
                             self.presentation(),
                             self.reveal.progress,
                         ) {
@@ -3882,7 +3938,7 @@ impl Render for WorkspaceView {
                         cx.stop_propagation();
                     },
                 ));
-            let style = self.config.tabs.style;
+            let tabs = self.config.tabs;
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
                 let (title, exited) = tab.label(cx);
@@ -3907,9 +3963,8 @@ impl Render for WorkspaceView {
                     follows_active: index > 0
                         && Some(self.tabs[index - 1].id) == self.active,
                 };
-                bar = bar.child(Self::tab_element(
-                    &item, bounds, position, style, colors, cx,
-                ));
+                bar = bar
+                    .child(Self::tab_element(&item, bounds, tabs, colors, cx));
             }
             for forward in [false, true] {
                 if (forward && strip.offset < strip.max_offset())
@@ -4055,6 +4110,53 @@ impl Render for WorkspaceView {
                 );
             }
             root = root.child(chrome);
+            if self.presentation() == Presentation::Reserved
+                && let Some(edge) =
+                    layout.top_chrome_border(position, top_chrome)
+            {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(edge.origin.x)
+                        .top(edge.origin.y)
+                        .w(edge.size.width)
+                        .h(edge.size.height)
+                        .bg(colors.border),
+                );
+                let radius = terminal_corner_radius(self.config.window);
+                if let Some(corner) =
+                    layout.terminal_corner(position, top_chrome, radius)
+                {
+                    let left = position == TabPosition::Left;
+                    let outer = radius + px(1.0);
+                    root = root.child(
+                        div()
+                            .absolute()
+                            .left(corner.origin.x)
+                            .top(corner.origin.y)
+                            .w(corner.size.width)
+                            .h(corner.size.height)
+                            .bg(colors.bar)
+                            .child(
+                                div()
+                                    .size_full()
+                                    .bg(background)
+                                    .border_color(colors.border)
+                                    .border_t(px(1.0))
+                                    .when(left, |patch| {
+                                        patch
+                                            .border_l(px(1.0))
+                                            .rounded_tl(outer)
+                                    })
+                                    .when(!left, |patch| {
+                                        patch
+                                            .border_r(px(1.0))
+                                            .rounded_tr(outer)
+                                    }),
+                            ),
+                    );
+                }
+            }
         }
         if let Some(drag) = &self.reorder
             && drag.dragging

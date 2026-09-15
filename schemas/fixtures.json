@@ -552,6 +552,18 @@
     "theme": false
   },
   {
+    "name": "tab pill accent",
+    "toml": "[tabs]\npill_accent = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab pill accent not boolean",
+    "toml": "[tabs]\npill_accent = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "tab width fit",
     "toml": "[tabs]\nwidth = \"fit\"",
     "valid": true,

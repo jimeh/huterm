@@ -53,6 +53,8 @@ always_show = false
 auto_hide_in_fullscreen = false
 # Horizontal tab style: strip or pill.
 style = "strip"
+# Draw an accent bar inside the active pill.
+pill_accent = false
 # Horizontal tab width: fill or fit.
 width = "fill"
 # Width bounds in logical points for fit mode.
@@ -411,7 +413,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 154);
+        assert_eq!(fixtures.len(), 156);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -470,6 +472,7 @@ mod tests {
                     "auto_hide_in_fullscreen = true",
                 )
                 .replace("style = \"strip\"", "style = \"pill\"")
+                .replace("pill_accent = false", "pill_accent = true")
                 .replace("width = \"fill\"", "width = \"fit\"")
                 .replace("min_width = 96.0", "min_width = 120.0")
                 .replace("max_width = 240.0", "max_width = 360.0"),
@@ -482,6 +485,7 @@ mod tests {
                 always_show: true,
                 auto_hide_in_fullscreen: true,
                 style: TabStyle::Pill,
+                pill_accent: true,
                 width: TabWidth::Fit,
                 min_width: 120.0,
                 max_width: 360.0,
