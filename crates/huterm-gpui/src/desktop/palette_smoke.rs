@@ -7,7 +7,8 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use gpui::App;
 use huterm_protocol::{
-    CommandArgument, CommandInvocation, CommandValue, TabId, WorkspaceId, ids,
+    CommandArgument, CommandInvocation, CommandValue, TabId, TerminalInput,
+    WorkspaceId, ids,
 };
 
 use super::{Desktop, WorkspaceView, open_window};
@@ -169,6 +170,14 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                     .focus
                     .focus(window);
                 Ok("terminal focused".to_owned())
+            }
+            "input-barrier" => {
+                view.active_view()
+                    .context("active terminal")?
+                    .read(cx)
+                    .client
+                    .send_input(TerminalInput::Text("\x1f".into()))?;
+                Ok("input barrier queued".to_owned())
             }
             "open-explicit" => {
                 let tab = view.active.context("active tab")?;

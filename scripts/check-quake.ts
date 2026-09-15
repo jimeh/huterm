@@ -312,10 +312,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (fullscreenAfter.native_id !== fullscreenBefore.native_id || fullscreenAfter.fullscreen !== "true" || fullscreenAfter.frame !== fullscreenBefore.frame) throw new Error("unchanged fullscreen summon altered retained presentation");
           if (macos && (![fullscreenBefore.lease_changes, fullscreenAfter.lease_changes].every(value => value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) || fullscreenAfter.lease_changes !== fullscreenBefore.lease_changes || fullscreenAfter.options !== fullscreenBefore.options)) throw new Error(`unchanged summon released its presentation lease: ${fullscreenBefore.lease_changes}/${fullscreenBefore.options} -> ${fullscreenAfter.lease_changes}/${fullscreenAfter.options}`);
           if (spy) {
-            await Bun.sleep(100);
+            const observedEvents = propertyEvents.length;
+            run(["xprop", "-id", fullscreenBefore.native_id!, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN"]);
+            await waitFor(async () => propertyEvents.length > observedEvents, "native fullscreen property observer barrier");
             if (spy.exitCode !== null) throw new Error("native fullscreen property observer exited before the continuity check completed");
             spy.kill();await spy.exited;await spying;
-            if (propertyEvents.some(event => !event.includes("_NET_WM_STATE_FULLSCREEN"))) throw new Error(`unchanged summon exited native fullscreen: ${propertyEvents.join("; ")}`);
+            if (propertyEvents.some(event => event.startsWith("_NET_WM_STATE") && !event.includes("_NET_WM_STATE_FULLSCREEN"))) throw new Error(`unchanged summon exited native fullscreen: ${propertyEvents.join("; ")}`);
           }
           console.log(`QUAKE_IDEMPOTENT fullscreen=retained show-and-unfocused-toggle=passed native-window=${fullscreenAfter.native_id} lease-changes=${fullscreenAfter.lease_changes ?? "X11-property-events"}`);
         } finally {if (spy && spy.exitCode === null) spy.kill();if (spy) await spy.exited;await spying;}
@@ -330,7 +332,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (quakeIndex < 0 || witnessIndex < 0 || quakeIndex <= witnessIndex) throw new Error(`quake is missing or below the focused external window: ${stacking}`);
           await command("app show_quake");await settled(true);
         }
-        // The window must stay up while repeated Press events arrive without Release.
+        // These delays are the input duration under test: the window must stay up
+        // while repeated Press events arrive without Release.
         await hotkey(); await settled(false);
         if (macos) {
           await native("key\t17\tdown\t786432");
@@ -343,7 +346,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         }
         await reload('hide_on_focus_loss = false\nanimation_ms = 150');
         await command("app show_quake");await settled(true);
-        await focusWitness();await Bun.sleep(300);
+        await focusWitness();
+        await waitFor(async () => (await current())?.active === "false", "disabled blur host observes external focus");
         if ((await current())?.visible !== "true") throw new Error("disabled blur hiding ignored");
         await hotkey();await settled(true);
         if ((await current())?.active !== "true") throw new Error("visible unfocused toggle did not raise");
@@ -698,7 +702,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(async () => (await current())?.regular === "true" && (await current())?.stage === "Idle", "regular presentation after native Space");
     }
     await focusWitness();
-    await Bun.sleep(350);
+    await waitFor(async () => (await current())?.active === "false", "regular host observes external focus");
     if ((await current())?.visible !== "true") throw new Error("regular presentation auto-hid");
     await command("default toggle_fullscreen");
     await waitFor(async () => (await current())?.regular === "false" && (await current())?.stage === "Idle", "return to quake presentation");
