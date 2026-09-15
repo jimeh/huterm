@@ -177,12 +177,12 @@ Window and tab shortcuts:
 | Select last tab | `Cmd-9` | `Alt-9` |
 
 The tab bar is hidden with one tab by default. Set
-`[window].always_show_tab_bar = true` to keep it visible. With two or more tabs,
+`[tabs].always_show = true` to keep it visible. With two or more tabs,
 it reserves space beside the terminal.
 
-Set `[window].auto_hide_tab_bar_in_fullscreen = true` to reveal the bar only
+Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only
 when the pointer reaches its attached edge in fullscreen, even with one tab.
-Fullscreen auto-hide overrides `always_show_tab_bar` and reserves no bar space,
+Fullscreen auto-hide overrides `always_show` and reserves no bar space,
 regardless of tab count. It slides over the terminal without changing the grid,
 and hides after the pointer leaves. Tab dragging and sidebar resizing keep it
 open. A top bar can be revealed from the macOS notch-height region and appears
@@ -191,7 +191,7 @@ also reveal the fullscreen overlay for one second before the normal dismissal
 delay. Repeated activity restarts the hold.
 Both settings default to `false` and take effect on config reload.
 
-Set `[window].tab_position` to `top`, `bottom`, `left`, or `right`. Top is the
+Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
 default. Horizontal tabs divide the available width equally until their
 120-pixel minimum, then scroll horizontally. Vertical tabs stay 32 pixels tall
 and fill the sidebar width. Drag the sidebar's inner edge to resize it between
@@ -199,6 +199,10 @@ and fill the sidebar width. Drag the sidebar's inner edge to resize it between
 its preferred width for its lifetime, including through temporary window
 shrinking. The full-width vertical new-tab button follows the last tab and
 stays visible at the bottom when tabs overflow.
+
+The `[tabs]` table also accepts `style = "strip"` or `"pill"`, `width = "fill"`
+or `"fit"`, and `min_width` and `max_width` bounds from 48 through 600 logical
+points. These settings are validated but do not affect rendering yet.
 
 Trackpad and wheel scrolling move the strip without selecting a tab. Floating
 arrows indicate hidden content and animate scrolling when clicked. Explicit

@@ -469,19 +469,97 @@
   },
   {
     "name": "tab visibility enabled",
-    "toml": "[window]\nalways_show_tab_bar = true\nauto_hide_tab_bar_in_fullscreen = true",
+    "toml": "[tabs]\nalways_show = true\nauto_hide_in_fullscreen = true",
     "valid": true,
     "theme": false
   },
   {
     "name": "always-show requires a boolean",
-    "toml": "[window]\nalways_show_tab_bar = \"true\"",
+    "toml": "[tabs]\nalways_show = \"true\"",
     "valid": false,
     "theme": false
   },
   {
     "name": "fullscreen auto-hide requires a boolean",
-    "toml": "[window]\nauto_hide_tab_bar_in_fullscreen = 1",
+    "toml": "[tabs]\nauto_hide_in_fullscreen = 1",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy window tab position moved",
+    "toml": "[window]\ntab_position = \"top\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy window always-show moved",
+    "toml": "[window]\nalways_show_tab_bar = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "legacy window fullscreen auto-hide moved",
+    "toml": "[window]\nauto_hide_tab_bar_in_fullscreen = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab position right",
+    "toml": "[tabs]\nposition = \"right\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab position unknown",
+    "toml": "[tabs]\nposition = \"center\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab style pill",
+    "toml": "[tabs]\nstyle = \"pill\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab style unknown",
+    "toml": "[tabs]\nstyle = \"card\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab width fit",
+    "toml": "[tabs]\nwidth = \"fit\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab width unknown",
+    "toml": "[tabs]\nwidth = \"fixed\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab minimum width 48",
+    "toml": "[tabs]\nmin_width = 48",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab minimum width below 48",
+    "toml": "[tabs]\nmin_width = 47",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab maximum width 600",
+    "toml": "[tabs]\nmax_width = 600",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab maximum width above 600",
+    "toml": "[tabs]\nmax_width = 601",
     "valid": false,
     "theme": false
   },

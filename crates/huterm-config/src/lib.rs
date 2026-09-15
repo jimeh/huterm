@@ -161,9 +161,19 @@ pub struct WindowConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub padding_balance: bool,
-    pub tab_position: TabPosition,
-    pub always_show_tab_bar: bool,
-    pub auto_hide_tab_bar_in_fullscreen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct TabsConfig {
+    pub position: TabPosition,
+    pub always_show: bool,
+    pub auto_hide_in_fullscreen: bool,
+    pub style: TabStyle,
+    pub width: TabWidth,
+    pub min_width: f32,
+    pub max_width: f32,
 }
 
 /// Optional overrides for the platform updater.
@@ -190,9 +200,20 @@ impl Default for WindowConfig {
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
-            tab_position: TabPosition::Top,
-            always_show_tab_bar: false,
-            auto_hide_tab_bar_in_fullscreen: false,
+        }
+    }
+}
+
+impl Default for TabsConfig {
+    fn default() -> Self {
+        Self {
+            position: TabPosition::Top,
+            always_show: false,
+            auto_hide_in_fullscreen: false,
+            style: TabStyle::Strip,
+            width: TabWidth::Fill,
+            min_width: 96.0,
+            max_width: 240.0,
         }
     }
 }
@@ -259,6 +280,28 @@ pub enum TabPosition {
     Bottom,
     Left,
     Right,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabStyle {
+    #[default]
+    Strip,
+    Pill,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabWidth {
+    #[default]
+    Fill,
+    Fit,
 }
 
 impl TabPosition {
@@ -387,6 +430,8 @@ pub struct RawConfig {
     pub font: RawFont,
     #[serde(default)]
     pub window: WindowConfig,
+    #[serde(default)]
+    pub tabs: TabsConfig,
     #[serde(default)]
     pub updates: UpdateConfig,
     #[serde(default)]
@@ -603,6 +648,21 @@ impl RawConfig {
                 ));
             }
         }
+        if !self.tabs.min_width.is_finite() || self.tabs.min_width < 48.0 {
+            return Err(ConfigError::Invalid(
+                "tabs.min_width must be at least 48 points",
+            ));
+        }
+        if !self.tabs.max_width.is_finite() || self.tabs.max_width > 600.0 {
+            return Err(ConfigError::Invalid(
+                "tabs.max_width must be at most 600 points",
+            ));
+        }
+        if self.tabs.min_width > self.tabs.max_width {
+            return Err(ConfigError::Invalid(
+                "tabs.min_width must not exceed tabs.max_width",
+            ));
+        }
         if self.updates.check_interval_hours == Some(0) {
             return Err(ConfigError::Invalid(
                 "updates.check_interval_hours must be at least 1",
@@ -644,6 +704,81 @@ mod update_tests {
                 .expect_err("zero interval must fail")
                 .to_string(),
             "updates.check_interval_hours must be at least 1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tabs_tests {
+    use super::*;
+
+    #[test]
+    fn tab_settings_use_settled_defaults() {
+        let configured: RawConfig = toml::from_str("").expect("default config");
+        assert_eq!(configured.tabs, TabsConfig::default());
+    }
+
+    #[test]
+    fn tab_settings_accept_every_override() {
+        let configured: RawConfig = toml::from_str(
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+        )
+        .expect("tab settings");
+        configured.validate_values().expect("valid tab settings");
+        assert_eq!(
+            configured.tabs,
+            TabsConfig {
+                position: TabPosition::Right,
+                always_show: true,
+                auto_hide_in_fullscreen: true,
+                style: TabStyle::Pill,
+                width: TabWidth::Fit,
+                min_width: 72.0,
+                max_width: 480.0,
+            }
+        );
+    }
+
+    #[test]
+    fn tab_minimum_width_accepts_48_and_rejects_smaller_values() {
+        let boundary: RawConfig =
+            toml::from_str("[tabs]\nmin_width = 48").expect("minimum boundary");
+        boundary.validate_values().expect("minimum is inclusive");
+        for value in ["47.99", "nan"] {
+            let configured: RawConfig =
+                toml::from_str(&format!("[tabs]\nmin_width = {value}"))
+                    .expect("numeric minimum");
+            assert_eq!(
+                configured.validate_values().unwrap_err().to_string(),
+                "tabs.min_width must be at least 48 points"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_maximum_width_accepts_600_and_rejects_larger_values() {
+        let boundary: RawConfig = toml::from_str("[tabs]\nmax_width = 600")
+            .expect("maximum boundary");
+        boundary.validate_values().expect("maximum is inclusive");
+        for value in ["600.01", "inf"] {
+            let configured: RawConfig =
+                toml::from_str(&format!("[tabs]\nmax_width = {value}"))
+                    .expect("numeric maximum");
+            assert_eq!(
+                configured.validate_values().unwrap_err().to_string(),
+                "tabs.max_width must be at most 600 points"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_minimum_width_cannot_exceed_maximum_width() {
+        let configured: RawConfig =
+            toml::from_str("[tabs]\nmin_width = 241\nmax_width = 240")
+                .expect("ordered bounds");
+        assert_eq!(
+            configured.validate_values().unwrap_err().to_string(),
+            "tabs.min_width must not exceed tabs.max_width"
         );
     }
 }

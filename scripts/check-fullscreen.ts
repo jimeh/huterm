@@ -199,7 +199,7 @@ done
   const checkReserved = async () => {
     const baseline = await state();
     for (const position of ["top", "left", "bottom", "right"]) {
-      await writeFile(config, initialConfig.replace("[window]", `[window]\ntab_position = "${position}"`));
+      await writeFile(config, initialConfig.replace("[window]", `[tabs]\nposition = "${position}"\n[window]`));
       await accepted("0 reload_config");
       await waitFor(async () => (await state()).reloading === "false", "reserved config reload");
       const one = await state();
@@ -228,7 +228,7 @@ done
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
     }
-    await writeFile(config, initialConfig.replace("[window]", "[window]\nalways_show_tab_bar = true"));
+    await writeFile(config, initialConfig.replace("[window]", "[tabs]\nalways_show = true\n[window]"));
     await accepted("0 reload_config");
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "always-show reserves a single tab");
     await writeFile(config, initialConfig);
@@ -252,7 +252,7 @@ done
       const [width, height] = current["w0.viewport"]!.split(",").map(Number) as [number, number];
       const topInset = Number(current["w0.insets"]!.split(",")[0]);
       const centerX = width / 2; const centerY = height / 2;
-      const source = configText("native").replace("[window]", `[window]\ntab_position = "${position}"\nauto_hide_tab_bar_in_fullscreen = true`);
+      const source = configText("native").replace("[window]", `[tabs]\nposition = "${position}"\nauto_hide_in_fullscreen = true\n[window]`);
       await move(centerX, centerY);
       await writeFile(config, source);
       await accepted("0 reload_config");

@@ -27,7 +27,9 @@ use crate::APP_ID;
 use crate::commands::{
     InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
 };
-use crate::config::{self, Config, LinkModifiersExt, Theme, WindowConfig};
+use crate::config::{
+    self, Config, LinkModifiersExt, TabsConfig, Theme, WindowConfig,
+};
 #[cfg(test)]
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
@@ -254,6 +256,7 @@ struct TerminalView {
     font_family: String,
     font_size: Pixels,
     window_config: WindowConfig,
+    tabs_config: TabsConfig,
     sidebar_width: Pixels,
     tab_presentation: windows::tab_visibility::Presentation,
     tab_overlay: Option<Bounds<Pixels>>,
@@ -396,6 +399,7 @@ impl TerminalView {
             last_cell_size: None,
             font_size: metrics.font_size,
             window_config: config.window,
+            tabs_config: config.tabs,
             sidebar_width: windows::SIDEBAR_WIDTH,
             tab_presentation: windows::tab_visibility::Presentation::Hidden,
             tab_overlay: None,
@@ -1489,11 +1493,11 @@ impl TerminalView {
         windows::ChromeLayout::with_safe_area(
             window.viewport_size(),
             terminal_top(self.chrome_hidden),
-            self.window_config.tab_position,
+            self.tabs_config.position,
             self.sidebar_width,
             self.fullscreen_insets,
         )
-        .present(self.tab_presentation, self.window_config.tab_position, 0.0)
+        .present(self.tab_presentation, self.tabs_config.position, 0.0)
         .terminal
     }
     fn viewport(&self, window: &Window) -> gpui::Size<Pixels> {
