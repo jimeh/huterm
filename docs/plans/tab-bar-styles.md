@@ -109,7 +109,7 @@ Add these flat optional keys to `ThemeDefinition` and resolved fields to
 | `tab_foreground` | Active tab text and icons | `foreground` |
 | `tab_inactive_foreground` | Inactive tab text and icons | Foreground mixed toward the bar background |
 | `tab_border` | Separators and bar edge | Foreground at low opacity over the bar background |
-| `tab_accent` | Strip accent line, Pill index badge, vertical accent bar | `ansi[4]` |
+| `tab_accent` | Strip accent line, Pill and vertical accent bars | `ansi[4]` |
 
 The Strip active tab always uses the terminal `background`, so it merges with
 the terminal below it. Hover backgrounds derive from the foreground at low
@@ -157,9 +157,10 @@ helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
   active tab uses the terminal background with a 2-point `tab_accent` line on
   its outer edge, away from the terminal, as in the mock-up. Inactive tabs are
   separated by short `tab_border` dividers.
-- **Pill.** Tabs render as 26-point rounded pills centered in the 32-point bar.
-  Each of the first nine tabs shows an index badge; the active badge uses
-  `tab_accent`. The active pill uses `tab_active_background`.
+- **Pill.** Tabs render as 26-point rounded pills centered in the 32-point bar,
+  separated by short `tab_border` dividers. The active pill uses
+  `tab_active_background` with a 3-point `tab_accent` bar inside its left edge.
+  An earlier numbered-badge design was dropped after reviewing the mock-up.
 - **Vertical.** Rows use `tab_active_background` when active, with a 3-point
   `tab_accent` bar inset inside the rounded row.
 - **Shared.** The close button appears on hover and on the active tab. Its slot
@@ -171,7 +172,7 @@ helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
 ### Fit width
 
 In Fit mode, a horizontal tab's width is its measured title plus fixed chrome
-(padding, status slot, close slot, and the Pill index badge), clamped to
+(padding, status slot, and close slot), clamped to
 `[min_width, max_width]`.
 
 - Measure titles with `window.text_system().shape_line` using the chrome font

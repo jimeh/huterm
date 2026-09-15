@@ -202,11 +202,12 @@ shrinking. The full-width vertical new-tab button follows the last tab and
 stays visible at the bottom when tabs overflow.
 
 `[tabs].style = "strip"`, the default, merges the active tab into the terminal
-with an accent line on its outer edge. `"pill"` draws rounded tabs with
-numbered badges for the first nine. Left and right placement ignore `style` and
-use one row style with an inset accent bar. While the bar is visible or
-revealing, the macOS titlebar and the non-native fullscreen safe area above a
-notch use the tab bar background; otherwise they use the terminal background.
+with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
+dividers, with an accent bar inside the active pill's left edge. Left and right
+placement ignore `style` and use one row style with the same inset accent bar.
+While the bar is visible or revealing, the macOS titlebar and the non-native
+fullscreen safe area above a notch use the tab bar background; otherwise they
+use the terminal background.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
