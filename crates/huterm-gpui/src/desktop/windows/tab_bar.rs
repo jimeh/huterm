@@ -1,6 +1,6 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
-use gpui::{Div, FontWeight, Hsla, Stateful, Svg, TextRun, svg};
+use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
 use huterm_config::{TabStyle, TabWidth};
 
 use crate::assets::Icon;
@@ -19,12 +19,13 @@ const TITLE_WIDTH_CACHE_LIMIT: usize = 512;
 const PILL_HEIGHT: Pixels = px(26.0);
 const ICON_SIZE: Pixels = px(12.0);
 const CLOSE_SIZE: Pixels = px(18.0);
-const BADGE_SIZE: Pixels = px(16.0);
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
 const STRIP_PADDING_RIGHT: Pixels = px(6.0);
 const PILL_GAP: Pixels = px(6.0);
-const PILL_PADDING_LEFT: Pixels = px(6.0);
+/// Leaves room for the active pill's accent bar on every pill, so titles
+/// keep their position when the active tab changes.
+const PILL_PADDING_LEFT: Pixels = px(14.0);
 const PILL_PADDING_RIGHT: Pixels = px(5.0);
 const PILL_MARGIN: Pixels = px(2.0);
 /// Title text size used both to render and to measure Fit tabs.
@@ -95,6 +96,14 @@ pub(super) struct TabItem {
     pub(super) follows_active: bool,
 }
 
+impl TabItem {
+    /// Horizontal tabs draw a leading divider unless they or their left
+    /// neighbor is active, or they are first.
+    fn divided(&self) -> bool {
+        !self.active && self.index > 0 && !self.follows_active
+    }
+}
+
 /// Content shared by every tab style: status, title, and close button.
 struct TabParts {
     status: Option<Svg>,
@@ -142,10 +151,14 @@ impl WorkspaceView {
             status: item
                 .exited
                 .then(|| icon_element(Icon::CircleAlert, colors.error)),
+            // GPUI caches nowrap text at its first measured width, which
+            // skips truncation; a one-line clamp truncates at the final width.
             title: div()
                 .flex_1()
                 .min_w_0()
+                .overflow_hidden()
                 .text_ellipsis()
+                .line_clamp(1)
                 .when(item.exited, |title| title.opacity(0.6))
                 .child(item.title.clone()),
             close: Self::close_tab_button(id, item.active, colors, cx),
@@ -175,7 +188,7 @@ impl WorkspaceView {
         }
         let font = window.text_style().font();
         let mut widths = Vec::with_capacity(self.tabs.len());
-        for (index, tab) in self.tabs.iter().enumerate() {
+        for tab in &self.tabs {
             let (title, exited) = tab.label(cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
@@ -199,7 +212,6 @@ impl WorkspaceView {
                 text,
                 tabs.style,
                 exited,
-                index,
                 tabs.min_width,
                 tabs.max_width,
             ));
@@ -247,6 +259,29 @@ impl WorkspaceView {
     }
 }
 
+/// A 3-point accent bar inset along the left edge of an active row or pill.
+fn accent_bar(colors: TabColors, inset: Pixels) -> Div {
+    div()
+        .absolute()
+        .left(px(5.0))
+        .top(inset)
+        .bottom(inset)
+        .w(px(3.0))
+        .rounded(px(3.0))
+        .bg(colors.accent)
+}
+
+/// A short vertical line on a horizontal tab's leading edge.
+fn divider(colors: TabColors) -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .top(px(9.0))
+        .bottom(px(9.0))
+        .w(px(1.0))
+        .bg(colors.border)
+}
+
 /// Left and right placement share one row style regardless of `tabs.style`.
 fn vertical_tab(
     shell: Stateful<Div>,
@@ -259,6 +294,7 @@ fn vertical_tab(
         div()
             .relative()
             .flex_1()
+            .min_w_0()
             .h_full()
             .mx(px(6.0))
             .my(px(1.0))
@@ -269,16 +305,7 @@ fn vertical_tab(
             .pl(px(14.0))
             .pr(px(6.0))
             .when(active, |row| {
-                row.bg(colors.active).child(
-                    div()
-                        .absolute()
-                        .left(px(5.0))
-                        .top(px(8.0))
-                        .bottom(px(8.0))
-                        .w(px(3.0))
-                        .rounded(px(3.0))
-                        .bg(colors.accent),
-                )
+                row.bg(colors.active).child(accent_bar(colors, px(8.0)))
             })
             .when(!active, |row| {
                 row.group_hover("tab", |style| {
@@ -300,7 +327,6 @@ fn strip_tab(
     colors: TabColors,
 ) -> Stateful<Div> {
     let (hover, foreground) = (colors.hover(), colors.foreground);
-    let separator = !item.active && item.index > 0 && !item.follows_active;
     shell
         .gap(STRIP_GAP)
         .pl(STRIP_PADDING_LEFT)
@@ -320,23 +346,14 @@ fn strip_tab(
         .when(!item.active, |tab| {
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
-        .when(separator, |tab| {
-            tab.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(9.0))
-                    .bottom(px(9.0))
-                    .w(px(1.0))
-                    .bg(colors.border),
-            )
-        })
+        .when(item.divided(), |tab| tab.child(divider(colors)))
         .children(parts.status)
         .child(parts.title)
         .child(parts.close)
 }
 
-/// Rounded tabs with a numbered badge doubling as the shortcut hint.
+/// Rounded tabs separated by dividers. The active pill is raised and carries
+/// the same left accent bar as vertical rows.
 fn pill_tab(
     shell: Stateful<Div>,
     parts: TabParts,
@@ -345,46 +362,38 @@ fn pill_tab(
 ) -> Stateful<Div> {
     let (hover, foreground) = (colors.hover(), colors.foreground);
     let active = item.active;
-    let badge = (item.index < 9).then(|| {
-        div()
-            .w(BADGE_SIZE)
-            .h(BADGE_SIZE)
-            .flex_shrink_0()
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(10.5))
-            .when(active, |badge| {
-                badge
-                    .bg(colors.accent)
-                    .text_color(colors.bar)
-                    .font_weight(FontWeight::BOLD)
-            })
-            .when(!active, |badge| badge.bg(foreground.opacity(0.06)))
-            .child((item.index + 1).to_string())
-    });
-    shell.px(PILL_MARGIN).child(
-        div()
-            .flex_1()
-            .h(PILL_HEIGHT)
-            .rounded(px(7.0))
-            .flex()
-            .items_center()
-            .gap(PILL_GAP)
-            .pl(PILL_PADDING_LEFT)
-            .pr(PILL_PADDING_RIGHT)
-            .when(active, |pill| pill.bg(colors.active))
-            .when(!active, |pill| {
-                pill.group_hover("tab", |style| {
-                    style.bg(hover).text_color(foreground)
+    shell
+        .px(PILL_MARGIN)
+        .when(item.divided(), |tab| {
+            // A hovered pill hides its own divider so the highlight stays clean.
+            tab.child(
+                divider(colors).group_hover("tab", |style| style.opacity(0.0)),
+            )
+        })
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .h(PILL_HEIGHT)
+                .rounded(px(7.0))
+                .flex()
+                .items_center()
+                .gap(PILL_GAP)
+                .pl(PILL_PADDING_LEFT)
+                .pr(PILL_PADDING_RIGHT)
+                .when(active, |pill| {
+                    pill.bg(colors.active).child(accent_bar(colors, px(7.0)))
                 })
-            })
-            .children(badge)
-            .children(parts.status)
-            .child(parts.title)
-            .child(parts.close),
-    )
+                .when(!active, |pill| {
+                    pill.group_hover("tab", |style| {
+                        style.bg(hover).text_color(foreground)
+                    })
+                })
+                .children(parts.status)
+                .child(parts.title)
+                .child(parts.close),
+        )
 }
 
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
@@ -394,36 +403,33 @@ pub(super) fn fit_tab_width(
     title_width: Pixels,
     style: TabStyle,
     exited: bool,
-    index: usize,
     min_width: f32,
     max_width: f32,
 ) -> Pixels {
-    let status = if exited { ICON_SIZE } else { px(0.0) };
-    // Slots are the flex children: title and close, plus status and badge.
-    let chrome = match style {
-        TabStyle::Strip => {
-            let slots = 2 + u8::from(exited);
-            STRIP_PADDING_LEFT
-                + STRIP_PADDING_RIGHT
-                + STRIP_GAP * f32::from(slots - 1)
-                + CLOSE_SIZE
-                + status
-        }
-        TabStyle::Pill => {
-            let badge = index < 9;
-            let slots = 2 + u8::from(exited) + u8::from(badge);
-            PILL_MARGIN * 2.0
-                + PILL_PADDING_LEFT
-                + PILL_PADDING_RIGHT
-                + PILL_GAP * f32::from(slots - 1)
-                + CLOSE_SIZE
-                + status
-                + if badge { BADGE_SIZE } else { px(0.0) }
-        }
+    let status = if exited {
+        ICON_SIZE + gap(style)
+    } else {
+        px(0.0)
     };
+    // Every tab has a title and a close button separated by one gap.
+    let chrome = match style {
+        TabStyle::Strip => STRIP_PADDING_LEFT + STRIP_PADDING_RIGHT,
+        TabStyle::Pill => {
+            PILL_MARGIN * 2.0 + PILL_PADDING_LEFT + PILL_PADDING_RIGHT
+        }
+    } + gap(style)
+        + CLOSE_SIZE
+        + status;
     (title_width + chrome)
         .ceil()
         .clamp(px(min_width), px(max_width))
+}
+
+fn gap(style: TabStyle) -> Pixels {
+    match style {
+        TabStyle::Strip => STRIP_GAP,
+        TabStyle::Pill => PILL_GAP,
+    }
 }
 
 #[cfg(test)]
@@ -436,29 +442,46 @@ mod tests {
     #[test]
     fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
         let strip =
-            fit_tab_width(px(20.0), TabStyle::Strip, false, 0, 48.0, 600.0);
+            fit_tab_width(px(20.0), TabStyle::Strip, false, 48.0, 600.0);
         assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.0), TabStyle::Strip, true, 0, 48.0, 600.0),
+            fit_tab_width(px(20.0), TabStyle::Strip, true, 48.0, 600.0),
             strip + ICON_SIZE + STRIP_GAP
         );
-        let badged =
-            fit_tab_width(px(20.0), TabStyle::Pill, false, 8, 48.0, 600.0);
-        let unbadged =
-            fit_tab_width(px(20.0), TabStyle::Pill, false, 9, 48.0, 600.0);
-        assert_eq!(badged - unbadged, BADGE_SIZE + PILL_GAP);
+        let pill = fit_tab_width(px(20.0), TabStyle::Pill, false, 48.0, 600.0);
+        assert_eq!(pill, px(20.0 + 2.0 * 2.0 + 14.0 + 5.0 + 6.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.4), TabStyle::Strip, false, 0, 48.0, 600.0),
+            fit_tab_width(px(20.0), TabStyle::Pill, true, 48.0, 600.0),
+            pill + ICON_SIZE + PILL_GAP
+        );
+        assert_eq!(
+            fit_tab_width(px(20.4), TabStyle::Strip, false, 48.0, 600.0),
             px(64.0)
         );
         assert_eq!(
-            fit_tab_width(px(1.0), TabStyle::Strip, false, 0, 96.0, 240.0),
+            fit_tab_width(px(1.0), TabStyle::Strip, false, 96.0, 240.0),
             px(96.0)
         );
         assert_eq!(
-            fit_tab_width(px(900.0), TabStyle::Pill, false, 0, 96.0, 240.0),
+            fit_tab_width(px(900.0), TabStyle::Pill, false, 96.0, 240.0),
             px(240.0)
         );
+    }
+
+    #[test]
+    fn horizontal_dividers_skip_the_first_active_and_following_tabs() {
+        let item = |index, active, follows_active| TabItem {
+            id: TabId::new(1),
+            index,
+            title: String::new(),
+            exited: false,
+            active,
+            follows_active,
+        };
+        assert!(item(1, false, false).divided());
+        assert!(!item(0, false, false).divided());
+        assert!(!item(2, true, false).divided());
+        assert!(!item(3, false, true).divided());
     }
 
     #[test]
