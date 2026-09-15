@@ -216,6 +216,30 @@
     "theme": true
   },
   {
+    "name": "standalone chrome colors",
+    "toml": "[theme]\nextends = \"huterm-dark\"\ntab_bar_background = \"#101010\"\ntab_active_background = \"#202020\"\ntab_foreground = \"#f0f0f0\"\ntab_inactive_foreground = \"#909090\"\ntab_border = \"#303030\"\ntab_accent = \"#4080ff\"",
+    "valid": true,
+    "theme": true
+  },
+  {
+    "name": "standalone chrome color invalid",
+    "toml": "[theme]\ntab_accent = \"blue\"",
+    "valid": false,
+    "theme": true
+  },
+  {
+    "name": "selected theme chrome color",
+    "toml": "[theme]\nname = \"tokyo-night\"\ntab_bar_background = \"#000000\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "selected theme chrome color invalid",
+    "toml": "[theme]\ntab_border = \"#12345\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "link modifiers alt-shift",
     "toml": "[terminal]\nlink_modifiers = \"alt-shift\"",
     "valid": true,
