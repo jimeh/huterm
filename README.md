@@ -230,8 +230,10 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-The `style`, `width`, `min_width`, and `max_width` tab settings are accepted and
-validated now but do not change rendering yet.
+`style` selects Strip or Pill tabs for top and bottom placement; left and right
+placement always use one row style. Themes color the tab bar through their tab
+chrome keys. The `width`, `min_width`, and `max_width` tab settings are
+validated but do not change rendering yet.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores

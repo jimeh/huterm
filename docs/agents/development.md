@@ -200,9 +200,16 @@ its preferred width for its lifetime, including through temporary window
 shrinking. The full-width vertical new-tab button follows the last tab and
 stays visible at the bottom when tabs overflow.
 
-The `[tabs]` table also accepts `style = "strip"` or `"pill"`, `width = "fill"`
-or `"fit"`, and `min_width` and `max_width` bounds from 48 through 600 logical
-points. These settings are validated but do not affect rendering yet.
+`[tabs].style = "strip"`, the default, merges the active tab into the terminal
+with an accent line on its outer edge. `"pill"` draws rounded tabs with
+numbered badges for the first nine. Left and right placement ignore `style` and
+use one row style with an inset accent bar. While the bar is visible or
+revealing, the macOS titlebar and the non-native fullscreen safe area above a
+notch use the tab bar background; otherwise they use the terminal background.
+
+The `[tabs]` table also accepts `width = "fill"` or `"fit"`, and `min_width`
+and `max_width` bounds from 48 through 600 logical points. These settings are
+validated but do not affect rendering yet.
 
 Trackpad and wheel scrolling move the strip without selecting a tab. Floating
 arrows indicate hidden content and animate scrolling when clicked. Explicit

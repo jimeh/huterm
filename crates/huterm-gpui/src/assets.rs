@@ -28,13 +28,6 @@ const ASSETS: [(&str, &[u8]); 7] = [
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the tab styles will consume the embedded icons in the next implementation step"
-    )
-)]
 pub(crate) enum Icon {
     X,
     Plus,
@@ -46,13 +39,7 @@ pub(crate) enum Icon {
 }
 
 impl Icon {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the tab styles will consume the embedded icons in the next implementation step"
-        )
-    )]
+    #[cfg(test)]
     const ALL: [Self; 7] = [
         Self::X,
         Self::Plus,
@@ -63,13 +50,6 @@ impl Icon {
         Self::CircleAlert,
     ];
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the tab styles will consume the embedded icons in the next implementation step"
-        )
-    )]
     pub(crate) const fn asset_path(self) -> &'static str {
         match self {
             Self::X => "icons/x.svg",
