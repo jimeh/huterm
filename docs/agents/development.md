@@ -192,10 +192,11 @@ delay. Repeated activity restarts the hold.
 Both settings default to `false` and take effect on config reload.
 
 Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. Horizontal tabs divide the available width equally until their
-120-pixel minimum, then scroll horizontally. Vertical tabs stay 32 pixels tall
-and fill the sidebar width. Drag the sidebar's inner edge to resize it between
-140 and 400 logical pixels, capped at half the window width. Each window keeps
+default. With the default `width = "fill"`, horizontal tabs divide the
+available width equally until their 120-pixel minimum, then scroll
+horizontally. Vertical tabs stay 32 pixels tall and fill the sidebar width.
+Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
+capped at half the window width. Each window keeps
 its preferred width for its lifetime, including through temporary window
 shrinking. The full-width vertical new-tab button follows the last tab and
 stays visible at the bottom when tabs overflow.
@@ -207,9 +208,12 @@ use one row style with an inset accent bar. While the bar is visible or
 revealing, the macOS titlebar and the non-native fullscreen safe area above a
 notch use the tab bar background; otherwise they use the terminal background.
 
-The `[tabs]` table also accepts `width = "fill"` or `"fit"`, and `min_width`
-and `max_width` bounds from 48 through 600 logical points. These settings are
-validated but do not affect rendering yet.
+`[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
+`min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
+logical points). The bar then shrinks to its tabs, so the new-tab button follows
+the last tab until the bar overflows and scrolls. Render measures titles and
+caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
+drop slots. Vertical tabs ignore `width`.
 
 Trackpad and wheel scrolling move the strip without selecting a tab. Floating
 arrows indicate hidden content and animate scrolling when clicked. Explicit

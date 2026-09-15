@@ -1,18 +1,34 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
-use gpui::{Div, FontWeight, Hsla, Stateful, Svg, svg};
-use huterm_config::TabStyle;
+use gpui::{Div, FontWeight, Hsla, Stateful, Svg, TextRun, svg};
+use huterm_config::{TabStyle, TabWidth};
 
 use crate::assets::Icon;
 
 use super::{
-    Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
+    App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Presentation,
-    StatefulInteractiveElement, Styled, TabId, TabPosition, Theme,
+    StatefulInteractiveElement, Styled, TabId, TabPosition, Theme, Window,
     WorkspaceView, color, div, px,
 };
 
+/// Bounds the title width cache so long-lived windows with changing titles
+/// cannot grow it without limit.
+const TITLE_WIDTH_CACHE_LIMIT: usize = 512;
+
 const PILL_HEIGHT: Pixels = px(26.0);
+const ICON_SIZE: Pixels = px(12.0);
+const CLOSE_SIZE: Pixels = px(18.0);
+const BADGE_SIZE: Pixels = px(16.0);
+const STRIP_GAP: Pixels = px(7.0);
+const STRIP_PADDING_LEFT: Pixels = px(12.0);
+const STRIP_PADDING_RIGHT: Pixels = px(6.0);
+const PILL_GAP: Pixels = px(6.0);
+const PILL_PADDING_LEFT: Pixels = px(6.0);
+const PILL_PADDING_RIGHT: Pixels = px(5.0);
+const PILL_MARGIN: Pixels = px(2.0);
+/// Title text size used both to render and to measure Fit tabs.
+pub(super) const TAB_TEXT_SIZE: Pixels = px(13.0);
 
 #[derive(Clone, Copy)]
 pub(super) struct TabColors {
@@ -51,8 +67,8 @@ impl TabColors {
 pub(super) fn icon_element(icon: Icon, tint: Hsla) -> Svg {
     svg()
         .path(icon.asset_path())
-        .w(px(12.0))
-        .h(px(12.0))
+        .w(ICON_SIZE)
+        .h(ICON_SIZE)
         .flex_shrink_0()
         .text_color(tint)
 }
@@ -146,6 +162,51 @@ impl WorkspaceView {
         }
     }
 
+    /// Caches Fit tab widths for `tab_strip`, which cannot read titles
+    /// because it has no `App`.
+    pub(super) fn measure_tab_widths(&mut self, window: &Window, cx: &App) {
+        let tabs = self.config.tabs;
+        if tabs.width != TabWidth::Fit || tabs.position.vertical() {
+            self.tab_widths.clear();
+            return;
+        }
+        if self.title_widths.len() > TITLE_WIDTH_CACHE_LIMIT {
+            self.title_widths.clear();
+        }
+        let font = window.text_style().font();
+        let mut widths = Vec::with_capacity(self.tabs.len());
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let (title, exited) = tab.label(cx);
+            let text = if let Some(width) = self.title_widths.get(&title) {
+                *width
+            } else {
+                let run = TextRun {
+                    len: title.len(),
+                    font: font.clone(),
+                    color: Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let width = window
+                    .text_system()
+                    .layout_line(&title, TAB_TEXT_SIZE, &[run], None)
+                    .width;
+                self.title_widths.insert(title, width);
+                width
+            };
+            widths.push(fit_tab_width(
+                text,
+                tabs.style,
+                exited,
+                index,
+                tabs.min_width,
+                tabs.max_width,
+            ));
+        }
+        self.tab_widths = widths;
+    }
+
     /// Keeps its slot while hidden so hovering never changes tab width.
     fn close_tab_button(
         id: TabId,
@@ -158,8 +219,8 @@ impl WorkspaceView {
             .id(("close-tab", id.get()))
             .group("close-tab")
             .flex_shrink_0()
-            .w(px(18.0))
-            .h(px(18.0))
+            .w(CLOSE_SIZE)
+            .h(CLOSE_SIZE)
             .rounded(px(4.0))
             .flex()
             .items_center()
@@ -241,9 +302,9 @@ fn strip_tab(
     let (hover, foreground) = (colors.hover(), colors.foreground);
     let separator = !item.active && item.index > 0 && !item.follows_active;
     shell
-        .gap(px(7.0))
-        .pl(px(12.0))
-        .pr(px(6.0))
+        .gap(STRIP_GAP)
+        .pl(STRIP_PADDING_LEFT)
+        .pr(STRIP_PADDING_RIGHT)
         .when(item.active, |tab| {
             tab.bg(colors.terminal).child(
                 div()
@@ -286,8 +347,8 @@ fn pill_tab(
     let active = item.active;
     let badge = (item.index < 9).then(|| {
         div()
-            .w(px(16.0))
-            .h(px(16.0))
+            .w(BADGE_SIZE)
+            .h(BADGE_SIZE)
             .flex_shrink_0()
             .rounded(px(4.0))
             .flex()
@@ -303,16 +364,16 @@ fn pill_tab(
             .when(!active, |badge| badge.bg(foreground.opacity(0.06)))
             .child((item.index + 1).to_string())
     });
-    shell.px(px(2.0)).child(
+    shell.px(PILL_MARGIN).child(
         div()
             .flex_1()
             .h(PILL_HEIGHT)
             .rounded(px(7.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .pl(px(6.0))
-            .pr(px(5.0))
+            .gap(PILL_GAP)
+            .pl(PILL_PADDING_LEFT)
+            .pr(PILL_PADDING_RIGHT)
             .when(active, |pill| pill.bg(colors.active))
             .when(!active, |pill| {
                 pill.group_hover("tab", |style| {
@@ -326,12 +387,79 @@ fn pill_tab(
     )
 }
 
+/// The width a horizontal Fit tab needs around `title_width` of text, clamped
+/// to the configured bounds. It mirrors the padding, gaps, and slots rendered
+/// by `strip_tab` and `pill_tab`.
+pub(super) fn fit_tab_width(
+    title_width: Pixels,
+    style: TabStyle,
+    exited: bool,
+    index: usize,
+    min_width: f32,
+    max_width: f32,
+) -> Pixels {
+    let status = if exited { ICON_SIZE } else { px(0.0) };
+    // Slots are the flex children: title and close, plus status and badge.
+    let chrome = match style {
+        TabStyle::Strip => {
+            let slots = 2 + u8::from(exited);
+            STRIP_PADDING_LEFT
+                + STRIP_PADDING_RIGHT
+                + STRIP_GAP * f32::from(slots - 1)
+                + CLOSE_SIZE
+                + status
+        }
+        TabStyle::Pill => {
+            let badge = index < 9;
+            let slots = 2 + u8::from(exited) + u8::from(badge);
+            PILL_MARGIN * 2.0
+                + PILL_PADDING_LEFT
+                + PILL_PADDING_RIGHT
+                + PILL_GAP * f32::from(slots - 1)
+                + CLOSE_SIZE
+                + status
+                + if badge { BADGE_SIZE } else { px(0.0) }
+        }
+    };
+    (title_width + chrome)
+        .ceil()
+        .clamp(px(min_width), px(max_width))
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::size;
 
     use super::super::ChromeLayout;
     use super::*;
+
+    #[test]
+    fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
+        let strip =
+            fit_tab_width(px(20.0), TabStyle::Strip, false, 0, 48.0, 600.0);
+        assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
+        assert_eq!(
+            fit_tab_width(px(20.0), TabStyle::Strip, true, 0, 48.0, 600.0),
+            strip + ICON_SIZE + STRIP_GAP
+        );
+        let badged =
+            fit_tab_width(px(20.0), TabStyle::Pill, false, 8, 48.0, 600.0);
+        let unbadged =
+            fit_tab_width(px(20.0), TabStyle::Pill, false, 9, 48.0, 600.0);
+        assert_eq!(badged - unbadged, BADGE_SIZE + PILL_GAP);
+        assert_eq!(
+            fit_tab_width(px(20.4), TabStyle::Strip, false, 0, 48.0, 600.0),
+            px(64.0)
+        );
+        assert_eq!(
+            fit_tab_width(px(1.0), TabStyle::Strip, false, 0, 96.0, 240.0),
+            px(96.0)
+        );
+        assert_eq!(
+            fit_tab_width(px(900.0), TabStyle::Pill, false, 0, 96.0, 240.0),
+            px(240.0)
+        );
+    }
 
     #[test]
     fn top_chrome_follows_a_visible_or_revealing_tab_bar() {

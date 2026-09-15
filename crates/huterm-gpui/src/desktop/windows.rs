@@ -32,6 +32,7 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
+use huterm_config::TabWidth;
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HostEffectRecipientOptions, MuxError, OpenedTab,
@@ -40,6 +41,7 @@ use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
     catalog, validate, validate_supplied,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -49,7 +51,7 @@ mod tab_strip;
 pub(super) mod tab_visibility;
 use crate::assets::Icon;
 use tab_bar::{TabColors, TabItem, icon_element, top_chrome_uses_bar};
-use tab_strip::TabStrip;
+use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
 const CONTROL_SIZE: Pixels = px(28.0);
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
@@ -1133,6 +1135,8 @@ fn open_window_with_profile(
                 active: None,
                 history: Vec::new(),
                 tab_scroll: px(0.0),
+                tab_widths: Vec::new(),
+                title_widths: HashMap::new(),
                 scroll_target: None,
                 last_scroll: Instant::now(),
                 sidebar_width: SIDEBAR_WIDTH,
@@ -1295,6 +1299,10 @@ struct WorkspaceView {
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     reorder: Option<TabReorder>,
+    /// Fit tab widths measured during the last render.
+    tab_widths: Vec<Pixels>,
+    /// Title text widths by title, cleared on config reload.
+    title_widths: HashMap<String, Pixels>,
     config: Config,
     family: String,
     metrics: GridMetrics,
@@ -1666,12 +1674,27 @@ impl WorkspaceView {
     }
 
     fn tab_strip(&self, window: &Window) -> TabStrip {
-        let position = self.config.tabs.position;
+        let tabs = self.config.tabs;
         let layout = self.chrome_layout(window);
+        let extents = if tabs.width == TabWidth::Fit {
+            // Render measures titles; tabs added since then use the minimum.
+            TabExtents::Fit(
+                (0..self.tabs.len())
+                    .map(|index| {
+                        self.tab_widths
+                            .get(index)
+                            .copied()
+                            .unwrap_or(px(tabs.min_width))
+                    })
+                    .collect(),
+            )
+        } else {
+            TabExtents::Uniform(self.tabs.len())
+        };
         TabStrip::new(
             layout.tabs,
-            position.vertical(),
-            self.tabs.len(),
+            tabs.position.vertical(),
+            extents,
             self.tab_scroll,
         )
     }
@@ -3424,6 +3447,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.resizing_sidebar = false;
                             view.scroll_target = None;
                             view.config = config.clone();
+                            view.title_widths.clear();
                             view.fullscreen.set_default(
                                 config.window.macos_fullscreen_mode,
                             );
@@ -3630,7 +3654,6 @@ impl ChromeLayout {
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
-        clippy::cast_precision_loss,
         reason = "window chrome composes tab controls and close confirmation"
     )]
     fn render(
@@ -3638,6 +3661,7 @@ impl Render for WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        self.measure_tab_widths(window, cx);
         self.sync_tab_layout(window, cx);
         if self.reveal.progress > 0.0 && self.reveal.progress < 1.0 {
             window.request_animation_frame();
@@ -3652,7 +3676,7 @@ impl Render for WorkspaceView {
             .relative()
             .bg(background)
             .text_color(foreground)
-            .text_size(px(13.0))
+            .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
@@ -3862,7 +3886,7 @@ impl Render for WorkspaceView {
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
                 let (title, exited) = tab.label(cx);
-                let offset = strip.extent * index as f32 - strip.offset;
+                let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
                         point(px(0.0), offset),
@@ -3871,7 +3895,7 @@ impl Render for WorkspaceView {
                 } else {
                     Bounds::new(
                         point(offset, px(0.0)),
-                        size(strip.extent, TAB_HEIGHT),
+                        size(strip.tab_extent(index), TAB_HEIGHT),
                     )
                 };
                 let item = TabItem {
@@ -4036,7 +4060,12 @@ impl Render for WorkspaceView {
             && drag.dragging
         {
             let marker = strip.marker(strip.slot(drag.pointer));
-            let preview = strip.preview(drag.pointer);
+            let source = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == drag.source.tab)
+                .unwrap_or_default();
+            let preview = strip.preview(drag.pointer, source);
             let title = self
                 .tabs
                 .iter()
@@ -4423,12 +4452,17 @@ mod tests {
                 px(32.0),
                 position,
             );
-            let strip =
-                TabStrip::new(layout.tabs, position.vertical(), 8, px(0.0));
+            let strip = TabStrip::new(
+                layout.tabs,
+                position.vertical(),
+                TabExtents::Uniform(8),
+                px(0.0),
+            );
+            let extent = strip.tab_extent(0);
             let pointer = if strip.vertical {
-                strip.bounds.origin + point(px(20.0), strip.extent * 1.1)
+                strip.bounds.origin + point(px(20.0), extent * 1.1)
             } else {
-                strip.bounds.origin + point(strip.extent * 1.1, px(10.0))
+                strip.bounds.origin + point(extent * 1.1, px(10.0))
             };
             assert_eq!(strip.slot(pointer), 1, "{position:?}");
             for excursion in [-10_000.0, 10_000.0] {
@@ -4461,8 +4495,8 @@ mod tests {
                     }
                 );
                 for bounds in [
-                    strip.preview(beyond),
-                    strip.preview(perpendicular),
+                    strip.preview(beyond, 0),
+                    strip.preview(perpendicular, 0),
                     strip.marker(slot),
                 ] {
                     assert!(
