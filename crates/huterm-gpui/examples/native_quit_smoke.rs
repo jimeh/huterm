@@ -48,7 +48,6 @@ async fn acknowledge(
 
 #[cfg(target_os = "macos")]
 fn main() {
-    use gpui::Application;
     use huterm_core::{RuntimeError, TerminalRuntime};
     use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalId};
     use std::cell::RefCell;
@@ -76,7 +75,7 @@ fn main() {
     let runtime = TerminalRuntime::spawn(TerminalId::new(1), &command).unwrap();
     let client = runtime.client();
     let runtime = Rc::new(RefCell::new(Some(runtime)));
-    Application::new().run(move |cx| {
+    huterm_gpui::application_with_assets().run(move |cx| {
         let receiver = native_quit::install().unwrap();
         let quit_client = client.clone();
         cx.on_app_quit(move |_| {

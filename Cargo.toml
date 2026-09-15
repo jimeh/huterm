@@ -64,7 +64,7 @@ binariesDir = "target/universal-apple-darwin/release"
 targetTriple = "universal-apple-darwin"
 beforePackagingCommand = "mise run package:build:macos"
 icons = ["assets/Huterm.icns", "assets/Huterm.png"]
-resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }, { src = "third-party/terminal-graphics", target = "terminal-graphics" }, { src = "assets/macos/Assets.car", target = "Assets.car" }, { src = "target/terminfo", target = "terminfo" }]
+resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "third-party/ghostty", target = "ghostty" }, { src = "third-party/terminal-graphics", target = "terminal-graphics" }, { src = "third-party/lucide", target = "lucide" }, { src = "assets/macos/Assets.car", target = "Assets.car" }, { src = "target/terminfo", target = "terminfo" }]
 
 [package.metadata.packager.macos]
 entitlements = "assets/macos/Huterm.entitlements"

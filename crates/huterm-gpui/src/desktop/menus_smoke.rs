@@ -9,7 +9,7 @@ use crate::native_quit::{MenuShortcut, menu_shortcut};
 const COMMAND_MODIFIER: usize = 1 << 20;
 
 pub(crate) fn run() {
-    Application::new().run(|cx| {
+    crate::assets::application().run(|cx| {
         if let Err(error) = check(cx) {
             eprintln!("NATIVE_MENUS_SMOKE failed: {error:#}");
             std::process::exit(1);

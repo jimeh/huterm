@@ -161,9 +161,19 @@ pub struct WindowConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub padding_balance: bool,
-    pub tab_position: TabPosition,
-    pub always_show_tab_bar: bool,
-    pub auto_hide_tab_bar_in_fullscreen: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct TabsConfig {
+    pub position: TabPosition,
+    pub always_show: bool,
+    pub auto_hide_in_fullscreen: bool,
+    pub style: TabStyle,
+    pub width: TabWidth,
+    pub min_width: f32,
+    pub max_width: f32,
 }
 
 /// Optional overrides for the platform updater.
@@ -190,9 +200,20 @@ impl Default for WindowConfig {
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
-            tab_position: TabPosition::Top,
-            always_show_tab_bar: false,
-            auto_hide_tab_bar_in_fullscreen: false,
+        }
+    }
+}
+
+impl Default for TabsConfig {
+    fn default() -> Self {
+        Self {
+            position: TabPosition::Top,
+            always_show: false,
+            auto_hide_in_fullscreen: false,
+            style: TabStyle::Strip,
+            width: TabWidth::Fill,
+            min_width: 96.0,
+            max_width: 240.0,
         }
     }
 }
@@ -261,6 +282,28 @@ pub enum TabPosition {
     Right,
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabStyle {
+    #[default]
+    Strip,
+    Pill,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabWidth {
+    #[default]
+    Fill,
+    Fit,
+}
+
 impl TabPosition {
     #[must_use]
     pub fn vertical(self) -> bool {
@@ -282,6 +325,52 @@ pub struct Theme {
     pub selection: Rgb,
     pub selection_foreground: Option<Rgb>,
     pub ansi: [Rgb; 16],
+    pub tab_bar_background: Option<Rgb>,
+    pub tab_active_background: Option<Rgb>,
+    pub tab_foreground: Option<Rgb>,
+    pub tab_inactive_foreground: Option<Rgb>,
+    pub tab_border: Option<Rgb>,
+    pub tab_accent: Option<Rgb>,
+}
+
+/// Window chrome colors with every unset theme value derived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UiColors {
+    pub tab_bar_background: Rgb,
+    pub tab_active_background: Rgb,
+    pub tab_foreground: Rgb,
+    pub tab_inactive_foreground: Rgb,
+    pub tab_border: Rgb,
+    pub tab_accent: Rgb,
+}
+
+const BLACK: Rgb = rgb(0x0000_0000);
+const WHITE: Rgb = rgb(0x00ff_ffff);
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the rounded value is clamped to the u8 range"
+)]
+fn mix(from: Rgb, to: Rgb, amount: f32) -> Rgb {
+    let channel = |from: u8, to: u8| {
+        let from = f32::from(from);
+        (from + (f32::from(to) - from) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgb {
+        red: channel(from.red, to.red),
+        green: channel(from.green, to.green),
+        blue: channel(from.blue, to.blue),
+    }
+}
+
+fn luminance(color: Rgb) -> f32 {
+    (0.2126 * f32::from(color.red)
+        + 0.7152 * f32::from(color.green)
+        + 0.0722 * f32::from(color.blue))
+        / 255.0
 }
 
 impl Default for Theme {
@@ -292,6 +381,12 @@ impl Default for Theme {
             cursor: rgb(0x00ff_ffff),
             selection: rgb(0x0026_4f78),
             selection_foreground: None,
+            tab_bar_background: Some(rgb(0x0016_1719)),
+            tab_active_background: Some(rgb(0x0028_2a2e)),
+            tab_foreground: Some(rgb(0x00c5_c8c6)),
+            tab_inactive_foreground: Some(rgb(0x0096_9896)),
+            tab_border: Some(rgb(0x002a_2c30)),
+            tab_accent: Some(rgb(0x0081_a2be)),
             ansi: [
                 rgb(0x001d_1f21),
                 rgb(0x00cc_6666),
@@ -315,6 +410,43 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Resolves chrome colors, deriving any value the theme does not set.
+    #[must_use]
+    pub fn ui(&self) -> UiColors {
+        let background = self.background;
+        let light = luminance(background) > 0.5;
+        let bar = self.tab_bar_background.unwrap_or_else(|| {
+            if light {
+                mix(background, BLACK, 0.07)
+            } else if luminance(background) < 0.04 {
+                // A near-black background cannot get darker.
+                mix(background, self.foreground, 0.08)
+            } else {
+                mix(background, BLACK, 0.18)
+            }
+        });
+        UiColors {
+            tab_bar_background: bar,
+            tab_active_background: self.tab_active_background.unwrap_or_else(
+                || {
+                    if light {
+                        mix(background, WHITE, 0.6)
+                    } else {
+                        mix(background, self.foreground, 0.1)
+                    }
+                },
+            ),
+            tab_foreground: self.tab_foreground.unwrap_or(self.foreground),
+            tab_inactive_foreground: self
+                .tab_inactive_foreground
+                .unwrap_or_else(|| mix(self.foreground, bar, 0.45)),
+            tab_border: self
+                .tab_border
+                .unwrap_or_else(|| mix(bar, self.foreground, 0.1)),
+            tab_accent: self.tab_accent.unwrap_or(self.ansi[4]),
+        }
+    }
+
     #[must_use]
     pub fn indexed(&self, index: u8) -> Rgb {
         if let Some(color) = self.ansi.get(usize::from(index)) {
@@ -387,6 +519,8 @@ pub struct RawConfig {
     pub font: RawFont,
     #[serde(default)]
     pub window: WindowConfig,
+    #[serde(default)]
+    pub tabs: TabsConfig,
     #[serde(default)]
     pub updates: UpdateConfig,
     #[serde(default)]
@@ -603,6 +737,21 @@ impl RawConfig {
                 ));
             }
         }
+        if !self.tabs.min_width.is_finite() || self.tabs.min_width < 48.0 {
+            return Err(ConfigError::Invalid(
+                "tabs.min_width must be at least 48 points",
+            ));
+        }
+        if !self.tabs.max_width.is_finite() || self.tabs.max_width > 600.0 {
+            return Err(ConfigError::Invalid(
+                "tabs.max_width must be at most 600 points",
+            ));
+        }
+        if self.tabs.min_width > self.tabs.max_width {
+            return Err(ConfigError::Invalid(
+                "tabs.min_width must not exceed tabs.max_width",
+            ));
+        }
         if self.updates.check_interval_hours == Some(0) {
             return Err(ConfigError::Invalid(
                 "updates.check_interval_hours must be at least 1",
@@ -644,6 +793,167 @@ mod update_tests {
                 .expect_err("zero interval must fail")
                 .to_string(),
             "updates.check_interval_hours must be at least 1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod theme_ui_tests {
+    use super::*;
+
+    fn unset(background: u32, foreground: u32) -> Theme {
+        Theme {
+            background: rgb(background),
+            foreground: rgb(foreground),
+            tab_bar_background: None,
+            tab_active_background: None,
+            tab_foreground: None,
+            tab_inactive_foreground: None,
+            tab_border: None,
+            tab_accent: None,
+            ..Theme::default()
+        }
+    }
+
+    #[test]
+    fn dark_themes_derive_a_darker_bar_and_a_lighter_active_tab() {
+        let theme = unset(0x001a_1b26, 0x00c0_caf5);
+        let ui = theme.ui();
+        assert!(luminance(ui.tab_bar_background) < luminance(theme.background));
+        assert!(
+            luminance(ui.tab_active_background) > luminance(theme.background)
+        );
+        let inactive = luminance(ui.tab_inactive_foreground);
+        assert!(inactive > luminance(ui.tab_bar_background));
+        assert!(inactive < luminance(theme.foreground));
+        assert_ne!(ui.tab_border, ui.tab_bar_background);
+        assert_eq!(ui.tab_foreground, theme.foreground);
+        assert_eq!(ui.tab_accent, theme.ansi[4]);
+    }
+
+    #[test]
+    fn light_and_black_themes_keep_the_bar_distinct_from_the_terminal() {
+        let light = unset(0x00ef_f1f5, 0x004c_4f69);
+        let ui = light.ui();
+        assert!(luminance(ui.tab_bar_background) < luminance(light.background));
+        assert!(
+            luminance(ui.tab_active_background) > luminance(light.background)
+        );
+        let black = unset(0x0000_0000, 0x00ff_ffff);
+        assert!(
+            luminance(black.ui().tab_bar_background)
+                > luminance(black.background)
+        );
+    }
+
+    #[test]
+    fn explicit_colors_win_and_derived_colors_follow_an_explicit_bar() {
+        let mut theme = unset(0x001a_1b26, 0x00c0_caf5);
+        let derived = theme.ui();
+        theme.tab_bar_background = Some(rgb(0x0030_3030));
+        theme.tab_accent = Some(rgb(0x0012_3456));
+        let ui = theme.ui();
+        assert_eq!(ui.tab_bar_background, rgb(0x0030_3030));
+        assert_eq!(ui.tab_accent, rgb(0x0012_3456));
+        assert_ne!(ui.tab_inactive_foreground, derived.tab_inactive_foreground);
+        assert_ne!(ui.tab_border, derived.tab_border);
+    }
+
+    #[test]
+    fn definitions_apply_and_validate_every_ui_color() {
+        let definition: ThemeDefinition = toml::from_str(
+            "tab_bar_background = '#010203'\ntab_active_background = '#040506'\ntab_foreground = '#070809'\ntab_inactive_foreground = '#0a0b0c'\ntab_border = '#0d0e0f'\ntab_accent = '#101112'",
+        )
+        .expect("ui colors");
+        let ui = definition.apply(unset(0, 0x00ff_ffff)).unwrap().ui();
+        assert_eq!(
+            ui,
+            UiColors {
+                tab_bar_background: rgb(0x0001_0203),
+                tab_active_background: rgb(0x0004_0506),
+                tab_foreground: rgb(0x0007_0809),
+                tab_inactive_foreground: rgb(0x000a_0b0c),
+                tab_border: rgb(0x000d_0e0f),
+                tab_accent: rgb(0x0010_1112),
+            }
+        );
+        let invalid: ThemeDefinition =
+            toml::from_str("tab_border = '#12345z'").expect("string color");
+        assert!(invalid.apply(Theme::default()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tabs_tests {
+    use super::*;
+
+    #[test]
+    fn tab_settings_use_settled_defaults() {
+        let configured: RawConfig = toml::from_str("").expect("default config");
+        assert_eq!(configured.tabs, TabsConfig::default());
+    }
+
+    #[test]
+    fn tab_settings_accept_every_override() {
+        let configured: RawConfig = toml::from_str(
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+        )
+        .expect("tab settings");
+        configured.validate_values().expect("valid tab settings");
+        assert_eq!(
+            configured.tabs,
+            TabsConfig {
+                position: TabPosition::Right,
+                always_show: true,
+                auto_hide_in_fullscreen: true,
+                style: TabStyle::Pill,
+                width: TabWidth::Fit,
+                min_width: 72.0,
+                max_width: 480.0,
+            }
+        );
+    }
+
+    #[test]
+    fn tab_minimum_width_accepts_48_and_rejects_smaller_values() {
+        let boundary: RawConfig =
+            toml::from_str("[tabs]\nmin_width = 48").expect("minimum boundary");
+        boundary.validate_values().expect("minimum is inclusive");
+        for value in ["47.99", "nan"] {
+            let configured: RawConfig =
+                toml::from_str(&format!("[tabs]\nmin_width = {value}"))
+                    .expect("numeric minimum");
+            assert_eq!(
+                configured.validate_values().unwrap_err().to_string(),
+                "tabs.min_width must be at least 48 points"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_maximum_width_accepts_600_and_rejects_larger_values() {
+        let boundary: RawConfig = toml::from_str("[tabs]\nmax_width = 600")
+            .expect("maximum boundary");
+        boundary.validate_values().expect("maximum is inclusive");
+        for value in ["600.01", "inf"] {
+            let configured: RawConfig =
+                toml::from_str(&format!("[tabs]\nmax_width = {value}"))
+                    .expect("numeric maximum");
+            assert_eq!(
+                configured.validate_values().unwrap_err().to_string(),
+                "tabs.max_width must be at most 600 points"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_minimum_width_cannot_exceed_maximum_width() {
+        let configured: RawConfig =
+            toml::from_str("[tabs]\nmin_width = 241\nmax_width = 240")
+                .expect("ordered bounds");
+        assert_eq!(
+            configured.validate_values().unwrap_err().to_string(),
+            "tabs.min_width must not exceed tabs.max_width"
         );
     }
 }
@@ -724,6 +1034,12 @@ pub struct ThemeDefinition {
     pub ansi_bright_magenta: Option<String>,
     pub ansi_bright_cyan: Option<String>,
     pub ansi_bright_white: Option<String>,
+    pub tab_bar_background: Option<String>,
+    pub tab_active_background: Option<String>,
+    pub tab_foreground: Option<String>,
+    pub tab_inactive_foreground: Option<String>,
+    pub tab_border: Option<String>,
+    pub tab_accent: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -741,6 +1057,24 @@ impl ThemeDefinition {
     pub fn apply(&self, mut theme: Theme) -> Result<Theme, ConfigError> {
         if let Some(value) = &self.selection_foreground {
             theme.selection_foreground = Some(parse_color(value)?);
+        }
+        for (target, value) in [
+            (&mut theme.tab_bar_background, &self.tab_bar_background),
+            (
+                &mut theme.tab_active_background,
+                &self.tab_active_background,
+            ),
+            (&mut theme.tab_foreground, &self.tab_foreground),
+            (
+                &mut theme.tab_inactive_foreground,
+                &self.tab_inactive_foreground,
+            ),
+            (&mut theme.tab_border, &self.tab_border),
+            (&mut theme.tab_accent, &self.tab_accent),
+        ] {
+            if let Some(value) = value {
+                *target = Some(parse_color(value)?);
+            }
         }
         for (target, value) in [
             (&mut theme.foreground, &self.foreground),

@@ -177,12 +177,12 @@ Window and tab shortcuts:
 | Select last tab | `Cmd-9` | `Alt-9` |
 
 The tab bar is hidden with one tab by default. Set
-`[window].always_show_tab_bar = true` to keep it visible. With two or more tabs,
+`[tabs].always_show = true` to keep it visible. With two or more tabs,
 it reserves space beside the terminal.
 
-Set `[window].auto_hide_tab_bar_in_fullscreen = true` to reveal the bar only
+Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only
 when the pointer reaches its attached edge in fullscreen, even with one tab.
-Fullscreen auto-hide overrides `always_show_tab_bar` and reserves no bar space,
+Fullscreen auto-hide overrides `always_show` and reserves no bar space,
 regardless of tab count. It slides over the terminal without changing the grid,
 and hides after the pointer leaves. Tab dragging and sidebar resizing keep it
 open. A top bar can be revealed from the macOS notch-height region and appears
@@ -191,14 +191,30 @@ also reveal the fullscreen overlay for one second before the normal dismissal
 delay. Repeated activity restarts the hold.
 Both settings default to `false` and take effect on config reload.
 
-Set `[window].tab_position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. Horizontal tabs divide the available width equally until their
-120-pixel minimum, then scroll horizontally. Vertical tabs stay 32 pixels tall
-and fill the sidebar width. Drag the sidebar's inner edge to resize it between
-140 and 400 logical pixels, capped at half the window width. Each window keeps
+Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
+default. With the default `width = "fill"`, horizontal tabs divide the
+available width equally until their 120-pixel minimum, then scroll
+horizontally. Vertical tabs stay 32 pixels tall and fill the sidebar width.
+Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
+capped at half the window width. Each window keeps
 its preferred width for its lifetime, including through temporary window
 shrinking. The full-width vertical new-tab button follows the last tab and
 stays visible at the bottom when tabs overflow.
+
+`[tabs].style = "strip"`, the default, merges the active tab into the terminal
+with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
+dividers, with an accent bar inside the active pill's left edge. Left and right
+placement ignore `style` and use one row style with the same inset accent bar.
+While the bar is visible or revealing, the macOS titlebar and the non-native
+fullscreen safe area above a notch use the tab bar background; otherwise they
+use the terminal background.
+
+`[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
+`min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
+logical points). The bar then shrinks to its tabs, so the new-tab button follows
+the last tab until the bar overflows and scrolls. Render measures titles and
+caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
+drop slots. Vertical tabs ignore `width`.
 
 Trackpad and wheel scrolling move the strip without selecting a tab. Floating
 arrows indicate hidden content and animate scrolling when clicked. Explicit

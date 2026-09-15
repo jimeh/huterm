@@ -32,6 +32,7 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
+use huterm_config::TabWidth;
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HostEffectRecipientOptions, MuxError, OpenedTab,
@@ -40,13 +41,17 @@ use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
     catalog, validate, validate_supplied,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+mod tab_bar;
 mod tab_strip;
 pub(super) mod tab_visibility;
-use tab_strip::TabStrip;
+use crate::assets::Icon;
+use tab_bar::{TabColors, TabItem, icon_element, top_chrome_uses_bar};
+use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
 const CONTROL_SIZE: Pixels = px(28.0);
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
@@ -767,7 +772,7 @@ pub(super) fn run_with_startup(
     }
     let runtime = Arc::new(DesktopRuntime::default());
     let app_runtime = Arc::clone(&runtime);
-    let application = Application::new();
+    let application = crate::assets::application();
     application.on_reopen(|cx| {
         if cx.windows().is_empty() {
             open_window(cx);
@@ -1013,9 +1018,7 @@ fn initial_window_size(
     size(
         metrics.cell_width * f32::from(INITIAL_COLUMNS)
             + px(config.window.padding_x * 2.0)
-            + if config.window.always_show_tab_bar
-                && config.window.tab_position.vertical()
-            {
+            + if config.tabs.always_show && config.tabs.position.vertical() {
                 SIDEBAR_WIDTH
             } else {
                 px(0.0)
@@ -1023,9 +1026,7 @@ fn initial_window_size(
         metrics.cell_height * f32::from(INITIAL_ROWS)
             + px(config.window.padding_y * 2.0)
             + titlebar_inset(cfg!(target_os = "macos"), false)
-            + if !config.window.always_show_tab_bar
-                || config.window.tab_position.vertical()
-            {
+            + if !config.tabs.always_show || config.tabs.position.vertical() {
                 px(0.0)
             } else {
                 TAB_HEIGHT
@@ -1134,6 +1135,8 @@ fn open_window_with_profile(
                 active: None,
                 history: Vec::new(),
                 tab_scroll: px(0.0),
+                tab_widths: Vec::new(),
+                title_widths: HashMap::new(),
                 scroll_target: None,
                 last_scroll: Instant::now(),
                 sidebar_width: SIDEBAR_WIDTH,
@@ -1258,13 +1261,21 @@ struct TabView {
 
 impl TabView {
     fn title(&self, cx: &App) -> String {
-        let terminal = self.view.read(cx);
-        let title = self.record.display_name(&terminal.title).to_owned();
-        if terminal.exited {
+        let (title, exited) = self.label(cx);
+        if exited {
             format!("{title} · exited")
         } else {
             title
         }
+    }
+
+    /// Returns the display name without status text, and whether it exited.
+    fn label(&self, cx: &App) -> (String, bool) {
+        let terminal = self.view.read(cx);
+        (
+            self.record.display_name(&terminal.title).to_owned(),
+            terminal.exited,
+        )
     }
 }
 
@@ -1288,6 +1299,10 @@ struct WorkspaceView {
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     reorder: Option<TabReorder>,
+    /// Fit tab widths measured during the last render.
+    tab_widths: Vec<Pixels>,
+    /// Title text widths by title, cleared on config reload.
+    title_widths: HashMap<String, Pixels>,
     config: Config,
     family: String,
     metrics: GridMetrics,
@@ -1537,9 +1552,9 @@ impl WorkspaceView {
     fn presentation(&self) -> Presentation {
         Presentation::resolve(
             self.tabs.len(),
-            self.config.window.always_show_tab_bar,
+            self.config.tabs.always_show,
             self.tab_fullscreen_context(),
-            self.config.window.auto_hide_tab_bar_in_fullscreen,
+            self.config.tabs.auto_hide_in_fullscreen,
         )
     }
 
@@ -1547,13 +1562,13 @@ impl WorkspaceView {
         ChromeLayout::with_safe_area(
             window.viewport_size(),
             terminal_top(self.chrome_hidden()),
-            self.config.window.tab_position,
+            self.config.tabs.position,
             self.sidebar_width,
             self.fullscreen_insets,
         )
         .present(
             self.presentation(),
-            self.config.window.tab_position,
+            self.config.tabs.position,
             self.reveal.progress,
         )
     }
@@ -1601,11 +1616,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let position = self.config.window.tab_position;
+        let position = self.config.tabs.position;
         let context = (
             position,
             self.tab_fullscreen_context(),
-            self.config.window.auto_hide_tab_bar_in_fullscreen,
+            self.config.tabs.auto_hide_in_fullscreen,
         );
         if self.reveal_context != Some(context) {
             self.reveal = Reveal::default();
@@ -1659,12 +1674,27 @@ impl WorkspaceView {
     }
 
     fn tab_strip(&self, window: &Window) -> TabStrip {
-        let position = self.config.window.tab_position;
+        let tabs = self.config.tabs;
         let layout = self.chrome_layout(window);
+        let extents = if tabs.width == TabWidth::Fit {
+            // Render measures titles; tabs added since then use the minimum.
+            TabExtents::Fit(
+                (0..self.tabs.len())
+                    .map(|index| {
+                        self.tab_widths
+                            .get(index)
+                            .copied()
+                            .unwrap_or(px(tabs.min_width))
+                    })
+                    .collect(),
+            )
+        } else {
+            TabExtents::Uniform(self.tabs.len())
+        };
         TabStrip::new(
             layout.tabs,
-            position.vertical(),
-            self.tabs.len(),
+            tabs.position.vertical(),
+            extents,
             self.tab_scroll,
         )
     }
@@ -1697,7 +1727,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let desired = if self.config.window.tab_position == TabPosition::Left {
+        let desired = if self.config.tabs.position == TabPosition::Left {
             pointer.x
         } else {
             window.viewport_size().width - pointer.x
@@ -3153,7 +3183,7 @@ impl WorkspaceView {
             workspace: self.workspace,
             active: self.active,
             bounds: self.bounds,
-            tab_position: self.config.window.tab_position,
+            tab_position: self.config.tabs.position,
             sidebar_width: self.sidebar_width,
             tab_scroll: self.tab_scroll,
         })
@@ -3417,6 +3447,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.resizing_sidebar = false;
                             view.scroll_target = None;
                             view.config = config.clone();
+                            view.title_widths.clear();
                             view.fullscreen.set_default(
                                 config.window.macos_fullscreen_mode,
                             );
@@ -3436,6 +3467,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                                     view.font_size = metrics.font_size;
                                     view.metrics = metrics;
                                     view.window_config = config.window;
+                                    view.tabs_config = config.tabs;
                                     view.reload_terminal_config(
                                         config.terminal,
                                         cx,
@@ -3524,6 +3556,28 @@ impl ChromeLayout {
         self
     }
 
+    /// The one-point line where the tab bar meets the terminal.
+    fn tab_border(&self, position: TabPosition) -> Bounds<Pixels> {
+        let tabs = self.tabs;
+        let line = px(1.0);
+        match position {
+            TabPosition::Top => Bounds::new(
+                point(tabs.origin.x, tabs.bottom() - line),
+                size(tabs.size.width, line),
+            ),
+            TabPosition::Bottom => {
+                Bounds::new(tabs.origin, size(tabs.size.width, line))
+            }
+            TabPosition::Left => Bounds::new(
+                point(tabs.right() - line, tabs.origin.y),
+                size(line, tabs.size.height),
+            ),
+            TabPosition::Right => {
+                Bounds::new(tabs.origin, size(line, tabs.size.height))
+            }
+        }
+    }
+
     fn sidebar_resize_handle(&self, position: TabPosition) -> Bounds<Pixels> {
         let width = px(6.0).min(self.tabs.size.width);
         let x = self.tabs.origin.x
@@ -3600,7 +3654,6 @@ impl ChromeLayout {
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
-        clippy::cast_precision_loss,
         reason = "window chrome composes tab controls and close confirmation"
     )]
     fn render(
@@ -3608,20 +3661,22 @@ impl Render for WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        self.measure_tab_widths(window, cx);
         self.sync_tab_layout(window, cx);
         if self.reveal.progress > 0.0 && self.reveal.progress < 1.0 {
             window.request_animation_frame();
         }
-        let position = self.config.window.tab_position;
+        let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
+        let colors = TabColors::new(&self.config.theme);
         let mut root = div()
             .size_full()
             .relative()
             .bg(background)
             .text_color(foreground)
-            .text_size(px(13.0))
+            .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
             .track_focus(&self.focus)
             .on_drag_move::<gpui::ExternalPaths>(|_, window, cx| {
@@ -3721,19 +3776,33 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
-        if terminal_top(self.chrome_hidden()) > px(0.0) {
+        let titlebar = terminal_top(self.chrome_hidden());
+        let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
+        if top_chrome > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(terminal_top(self.chrome_hidden()))
-                    .pl(px(84.0))
-                    .flex()
-                    .items_center()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child("Huterm"),
+                    .h(top_chrome)
+                    .bg(
+                        if top_chrome_uses_bar(
+                            self.presentation(),
+                            self.reveal.progress,
+                        ) {
+                            colors.bar
+                        } else {
+                            background
+                        },
+                    )
+                    .when(titlebar > px(0.0), |bar| {
+                        bar.pl(px(84.0))
+                            .flex()
+                            .items_center()
+                            .window_control_area(WindowControlArea::Drag)
+                            .child("Huterm")
+                    }),
             );
         }
         if let Some(tab) = self.active_view() {
@@ -3777,8 +3846,18 @@ impl Render for WorkspaceView {
                     .top(layout.tabs.origin.y - clip.origin.y)
                     .w(layout.tabs.size.width)
                     .h(layout.tabs.size.height)
-                    .bg(background)
+                    .bg(colors.bar)
                     .occlude(),
+            );
+            let edge = layout.tab_border(position);
+            chrome = chrome.child(
+                div()
+                    .absolute()
+                    .left(edge.origin.x - clip.origin.x)
+                    .top(edge.origin.y - clip.origin.y)
+                    .w(edge.size.width)
+                    .h(edge.size.height)
+                    .bg(colors.border),
             );
             let mut bar = div()
                 .id("tab-strip")
@@ -3789,7 +3868,6 @@ impl Render for WorkspaceView {
                 .w(strip.bounds.size.width)
                 .h(strip.bounds.size.height)
                 .overflow_hidden()
-                .bg(background)
                 .on_scroll_wheel(cx.listener(
                     move |view, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(px(32.0));
@@ -3804,84 +3882,34 @@ impl Render for WorkspaceView {
                         cx.stop_propagation();
                     },
                 ));
+            let style = self.config.tabs.style;
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
-                let id = tab.id;
-                let title = tab.title(cx);
-                bar = bar.child(
-                    div()
-                        .id(("tab", id.get()))
-                        .absolute()
-                        .left(if vertical {
-                            px(0.0)
-                        } else {
-                            strip.extent * index as f32 - strip.offset
-                        })
-                        .top(if vertical {
-                            strip.extent * index as f32 - strip.offset
-                        } else {
-                            px(0.0)
-                        })
-                        .flex_shrink_0()
-                        .w(if vertical {
-                            layout.tabs.size.width
-                        } else {
-                            strip.extent
-                        })
-                        .h(TAB_HEIGHT)
-                        .flex()
-                        .items_center()
-                        .px_2()
-                        .gap_2()
-                        .overflow_hidden()
-                        .cursor_pointer()
-                        .when(Some(id) == self.active, |tab| {
-                            tab.bg(foreground.opacity(0.12))
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(
-                                move |view,
-                                      event: &MouseDownEvent,
-                                      window,
-                                      cx| {
-                                    view.begin_reorder(
-                                        id,
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                },
-                            ),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_ellipsis()
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .id(("close-tab", id.get()))
-                                .flex_shrink_0()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation();
-                                })
-                                .on_click(cx.listener(
-                                    move |view, _, window, cx| {
-                                        cx.stop_propagation();
-                                        view.request_close(
-                                            CloseTarget::Tab(id),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .child("×"),
-                        ),
-                );
+                let (title, exited) = tab.label(cx);
+                let offset = strip.start(index) - strip.offset;
+                let bounds = if vertical {
+                    Bounds::new(
+                        point(px(0.0), offset),
+                        size(layout.tabs.size.width, TAB_HEIGHT),
+                    )
+                } else {
+                    Bounds::new(
+                        point(offset, px(0.0)),
+                        size(strip.tab_extent(index), TAB_HEIGHT),
+                    )
+                };
+                let item = TabItem {
+                    id: tab.id,
+                    index,
+                    title,
+                    exited,
+                    active: Some(tab.id) == self.active,
+                    follows_active: index > 0
+                        && Some(self.tabs[index - 1].id) == self.active,
+                };
+                bar = bar.child(Self::tab_element(
+                    &item, bounds, position, style, colors, cx,
+                ));
             }
             for forward in [false, true] {
                 if (forward && strip.offset < strip.max_offset())
@@ -3913,9 +3941,12 @@ impl Render for WorkspaceView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(background)
+                            .group("scroll-tabs")
+                            .bg(colors.bar)
+                            .hover(|style| {
+                                style.bg(colors.foreground.opacity(0.06))
+                            })
                             .rounded_md()
-                            .opacity(0.9)
                             .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
@@ -3938,21 +3969,30 @@ impl Render for WorkspaceView {
                                     cx.stop_propagation();
                                 },
                             ))
-                            .child(if vertical {
-                                if forward { "⌄" } else { "⌃" }
-                            } else if forward {
-                                "›"
-                            } else {
-                                "‹"
-                            }),
+                            .child(
+                                icon_element(
+                                    match (vertical, forward) {
+                                        (true, true) => Icon::ChevronDown,
+                                        (true, false) => Icon::ChevronUp,
+                                        (false, true) => Icon::ChevronRight,
+                                        (false, false) => Icon::ChevronLeft,
+                                    },
+                                    colors.inactive,
+                                )
+                                .group_hover("scroll-tabs", |style| {
+                                    style.text_color(colors.foreground)
+                                }),
+                            ),
                     );
                 }
             }
             chrome = chrome.child(bar).child(
                 div()
                     .id("new-tab")
+                    .group("new-tab")
                     .occlude()
-                    .bg(background)
+                    .hover(|style| style.bg(colors.foreground.opacity(0.06)))
+                    .rounded_md()
                     .absolute()
                     .left(
                         layout.tabs.origin.x - clip.origin.x
@@ -3986,7 +4026,12 @@ impl Render for WorkspaceView {
                             cx.notify();
                         }
                     }))
-                    .child("+"),
+                    .child(
+                        icon_element(Icon::Plus, colors.inactive)
+                            .group_hover("new-tab", |style| {
+                                style.text_color(colors.foreground)
+                            }),
+                    ),
             );
             if vertical {
                 let handle = layout.sidebar_resize_handle(position);
@@ -4015,7 +4060,12 @@ impl Render for WorkspaceView {
             && drag.dragging
         {
             let marker = strip.marker(strip.slot(drag.pointer));
-            let preview = strip.preview(drag.pointer);
+            let source = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == drag.source.tab)
+                .unwrap_or_default();
+            let preview = strip.preview(drag.pointer, source);
             let title = self
                 .tabs
                 .iter()
@@ -4030,11 +4080,15 @@ impl Render for WorkspaceView {
                     .w(preview.size.width)
                     .h(preview.size.height)
                     .overflow_hidden()
-                    .px_2()
-                    .bg(background)
+                    .flex()
+                    .items_center()
+                    .px(px(12.0))
+                    .rounded(px(7.0))
+                    .bg(colors.active)
                     .border_1()
-                    .border_color(foreground.opacity(0.5))
-                    .opacity(0.8)
+                    .border_color(colors.border)
+                    .text_color(colors.foreground)
+                    .opacity(0.9)
                     .child(title),
             );
             root = root.child(
@@ -4044,7 +4098,7 @@ impl Render for WorkspaceView {
                     .top(marker.origin.y)
                     .w(marker.size.width)
                     .h(marker.size.height)
-                    .bg(foreground),
+                    .bg(colors.accent),
             );
         }
         if let Some(status) = &self.status {
@@ -4398,12 +4452,17 @@ mod tests {
                 px(32.0),
                 position,
             );
-            let strip =
-                TabStrip::new(layout.tabs, position.vertical(), 8, px(0.0));
+            let strip = TabStrip::new(
+                layout.tabs,
+                position.vertical(),
+                TabExtents::Uniform(8),
+                px(0.0),
+            );
+            let extent = strip.tab_extent(0);
             let pointer = if strip.vertical {
-                strip.bounds.origin + point(px(20.0), strip.extent * 1.1)
+                strip.bounds.origin + point(px(20.0), extent * 1.1)
             } else {
-                strip.bounds.origin + point(strip.extent * 1.1, px(10.0))
+                strip.bounds.origin + point(extent * 1.1, px(10.0))
             };
             assert_eq!(strip.slot(pointer), 1, "{position:?}");
             for excursion in [-10_000.0, 10_000.0] {
@@ -4436,8 +4495,8 @@ mod tests {
                     }
                 );
                 for bounds in [
-                    strip.preview(beyond),
-                    strip.preview(perpendicular),
+                    strip.preview(beyond, 0),
+                    strip.preview(perpendicular, 0),
                     strip.marker(slot),
                 ] {
                     assert!(
