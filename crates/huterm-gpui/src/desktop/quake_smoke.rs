@@ -311,7 +311,7 @@ impl gpui::Render for HiddenProbe {
     }
 }
 fn run_hidden_probe(directory: PathBuf) {
-    gpui::Application::new().run(move |cx| {
+    crate::assets::application().run(move |cx| {
         let grab = std::env::var_os("HUTERM_QUAKE_GRAB_PROBE").map(|_| {
             let manager = global_hotkey::GlobalHotKeyManager::new()
                 .expect("native external grab manager");

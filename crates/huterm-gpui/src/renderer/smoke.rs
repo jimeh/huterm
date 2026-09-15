@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Application, Bounds, Context, Render, Window, WindowBounds,
-    WindowOptions, canvas, div, point, prelude::*, px, size,
+    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, canvas,
+    div, point, prelude::*, px, size,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellStyle, GridSize, TerminalId,
@@ -19,7 +19,7 @@ use crate::config::Theme;
 
 pub(crate) fn run() {
     let hold = std::env::var_os("HUTERM_RENDERER_HOLD").is_some();
-    Application::new().run(move |cx| {
+    crate::assets::application().run(move |cx| {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(

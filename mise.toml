@@ -119,7 +119,7 @@ fi
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check"]
+depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, and architecture checks"
@@ -310,6 +310,8 @@ for notice in catppuccin folke dracula nordtheme binaryify chriskempson; do
 done
 assert_file "$bundle/Contents/Resources/ghostty/ghostty-MIT.txt" "Ghostty license"
 assert_file "$bundle/Contents/Resources/terminal-graphics/LICENSE-Ghostty" "terminal graphics license"
+assert_file "$bundle/Contents/Resources/lucide/README.md" "Lucide provenance"
+assert_file "$bundle/Contents/Resources/lucide/LICENSE" "Lucide license"
 if [ ! -f "$bundle/Contents/Resources/terminfo/x/xterm-huterm" ] && [ ! -f "$bundle/Contents/Resources/terminfo/78/xterm-huterm" ]; then
   echo "package verification failed: missing Huterm terminfo entry" >&2
   exit 1
@@ -489,6 +491,16 @@ run = ["bun scripts/icons.ts generate", "bun scripts/linux-icon.ts generate"]
 [tasks."icons:check"]
 description = "Verify icon source and generated asset hashes without Apple tools"
 run = ["bun scripts/icons.ts check", "bun scripts/linux-icon.ts check"]
+
+[tasks."ui-icons:generate"]
+description = "Copy the pinned Lucide SVGs into the GPUI asset directory"
+depends = ["scripts:install"]
+run = "bun scripts/ui-icons.ts generate"
+
+[tasks."ui-icons:check"]
+description = "Verify committed GPUI SVGs against the pinned Lucide package"
+depends = ["scripts:install"]
+run = "bun scripts/ui-icons.ts check"
 
 [tasks."package:linux"]
 description = "Build and verify native Linux AppImage and tarball artifacts"

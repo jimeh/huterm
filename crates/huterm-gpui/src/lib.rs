@@ -3,6 +3,8 @@
 #![deny(missing_docs)]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod assets;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod commands;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod config;
@@ -39,6 +41,14 @@ mod ui;
 
 /// Stable application identifier used by runtime diagnostics and packaging.
 pub const APP_ID: &str = "app.huterm.dev";
+
+/// Creates the GPUI application with Huterm's embedded assets installed.
+#[doc(hidden)]
+#[must_use]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn application_with_assets() -> gpui::Application {
+    assets::application()
+}
 
 /// Starts the Huterm desktop client.
 ///
