@@ -153,9 +153,9 @@ Move tab item rendering out of the inline `render` block into a style-aware
 helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
 
 - **Strip.** The bar uses `tab_bar_background` with a `tab_border` edge. The
-  active tab uses the terminal background with a 2-point `tab_accent` line on the
-  edge that touches the terminal. Inactive tabs are separated by short
-  `tab_border` dividers.
+  active tab uses the terminal background with a 2-point `tab_accent` line on
+  its outer edge, away from the terminal, as in the mock-up. Inactive tabs are
+  separated by short `tab_border` dividers.
 - **Pill.** Tabs render as 26-point rounded pills centered in the 32-point bar.
   Each of the first nine tabs shows an index badge; the active badge uses
   `tab_accent`. The active pill uses `tab_active_background`.
