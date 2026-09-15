@@ -232,8 +232,9 @@ bottom. Padding accepts values from 0 to 256 points.
 
 `style` selects Strip or Pill tabs for top and bottom placement; left and right
 placement always use one row style. Themes color the tab bar through their tab
-chrome keys. The `width`, `min_width`, and `max_width` tab settings are
-validated but do not change rendering yet.
+chrome keys. `width = "fill"` shares the bar equally; `"fit"` sizes top and
+bottom tabs to their titles between `min_width` and `max_width` logical points,
+each accepting 48 through 600.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores
