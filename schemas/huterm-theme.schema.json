@@ -102,6 +102,30 @@
         "selection_foreground": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
+        },
+        "tab_accent": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_active_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_bar_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_border": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_inactive_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
         }
       },
       "type": "object"

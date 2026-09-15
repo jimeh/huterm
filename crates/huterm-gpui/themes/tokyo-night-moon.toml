@@ -22,4 +22,11 @@ ansi_bright_blue = "#9ab8ff"
 ansi_bright_magenta = "#caabff"
 ansi_bright_cyan = "#b2ebff"
 ansi_bright_white = "#c8d3f5"
+# Huterm window chrome colors, chosen to match this palette.
+tab_bar_background = "#1e2030"
+tab_active_background = "#2f334d"
+tab_foreground = "#c8d3f5"
+tab_inactive_foreground = "#828bb8"
+tab_border = "#2c2f44"
+tab_accent = "#82aaff"
 
