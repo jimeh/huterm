@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, Bounds, ClipboardItem, Context, DispatchPhase,
-    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
-    Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, PromptLevel, Render, ScrollDelta, ScrollWheelEvent,
-    Subscription, SystemMenuType, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle, Focusable,
+    KeyContext, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
+    SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,

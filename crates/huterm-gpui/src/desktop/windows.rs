@@ -767,7 +767,7 @@ pub(super) fn run_with_startup(
     }
     let runtime = Arc::new(DesktopRuntime::default());
     let app_runtime = Arc::clone(&runtime);
-    let application = Application::new();
+    let application = crate::assets::application();
     application.on_reopen(|cx| {
         if cx.windows().is_empty() {
             open_window(cx);
