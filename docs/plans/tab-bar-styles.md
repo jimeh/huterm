@@ -1,6 +1,7 @@
 # Tab bar styles
 
-Status: planned on 2026-09-15. Not yet implemented.
+Status: implemented on 2026-09-15. Linux unit, script, and fullscreen smoke
+validation passed. macOS native validation remains pending.
 
 Visual reference: the interactive
 [tab bar mock-up](https://plans.jimeh.dev/7fdnlj2dvbgvnmvnse75i52aty/huterm-tabs-workspaces-sessions.html),
@@ -268,6 +269,28 @@ horizontal edges, vertical tabs, an exited tab, overflow scrolling, hover close
 buttons, and the single-tab titlebar before and after opening a second tab.
 Check at least one light bundled theme. Linux screenshots cover the X11 path,
 where no titlebar area exists.
+
+## Implementation evidence
+
+- `mise run check` passed, including Clippy, schema and both icon checks, the
+  docs lint, and 396 script tests. `mise run test` passed every Rust suite,
+  including 339 GPUI unit tests and the PTY integration tests.
+- New unit tests cover tab config validation and moved keys, derived and
+  explicit theme chrome colors, bundled theme completeness, embedded icons,
+  tab border and top chrome rules, Fit chrome widths, and `TabStrip` geometry
+  for unequal widths.
+- `mise run smoke:linux-fullscreen` passed in the Linux container: tab
+  visibility for all positions, overlay input isolation, the new-tab click,
+  and fullscreen restoration.
+- Xvfb screenshots confirmed Strip and Pill at the top and bottom, both
+  vertical placements, hover close buttons, exited tabs, a light theme, and Fit
+  widths with varied titles.
+- The Strip accent follows the mock-up on the outer edge. Vertical tabs render
+  titles only, because no directory metadata exists yet.
+
+Not yet verified: the macOS titlebar and notch safe-area backgrounds, native
+fullscreen, and the macOS smokes. `mise run license` fails on
+RUSTSEC-2026-0285 in `rustls` 0.23.43, which is unchanged from `origin/main`.
 
 ## Risks
 
