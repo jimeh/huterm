@@ -27,6 +27,7 @@ the macOS titlebar. Everything ships in one PR.
   always_show = false
   auto_hide_in_fullscreen = false
   style = "strip"    # strip or pill; top and bottom only
+  pill_accent = false # accent bar inside the active pill
   width = "fill"     # fill or fit; top and bottom only
   min_width = 96.0   # logical points; fit only
   max_width = 240.0  # logical points; fit only
@@ -49,7 +50,9 @@ the macOS titlebar. Everything ships in one PR.
   license file permits bundling before committing any icon.
 - **Single-tab titlebar.** When the tab bar is hidden because the window has one
   tab and `always_show` is false, the titlebar area uses the terminal background.
-  When the bar is visible, the titlebar uses the tab bar background.
+  When a top, left, or right bar is visible, the titlebar uses the tab bar
+  background. A bottom bar never touches the titlebar, so the titlebar keeps
+  the terminal background.
 
 ## Non-goals
 
@@ -159,10 +162,17 @@ helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
   separated by short `tab_border` dividers.
 - **Pill.** Tabs render as 26-point rounded pills centered in the 32-point bar,
   separated by short `tab_border` dividers. The active pill uses
-  `tab_active_background` with a 3-point `tab_accent` bar inside its left edge.
-  An earlier numbered-badge design was dropped after reviewing the mock-up.
+  `tab_active_background`. With `pill_accent = true` it also carries a 3-point
+  `tab_accent` bar inside its left edge, and every pill widens its left padding
+  to keep titles aligned; the default omits the bar. An earlier numbered-badge
+  design was dropped after reviewing the mock-up.
 - **Vertical.** Rows use `tab_active_background` when active, with a 3-point
-  `tab_accent` bar inset inside the rounded row.
+  `tab_accent` bar inset inside the rounded row. When top chrome sits above
+  the column, a `tab_border` line also runs along the terminal's top edge and
+  meets the column's edge, so the titlebar and column read as one surface.
+  That corner is rounded by the smaller window padding, capped at 12 points,
+  so the arc stays inside the padding. This departs from the mock-up, whose
+  titlebar has no border.
 - **Shared.** The close button appears on hover and on the active tab. Its slot
   stays reserved so hovering never changes tab width. New-tab and overflow
   controls use the icons. Exited tabs show the exited icon and a dimmed title

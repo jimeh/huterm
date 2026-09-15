@@ -171,6 +171,8 @@ pub struct TabsConfig {
     pub always_show: bool,
     pub auto_hide_in_fullscreen: bool,
     pub style: TabStyle,
+    /// Draws the accent bar inside the active pill; ignored by other styles.
+    pub pill_accent: bool,
     pub width: TabWidth,
     pub min_width: f32,
     pub max_width: f32,
@@ -211,6 +213,7 @@ impl Default for TabsConfig {
             always_show: false,
             auto_hide_in_fullscreen: false,
             style: TabStyle::Strip,
+            pill_accent: false,
             width: TabWidth::Fill,
             min_width: 96.0,
             max_width: 240.0,
@@ -896,7 +899,7 @@ mod tabs_tests {
     #[test]
     fn tab_settings_accept_every_override() {
         let configured: RawConfig = toml::from_str(
-            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
         )
         .expect("tab settings");
         configured.validate_values().expect("valid tab settings");
@@ -907,6 +910,7 @@ mod tabs_tests {
                 always_show: true,
                 auto_hide_in_fullscreen: true,
                 style: TabStyle::Pill,
+                pill_accent: true,
                 width: TabWidth::Fit,
                 min_width: 72.0,
                 max_width: 480.0,

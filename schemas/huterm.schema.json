@@ -3543,6 +3543,11 @@
           "minimum": 48,
           "type": "number"
         },
+        "pill_accent": {
+          "default": false,
+          "description": "Draws the accent bar inside the active pill; ignored by other styles.",
+          "type": "boolean"
+        },
         "position": {
           "allOf": [
             {

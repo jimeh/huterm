@@ -220,6 +220,7 @@ position = "top" # top, bottom, left, or right
 always_show = false
 auto_hide_in_fullscreen = false
 style = "strip" # strip or pill
+pill_accent = false # accent bar inside the active pill
 width = "fill" # fill or fit
 min_width = 96.0 # logical points; fit only
 max_width = 240.0 # logical points; fit only
@@ -231,7 +232,8 @@ the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
 `style` selects Strip or Pill tabs for top and bottom placement; left and right
-placement always use one row style. Themes color the tab bar through their tab
+placement always use one row style. `pill_accent = true` draws an accent bar
+inside the active pill. Themes color the tab bar through their tab
 chrome keys. `width = "fill"` shares the bar equally; `"fit"` sizes top and
 bottom tabs to their titles between `min_width` and `max_width` logical points,
 each accepting 48 through 600.

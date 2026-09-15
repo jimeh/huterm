@@ -1,7 +1,7 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
 use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
-use huterm_config::{TabStyle, TabWidth};
+use huterm_config::{TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
 
@@ -23,9 +23,10 @@ const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
 const STRIP_PADDING_RIGHT: Pixels = px(6.0);
 const PILL_GAP: Pixels = px(6.0);
+const PILL_PADDING_LEFT: Pixels = px(9.0);
 /// Leaves room for the active pill's accent bar on every pill, so titles
 /// keep their position when the active tab changes.
-const PILL_PADDING_LEFT: Pixels = px(14.0);
+const PILL_ACCENT_PADDING_LEFT: Pixels = px(14.0);
 const PILL_PADDING_RIGHT: Pixels = px(5.0);
 const PILL_MARGIN: Pixels = px(2.0);
 /// Title text size used both to render and to measure Fit tabs.
@@ -74,12 +75,18 @@ pub(super) fn icon_element(icon: Icon, tint: Hsla) -> Svg {
         .text_color(tint)
 }
 
-/// Whether the region above the tab bar and terminal (the macOS titlebar or
-/// the display safe area above a notch) uses the tab bar background.
+/// Whether the region above the terminal (the macOS titlebar or the display
+/// safe area above a notch) uses the tab bar background. Only a bar that
+/// touches that region shares its color; a bottom bar leaves it to the
+/// terminal.
 pub(super) fn top_chrome_uses_bar(
+    position: TabPosition,
     presentation: Presentation,
     reveal_progress: f32,
 ) -> bool {
+    if position == TabPosition::Bottom {
+        return false;
+    }
     match presentation {
         Presentation::Reserved => true,
         Presentation::Overlay => reveal_progress > 0.0,
@@ -116,11 +123,11 @@ impl WorkspaceView {
     pub(super) fn tab_element(
         item: &TabItem,
         bounds: Bounds<Pixels>,
-        position: TabPosition,
-        style: TabStyle,
+        tabs: TabsConfig,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
+        let position = tabs.position;
         let id = item.id;
         let shell = div()
             .id(("tab", id.get()))
@@ -166,11 +173,13 @@ impl WorkspaceView {
         if position.vertical() {
             vertical_tab(shell, parts, item.active, colors)
         } else {
-            match style {
+            match tabs.style {
                 TabStyle::Strip => {
                     strip_tab(shell, parts, item, position, colors)
                 }
-                TabStyle::Pill => pill_tab(shell, parts, item, colors),
+                TabStyle::Pill => {
+                    pill_tab(shell, parts, item, tabs.pill_accent, colors)
+                }
             }
         }
     }
@@ -208,13 +217,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(
-                text,
-                tabs.style,
-                exited,
-                tabs.min_width,
-                tabs.max_width,
-            ));
+            widths.push(fit_tab_width(text, tabs, exited));
         }
         self.tab_widths = widths;
     }
@@ -352,12 +355,13 @@ fn strip_tab(
         .child(parts.close)
 }
 
-/// Rounded tabs separated by dividers. The active pill is raised and carries
-/// the same left accent bar as vertical rows.
+/// Rounded tabs separated by dividers. The active pill is raised and, with
+/// `accent`, carries the same left accent bar as vertical rows.
 fn pill_tab(
     shell: Stateful<Div>,
     parts: TabParts,
     item: &TabItem,
+    accent: bool,
     colors: TabColors,
 ) -> Stateful<Div> {
     let (hover, foreground) = (colors.hover(), colors.foreground);
@@ -380,10 +384,11 @@ fn pill_tab(
                 .flex()
                 .items_center()
                 .gap(PILL_GAP)
-                .pl(PILL_PADDING_LEFT)
+                .pl(pill_padding_left(accent))
                 .pr(PILL_PADDING_RIGHT)
-                .when(active, |pill| {
-                    pill.bg(colors.active).child(accent_bar(colors, px(7.0)))
+                .when(active, |pill| pill.bg(colors.active))
+                .when(active && accent, |pill| {
+                    pill.child(accent_bar(colors, px(7.0)))
                 })
                 .when(!active, |pill| {
                     pill.group_hover("tab", |style| {
@@ -396,16 +401,23 @@ fn pill_tab(
         )
 }
 
+fn pill_padding_left(accent: bool) -> Pixels {
+    if accent {
+        PILL_ACCENT_PADDING_LEFT
+    } else {
+        PILL_PADDING_LEFT
+    }
+}
+
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
 /// to the configured bounds. It mirrors the padding, gaps, and slots rendered
 /// by `strip_tab` and `pill_tab`.
 pub(super) fn fit_tab_width(
     title_width: Pixels,
-    style: TabStyle,
+    tabs: TabsConfig,
     exited: bool,
-    min_width: f32,
-    max_width: f32,
 ) -> Pixels {
+    let style = tabs.style;
     let status = if exited {
         ICON_SIZE + gap(style)
     } else {
@@ -415,14 +427,16 @@ pub(super) fn fit_tab_width(
     let chrome = match style {
         TabStyle::Strip => STRIP_PADDING_LEFT + STRIP_PADDING_RIGHT,
         TabStyle::Pill => {
-            PILL_MARGIN * 2.0 + PILL_PADDING_LEFT + PILL_PADDING_RIGHT
+            PILL_MARGIN * 2.0
+                + pill_padding_left(tabs.pill_accent)
+                + PILL_PADDING_RIGHT
         }
     } + gap(style)
         + CLOSE_SIZE
         + status;
     (title_width + chrome)
         .ceil()
-        .clamp(px(min_width), px(max_width))
+        .clamp(px(tabs.min_width), px(tabs.max_width))
 }
 
 fn gap(style: TabStyle) -> Pixels {
@@ -436,34 +450,64 @@ fn gap(style: TabStyle) -> Pixels {
 mod tests {
     use gpui::size;
 
-    use super::super::ChromeLayout;
+    use super::super::{ChromeLayout, terminal_corner_radius};
     use super::*;
+
+    fn tabs(
+        style: TabStyle,
+        pill_accent: bool,
+        min: f32,
+        max: f32,
+    ) -> TabsConfig {
+        TabsConfig {
+            style,
+            pill_accent,
+            width: TabWidth::Fit,
+            min_width: min,
+            max_width: max,
+            ..TabsConfig::default()
+        }
+    }
 
     #[test]
     fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
-        let strip =
-            fit_tab_width(px(20.0), TabStyle::Strip, false, 48.0, 600.0);
+        let strip_tabs = tabs(TabStyle::Strip, false, 48.0, 600.0);
+        let strip = fit_tab_width(px(20.0), strip_tabs, false);
         assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.0), TabStyle::Strip, true, 48.0, 600.0),
+            fit_tab_width(px(20.0), strip_tabs, true),
             strip + ICON_SIZE + STRIP_GAP
         );
-        let pill = fit_tab_width(px(20.0), TabStyle::Pill, false, 48.0, 600.0);
-        assert_eq!(pill, px(20.0 + 2.0 * 2.0 + 14.0 + 5.0 + 6.0 + 18.0));
+        let pill_tabs = tabs(TabStyle::Pill, false, 48.0, 600.0);
+        let pill = fit_tab_width(px(20.0), pill_tabs, false);
+        assert_eq!(pill, px(20.0 + 2.0 * 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.0), TabStyle::Pill, true, 48.0, 600.0),
+            fit_tab_width(px(20.0), pill_tabs, true),
             pill + ICON_SIZE + PILL_GAP
         );
         assert_eq!(
-            fit_tab_width(px(20.4), TabStyle::Strip, false, 48.0, 600.0),
-            px(64.0)
+            fit_tab_width(
+                px(20.0),
+                tabs(TabStyle::Pill, true, 48.0, 600.0),
+                false
+            ),
+            pill + PILL_ACCENT_PADDING_LEFT - PILL_PADDING_LEFT
         );
+        assert_eq!(fit_tab_width(px(20.4), strip_tabs, false), px(64.0));
         assert_eq!(
-            fit_tab_width(px(1.0), TabStyle::Strip, false, 96.0, 240.0),
+            fit_tab_width(
+                px(1.0),
+                tabs(TabStyle::Strip, false, 96.0, 240.0),
+                false
+            ),
             px(96.0)
         );
         assert_eq!(
-            fit_tab_width(px(900.0), TabStyle::Pill, false, 96.0, 240.0),
+            fit_tab_width(
+                px(900.0),
+                tabs(TabStyle::Pill, false, 96.0, 240.0),
+                false
+            ),
             px(240.0)
         );
     }
@@ -485,11 +529,93 @@ mod tests {
     }
 
     #[test]
+    fn top_chrome_border_spans_the_terminal_beside_vertical_tab_bars() {
+        let viewport = size(px(800.0), px(600.0));
+        for position in [TabPosition::Left, TabPosition::Right] {
+            let layout = ChromeLayout::new(viewport, px(28.0), position);
+            let border = layout
+                .top_chrome_border(position, px(28.0))
+                .expect("titlebar border");
+            let terminal = layout.terminal;
+            assert_eq!(border.bottom(), terminal.origin.y);
+            assert_eq!(border.origin.x, terminal.origin.x);
+            assert_eq!(border.size.width, terminal.size.width);
+            assert_eq!(border.size.height, px(1.0));
+            // The two lines meet at the terminal's top corner.
+            let side = layout.tab_border(position);
+            let corner = match position {
+                TabPosition::Left => side.right() == border.origin.x,
+                _ => side.origin.x == border.right(),
+            };
+            assert!(corner, "{position:?}: {side:?} vs {border:?}");
+            assert!(layout.top_chrome_border(position, px(0.0)).is_none());
+        }
+        for position in [TabPosition::Top, TabPosition::Bottom] {
+            let layout = ChromeLayout::new(viewport, px(28.0), position);
+            assert!(layout.top_chrome_border(position, px(28.0)).is_none());
+        }
+    }
+
+    #[test]
+    fn terminal_corner_continues_the_lines_around_the_terminal() {
+        let viewport = size(px(800.0), px(600.0));
+        for position in [TabPosition::Left, TabPosition::Right] {
+            let layout = ChromeLayout::new(viewport, px(28.0), position);
+            let corner = layout
+                .terminal_corner(position, px(28.0), px(4.0))
+                .expect("corner patch");
+            let line = layout.top_chrome_border(position, px(28.0)).unwrap();
+            let side = layout.tab_border(position);
+            assert_eq!(corner.size, size(px(5.0), px(5.0)));
+            assert_eq!(corner.origin.y, line.origin.y);
+            let flush = match position {
+                TabPosition::Left => corner.origin.x == side.origin.x,
+                _ => corner.right() == side.right(),
+            };
+            assert!(flush, "{position:?}: {corner:?} vs {side:?}");
+            assert!(
+                layout
+                    .terminal_corner(position, px(28.0), px(0.0))
+                    .is_none()
+            );
+            assert!(
+                layout.terminal_corner(position, px(0.0), px(4.0)).is_none()
+            );
+        }
+        let layout = ChromeLayout::new(viewport, px(28.0), TabPosition::Top);
+        assert!(
+            layout
+                .terminal_corner(TabPosition::Top, px(28.0), px(4.0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn terminal_corner_radius_stays_inside_the_smaller_padding() {
+        let window = |x, y| huterm_config::WindowConfig {
+            padding_x: x,
+            padding_y: y,
+            ..huterm_config::WindowConfig::default()
+        };
+        assert_eq!(terminal_corner_radius(window(4.0, 4.0)), px(4.0));
+        assert_eq!(terminal_corner_radius(window(10.0, 6.5)), px(6.0));
+        assert_eq!(terminal_corner_radius(window(0.0, 8.0)), px(0.0));
+        assert_eq!(terminal_corner_radius(window(40.0, 40.0)), px(12.0));
+    }
+
+    #[test]
     fn top_chrome_follows_a_visible_or_revealing_tab_bar() {
-        assert!(top_chrome_uses_bar(Presentation::Reserved, 0.0));
-        assert!(!top_chrome_uses_bar(Presentation::Hidden, 1.0));
-        assert!(!top_chrome_uses_bar(Presentation::Overlay, 0.0));
-        assert!(top_chrome_uses_bar(Presentation::Overlay, 0.01));
+        for position in
+            [TabPosition::Top, TabPosition::Left, TabPosition::Right]
+        {
+            assert!(top_chrome_uses_bar(position, Presentation::Reserved, 0.0));
+            assert!(!top_chrome_uses_bar(position, Presentation::Hidden, 1.0));
+            assert!(!top_chrome_uses_bar(position, Presentation::Overlay, 0.0));
+            assert!(top_chrome_uses_bar(position, Presentation::Overlay, 0.01));
+        }
+        let bottom = TabPosition::Bottom;
+        assert!(!top_chrome_uses_bar(bottom, Presentation::Reserved, 0.0));
+        assert!(!top_chrome_uses_bar(bottom, Presentation::Overlay, 1.0));
     }
 
     #[test]
