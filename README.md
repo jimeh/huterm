@@ -58,8 +58,9 @@ position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
 Horizontal tabs share the window width, shrinking to 120 logical pixels before
 scrolling. Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
 bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
-more tabs remain; vertical bars show an overlay scrollbar that widens on hover
-and can be dragged. The new-tab button stays visible and follows the last tab in
+more tabs remain plus a slim, draggable position indicator along their bottom
+edge; vertical bars show an overlay scrollbar that widens on hover and can be
+dragged. The new-tab button stays visible and follows the last tab in
 vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 

@@ -32,10 +32,6 @@ pub(crate) enum Edge {
     Right,
     #[expect(dead_code, reason = "no view places a scrollbar on its left yet")]
     Left,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "horizontal tab bars adopt this later")
-    )]
     Bottom,
     #[expect(dead_code, reason = "no view places a scrollbar on its top yet")]
     Top,
@@ -380,10 +376,11 @@ impl AxisScrollbar {
     fn advance(&mut self, now: Instant) -> bool {
         let interacting = self.interacting();
         let mut changed = self.visibility.update(now, interacting);
+        // Interaction keeps the expansion open only where it may open at all.
         changed |= self.expansion.update(
             now,
             self.visibility.opacity > 0.0,
-            interacting,
+            interacting && self.options.expand_on_hover,
         );
         changed
     }
@@ -1065,10 +1062,13 @@ mod tests {
             ))
         );
         assert!(jumping.dragging());
+        // Neither the press nor a later pump tick may open the expansion.
+        jumping.advance(now + SCROLLBAR_EXPAND);
         assert!(
             (jumping.strip_thickness(Axis::Vertical) - STRIP_THICKNESS).abs()
                 < f32::EPSILON
         );
+        assert_eq!(jumping.layers(&geometries, Hsla::default()).count(), 1);
     }
 
     #[test]
