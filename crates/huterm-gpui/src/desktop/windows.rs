@@ -80,6 +80,15 @@ const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
 };
+/// The position indicator along a horizontal tab bar's bottom edge: it never
+/// expands or shows a track, but its thumb still drags and the track jumps.
+const TAB_ROW_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
+    edge: Edge::Bottom,
+    origin: Origin::Start,
+    expand_on_hover: false,
+    track_press: TrackPress::Jump,
+    margins: TrackMargins::EVEN,
+};
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
 #[derive(Default)]
@@ -1766,7 +1775,18 @@ impl WorkspaceView {
         let vertical = self.config.tabs.position.vertical();
         self.tab_scrollbars
             .set_axis(Axis::Vertical, vertical.then_some(TAB_COLUMN_SCROLLBAR));
-        self.tab_scrollbars.set_axis(Axis::Horizontal, None);
+        self.tab_scrollbars.set_axis(
+            Axis::Horizontal,
+            (!vertical).then_some(TAB_ROW_SCROLLBAR),
+        );
+    }
+
+    fn tab_scrollbar_axis(strip: &TabStrip) -> Axis {
+        if strip.vertical {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        }
     }
 
     /// The scrolled part of the strip: its bounds minus the new-tab slot.
@@ -1781,19 +1801,27 @@ impl WorkspaceView {
     }
 
     fn tab_scrollbar_geometries(strip: &TabStrip) -> ScrollbarGeometries {
+        let options = if strip.vertical {
+            TAB_COLUMN_SCROLLBAR
+        } else {
+            TAB_ROW_SCROLLBAR
+        };
         let available = f32::from(strip.available());
         let geometry = ScrollbarGeometry::new(
             available,
             available + f32::from(strip.max_offset()),
             available,
             f32::from(strip.offset),
-            TAB_COLUMN_SCROLLBAR.origin,
-            TAB_COLUMN_SCROLLBAR.margins,
+            options.origin,
+            options.margins,
         );
         if strip.vertical {
             ScrollbarGeometries::vertical(geometry)
         } else {
-            ScrollbarGeometries::default()
+            ScrollbarGeometries {
+                vertical: None,
+                horizontal: geometry,
+            }
         }
     }
 
@@ -4364,25 +4392,40 @@ impl Render for WorkspaceView {
             }
             // Above the resize handle so a press on the thumb scrolls instead
             // of resizing; misses fall through to the handle and rows.
-            if vertical {
+            {
+                let axis = Self::tab_scrollbar_axis(&strip);
                 let geometries = Self::tab_scrollbar_geometries(&strip);
-                let thickness =
-                    self.tab_scrollbars.strip_thickness(Axis::Vertical);
-                if self.tab_scrollbars.visible(Axis::Vertical)
-                    && geometries.vertical.is_some()
-                {
+                let thickness = px(self.tab_scrollbars.strip_thickness(axis));
+                let geometry = match axis {
+                    Axis::Vertical => geometries.vertical,
+                    Axis::Horizontal => geometries.horizontal,
+                };
+                let placement = if vertical {
+                    Bounds::new(
+                        point(
+                            strip.bounds.right() - thickness,
+                            strip.bounds.origin.y,
+                        ),
+                        size(thickness, strip.available()),
+                    )
+                } else {
+                    Bounds::new(
+                        point(
+                            strip.bounds.origin.x,
+                            strip.bounds.bottom() - thickness,
+                        ),
+                        size(strip.available(), thickness),
+                    )
+                };
+                if self.tab_scrollbars.visible(axis) && geometry.is_some() {
                     chrome = chrome.child(
                         div()
                             .id("tab-scrollbar")
                             .absolute()
-                            .left(
-                                strip.bounds.right()
-                                    - px(thickness)
-                                    - clip.origin.x,
-                            )
-                            .top(strip.bounds.origin.y - clip.origin.y)
-                            .w(px(thickness))
-                            .h(strip.available())
+                            .left(placement.origin.x - clip.origin.x)
+                            .top(placement.origin.y - clip.origin.y)
+                            .w(placement.size.width)
+                            .h(placement.size.height)
                             .on_mouse_move(cx.listener(
                                 |view, event: &MouseMoveEvent, window, cx| {
                                     view.tab_scrollbar_pointer_moved(
