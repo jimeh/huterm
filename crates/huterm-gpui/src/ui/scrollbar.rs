@@ -20,6 +20,10 @@ const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
 /// Pointer strip along the scrollbar's edge that owns its gestures.
 const STRIP_THICKNESS: f32 = 12.0;
 const STRIP_EXPANDED_THICKNESS: f32 = 18.0;
+/// Narrowest pointer strip, so a hairline thumb stays grabbable.
+const STRIP_MIN_THICKNESS: f32 = 6.0;
+/// Resting thumb thickness of a full-size scrollbar.
+const THUMB_THICKNESS: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Axis {
@@ -87,14 +91,41 @@ pub(crate) struct ScrollbarOptions {
     pub(crate) expand_on_hover: bool,
     pub(crate) track_press: TrackPress,
     pub(crate) margins: TrackMargins,
-    /// Halve the resting thumb and pointer strip across the axis; the
-    /// expanded state keeps its full size.
-    pub(crate) slim: bool,
+    /// Resting size across the axis; the expanded state always grows back
+    /// to full size.
+    pub(crate) thumb: ThumbSize,
     /// Distance from `edge` to the strip, leaving that band to other
     /// controls such as a resize handle.
     pub(crate) edge_inset: f32,
     /// How long the indicator stays visible after activity before fading.
     pub(crate) hold: Duration,
+}
+
+/// How thick a scrollbar rests across its axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ThumbSize {
+    /// A 6-point thumb in a 12-point strip.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "every view currently rests slimmer")
+    )]
+    Full,
+    /// Half of `Full`.
+    Slim,
+    /// An exact resting thumb thickness in points; the strip scales with it
+    /// down to a 6-point minimum.
+    Points(f32),
+}
+
+impl ThumbSize {
+    /// The resting size as a fraction of `Full`.
+    fn scale(self) -> f32 {
+        match self {
+            Self::Full => 1.0,
+            Self::Slim => 0.5,
+            Self::Points(points) => (points / THUMB_THICKNESS).max(0.0),
+        }
+    }
 }
 
 /// Thumb and track colors, usually the theme's overlay colors.
@@ -367,21 +398,18 @@ impl AxisScrollbar {
         }
     }
 
-    /// Scale across the axis: a slim indicator rests at half size and grows
-    /// back to full size as it expands.
+    /// Scale across the axis: the thumb rests at its configured size and
+    /// grows back to full size as it expands.
     fn scale(&self) -> f32 {
-        if self.options.slim {
-            0.5 + 0.5 * self.expansion.progress
-        } else {
-            1.0
-        }
+        let resting = self.options.thumb.scale();
+        resting + (1.0 - resting) * self.expansion.progress
     }
 
     fn thickness(&self) -> f32 {
         if self.expansion.active() {
             STRIP_EXPANDED_THICKNESS
         } else {
-            STRIP_THICKNESS * self.scale()
+            (STRIP_THICKNESS * self.scale()).max(STRIP_MIN_THICKNESS)
         }
     }
 
@@ -800,7 +828,7 @@ mod tests {
             expand_on_hover,
             track_press,
             margins: TERMINAL_MARGINS,
-            slim: false,
+            thumb: ThumbSize::Full,
             edge_inset: 0.0,
             hold: INDICATOR_HOLD,
         }
@@ -818,7 +846,7 @@ mod tests {
         let geometries =
             ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
         let mut slim = Scrollbars::vertical(ScrollbarOptions {
-            slim: true,
+            thumb: ThumbSize::Slim,
             ..options(false, TrackPress::Jump)
         });
         slim.show(Axis::Vertical, now);
@@ -835,9 +863,8 @@ mod tests {
             slim.hit(&geometries, bounds, point(px(95.0), px(200.0)))
                 .is_some()
         );
-        // Expansion restores the full strip and track for a slim scrollbar.
         let mut growing = Scrollbars::vertical(ScrollbarOptions {
-            slim: true,
+            thumb: ThumbSize::Slim,
             ..options(true, TrackPress::Jump)
         });
         growing.show(Axis::Vertical, now);
@@ -870,6 +897,30 @@ mod tests {
                 )
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn exact_thumb_sizes_scale_the_strip_down_to_a_grabbable_minimum() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometries =
+            ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+        let mut hairline = Scrollbars::vertical(ScrollbarOptions {
+            thumb: ThumbSize::Points(2.0),
+            ..options(false, TrackPress::Jump)
+        });
+        hairline.show(Axis::Vertical, now);
+        assert!(
+            (hairline.strip_thickness(Axis::Vertical) - STRIP_MIN_THICKNESS)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (hairline.strip_inset(Axis::Vertical) - STRIP_THICKNESS / 3.0)
+                .abs()
+                < 0.001
         );
 
         let mut inset = Scrollbars::vertical(ScrollbarOptions {
@@ -1272,7 +1323,7 @@ mod tests {
                 expand_on_hover: false,
                 track_press: TrackPress::Jump,
                 margins: TrackMargins::EVEN,
-                slim: false,
+                thumb: ThumbSize::Full,
                 edge_inset: 0.0,
                 hold: INDICATOR_HOLD,
             }),

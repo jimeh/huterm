@@ -52,7 +52,7 @@ pub(super) mod tab_visibility;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
-    ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
+    ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, TabColors, TabItem,
@@ -86,20 +86,20 @@ const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     expand_on_hover: true,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
-    slim: true,
+    thumb: ThumbSize::Slim,
     edge_inset: SIDEBAR_HANDLE_WIDTH,
     hold: TAB_SCROLLBAR_HOLD,
 };
-/// The slim position indicator along a horizontal tab bar's bottom edge: it
-/// never expands or shows a track, but its thumb still drags and the track
-/// jumps.
+/// The hairline position indicator along a horizontal tab bar's bottom
+/// edge: it never expands or shows a track, but its thumb still drags and
+/// the track jumps.
 const TAB_ROW_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     edge: Edge::Bottom,
     origin: Origin::Start,
     expand_on_hover: false,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
-    slim: true,
+    thumb: ThumbSize::Points(2.0),
     edge_inset: 0.0,
     hold: TAB_SCROLLBAR_HOLD,
 };

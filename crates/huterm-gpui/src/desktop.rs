@@ -46,7 +46,7 @@ use crate::scroll::ScrollController;
 use crate::ui::scrollbar::{
     Axis, Edge, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
     ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
-    Scrollbars, TrackMargins, TrackPress,
+    Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
@@ -66,7 +66,7 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
         start: 2.0,
         end: 8.0,
     },
-    slim: true,
+    thumb: ThumbSize::Slim,
     edge_inset: 2.0,
     hold: INDICATOR_HOLD,
 };
