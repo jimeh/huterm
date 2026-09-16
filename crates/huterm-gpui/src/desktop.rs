@@ -42,8 +42,8 @@ use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::ScrollController;
 use crate::ui::scrollbar::{
-    IndicatorVisibility, Origin, ScrollbarExpansion, ScrollbarGeometry,
-    TrackMargins,
+    Axis, Edge, IndicatorVisibility, Origin, Press, ScrollbarGeometries,
+    ScrollbarGeometry, ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
 };
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
@@ -51,12 +51,18 @@ use huterm_protocol::{
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
-const SCROLLBAR_WIDTH: Pixels = px(12.0);
-const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
-/// Leaves room below the terminal scrollbar track for the scroll label.
-const TERMINAL_TRACK_MARGINS: TrackMargins = TrackMargins {
-    start: 2.0,
-    end: 8.0,
+/// The terminal's overlay scrollbar: history rows counted from the bottom,
+/// a paging track, hover expansion, and room below the track for the scroll
+/// label.
+const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
+    edge: Edge::Right,
+    origin: Origin::End,
+    expand_on_hover: true,
+    track_press: TrackPress::Page,
+    margins: TrackMargins {
+        start: 2.0,
+        end: 8.0,
+    },
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
@@ -273,11 +279,7 @@ struct TerminalView {
     selection: Option<Selection>,
     selected_text: Option<String>,
     selecting: bool,
-    scrollbar_dragging: bool,
-    scrollbar_drag_offset: Pixels,
-    scrollbar_hovering: bool,
-    scrollbar_visibility: IndicatorVisibility,
-    scrollbar_expansion: ScrollbarExpansion,
+    scrollbars: Scrollbars,
     resize_visibility: IndicatorVisibility,
     last_viewport: Option<gpui::Size<Pixels>>,
     selection_edge_direction: i64,
@@ -419,11 +421,7 @@ impl TerminalView {
             selection: None,
             selected_text: None,
             selecting: false,
-            scrollbar_dragging: false,
-            scrollbar_drag_offset: px(0.0),
-            scrollbar_hovering: false,
-            scrollbar_visibility: IndicatorVisibility::default(),
-            scrollbar_expansion: ScrollbarExpansion::default(),
+            scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
             resize_visibility: IndicatorVisibility::default(),
             last_viewport: None,
             selection_edge_direction: 0,
@@ -586,16 +584,8 @@ impl TerminalView {
             self.cancel_mouse();
         }
         let mut changed = false;
-        changed |= self.scrollbar_visibility.update(
-            Instant::now(),
-            self.scrollbar_dragging || self.scrollbar_hovering,
-        );
+        changed |= self.scrollbars.advance(Instant::now());
         changed |= self.resize_visibility.update(Instant::now(), false);
-        changed |= self.scrollbar_expansion.update(
-            Instant::now(),
-            self.scrollbar_visibility.opacity > 0.0,
-            self.scrollbar_hovering || self.scrollbar_dragging,
-        );
         for _ in 0..64 {
             match self.client.try_recv_event() {
                 Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
@@ -1027,7 +1017,7 @@ impl TerminalView {
                 .is_some_and(|bounds| bounds.contains(&position))
             && !self.external_drag
             && !self.selecting
-            && !self.scrollbar_dragging
+            && !self.scrollbars.dragging()
             && !self.mouse.held(ProtocolMouseButton::Left);
         let was_hovered = self.links.hover().is_some();
         if self.links.update(
@@ -1106,7 +1096,7 @@ impl TerminalView {
         let route = self.snapshot.as_ref().is_some_and(|snapshot| {
             application_route(
                 in_grid,
-                self.scrollbar_at(position, window).is_some(),
+                self.over_scrollbar(position, window),
                 modifiers.shift,
                 (!self.exited).then_some(snapshot.modes.mouse_tracking),
                 self.scroll.displayed(),
@@ -1142,12 +1132,10 @@ impl TerminalView {
         self.update_link_pointer(event.position, event.modifiers, window, cx);
         if event.button == MouseButton::Left
             && self.link_cell(event.position, window).is_some()
-            && self
-                .scrollbar_at(
-                    event.position - self.content_bounds(window).origin,
-                    window,
-                )
-                .is_none()
+            && !self.over_scrollbar(
+                event.position - self.content_bounds(window).origin,
+                window,
+            )
             && self.links.press(
                 cell,
                 (f32::from(event.position.x), f32::from(event.position.y)),
@@ -1179,20 +1167,20 @@ impl TerminalView {
             return;
         }
         let position = event.position - self.content_bounds(window).origin;
-        if let Some(geometry) = self.scrollbar_at(position, window) {
-            if geometry.contains(f32::from(position.y)) {
-                self.scrollbar_dragging = true;
-                self.scrollbar_expansion.activate(Instant::now());
-                self.scrollbar_drag_offset =
-                    position.y - px(geometry.thumb_start);
-                self.activate_scrollbar();
-                cx.notify();
-            } else {
-                let upward = f32::from(position.y) < geometry.thumb_start;
-                if self.scroll.page(self.last_grid_size.rows, upward) {
-                    self.activate_scrollbar();
-                    self.start_snapshot_if_needed(cx);
-                    cx.notify();
+        let geometries = self.scrollbar_geometries(window);
+        if let Some((_, press)) = self.scrollbars.press(
+            &geometries,
+            self.viewport_bounds(window),
+            position,
+            Instant::now(),
+        ) {
+            match press {
+                Press::Grabbed | Press::Jump(_) => cx.notify(),
+                Press::Page { backward } => {
+                    if self.scroll.page(self.last_grid_size.rows, backward) {
+                        self.start_snapshot_if_needed(cx);
+                        cx.notify();
+                    }
                 }
             }
             return;
@@ -1250,21 +1238,20 @@ impl TerminalView {
         ) {
             self.admit_input(TerminalInput::Mouse(motion), false, true);
         }
-        let was_hovering = self.scrollbar_hovering;
-        self.scrollbar_hovering = self.scrollbar_at(position, window).is_some();
-        if self.scrollbar_hovering {
-            self.scrollbar_expansion.activate(Instant::now());
-        }
-        if self.scrollbar_hovering != was_hovering {
+        let now = Instant::now();
+        let geometries = self.scrollbar_geometries(window);
+        let bounds = self.viewport_bounds(window);
+        if self
+            .scrollbars
+            .pointer_moved(&geometries, bounds, position, now)
+        {
             self.activate_scrollbar();
             cx.notify();
         }
-        if self.scrollbar_dragging {
-            self.scrollbar_seek(
-                position.y - self.scrollbar_drag_offset,
-                window,
-                cx,
-            );
+        if let Some((_, thumb_start)) =
+            self.scrollbars.drag_to(bounds, position, now)
+        {
+            self.scrollbar_seek(px(thumb_start), window, cx);
             return;
         }
         if !self.selecting {
@@ -1366,9 +1353,7 @@ impl TerminalView {
         if button != ProtocolMouseButton::Left {
             return;
         }
-        if self.scrollbar_dragging {
-            self.scrollbar_dragging = false;
-            self.activate_scrollbar();
+        if self.scrollbars.release(Instant::now()) {
             cx.notify();
         }
         self.finish_selection(cx);
@@ -1448,24 +1433,29 @@ impl TerminalView {
         )
     }
 
-    fn scrollbar_expanded(&self) -> bool {
-        self.scrollbar_expansion.active()
+    fn scrollbar_geometries(&self, window: &Window) -> ScrollbarGeometries {
+        ScrollbarGeometries::vertical(self.scrollbar_geometry(window))
     }
 
-    fn scrollbar_at(
+    /// The viewport in the content-relative coordinates mouse handlers use.
+    fn viewport_bounds(&self, window: &Window) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.0), px(0.0)), self.viewport(window))
+    }
+
+    /// Whether the content-relative `position` is over the visible
+    /// scrollbar strip.
+    fn over_scrollbar(
         &self,
         position: gpui::Point<Pixels>,
         window: &Window,
-    ) -> Option<ScrollbarGeometry> {
-        let geometry = self.scrollbar_geometry(window)?;
-        scrollbar_hit_test(
-            position,
-            self.viewport(window).width,
-            geometry,
-            self.scrollbar_visibility.opacity,
-            self.scrollbar_expanded(),
-        )
-        .then_some(geometry)
+    ) -> bool {
+        self.scrollbars
+            .hit(
+                &self.scrollbar_geometries(window),
+                self.viewport_bounds(window),
+                position,
+            )
+            .is_some()
     }
     fn clear_selection(&mut self) {
         self.selection = None;
@@ -1475,7 +1465,7 @@ impl TerminalView {
         self.update_renderer_selection();
     }
     fn activate_scrollbar(&mut self) {
-        self.scrollbar_visibility.activate(Instant::now());
+        self.scrollbars.show(Axis::Vertical, Instant::now());
     }
     fn update_renderer_selection(&self) {
         self.renderer
@@ -1485,7 +1475,7 @@ impl TerminalView {
 
     fn owns_pointer_gesture(&self) -> bool {
         self.selecting
-            || self.scrollbar_dragging
+            || self.scrollbars.dragging()
             || self.external_drag
             || self.links.owns_press()
             || [
@@ -1605,7 +1595,7 @@ impl TerminalView {
         self.blur_mouse(cx);
         self.mouse.forget_released_buttons();
         self.links.forget_press();
-        self.scrollbar_hovering = false;
+        self.scrollbars.pointer_left();
         self.visible = false;
     }
 
@@ -1613,7 +1603,7 @@ impl TerminalView {
         self.links.disable();
         self.cancel_mouse();
         self.finish_selection(cx);
-        self.scrollbar_dragging = false;
+        self.scrollbars.release(Instant::now());
         self.selection_edge_direction = 0;
         self.scroll.reset_wheel();
     }
@@ -1845,8 +1835,7 @@ impl Render for TerminalView {
         let mut root = div()
             .id("terminal")
             .on_hover(cx.listener(|view, hovering, _, cx| {
-                if !hovering && view.scrollbar_hovering {
-                    view.scrollbar_hovering = false;
+                if !hovering && view.scrollbars.pointer_left() {
                     view.activate_scrollbar();
                     cx.notify();
                 }
@@ -2030,32 +2019,27 @@ impl Render for TerminalView {
             );
         }
         let displayed_offset = self.scroll.displayed();
-        if self.scrollbar_visibility.opacity > 0.0
-            && let Some(geometry) = self.scrollbar_geometry(window)
+        let geometries = self.scrollbar_geometries(window);
+        if self.scrollbars.visible(Axis::Vertical)
+            && geometries.vertical.is_some()
         {
-            let expansion = self.scrollbar_expansion.progress;
-            root = root.children(crate::ui::scrollbar::layers(
-                geometry,
-                self.scrollbar_visibility.opacity,
-                expansion,
-                color(self.theme.foreground),
-            ));
+            root = root.children(
+                self.scrollbars
+                    .layers(&geometries, color(self.theme.foreground))
+                    .collect::<Vec<_>>(),
+            );
             if let Some(label) = scroll_position_label(displayed_offset) {
                 root = root.child(
                     div()
                         .absolute()
-                        .right(
-                            SCROLLBAR_WIDTH
-                                + (SCROLLBAR_EXPANDED_WIDTH - SCROLLBAR_WIDTH)
-                                    * expansion,
-                        )
+                        .right(px(self.scrollbars.strip_inset(Axis::Vertical)))
                         .bottom(px(12.0))
                         .px_2()
                         .py_1()
                         .rounded(px(3.0))
                         .bg(color(self.theme.background))
                         .text_color(color(self.theme.foreground))
-                        .opacity(self.scrollbar_visibility.opacity)
+                        .opacity(self.scrollbars.opacity(Axis::Vertical))
                         .child(label),
                 );
             }
@@ -2130,8 +2114,8 @@ fn terminal_scrollbar_geometry(
         visible + history as f32,
         visible,
         displayed_offset.min(history) as f32,
-        Origin::End,
-        TERMINAL_TRACK_MARGINS,
+        TERMINAL_SCROLLBAR.origin,
+        TERMINAL_SCROLLBAR.margins,
     )
 }
 
@@ -2143,24 +2127,6 @@ fn terminal_scrollbar_geometry(
 )]
 fn rows_for_offset(offset: f32) -> usize {
     offset.round() as usize
-}
-
-fn scrollbar_hit_test(
-    position: gpui::Point<Pixels>,
-    viewport_width: Pixels,
-    geometry: ScrollbarGeometry,
-    opacity: f32,
-    expanded: bool,
-) -> bool {
-    let width = if expanded {
-        SCROLLBAR_EXPANDED_WIDTH
-    } else {
-        SCROLLBAR_WIDTH
-    };
-    opacity > 0.0
-        && position.x >= (viewport_width - width).max(px(0.0))
-        && position.x < viewport_width
-        && geometry.track_contains(f32::from(position.y))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2583,60 +2549,6 @@ mod tests {
                 MousePosition::default()
             );
         }
-    }
-
-    #[test]
-    fn scrollbar_hover_target_expands_only_while_visible() {
-        let geometry = terminal_scrollbar_geometry(400.0, 32, 100, 0).unwrap();
-        let position = point(px(85.0), px(200.0));
-        assert!(!scrollbar_hit_test(
-            position,
-            px(100.0),
-            geometry,
-            1.0,
-            false
-        ));
-        assert!(scrollbar_hit_test(position, px(100.0), geometry, 1.0, true));
-        assert!(!scrollbar_hit_test(
-            position,
-            px(100.0),
-            geometry,
-            0.0,
-            true
-        ));
-        assert!(scrollbar_hit_test(
-            point(px(95.0), px(200.0)),
-            px(100.0),
-            geometry,
-            0.5,
-            false
-        ));
-    }
-
-    #[test]
-    fn scrollbar_hit_testing_excludes_insets_and_outside_window() {
-        let geometry = terminal_scrollbar_geometry(400.0, 32, 100, 0).unwrap();
-        for position in [
-            point(px(99.0), px(1.0)),
-            point(px(99.0), px(393.0)),
-            point(px(100.0), px(200.0)),
-            point(px(-1.0), px(200.0)),
-        ] {
-            assert!(!scrollbar_hit_test(
-                position,
-                px(100.0),
-                geometry,
-                1.0,
-                true
-            ));
-        }
-        assert!(scrollbar_hit_test(
-            point(px(99.0), px(392.0)),
-            px(100.0),
-            geometry,
-            1.0,
-            true
-        ));
     }
 
     #[test]
