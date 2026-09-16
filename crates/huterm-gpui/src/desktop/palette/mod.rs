@@ -93,8 +93,8 @@ const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     expand_on_hover: true,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
-    slim: false,
-    edge_inset: 0.0,
+    slim: true,
+    edge_inset: 2.0,
     hold: INDICATOR_HOLD,
 };
 

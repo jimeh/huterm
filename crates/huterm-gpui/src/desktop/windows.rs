@@ -71,8 +71,9 @@ const CONTROL_INSET: Pixels = px(3.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
-/// Width of the grab zone along a vertical tab bar's terminal edge.
-const SIDEBAR_HANDLE_WIDTH: f32 = 6.0;
+/// Width of the grab zone along a vertical tab bar's terminal edge. The
+/// column scrollbar sits just inboard of it, so it stays narrow.
+const SIDEBAR_HANDLE_WIDTH: f32 = 4.0;
 /// Tab bar indicators fade sooner than the terminal's: the bar is small and
 /// the indicator would otherwise linger over its tabs.
 const TAB_SCROLLBAR_HOLD: Duration = Duration::from_millis(700);
@@ -85,7 +86,7 @@ const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     expand_on_hover: true,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
-    slim: false,
+    slim: true,
     edge_inset: SIDEBAR_HANDLE_WIDTH,
     hold: TAB_SCROLLBAR_HOLD,
 };

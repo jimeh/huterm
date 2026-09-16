@@ -64,8 +64,8 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
         start: 2.0,
         end: 8.0,
     },
-    slim: false,
-    edge_inset: 0.0,
+    slim: true,
+    edge_inset: 2.0,
     hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
