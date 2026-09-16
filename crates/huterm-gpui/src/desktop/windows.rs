@@ -51,7 +51,7 @@ mod tab_strip;
 pub(super) mod tab_visibility;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
-    Axis, Edge, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
+    Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
     ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
 use tab_bar::{
@@ -79,17 +79,30 @@ const SIDEBAR_HANDLE_WIDTH: f32 = 4.0;
 const TAB_SCROLLBAR_HOLD: Duration = Duration::from_millis(700);
 /// The overlay scrollbar on a vertical tab column: pixel offsets from the
 /// top, a jump-to-pointer track, and hover expansion like the palette list.
-/// It sits inboard of the resize handle so the two never overlap.
-const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
-    edge: Edge::Right,
-    origin: Origin::Start,
-    expand_on_hover: true,
-    track_press: TrackPress::Jump,
-    margins: TrackMargins::EVEN,
-    thumb: ThumbSize::Slim,
-    edge_inset: SIDEBAR_HANDLE_WIDTH,
-    hold: TAB_SCROLLBAR_HOLD,
-};
+/// It sits inboard of the resize handle. On the left, its target stops at
+/// the handle; on the right, the handle is on the far side, so the target
+/// reaches the window edge.
+fn tab_column_scrollbar(position: TabPosition) -> ScrollbarOptions {
+    ScrollbarOptions {
+        edge: Edge::Right,
+        origin: Origin::Start,
+        expand_on_hover: true,
+        track_press: TrackPress::Jump,
+        margins: TrackMargins::EVEN,
+        thumb: ThumbSize::Slim,
+        edge_inset: SIDEBAR_HANDLE_WIDTH,
+        hit: HitBand {
+            outward: if position == TabPosition::Left {
+                0.0
+            } else {
+                SIDEBAR_HANDLE_WIDTH
+            },
+            inward: 6.0,
+        },
+        reveal_on_hover: true,
+        hold: TAB_SCROLLBAR_HOLD,
+    }
+}
 /// The hairline position indicator along a horizontal tab bar's bottom
 /// edge: it never expands or shows a track, but its thumb still drags and
 /// the track jumps. Its ends align with the tabs: a point in from the bar's
@@ -115,6 +128,10 @@ fn tab_row_scrollbar(style: TabStyle) -> ScrollbarOptions {
         },
         thumb: ThumbSize::Points(2.0),
         edge_inset: 0.0,
+        // Only the line itself; the tabs and chevrons above it keep their
+        // presses.
+        hit: HitBand::THUMB,
+        reveal_on_hover: false,
         hold: TAB_SCROLLBAR_HOLD,
     }
 }
@@ -1807,8 +1824,10 @@ impl WorkspaceView {
     /// render calls it each frame and reload needs no extra hook.
     fn sync_tab_scrollbars(&mut self) {
         let vertical = self.config.tabs.position.vertical();
-        self.tab_scrollbars
-            .set_axis(Axis::Vertical, vertical.then_some(TAB_COLUMN_SCROLLBAR));
+        self.tab_scrollbars.set_axis(
+            Axis::Vertical,
+            vertical.then(|| tab_column_scrollbar(self.config.tabs.position)),
+        );
         self.tab_scrollbars.set_axis(
             Axis::Horizontal,
             (!vertical).then(|| tab_row_scrollbar(self.config.tabs.style)),
@@ -1839,7 +1858,7 @@ impl WorkspaceView {
         tabs: TabsConfig,
     ) -> ScrollbarGeometries {
         let options = if strip.vertical {
-            TAB_COLUMN_SCROLLBAR
+            tab_column_scrollbar(tabs.position)
         } else {
             tab_row_scrollbar(tabs.style)
         };
@@ -3606,6 +3625,9 @@ impl WorkspaceView {
                             |tab| tab.id,
                         );
                         prune_tab_history(&mut view.history, id);
+                        // Fit widths are index-based; refresh them before
+                        // the reveal below reads them.
+                        view.measure_tab_widths(window, cx);
                         if let Some(active) = view.active {
                             view.select(active, window, cx);
                             view.reveal_tab_activity(window, cx);
@@ -3738,7 +3760,9 @@ const TERMINAL_CORNER_RADIUS_LIMIT: Pixels = px(12.0);
 
 /// The rounded terminal corner stays inside the window padding, so the arc
 /// never covers a cell.
-fn terminal_corner_radius(window: huterm_config::WindowConfig) -> Pixels {
+pub(super) fn terminal_corner_radius(
+    window: huterm_config::WindowConfig,
+) -> Pixels {
     px(window.padding_x.min(window.padding_y).max(0.0).floor())
         .min(TERMINAL_CORNER_RADIUS_LIMIT)
 }
@@ -4456,7 +4480,13 @@ impl Render for WorkspaceView {
                         size(strip.available(), extent),
                     )
                 };
-                if self.tab_scrollbars.visible(axis) && geometry.is_some() {
+                let show_strip =
+                    self.tab_scrollbars.wants_strip(axis) && geometry.is_some();
+                if !show_strip {
+                    // No element means no leave event, so clear hover here.
+                    self.tab_scrollbars.pointer_left();
+                }
+                if show_strip {
                     chrome = chrome.child(
                         div()
                             .id("tab-scrollbar")

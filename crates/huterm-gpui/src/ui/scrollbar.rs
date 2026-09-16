@@ -16,13 +16,10 @@ pub(crate) const INDICATOR_HOLD: Duration = Duration::from_secs(2);
 const INDICATOR_FADE: Duration = Duration::from_millis(400);
 const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
 const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
-/// Pointer strip along the scrollbar's edge that owns its gestures.
-const STRIP_THICKNESS: f32 = 12.0;
-const STRIP_EXPANDED_THICKNESS: f32 = 18.0;
-/// Narrowest pointer strip, so a hairline thumb stays grabbable.
-const STRIP_MIN_THICKNESS: f32 = 6.0;
 /// Resting thumb thickness of a full-size scrollbar.
 const THUMB_THICKNESS: f32 = 6.0;
+/// Gap kept between the thumb and a label beside it.
+const LABEL_GAP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Axis {
@@ -99,8 +96,31 @@ pub(crate) struct ScrollbarOptions {
     /// Distance from `edge` to the strip, leaving that band to other
     /// controls such as a resize handle.
     pub(crate) edge_inset: f32,
+    /// How far the pointer target reaches beyond the thumb across the axis.
+    pub(crate) hit: HitBand,
+    /// Keep the strip live after the indicator fades so hovering it shows
+    /// the scrollbar again.
+    pub(crate) reveal_on_hover: bool,
     /// How long the indicator stays visible after activity before fading.
     pub(crate) hold: Duration,
+}
+
+/// Extra pointer target across the axis, beyond the thumb itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HitBand {
+    /// Points beyond the strip's far side toward the edge, so a target can
+    /// reach into the edge inset or stop short of another control there.
+    pub(crate) outward: f32,
+    /// Points beyond the thumb's inner side, away from the edge.
+    pub(crate) inward: f32,
+}
+
+impl HitBand {
+    /// Only the thumb itself.
+    pub(crate) const THUMB: Self = Self {
+        outward: 0.0,
+        inward: 0.0,
+    };
 }
 
 /// How thick a scrollbar rests across its axis.
@@ -284,7 +304,8 @@ impl ScrollbarExpansion {
         self.collapse_at = Some(now + SCROLLBAR_EXPANDED_HOLD);
     }
 
-    pub(crate) fn active(&self) -> bool {
+    #[cfg(test)]
+    fn active(&self) -> bool {
         self.target > 0.0 || self.progress > 0.0
     }
 
@@ -407,17 +428,21 @@ impl AxisScrollbar {
         resting + (1.0 - resting) * self.expansion.progress
     }
 
-    fn thickness(&self) -> f32 {
-        if self.expansion.active() {
-            STRIP_EXPANDED_THICKNESS
-        } else {
-            (STRIP_THICKNESS * self.scale()).max(STRIP_MIN_THICKNESS)
-        }
+    /// The thumb's inset from the strip's far side and its thickness across
+    /// the axis at the current expansion.
+    fn thumb_cross(&self) -> (f32, f32) {
+        let expansion = self.expansion.progress;
+        let scale = self.scale();
+        (
+            (2.0 + 2.0 * expansion) * scale,
+            (6.0 + 4.0 * expansion) * scale,
+        )
     }
 
-    /// The strip plus the band between it and the edge.
+    /// From the edge to the inner end of the pointer target.
     fn extent(&self) -> f32 {
-        self.options.edge_inset + self.thickness()
+        let (inset, thick) = self.thumb_cross();
+        self.options.edge_inset + inset + thick + self.options.hit.inward
     }
 
     /// Pointer position along the axis when `position` is over this
@@ -429,7 +454,7 @@ impl AxisScrollbar {
         position: gpui::Point<Pixels>,
     ) -> Option<f32> {
         let geometry = geometry?;
-        if self.visibility.opacity <= 0.0 {
+        if self.visibility.opacity <= 0.0 && !self.options.reveal_on_hover {
             return None;
         }
         let x = f32::from(position.x - bounds.origin.x);
@@ -443,10 +468,11 @@ impl AxisScrollbar {
             Edge::Top => (extent_flip(y, height), height, x),
         };
         let far = extent - self.options.edge_inset;
-        (cross >= (far - self.thickness()).max(0.0)
-            && cross < far
-            && geometry.track_contains(along))
-        .then_some(along)
+        let (inset, thick) = self.thumb_cross();
+        let outer = (far + self.options.hit.outward).min(extent);
+        let inner = (far - inset - thick - self.options.hit.inward).max(0.0);
+        (cross >= inner && cross < outer && geometry.track_contains(along))
+            .then_some(along)
     }
 
     fn advance(&mut self, now: Instant) -> bool {
@@ -471,6 +497,7 @@ impl AxisScrollbar {
         let edge = self.options.edge;
         let inset = self.options.edge_inset;
         let scale = self.scale();
+        let (thumb_inset, thumb_thickness) = self.thumb_cross();
         let track = (expansion > 0.0).then(|| {
             place(
                 div(),
@@ -487,10 +514,10 @@ impl AxisScrollbar {
         let thumb = place(
             div(),
             edge,
-            inset + (2.0 + 2.0 * expansion) * scale,
+            inset + thumb_inset,
             geometry.thumb_start,
             geometry.thumb_size,
-            (6.0 + 4.0 * expansion) * scale,
+            thumb_thickness,
         )
         .rounded(px((3.0 + 2.0 * expansion) * scale))
         .bg(colors.thumb)
@@ -629,6 +656,15 @@ impl Scrollbars {
             .is_some_and(|scrollbar| scrollbar.visibility.opacity > 0.0)
     }
 
+    /// Whether the caller should mount the pointer strip on `axis`: while
+    /// the indicator shows, or always when hovering may reveal it.
+    pub(crate) fn wants_strip(&self, axis: Axis) -> bool {
+        self.slot(axis).is_some_and(|scrollbar| {
+            scrollbar.visibility.opacity > 0.0
+                || scrollbar.options.reveal_on_hover
+        })
+    }
+
     pub(crate) fn opacity(&self, axis: Axis) -> f32 {
         self.slot(axis)
             .map_or(0.0, |scrollbar| scrollbar.visibility.opacity)
@@ -638,22 +674,14 @@ impl Scrollbars {
     /// for labels beside the thumb.
     pub(crate) fn strip_inset(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, |scrollbar| {
-            scrollbar.options.edge_inset
-                + (STRIP_THICKNESS
-                    + (STRIP_EXPANDED_THICKNESS - STRIP_THICKNESS)
-                        * scrollbar.expansion.progress)
-                    * scrollbar.scale()
+            let (inset, thick) = scrollbar.thumb_cross();
+            scrollbar.options.edge_inset + inset + thick + LABEL_GAP
         })
     }
 
-    /// Thickness of the pointer strip on `axis` for the caller's element.
-    pub(crate) fn strip_thickness(&self, axis: Axis) -> f32 {
-        self.slot(axis).map_or(0.0, AxisScrollbar::thickness)
-    }
-
-    /// Distance from the edge to the far side of the strip on `axis`: the
-    /// size across the axis of an element that covers the strip and its
-    /// edge inset, so `layers` inside it line up with `hit`.
+    /// Distance from the edge to the inner end of the pointer target on
+    /// `axis`: the size across the axis of an element that covers the
+    /// target and the edge inset, so `layers` inside it line up with `hit`.
     pub(crate) fn strip_extent(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, AxisScrollbar::extent)
     }
@@ -833,6 +861,11 @@ mod tests {
             margins: TERMINAL_MARGINS,
             thumb: ThumbSize::Full,
             edge_inset: 0.0,
+            hit: HitBand {
+                outward: 0.0,
+                inward: 4.0,
+            },
+            reveal_on_hover: false,
             hold: INDICATOR_HOLD,
         }
     }
@@ -853,13 +886,10 @@ mod tests {
             ..options(false, TrackPress::Jump)
         });
         slim.show(Axis::Vertical, now);
+        // Resting slim: 1 inset, 3 thumb, 4 inward.
+        assert!((slim.strip_extent(Axis::Vertical) - 8.0).abs() < 0.01);
         assert!(
-            (slim.strip_thickness(Axis::Vertical) - STRIP_THICKNESS / 2.0)
-                .abs()
-                < f32::EPSILON
-        );
-        assert!(
-            slim.hit(&geometries, bounds, point(px(93.0), px(200.0)))
+            slim.hit(&geometries, bounds, point(px(91.0), px(200.0)))
                 .is_none()
         );
         assert!(
@@ -878,17 +908,8 @@ mod tests {
             now
         ));
         growing.advance(now + SCROLLBAR_EXPAND);
-        assert!(
-            (growing.strip_thickness(Axis::Vertical)
-                - STRIP_EXPANDED_THICKNESS)
-                .abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (growing.strip_inset(Axis::Vertical) - STRIP_EXPANDED_THICKNESS)
-                .abs()
-                < 0.001
-        );
+        assert!((growing.strip_extent(Axis::Vertical) - 18.0).abs() < 0.001);
+        assert!((growing.strip_inset(Axis::Vertical) - 18.0).abs() < 0.001);
         assert_eq!(
             growing
                 .layers(
@@ -912,18 +933,54 @@ mod tests {
             ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
         let mut hairline = Scrollbars::vertical(ScrollbarOptions {
             thumb: ThumbSize::Points(2.0),
+            hit: HitBand::THUMB,
             ..options(false, TrackPress::Jump)
         });
         hairline.show(Axis::Vertical, now);
+        // A hairline with a thumb-only band: 2/3 inset plus a 2-point thumb.
         assert!(
-            (hairline.strip_thickness(Axis::Vertical) - STRIP_MIN_THICKNESS)
-                .abs()
-                < f32::EPSILON
+            (hairline.strip_extent(Axis::Vertical) - 2.0 - 2.0 / 3.0).abs()
+                < 0.01
         );
         assert!(
-            (hairline.strip_inset(Axis::Vertical) - STRIP_THICKNESS / 3.0)
-                .abs()
-                < 0.001
+            hairline
+                .hit(&geometries, bounds, point(px(98.5), px(200.0)))
+                .is_some()
+        );
+        assert!(
+            hairline
+                .hit(&geometries, bounds, point(px(100.0), px(200.0)))
+                .is_none()
+        );
+        assert!(
+            hairline
+                .hit(&geometries, bounds, point(px(97.0), px(200.0)))
+                .is_none()
+        );
+        // Reaching outward covers the edge; inward extends the inner side.
+        let mut reaching = Scrollbars::vertical(ScrollbarOptions {
+            edge_inset: 2.0,
+            hit: HitBand {
+                outward: 2.0,
+                inward: 6.0,
+            },
+            ..options(false, TrackPress::Jump)
+        });
+        reaching.show(Axis::Vertical, now);
+        assert!(
+            reaching
+                .hit(&geometries, bounds, point(px(99.5), px(200.0)))
+                .is_some()
+        );
+        assert!(
+            reaching
+                .hit(&geometries, bounds, point(px(84.5), px(200.0)))
+                .is_some()
+        );
+        assert!(
+            reaching
+                .hit(&geometries, bounds, point(px(83.0), px(200.0)))
+                .is_none()
         );
 
         let mut inset = Scrollbars::vertical(ScrollbarOptions {
@@ -931,11 +988,7 @@ mod tests {
             ..options(true, TrackPress::Jump)
         });
         inset.show(Axis::Vertical, now);
-        assert!(
-            (inset.strip_extent(Axis::Vertical) - (6.0 + STRIP_THICKNESS))
-                .abs()
-                < f32::EPSILON
-        );
+        assert!((inset.strip_extent(Axis::Vertical) - 18.0).abs() < 0.001);
         // The band nearest the edge belongs to other controls.
         assert!(
             inset
@@ -952,10 +1005,31 @@ mod tests {
                 .hit(&geometries, bounds, point(px(81.0), px(200.0)))
                 .is_none()
         );
-        assert!(
-            (inset.strip_inset(Axis::Vertical) - (6.0 + STRIP_THICKNESS)).abs()
-                < f32::EPSILON
-        );
+        assert!((inset.strip_inset(Axis::Vertical) - 18.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn reveal_on_hover_keeps_the_strip_live_after_the_indicator_fades() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometries =
+            ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+        let position = point(px(95.0), px(200.0));
+        let mut hidden = vertical(true, TrackPress::Jump);
+        assert!(!hidden.wants_strip(Axis::Vertical));
+        assert!(hidden.hit(&geometries, bounds, position).is_none());
+        let mut revealing = Scrollbars::vertical(ScrollbarOptions {
+            reveal_on_hover: true,
+            ..options(true, TrackPress::Jump)
+        });
+        assert!(revealing.wants_strip(Axis::Vertical));
+        assert!(!revealing.visible(Axis::Vertical));
+        assert!(revealing.hit(&geometries, bounds, position).is_some());
+        assert!(revealing.pointer_moved(&geometries, bounds, position, now));
+        assert!(revealing.visible(Axis::Vertical));
+        hidden.show(Axis::Vertical, now);
+        assert!(hidden.wants_strip(Axis::Vertical));
     }
 
     #[test]
@@ -1226,12 +1300,9 @@ mod tests {
             point(px(95.0), px(200.0)),
             now
         ));
-        assert!(
-            (scrollbars.strip_thickness(Axis::Vertical)
-                - STRIP_EXPANDED_THICKNESS)
-                .abs()
-                < f32::EPSILON
-        );
+        // Expanding widens the target: 4 inset, 10 thumb, 4 inward.
+        scrollbars.advance(now + SCROLLBAR_EXPAND);
+        assert!((scrollbars.strip_extent(Axis::Vertical) - 18.0).abs() < 0.01);
         assert_eq!(
             scrollbars.hit(&geometries, bounds, position),
             Some((Axis::Vertical, 200.0))
@@ -1311,8 +1382,7 @@ mod tests {
         // Neither the press nor a later pump tick may open the expansion.
         jumping.advance(now + SCROLLBAR_EXPAND);
         assert!(
-            (jumping.strip_thickness(Axis::Vertical) - STRIP_THICKNESS).abs()
-                < f32::EPSILON
+            (jumping.strip_extent(Axis::Vertical) - 12.0).abs() < f32::EPSILON
         );
         assert_eq!(
             jumping
@@ -1344,6 +1414,11 @@ mod tests {
                 margins: TrackMargins::EVEN,
                 thumb: ThumbSize::Full,
                 edge_inset: 0.0,
+                hit: HitBand {
+                    outward: 0.0,
+                    inward: 4.0,
+                },
+                reveal_on_hover: false,
                 hold: INDICATOR_HOLD,
             }),
         );

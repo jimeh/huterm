@@ -44,7 +44,7 @@ use crate::renderer::{
 };
 use crate::scroll::ScrollController;
 use crate::ui::scrollbar::{
-    Axis, Edge, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
+    Axis, Edge, HitBand, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
     ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
     Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
@@ -69,6 +69,12 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     },
     thumb: ThumbSize::Slim,
     edge_inset: 2.0,
+    // Reaches the window edge so a pointer pinned there still grabs it.
+    hit: HitBand {
+        outward: 2.0,
+        inward: 6.0,
+    },
+    reveal_on_hover: false,
     hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
@@ -1437,7 +1443,27 @@ impl TerminalView {
             self.last_grid_size.rows,
             self.scroll.history(),
             self.scroll.displayed(),
+            self.scrollbar_options().margins,
         )
+    }
+
+    /// The terminal scrollbar options for the current chrome: with a right
+    /// tab bar under top chrome, the track starts below the rounded corner
+    /// so the patch never covers the thumb.
+    fn scrollbar_options(&self) -> ScrollbarOptions {
+        let mut options = TERMINAL_SCROLLBAR;
+        let top_chrome = terminal_top(self.chrome_hidden)
+            + self.fullscreen_insets.top.max(px(0.0));
+        if self.tab_presentation
+            == windows::tab_visibility::Presentation::Reserved
+            && self.tabs_config.position == huterm_config::TabPosition::Right
+            && top_chrome > px(0.0)
+        {
+            let radius =
+                f32::from(windows::terminal_corner_radius(self.window_config));
+            options.margins.start = options.margins.start.max(radius + 1.0);
+        }
+        options
     }
 
     fn scrollbar_geometries(&self, window: &Window) -> ScrollbarGeometries {
@@ -1834,6 +1860,8 @@ impl Render for TerminalView {
         let input_view = cx.entity();
         #[cfg(target_os = "macos")]
         let input_focus = self.focus.clone();
+        self.scrollbars
+            .set_axis(Axis::Vertical, Some(self.scrollbar_options()));
         let layout = self.terminal_layout(window);
         let hovered_link = self.links.hover().cloned();
         let link_metrics = self.metrics;
@@ -2114,6 +2142,7 @@ fn terminal_scrollbar_geometry(
     visible_rows: u16,
     history: usize,
     displayed_offset: usize,
+    margins: TrackMargins,
 ) -> Option<ScrollbarGeometry> {
     let visible = f32::from(visible_rows.max(1));
     ScrollbarGeometry::new(
@@ -2122,7 +2151,7 @@ fn terminal_scrollbar_geometry(
         visible,
         displayed_offset.min(history) as f32,
         TERMINAL_SCROLLBAR.origin,
-        TERMINAL_SCROLLBAR.margins,
+        margins,
     )
 }
 

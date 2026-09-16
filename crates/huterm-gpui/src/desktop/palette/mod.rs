@@ -36,7 +36,7 @@ use slots::{
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
 use crate::ui::scrollbar::{
-    Axis, Edge, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
+    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
     ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
     ThumbSize, TrackMargins, TrackPress,
 };
@@ -96,6 +96,11 @@ const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     margins: TrackMargins::EVEN,
     thumb: ThumbSize::Slim,
     edge_inset: 2.0,
+    hit: HitBand {
+        outward: 2.0,
+        inward: 6.0,
+    },
+    reveal_on_hover: true,
     hold: INDICATOR_HOLD,
 };
 
@@ -2073,9 +2078,15 @@ impl Render for CommandPalette {
             );
         }
 
-        let scrollbar = self.scrollbars.visible(Axis::Vertical).then(|| {
-            let width = self.scrollbars.strip_thickness(Axis::Vertical);
-            let geometries = self.scrollbar_geometries();
+        let geometries = self.scrollbar_geometries();
+        let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
+            && geometries.vertical.is_some();
+        if !show_strip {
+            // The strip is not mounted, so no leave event will arrive.
+            self.scrollbars.pointer_left();
+        }
+        let scrollbar = show_strip.then(|| {
+            let width = self.scrollbars.strip_extent(Axis::Vertical);
             div()
                 .id("palette-scrollbar")
                 .absolute()
