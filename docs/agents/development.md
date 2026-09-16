@@ -198,8 +198,14 @@ horizontally. Vertical tabs stay 32 pixels tall and fill the sidebar width.
 Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
 capped at half the window width. Each window keeps
 its preferred width for its lifetime, including through temporary window
-shrinking. The full-width vertical new-tab button follows the last tab and
-stays visible at the bottom when tabs overflow.
+shrinking. The vertical new-tab button is a row with the same insets as the
+tabs; it follows the last tab and stays visible at the bottom when tabs
+overflow. Horizontal bars reserve a 32-point slot for it and center a 26-point
+button across the bar, matching the pill inset, so it never touches the bar
+border. Strip bars are 32 points tall; Pill bars are 34 so 26-point pills keep
+4 points on every side.
+Pill strips also start with a leading margin so the first pill's visible edge
+sits at that same inset, and hovering a pill never hides its dividers.
 
 `[tabs].style = "strip"`, the default, merges the active tab into the terminal
 with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
