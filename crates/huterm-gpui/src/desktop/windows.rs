@@ -4424,7 +4424,7 @@ impl Render for WorkspaceView {
                     .rounded(px(7.0))
                     .absolute()
                     .left(
-                        layout.tabs.origin.x - clip.origin.x
+                        strip.bounds.origin.x - clip.origin.x
                             + if vertical {
                                 VERTICAL_ROW_MARGIN_X
                             } else {
@@ -4432,7 +4432,7 @@ impl Render for WorkspaceView {
                             },
                     )
                     .top(
-                        layout.tabs.origin.y - clip.origin.y
+                        strip.bounds.origin.y - clip.origin.y
                             + if vertical {
                                 strip.available() + VERTICAL_ROW_MARGIN_Y
                             } else {
