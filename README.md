@@ -55,8 +55,9 @@ snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
 even when the pointer leaves the window; releasing commits the clamped insertion
 position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
-Horizontal tabs share the window width, shrinking to 120 logical pixels before
-scrolling. Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
+Horizontal tabs size to their titles by default; with `width = "fill"` they
+share the window width, shrinking to 120 logical pixels before scrolling.
+Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
 bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
 more tabs remain plus a slim, draggable position indicator along their bottom
 edge; vertical bars show an overlay scrollbar that widens on hover and can be

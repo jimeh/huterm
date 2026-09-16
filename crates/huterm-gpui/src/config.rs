@@ -869,7 +869,18 @@ background = "#040506"
         assert_eq!(parse("").unwrap(), Config::default());
         assert_eq!(
             parse("[theme]\nname = 'huterm-dark'").unwrap().theme,
-            Theme::default()
+            Theme::huterm_dark()
+        );
+        // An unnamed theme derives its chrome from its own colors rather
+        // than inheriting huterm-dark's hand-picked dark set.
+        let light =
+            parse("[theme]\nbackground = '#ffffff'\nforeground = '#000000'")
+                .unwrap()
+                .theme;
+        assert_eq!(light.tab_bar_background, None);
+        assert_ne!(
+            light.ui().tab_bar_background,
+            Theme::huterm_dark().ui().tab_bar_background
         );
         for name in [
             "tokyo-night",
@@ -935,7 +946,7 @@ background = "#040506"
         assert_eq!(theme.ansi[..8], ansi);
         assert_eq!(theme.ansi[8..], ansi);
         let default = parse("[theme]\nname = 'huterm-dark'").unwrap().theme;
-        assert_eq!(default, Theme::default());
+        assert_eq!(default, Theme::huterm_dark());
         assert_ne!(theme, default);
     }
 

@@ -447,6 +447,24 @@ fn luminance(color: Rgb) -> f32 {
         / 255.0
 }
 
+impl Theme {
+    /// The built-in `huterm-dark` theme: the default colors plus hand-picked
+    /// tab chrome. `Default` leaves the chrome unset so a theme built on it
+    /// derives chrome from its own colors.
+    #[must_use]
+    pub fn huterm_dark() -> Self {
+        Self {
+            tab_bar_background: Some(rgb(0x0016_1719)),
+            tab_active_background: Some(rgb(0x0028_2a2e)),
+            tab_foreground: Some(rgb(0x00c5_c8c6)),
+            tab_inactive_foreground: Some(rgb(0x0096_9896)),
+            tab_border: Some(rgb(0x002a_2c30)),
+            tab_accent: Some(rgb(0x0081_a2be)),
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self {
@@ -455,12 +473,12 @@ impl Default for Theme {
             cursor: rgb(0x00ff_ffff),
             selection: rgb(0x0026_4f78),
             selection_foreground: None,
-            tab_bar_background: Some(rgb(0x0016_1719)),
-            tab_active_background: Some(rgb(0x0028_2a2e)),
-            tab_foreground: Some(rgb(0x00c5_c8c6)),
-            tab_inactive_foreground: Some(rgb(0x0096_9896)),
-            tab_border: Some(rgb(0x002a_2c30)),
-            tab_accent: Some(rgb(0x0081_a2be)),
+            tab_bar_background: None,
+            tab_active_background: None,
+            tab_foreground: None,
+            tab_inactive_foreground: None,
+            tab_border: None,
+            tab_accent: None,
             tab_hover_background: None,
             scrollbar_thumb: None,
             scrollbar_track: None,

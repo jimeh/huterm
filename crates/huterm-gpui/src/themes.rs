@@ -76,7 +76,7 @@ fn resolve_named(
             Ok(source) => parse_file(&source)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if name == "huterm-dark" {
-                    return Ok(Theme::default());
+                    return Ok(Theme::huterm_dark());
                 }
                 let source = bundled(name).ok_or_else(|| {
                     ConfigError::Theme(format!("unknown theme {name:?}"))
@@ -175,7 +175,7 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 13);
-        let default = Theme::default();
+        let default = Theme::huterm_dark();
         assert!(
             [
                 default.tab_bar_background,

@@ -3781,7 +3781,9 @@ fn path_for_status(cx: &App) -> String {
 }
 
 /// The shelf a top bar occupies for `tabs`, if the config asks for one and
-/// the display offers it. Only top bars use shelves.
+/// the display offers one tall enough for the bar. Only top bars use
+/// shelves; a shorter shelf is not a shelf at all, so presentation, painting,
+/// and layout agree on the bar's normal place below the safe area.
 fn select_notch_shelf(
     tabs: TabsConfig,
     shelves: Option<crate::fullscreen::NotchShelves>,
@@ -3790,11 +3792,12 @@ fn select_notch_shelf(
         return None;
     }
     let shelves = shelves?;
-    match tabs.notch {
-        huterm_config::TabNotch::Off => None,
-        huterm_config::TabNotch::Left => Some(shelves.left),
-        huterm_config::TabNotch::Right => Some(shelves.right),
-    }
+    let shelf = match tabs.notch {
+        huterm_config::TabNotch::Off => return None,
+        huterm_config::TabNotch::Left => shelves.left,
+        huterm_config::TabNotch::Right => shelves.right,
+    };
+    (shelf.size.height >= tab_bar_height(tabs)).then_some(shelf)
 }
 
 /// Largest corner radius the rounded terminal corner may use, so wide padding

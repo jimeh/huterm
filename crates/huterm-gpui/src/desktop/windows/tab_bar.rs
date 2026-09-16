@@ -931,6 +931,26 @@ mod tests {
                 "{position:?}"
             );
         }
+        // A shelf shorter than the bar is not selected, so auto-hide and the
+        // shelf background follow the same fallback as the layout.
+        let short = crate::fullscreen::NotchShelves {
+            left: Bounds::new(shelves.left.origin, size(px(790.0), px(20.0))),
+            right: shelves.right,
+        };
+        assert!(
+            select_notch_shelf(
+                tabs(TabPosition::Top, TabNotch::Left),
+                Some(short)
+            )
+            .is_none()
+        );
+        assert_eq!(
+            select_notch_shelf(
+                tabs(TabPosition::Top, TabNotch::Right),
+                Some(short)
+            ),
+            Some(short.right)
+        );
     }
 
     #[test]
