@@ -3462,6 +3462,14 @@
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
+        "scrollbar_thumb": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "scrollbar_track": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
         "selection": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
@@ -3488,6 +3496,10 @@
         },
         "tab_foreground": {
           "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_hover_background": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
           "type": "string"
         },
         "tab_inactive_foreground": {
@@ -3715,6 +3727,14 @@
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
         },
+        "scrollbar_thumb": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "scrollbar_track": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
         "selection": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
@@ -3741,6 +3761,10 @@
         },
         "tab_foreground": {
           "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_hover_background": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
           "type": "string"
         },
         "tab_inactive_foreground": {

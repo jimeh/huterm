@@ -984,6 +984,16 @@ pub(super) fn display_foreground(foreground: Rgb, dim: bool) -> Rgb {
     }
 }
 
+pub(super) fn rgba_color(rgba: huterm_config::Rgba) -> Hsla {
+    gpui::Rgba {
+        r: f32::from(rgba.red) / 255.0,
+        g: f32::from(rgba.green) / 255.0,
+        b: f32::from(rgba.blue) / 255.0,
+        a: f32::from(rgba.alpha) / 255.0,
+    }
+    .into()
+}
+
 pub(super) fn rgb_color(rgb: Rgb) -> Hsla {
     gpui::rgb(
         (u32::from(rgb.red) << 16)

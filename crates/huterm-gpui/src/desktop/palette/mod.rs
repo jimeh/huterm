@@ -36,8 +36,9 @@ use slots::{
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
 use crate::ui::scrollbar::{
-    Axis, Edge, INDICATOR_HOLD, Origin, Press, ScrollbarGeometries,
-    ScrollbarGeometry, ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
+    Axis, Edge, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
+    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
+    TrackMargins, TrackPress,
 };
 use crate::ui::text_field::{Changed, TextField};
 
@@ -105,6 +106,7 @@ pub(super) struct PaletteColors {
     pub(super) background: Hsla,
     pub(super) selection: Hsla,
     pub(super) accent: Hsla,
+    pub(super) scrollbar: ScrollbarColors,
 }
 
 /// One configured quake profile for the profile picker.
@@ -1414,6 +1416,7 @@ struct Swatch {
     selection: Hsla,
     accent: Hsla,
     chip: Hsla,
+    scrollbar: ScrollbarColors,
 }
 
 impl Swatch {
@@ -1427,6 +1430,7 @@ impl Swatch {
             selection: colors.selection.opacity(0.35),
             accent: colors.accent,
             chip: colors.foreground.opacity(0.1),
+            scrollbar: colors.scrollbar,
         }
     }
 }
@@ -2108,7 +2112,7 @@ impl Render for CommandPalette {
                 )
                 .children(
                     self.scrollbars
-                        .layers(&geometries, swatch.fg)
+                        .layers(&geometries, swatch.scrollbar)
                         .collect::<Vec<_>>(),
                 )
         });

@@ -39,12 +39,14 @@ use crate::keymap::{
     self, CompiledKeymap, InstalledKeymap, Platform, ReservedKeys,
 };
 use crate::mouse::{MouseState, application_route};
-use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
+use crate::renderer::{
+    GridMetrics, TerminalRenderer, rgb_color as color, rgba_color,
+};
 use crate::scroll::ScrollController;
 use crate::ui::scrollbar::{
     Axis, Edge, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
-    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
-    TrackMargins, TrackPress,
+    ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
+    Scrollbars, TrackMargins, TrackPress,
 };
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
@@ -2029,7 +2031,7 @@ impl Render for TerminalView {
         {
             root = root.children(
                 self.scrollbars
-                    .layers(&geometries, color(self.theme.foreground))
+                    .layers(&geometries, scrollbar_colors(&self.theme))
                     .collect::<Vec<_>>(),
             );
             if let Some(label) = scroll_position_label(displayed_offset) {
@@ -2169,6 +2171,15 @@ impl TerminalLayout {
             ),
             grid,
         }
+    }
+}
+
+/// The theme's overlay scrollbar colors as GPUI colors.
+pub(super) fn scrollbar_colors(theme: &Theme) -> ScrollbarColors {
+    let ui = theme.ui();
+    ScrollbarColors {
+        thumb: rgba_color(ui.scrollbar_thumb),
+        track: rgba_color(ui.scrollbar_track),
     }
 }
 

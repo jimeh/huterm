@@ -97,6 +97,13 @@ pub(crate) struct ScrollbarOptions {
     pub(crate) hold: Duration,
 }
 
+/// Thumb and track colors, usually the theme's overlay colors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollbarColors {
+    pub(crate) thumb: Hsla,
+    pub(crate) track: Hsla,
+}
+
 /// The result of a press on a scrollbar strip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Press {
@@ -427,7 +434,7 @@ impl AxisScrollbar {
     fn layers(
         &self,
         geometry: ScrollbarGeometry,
-        foreground: Hsla,
+        colors: ScrollbarColors,
     ) -> impl Iterator<Item = Div> {
         let opacity = self.visibility.opacity;
         let expansion = self.expansion.progress;
@@ -444,7 +451,7 @@ impl AxisScrollbar {
                 (8.0 + 6.0 * expansion) * scale,
             )
             .rounded(px((4.0 + 3.0 * expansion) * scale))
-            .bg(foreground.opacity(20.0 / 255.0))
+            .bg(colors.track)
             .opacity(opacity * expansion)
         });
         let thumb = place(
@@ -456,7 +463,7 @@ impl AxisScrollbar {
             (6.0 + 4.0 * expansion) * scale,
         )
         .rounded(px((3.0 + 2.0 * expansion) * scale))
-        .bg(foreground.opacity(187.0 / 255.0))
+        .bg(colors.thumb)
         .opacity(opacity);
         track.into_iter().chain(std::iter::once(thumb))
     }
@@ -743,15 +750,15 @@ impl Scrollbars {
     pub(crate) fn layers<'a>(
         &'a self,
         geometries: &'a ScrollbarGeometries,
-        foreground: Hsla,
+        colors: ScrollbarColors,
     ) -> impl Iterator<Item = Div> + 'a {
         self.enabled().flat_map(move |(axis, scrollbar)| {
             let geometry = geometries
                 .get(axis)
                 .filter(|_| scrollbar.visibility.opacity > 0.0);
-            geometry.into_iter().flat_map(move |geometry| {
-                scrollbar.layers(geometry, foreground)
-            })
+            geometry
+                .into_iter()
+                .flat_map(move |geometry| scrollbar.layers(geometry, colors))
         })
     }
 }
@@ -852,7 +859,18 @@ mod tests {
                 .abs()
                 < 0.001
         );
-        assert_eq!(growing.layers(&geometries, Hsla::default()).count(), 2);
+        assert_eq!(
+            growing
+                .layers(
+                    &geometries,
+                    ScrollbarColors {
+                        thumb: Hsla::default(),
+                        track: Hsla::default()
+                    }
+                )
+                .count(),
+            2
+        );
 
         let mut inset = Scrollbars::vertical(ScrollbarOptions {
             edge_inset: 6.0,
@@ -1226,7 +1244,18 @@ mod tests {
             (jumping.strip_thickness(Axis::Vertical) - STRIP_THICKNESS).abs()
                 < f32::EPSILON
         );
-        assert_eq!(jumping.layers(&geometries, Hsla::default()).count(), 1);
+        assert_eq!(
+            jumping
+                .layers(
+                    &geometries,
+                    ScrollbarColors {
+                        thumb: Hsla::default(),
+                        track: Hsla::default()
+                    }
+                )
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1281,7 +1310,18 @@ mod tests {
                 .map(|(axis, _)| axis),
             Some(Axis::Horizontal)
         );
-        assert_eq!(scrollbars.layers(&geometries, Hsla::default()).count(), 2);
+        assert_eq!(
+            scrollbars
+                .layers(
+                    &geometries,
+                    ScrollbarColors {
+                        thumb: Hsla::default(),
+                        track: Hsla::default()
+                    }
+                )
+                .count(),
+            2
+        );
         scrollbars.set_axis(Axis::Horizontal, None);
         assert!(
             scrollbars

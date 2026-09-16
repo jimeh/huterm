@@ -1,10 +1,13 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
 use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
-use huterm_config::{TabCloseButton, TabStyle, TabWidth, TabsConfig};
+use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
+use crate::renderer::rgba_color;
+use crate::ui::scrollbar::ScrollbarColors;
 
+use super::super::scrollbar_colors;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Presentation,
@@ -52,11 +55,21 @@ pub(super) struct TabColors {
     pub(super) accent: Hsla,
     pub(super) terminal: Hsla,
     pub(super) error: Hsla,
+    /// Overlay on a hovered tab.
+    pub(super) hover: Hsla,
+    /// Overlay on a hovered control, twice as strong as a tab's.
+    pub(super) control_hover: Hsla,
+    pub(super) scrollbar: ScrollbarColors,
 }
 
 impl TabColors {
     pub(super) fn new(theme: &Theme) -> Self {
         let ui = theme.ui();
+        let hover = ui.tab_hover_background;
+        let control_hover = Rgba {
+            alpha: hover.alpha.saturating_mul(2),
+            ..hover
+        };
         Self {
             bar: color(ui.tab_bar_background),
             active: color(ui.tab_active_background),
@@ -66,11 +79,14 @@ impl TabColors {
             accent: color(ui.tab_accent),
             terminal: color(theme.background),
             error: color(theme.ansi[1]),
+            hover: rgba_color(hover),
+            control_hover: rgba_color(control_hover),
+            scrollbar: scrollbar_colors(theme),
         }
     }
 
     fn hover(self) -> Hsla {
-        self.foreground.opacity(0.04)
+        self.hover
     }
 }
 
@@ -292,7 +308,7 @@ impl WorkspaceView {
                     .opacity(0.0)
                     .group_hover("tab", |style| style.opacity(1.0))
             })
-            .hover(|style| style.bg(foreground.opacity(0.08)))
+            .hover(|style| style.bg(colors.control_hover))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })

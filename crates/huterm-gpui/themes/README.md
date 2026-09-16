@@ -59,5 +59,13 @@ inactive text and border colors.
 Overriding only `background` or `foreground` on top of a bundled theme keeps
 that theme's chrome colors. Set the chrome keys too when they should follow.
 
+Three more optional keys color overlays and accept `#rrggbb` or `#rrggbbaa`:
+`tab_hover_background` for hovered tabs and chrome controls, and
+`scrollbar_thumb` and `scrollbar_track` for every overlay scrollbar, in the
+terminal, the command palette list, and the tab bars. Unset keys derive from
+the resolved `foreground` at fixed alphas: about 4 percent for hover, 73
+percent for the thumb, and 8 percent for the track. Bundled themes leave them
+derived.
+
 The theme TOML files are modified conversions, not original upstream files.
 Keep the upstream license notices with binary distributions.

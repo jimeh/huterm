@@ -228,6 +228,24 @@
     "theme": true
   },
   {
+    "name": "standalone overlay colors with and without alpha",
+    "toml": "[theme]\nextends = \"huterm-dark\"\ntab_hover_background = \"#c0caf50a\"\nscrollbar_thumb = \"#c0caf5\"\nscrollbar_track = \"#c0caf514\"",
+    "valid": true,
+    "theme": true
+  },
+  {
+    "name": "standalone overlay color with odd digits",
+    "toml": "[theme]\nscrollbar_thumb = \"#c0caf5a\"",
+    "valid": false,
+    "theme": true
+  },
+  {
+    "name": "opaque chrome color rejects alpha",
+    "toml": "[theme]\ntab_accent = \"#4080ff80\"",
+    "valid": false,
+    "theme": true
+  },
+  {
     "name": "selected theme chrome color",
     "toml": "[theme]\nname = \"tokyo-night\"\ntab_bar_background = \"#000000\"",
     "valid": true,
