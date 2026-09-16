@@ -879,6 +879,13 @@ background = "#040506"
         let same = parse("[theme]\nbackground = '#1d1f21'").unwrap().theme;
         assert_eq!(same.background, Theme::default().background);
         assert_eq!(same.tab_bar_background, None);
+        // An empty named definition follows the same rule.
+        assert_eq!(
+            parse("[theme]\nname = 'bare'\n[themes.bare]")
+                .unwrap()
+                .theme,
+            Theme::huterm_dark()
+        );
         // An unnamed theme derives its chrome from its own colors rather
         // than inheriting huterm-dark's hand-picked dark set.
         let light =

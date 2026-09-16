@@ -395,19 +395,35 @@ impl Window {
     pub fn safe_area(&self) -> gpui::Edges<gpui::Pixels> {
         // SAFETY: Retained NSWindow and its current NSScreen, read synchronously.
         unsafe {
+            if self.in_native_space() {
+                // A native Space already keeps the content below the notch.
+                return gpui::Edges::default();
+            }
             let screen: *mut Object = msg_send![self.0.native.0, screen];
             crate::native_fullscreen::screen_safe_area(screen)
                 .map(|value| gpui::px(*value as f32))
         }
     }
     /// The areas beside the camera housing while the quake window covers
-    /// the screen, or `None` without a notch.
+    /// the screen, or `None` without a notch or inside a native Space.
     pub fn notch_shelves(&self) -> Option<crate::fullscreen::NotchShelves> {
         // SAFETY: Retained NSWindow and its current NSScreen, read
         // synchronously; a fullscreen quake frame equals the screen frame.
         unsafe {
+            if self.in_native_space() {
+                return None;
+            }
             let screen: *mut Object = msg_send![self.0.native.0, screen];
             crate::native_fullscreen::screen_notch_shelves(screen)
+        }
+    }
+    /// Whether `AppKit` has the window in a native fullscreen Space, where it
+    /// lays the content out below the notch itself.
+    unsafe fn in_native_space(&self) -> bool {
+        // SAFETY: Read-only main-thread style getter on the retained window.
+        unsafe {
+            let style: usize = msg_send![self.0.native.0, styleMask];
+            style & (1 << 14) != 0
         }
     }
     pub fn toggle_native_for_smoke(&self) {

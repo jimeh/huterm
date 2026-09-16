@@ -372,7 +372,9 @@ fn vertical_pill_tab(
             .relative()
             .flex_1()
             .min_w_0()
-            .h_full()
+            // An explicit height keeps the margins inside the slot; a full
+            // height plus margins would overflow it and lose the inset.
+            .h(TAB_HEIGHT - VERTICAL_ROW_MARGIN_Y * 2.0)
             .mx(VERTICAL_ROW_MARGIN_X)
             .my(VERTICAL_ROW_MARGIN_Y)
             .rounded(px(7.0))

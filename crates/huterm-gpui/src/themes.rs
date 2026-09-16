@@ -98,6 +98,11 @@ fn resolve_named(
         }
     };
     validate_definition(&definition)?;
+    // An empty definition is huterm-dark itself, as for the `[theme]` table.
+    if definition == ThemeDefinition::default() {
+        stack.pop();
+        return Ok(Theme::huterm_dark());
+    }
     let base = match &definition.extends {
         Some(parent) => resolve_named(parent, inline, directory, stack)?,
         None => Theme::default(),
