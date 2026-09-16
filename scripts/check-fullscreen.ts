@@ -94,7 +94,9 @@ writeFileSync(${JSON.stringify(rawReady)}, "ready");
 setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
 for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
 `);
-  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
+  // Keep a top bar below the notch so the safe-area checks see the bar
+  // itself inset rather than moved beside the camera housing.
+  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[tabs]\nnotch = "off"\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do
@@ -199,7 +201,7 @@ done
   const checkReserved = async () => {
     const baseline = await state();
     for (const position of ["top", "left", "bottom", "right"]) {
-      await writeFile(config, initialConfig.replace("[window]", `[tabs]\nposition = "${position}"\n[window]`));
+      await writeFile(config, initialConfig.replace("[tabs]\n", `[tabs]\nposition = "${position}"\n`));
       await accepted("0 reload_config");
       await waitFor(async () => (await state()).reloading === "false", "reserved config reload");
       const one = await state();
@@ -228,7 +230,7 @@ done
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
     }
-    await writeFile(config, initialConfig.replace("[window]", "[tabs]\nalways_show = true\n[window]"));
+    await writeFile(config, initialConfig.replace("[tabs]\n", "[tabs]\nalways_show = true\n"));
     await accepted("0 reload_config");
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "always-show reserves a single tab");
     await writeFile(config, initialConfig);
@@ -252,7 +254,7 @@ done
       const [width, height] = current["w0.viewport"]!.split(",").map(Number) as [number, number];
       const topInset = Number(current["w0.insets"]!.split(",")[0]);
       const centerX = width / 2; const centerY = height / 2;
-      const source = configText("native").replace("[window]", `[tabs]\nposition = "${position}"\nauto_hide_in_fullscreen = true\n[window]`);
+      const source = configText("native").replace("[tabs]\n", `[tabs]\nposition = "${position}"\nauto_hide_in_fullscreen = true\n`);
       await move(centerX, centerY);
       await writeFile(config, source);
       await accepted("0 reload_config");
@@ -447,8 +449,9 @@ done
         if (simple["w0.shadow"] !== "false") throw new Error("non-native fullscreen retained its shadow border");
         if (simple["w0.insets"] !== simple["w0.safe_area"]) throw new Error("non-native fullscreen did not apply the display safe area");
         const topInset = Number(simple["w0.safe_area"]!.split(",")[0]);
-        if (Number(simple["w0.tab_bounds"]!.split(",")[1]) !== topInset) throw new Error("tab bar overlaps the display safe area");
-        if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + 32) throw new Error("terminal did not follow inset tab bar");
+        const [, tabTop, , tabHeight] = simple["w0.tab_bounds"]!.split(",").map(Number);
+        if (tabTop !== topInset) throw new Error("tab bar overlaps the display safe area");
+        if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + tabHeight!) throw new Error("terminal did not follow inset tab bar");
         await accepted("probe-display-refit");
         await waitFor(async () => {
           const current = await state();

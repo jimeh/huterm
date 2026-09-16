@@ -216,11 +216,11 @@ impl Default for TabsConfig {
             position: TabPosition::Top,
             always_show: false,
             auto_hide_in_fullscreen: false,
-            style: TabStyle::Strip,
+            style: TabStyle::Pill,
             pill_accent: false,
             close_button: TabCloseButton::Active,
-            notch: TabNotch::Off,
-            width: TabWidth::Fill,
+            notch: TabNotch::Left,
+            width: TabWidth::Fit,
             min_width: 96.0,
             max_width: 240.0,
         }
@@ -297,8 +297,8 @@ pub enum TabPosition {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabStyle {
-    #[default]
     Strip,
+    #[default]
     Pill,
 }
 
@@ -308,8 +308,8 @@ pub enum TabStyle {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabWidth {
-    #[default]
     Fill,
+    #[default]
     Fit,
 }
 
@@ -337,8 +337,8 @@ pub enum TabCloseButton {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TabNotch {
-    #[default]
     Off,
+    #[default]
     Left,
     Right,
 }

@@ -192,9 +192,10 @@ delay. Repeated activity restarts the hold.
 Both settings default to `false` and take effect on config reload.
 
 Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. With the default `width = "fill"`, horizontal tabs divide the
-available width equally until their 120-pixel minimum, then scroll
-horizontally. Vertical tabs stay 32 pixels tall and fill the sidebar width.
+default. With `width = "fill"`, horizontal tabs divide the available width
+equally until their 120-pixel minimum, then scroll horizontally; the default
+`"fit"` sizes them to their titles between `min_width` and `max_width`.
+Vertical tabs stay 32 pixels tall and fill the sidebar width.
 Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
 capped at half the window width. Each window keeps
 its preferred width for its lifetime, including through temporary window
@@ -207,10 +208,11 @@ border. Strip bars are 32 points tall; Pill bars are 34 so 26-point pills keep
 Pill strips also start with a leading margin so the first pill's visible edge
 sits at that same inset, and hovering a pill never hides its dividers.
 
-`[tabs].style = "strip"`, the default, merges the active tab into the terminal
-with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
-dividers; `pill_accent = true` adds an accent bar inside the active pill's left
-edge and widens every pill's left padding to keep titles aligned. `close_button`
+`[tabs].style = "strip"` merges the active tab into the terminal with an
+accent line on its outer edge. `"pill"`, the default, draws rounded tabs
+separated by dividers; `pill_accent = true` adds an accent bar inside the
+active pill's left edge and widens every pill's left padding to keep titles
+aligned. `close_button`
 selects when close buttons show: `hover` only, `active` adds the active tab, and
 `always` shows every tab's; the slot stays reserved either way so widths never
 change. Left and right placement follow `style` too: Strip rows span the column,

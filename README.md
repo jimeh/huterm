@@ -221,11 +221,11 @@ macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 position = "top" # top, bottom, left, or right
 always_show = false
 auto_hide_in_fullscreen = false
-style = "strip" # strip or pill
+style = "pill" # pill or strip
 pill_accent = false # accent bar inside the active pill
-close_button = "active" # hover, active, or always
-notch = "off" # fullscreen top bar beside a display notch: off, left, or right
-width = "fill" # fill or fit
+close_button = "active" # active, hover, or always
+notch = "left" # fullscreen top bar beside a display notch: off, left, or right
+width = "fit" # fit or fill
 min_width = 96.0 # logical points; fit only
 max_width = 240.0 # logical points; fit only
 ```
@@ -235,17 +235,19 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-`style` selects Strip or Pill tabs for every placement. Left and right Strip
-tabs put the accent line on the window edge; left and right Pill tabs are
-rounded rows inset in the column. `pill_accent = true` draws an accent bar
-inside the active pill. `close_button` shows close buttons on hovered tabs only,
-on the active tab as well (the default), or on every tab. `notch = "left"` or
-`"right"` moves a top bar beside the camera housing in non-native fullscreen on
-a notched display, keeping its normal height at the bottom of that area and
-giving the bar's height back to the terminal; elsewhere it is ignored. Themes
-color the tab bar through their tab chrome keys. `width = "fill"` shares the bar
-equally; `"fit"` sizes top and bottom tabs to their titles between `min_width`
-and `max_width` logical points, each accepting 48 through 600.
+`style` selects Pill (the default) or Strip tabs for every placement. Left and
+right Strip tabs put the accent line on the window edge; left and right Pill
+tabs are rounded rows inset in the column. `pill_accent = true` draws an
+accent bar inside the active pill. `close_button` shows close buttons on
+hovered tabs only,
+on the active tab as well (the default), or on every tab. `notch = "left"` (the
+default) or `"right"` moves a top bar beside the camera housing in non-native
+fullscreen on a notched display, keeping its normal height at the bottom of
+that area and giving the bar's height back to the terminal; `"off"` keeps the
+bar below the notch, and elsewhere the setting is ignored. Themes
+color the tab bar through their tab chrome keys. `width = "fit"` (the default)
+sizes top and bottom tabs to their titles between `min_width` and `max_width`
+logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores

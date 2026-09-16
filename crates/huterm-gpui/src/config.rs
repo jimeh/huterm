@@ -51,17 +51,17 @@ padding_balance = false
 position = "top"
 always_show = false
 auto_hide_in_fullscreen = false
-# Horizontal tab style: strip or pill.
-style = "strip"
+# Tab style: pill or strip.
+style = "pill"
 # Draw an accent bar inside the active pill.
 pill_accent = false
-# Show tab close buttons on: hover, active, or always.
+# Show tab close buttons on: active, hover, or always.
 close_button = "active"
 # In fullscreen on a notched display, put a top bar beside the notch: off,
 # left, or right.
-notch = "off"
-# Horizontal tab width: fill or fit.
-width = "fill"
+notch = "left"
+# Horizontal tab width: fit or fill.
+width = "fit"
 # Width bounds in logical points for fit mode.
 min_width = 96.0
 max_width = 240.0
@@ -476,14 +476,14 @@ mod tests {
                     "auto_hide_in_fullscreen = false",
                     "auto_hide_in_fullscreen = true",
                 )
-                .replace("style = \"strip\"", "style = \"pill\"")
+                .replace("style = \"pill\"", "style = \"strip\"")
                 .replace("pill_accent = false", "pill_accent = true")
                 .replace(
                     "close_button = \"active\"",
                     "close_button = \"always\"",
                 )
-                .replace("notch = \"off\"", "notch = \"left\"")
-                .replace("width = \"fill\"", "width = \"fit\"")
+                .replace("notch = \"left\"", "notch = \"right\"")
+                .replace("width = \"fit\"", "width = \"fill\"")
                 .replace("min_width = 96.0", "min_width = 120.0")
                 .replace("max_width = 240.0", "max_width = 360.0"),
         )
@@ -494,11 +494,11 @@ mod tests {
                 position: TabPosition::Bottom,
                 always_show: true,
                 auto_hide_in_fullscreen: true,
-                style: TabStyle::Pill,
+                style: TabStyle::Strip,
                 pill_accent: true,
                 close_button: TabCloseButton::Always,
-                notch: TabNotch::Left,
-                width: TabWidth::Fit,
+                notch: TabNotch::Right,
+                width: TabWidth::Fill,
                 min_width: 120.0,
                 max_width: 360.0,
             }

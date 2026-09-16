@@ -751,7 +751,11 @@ mod tests {
         let inset = strip_bounds(tabs, px(10.0), pill(TabPosition::Left));
         assert_eq!(inset.origin.y, tabs.origin.y + px(10.0));
         assert_eq!(inset.bottom(), tabs.bottom());
-        assert_eq!(strip_bounds(tabs, px(0.0), TabsConfig::default()), tabs);
+        let strip_style = TabsConfig {
+            style: TabStyle::Strip,
+            ..TabsConfig::default()
+        };
+        assert_eq!(strip_bounds(tabs, px(0.0), strip_style), tabs);
         let tiny = Bounds::new(tabs.origin, size(px(1.0), px(32.0)));
         assert_eq!(
             strip_bounds(tiny, px(0.0), pill(TabPosition::Bottom))

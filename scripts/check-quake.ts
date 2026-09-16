@@ -154,7 +154,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await waitFor(async () => {
       const value = profile(await state(), name);
       return value?.tab_presentation === (fullscreen ? "Overlay" : "Reserved")
-        && Number(value.terminal_top) === Number(value.safe_top) + (fullscreen ? 0 : 32);
+        && Number(value.terminal_top) === Number(value.safe_top) + (fullscreen ? 0 : Number(value.tab_height));
     }, `${name} frameless ${fullscreen ? "overlay" : "reserved-tab"} terminal bounds`);
   };
   const checkStackingState = async (value: State, regular: boolean) => {

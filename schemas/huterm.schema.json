@@ -3598,7 +3598,7 @@
               "$ref": "#/definitions/TabNotch"
             }
           ],
-          "default": "off",
+          "default": "left",
           "description": "Put a top bar beside a display notch in non-native fullscreen."
         },
         "pill_accent": {
@@ -3620,7 +3620,7 @@
               "$ref": "#/definitions/TabStyle"
             }
           ],
-          "default": "strip"
+          "default": "pill"
         },
         "width": {
           "allOf": [
@@ -3628,7 +3628,7 @@
               "$ref": "#/definitions/TabWidth"
             }
           ],
-          "default": "fill"
+          "default": "fit"
         }
       },
       "type": "object"

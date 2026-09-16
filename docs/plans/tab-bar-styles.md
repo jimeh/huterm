@@ -26,15 +26,16 @@ the macOS titlebar. Everything ships in one PR.
   position = "top"   # top, bottom, left, or right
   always_show = false
   auto_hide_in_fullscreen = false
-  style = "strip"    # strip or pill; top and bottom only
+  style = "pill"     # pill or strip
   pill_accent = false # accent bar inside the active pill
-  width = "fill"     # fill or fit; top and bottom only
+  width = "fit"      # fit or fill; top and bottom only
   min_width = 96.0   # logical points; fit only
   max_width = 240.0  # logical points; fit only
   ```
 
-- **Defaults.** Strip style with Fill width, which stays closest to today's
-  layout.
+- **Defaults.** Pill style with Fit width. The plan first chose Strip with
+  Fill to stay closest to the previous layout; the defaults changed once both
+  styles were in use.
 - **Bar height.** Strip keeps the existing 32-point `TAB_HEIGHT`, which
   vertical rows also use. Pill bars are 34 points so 26-point pills keep a
   4-point inset on every side; `ChromeLayout` takes the height from the tab
