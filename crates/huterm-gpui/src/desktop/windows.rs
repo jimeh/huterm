@@ -4247,6 +4247,9 @@ impl Render for WorkspaceView {
         );
         let titlebar = terminal_top(self.chrome_hidden());
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
+        // A top bar on the notch shelf, currently shown.
+        let shelf_bar = self.notch_shelf().is_some()
+            && self.presentation() == Presentation::Reserved;
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
@@ -4256,10 +4259,10 @@ impl Render for WorkspaceView {
                     .right_0()
                     .h(top_chrome)
                     .bg(
-                        // A shelf bar paints its own background; the rest
-                        // of the safe-area strip stays terminal-colored.
-                        if self.notch_shelf().is_none()
-                            && top_chrome_uses_bar(
+                        // A shelf bar fills the whole safe-area strip, so
+                        // the bar reads as one band across the notch.
+                        if shelf_bar
+                            || top_chrome_uses_bar(
                                 position,
                                 titlebar > px(0.0),
                                 self.presentation(),
@@ -4325,16 +4328,30 @@ impl Render for WorkspaceView {
                     .bg(colors.bar)
                     .occlude(),
             );
-            let edge = layout.tab_border(position);
-            chrome = chrome.child(
-                div()
-                    .absolute()
-                    .left(edge.origin.x - clip.origin.x)
-                    .top(edge.origin.y - clip.origin.y)
-                    .w(edge.size.width)
-                    .h(edge.size.height)
-                    .bg(colors.border),
-            );
+            if shelf_bar {
+                // One point below the safe area so the notch never hides
+                // it, and across the whole window rather than the shelf.
+                chrome = chrome.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0) - clip.origin.x)
+                        .top(layout.terminal.origin.y - clip.origin.y)
+                        .w(window.viewport_size().width)
+                        .h(px(1.0))
+                        .bg(colors.border),
+                );
+            } else {
+                let edge = layout.tab_border(position);
+                chrome = chrome.child(
+                    div()
+                        .absolute()
+                        .left(edge.origin.x - clip.origin.x)
+                        .top(edge.origin.y - clip.origin.y)
+                        .w(edge.size.width)
+                        .h(edge.size.height)
+                        .bg(colors.border),
+                );
+            }
             let mut bar = div()
                 .id("tab-strip")
                 .occlude()
