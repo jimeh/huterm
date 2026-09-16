@@ -784,9 +784,54 @@ mod tests {
             tabs(TabPosition::Top, TabStyle::Pill),
             px(220.0),
             gpui::Edges::default(),
+            None,
         );
         assert_eq!(layout.tabs.size.height, px(34.0));
         assert_eq!(layout.terminal.origin.y, px(28.0 + 34.0));
+    }
+
+    #[test]
+    fn a_notch_shelf_holds_a_top_bar_beside_the_notch_at_full_height() {
+        let viewport = size(px(1800.0), px(1169.0));
+        let safe_area = gpui::Edges {
+            top: px(38.0),
+            ..Default::default()
+        };
+        let shelf =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(790.0), px(38.0)));
+        let pill = TabsConfig {
+            style: TabStyle::Pill,
+            ..TabsConfig::default()
+        };
+        let layout = ChromeLayout::for_tabs(
+            viewport,
+            px(0.0),
+            pill,
+            px(220.0),
+            safe_area,
+            Some(shelf),
+        );
+        // Bottom-aligned in the shelf at the Pill bar's own height.
+        assert_eq!(layout.tabs.size, size(px(790.0), px(34.0)));
+        assert_eq!(layout.tabs.bottom(), px(38.0));
+        assert_eq!(layout.tabs.origin.x, px(0.0));
+        // The terminal keeps everything under the safe area.
+        assert_eq!(layout.terminal.origin.y, px(38.0));
+        assert_eq!(layout.terminal.size.height, px(1169.0 - 38.0));
+        // Other placements ignore the shelf.
+        let column = ChromeLayout::for_tabs(
+            viewport,
+            px(0.0),
+            TabsConfig {
+                position: TabPosition::Left,
+                ..TabsConfig::default()
+            },
+            px(220.0),
+            safe_area,
+            Some(shelf),
+        );
+        assert_eq!(column.tabs.origin.y, px(0.0));
+        assert!(column.tabs.size.height > px(1000.0));
     }
 
     #[test]

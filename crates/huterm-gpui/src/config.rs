@@ -57,6 +57,9 @@ style = "strip"
 pill_accent = false
 # Show tab close buttons on: hover, active, or always.
 close_button = "active"
+# In fullscreen on a notched display, put a top bar beside the notch: off,
+# left, or right.
+notch = "off"
 # Horizontal tab width: fill or fit.
 width = "fill"
 # Width bounds in logical points for fit mode.
@@ -397,7 +400,7 @@ impl fmt::Display for ConfigFileError {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use huterm_config::{TabCloseButton, TabStyle, TabWidth};
+    use huterm_config::{TabCloseButton, TabNotch, TabStyle, TabWidth};
 
     use super::*;
 
@@ -415,7 +418,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 161);
+        assert_eq!(fixtures.len(), 163);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -479,6 +482,7 @@ mod tests {
                     "close_button = \"active\"",
                     "close_button = \"always\"",
                 )
+                .replace("notch = \"off\"", "notch = \"left\"")
                 .replace("width = \"fill\"", "width = \"fit\"")
                 .replace("min_width = 96.0", "min_width = 120.0")
                 .replace("max_width = 240.0", "max_width = 360.0"),
@@ -493,6 +497,7 @@ mod tests {
                 style: TabStyle::Pill,
                 pill_accent: true,
                 close_button: TabCloseButton::Always,
+                notch: TabNotch::Left,
                 width: TabWidth::Fit,
                 min_width: 120.0,
                 max_width: 360.0,

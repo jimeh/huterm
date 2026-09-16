@@ -175,6 +175,8 @@ pub struct TabsConfig {
     pub pill_accent: bool,
     /// When a tab shows its close button; hovering a tab always shows it.
     pub close_button: TabCloseButton,
+    /// Put a top bar beside a display notch in non-native fullscreen.
+    pub notch: TabNotch,
     pub width: TabWidth,
     pub min_width: f32,
     pub max_width: f32,
@@ -217,6 +219,7 @@ impl Default for TabsConfig {
             style: TabStyle::Strip,
             pill_accent: false,
             close_button: TabCloseButton::Active,
+            notch: TabNotch::Off,
             width: TabWidth::Fill,
             min_width: 96.0,
             max_width: 240.0,
@@ -323,6 +326,21 @@ pub enum TabCloseButton {
     Active,
     /// On every tab.
     Always,
+}
+
+/// Where a top tab bar goes on a notched display in non-native fullscreen:
+/// below the notch across the window, or beside the camera housing on one
+/// side, giving that height back to the terminal.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabNotch {
+    #[default]
+    Off,
+    Left,
+    Right,
 }
 
 impl TabPosition {
@@ -1029,7 +1047,7 @@ mod tabs_tests {
     #[test]
     fn tab_settings_accept_every_override() {
         let configured: RawConfig = toml::from_str(
-            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nnotch = 'right'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
         )
         .expect("tab settings");
         configured.validate_values().expect("valid tab settings");
@@ -1042,6 +1060,7 @@ mod tabs_tests {
                 style: TabStyle::Pill,
                 pill_accent: true,
                 close_button: TabCloseButton::Always,
+                notch: TabNotch::Right,
                 width: TabWidth::Fit,
                 min_width: 72.0,
                 max_width: 480.0,

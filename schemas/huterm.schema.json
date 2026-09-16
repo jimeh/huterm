@@ -3528,6 +3528,15 @@
         }
       ]
     },
+    "TabNotch": {
+      "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
+      "enum": [
+        "off",
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
     "TabPosition": {
       "enum": [
         "top",
@@ -3582,6 +3591,15 @@
           "format": "float",
           "minimum": 48,
           "type": "number"
+        },
+        "notch": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabNotch"
+            }
+          ],
+          "default": "off",
+          "description": "Put a top bar beside a display notch in non-native fullscreen."
         },
         "pill_accent": {
           "default": false,

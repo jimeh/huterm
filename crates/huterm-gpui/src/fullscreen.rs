@@ -2,7 +2,15 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::WindowBounds;
+use gpui::{Bounds, Pixels, WindowBounds};
+
+/// The display areas beside a camera housing, in window coordinates of a
+/// window that covers the whole screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NotchShelves {
+    pub(crate) left: Bounds<Pixels>,
+    pub(crate) right: Bounds<Pixels>,
+}
 
 use crate::config::MacosFullscreenMode;
 

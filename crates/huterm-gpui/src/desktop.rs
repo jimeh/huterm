@@ -287,6 +287,8 @@ struct TerminalView {
     tab_overlay: Option<Bounds<Pixels>>,
     chrome_hidden: bool,
     fullscreen_insets: gpui::Edges<Pixels>,
+    /// Shelf beside a display notch that holds the top tab bar, if any.
+    notch_shelf: Option<Bounds<Pixels>>,
     theme: Theme,
     status: Option<String>,
     selection: Option<Selection>,
@@ -426,6 +428,7 @@ impl TerminalView {
             tab_overlay: None,
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
+            notch_shelf: None,
             theme,
             status: presentation_status,
             title: String::new(),
@@ -1525,6 +1528,7 @@ impl TerminalView {
             self.tabs_config,
             self.sidebar_width,
             self.fullscreen_insets,
+            self.notch_shelf,
         )
         .present(self.tab_presentation, self.tabs_config.position, 0.0)
         .terminal

@@ -594,6 +594,18 @@
     "theme": false
   },
   {
+    "name": "tab notch left",
+    "toml": "[tabs]\nnotch = \"left\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab notch unknown",
+    "toml": "[tabs]\nnotch = \"middle\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "tab width fit",
     "toml": "[tabs]\nwidth = \"fit\"",
     "valid": true,

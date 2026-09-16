@@ -195,6 +195,30 @@ impl Adapter {
         }
     }
 
+    /// The areas beside the camera housing while custom fullscreen covers the
+    /// screen, or `None` without a notch or outside that mode.
+    pub fn notch_shelves(&self) -> Option<crate::fullscreen::NotchShelves> {
+        if !self
+            .0
+            .saved
+            .borrow()
+            .as_ref()
+            .is_some_and(|saved| saved.complete)
+        {
+            return None;
+        }
+        // SAFETY: Read-only main-thread getters on the retained NSWindow and its
+        // NSScreen; the window frame equals the screen frame in this mode.
+        unsafe {
+            let style: usize = msg_send![self.0.window.0, styleMask];
+            if style & NATIVE != 0 {
+                return None;
+            }
+            let screen: *mut Object = msg_send![self.0.window.0, screen];
+            screen_notch_shelves(screen)
+        }
+    }
+
     /// GPUI's macOS hover flag only reports activation, including when the
     /// cursor has left this fullscreen window for another display.
     pub fn pointer_on_display(&self) -> bool {
@@ -978,6 +1002,56 @@ pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
             bottom: insets.bottom,
             left: insets.left,
         }
+    }
+}
+
+/// The auxiliary areas beside a notch, converted from `AppKit` screen
+/// coordinates to top-left window coordinates for a window covering the
+/// screen. `None` when the screen has no notch or the API is unavailable.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "AppKit points fit GPUI logical pixels"
+)]
+pub(crate) unsafe fn screen_notch_shelves(
+    screen: *mut Object,
+) -> Option<crate::fullscreen::NotchShelves> {
+    if screen.is_null() {
+        return None;
+    }
+    // SAFETY: Callers supply NSScreen on the main thread. The auxiliary area
+    // getters were added in macOS 12 and return NSZeroRect without a notch.
+    unsafe {
+        let supported: objc::runtime::BOOL =
+            msg_send![screen, respondsToSelector: sel!(auxiliaryTopLeftArea)];
+        if supported != YES {
+            return None;
+        }
+        let frame: Bounds<f64> = msg_send![screen, frame];
+        let left: Bounds<f64> = msg_send![screen, auxiliaryTopLeftArea];
+        let right: Bounds<f64> = msg_send![screen, auxiliaryTopRightArea];
+        if left.size.width <= 0.0 || right.size.width <= 0.0 {
+            return None;
+        }
+        let convert = |area: Bounds<f64>| {
+            gpui::Bounds::new(
+                gpui::point(
+                    gpui::px((area.origin.x - frame.origin.x) as f32),
+                    gpui::px(
+                        (frame.origin.y + frame.size.height
+                            - area.origin.y
+                            - area.size.height) as f32,
+                    ),
+                ),
+                gpui::size(
+                    gpui::px(area.size.width as f32),
+                    gpui::px(area.size.height as f32),
+                ),
+            )
+        };
+        Some(crate::fullscreen::NotchShelves {
+            left: convert(left),
+            right: convert(right),
+        })
     }
 }
 

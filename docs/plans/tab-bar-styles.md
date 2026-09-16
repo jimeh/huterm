@@ -235,6 +235,13 @@ Native macOS fullscreen lets AppKit position content inside the safe area, so
 Huterm may not own the notch strip there. Record what native fullscreen shows on
 a notched display instead of assuming it matches.
 
+`tabs.notch` can instead put a top bar beside the camera housing in non-native
+fullscreen, using `NSScreen`'s auxiliary top-left or top-right area. The bar
+keeps its normal height at the bottom of that area, the terminal starts under
+the safe area with no bar height taken from it, the rest of the strip keeps the
+terminal background, and auto-hide does not apply because the bar has nowhere
+to hide.
+
 ## Implementation sequence
 
 1. **Move tab config.** Add `TabsConfig` with validation and the legacy-key

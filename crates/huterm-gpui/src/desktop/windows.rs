@@ -1201,6 +1201,7 @@ fn open_window_with_profile(
                 attachment: None,
                 bounds: window.window_bounds(),
                 fullscreen_insets: gpui::Edges::default(),
+                notch_shelves: None,
                 fullscreen: FullscreenController::new(
                     window.window_bounds(),
                     config.window.macos_fullscreen_mode,
@@ -1369,6 +1370,8 @@ struct WorkspaceView {
     bounds: WindowBounds,
     fullscreen: FullscreenController,
     fullscreen_insets: gpui::Edges<Pixels>,
+    /// Areas beside a display notch while custom fullscreen covers it.
+    notch_shelves: Option<crate::fullscreen::NotchShelves>,
     #[cfg(target_os = "macos")]
     native_fullscreen: Option<crate::native_fullscreen::Adapter>,
     workspace: Option<WorkspaceId>,
@@ -1640,8 +1643,24 @@ impl WorkspaceView {
             self.tabs.len(),
             self.config.tabs.always_show,
             self.tab_fullscreen_context(),
-            self.config.tabs.auto_hide_in_fullscreen,
+            // A bar on the notch shelf has nowhere to hide.
+            self.config.tabs.auto_hide_in_fullscreen
+                && self.notch_shelf().is_none(),
         )
+    }
+
+    /// The shelf beside the notch a top bar should occupy, when configured
+    /// and available.
+    fn notch_shelf(&self) -> Option<Bounds<Pixels>> {
+        if self.config.tabs.position != TabPosition::Top {
+            return None;
+        }
+        let shelves = self.notch_shelves?;
+        match self.config.tabs.notch {
+            huterm_config::TabNotch::Off => None,
+            huterm_config::TabNotch::Left => Some(shelves.left),
+            huterm_config::TabNotch::Right => Some(shelves.right),
+        }
     }
 
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
@@ -1651,6 +1670,7 @@ impl WorkspaceView {
             self.config.tabs,
             self.sidebar_width,
             self.fullscreen_insets,
+            self.notch_shelf(),
         )
         .present(
             self.presentation(),
@@ -1662,6 +1682,7 @@ impl WorkspaceView {
     fn sync_tab_layout(&self, window: &Window, cx: &mut Context<'_, Self>) {
         let presentation = self.presentation();
         let chrome_hidden = self.chrome_hidden();
+        let notch_shelf = self.notch_shelf();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
             .then(|| {
@@ -1679,13 +1700,15 @@ impl WorkspaceView {
                 let changed = terminal.tab_presentation != presentation
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
-                    || terminal.fullscreen_insets != self.fullscreen_insets;
+                    || terminal.fullscreen_insets != self.fullscreen_insets
+                    || terminal.notch_shelf != notch_shelf;
                 changed_any |= changed || scale_changed || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
+                terminal.notch_shelf = notch_shelf;
                 if changed || scale_changed || cell_changed {
                     terminal.resize_if_needed(window);
                     cx.notify();
@@ -3117,6 +3140,7 @@ impl WorkspaceView {
             self.fullscreen.chrome_hidden,
             self.fullscreen.observed,
             self.fullscreen_insets,
+            self.notch_shelves,
         );
         let now = Instant::now();
         #[cfg(target_os = "macos")]
@@ -3175,6 +3199,11 @@ impl WorkspaceView {
                     gpui::Edges::default,
                     crate::native_fullscreen::Adapter::safe_area,
                 );
+            self.notch_shelves = self
+                .native_fullscreen
+                .as_ref()
+                .filter(|_| self.fullscreen.chrome_hidden)
+                .and_then(crate::native_fullscreen::Adapter::notch_shelves);
         }
         if self.quake.is_none() {
             self.bounds = self.fullscreen.restorable_bounds();
@@ -3184,12 +3213,15 @@ impl WorkspaceView {
                 self.fullscreen.chrome_hidden,
                 self.fullscreen.observed,
                 self.fullscreen_insets,
+                self.notch_shelves,
             )
         {
+            let notch_shelf = self.notch_shelf();
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
                     terminal.chrome_hidden = self.fullscreen.chrome_hidden;
                     terminal.fullscreen_insets = self.fullscreen_insets;
+                    terminal.notch_shelf = notch_shelf;
                     terminal.resize_if_needed(window);
                     cx.notify();
                 });
@@ -3974,15 +4006,19 @@ impl ChromeLayout {
             TAB_HEIGHT,
             sidebar_width,
             safe_area,
+            None,
         )
     }
 
+    /// `notch_shelf` places a top bar in that window-relative area beside a
+    /// display notch instead of below the safe area.
     pub(super) fn for_tabs(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
         tabs: huterm_config::TabsConfig,
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
+        notch_shelf: Option<Bounds<Pixels>>,
     ) -> Self {
         Self::build(
             viewport,
@@ -3991,6 +4027,7 @@ impl ChromeLayout {
             tab_bar_height(tabs),
             sidebar_width,
             safe_area,
+            notch_shelf,
         )
     }
 
@@ -4001,6 +4038,7 @@ impl ChromeLayout {
         bar_height: Pixels,
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
+        notch_shelf: Option<Bounds<Pixels>>,
     ) -> Self {
         let left = safe_area.left.max(px(0.0)).min(viewport.width.max(px(0.0)));
         let top = (titlebar + safe_area.top)
@@ -4035,6 +4073,17 @@ impl ChromeLayout {
             tabs.size.height =
                 (viewport.height - column_top - safe_area.bottom.max(px(0.0)))
                     .max(px(0.0));
+        } else if let Some(shelf) =
+            notch_shelf.filter(|_| position == TabPosition::Top)
+        {
+            // The bar keeps its height at the bottom of the shelf, so its
+            // spacing to the terminal matches a windowed top bar, and the
+            // terminal keeps the whole area under the safe area.
+            let height = bar_height.min(shelf.size.height);
+            tabs = Bounds::new(
+                point(shelf.origin.x, shelf.bottom() - height),
+                size(shelf.size.width, height),
+            );
         } else {
             tabs.size.height = bar_height.min(available.height);
             terminal.size.height =
@@ -4207,12 +4256,16 @@ impl Render for WorkspaceView {
                     .right_0()
                     .h(top_chrome)
                     .bg(
-                        if top_chrome_uses_bar(
-                            position,
-                            titlebar > px(0.0),
-                            self.presentation(),
-                            self.reveal.progress,
-                        ) {
+                        // A shelf bar paints its own background; the rest
+                        // of the safe-area strip stays terminal-colored.
+                        if self.notch_shelf().is_none()
+                            && top_chrome_uses_bar(
+                                position,
+                                titlebar > px(0.0),
+                                self.presentation(),
+                                self.reveal.progress,
+                            )
+                        {
                             colors.bar
                         } else {
                             background

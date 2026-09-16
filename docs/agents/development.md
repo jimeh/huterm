@@ -227,7 +227,12 @@ screen, its rows stay below the safe area, and the strip beside it keeps the
 terminal background. While a top bar is visible or revealing, the macOS titlebar
 and the non-native fullscreen safe area above a notch use the tab bar
 background; a titlebar above a left or right bar does too; otherwise, including
-for a bottom bar, they use the terminal background.
+for a bottom bar, they use the terminal background. `[tabs].notch = "left"` or
+`"right"` places a top bar in the auxiliary area beside the notch in non-native
+fullscreen, read from `NSScreen`'s auxiliary top areas: the bar keeps its
+height, sits at the bottom of that area, and the terminal starts directly under
+the safe area, so auto-hide leaves it in place. Without a notch, in windowed
+mode, or in native fullscreen the key is ignored.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
