@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/jimeh/huterm/compare/v0.10.1...v0.11.0) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* `[window] tab_position`, `always_show_tab_bar`, and `auto_hide_tab_bar_in_fullscreen` now fail to parse. Each reports an error naming its replacement, for example `window.tab_position moved to tabs.position`, and Huterm starts with default settings until the config is updated.
+
+### Features
+
+* restyle the tab bar with Strip and Pill styles, overlay scrollbars, and notch placement ([#128](https://github.com/jimeh/huterm/issues/128)) ([17c2b22](https://github.com/jimeh/huterm/commit/17c2b227c5694dffa497b2eac2849ebf07606b8a))
+
 ## [0.10.1](https://github.com/jimeh/huterm/compare/v0.10.0...v0.10.1) (2026-09-14)
 
 
