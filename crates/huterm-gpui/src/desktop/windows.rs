@@ -99,7 +99,8 @@ fn tab_column_scrollbar(position: TabPosition) -> ScrollbarOptions {
             },
             inward: 6.0,
         },
-        reveal_on_hover: true,
+        // Hover reveal here made close-button hovers flash the scrollbar.
+        reveal_on_hover: false,
         hold: TAB_SCROLLBAR_HOLD,
     }
 }
