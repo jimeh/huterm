@@ -231,8 +231,9 @@ for a bottom bar, they use the terminal background. `[tabs].notch = "left"` or
 `"right"` places a top bar in the auxiliary area beside the notch in non-native
 fullscreen, read from `NSScreen`'s auxiliary top areas: the bar keeps its
 height, sits at the bottom of that area, and the terminal starts directly under
-the safe area, so auto-hide leaves it in place. Without a notch, in windowed
-mode, or in native fullscreen the key is ignored.
+the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
+the same shelves from their own window. Without a notch, in windowed mode, or in
+native fullscreen the key is ignored.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600

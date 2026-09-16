@@ -1397,13 +1397,16 @@ impl WorkspaceView {
         let visible = self.quake_visible();
         #[cfg(target_os = "macos")]
         {
-            self.fullscreen_insets = self
+            let fullscreen = self
                 .quake
                 .as_ref()
-                .filter(|state| !state.regular && state.profile.fullscreen)
+                .filter(|state| !state.regular && state.profile.fullscreen);
+            self.fullscreen_insets = fullscreen
                 .map_or_else(gpui::Edges::default, |state| {
                     state.native.safe_area()
                 });
+            self.notch_shelves =
+                fullscreen.and_then(|state| state.native.notch_shelves());
         }
         self.sync_tab_layout(window, cx);
         let mut changed_any = false;

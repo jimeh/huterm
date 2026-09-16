@@ -400,6 +400,16 @@ impl Window {
                 .map(|value| gpui::px(*value as f32))
         }
     }
+    /// The areas beside the camera housing while the quake window covers
+    /// the screen, or `None` without a notch.
+    pub fn notch_shelves(&self) -> Option<crate::fullscreen::NotchShelves> {
+        // SAFETY: Retained NSWindow and its current NSScreen, read
+        // synchronously; a fullscreen quake frame equals the screen frame.
+        unsafe {
+            let screen: *mut Object = msg_send![self.0.native.0, screen];
+            crate::native_fullscreen::screen_notch_shelves(screen)
+        }
+    }
     pub fn toggle_native_for_smoke(&self) {
         // SAFETY: The smoke schedules this on the foreground executor outside
         // GPUI updates, exercising the actual AppKit Space transition.
