@@ -818,6 +818,11 @@ mod tests {
         // The terminal keeps everything under the safe area.
         assert_eq!(layout.terminal.origin.y, px(38.0));
         assert_eq!(layout.terminal.size.height, px(1169.0 - 38.0));
+        // Hiding a shelf bar must not pull the terminal into the notch.
+        for presentation in [Presentation::Hidden, Presentation::Overlay] {
+            let hidden = layout.present(presentation, TabPosition::Top, 0.0);
+            assert_eq!(hidden.terminal, layout.terminal, "{presentation:?}");
+        }
         // Other placements ignore the shelf.
         let column = ChromeLayout::for_tabs(
             viewport,

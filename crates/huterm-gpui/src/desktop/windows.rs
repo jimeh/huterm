@@ -3833,6 +3833,8 @@ pub(super) struct ChromeLayout {
     tabs: Bounds<Pixels>,
     /// Safe-area height a vertical column spans above its rows.
     column_top_inset: Pixels,
+    /// The bar sits on a notch shelf, so hiding it frees no terminal space.
+    on_shelf: bool,
 }
 impl ChromeLayout {
     #[cfg(test)]
@@ -3849,7 +3851,7 @@ impl ChromeLayout {
         position: TabPosition,
         progress: f32,
     ) -> Self {
-        if presentation != Presentation::Reserved {
+        if presentation != Presentation::Reserved && !self.on_shelf {
             if position.vertical() {
                 self.terminal.size.width += self.tabs.size.width;
                 if position == TabPosition::Left {
@@ -4052,6 +4054,7 @@ impl ChromeLayout {
         let mut terminal = Bounds::new(point(left, top), available);
         let mut tabs = terminal;
         let mut column_top_inset = px(0.0);
+        let mut on_shelf = false;
         if position.vertical() {
             tabs.size.width = sidebar_width
                 .clamp(px(140.0), px(400.0))
@@ -4084,6 +4087,7 @@ impl ChromeLayout {
                 point(shelf.origin.x, shelf.bottom() - height),
                 size(shelf.size.width, height),
             );
+            on_shelf = true;
         } else {
             tabs.size.height = bar_height.min(available.height);
             terminal.size.height =
@@ -4098,6 +4102,7 @@ impl ChromeLayout {
             terminal,
             tabs,
             column_top_inset,
+            on_shelf,
         }
     }
 
