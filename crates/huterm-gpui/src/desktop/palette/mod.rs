@@ -2079,8 +2079,10 @@ impl Render for CommandPalette {
         }
 
         let geometries = self.scrollbar_geometries();
-        let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
-            && geometries.vertical.is_some();
+        // The strip mounts on visibility alone: the list's scroll bounds
+        // are empty until its first layout, and nothing else repaints
+        // before the pointer arrives on a headless X server.
+        let show_strip = self.scrollbars.wants_strip(Axis::Vertical);
         if !show_strip {
             // The strip is not mounted, so no leave event will arrive.
             self.scrollbars.pointer_left();
