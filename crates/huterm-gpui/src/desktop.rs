@@ -65,6 +65,7 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     margins: TrackMargins {
         start: 2.0,
         end: 8.0,
+        padding: 2.0,
     },
     thumb: ThumbSize::Slim,
     edge_inset: 2.0,

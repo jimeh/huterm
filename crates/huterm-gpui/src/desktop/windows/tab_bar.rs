@@ -37,7 +37,7 @@ const PILL_PADDING_RIGHT: Pixels = px(5.0);
 /// Pills leave one more point on the left than the right, so the 1-point
 /// divider drawn at a tab's leading edge sits centered between neighbors.
 pub(super) const PILL_MARGIN_LEFT: Pixels = px(3.0);
-const PILL_MARGIN_RIGHT: Pixels = px(2.0);
+pub(super) const PILL_MARGIN_RIGHT: Pixels = px(2.0);
 /// Insets shared by vertical rows and the vertical new-tab button so they
 /// align in the column.
 pub(super) const VERTICAL_ROW_MARGIN_X: Pixels = px(6.0);

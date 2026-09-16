@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use gpui::{Bounds, Div, Hsla, Pixels, div, prelude::*, px};
 
 const MIN_THUMB_SIZE: f32 = 24.0;
-const TRACK_PADDING: f32 = 2.0;
 /// How long an indicator stays fully visible after activity before fading.
 pub(crate) const INDICATOR_HOLD: Duration = Duration::from_secs(2);
 const INDICATOR_FADE: Duration = Duration::from_millis(400);
@@ -68,11 +67,13 @@ pub(crate) enum TrackPress {
     Page,
 }
 
-/// Empty space before and after a scrollbar track along its axis.
+/// Empty space before and after a scrollbar track along its axis, plus the
+/// track's own padding around the thumb at either end.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TrackMargins {
     pub(crate) start: f32,
     pub(crate) end: f32,
+    pub(crate) padding: f32,
 }
 
 impl TrackMargins {
@@ -80,6 +81,14 @@ impl TrackMargins {
     pub(crate) const EVEN: Self = Self {
         start: 2.0,
         end: 2.0,
+        padding: 2.0,
+    };
+
+    /// No margins or padding: the thumb can reach both ends of the track.
+    pub(crate) const FLUSH: Self = Self {
+        start: 0.0,
+        end: 0.0,
+        padding: 0.0,
     };
 }
 
@@ -181,12 +190,12 @@ impl ScrollbarGeometry {
         let margin_scale = (length
             / (margins.start
                 + margins.end
-                + TRACK_PADDING * 2.0
+                + margins.padding * 2.0
                 + MIN_THUMB_SIZE))
             .min(1.0);
         let track_start = margins.start * margin_scale;
         let track_length = length - track_start - margins.end * margin_scale;
-        let track_padding = TRACK_PADDING * margin_scale;
+        let track_padding = margins.padding * margin_scale;
         let inner = (track_length - track_padding * 2.0).max(0.0);
         let thumb_size =
             (inner * viewport / content).max(MIN_THUMB_SIZE).min(inner);
@@ -800,6 +809,7 @@ mod tests {
     const TERMINAL_MARGINS: TrackMargins = TrackMargins {
         start: 2.0,
         end: 8.0,
+        padding: 2.0,
     };
 
     fn rows(
@@ -1183,6 +1193,18 @@ mod tests {
             (top.thumb_size * 2.0 - (top.travel + top.thumb_size)).abs()
                 < 0.0001
         );
+        // Flush margins let the thumb touch both ends of the track.
+        let flush = ScrollbarGeometry::new(
+            336.0,
+            672.0,
+            336.0,
+            336.0,
+            Origin::Start,
+            TrackMargins::FLUSH,
+        )
+        .unwrap();
+        assert!(flush.track_start.abs() < f32::EPSILON);
+        assert!((flush.thumb_start + flush.thumb_size - 336.0).abs() < 0.0001);
     }
 
     #[test]

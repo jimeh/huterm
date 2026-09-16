@@ -32,7 +32,7 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
-use huterm_config::{TabStyle, TabWidth};
+use huterm_config::{TabStyle, TabWidth, TabsConfig};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HostEffectRecipientOptions, MuxError, OpenedTab,
@@ -55,9 +55,9 @@ use crate::ui::scrollbar::{
     ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
 use tab_bar::{
-    Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, TabColors, TabItem,
-    VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height,
-    top_chrome_uses_bar,
+    Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
+    TabColors, TabItem, VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y,
+    icon_element, tab_bar_height, top_chrome_uses_bar,
 };
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
@@ -92,17 +92,27 @@ const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
 };
 /// The hairline position indicator along a horizontal tab bar's bottom
 /// edge: it never expands or shows a track, but its thumb still drags and
-/// the track jumps.
-const TAB_ROW_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
-    edge: Edge::Bottom,
-    origin: Origin::Start,
-    expand_on_hover: false,
-    track_press: TrackPress::Jump,
-    margins: TrackMargins::EVEN,
-    thumb: ThumbSize::Points(2.0),
-    edge_inset: 0.0,
-    hold: TAB_SCROLLBAR_HOLD,
-};
+/// the track jumps. Its ends align with the tabs: flush with the bar for
+/// Strip, and with the pills' visible edges for Pill.
+fn tab_row_scrollbar(style: TabStyle) -> ScrollbarOptions {
+    ScrollbarOptions {
+        edge: Edge::Bottom,
+        origin: Origin::Start,
+        expand_on_hover: false,
+        track_press: TrackPress::Jump,
+        margins: match style {
+            TabStyle::Strip => TrackMargins::FLUSH,
+            TabStyle::Pill => TrackMargins {
+                start: f32::from(PILL_MARGIN_LEFT),
+                end: f32::from(PILL_MARGIN_RIGHT),
+                padding: 0.0,
+            },
+        },
+        thumb: ThumbSize::Points(2.0),
+        edge_inset: 0.0,
+        hold: TAB_SCROLLBAR_HOLD,
+    }
+}
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
 #[derive(Default)]
@@ -1791,7 +1801,7 @@ impl WorkspaceView {
             .set_axis(Axis::Vertical, vertical.then_some(TAB_COLUMN_SCROLLBAR));
         self.tab_scrollbars.set_axis(
             Axis::Horizontal,
-            (!vertical).then_some(TAB_ROW_SCROLLBAR),
+            (!vertical).then(|| tab_row_scrollbar(self.config.tabs.style)),
         );
     }
 
@@ -1814,11 +1824,14 @@ impl WorkspaceView {
         bounds
     }
 
-    fn tab_scrollbar_geometries(strip: &TabStrip) -> ScrollbarGeometries {
+    fn tab_scrollbar_geometries(
+        strip: &TabStrip,
+        tabs: TabsConfig,
+    ) -> ScrollbarGeometries {
         let options = if strip.vertical {
             TAB_COLUMN_SCROLLBAR
         } else {
-            TAB_ROW_SCROLLBAR
+            tab_row_scrollbar(tabs.style)
         };
         let available = f32::from(strip.available());
         let geometry = ScrollbarGeometry::new(
@@ -1847,7 +1860,7 @@ impl WorkspaceView {
     ) {
         let strip = self.tab_strip(window);
         if self.tab_scrollbars.pointer_moved(
-            &Self::tab_scrollbar_geometries(&strip),
+            &Self::tab_scrollbar_geometries(&strip, self.config.tabs),
             Self::tab_scrollbar_bounds(&strip),
             position,
             Instant::now(),
@@ -1864,7 +1877,8 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let strip = self.tab_strip(window);
-        let geometries = Self::tab_scrollbar_geometries(&strip);
+        let geometries =
+            Self::tab_scrollbar_geometries(&strip, self.config.tabs);
         let Some((axis, press)) = self.tab_scrollbars.press(
             &geometries,
             Self::tab_scrollbar_bounds(&strip),
@@ -1887,7 +1901,8 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let strip = self.tab_strip(window);
-        let geometries = Self::tab_scrollbar_geometries(&strip);
+        let geometries =
+            Self::tab_scrollbar_geometries(&strip, self.config.tabs);
         if let Some((axis, thumb_start)) = self.tab_scrollbars.drag_to(
             Self::tab_scrollbar_bounds(&strip),
             position,
@@ -4405,7 +4420,8 @@ impl Render for WorkspaceView {
             // of resizing; misses fall through to the handle and rows.
             {
                 let axis = Self::tab_scrollbar_axis(&strip);
-                let geometries = Self::tab_scrollbar_geometries(&strip);
+                let geometries =
+                    Self::tab_scrollbar_geometries(&strip, self.config.tabs);
                 // Covers the strip and its edge inset so the layers inside
                 // line up with the hit test; misses fall through.
                 let extent = px(self.tab_scrollbars.strip_extent(axis));
