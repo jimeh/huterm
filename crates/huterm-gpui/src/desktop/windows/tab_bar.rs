@@ -143,11 +143,33 @@ pub(super) enum Activity {
     Inactive,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TabStatus {
+    Running,
+    Bell,
+    Exited,
+    Failed,
+}
+
+impl TabStatus {
+    pub(super) fn new(exited: bool, failed: bool, bell: bool) -> Self {
+        if failed {
+            Self::Failed
+        } else if exited {
+            Self::Exited
+        } else if bell {
+            Self::Bell
+        } else {
+            Self::Running
+        }
+    }
+}
+
 pub(super) struct TabItem {
     pub(super) id: TabId,
     pub(super) index: usize,
     pub(super) title: String,
-    pub(super) exited: bool,
+    pub(super) status: TabStatus,
     pub(super) activity: Activity,
     /// The first tab while the strip is scrolled to its start, so its edge
     /// meets the bar's own edge.
@@ -209,9 +231,16 @@ impl WorkspaceView {
                 }),
             );
         let parts = TabParts {
-            status: item
-                .exited
-                .then(|| icon_element(Icon::CircleAlert, colors.error)),
+            status: if matches!(
+                item.status,
+                TabStatus::Exited | TabStatus::Failed
+            ) {
+                Some(icon_element(Icon::CircleAlert, colors.error))
+            } else if item.status == TabStatus::Bell {
+                Some(icon_element(Icon::Bell, colors.accent))
+            } else {
+                None
+            },
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
             title: div()
@@ -220,7 +249,9 @@ impl WorkspaceView {
                 .overflow_hidden()
                 .text_ellipsis()
                 .line_clamp(1)
-                .when(item.exited, |title| title.opacity(0.6))
+                .when(item.status == TabStatus::Exited, |title| {
+                    title.opacity(0.6)
+                })
                 .child(item.title.clone()),
             close: Self::close_tab_button(
                 id,
@@ -259,7 +290,8 @@ impl WorkspaceView {
         let font = window.text_style().font();
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
-            let (title, exited) = tab.label(cx);
+            let (title, exited, failed, bell) =
+                tab.label(self.config.tabs.label, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
@@ -278,7 +310,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(text, tabs, exited));
+            widths.push(fit_tab_width(text, tabs, exited || failed || bell));
         }
         self.tab_widths = widths;
     }
@@ -634,7 +666,7 @@ mod tests {
             id: TabId::new(1),
             index,
             title: String::new(),
-            exited: false,
+            status: TabStatus::Running,
             activity,
             flush_start: false,
         };
@@ -642,6 +674,13 @@ mod tests {
         assert!(!item(0, Activity::Inactive).divided());
         assert!(!item(2, Activity::Active).divided());
         assert!(!item(3, Activity::FollowsActive).divided());
+    }
+
+    #[test]
+    fn error_and_exit_status_take_precedence_over_bell_attention() {
+        assert_eq!(TabStatus::new(false, false, true), TabStatus::Bell);
+        assert_eq!(TabStatus::new(true, false, true), TabStatus::Exited);
+        assert_eq!(TabStatus::new(true, true, true), TabStatus::Failed);
     }
 
     #[test]

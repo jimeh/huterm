@@ -4,15 +4,103 @@ mod links;
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, CellSize, GridSize, ScrollCommand, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalSnapshot,
+    BufferRange, CellSize, GridSize, ScrollCommand, TerminalDirectory,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalSnapshot,
 };
+
+const METADATA_BYTE_LIMIT: usize = 4096;
+
+#[derive(Debug, Eq, PartialEq)]
+enum DirectoryUpdate {
+    Ignore,
+    Clear,
+    Set(TerminalDirectory),
+}
 
 #[derive(Debug)]
 pub(crate) enum EngineEffect {
     PtyWrite(Vec<u8>),
     Title(String),
+    Directory(Option<TerminalDirectory>),
     Bell,
+}
+
+fn normalize_directory(
+    reported: &str,
+    server_hostname: Option<&str>,
+) -> DirectoryUpdate {
+    if reported.len() > METADATA_BYTE_LIMIT || reported.contains('\0') {
+        return DirectoryUpdate::Ignore;
+    }
+    if reported.is_empty() {
+        return DirectoryUpdate::Clear;
+    }
+    if reported.starts_with('/') {
+        return DirectoryUpdate::Set(TerminalDirectory::new(
+            None,
+            reported.to_owned(),
+            false,
+        ));
+    }
+    let Ok(uri) = url::Url::parse(reported) else {
+        return DirectoryUpdate::Ignore;
+    };
+    if uri.scheme() != "file"
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.port().is_some()
+        || uri.query().is_some()
+        || uri.fragment().is_some()
+    {
+        return DirectoryUpdate::Ignore;
+    }
+    let Some(path) = percent_decode(uri.path()) else {
+        return DirectoryUpdate::Ignore;
+    };
+    if !path.starts_with('/') || path.contains('\0') {
+        return DirectoryUpdate::Ignore;
+    }
+    let host = uri.host_str().filter(|host| !host.is_empty());
+    let local = host.is_none_or(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || server_hostname.is_some_and(|server| {
+                host.strip_suffix('.').unwrap_or(host).eq_ignore_ascii_case(
+                    server.strip_suffix('.').unwrap_or(server),
+                )
+            })
+    });
+    DirectoryUpdate::Set(TerminalDirectory::new(
+        host.map(str::to_owned),
+        path,
+        local,
+    ))
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex(high)?.checked_mul(16)?.checked_add(hex(low)?)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+const fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -119,6 +207,73 @@ impl TerminalEngine {
         range: BufferRange,
     ) -> Result<Option<String>, RuntimeError> {
         self.inner.extract_text(generation, range)
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    fn directory(
+        value: &str,
+        hostname: Option<&str>,
+    ) -> Option<TerminalDirectory> {
+        match normalize_directory(value, hostname) {
+            DirectoryUpdate::Set(directory) => Some(directory),
+            DirectoryUpdate::Ignore | DirectoryUpdate::Clear => None,
+        }
+    }
+
+    #[test]
+    fn file_directories_decode_and_classify_exact_local_hosts() {
+        for host in ["", "localhost", "WORKSTATION", "workstation."] {
+            let value = format!("file://{host}/tmp/hello%20world/%E2%98%83");
+            let directory = directory(&value, Some("workstation")).unwrap();
+            assert_eq!(directory.path(), "/tmp/hello world/☃");
+            assert!(directory.is_local(), "{host:?}");
+        }
+        for host in ["workstation.local", "short", "workstation.example"] {
+            let value = format!("file://{host}/tmp/project");
+            let directory = directory(&value, Some("workstation")).unwrap();
+            assert_eq!(directory.host(), Some(host));
+            assert!(!directory.is_local(), "{host:?}");
+        }
+    }
+
+    #[test]
+    fn bare_paths_are_display_only_and_empty_clears() {
+        let bare = directory("/tmp/project", Some("workstation")).unwrap();
+        assert_eq!(bare.host(), None);
+        assert_eq!(bare.path(), "/tmp/project");
+        assert!(!bare.is_local());
+        assert_eq!(
+            normalize_directory("", Some("workstation")),
+            DirectoryUpdate::Clear
+        );
+    }
+
+    #[test]
+    fn malformed_unsafe_and_oversized_reports_are_rejected() {
+        for value in [
+            "relative/path",
+            "https://localhost/tmp",
+            "file://user@localhost/tmp",
+            "file://localhost:22/tmp",
+            "file://localhost/tmp/%gg",
+            "file://localhost/tmp?query",
+            "file://localhost/tmp#fragment",
+            "file://localhost/tmp%00name",
+        ] {
+            assert_eq!(
+                normalize_directory(value, Some("localhost")),
+                DirectoryUpdate::Ignore,
+                "{value}"
+            );
+        }
+        assert_eq!(
+            normalize_directory(&"x".repeat(METADATA_BYTE_LIMIT + 1), None),
+            DirectoryUpdate::Ignore
+        );
     }
 }
 

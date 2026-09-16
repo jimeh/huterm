@@ -2530,6 +2530,7 @@ dependencies = [
  "huterm-config",
  "huterm-core",
  "huterm-protocol",
+ "nix 0.29.0",
  "nucleo-matcher",
  "objc",
  "raw-window-handle",

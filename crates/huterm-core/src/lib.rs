@@ -12,7 +12,7 @@ pub use host_effects::{
     DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
     HostEffectRecipientOptions, PendingHostEffect,
 };
-pub use jobs::{JobProcess, JobState};
+pub use jobs::{JobProcess, JobState, sample_foreground_processes};
 mod mux;
 mod presentation;
 mod pty;

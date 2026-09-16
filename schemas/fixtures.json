@@ -24,6 +24,30 @@
     "theme": false
   },
   {
+    "name": "new tab directory inherit",
+    "toml": "[terminal]\nnew_tab_directory = \"inherit\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "new tab directory unknown",
+    "toml": "[terminal]\nnew_tab_directory = \"remote\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "visual bell disabled",
+    "toml": "[terminal.bell]\nvisual = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "visual bell requires boolean",
+    "toml": "[terminal.bell]\nvisual = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "font size 6",
     "toml": "[font]\nsize = 6",
     "valid": true,
@@ -549,6 +573,18 @@
     "name": "tab position right",
     "toml": "[tabs]\nposition = \"right\"",
     "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab label process and directory",
+    "toml": "[tabs]\nlabel = \"process_and_directory\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab label unknown",
+    "toml": "[tabs]\nlabel = \"command\"",
+    "valid": false,
     "theme": false
   },
   {

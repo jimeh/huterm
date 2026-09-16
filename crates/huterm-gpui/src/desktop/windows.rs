@@ -42,6 +42,7 @@ use huterm_protocol::{
     catalog, validate, validate_supplied,
 };
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -482,6 +483,7 @@ struct Desktop {
     quitting: bool,
     pending_spawns: usize,
     quit_pending: bool,
+    process_sampler_generation: u64,
     external_drag_window: Option<gpui::WindowId>,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
@@ -880,10 +882,12 @@ pub(super) fn run_with_startup(
             quitting: false,
             pending_spawns: 0,
             quit_pending: false,
+            process_sampler_generation: 0,
             external_drag_window: None,
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
+        reconcile_process_metadata_sampler(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
@@ -924,6 +928,50 @@ pub(super) fn run_with_startup(
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
+}
+
+fn reconcile_process_metadata_sampler(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.process_sampler_generation =
+        desktop.process_sampler_generation.wrapping_add(1);
+    let generation = desktop.process_sampler_generation;
+    if !matches!(
+        desktop.config.tabs.label,
+        huterm_config::TabLabel::Process
+            | huterm_config::TabLabel::ProcessAndDirectory
+    ) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let Ok(Some(clients)) = cx.update(|cx| {
+                let desktop = cx.global::<Desktop>();
+                if desktop.process_sampler_generation != generation
+                    || desktop.runtime.terminating.load(Ordering::Acquire)
+                {
+                    return None;
+                }
+                let mux = desktop
+                    .runtime
+                    .mux
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Some(mux.runtime_clients())
+            }) else {
+                break;
+            };
+            if clients.is_empty() {
+                continue;
+            }
+            cx.background_executor()
+                .spawn(async move {
+                    huterm_core::sample_foreground_processes(&clients);
+                })
+                .await;
+        }
+    })
+    .detach();
 }
 
 fn observe_keystroke(
@@ -1292,8 +1340,11 @@ fn open_window_with_profile(
                                         let previous = (
                                             terminal.title.clone(),
                                             terminal.exited,
+                                            terminal.failed,
+                                            terminal.metadata_revision,
+                                            terminal.bell.unseen,
                                         );
-                                        terminal.refresh(cx);
+                                        terminal.refresh(window, cx);
                                         view.exited_tabs.observe(
                                             tab.id,
                                             previous.1,
@@ -1304,6 +1355,9 @@ fn open_window_with_profile(
                                             != (
                                                 terminal.title.clone(),
                                                 terminal.exited,
+                                                terminal.failed,
+                                                terminal.metadata_revision,
+                                                terminal.bell.unseen,
                                             );
                                     });
                                 }
@@ -1347,7 +1401,8 @@ struct TabView {
 
 impl TabView {
     fn title(&self, cx: &App) -> String {
-        let (title, exited) = self.label(cx);
+        let (title, exited, _, _) =
+            self.label(huterm_config::TabLabel::Title, cx);
         if exited {
             format!("{title} · exited")
         } else {
@@ -1356,12 +1411,60 @@ impl TabView {
     }
 
     /// Returns the display name without status text, and whether it exited.
-    fn label(&self, cx: &App) -> (String, bool) {
+    fn label(
+        &self,
+        mode: huterm_config::TabLabel,
+        cx: &App,
+    ) -> (String, bool, bool, bool) {
         let terminal = self.view.read(cx);
+        let fallback = self.record.display_name(&terminal.title);
+        let label = if self.record.custom_name().is_some() {
+            fallback.to_owned()
+        } else {
+            resolve_tab_label(mode, fallback, &terminal.metadata)
+        };
         (
-            self.record.display_name(&terminal.title).to_owned(),
+            label,
             terminal.exited,
+            terminal.failed,
+            terminal.bell.unseen,
         )
+    }
+}
+
+fn resolve_tab_label(
+    mode: huterm_config::TabLabel,
+    title: &str,
+    metadata: &huterm_protocol::TerminalMetadata,
+) -> String {
+    let process = metadata
+        .foreground_process()
+        .filter(|value| !value.is_empty());
+    let directory = metadata.directory().and_then(|directory| {
+        let path = directory.path();
+        if path == "/" {
+            Some("/")
+        } else {
+            path.trim_end_matches('/')
+                .rsplit('/')
+                .find(|part| !part.is_empty())
+        }
+    });
+    match mode {
+        huterm_config::TabLabel::Title => title.to_owned(),
+        huterm_config::TabLabel::Process => process.unwrap_or(title).to_owned(),
+        huterm_config::TabLabel::Directory => {
+            directory.unwrap_or(title).to_owned()
+        }
+        huterm_config::TabLabel::ProcessAndDirectory => {
+            match (process, directory) {
+                (Some(process), Some(directory)) => {
+                    format!("{process} · {directory}")
+                }
+                (Some(value), None) | (None, Some(value)) => value.to_owned(),
+                (None, None) => title.to_owned(),
+            }
+        }
     }
 }
 
@@ -2196,12 +2299,18 @@ impl WorkspaceView {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
         self.check_new_tab_available(cx)?;
-        let command = shell_command(
+        let mut command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal.term,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
+        let inherited_directory = self.active_view().and_then(|view| {
+            inherited_directory(
+                self.config.terminal.new_tab_directory,
+                &view.read(cx).metadata,
+            )
+        });
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace;
         let attachment = self.attachment;
@@ -2210,6 +2319,11 @@ impl WorkspaceView {
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
+            if let Some(directory) = inherited_directory
+                && usable_launch_directory(&directory)
+            {
+                command.working_directory = directory;
+            }
             runtime.open_tab(workspace, attachment, &command, clipboard_allowed)
         });
         let cleanup_runtime = Arc::clone(&cx.global::<Desktop>().runtime);
@@ -3072,6 +3186,25 @@ impl WorkspaceView {
     }
 }
 
+fn usable_launch_directory(directory: &Path) -> bool {
+    std::fs::metadata(directory).is_ok_and(|metadata| metadata.is_dir())
+        && nix::unistd::access(directory, nix::unistd::AccessFlags::X_OK)
+            .is_ok()
+}
+
+fn inherited_directory(
+    policy: huterm_config::NewTabDirectory,
+    metadata: &huterm_protocol::TerminalMetadata,
+) -> Option<PathBuf> {
+    if policy != huterm_config::NewTabDirectory::Inherit {
+        return None;
+    }
+    metadata
+        .directory()
+        .filter(|directory| directory.is_local())
+        .map(|directory| PathBuf::from(directory.path()))
+}
+
 /// Executes a filled runtime command on the structural worker and reports a
 /// later failure through the window status.
 fn run_on_runtime(
@@ -3326,6 +3459,7 @@ impl WorkspaceView {
             tab.view.update(cx, |view, cx| {
                 view.visible = visible && tab.id == id;
                 if view.visible {
+                    view.bell.viewed(window.is_window_active());
                     view.resize_if_needed(window);
                     view.focus.focus(window);
                     view.start_initial_snapshot(cx);
@@ -3705,6 +3839,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
                 apply_update_config(cx, &config);
                 cx.global_mut::<Desktop>().config = config.clone();
+                reconcile_process_metadata_sampler(cx);
                 keymap_status = reload_diagnostic(cx, &config, &compiled);
                 quake_windows::reconcile(cx);
                 let keymap = bind_keymap(cx, compiled);
@@ -4405,7 +4540,8 @@ impl Render for WorkspaceView {
                 ((layout.tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0));
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
-                let (title, exited) = tab.label(cx);
+                let (title, exited, failed, bell) =
+                    tab.label(self.config.tabs.label, cx);
                 let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
@@ -4422,7 +4558,7 @@ impl Render for WorkspaceView {
                     id: tab.id,
                     index,
                     title,
-                    exited,
+                    status: tab_bar::TabStatus::new(exited, failed, bell),
                     activity: if Some(tab.id) == self.active {
                         Activity::Active
                     } else if index > 0
@@ -6093,5 +6229,113 @@ mod tests {
         assert_eq!(scroll.diagnostics().requests_started, 0);
         assert!(begin_visible_snapshot(&mut scroll, true).is_some());
         assert_eq!(scroll.diagnostics().requests_started, 1);
+    }
+
+    #[test]
+    fn tab_labels_degrade_across_all_metadata_modes() {
+        use huterm_config::TabLabel;
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+        let empty = TerminalMetadata::default();
+        assert_eq!(
+            resolve_tab_label(TabLabel::Title, "shell", &empty),
+            "shell"
+        );
+        assert_eq!(
+            resolve_tab_label(TabLabel::Process, "shell", &empty),
+            "shell"
+        );
+        assert_eq!(
+            resolve_tab_label(TabLabel::Directory, "shell", &empty),
+            "shell"
+        );
+
+        let process = TerminalMetadata::new(None, Some("vim".into()));
+        assert_eq!(
+            resolve_tab_label(TabLabel::Process, "shell", &process),
+            "vim"
+        );
+        assert_eq!(
+            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &process),
+            "vim"
+        );
+
+        let directory = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, "/tmp/世界".into(), false)),
+            None,
+        );
+        assert_eq!(
+            resolve_tab_label(TabLabel::Directory, "shell", &directory),
+            "世界"
+        );
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                "shell",
+                &directory
+            ),
+            "世界"
+        );
+
+        let both = TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("remote".into()),
+                "/work/project".into(),
+                false,
+            )),
+            Some("cargo".into()),
+        );
+        assert_eq!(
+            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &both),
+            "cargo · project"
+        );
+    }
+
+    #[test]
+    fn new_tab_directory_inheritance_accepts_only_local_usable_directories() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use huterm_config::NewTabDirectory;
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+        let root = std::env::temp_dir().join(format!(
+            "huterm-directory-inheritance-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let local = TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("localhost".into()),
+                root.to_string_lossy().into_owned(),
+                true,
+            )),
+            None,
+        );
+        let captured =
+            inherited_directory(NewTabDirectory::Inherit, &local).unwrap();
+        assert_eq!(captured, root);
+        assert!(usable_launch_directory(&captured));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert!(!usable_launch_directory(&captured));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert_eq!(inherited_directory(NewTabDirectory::Default, &local), None);
+
+        let remote = TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("remote".into()),
+                root.to_string_lossy().into_owned(),
+                false,
+            )),
+            None,
+        );
+        assert_eq!(
+            inherited_directory(NewTabDirectory::Inherit, &remote),
+            None
+        );
+        std::fs::remove_dir(&root).unwrap();
+        assert!(!usable_launch_directory(&captured));
     }
 }

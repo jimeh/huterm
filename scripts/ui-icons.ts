@@ -11,6 +11,7 @@ export const iconNames = [
   "chevron-left",
   "chevron-right",
   "circle-alert",
+  "bell",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {
