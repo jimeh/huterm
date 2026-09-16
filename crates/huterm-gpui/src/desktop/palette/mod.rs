@@ -35,8 +35,9 @@ use slots::{
 
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
-use crate::scroll::{
-    IndicatorVisibility, ScrollbarExpansion, ScrollbarGeometry, TrackMargins,
+use crate::ui::scrollbar::{
+    Axis, Edge, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
+    ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
 };
 use crate::ui::text_field::{Changed, TextField};
 
@@ -84,9 +85,15 @@ const PANEL_CHROME_HEIGHT: f32 = PANEL_MAX_HEIGHT - LIST_MAX_HEIGHT;
 /// Distance from the window's top edge for top placement, and the minimum
 /// for centred placement in short windows.
 const PANEL_TOP_INSET: f32 = 36.0;
-/// Pointer strip at the list's right edge that owns scrollbar gestures.
-const SCROLLBAR_WIDTH: f32 = 12.0;
-const SCROLLBAR_EXPANDED_WIDTH: f32 = 18.0;
+/// The list's overlay scrollbar: a jump-to-pointer track that widens on
+/// hover, scrolled in pixels from the top.
+const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
+    edge: Edge::Right,
+    origin: Origin::Start,
+    expand_on_hover: true,
+    track_press: TrackPress::Jump,
+    margins: TrackMargins::EVEN,
+};
 
 /// Theme colours the palette derives its presentation from.
 #[derive(Clone, Copy, Debug)]
@@ -434,12 +441,7 @@ pub(super) struct CommandPalette {
     scroll: ScrollHandle,
     /// Fading overlay scrollbar on the list; shown after list changes and
     /// scrolling so it also signals rows beyond the visible six.
-    indicator: IndicatorVisibility,
-    /// Widens the scrollbar while the pointer is over it or dragging.
-    scrollbar_expansion: ScrollbarExpansion,
-    scrollbar_hovering: bool,
-    /// Pointer distance from the thumb's top while dragging it.
-    scrollbar_drag: Option<f32>,
+    scrollbars: Scrollbars,
     /// Monotonic acknowledgement for native smoke-test wheel input.
     wheel_events: u64,
     _subscriptions: Vec<Subscription>,
@@ -507,10 +509,7 @@ impl CommandPalette {
             picker_selected: None,
             hover: None,
             scroll: ScrollHandle::new(),
-            indicator: IndicatorVisibility::default(),
-            scrollbar_expansion: ScrollbarExpansion::default(),
-            scrollbar_hovering: false,
-            scrollbar_drag: None,
+            scrollbars: Scrollbars::vertical(LIST_SCROLLBAR),
             wheel_events: 0,
             _subscriptions: vec![subscription],
         };
@@ -682,7 +681,7 @@ impl CommandPalette {
 
     /// Reveals the list scrollbar; the window pump fades it out.
     fn show_scrollbar(&mut self) {
-        self.indicator.activate(Instant::now());
+        self.scrollbars.show(Axis::Vertical, Instant::now());
     }
 
     fn observe_scroll_wheel(&mut self, cx: &mut Context<'_, Self>) {
@@ -694,15 +693,7 @@ impl CommandPalette {
     /// Advances the scrollbar fade and expansion from the window refresh
     /// pump.
     pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
-        let interacting =
-            self.scrollbar_hovering || self.scrollbar_drag.is_some();
-        let mut changed = self.indicator.update(now, interacting);
-        changed |= self.scrollbar_expansion.update(
-            now,
-            self.indicator.opacity > 0.0,
-            interacting,
-        );
-        if changed {
+        if self.scrollbars.advance(now) {
             cx.notify();
         }
     }
@@ -711,31 +702,18 @@ impl CommandPalette {
     fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
         let viewport = f32::from(self.scroll.bounds().size.height);
         let overflow = f32::from(self.scroll.max_offset().height);
-        ScrollbarGeometry::for_pixels(
+        ScrollbarGeometry::new(
             viewport,
             viewport + overflow,
             viewport,
             -f32::from(self.scroll.offset().y),
-            TrackMargins::EVEN,
+            LIST_SCROLLBAR.origin,
+            LIST_SCROLLBAR.margins,
         )
     }
 
-    /// Whether `position` is over the scrollbar strip at the list's right
-    /// edge, with the strip's local y.
-    fn scrollbar_hit(&self, position: gpui::Point<Pixels>) -> Option<f32> {
-        let geometry = self.scrollbar_geometry()?;
-        let bounds = self.scroll.bounds();
-        let width = if self.scrollbar_expansion.active() {
-            SCROLLBAR_EXPANDED_WIDTH
-        } else {
-            SCROLLBAR_WIDTH
-        };
-        let y = f32::from(position.y - bounds.top());
-        (self.indicator.opacity > 0.0
-            && position.x >= bounds.right() - px(width)
-            && position.x < bounds.right()
-            && geometry.track_contains(y))
-        .then_some(y)
+    fn scrollbar_geometries(&self) -> ScrollbarGeometries {
+        ScrollbarGeometries::vertical(self.scrollbar_geometry())
     }
 
     fn scrollbar_pointer_moved(
@@ -743,13 +721,19 @@ impl CommandPalette {
         position: gpui::Point<Pixels>,
         cx: &mut Context<'_, Self>,
     ) {
-        let hovering = self.scrollbar_hit(position).is_some();
-        if hovering {
-            self.scrollbar_expansion.activate(Instant::now());
-            self.show_scrollbar();
+        let geometries = self.scrollbar_geometries();
+        if self.scrollbars.pointer_moved(
+            &geometries,
+            self.scroll.bounds(),
+            position,
+            Instant::now(),
+        ) {
+            cx.notify();
         }
-        if hovering != self.scrollbar_hovering {
-            self.scrollbar_hovering = hovering;
+    }
+
+    fn scrollbar_pointer_left(&mut self, cx: &mut Context<'_, Self>) {
+        if self.scrollbars.pointer_left() {
             cx.notify();
         }
     }
@@ -761,22 +745,23 @@ impl CommandPalette {
         position: gpui::Point<Pixels>,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let Some(y) = self.scrollbar_hit(position) else {
+        let geometries = self.scrollbar_geometries();
+        let Some((_, press)) = self.scrollbars.press(
+            &geometries,
+            self.scroll.bounds(),
+            position,
+            Instant::now(),
+        ) else {
             return false;
         };
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return false;
-        };
-        let grab = if geometry.contains(y) {
-            y - geometry.thumb_start
-        } else {
-            let grab = geometry.thumb_size / 2.0;
-            self.scrollbar_seek(geometry, y - grab);
-            grab
-        };
-        self.scrollbar_drag = Some(grab);
-        self.scrollbar_expansion.activate(Instant::now());
-        self.show_scrollbar();
+        match press {
+            Press::Grabbed | Press::Page { .. } => {}
+            Press::Jump(thumb_start) => {
+                if let Some(geometry) = geometries.vertical {
+                    self.scrollbar_seek(geometry, thumb_start);
+                }
+            }
+        }
         cx.notify();
         true
     }
@@ -786,26 +771,28 @@ impl CommandPalette {
         position: gpui::Point<Pixels>,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(grab) = self.scrollbar_drag else {
-            return;
-        };
         let Some(geometry) = self.scrollbar_geometry() else {
             return;
         };
-        let y = f32::from(position.y - self.scroll.bounds().top());
-        self.scrollbar_seek(geometry, y - grab);
-        self.show_scrollbar();
+        let Some((_, thumb_start)) = self.scrollbars.drag_to(
+            self.scroll.bounds(),
+            position,
+            Instant::now(),
+        ) else {
+            return;
+        };
+        self.scrollbar_seek(geometry, thumb_start);
         cx.notify();
     }
 
     fn scrollbar_release(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbar_drag.take().is_some() {
+        if self.scrollbars.release(Instant::now()) {
             cx.notify();
         }
     }
 
     fn scrollbar_seek(&self, geometry: ScrollbarGeometry, thumb_start: f32) {
-        let offset = geometry.pixel_offset_for_thumb_start(thumb_start);
+        let offset = geometry.offset_for_thumb_start(thumb_start);
         self.scroll.set_offset(point(px(0.0), px(-offset)));
     }
 
@@ -1294,7 +1281,7 @@ impl CommandPalette {
             "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={}",
             self.input.read(cx).text(),
             self.diagnostic,
-            self.scrollbar_drag.is_some(),
+            self.scrollbars.dragging(),
             self.wheel_events,
         )
     }
@@ -2079,12 +2066,9 @@ impl Render for CommandPalette {
             );
         }
 
-        let scrollbar = (self.indicator.opacity > 0.0).then(|| {
-            let width = if self.scrollbar_expansion.active() {
-                SCROLLBAR_EXPANDED_WIDTH
-            } else {
-                SCROLLBAR_WIDTH
-            };
+        let scrollbar = self.scrollbars.visible(Axis::Vertical).then(|| {
+            let width = self.scrollbars.strip_thickness(Axis::Vertical);
+            let geometries = self.scrollbar_geometries();
             div()
                 .id("palette-scrollbar")
                 .absolute()
@@ -2099,9 +2083,8 @@ impl Render for CommandPalette {
                     },
                 ))
                 .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
-                    if !hovering && palette.scrollbar_hovering {
-                        palette.scrollbar_hovering = false;
-                        cx.notify();
+                    if !hovering {
+                        palette.scrollbar_pointer_left(cx);
                     }
                 }))
                 .on_mouse_down(
@@ -2120,16 +2103,11 @@ impl Render for CommandPalette {
                         palette.scrollbar_release(cx);
                     }),
                 )
-                .children(self.scrollbar_geometry().into_iter().flat_map(
-                    |geometry| {
-                        crate::ui::scrollbar::layers(
-                            geometry,
-                            self.indicator.opacity,
-                            self.scrollbar_expansion.progress,
-                            swatch.fg,
-                        )
-                    },
-                ))
+                .children(
+                    self.scrollbars
+                        .layers(&geometries, swatch.fg)
+                        .collect::<Vec<_>>(),
+                )
         });
         let scrollbar_capture = canvas(
             |_, _, _| {},
