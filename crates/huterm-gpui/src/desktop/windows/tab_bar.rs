@@ -177,7 +177,6 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .overflow_hidden()
-            .cursor_pointer()
             .text_color(if item.active() {
                 colors.foreground
             } else {

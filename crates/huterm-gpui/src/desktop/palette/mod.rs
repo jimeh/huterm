@@ -36,8 +36,8 @@ use slots::{
 use super::TerminalView;
 use crate::keymap::InstalledKeymap;
 use crate::ui::scrollbar::{
-    Axis, Edge, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
-    ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
+    Axis, Edge, INDICATOR_HOLD, Origin, Press, ScrollbarGeometries,
+    ScrollbarGeometry, ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
 };
 use crate::ui::text_field::{Changed, TextField};
 
@@ -93,6 +93,9 @@ const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     expand_on_hover: true,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
+    slim: false,
+    edge_inset: 0.0,
+    hold: INDICATOR_HOLD,
 };
 
 /// Theme colours the palette derives its presentation from.

@@ -42,8 +42,9 @@ use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
 use crate::scroll::ScrollController;
 use crate::ui::scrollbar::{
-    Axis, Edge, IndicatorVisibility, Origin, Press, ScrollbarGeometries,
-    ScrollbarGeometry, ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
+    Axis, Edge, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
+    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
+    TrackMargins, TrackPress,
 };
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
@@ -63,6 +64,9 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
         start: 2.0,
         end: 8.0,
     },
+    slim: false,
+    edge_inset: 0.0,
+    hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
