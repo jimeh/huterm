@@ -87,7 +87,8 @@ pub(crate) struct ScrollbarOptions {
     pub(crate) expand_on_hover: bool,
     pub(crate) track_press: TrackPress,
     pub(crate) margins: TrackMargins,
-    /// Halve the thumb, track, and pointer strip across the axis.
+    /// Halve the resting thumb and pointer strip across the axis; the
+    /// expanded state keeps its full size.
     pub(crate) slim: bool,
     /// Distance from `edge` to the strip, leaving that band to other
     /// controls such as a resize handle.
@@ -359,18 +360,22 @@ impl AxisScrollbar {
         }
     }
 
-    /// Halves every dimension across the axis for a slim indicator.
+    /// Scale across the axis: a slim indicator rests at half size and grows
+    /// back to full size as it expands.
     fn scale(&self) -> f32 {
-        if self.options.slim { 0.5 } else { 1.0 }
+        if self.options.slim {
+            0.5 + 0.5 * self.expansion.progress
+        } else {
+            1.0
+        }
     }
 
     fn thickness(&self) -> f32 {
-        let base = if self.expansion.active() {
+        if self.expansion.active() {
             STRIP_EXPANDED_THICKNESS
         } else {
-            STRIP_THICKNESS
-        };
-        base * self.scale()
+            STRIP_THICKNESS * self.scale()
+        }
     }
 
     /// The strip plus the band between it and the edge.
@@ -823,6 +828,31 @@ mod tests {
             slim.hit(&geometries, bounds, point(px(95.0), px(200.0)))
                 .is_some()
         );
+        // Expansion restores the full strip and track for a slim scrollbar.
+        let mut growing = Scrollbars::vertical(ScrollbarOptions {
+            slim: true,
+            ..options(true, TrackPress::Jump)
+        });
+        growing.show(Axis::Vertical, now);
+        assert!(growing.pointer_moved(
+            &geometries,
+            bounds,
+            point(px(97.0), px(200.0)),
+            now
+        ));
+        growing.advance(now + SCROLLBAR_EXPAND);
+        assert!(
+            (growing.strip_thickness(Axis::Vertical)
+                - STRIP_EXPANDED_THICKNESS)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (growing.strip_inset(Axis::Vertical) - STRIP_EXPANDED_THICKNESS)
+                .abs()
+                < 0.001
+        );
+        assert_eq!(growing.layers(&geometries, Hsla::default()).count(), 2);
 
         let mut inset = Scrollbars::vertical(ScrollbarOptions {
             edge_inset: 6.0,
