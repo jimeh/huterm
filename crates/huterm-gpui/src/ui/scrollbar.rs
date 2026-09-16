@@ -64,13 +64,6 @@ pub(crate) enum TrackPress {
     /// Center the thumb under the pointer and start dragging it.
     Jump,
     /// Move one page toward the pointer.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the terminal adopts this when it migrates"
-        )
-    )]
     Page,
 }
 
@@ -431,41 +424,6 @@ impl AxisScrollbar {
     }
 }
 
-/// Track and thumb layers on the right edge for callers that still own
-/// their scrollbar state. Transitional until the terminal uses `Scrollbars`.
-pub(crate) fn layers(
-    geometry: ScrollbarGeometry,
-    opacity: f32,
-    expansion: f32,
-    foreground: Hsla,
-) -> impl Iterator<Item = Div> {
-    let track = (expansion > 0.0).then(|| {
-        place(
-            div(),
-            Edge::Right,
-            2.0,
-            geometry.track_start,
-            geometry.track_size(),
-            8.0 + 6.0 * expansion,
-        )
-        .rounded(px(4.0 + 3.0 * expansion))
-        .bg(foreground.opacity(20.0 / 255.0))
-        .opacity(opacity * expansion)
-    });
-    let thumb = place(
-        div(),
-        Edge::Right,
-        2.0 + 2.0 * expansion,
-        geometry.thumb_start,
-        geometry.thumb_size,
-        6.0 + 4.0 * expansion,
-    )
-    .rounded(px(3.0 + 2.0 * expansion))
-    .bg(foreground.opacity(187.0 / 255.0))
-    .opacity(opacity);
-    track.into_iter().chain(std::iter::once(thumb))
-}
-
 /// Distance from the far edge, so `Left` and `Top` strips can share the
 /// `Right` and `Bottom` comparison.
 fn extent_flip(cross: f32, extent: f32) -> f32 {
@@ -596,32 +554,24 @@ impl Scrollbars {
             .is_some_and(|scrollbar| scrollbar.visibility.opacity > 0.0)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the terminal adopts this when it migrates"
-        )
-    )]
-    pub(crate) fn expanded(&self, axis: Axis) -> bool {
+    pub(crate) fn opacity(&self, axis: Axis) -> f32 {
         self.slot(axis)
-            .is_some_and(|scrollbar| scrollbar.expansion.active())
+            .map_or(0.0, |scrollbar| scrollbar.visibility.opacity)
+    }
+
+    /// Space to keep clear of the strip on `axis` as its expansion animates,
+    /// for labels beside the thumb.
+    pub(crate) fn strip_inset(&self, axis: Axis) -> f32 {
+        self.slot(axis).map_or(0.0, |scrollbar| {
+            STRIP_THICKNESS
+                + (STRIP_EXPANDED_THICKNESS - STRIP_THICKNESS)
+                    * scrollbar.expansion.progress
+        })
     }
 
     /// Thickness of the pointer strip on `axis` for the caller's element.
     pub(crate) fn strip_thickness(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, AxisScrollbar::thickness)
-    }
-
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the terminal adopts this when it migrates"
-        )
-    )]
-    pub(crate) fn interacting(&self) -> bool {
-        self.enabled().any(|(_, scrollbar)| scrollbar.interacting())
     }
 
     pub(crate) fn dragging(&self) -> bool {
@@ -1033,13 +983,18 @@ mod tests {
             point(px(95.0), px(200.0)),
             now
         ));
-        assert!(scrollbars.expanded(Axis::Vertical));
+        assert!(
+            (scrollbars.strip_thickness(Axis::Vertical)
+                - STRIP_EXPANDED_THICKNESS)
+                .abs()
+                < f32::EPSILON
+        );
         assert_eq!(
             scrollbars.hit(&geometries, bounds, position),
             Some((Axis::Vertical, 200.0))
         );
         assert!(scrollbars.pointer_left());
-        assert!(!scrollbars.interacting());
+        assert!(!scrollbars.pointer_left());
     }
 
     #[test]
@@ -1110,7 +1065,6 @@ mod tests {
             ))
         );
         assert!(jumping.dragging());
-        assert!(!jumping.expanded(Axis::Vertical));
         assert!(
             (jumping.strip_thickness(Axis::Vertical) - STRIP_THICKNESS).abs()
                 < f32::EPSILON
