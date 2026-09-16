@@ -50,6 +50,10 @@ mod tab_bar;
 mod tab_strip;
 pub(super) mod tab_visibility;
 use crate::assets::Icon;
+use crate::ui::scrollbar::{
+    Axis, Edge, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
+    ScrollbarOptions, Scrollbars, TrackMargins, TrackPress,
+};
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, TabColors, TabItem,
     VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height,
@@ -67,6 +71,15 @@ const CONTROL_INSET: Pixels = px(3.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
+/// The overlay scrollbar on a vertical tab column: pixel offsets from the
+/// top, a jump-to-pointer track, and hover expansion like the palette list.
+const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
+    edge: Edge::Right,
+    origin: Origin::Start,
+    expand_on_hover: true,
+    track_press: TrackPress::Jump,
+    margins: TrackMargins::EVEN,
+};
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
 #[derive(Default)]
@@ -1152,6 +1165,7 @@ fn open_window_with_profile(
                 title_widths: HashMap::new(),
                 scroll_target: None,
                 last_scroll: Instant::now(),
+                tab_scrollbars: Scrollbars::default(),
                 sidebar_width: SIDEBAR_WIDTH,
                 resizing_sidebar: false,
                 reveal: Reveal::default(),
@@ -1208,8 +1222,9 @@ fn open_window_with_profile(
                             let _ = pump_view.update(cx, |view, cx| {
                                 view.refresh_fullscreen(window, cx);
                                 view.refresh_tab_visibility(window, cx);
-                                if view
-                                    .advance_tab_scroll(Instant::now(), window)
+                                let now = Instant::now();
+                                if view.advance_tab_scroll(now, window)
+                                    | view.tab_scrollbars.advance(now)
                                 {
                                     cx.notify();
                                 }
@@ -1307,6 +1322,8 @@ struct WorkspaceView {
     tab_scroll: Pixels,
     scroll_target: Option<Pixels>,
     last_scroll: Instant,
+    /// Overlay scrollbar for the tab strip; axes follow the tab placement.
+    tab_scrollbars: Scrollbars,
     sidebar_width: Pixels,
     resizing_sidebar: bool,
     reveal: Reveal,
@@ -1718,6 +1735,7 @@ impl WorkspaceView {
             self.tabs.iter().position(|tab| Some(tab.id) == self.active)
         {
             self.tab_scroll = self.tab_strip(window).reveal(index);
+            self.show_tab_scrollbar();
         }
     }
 
@@ -1731,7 +1749,134 @@ impl WorkspaceView {
         let strip = self.tab_strip(window);
         self.tab_scroll =
             (strip.offset + delta).clamp(px(0.0), strip.max_offset());
+        self.show_tab_scrollbar();
         cx.notify();
+    }
+
+    /// Reveals the strip's scrollbar; the window pump fades it out.
+    fn show_tab_scrollbar(&mut self) {
+        let now = Instant::now();
+        self.tab_scrollbars.show(Axis::Vertical, now);
+        self.tab_scrollbars.show(Axis::Horizontal, now);
+    }
+
+    /// Enables the scrollbar axis matching the tab placement. Idempotent, so
+    /// render calls it each frame and reload needs no extra hook.
+    fn sync_tab_scrollbars(&mut self) {
+        let vertical = self.config.tabs.position.vertical();
+        self.tab_scrollbars
+            .set_axis(Axis::Vertical, vertical.then_some(TAB_COLUMN_SCROLLBAR));
+        self.tab_scrollbars.set_axis(Axis::Horizontal, None);
+    }
+
+    /// The scrolled part of the strip: its bounds minus the new-tab slot.
+    fn tab_scrollbar_bounds(strip: &TabStrip) -> Bounds<Pixels> {
+        let mut bounds = strip.bounds;
+        if strip.vertical {
+            bounds.size.height = strip.available();
+        } else {
+            bounds.size.width = strip.available();
+        }
+        bounds
+    }
+
+    fn tab_scrollbar_geometries(strip: &TabStrip) -> ScrollbarGeometries {
+        let available = f32::from(strip.available());
+        let geometry = ScrollbarGeometry::new(
+            available,
+            available + f32::from(strip.max_offset()),
+            available,
+            f32::from(strip.offset),
+            TAB_COLUMN_SCROLLBAR.origin,
+            TAB_COLUMN_SCROLLBAR.margins,
+        );
+        if strip.vertical {
+            ScrollbarGeometries::vertical(geometry)
+        } else {
+            ScrollbarGeometries::default()
+        }
+    }
+
+    fn tab_scrollbar_pointer_moved(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let strip = self.tab_strip(window);
+        if self.tab_scrollbars.pointer_moved(
+            &Self::tab_scrollbar_geometries(&strip),
+            Self::tab_scrollbar_bounds(&strip),
+            position,
+            Instant::now(),
+        ) {
+            cx.notify();
+        }
+    }
+
+    /// Mouse down on the strip's scrollbar; true when it took the press.
+    fn tab_scrollbar_press(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let strip = self.tab_strip(window);
+        let geometries = Self::tab_scrollbar_geometries(&strip);
+        let Some((axis, press)) = self.tab_scrollbars.press(
+            &geometries,
+            Self::tab_scrollbar_bounds(&strip),
+            position,
+            Instant::now(),
+        ) else {
+            return false;
+        };
+        if let Press::Jump(thumb_start) = press {
+            self.tab_scrollbar_seek(axis, &geometries, thumb_start, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    fn tab_scrollbar_drag_to(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let strip = self.tab_strip(window);
+        let geometries = Self::tab_scrollbar_geometries(&strip);
+        if let Some((axis, thumb_start)) = self.tab_scrollbars.drag_to(
+            Self::tab_scrollbar_bounds(&strip),
+            position,
+            Instant::now(),
+        ) {
+            self.tab_scrollbar_seek(axis, &geometries, thumb_start, cx);
+        }
+    }
+
+    fn tab_scrollbar_release(&mut self, cx: &mut Context<'_, Self>) {
+        if self.tab_scrollbars.release(Instant::now()) {
+            cx.notify();
+        }
+    }
+
+    fn tab_scrollbar_seek(
+        &mut self,
+        axis: Axis,
+        geometries: &ScrollbarGeometries,
+        thumb_start: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let geometry = match axis {
+            Axis::Vertical => geometries.vertical,
+            Axis::Horizontal => geometries.horizontal,
+        };
+        if let Some(geometry) = geometry {
+            self.scroll_target = None;
+            self.tab_scroll = px(geometry.offset_for_thumb_start(thumb_start));
+            cx.notify();
+        }
     }
 
     fn resize_sidebar(
@@ -1852,6 +1997,9 @@ impl WorkspaceView {
         };
         let changed = self.tab_scroll != next;
         self.tab_scroll = next;
+        if changed {
+            self.show_tab_scrollbar();
+        }
         changed
     }
 
@@ -3874,6 +4022,13 @@ impl Render for WorkspaceView {
                                             cx,
                                         );
                                         cx.stop_propagation();
+                                    } else if view.tab_scrollbars.dragging() {
+                                        view.tab_scrollbar_drag_to(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
                                     }
                                 });
                             }
@@ -3899,6 +4054,9 @@ impl Render for WorkspaceView {
                                             window,
                                             cx,
                                         );
+                                        cx.stop_propagation();
+                                    } else if view.tab_scrollbars.dragging() {
+                                        view.tab_scrollbar_release(cx);
                                         cx.stop_propagation();
                                     }
                                 });
@@ -3952,6 +4110,7 @@ impl Render for WorkspaceView {
                     .child(tab),
             );
         }
+        self.sync_tab_scrollbars();
         let strip = self.tab_strip(window);
         let vertical = strip.vertical;
         self.tab_scroll = strip.offset;
@@ -4056,8 +4215,9 @@ impl Render for WorkspaceView {
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
             }
             for forward in [false, true] {
-                if (forward && strip.offset < strip.max_offset())
-                    || (!forward && strip.offset > px(0.0))
+                if !vertical
+                    && ((forward && strip.offset < strip.max_offset())
+                        || (!forward && strip.offset > px(0.0)))
                 {
                     let edge = if forward {
                         (strip.available() - CONTROL_SLOT).max(px(0.0))
@@ -4115,11 +4275,10 @@ impl Render for WorkspaceView {
                             ))
                             .child(
                                 icon_element(
-                                    match (vertical, forward) {
-                                        (true, true) => Icon::ChevronDown,
-                                        (true, false) => Icon::ChevronUp,
-                                        (false, true) => Icon::ChevronRight,
-                                        (false, false) => Icon::ChevronLeft,
+                                    if forward {
+                                        Icon::ChevronRight
+                                    } else {
+                                        Icon::ChevronLeft
                                     },
                                     colors.inactive,
                                 )
@@ -4202,6 +4361,70 @@ impl Render for WorkspaceView {
                             }),
                         ),
                 );
+            }
+            // Above the resize handle so a press on the thumb scrolls instead
+            // of resizing; misses fall through to the handle and rows.
+            if vertical {
+                let geometries = Self::tab_scrollbar_geometries(&strip);
+                let thickness =
+                    self.tab_scrollbars.strip_thickness(Axis::Vertical);
+                if self.tab_scrollbars.visible(Axis::Vertical)
+                    && geometries.vertical.is_some()
+                {
+                    chrome = chrome.child(
+                        div()
+                            .id("tab-scrollbar")
+                            .absolute()
+                            .left(
+                                strip.bounds.right()
+                                    - px(thickness)
+                                    - clip.origin.x,
+                            )
+                            .top(strip.bounds.origin.y - clip.origin.y)
+                            .w(px(thickness))
+                            .h(strip.available())
+                            .on_mouse_move(cx.listener(
+                                |view, event: &MouseMoveEvent, window, cx| {
+                                    view.tab_scrollbar_pointer_moved(
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ))
+                            .on_hover(cx.listener(
+                                |view, hovering: &bool, _, cx| {
+                                    if !hovering
+                                        && view.tab_scrollbars.pointer_left()
+                                    {
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    |view,
+                                     event: &MouseDownEvent,
+                                     window,
+                                     cx| {
+                                        if view.tab_scrollbar_press(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        ) {
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ),
+                            )
+                            .children(
+                                self.tab_scrollbars
+                                    .layers(&geometries, colors.foreground)
+                                    .collect::<Vec<_>>(),
+                            ),
+                    );
+                }
             }
             root = root.child(chrome);
             // A flush active Strip row continues the terminal's top border

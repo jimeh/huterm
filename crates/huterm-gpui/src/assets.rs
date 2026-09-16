@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use gpui::{Application, AssetSource, SharedString};
 
-const ASSETS: [(&str, &[u8]); 7] = [
+const ASSETS: [(&str, &[u8]); 5] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -12,14 +12,6 @@ const ASSETS: [(&str, &[u8]); 7] = [
     (
         "icons/chevron-right.svg",
         include_bytes!("../assets/icons/chevron-right.svg"),
-    ),
-    (
-        "icons/chevron-up.svg",
-        include_bytes!("../assets/icons/chevron-up.svg"),
-    ),
-    (
-        "icons/chevron-down.svg",
-        include_bytes!("../assets/icons/chevron-down.svg"),
     ),
     (
         "icons/circle-alert.svg",
@@ -33,20 +25,16 @@ pub(crate) enum Icon {
     Plus,
     ChevronLeft,
     ChevronRight,
-    ChevronUp,
-    ChevronDown,
     CircleAlert,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 5] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
         Self::ChevronRight,
-        Self::ChevronUp,
-        Self::ChevronDown,
         Self::CircleAlert,
     ];
 
@@ -56,8 +44,6 @@ impl Icon {
             Self::Plus => "icons/plus.svg",
             Self::ChevronLeft => "icons/chevron-left.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
-            Self::ChevronUp => "icons/chevron-up.svg",
-            Self::ChevronDown => "icons/chevron-down.svg",
             Self::CircleAlert => "icons/circle-alert.svg",
         }
     }

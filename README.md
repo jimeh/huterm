@@ -53,13 +53,14 @@ and independent terminal processes. Tabs can appear at the top, bottom, left,
 or right. Hidden tabs keep processing output without preparing viewport
 snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
-even when the pointer leaves the window; releasing commits the clamped
-insertion position. Escape cancels. Drag near a bar edge to scroll toward
-hidden tabs. Horizontal tabs share the window width, shrinking to 120 logical
-pixels before scrolling. Vertical tabs keep a fixed height in a resizable
-sidebar. Scroll the bar with a trackpad or mouse wheel; floating arrows show
-where more tabs remain. The new-tab button stays visible and follows the last
-tab in vertical mode. Moving tabs between windows and tearing tabs out are not
+even when the pointer leaves the window; releasing commits the clamped insertion
+position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
+Horizontal tabs share the window width, shrinking to 120 logical pixels before
+scrolling. Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
+bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
+more tabs remain; vertical bars show an overlay scrollbar that widens on hover
+and can be dragged. The new-tab button stays visible and follows the last tab in
+vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 
 Closing a tab stops its terminal. Windows attach to sessions. Closing a window

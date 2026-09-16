@@ -233,15 +233,18 @@ the last tab until the bar overflows and scrolls. Render measures titles and
 caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
 drop slots. Vertical tabs ignore `width`.
 
-Trackpad and wheel scrolling move the strip without selecting a tab. Floating
-arrows indicate hidden content and animate scrolling when clicked. Explicit
-selection or creating a tab reveals it; ordinary redraws preserve manual
-scroll. Drag a tab to reorder it within its window, horizontally or
-vertically. The preview and insertion position remain constrained to the bar
-when the pointer leaves it; release commits and Escape cancels. During a drag,
-hovering an overflow edge scrolls continuously without changing the active
-terminal. Reordering preserves terminal processes, focus, selection, and
-scroll position. Cross-window moves and tear-out remain deferred.
+Trackpad and wheel scrolling move the strip without selecting a tab. Horizontal
+bars show floating arrows that indicate hidden content and animate scrolling
+when clicked. Vertical columns use the shared `Scrollbars` overlay on their
+right edge instead: it appears on scrolling, reveal, and hover, widens on hover,
+jumps on a track press, and drags through the window-level capture that also
+serves tab reordering. Explicit selection or creating a tab reveals it; ordinary
+redraws preserve manual scroll. Drag a tab to reorder it within its window,
+horizontally or vertically. The preview and insertion position remain
+constrained to the bar when the pointer leaves it; release commits and Escape
+cancels. During a drag, hovering an overflow edge scrolls continuously without
+changing the active terminal. Reordering preserves terminal processes, focus,
+selection, and scroll position. Cross-window moves and tear-out remain deferred.
 Reload applies placement, font, padding, and theme changes across all windows.
 Shell titles label tabs, with the launched program as fallback. Directory and
 process labels and directory inheritance are not implemented yet.
