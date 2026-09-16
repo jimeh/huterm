@@ -92,8 +92,8 @@ const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
 };
 /// The hairline position indicator along a horizontal tab bar's bottom
 /// edge: it never expands or shows a track, but its thumb still drags and
-/// the track jumps. Its ends align with the tabs: flush with the bar for
-/// Strip, and with the pills' visible edges for Pill.
+/// the track jumps. Its ends align with the tabs: a point in from the bar's
+/// edge for Strip, and on the pills' visible edges for Pill.
 fn tab_row_scrollbar(style: TabStyle) -> ScrollbarOptions {
     ScrollbarOptions {
         edge: Edge::Bottom,
@@ -101,7 +101,12 @@ fn tab_row_scrollbar(style: TabStyle) -> ScrollbarOptions {
         expand_on_hover: false,
         track_press: TrackPress::Jump,
         margins: match style {
-            TabStyle::Strip => TrackMargins::FLUSH,
+            // One point clear of the window's own edge outline.
+            TabStyle::Strip => TrackMargins {
+                start: 1.0,
+                end: 0.0,
+                padding: 0.0,
+            },
             TabStyle::Pill => TrackMargins {
                 start: f32::from(PILL_MARGIN_LEFT),
                 end: f32::from(PILL_MARGIN_RIGHT),

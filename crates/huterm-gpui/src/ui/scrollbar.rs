@@ -83,13 +83,6 @@ impl TrackMargins {
         end: 2.0,
         padding: 2.0,
     };
-
-    /// No margins or padding: the thumb can reach both ends of the track.
-    pub(crate) const FLUSH: Self = Self {
-        start: 0.0,
-        end: 0.0,
-        padding: 0.0,
-    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1200,7 +1193,11 @@ mod tests {
             336.0,
             336.0,
             Origin::Start,
-            TrackMargins::FLUSH,
+            TrackMargins {
+                start: 0.0,
+                end: 0.0,
+                padding: 0.0,
+            },
         )
         .unwrap();
         assert!(flush.track_start.abs() < f32::EPSILON);
