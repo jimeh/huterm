@@ -874,6 +874,11 @@ background = "#040506"
         // No `[theme]`, or an empty one, is huterm-dark with its hand-picked
         // chrome, so a fresh install matches the named theme.
         assert_eq!(parse("[theme]").unwrap().theme, Theme::huterm_dark());
+        // Setting a key, even to its default value, is a real definition
+        // that derives its chrome rather than taking the hand-picked set.
+        let same = parse("[theme]\nbackground = '#1d1f21'").unwrap().theme;
+        assert_eq!(same.background, Theme::default().background);
+        assert_eq!(same.tab_bar_background, None);
         // An unnamed theme derives its chrome from its own colors rather
         // than inheriting huterm-dark's hand-picked dark set.
         let light =
