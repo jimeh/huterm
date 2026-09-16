@@ -352,6 +352,35 @@ pub struct Theme {
     pub tab_inactive_foreground: Option<Rgb>,
     pub tab_border: Option<Rgb>,
     pub tab_accent: Option<Rgb>,
+    pub tab_hover_background: Option<Rgba>,
+    pub scrollbar_thumb: Option<Rgba>,
+    pub scrollbar_track: Option<Rgba>,
+}
+
+/// A color with straight alpha, for overlays drawn over varying surfaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rgba {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+impl Rgba {
+    #[must_use]
+    pub const fn opaque(rgb: Rgb) -> Self {
+        Self::with_alpha(rgb, 0xff)
+    }
+
+    #[must_use]
+    pub const fn with_alpha(rgb: Rgb, alpha: u8) -> Self {
+        Self {
+            red: rgb.red,
+            green: rgb.green,
+            blue: rgb.blue,
+            alpha,
+        }
+    }
 }
 
 /// Window chrome colors with every unset theme value derived.
@@ -363,6 +392,12 @@ pub struct UiColors {
     pub tab_inactive_foreground: Rgb,
     pub tab_border: Rgb,
     pub tab_accent: Rgb,
+    /// Overlay on a hovered tab or chrome control.
+    pub tab_hover_background: Rgba,
+    /// Overlay scrollbar thumb, over the terminal, lists, and tab bars.
+    pub scrollbar_thumb: Rgba,
+    /// Track behind an expanded scrollbar thumb.
+    pub scrollbar_track: Rgba,
 }
 
 const BLACK: Rgb = rgb(0x0000_0000);
@@ -408,6 +443,9 @@ impl Default for Theme {
             tab_inactive_foreground: Some(rgb(0x0096_9896)),
             tab_border: Some(rgb(0x002a_2c30)),
             tab_accent: Some(rgb(0x0081_a2be)),
+            tab_hover_background: None,
+            scrollbar_thumb: None,
+            scrollbar_track: None,
             ansi: [
                 rgb(0x001d_1f21),
                 rgb(0x00cc_6666),
@@ -465,6 +503,15 @@ impl Theme {
                 .tab_border
                 .unwrap_or_else(|| mix(bar, self.foreground, 0.1)),
             tab_accent: self.tab_accent.unwrap_or(self.ansi[4]),
+            tab_hover_background: self
+                .tab_hover_background
+                .unwrap_or(Rgba::with_alpha(self.foreground, 0x0a)),
+            scrollbar_thumb: self
+                .scrollbar_thumb
+                .unwrap_or(Rgba::with_alpha(self.foreground, 0xbb)),
+            scrollbar_track: self
+                .scrollbar_track
+                .unwrap_or(Rgba::with_alpha(self.foreground, 0x14)),
         }
     }
 
@@ -520,6 +567,29 @@ pub fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
     let value = u32::from_str_radix(hex, 16)
         .map_err(|_| ConfigError::Color(value.into()))?;
     Ok(rgb(value))
+}
+
+/// Parses a color with optional alpha: `#rrggbb` or `#rrggbbaa`.
+///
+/// # Errors
+/// Returns an error for any other form.
+pub fn parse_color_alpha(value: &str) -> Result<Rgba, ConfigError> {
+    let Some(hex) = value.strip_prefix('#') else {
+        return Err(ConfigError::Color(value.into()));
+    };
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ConfigError::Color(value.into()));
+    }
+    let (rgb, alpha) = match hex.len() {
+        6 => (hex, "ff"),
+        8 => hex.split_at(6),
+        _ => return Err(ConfigError::Color(value.into())),
+    };
+    let rgb = u32::from_str_radix(rgb, 16)
+        .map_err(|_| ConfigError::Color(value.into()))?;
+    let alpha = u8::from_str_radix(alpha, 16)
+        .map_err(|_| ConfigError::Color(value.into()))?;
+    Ok(Rgba::with_alpha(self::rgb(rgb), alpha))
 }
 
 const fn rgb(value: u32) -> Rgb {
@@ -832,6 +902,9 @@ mod theme_ui_tests {
             tab_inactive_foreground: None,
             tab_border: None,
             tab_accent: None,
+            tab_hover_background: None,
+            scrollbar_thumb: None,
+            scrollbar_track: None,
             ..Theme::default()
         }
     }
@@ -850,6 +923,19 @@ mod theme_ui_tests {
         assert_ne!(ui.tab_border, ui.tab_bar_background);
         assert_eq!(ui.tab_foreground, theme.foreground);
         assert_eq!(ui.tab_accent, theme.ansi[4]);
+        // Overlays derive from the foreground at fixed alphas.
+        assert_eq!(
+            ui.tab_hover_background,
+            Rgba::with_alpha(theme.foreground, 0x0a)
+        );
+        assert_eq!(
+            ui.scrollbar_thumb,
+            Rgba::with_alpha(theme.foreground, 0xbb)
+        );
+        assert_eq!(
+            ui.scrollbar_track,
+            Rgba::with_alpha(theme.foreground, 0x14)
+        );
     }
 
     #[test]
@@ -887,6 +973,7 @@ mod theme_ui_tests {
         )
         .expect("ui colors");
         let ui = definition.apply(unset(0, 0x00ff_ffff)).unwrap().ui();
+        let white = rgb(0x00ff_ffff);
         assert_eq!(
             ui,
             UiColors {
@@ -896,11 +983,36 @@ mod theme_ui_tests {
                 tab_inactive_foreground: rgb(0x000a_0b0c),
                 tab_border: rgb(0x000d_0e0f),
                 tab_accent: rgb(0x0010_1112),
+                tab_hover_background: Rgba::with_alpha(white, 0x0a),
+                scrollbar_thumb: Rgba::with_alpha(white, 0xbb),
+                scrollbar_track: Rgba::with_alpha(white, 0x14),
             }
         );
         let invalid: ThemeDefinition =
             toml::from_str("tab_border = '#12345z'").expect("string color");
         assert!(invalid.apply(Theme::default()).is_err());
+    }
+
+    #[test]
+    fn overlay_colors_accept_six_or_eight_hex_digits() {
+        let definition: ThemeDefinition = toml::from_str(
+            "tab_hover_background = '#10203040'\nscrollbar_thumb = '#506070'\nscrollbar_track = '#8090a0b0'",
+        )
+        .expect("overlay colors");
+        let ui = definition.apply(Theme::default()).unwrap().ui();
+        assert_eq!(
+            ui.tab_hover_background,
+            Rgba::with_alpha(rgb(0x0010_2030), 0x40)
+        );
+        assert_eq!(ui.scrollbar_thumb, Rgba::opaque(rgb(0x0050_6070)));
+        assert_eq!(
+            ui.scrollbar_track,
+            Rgba::with_alpha(rgb(0x0080_90a0), 0xb0)
+        );
+        for invalid in ["#12345", "#1234567", "#123456789", "123456", "#12345g"]
+        {
+            assert!(parse_color_alpha(invalid).is_err(), "{invalid}");
+        }
     }
 }
 
@@ -1063,6 +1175,9 @@ pub struct ThemeDefinition {
     pub tab_inactive_foreground: Option<String>,
     pub tab_border: Option<String>,
     pub tab_accent: Option<String>,
+    pub tab_hover_background: Option<String>,
+    pub scrollbar_thumb: Option<String>,
+    pub scrollbar_track: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1097,6 +1212,15 @@ impl ThemeDefinition {
         ] {
             if let Some(value) = value {
                 *target = Some(parse_color(value)?);
+            }
+        }
+        for (target, value) in [
+            (&mut theme.tab_hover_background, &self.tab_hover_background),
+            (&mut theme.scrollbar_thumb, &self.scrollbar_thumb),
+            (&mut theme.scrollbar_track, &self.scrollbar_track),
+        ] {
+            if let Some(value) = value {
+                *target = Some(parse_color_alpha(value)?);
             }
         }
         for (target, value) in [

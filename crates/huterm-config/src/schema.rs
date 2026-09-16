@@ -303,6 +303,12 @@ fn constrain_theme(schema: &mut Value) {
                 value["minItems"] = json!(16);
                 value["maxItems"] = json!(16);
                 value["items"]["pattern"] = json!("^#[0-9a-fA-F]{6}$");
+            } else if matches!(
+                name.as_str(),
+                "tab_hover_background" | "scrollbar_thumb" | "scrollbar_track"
+            ) {
+                // Overlays may carry alpha.
+                value["pattern"] = json!("^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$");
             } else {
                 value["pattern"] = json!("^#[0-9a-fA-F]{6}$");
             }

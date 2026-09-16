@@ -2687,6 +2687,7 @@ impl WorkspaceView {
             background: color(theme.background),
             selection: color(theme.selection),
             accent: color(theme.ansi[4]),
+            scrollbar: super::scrollbar_colors(theme),
         }
     }
 
@@ -4289,9 +4290,7 @@ impl Render for WorkspaceView {
                             .justify_center()
                             .group("scroll-tabs")
                             .bg(colors.bar)
-                            .hover(|style| {
-                                style.bg(colors.foreground.opacity(0.06))
-                            })
+                            .hover(|style| style.bg(colors.control_hover))
                             .rounded_md()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
@@ -4335,7 +4334,7 @@ impl Render for WorkspaceView {
                     .id("new-tab")
                     .group("new-tab")
                     .occlude()
-                    .hover(|style| style.bg(colors.foreground.opacity(0.06)))
+                    .hover(|style| style.bg(colors.control_hover))
                     .rounded(px(7.0))
                     .absolute()
                     .left(
@@ -4477,7 +4476,7 @@ impl Render for WorkspaceView {
                             )
                             .children(
                                 self.tab_scrollbars
-                                    .layers(&geometries, colors.foreground)
+                                    .layers(&geometries, colors.scrollbar)
                                     .collect::<Vec<_>>(),
                             ),
                     );
