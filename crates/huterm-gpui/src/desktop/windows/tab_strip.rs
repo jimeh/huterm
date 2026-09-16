@@ -1,4 +1,7 @@
-use super::{Bounds, CONTROL_SLOT, Pixels, TAB_HEIGHT, point, px, size};
+use super::{
+    Bounds, CONTROL_SLOT, Pixels, TAB_HEIGHT, VERTICAL_END_MARGIN, point, px,
+    size,
+};
 use std::time::Duration;
 
 /// How tab extents along the strip axis are chosen.
@@ -39,7 +42,14 @@ impl TabStrip {
         } else {
             bounds.size.width
         };
-        let viewport = (available - CONTROL_SLOT).max(px(0.0));
+        // A vertical column also keeps a margin below the new-tab button so
+        // it does not touch the window edge when tabs overflow.
+        let reserved = if vertical {
+            CONTROL_SLOT + VERTICAL_END_MARGIN
+        } else {
+            CONTROL_SLOT
+        };
+        let viewport = (available - reserved).max(px(0.0));
         let fit = matches!(extents, TabExtents::Fit(_)) && !vertical;
         let extents = match extents {
             TabExtents::Fit(widths) if !vertical => widths,
@@ -242,8 +252,8 @@ mod tests {
         assert_eq!(fitting.available(), px(96.0));
         assert_eq!(fitting.bounds.size.width, px(632.0));
         let overflowing = strip(true, 20, 0.0);
-        assert_eq!(overflowing.available(), px(192.0));
-        assert_eq!(overflowing.max_offset(), px(448.0));
+        assert_eq!(overflowing.available(), px(187.0));
+        assert_eq!(overflowing.max_offset(), px(453.0));
         let ignored = TabStrip::new(
             bounds(),
             true,
