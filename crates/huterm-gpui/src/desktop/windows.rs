@@ -1772,8 +1772,13 @@ impl WorkspaceView {
         if let Some(index) =
             self.tabs.iter().position(|tab| Some(tab.id) == self.active)
         {
-            self.tab_scroll = self.tab_strip(window).reveal(index);
-            self.show_tab_scrollbar();
+            let revealed = self.tab_strip(window).reveal(index);
+            // Only an actual move shows the indicator; switching to a tab
+            // that is already in view leaves it hidden.
+            if revealed != self.tab_scroll {
+                self.tab_scroll = revealed;
+                self.show_tab_scrollbar();
+            }
         }
     }
 
