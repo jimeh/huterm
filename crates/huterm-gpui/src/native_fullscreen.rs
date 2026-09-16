@@ -1008,10 +1008,6 @@ pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
 /// The auxiliary areas beside a notch, converted from `AppKit` screen
 /// coordinates to top-left window coordinates for a window covering the
 /// screen. `None` when the screen has no notch or the API is unavailable.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "AppKit points fit GPUI logical pixels"
-)]
 pub(crate) unsafe fn screen_notch_shelves(
     screen: *mut Object,
 ) -> Option<crate::fullscreen::NotchShelves> {
@@ -1029,29 +1025,7 @@ pub(crate) unsafe fn screen_notch_shelves(
         let frame: Bounds<f64> = msg_send![screen, frame];
         let left: Bounds<f64> = msg_send![screen, auxiliaryTopLeftArea];
         let right: Bounds<f64> = msg_send![screen, auxiliaryTopRightArea];
-        if left.size.width <= 0.0 || right.size.width <= 0.0 {
-            return None;
-        }
-        let convert = |area: Bounds<f64>| {
-            gpui::Bounds::new(
-                gpui::point(
-                    gpui::px((area.origin.x - frame.origin.x) as f32),
-                    gpui::px(
-                        (frame.origin.y + frame.size.height
-                            - area.origin.y
-                            - area.size.height) as f32,
-                    ),
-                ),
-                gpui::size(
-                    gpui::px(area.size.width as f32),
-                    gpui::px(area.size.height as f32),
-                ),
-            )
-        };
-        Some(crate::fullscreen::NotchShelves {
-            left: convert(left),
-            right: convert(right),
-        })
+        crate::fullscreen::NotchShelves::from_screen(frame, left, right)
     }
 }
 

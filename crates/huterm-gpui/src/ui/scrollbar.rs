@@ -1009,6 +1009,39 @@ mod tests {
     }
 
     #[test]
+    fn set_axis_keeps_state_for_equal_options_and_resets_for_new_ones() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometries =
+            ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+        let mut scrollbars = vertical(true, TrackPress::Jump);
+        scrollbars.show(Axis::Vertical, now);
+        assert!(scrollbars.pointer_moved(
+            &geometries,
+            bounds,
+            point(px(95.0), px(200.0)),
+            now
+        ));
+        // Render re-applies the same options every frame; nothing resets.
+        scrollbars
+            .set_axis(Axis::Vertical, Some(options(true, TrackPress::Jump)));
+        assert!(scrollbars.visible(Axis::Vertical));
+        // Hover survived, so leaving now reports a change.
+        assert!(scrollbars.pointer_left());
+        // Different options rebuild the axis from scratch.
+        scrollbars.set_axis(
+            Axis::Vertical,
+            Some(ScrollbarOptions {
+                hold: Duration::from_millis(300),
+                ..options(true, TrackPress::Jump)
+            }),
+        );
+        assert!(!scrollbars.visible(Axis::Vertical));
+        assert!(!scrollbars.pointer_left());
+    }
+
+    #[test]
     fn reveal_on_hover_keeps_the_strip_live_after_the_indicator_fades() {
         let now = Instant::now();
         let bounds =

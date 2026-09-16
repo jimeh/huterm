@@ -224,11 +224,7 @@ impl WorkspaceView {
                 .child(item.title.clone()),
             close: Self::close_tab_button(
                 id,
-                match tabs.close_button {
-                    TabCloseButton::Hover => false,
-                    TabCloseButton::Active => item.active(),
-                    TabCloseButton::Always => true,
-                },
+                close_button_shown(tabs.close_button, item.active()),
                 colors,
                 cx,
             ),
@@ -325,6 +321,15 @@ impl WorkspaceView {
                         style.text_color(foreground)
                     }),
             )
+    }
+}
+
+/// Whether a tab shows its close button without being hovered.
+fn close_button_shown(mode: TabCloseButton, active: bool) -> bool {
+    match mode {
+        TabCloseButton::Hover => false,
+        TabCloseButton::Active => active,
+        TabCloseButton::Always => true,
     }
 }
 
@@ -557,7 +562,9 @@ fn gap(style: TabStyle) -> Pixels {
 mod tests {
     use gpui::{point, size};
 
-    use super::super::{ChromeLayout, strip_bounds, terminal_corner_radius};
+    use super::super::{
+        ChromeLayout, select_notch_shelf, strip_bounds, terminal_corner_radius,
+    };
     use super::*;
 
     fn tabs(
@@ -854,6 +861,103 @@ mod tests {
         );
         assert_eq!(column.tabs.origin.y, px(0.0));
         assert!(column.tabs.size.height > px(1000.0));
+    }
+
+    #[test]
+    fn close_buttons_show_by_mode_before_any_hover() {
+        assert!(!close_button_shown(TabCloseButton::Hover, true));
+        assert!(!close_button_shown(TabCloseButton::Hover, false));
+        assert!(close_button_shown(TabCloseButton::Active, true));
+        assert!(!close_button_shown(TabCloseButton::Active, false));
+        assert!(close_button_shown(TabCloseButton::Always, false));
+    }
+
+    #[test]
+    fn shelf_selection_follows_the_config_and_only_top_bars() {
+        use huterm_config::TabNotch;
+        let shelves = crate::fullscreen::NotchShelves {
+            left: Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(790.0), px(38.0)),
+            ),
+            right: Bounds::new(
+                point(px(1010.0), px(0.0)),
+                size(px(790.0), px(38.0)),
+            ),
+        };
+        let tabs = |position, notch| TabsConfig {
+            position,
+            notch,
+            ..TabsConfig::default()
+        };
+        assert_eq!(
+            select_notch_shelf(
+                tabs(TabPosition::Top, TabNotch::Left),
+                Some(shelves)
+            ),
+            Some(shelves.left)
+        );
+        assert_eq!(
+            select_notch_shelf(
+                tabs(TabPosition::Top, TabNotch::Right),
+                Some(shelves)
+            ),
+            Some(shelves.right)
+        );
+        assert!(
+            select_notch_shelf(
+                tabs(TabPosition::Top, TabNotch::Off),
+                Some(shelves)
+            )
+            .is_none()
+        );
+        assert!(
+            select_notch_shelf(tabs(TabPosition::Top, TabNotch::Left), None)
+                .is_none()
+        );
+        for position in
+            [TabPosition::Bottom, TabPosition::Left, TabPosition::Right]
+        {
+            assert!(
+                select_notch_shelf(
+                    tabs(position, TabNotch::Left),
+                    Some(shelves)
+                )
+                .is_none(),
+                "{position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_columns_overlay_beside_a_safe_area_without_moving_rows() {
+        let viewport = size(px(800.0), px(600.0));
+        let safe_area = gpui::Edges {
+            top: px(38.0),
+            ..Default::default()
+        };
+        let tabs = TabsConfig {
+            position: TabPosition::Left,
+            ..TabsConfig::default()
+        };
+        let reserved = ChromeLayout::for_tabs(
+            viewport,
+            px(0.0),
+            tabs,
+            px(220.0),
+            safe_area,
+            None,
+        );
+        let overlay =
+            reserved.present(Presentation::Overlay, TabPosition::Left, 0.5);
+        // The terminal takes the full width under the safe area.
+        assert_eq!(overlay.terminal.origin, point(px(0.0), px(38.0)));
+        assert_eq!(overlay.terminal.size.width, px(800.0));
+        // The column slides in from the left at half progress, still from the
+        // screen top, with its rows below the safe area.
+        assert_eq!(overlay.tabs.origin.x, -reserved.tabs.size.width * 0.5);
+        assert_eq!(overlay.tabs.origin.y, px(0.0));
+        assert_eq!(overlay.strip_bounds(tabs).origin.y, px(38.0));
     }
 
     #[test]

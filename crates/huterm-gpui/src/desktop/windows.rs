@@ -1653,15 +1653,7 @@ impl WorkspaceView {
     /// The shelf beside the notch a top bar should occupy, when configured
     /// and available.
     fn notch_shelf(&self) -> Option<Bounds<Pixels>> {
-        if self.config.tabs.position != TabPosition::Top {
-            return None;
-        }
-        let shelves = self.notch_shelves?;
-        match self.config.tabs.notch {
-            huterm_config::TabNotch::Off => None,
-            huterm_config::TabNotch::Left => Some(shelves.left),
-            huterm_config::TabNotch::Right => Some(shelves.right),
-        }
+        select_notch_shelf(self.config.tabs, self.notch_shelves)
     }
 
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
@@ -3786,6 +3778,23 @@ fn report_config_reload_error<T>(result: &Result<T, String>) {
 
 fn path_for_status(cx: &App) -> String {
     cx.global::<Desktop>().config_path.display().to_string()
+}
+
+/// The shelf a top bar occupies for `tabs`, if the config asks for one and
+/// the display offers it. Only top bars use shelves.
+fn select_notch_shelf(
+    tabs: TabsConfig,
+    shelves: Option<crate::fullscreen::NotchShelves>,
+) -> Option<Bounds<Pixels>> {
+    if tabs.position != TabPosition::Top {
+        return None;
+    }
+    let shelves = shelves?;
+    match tabs.notch {
+        huterm_config::TabNotch::Off => None,
+        huterm_config::TabNotch::Left => Some(shelves.left),
+        huterm_config::TabNotch::Right => Some(shelves.right),
+    }
 }
 
 /// Largest corner radius the rounded terminal corner may use, so wide padding

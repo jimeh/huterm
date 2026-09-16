@@ -277,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn fit_slots_account_for_the_scroll_offset() {
+        let scrolled = fit(&[240.0; 4], 50.0);
+        let at = |x: f32| scrolled.bounds.origin + point(px(x), px(5.0));
+        // Pointer x plus the offset picks the nearest boundary.
+        assert_eq!(scrolled.slot(at(60.0)), 0);
+        assert_eq!(scrolled.slot(at(80.0)), 1);
+        assert_eq!(scrolled.slot(at(300.0)), 1);
+        assert_eq!(scrolled.slot(at(320.0)), 2);
+    }
+
+    #[test]
     fn fit_slots_markers_previews_and_reveal_follow_unequal_widths() {
         let tabs = fit(&[100.0, 240.0, 96.0], 0.0);
         let at = |x: f32| tabs.bounds.origin + point(px(x), px(5.0));
