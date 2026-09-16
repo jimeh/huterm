@@ -2,6 +2,7 @@
 import {
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
@@ -308,6 +309,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
 
     const inheritedDirectory = join(directory, "inherited-directory");
     await mkdir(inheritedDirectory);
+    const inheritedDirectoryCanonical = await realpath(inheritedDirectory);
     await display(
       `\x1b]7;file://localhost${inheritedDirectory}\x07METADATA`,
     );
@@ -394,7 +396,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       return current.tabs === "2" && starts.length === 3;
     }, "inherited-directory tab");
     assert(
-      starts.includes(inheritedDirectory),
+      starts.includes(inheritedDirectoryCanonical),
       `new tab did not inherit local cwd: ${JSON.stringify(starts)}`,
     );
     if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");
