@@ -815,9 +815,26 @@ mod tests {
         assert_eq!(layout.tabs.size, size(px(790.0), px(34.0)));
         assert_eq!(layout.tabs.bottom(), px(38.0));
         assert_eq!(layout.tabs.origin.x, px(0.0));
-        // The terminal keeps everything under the safe area.
-        assert_eq!(layout.terminal.origin.y, px(38.0));
-        assert_eq!(layout.terminal.size.height, px(1169.0 - 38.0));
+        // The terminal keeps everything under the safe area except the
+        // point the border line uses.
+        assert_eq!(layout.terminal.origin.y, px(39.0));
+        assert_eq!(layout.terminal.size.height, px(1169.0 - 39.0));
+        // A shelf shorter than the bar is ignored: the bar keeps its full
+        // height below the safe area instead of shrinking into the shelf.
+        let short = ChromeLayout::for_tabs(
+            viewport,
+            px(0.0),
+            pill,
+            px(220.0),
+            safe_area,
+            Some(Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(790.0), px(30.0)),
+            )),
+        );
+        assert_eq!(short.tabs.size.height, px(34.0));
+        assert_eq!(short.tabs.origin.y, px(38.0));
+        assert_eq!(short.terminal.origin.y, px(38.0 + 34.0));
         // Hiding a shelf bar must not pull the terminal into the notch.
         for presentation in [Presentation::Hidden, Presentation::Overlay] {
             let hidden = layout.present(presentation, TabPosition::Top, 0.0);

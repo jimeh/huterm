@@ -91,13 +91,14 @@ fn tab_column_scrollbar(position: TabPosition) -> ScrollbarOptions {
         margins: TrackMargins::EVEN,
         thumb: ThumbSize::Slim,
         edge_inset: SIDEBAR_HANDLE_WIDTH,
+        // No inward reach: the rows' close buttons sit just inside.
         hit: HitBand {
             outward: if position == TabPosition::Left {
                 0.0
             } else {
                 SIDEBAR_HANDLE_WIDTH
             },
-            inward: 6.0,
+            inward: 0.0,
         },
         // Hover reveal here made close-button hovers flash the scrollbar.
         reveal_on_hover: false,
@@ -4076,17 +4077,22 @@ impl ChromeLayout {
             tabs.size.height =
                 (viewport.height - column_top - safe_area.bottom.max(px(0.0)))
                     .max(px(0.0));
-        } else if let Some(shelf) =
-            notch_shelf.filter(|_| position == TabPosition::Top)
-        {
+        } else if let Some(shelf) = notch_shelf.filter(|shelf| {
+            // A shelf too short for the bar is not used; the bar then takes
+            // its normal place below the safe area at full height.
+            position == TabPosition::Top && shelf.size.height >= bar_height
+        }) {
             // The bar keeps its height at the bottom of the shelf, so its
-            // spacing to the terminal matches a windowed top bar, and the
-            // terminal keeps the whole area under the safe area.
-            let height = bar_height.min(shelf.size.height);
+            // spacing to the terminal matches a windowed top bar. The
+            // terminal keeps the area under the safe area except one point
+            // for the border line, so that line never covers a cell.
             tabs = Bounds::new(
-                point(shelf.origin.x, shelf.bottom() - height),
-                size(shelf.size.width, height),
+                point(shelf.origin.x, shelf.bottom() - bar_height),
+                size(shelf.size.width, bar_height),
             );
+            let line = px(1.0).min(available.height);
+            terminal.origin.y += line;
+            terminal.size.height -= line;
             on_shelf = true;
         } else {
             tabs.size.height = bar_height.min(available.height);
@@ -4335,12 +4341,13 @@ impl Render for WorkspaceView {
             );
             if shelf_bar {
                 // One point below the safe area so the notch never hides
-                // it, and across the whole window rather than the shelf.
+                // it, across the whole window, in the point the layout kept
+                // clear above the terminal.
                 chrome = chrome.child(
                     div()
                         .absolute()
                         .left(px(0.0) - clip.origin.x)
-                        .top(layout.terminal.origin.y - clip.origin.y)
+                        .top(layout.terminal.origin.y - px(1.0) - clip.origin.y)
                         .w(window.viewport_size().width)
                         .h(px(1.0))
                         .bg(colors.border),
