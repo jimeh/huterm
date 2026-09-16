@@ -226,7 +226,10 @@ already drives `ChromeLayout` presentation:
 
 The color changes when the window gains a second tab or returns to one. For the
 overlay, switch while the reveal is in progress so the notch strip and the
-sliding bar read as one surface.
+sliding bar read as one surface. The table applies to top bars. A bottom bar
+never touches the region. Left and right bars share only a titlebar: under a
+notch the column itself runs to the screen top with its rows below the safe
+area, and the strip beside it keeps the terminal background.
 
 Native macOS fullscreen lets AppKit position content inside the safe area, so
 Huterm may not own the notch strip there. Record what native fullscreen shows on

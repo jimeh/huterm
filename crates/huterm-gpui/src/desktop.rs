@@ -1452,12 +1452,10 @@ impl TerminalView {
     /// so the patch never covers the thumb.
     fn scrollbar_options(&self) -> ScrollbarOptions {
         let mut options = TERMINAL_SCROLLBAR;
-        let top_chrome = terminal_top(self.chrome_hidden)
-            + self.fullscreen_insets.top.max(px(0.0));
         if self.tab_presentation
             == windows::tab_visibility::Presentation::Reserved
             && self.tabs_config.position == huterm_config::TabPosition::Right
-            && top_chrome > px(0.0)
+            && terminal_top(self.chrome_hidden) > px(0.0)
         {
             let radius =
                 f32::from(windows::terminal_corner_radius(self.window_config));

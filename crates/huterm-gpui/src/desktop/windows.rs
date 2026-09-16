@@ -1777,7 +1777,7 @@ impl WorkspaceView {
             TabExtents::Uniform(self.tabs.len())
         };
         TabStrip::new(
-            strip_bounds(layout.tabs, tabs),
+            layout.strip_bounds(tabs),
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
@@ -3770,11 +3770,21 @@ pub(super) fn terminal_corner_radius(
 /// The strip's bounds inside the tab bar. Horizontal Pill bars start with a
 /// leading margin so the first pill's visible edge matches the vertical
 /// inset; every other placement and style fills the bar.
+/// Vertical columns also keep their rows below `top_inset`, the display
+/// safe area the column's background spans but its rows avoid.
 fn strip_bounds(
     tabs: Bounds<Pixels>,
+    top_inset: Pixels,
     config: huterm_config::TabsConfig,
 ) -> Bounds<Pixels> {
-    if config.position.vertical() || config.style != TabStyle::Pill {
+    if config.position.vertical() {
+        let inset = top_inset.min(tabs.size.height);
+        return Bounds::new(
+            point(tabs.origin.x, tabs.origin.y + inset),
+            size(tabs.size.width, tabs.size.height - inset),
+        );
+    }
+    if config.style != TabStyle::Pill {
         return tabs;
     }
     let lead = (PILL_INSET - PILL_MARGIN_LEFT).min(tabs.size.width);
@@ -3788,6 +3798,8 @@ fn strip_bounds(
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
     tabs: Bounds<Pixels>,
+    /// Safe-area height a vertical column spans above its rows.
+    column_top_inset: Pixels,
 }
 impl ChromeLayout {
     #[cfg(test)]
@@ -4000,6 +4012,7 @@ impl ChromeLayout {
         );
         let mut terminal = Bounds::new(point(left, top), available);
         let mut tabs = terminal;
+        let mut column_top_inset = px(0.0);
         if position.vertical() {
             tabs.size.width = sidebar_width
                 .clamp(px(140.0), px(400.0))
@@ -4011,6 +4024,16 @@ impl ChromeLayout {
             } else {
                 tabs.origin.x += terminal.size.width;
             }
+            // The column runs through the display safe area to the
+            // titlebar, so its edge spans the whole screen height beside a
+            // notch; only its rows stay below the safe area.
+            let column_top =
+                titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
+            column_top_inset = top - column_top;
+            tabs.origin.y = column_top;
+            tabs.size.height =
+                (viewport.height - column_top - safe_area.bottom.max(px(0.0)))
+                    .max(px(0.0));
         } else {
             tabs.size.height = bar_height.min(available.height);
             terminal.size.height =
@@ -4021,7 +4044,19 @@ impl ChromeLayout {
                 tabs.origin.y += terminal.size.height;
             }
         }
-        Self { terminal, tabs }
+        Self {
+            terminal,
+            tabs,
+            column_top_inset,
+        }
+    }
+
+    /// The strip's bounds inside the tab bar.
+    pub(super) fn strip_bounds(
+        &self,
+        config: huterm_config::TabsConfig,
+    ) -> Bounds<Pixels> {
+        strip_bounds(self.tabs, self.column_top_inset, config)
     }
 }
 
@@ -4173,6 +4208,7 @@ impl Render for WorkspaceView {
                     .bg(
                         if top_chrome_uses_bar(
                             position,
+                            titlebar > px(0.0),
                             self.presentation(),
                             self.reveal.progress,
                         ) {
@@ -4548,9 +4584,11 @@ impl Render for WorkspaceView {
                     .tabs
                     .first()
                     .is_some_and(|tab| Some(tab.id) == self.active);
+            // Only a titlebar joins the column through a line and corner; a
+            // fullscreen safe area lets the column run to the screen top.
             if self.presentation() == Presentation::Reserved
                 && let Some(edge) =
-                    layout.top_chrome_border(position, top_chrome, flush_active)
+                    layout.top_chrome_border(position, titlebar, flush_active)
             {
                 root = root.child(
                     div()
@@ -4564,7 +4602,7 @@ impl Render for WorkspaceView {
                 let radius = terminal_corner_radius(self.config.window);
                 if !flush_active
                     && let Some(corner) =
-                        layout.terminal_corner(position, top_chrome, radius)
+                        layout.terminal_corner(position, titlebar, radius)
                 {
                     let left = position == TabPosition::Left;
                     let outer = radius + px(1.0);
@@ -5073,18 +5111,36 @@ mod tests {
                     ..Default::default()
                 },
             );
+            assert!(
+                layout.terminal.origin.y >= px(48.5),
+                "{position:?}: {:?}",
+                layout.terminal
+            );
+            if position.vertical() {
+                // The column spans the safe area; its rows do not.
+                assert_eq!(layout.tabs.origin.y, px(0.0));
+                let strip = layout.strip_bounds(huterm_config::TabsConfig {
+                    position,
+                    ..Default::default()
+                });
+                assert_eq!(strip.origin.y, px(48.5));
+                assert_eq!(strip.bottom(), layout.tabs.bottom());
+            } else {
+                assert!(layout.tabs.origin.y >= px(48.5));
+            }
             for bounds in [layout.tabs, layout.terminal] {
-                assert!(
-                    bounds.origin.y >= px(48.5),
-                    "{position:?}: {bounds:?}"
-                );
                 assert!(bounds.bottom() <= px(600.0));
             }
+            let column_extra = if position.vertical() {
+                f32::from(layout.tabs.size.width) * 48.5
+            } else {
+                0.0
+            };
             let area = f32::from(layout.tabs.size.width)
                 * f32::from(layout.tabs.size.height)
                 + f32::from(layout.terminal.size.width)
                     * f32::from(layout.terminal.size.height);
-            assert!((area - 800.0 * 551.5).abs() < f32::EPSILON);
+            assert!((area - column_extra - 800.0 * 551.5).abs() < 0.01);
         }
     }
 
@@ -5113,7 +5169,13 @@ mod tests {
                 );
                 for bounds in [layout.tabs, layout.terminal] {
                     assert!(bounds.origin.x >= px(4.0).min(viewport.width));
-                    assert!(bounds.origin.y >= px(48.5).min(viewport.height));
+                    let floor = if position.vertical() && bounds == layout.tabs
+                    {
+                        px(0.0)
+                    } else {
+                        px(48.5).min(viewport.height)
+                    };
+                    assert!(bounds.origin.y >= floor);
                     assert!(
                         bounds.size.width >= px(0.0)
                             && bounds.size.height >= px(0.0)

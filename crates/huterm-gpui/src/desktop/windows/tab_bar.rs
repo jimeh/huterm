@@ -114,14 +114,17 @@ pub(super) fn icon_element(icon: Icon, tint: Hsla) -> Svg {
 
 /// Whether the region above the terminal (the macOS titlebar or the display
 /// safe area above a notch) uses the tab bar background. Only a bar that
-/// touches that region shares its color; a bottom bar leaves it to the
-/// terminal.
+/// touches that region shares its color: a bottom bar leaves it to the
+/// terminal, and a vertical column shares only a real titlebar, since under
+/// a notch the column itself runs to the screen top beside a terminal-colored
+/// strip.
 pub(super) fn top_chrome_uses_bar(
     position: TabPosition,
+    titlebar: bool,
     presentation: Presentation,
     reveal_progress: f32,
 ) -> bool {
-    if position == TabPosition::Bottom {
+    if position == TabPosition::Bottom || (position.vertical() && !titlebar) {
         return false;
     }
     match presentation {
@@ -728,7 +731,7 @@ mod tests {
             style: TabStyle::Pill,
             ..TabsConfig::default()
         };
-        let strip = strip_bounds(tabs, pill(TabPosition::Top));
+        let strip = strip_bounds(tabs, px(0.0), pill(TabPosition::Top));
         // The first pill's own margin plus the lead equals the vertical inset.
         assert_eq!(
             strip.origin.x + PILL_MARGIN_LEFT,
@@ -736,11 +739,17 @@ mod tests {
         );
         assert_eq!(strip.right(), tabs.right());
         assert_eq!(strip.size.height, tabs.size.height);
-        assert_eq!(strip_bounds(tabs, pill(TabPosition::Left)), tabs);
-        assert_eq!(strip_bounds(tabs, TabsConfig::default()), tabs);
+        assert_eq!(strip_bounds(tabs, px(0.0), pill(TabPosition::Left)), tabs);
+        // A column keeps its rows below the safe area it spans.
+        let inset = strip_bounds(tabs, px(10.0), pill(TabPosition::Left));
+        assert_eq!(inset.origin.y, tabs.origin.y + px(10.0));
+        assert_eq!(inset.bottom(), tabs.bottom());
+        assert_eq!(strip_bounds(tabs, px(0.0), TabsConfig::default()), tabs);
         let tiny = Bounds::new(tabs.origin, size(px(1.0), px(32.0)));
         assert_eq!(
-            strip_bounds(tiny, pill(TabPosition::Bottom)).size.width,
+            strip_bounds(tiny, px(0.0), pill(TabPosition::Bottom))
+                .size
+                .width,
             px(0.0)
         );
     }
@@ -785,14 +794,59 @@ mod tests {
         for position in
             [TabPosition::Top, TabPosition::Left, TabPosition::Right]
         {
-            assert!(top_chrome_uses_bar(position, Presentation::Reserved, 0.0));
-            assert!(!top_chrome_uses_bar(position, Presentation::Hidden, 1.0));
-            assert!(!top_chrome_uses_bar(position, Presentation::Overlay, 0.0));
-            assert!(top_chrome_uses_bar(position, Presentation::Overlay, 0.01));
+            assert!(top_chrome_uses_bar(
+                position,
+                true,
+                Presentation::Reserved,
+                0.0
+            ));
+            assert!(!top_chrome_uses_bar(
+                position,
+                true,
+                Presentation::Hidden,
+                1.0
+            ));
+            assert!(!top_chrome_uses_bar(
+                position,
+                true,
+                Presentation::Overlay,
+                0.0
+            ));
+            assert!(top_chrome_uses_bar(
+                position,
+                true,
+                Presentation::Overlay,
+                0.01
+            ));
+        }
+        // Without a titlebar only a top bar colors the safe-area strip.
+        assert!(top_chrome_uses_bar(
+            TabPosition::Top,
+            false,
+            Presentation::Reserved,
+            0.0
+        ));
+        for column in [TabPosition::Left, TabPosition::Right] {
+            assert!(!top_chrome_uses_bar(
+                column,
+                false,
+                Presentation::Reserved,
+                0.0
+            ));
         }
         let bottom = TabPosition::Bottom;
-        assert!(!top_chrome_uses_bar(bottom, Presentation::Reserved, 0.0));
-        assert!(!top_chrome_uses_bar(bottom, Presentation::Overlay, 1.0));
+        assert!(!top_chrome_uses_bar(
+            bottom,
+            true,
+            Presentation::Reserved,
+            0.0
+        ));
+        assert!(!top_chrome_uses_bar(
+            bottom,
+            true,
+            Presentation::Overlay,
+            1.0
+        ));
     }
 
     #[test]

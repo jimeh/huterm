@@ -218,13 +218,16 @@ merge into the terminal, put the accent line on the window edge, and outline the
 active row above and below; a first active row at the strip's start joins the
 terminal's top border instead and squares the rounded corner. Pill rows are
 rounded, inset in the column, and carry the same optional accent bar. With a
-titlebar or notch safe area above vertical tabs, a border also runs along the
-terminal's top edge, joining the bar's edge so the titlebar and bar form one
-surface around the terminal. The corner where they meet is rounded by the
-smaller window padding, capped at 12 points, so the arc never covers a cell.
-While a top, left, or right bar is visible or revealing, the macOS titlebar and
-the non-native fullscreen safe area above a notch use the tab bar background;
-otherwise, including for a bottom bar, they use the terminal background.
+titlebar above vertical tabs, a border also runs along the terminal's top edge,
+joining the bar's edge so the titlebar and bar form one surface around the
+terminal. The corner where they meet is rounded by the smaller window padding,
+capped at 12 points, so the arc never covers a cell. Under a notch in non-native
+fullscreen there is no titlebar: the column and its edge run to the top of the
+screen, its rows stay below the safe area, and the strip beside it keeps the
+terminal background. While a top bar is visible or revealing, the macOS titlebar
+and the non-native fullscreen safe area above a notch use the tab bar
+background; a titlebar above a left or right bar does too; otherwise, including
+for a bottom bar, they use the terminal background.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
