@@ -507,6 +507,7 @@ done
       await accepted("0 toggle_fullscreen");
       await stable("Windowed");
       const probe = await command("probe-notched-display");
+      if (probe.startsWith("error")) throw new Error(`notched display probe: ${probe}`);
       if (probe.startsWith("moved ")) {
         const originalFrame = probe.slice("moved ".length).trim();
         const parseRect = (text: string) => text.split(",").map(Number) as [number, number, number, number];
@@ -533,8 +534,10 @@ done
         await waitFor(async () => (await state()).reloading === "false", "shelf config restored");
         await accepted(`probe-window-frame\t${originalFrame}`);
         console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf left right`);
-      } else {
+      } else if (probe.trim() === "none") {
         console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf skipped no-notched-display`);
+      } else {
+        throw new Error(`unexpected notched display probe result: ${probe}`);
       }
       await accepted("0 toggle_non_native_fullscreen");
       await stable("NonNative");
