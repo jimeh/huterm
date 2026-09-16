@@ -59,13 +59,12 @@ impl AssetSource for UiAssets {
         }))
     }
 
+    /// Names relative to `path`, matching GPUI's directory-listing examples.
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        if path != "icons/" {
-            return Ok(Vec::new());
-        }
         Ok(ASSETS
             .iter()
-            .map(|(asset_path, _)| SharedString::from(*asset_path))
+            .filter_map(|(asset_path, _)| asset_path.strip_prefix(path))
+            .map(SharedString::from)
             .collect())
     }
 }
@@ -91,11 +90,18 @@ mod tests {
 
         let expected: Vec<SharedString> = Icon::ALL
             .iter()
-            .map(|icon| SharedString::from(icon.asset_path()))
+            .map(|icon| {
+                SharedString::from(
+                    icon.asset_path()
+                        .strip_prefix("icons/")
+                        .expect("icons live under icons/"),
+                )
+            })
             .collect();
         assert_eq!(
             source.list("icons/").expect("list embedded icons"),
             expected
         );
+        assert!(source.list("fonts/").expect("list").is_empty());
     }
 }

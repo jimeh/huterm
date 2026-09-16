@@ -611,20 +611,20 @@ pub fn parse_color(value: &str) -> Result<Rgb, ConfigError> {
 /// Returns an error for any other form.
 pub fn parse_color_alpha(value: &str) -> Result<Rgba, ConfigError> {
     let Some(hex) = value.strip_prefix('#') else {
-        return Err(ConfigError::Color(value.into()));
+        return Err(ConfigError::ColorAlpha(value.into()));
     };
     if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(ConfigError::Color(value.into()));
+        return Err(ConfigError::ColorAlpha(value.into()));
     }
     let (rgb, alpha) = match hex.len() {
         6 => (hex, "ff"),
         8 => hex.split_at(6),
-        _ => return Err(ConfigError::Color(value.into())),
+        _ => return Err(ConfigError::ColorAlpha(value.into())),
     };
     let rgb = u32::from_str_radix(rgb, 16)
-        .map_err(|_| ConfigError::Color(value.into()))?;
+        .map_err(|_| ConfigError::ColorAlpha(value.into()))?;
     let alpha = u8::from_str_radix(alpha, 16)
-        .map_err(|_| ConfigError::Color(value.into()))?;
+        .map_err(|_| ConfigError::ColorAlpha(value.into()))?;
     Ok(Rgba::with_alpha(self::rgb(rgb), alpha))
 }
 
@@ -797,6 +797,8 @@ impl Default for RawFont {
 pub enum ConfigError {
     Toml(toml::de::Error),
     Color(String),
+    /// A color that may carry alpha was malformed.
+    ColorAlpha(String),
     Invalid(&'static str),
     Theme(String),
     Engine(String),
@@ -811,6 +813,10 @@ impl fmt::Display for ConfigError {
             Self::Color(value) => write!(
                 formatter,
                 "invalid RGB color {value:?}; expected #rrggbb"
+            ),
+            Self::ColorAlpha(value) => write!(
+                formatter,
+                "invalid color {value:?}; expected #rrggbb or #rrggbbaa"
             ),
             Self::Invalid(message) => formatter.write_str(message),
             Self::Theme(message)

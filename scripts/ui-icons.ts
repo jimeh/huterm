@@ -1,5 +1,5 @@
 /** Copy the pinned Lucide UI icons byte for byte and verify committed copies. */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const repository = resolve(import.meta.dir, "..");
@@ -28,10 +28,13 @@ export function generateUiIcons(
   const destination = join(root, iconDirectory);
   mkdirSync(destination, { recursive: true });
   const expected = new Set(iconNames.map(name => `${name}.svg`));
+  // Read every source before touching the committed set, so a missing icon
+  // leaves the directory as it was.
+  const sources = iconNames.map(name => [name, readFileSync(sourceFile(packageRoot, name))] as const);
   for (const entry of readdirSync(destination)) {
     if (!expected.has(entry)) rmSync(join(destination, entry), { recursive: true, force: true });
   }
-  for (const name of iconNames) copyFileSync(sourceFile(packageRoot, name), destinationFile(root, name));
+  for (const [name, bytes] of sources) writeFileSync(destinationFile(root, name), bytes);
 }
 
 export function checkUiIcons(
@@ -39,7 +42,7 @@ export function checkUiIcons(
   packageRoot = join(root, "node_modules/lucide-static"),
 ): void {
   const destination = join(root, iconDirectory);
-  const actual = existsSync(destination) ? readdirSync(destination).sort() : [];
+  const actual = existsSync(destination) ? readdirSync(destination).filter(entry => entry !== ".DS_Store").sort() : [];
   const expected = iconNames.map(name => `${name}.svg`).sort();
   const missing = expected.filter(file => !actual.includes(file));
   if (missing.length > 0) throw new Error(`missing UI icons: ${missing.join(", ")}`);

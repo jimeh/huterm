@@ -28,6 +28,8 @@ the macOS titlebar. Everything ships in one PR.
   auto_hide_in_fullscreen = false
   style = "pill"     # pill or strip
   pill_accent = false # accent bar inside the active pill
+  close_button = "active" # active, hover, or always
+  notch = "left"     # fullscreen top bar beside the notch: off, left, or right
   width = "fit"      # fit or fill; top and bottom only
   min_width = 96.0   # logical points; fit only
   max_width = 240.0  # logical points; fit only
@@ -119,8 +121,10 @@ Add these flat optional keys to `ThemeDefinition` and resolved fields to
 | `tab_accent` | Strip accent line, Pill and vertical accent bars | `ansi[4]` |
 
 The Strip active tab always uses the terminal `background`, so it merges with
-the terminal below it. Hover backgrounds derive from the foreground at low
-opacity and are not themed.
+the terminal below it. Three overlay keys accept `#rrggbb` or `#rrggbbaa`:
+`tab_hover_background` (foreground at low opacity by default),
+`scrollbar_thumb`, and `scrollbar_track` (foreground at higher and lower
+opacity), covering the tab hover state and every overlay scrollbar.
 
 Derivation needs real color mixing because the bar can be darker than the
 terminal background; opacity overlays cannot darken. Put mixing and light-theme
@@ -143,8 +147,9 @@ name distinct from the existing app-icon `icons:*` tasks, for example:
 - `ui-icons:check` compares the committed bytes with the package and fails on
   drift. Include it in `mise run check`.
 
-The initial list is the close, plus, chevron left, chevron right, chevron up,
-chevron down, and one exited-status icon. Embed the files with `include_bytes!`
+The initial list is the close, plus, chevron left, chevron right, and one
+exited-status icon; vertical bars scroll with an overlay scrollbar rather than
+chevrons. Embed the files with `include_bytes!`
 behind an `AssetSource` registered at application startup, so packaging and
 runtime paths do not change.
 
@@ -195,7 +200,7 @@ In Fit mode, a horizontal tab's width is its measured title plus fixed chrome
 (padding, status slot, and close slot), clamped to
 `[min_width, max_width]`.
 
-- Measure titles with `window.text_system().shape_line` using the chrome font
+- Measure titles with `window.text_system().layout_line` using the chrome font
   and size. Cache widths by title and style, and invalidate the cache when the
   chrome font, size, or config changes.
 - Replace the single `extent` with per-tab start offsets for horizontal strips.

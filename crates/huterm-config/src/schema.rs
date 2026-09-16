@@ -289,9 +289,12 @@ fn constrain_ranges(definitions: &mut Value) {
         definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
         definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);
     }
-    definitions["TabsConfig"]["properties"]["min_width"]["minimum"] = json!(48);
-    definitions["TabsConfig"]["properties"]["max_width"]["maximum"] =
-        json!(600);
+    // Runtime bounds are 48 through 600 with min_width <= max_width, so each
+    // key carries both ends for editor validation.
+    for name in ["min_width", "max_width"] {
+        definitions["TabsConfig"]["properties"][name]["minimum"] = json!(48);
+        definitions["TabsConfig"]["properties"][name]["maximum"] = json!(600);
+    }
 }
 fn constrain_theme(schema: &mut Value) {
     if let Some(fields) = schema["properties"].as_object_mut() {

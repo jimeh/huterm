@@ -180,16 +180,17 @@ The tab bar is hidden with one tab by default. Set
 `[tabs].always_show = true` to keep it visible. With two or more tabs,
 it reserves space beside the terminal.
 
-Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only
-when the pointer reaches its attached edge in fullscreen, even with one tab.
-Fullscreen auto-hide overrides `always_show` and reserves no bar space,
-regardless of tab count. It slides over the terminal without changing the grid,
-and hides after the pointer leaves. Tab dragging and sidebar resizing keep it
-open. A top bar can be revealed from the macOS notch-height region and appears
-below the notch. Tab-switch commands, successful tab creation, and tab closure
-also reveal the fullscreen overlay for one second before the normal dismissal
-delay. Repeated activity restarts the hold.
-Both settings default to `false` and take effect on config reload.
+Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only when the
+pointer reaches its attached edge in fullscreen, even with one tab. Fullscreen
+auto-hide overrides `always_show` and reserves no bar space, regardless of tab
+count, except for a top bar on a notch shelf, which has nowhere to hide and
+stays reserved. It slides over the terminal without changing the grid, and hides
+after the pointer leaves. Tab dragging and sidebar resizing keep it open. A top
+bar can be revealed from the macOS notch-height region and appears below the
+notch. Tab-switch commands, successful tab creation, and tab closure also reveal
+the fullscreen overlay for one second before the normal dismissal delay.
+Repeated activity restarts the hold. Both settings default to `false` and take
+effect on config reload.
 
 Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
 default. With `width = "fill"`, horizontal tabs divide the available width
@@ -229,9 +230,11 @@ screen, its rows stay below the safe area, and the strip beside it keeps the
 terminal background. While a top bar is visible or revealing, the macOS titlebar
 and the non-native fullscreen safe area above a notch use the tab bar
 background; a titlebar above a left or right bar does too; otherwise, including
-for a bottom bar, they use the terminal background. `[tabs].notch = "left"` or
-`"right"` places a top bar in the auxiliary area beside the notch in non-native
-fullscreen, read from `NSScreen`'s auxiliary top areas: the bar keeps its
+for a bottom bar, they use the terminal background. `[tabs].notch = "left"`
+(the default) or `"right"` places a top bar in the auxiliary area beside the
+notch in non-native fullscreen, read from `NSScreen`'s auxiliary top areas,
+and `"off"` keeps the bar below the
+notch: the bar keeps its
 height, sits at the bottom of that area, and the terminal starts directly under
 the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
 the same shelves from their own window. Without a notch, in windowed mode, or in
