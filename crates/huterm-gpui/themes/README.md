@@ -46,8 +46,10 @@ match the iTerm version; cursor and selection colors follow Ghostty.
 Themes may set six flat keys for Huterm's window chrome: `tab_bar_background`,
 `tab_active_background`, `tab_foreground`, `tab_inactive_foreground`,
 `tab_border`, and `tab_accent`. Like palette colors, they inherit through
-`extends`. Every bundled theme and Huterm Dark set all six, chosen by hand from
-or to match each palette; they are Huterm additions, not upstream colors.
+`extends`; a definition without `extends` derives the keys it leaves unset
+from its own colors instead of inheriting Huterm Dark's. Every bundled theme
+and Huterm Dark set all six, chosen by hand from or to match each palette;
+they are Huterm additions, not upstream colors.
 
 A theme that omits a key derives it from the resolved palette. Dark themes get a
 bar darker than the background, and near-black or light themes get a bar that

@@ -414,7 +414,10 @@ Names use letters, digits, hyphens, and underscores, without a file extension.
 Lookup prefers inline definitions, then adjacent theme files, then built-ins.
 The first match wins; same-name definitions do not merge. Use a distinct custom
 name when extending a built-in. Without `extends`, a definition starts from
-Huterm Dark. Overrides in the config's `[theme]` table apply last.
+Huterm Dark's palette, and any tab chrome key it leaves unset derives from
+its resulting colors rather than inheriting Huterm Dark's hand-picked set. An
+empty `[theme]` is Huterm Dark itself. Overrides in the config's `[theme]`
+table apply last.
 
 All color keys are flat: `foreground`, `background`, `cursor`, `selection`
 (selection background), optional `selection_foreground`, and `ansi_black`,
