@@ -1,7 +1,7 @@
 //! Theme-derived tab bar colors and tab item presentation.
 
 use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
-use huterm_config::{TabStyle, TabWidth, TabsConfig};
+use huterm_config::{TabCloseButton, TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
 
@@ -203,7 +203,16 @@ impl WorkspaceView {
                 .line_clamp(1)
                 .when(item.exited, |title| title.opacity(0.6))
                 .child(item.title.clone()),
-            close: Self::close_tab_button(id, item.active(), colors, cx),
+            close: Self::close_tab_button(
+                id,
+                match tabs.close_button {
+                    TabCloseButton::Hover => false,
+                    TabCloseButton::Active => item.active(),
+                    TabCloseButton::Always => true,
+                },
+                colors,
+                cx,
+            ),
         };
         match (tabs.style, position.vertical()) {
             (TabStyle::Strip, true) => {
@@ -259,10 +268,11 @@ impl WorkspaceView {
         self.tab_widths = widths;
     }
 
-    /// Keeps its slot while hidden so hovering never changes tab width.
+    /// Visible when `shown` or while the tab is hovered. Keeps its slot while
+    /// hidden so hovering never changes tab width.
     fn close_tab_button(
         id: TabId,
-        active: bool,
+        shown: bool,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
@@ -277,7 +287,7 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .justify_center()
-            .when(!active, |button| {
+            .when(!shown, |button| {
                 button
                     .opacity(0.0)
                     .group_hover("tab", |style| style.opacity(1.0))
