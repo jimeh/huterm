@@ -127,7 +127,7 @@ impl Default for Config {
         Self {
             warning: None,
             font: FontConfig::default(),
-            theme: Theme::default(),
+            theme: Theme::huterm_dark(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
             updates: UpdateConfig::default(),
@@ -871,6 +871,9 @@ background = "#040506"
             parse("[theme]\nname = 'huterm-dark'").unwrap().theme,
             Theme::huterm_dark()
         );
+        // No `[theme]`, or an empty one, is huterm-dark with its hand-picked
+        // chrome, so a fresh install matches the named theme.
+        assert_eq!(parse("[theme]").unwrap().theme, Theme::huterm_dark());
         // An unnamed theme derives its chrome from its own colors rather
         // than inheriting huterm-dark's hand-picked dark set.
         let light =

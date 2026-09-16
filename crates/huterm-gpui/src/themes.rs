@@ -23,7 +23,13 @@ pub(super) fn resolve(
         Some(name) => resolve_named(name, inline, directory, &mut Vec::new())?,
         None => Theme::default(),
     };
-    selected.apply(base)
+    let theme = selected.apply(base)?;
+    // A `[theme]` that sets nothing is the built-in huterm-dark, with its
+    // hand-picked chrome; one that sets any color derives chrome from that.
+    if selected.name.is_none() && theme == Theme::default() {
+        return Ok(Theme::huterm_dark());
+    }
+    Ok(theme)
 }
 
 fn validate_name(name: &str) -> Result<(), ConfigError> {
