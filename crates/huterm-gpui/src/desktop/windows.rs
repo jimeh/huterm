@@ -71,23 +71,36 @@ const CONTROL_INSET: Pixels = px(3.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
+/// Width of the grab zone along a vertical tab bar's terminal edge.
+const SIDEBAR_HANDLE_WIDTH: f32 = 6.0;
+/// Tab bar indicators fade sooner than the terminal's: the bar is small and
+/// the indicator would otherwise linger over its tabs.
+const TAB_SCROLLBAR_HOLD: Duration = Duration::from_millis(700);
 /// The overlay scrollbar on a vertical tab column: pixel offsets from the
 /// top, a jump-to-pointer track, and hover expansion like the palette list.
+/// It sits inboard of the resize handle so the two never overlap.
 const TAB_COLUMN_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     edge: Edge::Right,
     origin: Origin::Start,
     expand_on_hover: true,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
+    slim: false,
+    edge_inset: SIDEBAR_HANDLE_WIDTH,
+    hold: TAB_SCROLLBAR_HOLD,
 };
-/// The position indicator along a horizontal tab bar's bottom edge: it never
-/// expands or shows a track, but its thumb still drags and the track jumps.
+/// The slim position indicator along a horizontal tab bar's bottom edge: it
+/// never expands or shows a track, but its thumb still drags and the track
+/// jumps.
 const TAB_ROW_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     edge: Edge::Bottom,
     origin: Origin::Start,
     expand_on_hover: false,
     track_press: TrackPress::Jump,
     margins: TrackMargins::EVEN,
+    slim: true,
+    edge_inset: 0.0,
+    hold: TAB_SCROLLBAR_HOLD,
 };
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
@@ -3851,7 +3864,7 @@ impl ChromeLayout {
     }
 
     fn sidebar_resize_handle(&self, position: TabPosition) -> Bounds<Pixels> {
-        let width = px(6.0).min(self.tabs.size.width);
+        let width = px(SIDEBAR_HANDLE_WIDTH).min(self.tabs.size.width);
         let x = self.tabs.origin.x
             + if position == TabPosition::Left {
                 self.tabs.size.width - width
@@ -4279,7 +4292,6 @@ impl Render for WorkspaceView {
                                 style.bg(colors.foreground.opacity(0.06))
                             })
                             .rounded_md()
-                            .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                             })
@@ -4355,7 +4367,6 @@ impl Render for WorkspaceView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_pointer()
                     .on_click(cx.listener(|view, _, window, cx| {
                         if let Err(error) = view.new_tab(window, cx) {
                             view.status = Some(error.to_string());
@@ -4395,7 +4406,9 @@ impl Render for WorkspaceView {
             {
                 let axis = Self::tab_scrollbar_axis(&strip);
                 let geometries = Self::tab_scrollbar_geometries(&strip);
-                let thickness = px(self.tab_scrollbars.strip_thickness(axis));
+                // Covers the strip and its edge inset so the layers inside
+                // line up with the hit test; misses fall through.
+                let extent = px(self.tab_scrollbars.strip_extent(axis));
                 let geometry = match axis {
                     Axis::Vertical => geometries.vertical,
                     Axis::Horizontal => geometries.horizontal,
@@ -4403,18 +4416,18 @@ impl Render for WorkspaceView {
                 let placement = if vertical {
                     Bounds::new(
                         point(
-                            strip.bounds.right() - thickness,
+                            strip.bounds.right() - extent,
                             strip.bounds.origin.y,
                         ),
-                        size(thickness, strip.available()),
+                        size(extent, strip.available()),
                     )
                 } else {
                     Bounds::new(
                         point(
                             strip.bounds.origin.x,
-                            strip.bounds.bottom() - thickness,
+                            strip.bounds.bottom() - extent,
                         ),
-                        size(strip.available(), thickness),
+                        size(strip.available(), extent),
                     )
                 };
                 if self.tab_scrollbars.visible(axis) && geometry.is_some() {
@@ -4656,7 +4669,6 @@ impl Render for WorkspaceView {
                                             .id("cancel-close")
                                             .px_3()
                                             .py_1()
-                                            .cursor_pointer()
                                             .on_click(cx.listener(
                                                 |view, _, window, cx| {
                                                     view.cancel_close(
@@ -4672,7 +4684,6 @@ impl Render for WorkspaceView {
                                             .px_3()
                                             .py_1()
                                             .bg(foreground.opacity(0.15))
-                                            .cursor_pointer()
                                             .on_click(cx.listener(
                                                 move |view, _, window, cx| {
                                                     view.finish_close(
@@ -5093,7 +5104,7 @@ mod tests {
                 assert_eq!(handle.size.height, layout.tabs.size.height);
                 assert_eq!(
                     handle.size.width,
-                    px(6.0).min(layout.tabs.size.width)
+                    px(SIDEBAR_HANDLE_WIDTH).min(layout.tabs.size.width)
                 );
             }
         }

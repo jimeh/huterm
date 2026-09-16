@@ -12,7 +12,8 @@ use gpui::{Bounds, Div, Hsla, Pixels, div, prelude::*, px};
 
 const MIN_THUMB_SIZE: f32 = 24.0;
 const TRACK_PADDING: f32 = 2.0;
-const INDICATOR_HOLD: Duration = Duration::from_secs(2);
+/// How long an indicator stays fully visible after activity before fading.
+pub(crate) const INDICATOR_HOLD: Duration = Duration::from_secs(2);
 const INDICATOR_FADE: Duration = Duration::from_millis(400);
 const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
 const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
@@ -86,6 +87,13 @@ pub(crate) struct ScrollbarOptions {
     pub(crate) expand_on_hover: bool,
     pub(crate) track_press: TrackPress,
     pub(crate) margins: TrackMargins,
+    /// Halve the thumb, track, and pointer strip across the axis.
+    pub(crate) slim: bool,
+    /// Distance from `edge` to the strip, leaving that band to other
+    /// controls such as a resize handle.
+    pub(crate) edge_inset: f32,
+    /// How long the indicator stays visible after activity before fading.
+    pub(crate) hold: Duration,
 }
 
 /// The result of a press on a scrollbar strip.
@@ -278,15 +286,30 @@ impl ScrollbarExpansion {
 }
 
 /// A hold-then-fade for overlay indicators.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct IndicatorVisibility {
+    hold: Duration,
     fade_start: Option<Instant>,
     pub(crate) opacity: f32,
 }
 
+impl Default for IndicatorVisibility {
+    fn default() -> Self {
+        Self::with_hold(INDICATOR_HOLD)
+    }
+}
+
 impl IndicatorVisibility {
+    pub(crate) fn with_hold(hold: Duration) -> Self {
+        Self {
+            hold,
+            fade_start: None,
+            opacity: 0.0,
+        }
+    }
+
     pub(crate) fn activate(&mut self, now: Instant) {
-        self.fade_start = Some(now + INDICATOR_HOLD);
+        self.fade_start = Some(now + self.hold);
         self.opacity = 1.0;
     }
 
@@ -319,7 +342,7 @@ impl AxisScrollbar {
     fn new(options: ScrollbarOptions) -> Self {
         Self {
             options,
-            visibility: IndicatorVisibility::default(),
+            visibility: IndicatorVisibility::with_hold(options.hold),
             expansion: ScrollbarExpansion::default(),
             hovering: false,
             drag: None,
@@ -336,12 +359,23 @@ impl AxisScrollbar {
         }
     }
 
+    /// Halves every dimension across the axis for a slim indicator.
+    fn scale(&self) -> f32 {
+        if self.options.slim { 0.5 } else { 1.0 }
+    }
+
     fn thickness(&self) -> f32 {
-        if self.expansion.active() {
+        let base = if self.expansion.active() {
             STRIP_EXPANDED_THICKNESS
         } else {
             STRIP_THICKNESS
-        }
+        };
+        base * self.scale()
+    }
+
+    /// The strip plus the band between it and the edge.
+    fn extent(&self) -> f32 {
+        self.options.edge_inset + self.thickness()
     }
 
     /// Pointer position along the axis when `position` is over this
@@ -360,15 +394,15 @@ impl AxisScrollbar {
         let y = f32::from(position.y - bounds.origin.y);
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
-        let thickness = self.thickness();
         let (cross, extent, along) = match self.options.edge {
             Edge::Right => (x, width, y),
             Edge::Left => (extent_flip(x, width), width, y),
             Edge::Bottom => (y, height, x),
             Edge::Top => (extent_flip(y, height), height, x),
         };
-        (cross >= (extent - thickness).max(0.0)
-            && cross < extent
+        let far = extent - self.options.edge_inset;
+        (cross >= (far - self.thickness()).max(0.0)
+            && cross < far
             && geometry.track_contains(along))
         .then_some(along)
     }
@@ -393,28 +427,30 @@ impl AxisScrollbar {
         let opacity = self.visibility.opacity;
         let expansion = self.expansion.progress;
         let edge = self.options.edge;
+        let inset = self.options.edge_inset;
+        let scale = self.scale();
         let track = (expansion > 0.0).then(|| {
             place(
                 div(),
                 edge,
-                2.0,
+                inset + 2.0 * scale,
                 geometry.track_start,
                 geometry.track_size(),
-                8.0 + 6.0 * expansion,
+                (8.0 + 6.0 * expansion) * scale,
             )
-            .rounded(px(4.0 + 3.0 * expansion))
+            .rounded(px((4.0 + 3.0 * expansion) * scale))
             .bg(foreground.opacity(20.0 / 255.0))
             .opacity(opacity * expansion)
         });
         let thumb = place(
             div(),
             edge,
-            2.0 + 2.0 * expansion,
+            inset + (2.0 + 2.0 * expansion) * scale,
             geometry.thumb_start,
             geometry.thumb_size,
-            6.0 + 4.0 * expansion,
+            (6.0 + 4.0 * expansion) * scale,
         )
-        .rounded(px(3.0 + 2.0 * expansion))
+        .rounded(px((3.0 + 2.0 * expansion) * scale))
         .bg(foreground.opacity(187.0 / 255.0))
         .opacity(opacity);
         track.into_iter().chain(std::iter::once(thumb))
@@ -560,15 +596,24 @@ impl Scrollbars {
     /// for labels beside the thumb.
     pub(crate) fn strip_inset(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, |scrollbar| {
-            STRIP_THICKNESS
-                + (STRIP_EXPANDED_THICKNESS - STRIP_THICKNESS)
-                    * scrollbar.expansion.progress
+            scrollbar.options.edge_inset
+                + (STRIP_THICKNESS
+                    + (STRIP_EXPANDED_THICKNESS - STRIP_THICKNESS)
+                        * scrollbar.expansion.progress)
+                    * scrollbar.scale()
         })
     }
 
     /// Thickness of the pointer strip on `axis` for the caller's element.
     pub(crate) fn strip_thickness(&self, axis: Axis) -> f32 {
         self.slot(axis).map_or(0.0, AxisScrollbar::thickness)
+    }
+
+    /// Distance from the edge to the far side of the strip on `axis`: the
+    /// size across the axis of an element that covers the strip and its
+    /// edge inset, so `layers` inside it line up with `hit`.
+    pub(crate) fn strip_extent(&self, axis: Axis) -> f32 {
+        self.slot(axis).map_or(0.0, AxisScrollbar::extent)
     }
 
     pub(crate) fn dragging(&self) -> bool {
@@ -733,14 +778,97 @@ mod tests {
         )
     }
 
-    fn vertical(expand_on_hover: bool, track_press: TrackPress) -> Scrollbars {
-        Scrollbars::vertical(ScrollbarOptions {
+    fn options(
+        expand_on_hover: bool,
+        track_press: TrackPress,
+    ) -> ScrollbarOptions {
+        ScrollbarOptions {
             edge: Edge::Right,
             origin: Origin::End,
             expand_on_hover,
             track_press,
             margins: TERMINAL_MARGINS,
-        })
+            slim: false,
+            edge_inset: 0.0,
+            hold: INDICATOR_HOLD,
+        }
+    }
+
+    fn vertical(expand_on_hover: bool, track_press: TrackPress) -> Scrollbars {
+        Scrollbars::vertical(options(expand_on_hover, track_press))
+    }
+
+    #[test]
+    fn slim_halves_the_strip_and_edge_inset_moves_it_inboard() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometries =
+            ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+        let mut slim = Scrollbars::vertical(ScrollbarOptions {
+            slim: true,
+            ..options(false, TrackPress::Jump)
+        });
+        slim.show(Axis::Vertical, now);
+        assert!(
+            (slim.strip_thickness(Axis::Vertical) - STRIP_THICKNESS / 2.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            slim.hit(&geometries, bounds, point(px(93.0), px(200.0)))
+                .is_none()
+        );
+        assert!(
+            slim.hit(&geometries, bounds, point(px(95.0), px(200.0)))
+                .is_some()
+        );
+
+        let mut inset = Scrollbars::vertical(ScrollbarOptions {
+            edge_inset: 6.0,
+            ..options(true, TrackPress::Jump)
+        });
+        inset.show(Axis::Vertical, now);
+        assert!(
+            (inset.strip_extent(Axis::Vertical) - (6.0 + STRIP_THICKNESS))
+                .abs()
+                < f32::EPSILON
+        );
+        // The band nearest the edge belongs to other controls.
+        assert!(
+            inset
+                .hit(&geometries, bounds, point(px(97.0), px(200.0)))
+                .is_none()
+        );
+        assert!(
+            inset
+                .hit(&geometries, bounds, point(px(90.0), px(200.0)))
+                .is_some()
+        );
+        assert!(
+            inset
+                .hit(&geometries, bounds, point(px(81.0), px(200.0)))
+                .is_none()
+        );
+        assert!(
+            (inset.strip_inset(Axis::Vertical) - (6.0 + STRIP_THICKNESS)).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn hold_sets_how_long_the_indicator_stays_before_fading() {
+        let now = Instant::now();
+        let mut quick =
+            IndicatorVisibility::with_hold(Duration::from_millis(600));
+        quick.activate(now);
+        assert!(!quick.update(now + Duration::from_millis(600), false));
+        assert!(quick.update(now + Duration::from_millis(800), false));
+        assert!((quick.opacity - 0.5).abs() < f32::EPSILON);
+        let mut standard = IndicatorVisibility::default();
+        standard.activate(now);
+        assert!(!standard.update(now + Duration::from_millis(800), false));
+        assert!((standard.opacity - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1085,6 +1213,9 @@ mod tests {
                 expand_on_hover: false,
                 track_press: TrackPress::Jump,
                 margins: TrackMargins::EVEN,
+                slim: false,
+                edge_inset: 0.0,
+                hold: INDICATOR_HOLD,
             }),
         );
         let geometries = ScrollbarGeometries {
