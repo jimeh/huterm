@@ -210,21 +210,21 @@ sits at that same inset, and hovering a pill never hides its dividers.
 `[tabs].style = "strip"`, the default, merges the active tab into the terminal
 with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
 dividers; `pill_accent = true` adds an accent bar inside the active pill's left
-edge and widens every pill's left padding to keep titles aligned. Left and
-right placement follow `style` too: Strip rows span the column, merge into the
-terminal, put the accent line on the window edge, and outline the active row
-above and below; a first active row at the strip's start joins the terminal's
-top border instead and squares the rounded corner. Pill rows are rounded,
-inset in the column, and carry the same optional accent bar.
-With a titlebar or notch safe area above vertical tabs, a border also runs
-along the terminal's top edge, joining the bar's edge so the titlebar and bar
-form one surface around the terminal. The corner where they meet is rounded by
-the smaller window padding, capped at 12 points, so the arc never covers a
-cell.
-While a top, left, or right bar is visible or revealing, the macOS titlebar
-and the non-native fullscreen safe area above a notch use the tab bar
-background; otherwise, including for a bottom bar, they use the terminal
-background.
+edge and widens every pill's left padding to keep titles aligned. `close_button`
+selects when close buttons show: `hover` only, `active` adds the active tab, and
+`always` shows every tab's; the slot stays reserved either way so widths never
+change. Left and right placement follow `style` too: Strip rows span the column,
+merge into the terminal, put the accent line on the window edge, and outline the
+active row above and below; a first active row at the strip's start joins the
+terminal's top border instead and squares the rounded corner. Pill rows are
+rounded, inset in the column, and carry the same optional accent bar. With a
+titlebar or notch safe area above vertical tabs, a border also runs along the
+terminal's top edge, joining the bar's edge so the titlebar and bar form one
+surface around the terminal. The corner where they meet is rounded by the
+smaller window padding, capped at 12 points, so the arc never covers a cell.
+While a top, left, or right bar is visible or revealing, the macOS titlebar and
+the non-native fullscreen safe area above a notch use the tab bar background;
+otherwise, including for a bottom bar, they use the terminal background.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600

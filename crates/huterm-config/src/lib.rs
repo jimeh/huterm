@@ -173,6 +173,8 @@ pub struct TabsConfig {
     pub style: TabStyle,
     /// Draws the accent bar inside the active pill; ignored by other styles.
     pub pill_accent: bool,
+    /// When a tab shows its close button; hovering a tab always shows it.
+    pub close_button: TabCloseButton,
     pub width: TabWidth,
     pub min_width: f32,
     pub max_width: f32,
@@ -214,6 +216,7 @@ impl Default for TabsConfig {
             auto_hide_in_fullscreen: false,
             style: TabStyle::Strip,
             pill_accent: false,
+            close_button: TabCloseButton::Active,
             width: TabWidth::Fill,
             min_width: 96.0,
             max_width: 240.0,
@@ -305,6 +308,21 @@ pub enum TabWidth {
     #[default]
     Fill,
     Fit,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TabCloseButton {
+    /// Only while the pointer is over the tab.
+    Hover,
+    /// On the active tab, and on any hovered tab.
+    #[default]
+    Active,
+    /// On every tab.
+    Always,
 }
 
 impl TabPosition {
@@ -899,7 +917,7 @@ mod tabs_tests {
     #[test]
     fn tab_settings_accept_every_override() {
         let configured: RawConfig = toml::from_str(
-            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
         )
         .expect("tab settings");
         configured.validate_values().expect("valid tab settings");
@@ -911,6 +929,7 @@ mod tabs_tests {
                 auto_hide_in_fullscreen: true,
                 style: TabStyle::Pill,
                 pill_accent: true,
+                close_button: TabCloseButton::Always,
                 width: TabWidth::Fit,
                 min_width: 72.0,
                 max_width: 480.0,

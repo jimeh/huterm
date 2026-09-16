@@ -564,6 +564,18 @@
     "theme": false
   },
   {
+    "name": "tab close button always",
+    "toml": "[tabs]\nclose_button = \"always\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab close button unknown",
+    "toml": "[tabs]\nclose_button = \"never\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "tab width fit",
     "toml": "[tabs]\nwidth = \"fit\"",
     "valid": true,

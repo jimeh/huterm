@@ -3497,6 +3497,25 @@
       },
       "type": "object"
     },
+    "TabCloseButton": {
+      "oneOf": [
+        {
+          "const": "hover",
+          "description": "Only while the pointer is over the tab.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "On the active tab, and on any hovered tab.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "On every tab.",
+          "type": "string"
+        }
+      ]
+    },
     "TabPosition": {
       "enum": [
         "top",
@@ -3530,6 +3549,15 @@
         "auto_hide_in_fullscreen": {
           "default": false,
           "type": "boolean"
+        },
+        "close_button": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabCloseButton"
+            }
+          ],
+          "default": "active",
+          "description": "When a tab shows its close button; hovering a tab always shows it."
         },
         "max_width": {
           "default": 240.0,

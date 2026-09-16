@@ -55,6 +55,8 @@ auto_hide_in_fullscreen = false
 style = "strip"
 # Draw an accent bar inside the active pill.
 pill_accent = false
+# Show tab close buttons on: hover, active, or always.
+close_button = "active"
 # Horizontal tab width: fill or fit.
 width = "fill"
 # Width bounds in logical points for fit mode.
@@ -395,7 +397,7 @@ impl fmt::Display for ConfigFileError {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use huterm_config::{TabStyle, TabWidth};
+    use huterm_config::{TabCloseButton, TabStyle, TabWidth};
 
     use super::*;
 
@@ -413,7 +415,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 156);
+        assert_eq!(fixtures.len(), 158);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -473,6 +475,10 @@ mod tests {
                 )
                 .replace("style = \"strip\"", "style = \"pill\"")
                 .replace("pill_accent = false", "pill_accent = true")
+                .replace(
+                    "close_button = \"active\"",
+                    "close_button = \"always\"",
+                )
                 .replace("width = \"fill\"", "width = \"fit\"")
                 .replace("min_width = 96.0", "min_width = 120.0")
                 .replace("max_width = 240.0", "max_width = 360.0"),
@@ -486,6 +492,7 @@ mod tests {
                 auto_hide_in_fullscreen: true,
                 style: TabStyle::Pill,
                 pill_accent: true,
+                close_button: TabCloseButton::Always,
                 width: TabWidth::Fit,
                 min_width: 120.0,
                 max_width: 360.0,
