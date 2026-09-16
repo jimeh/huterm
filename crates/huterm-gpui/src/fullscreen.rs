@@ -21,6 +21,10 @@ impl NotchShelves {
         clippy::cast_possible_truncation,
         reason = "AppKit points fit GPUI logical pixels"
     )]
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(dead_code, reason = "only AppKit reports auxiliary areas")
+    )]
     pub(crate) fn from_screen(
         frame: Bounds<f64>,
         left: Bounds<f64>,
