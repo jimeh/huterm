@@ -422,9 +422,13 @@ table apply last.
 All color keys are flat: `foreground`, `background`, `cursor`, `selection`
 (selection background), optional `selection_foreground`, and `ansi_black`,
 `ansi_red`, `ansi_green`, `ansi_yellow`, `ansi_blue`, `ansi_magenta`,
-`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys.
-Colors use `#rrggbb`. The legacy 16-color `ansi = [...]` array still works;
-individual ANSI keys override its entries. Unspecified fields inherit.
+`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys. Window
+chrome keys are `tab_bar_background`, `tab_active_background`,
+`tab_foreground`, `tab_inactive_foreground`, `tab_border`, and `tab_accent`,
+plus the overlays `tab_hover_background`, `scrollbar_thumb`, and
+`scrollbar_track`. Colors use `#rrggbb`; the three overlay keys also accept
+`#rrggbbaa`. The legacy 16-color `ansi = [...]` array still works; individual
+ANSI keys override its entries. Unspecified fields inherit.
 Without `selection_foreground`, selected text retains its original colors.
 Labels and scroll controls derive their colors from the theme.
 
