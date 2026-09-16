@@ -51,7 +51,7 @@ mod tab_strip;
 pub(super) mod tab_visibility;
 use crate::assets::Icon;
 use tab_bar::{
-    PILL_HEIGHT, PILL_INSET, PILL_MARGIN, TabColors, TabItem,
+    Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, TabColors, TabItem,
     VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height,
     top_chrome_uses_bar,
 };
@@ -64,6 +64,9 @@ const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// gives them the pill's inset.
 const CONTROL_SIZE: Pixels = PILL_HEIGHT;
 const CONTROL_INSET: Pixels = px(3.0);
+/// Space kept below a vertical column's new-tab button when tabs overflow,
+/// matching the rows' horizontal inset.
+const VERTICAL_END_MARGIN: Pixels = px(5.0);
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
 #[derive(Default)]
@@ -3534,7 +3537,7 @@ fn strip_bounds(
     if config.position.vertical() || config.style != TabStyle::Pill {
         return tabs;
     }
-    let lead = (PILL_INSET - PILL_MARGIN).min(tabs.size.width);
+    let lead = (PILL_INSET - PILL_MARGIN_LEFT).min(tabs.size.width);
     Bounds::new(
         point(tabs.origin.x + lead, tabs.origin.y),
         size(tabs.size.width - lead, tabs.size.height),
@@ -3620,18 +3623,29 @@ impl ChromeLayout {
     /// titlebar or the safe area above a notch) beside a vertical tab bar. It
     /// joins the bar's terminal edge so the titlebar and bar read as one
     /// surface around the terminal.
+    /// With `span_bar`, the line also runs across the tab bar, for a flush
+    /// active Strip row whose top edge continues the terminal's.
     fn top_chrome_border(
         &self,
         position: TabPosition,
         top_chrome: Pixels,
+        span_bar: bool,
     ) -> Option<Bounds<Pixels>> {
         if !position.vertical() || top_chrome <= px(0.0) {
             return None;
         }
         let terminal = self.terminal;
+        let (x, width) = if span_bar {
+            (
+                terminal.origin.x.min(self.tabs.origin.x),
+                terminal.size.width + self.tabs.size.width,
+            )
+        } else {
+            (terminal.origin.x, terminal.size.width)
+        };
         Some(Bounds::new(
-            point(terminal.origin.x, top_chrome - px(1.0)),
-            size(terminal.size.width, px(1.0)),
+            point(x, top_chrome - px(1.0)),
+            size(width, px(1.0)),
         ))
     }
 
@@ -4027,9 +4041,16 @@ impl Render for WorkspaceView {
                     index,
                     title,
                     exited,
-                    active: Some(tab.id) == self.active,
-                    follows_active: index > 0
-                        && Some(self.tabs[index - 1].id) == self.active,
+                    activity: if Some(tab.id) == self.active {
+                        Activity::Active
+                    } else if index > 0
+                        && Some(self.tabs[index - 1].id) == self.active
+                    {
+                        Activity::FollowsActive
+                    } else {
+                        Activity::Inactive
+                    },
+                    flush_start: index == 0 && strip.offset == px(0.0),
                 };
                 bar = bar
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
@@ -4183,9 +4204,18 @@ impl Render for WorkspaceView {
                 );
             }
             root = root.child(chrome);
+            // A flush active Strip row continues the terminal's top border
+            // across the bar, so the corner stays square.
+            let flush_active = vertical
+                && tabs.style == TabStyle::Strip
+                && strip.offset == px(0.0)
+                && self
+                    .tabs
+                    .first()
+                    .is_some_and(|tab| Some(tab.id) == self.active);
             if self.presentation() == Presentation::Reserved
                 && let Some(edge) =
-                    layout.top_chrome_border(position, top_chrome)
+                    layout.top_chrome_border(position, top_chrome, flush_active)
             {
                 root = root.child(
                     div()
@@ -4197,8 +4227,9 @@ impl Render for WorkspaceView {
                         .bg(colors.border),
                 );
                 let radius = terminal_corner_radius(self.config.window);
-                if let Some(corner) =
-                    layout.terminal_corner(position, top_chrome, radius)
+                if !flush_active
+                    && let Some(corner) =
+                        layout.terminal_corner(position, top_chrome, radius)
                 {
                     let left = position == TabPosition::Left;
                     let outer = radius + px(1.0);

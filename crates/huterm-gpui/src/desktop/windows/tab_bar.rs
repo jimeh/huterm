@@ -31,7 +31,10 @@ const PILL_PADDING_LEFT: Pixels = px(9.0);
 /// keep their position when the active tab changes.
 const PILL_ACCENT_PADDING_LEFT: Pixels = px(14.0);
 const PILL_PADDING_RIGHT: Pixels = px(5.0);
-pub(super) const PILL_MARGIN: Pixels = px(2.0);
+/// Pills leave one more point on the left than the right, so the 1-point
+/// divider drawn at a tab's leading edge sits centered between neighbors.
+pub(super) const PILL_MARGIN_LEFT: Pixels = px(3.0);
+const PILL_MARGIN_RIGHT: Pixels = px(2.0);
 /// Insets shared by vertical rows and the vertical new-tab button so they
 /// align in the column.
 pub(super) const VERTICAL_ROW_MARGIN_X: Pixels = px(6.0);
@@ -112,20 +115,35 @@ pub(super) fn top_chrome_uses_bar(
     }
 }
 
+/// A tab's relation to the window's active tab.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Activity {
+    Active,
+    /// Immediately after the active tab along the strip.
+    FollowsActive,
+    Inactive,
+}
+
 pub(super) struct TabItem {
     pub(super) id: TabId,
     pub(super) index: usize,
     pub(super) title: String,
     pub(super) exited: bool,
-    pub(super) active: bool,
-    pub(super) follows_active: bool,
+    pub(super) activity: Activity,
+    /// The first tab while the strip is scrolled to its start, so its edge
+    /// meets the bar's own edge.
+    pub(super) flush_start: bool,
 }
 
 impl TabItem {
-    /// Horizontal tabs draw a leading divider unless they or their left
-    /// neighbor is active, or they are first.
+    fn active(&self) -> bool {
+        self.activity == Activity::Active
+    }
+
+    /// Tabs draw a leading divider unless they or their preceding neighbor
+    /// is active, or they are first.
     fn divided(&self) -> bool {
-        !self.active && self.index > 0 && !self.follows_active
+        self.activity == Activity::Inactive && self.index > 0
     }
 }
 
@@ -160,7 +178,7 @@ impl WorkspaceView {
             .items_center()
             .overflow_hidden()
             .cursor_pointer()
-            .text_color(if item.active {
+            .text_color(if item.active() {
                 colors.foreground
             } else {
                 colors.inactive
@@ -186,18 +204,20 @@ impl WorkspaceView {
                 .line_clamp(1)
                 .when(item.exited, |title| title.opacity(0.6))
                 .child(item.title.clone()),
-            close: Self::close_tab_button(id, item.active, colors, cx),
+            close: Self::close_tab_button(id, item.active(), colors, cx),
         };
-        if position.vertical() {
-            vertical_tab(shell, parts, item.active, colors)
-        } else {
-            match tabs.style {
-                TabStyle::Strip => {
-                    strip_tab(shell, parts, item, position, colors)
-                }
-                TabStyle::Pill => {
-                    pill_tab(shell, parts, item, tabs.pill_accent, colors)
-                }
+        match (tabs.style, position.vertical()) {
+            (TabStyle::Strip, true) => {
+                vertical_strip_tab(shell, parts, item, position, colors)
+            }
+            (TabStyle::Strip, false) => {
+                strip_tab(shell, parts, item, position, colors)
+            }
+            (TabStyle::Pill, true) => {
+                vertical_pill_tab(shell, parts, item, tabs.pill_accent, colors)
+            }
+            (TabStyle::Pill, false) => {
+                pill_tab(shell, parts, item, tabs.pill_accent, colors)
             }
         }
     }
@@ -303,14 +323,17 @@ fn divider(colors: TabColors) -> Div {
         .bg(colors.border)
 }
 
-/// Left and right placement share one row style regardless of `tabs.style`.
-fn vertical_tab(
+/// Left and right Pill placement: a rounded row inset in the column, with
+/// the same optional accent bar as horizontal pills.
+fn vertical_pill_tab(
     shell: Stateful<Div>,
     parts: TabParts,
-    active: bool,
+    item: &TabItem,
+    accent: bool,
     colors: TabColors,
 ) -> Stateful<Div> {
     let (hover, foreground) = (colors.hover(), colors.foreground);
+    let active = item.active();
     shell.child(
         div()
             .relative()
@@ -322,11 +345,12 @@ fn vertical_tab(
             .rounded(px(7.0))
             .flex()
             .items_center()
-            .gap(px(9.0))
-            .pl(px(14.0))
-            .pr(px(6.0))
-            .when(active, |row| {
-                row.bg(colors.active).child(accent_bar(colors, px(8.0)))
+            .gap(PILL_GAP)
+            .pl(pill_padding_left(accent))
+            .pr(PILL_PADDING_RIGHT)
+            .when(active, |row| row.bg(colors.active))
+            .when(active && accent, |row| {
+                row.child(accent_bar(colors, px(8.0)))
             })
             .when(!active, |row| {
                 row.group_hover("tab", |style| {
@@ -337,6 +361,46 @@ fn vertical_tab(
             .child(parts.title)
             .child(parts.close),
     )
+}
+
+/// Left and right Strip placement: the active row spans the column and
+/// merges into the terminal, with the accent line on the window edge and
+/// `tab_border` lines above and below because the open edge is tall. A
+/// flush first row omits its top line; the bar's top border serves instead.
+fn vertical_strip_tab(
+    shell: Stateful<Div>,
+    parts: TabParts,
+    item: &TabItem,
+    position: TabPosition,
+    colors: TabColors,
+) -> Stateful<Div> {
+    let (hover, foreground) = (colors.hover(), colors.foreground);
+    shell
+        .gap(STRIP_GAP)
+        .pl(STRIP_PADDING_LEFT)
+        .pr(STRIP_PADDING_RIGHT)
+        .when(item.active(), |tab| {
+            tab.bg(colors.terminal)
+                .border_color(colors.border)
+                .border_b(px(1.0))
+                .when(!item.flush_start, |tab| tab.border_t(px(1.0)))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.0))
+                        .bg(colors.accent)
+                        .when(position == TabPosition::Left, Styled::left_0)
+                        .when(position != TabPosition::Left, Styled::right_0),
+                )
+        })
+        .when(!item.active(), |tab| {
+            tab.hover(|style| style.bg(hover).text_color(foreground))
+        })
+        .children(parts.status)
+        .child(parts.title)
+        .child(parts.close)
 }
 
 /// The active tab merges into the terminal with an accent on its outer edge.
@@ -352,7 +416,7 @@ fn strip_tab(
         .gap(STRIP_GAP)
         .pl(STRIP_PADDING_LEFT)
         .pr(STRIP_PADDING_RIGHT)
-        .when(item.active, |tab| {
+        .when(item.active(), |tab| {
             tab.bg(colors.terminal).child(
                 div()
                     .absolute()
@@ -364,7 +428,7 @@ fn strip_tab(
                     .when(position != TabPosition::Top, Styled::bottom_0),
             )
         })
-        .when(!item.active, |tab| {
+        .when(!item.active(), |tab| {
             tab.hover(|style| style.bg(hover).text_color(foreground))
         })
         .when(item.divided(), |tab| tab.child(divider(colors)))
@@ -383,9 +447,10 @@ fn pill_tab(
     colors: TabColors,
 ) -> Stateful<Div> {
     let (hover, foreground) = (colors.hover(), colors.foreground);
-    let active = item.active;
+    let active = item.active();
     shell
-        .px(PILL_MARGIN)
+        .pl(PILL_MARGIN_LEFT)
+        .pr(PILL_MARGIN_RIGHT)
         .when(item.divided(), |tab| tab.child(divider(colors)))
         .child(
             div()
@@ -440,7 +505,8 @@ pub(super) fn fit_tab_width(
     let chrome = match style {
         TabStyle::Strip => STRIP_PADDING_LEFT + STRIP_PADDING_RIGHT,
         TabStyle::Pill => {
-            PILL_MARGIN * 2.0
+            PILL_MARGIN_LEFT
+                + PILL_MARGIN_RIGHT
                 + pill_padding_left(tabs.pill_accent)
                 + PILL_PADDING_RIGHT
         }
@@ -493,7 +559,7 @@ mod tests {
         );
         let pill_tabs = tabs(TabStyle::Pill, false, 48.0, 600.0);
         let pill = fit_tab_width(px(20.0), pill_tabs, false);
-        assert_eq!(pill, px(20.0 + 2.0 * 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
+        assert_eq!(pill, px(20.0 + 3.0 + 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
         assert_eq!(
             fit_tab_width(px(20.0), pill_tabs, true),
             pill + ICON_SIZE + PILL_GAP
@@ -527,18 +593,18 @@ mod tests {
 
     #[test]
     fn horizontal_dividers_skip_the_first_active_and_following_tabs() {
-        let item = |index, active, follows_active| TabItem {
+        let item = |index, activity| TabItem {
             id: TabId::new(1),
             index,
             title: String::new(),
             exited: false,
-            active,
-            follows_active,
+            activity,
+            flush_start: false,
         };
-        assert!(item(1, false, false).divided());
-        assert!(!item(0, false, false).divided());
-        assert!(!item(2, true, false).divided());
-        assert!(!item(3, false, true).divided());
+        assert!(item(1, Activity::Inactive).divided());
+        assert!(!item(0, Activity::Inactive).divided());
+        assert!(!item(2, Activity::Active).divided());
+        assert!(!item(3, Activity::FollowsActive).divided());
     }
 
     #[test]
@@ -547,13 +613,20 @@ mod tests {
         for position in [TabPosition::Left, TabPosition::Right] {
             let layout = ChromeLayout::new(viewport, px(28.0), position);
             let border = layout
-                .top_chrome_border(position, px(28.0))
+                .top_chrome_border(position, px(28.0), false)
                 .expect("titlebar border");
             let terminal = layout.terminal;
             assert_eq!(border.bottom(), terminal.origin.y);
             assert_eq!(border.origin.x, terminal.origin.x);
             assert_eq!(border.size.width, terminal.size.width);
             assert_eq!(border.size.height, px(1.0));
+            // Spanning the bar as well covers the whole window width.
+            let spanning = layout
+                .top_chrome_border(position, px(28.0), true)
+                .expect("spanning border");
+            assert_eq!(spanning.origin.x, px(0.0));
+            assert_eq!(spanning.size.width, viewport.width);
+            assert_eq!(spanning.origin.y, border.origin.y);
             // The two lines meet at the terminal's top corner.
             let side = layout.tab_border(position);
             let corner = match position {
@@ -561,11 +634,15 @@ mod tests {
                 _ => side.origin.x == border.right(),
             };
             assert!(corner, "{position:?}: {side:?} vs {border:?}");
-            assert!(layout.top_chrome_border(position, px(0.0)).is_none());
+            assert!(
+                layout.top_chrome_border(position, px(0.0), false).is_none()
+            );
         }
         for position in [TabPosition::Top, TabPosition::Bottom] {
             let layout = ChromeLayout::new(viewport, px(28.0), position);
-            assert!(layout.top_chrome_border(position, px(28.0)).is_none());
+            assert!(
+                layout.top_chrome_border(position, px(28.0), true).is_none()
+            );
         }
     }
 
@@ -577,7 +654,8 @@ mod tests {
             let corner = layout
                 .terminal_corner(position, px(28.0), px(4.0))
                 .expect("corner patch");
-            let line = layout.top_chrome_border(position, px(28.0)).unwrap();
+            let line =
+                layout.top_chrome_border(position, px(28.0), false).unwrap();
             let side = layout.tab_border(position);
             assert_eq!(corner.size, size(px(5.0), px(5.0)));
             assert_eq!(corner.origin.y, line.origin.y);
@@ -627,7 +705,10 @@ mod tests {
         };
         let strip = strip_bounds(tabs, pill(TabPosition::Top));
         // The first pill's own margin plus the lead equals the vertical inset.
-        assert_eq!(strip.origin.x + PILL_MARGIN, tabs.origin.x + PILL_INSET);
+        assert_eq!(
+            strip.origin.x + PILL_MARGIN_LEFT,
+            tabs.origin.x + PILL_INSET
+        );
         assert_eq!(strip.right(), tabs.right());
         assert_eq!(strip.size.height, tabs.size.height);
         assert_eq!(strip_bounds(tabs, pill(TabPosition::Left)), tabs);

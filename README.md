@@ -231,8 +231,9 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-`style` selects Strip or Pill tabs for top and bottom placement; left and right
-placement always use one row style. `pill_accent = true` draws an accent bar
+`style` selects Strip or Pill tabs for every placement. Left and right Strip
+tabs put the accent line on the window edge; left and right Pill tabs are
+rounded rows inset in the column. `pill_accent = true` draws an accent bar
 inside the active pill. Themes color the tab bar through their tab
 chrome keys. `width = "fill"` shares the bar equally; `"fit"` sizes top and
 bottom tabs to their titles between `min_width` and `max_width` logical points,

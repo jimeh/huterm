@@ -211,7 +211,11 @@ sits at that same inset, and hovering a pill never hides its dividers.
 with an accent line on its outer edge. `"pill"` draws rounded tabs separated by
 dividers; `pill_accent = true` adds an accent bar inside the active pill's left
 edge and widens every pill's left padding to keep titles aligned. Left and
-right placement ignore `style` and use one row style with an inset accent bar.
+right placement follow `style` too: Strip rows span the column, merge into the
+terminal, put the accent line on the window edge, and outline the active row
+above and below; a first active row at the strip's start joins the terminal's
+top border instead and squares the rounded corner. Pill rows are rounded,
+inset in the column, and carry the same optional accent bar.
 With a titlebar or notch safe area above vertical tabs, a border also runs
 along the terminal's top edge, joining the bar's edge so the titlebar and bar
 form one surface around the terminal. The corner where they meet is rounded by

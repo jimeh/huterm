@@ -39,10 +39,11 @@ the macOS titlebar. Everything ships in one PR.
   vertical rows also use. Pill bars are 34 points so 26-point pills keep a
   4-point inset on every side; `ChromeLayout` takes the height from the tab
   config.
-- **Vertical tabs.** Left and right placement always use the Strip-like row: a
-  status slot, the title, and an accent bar inside the rounded active row. A
-  secondary directory line waits for directory metadata. `style`, `width`,
-  `min_width`, and `max_width` do not affect vertical tabs.
+- **Vertical tabs.** Left and right placement follow `style`. Strip rows span
+  the column, merge into the terminal, and put the 2-point accent line on the
+  window edge; Pill rows are rounded, inset in the column, and carry the
+  optional accent bar. A secondary directory line waits for directory metadata.
+  `width`, `min_width`, and `max_width` do not affect vertical tabs.
 - **Status.** Only exited terminals get an indicator in this work.
 - **Theme colors.** Themes gain flat, optional UI color keys that merge through
   `extends` like existing keys. Missing values derive from the theme's
@@ -168,8 +169,14 @@ helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
   `tab_accent` bar inside its left edge, and every pill widens its left padding
   to keep titles aligned; the default omits the bar. An earlier numbered-badge
   design was dropped after reviewing the mock-up.
-- **Vertical.** Rows use `tab_active_background` when active, with a 3-point
-  `tab_accent` bar inset inside the rounded row. When top chrome sits above
+- **Vertical.** Pill rows use `tab_active_background` when active, with the
+  optional 3-point `tab_accent` bar inset inside the rounded row. Strip rows
+  span the column, use the terminal background when active, draw the 2-point
+  `tab_accent` line on the window edge, and outline the active row's top and
+  bottom with `tab_border` because its open edge is tall. A first active row at
+  the strip's start drops its top line, the terminal's top border spans the bar
+  instead, and the rounded corner is skipped so the edges meet. When top chrome
+  sits above
   the column, a `tab_border` line also runs along the terminal's top edge and
   meets the column's edge, so the titlebar and column read as one surface.
   That corner is rounded by the smaller window padding, capped at 12 points,
