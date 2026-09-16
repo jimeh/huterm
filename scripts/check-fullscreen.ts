@@ -500,6 +500,45 @@ done
       }
       console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit native-timeout retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
     }
+    // On a display with a notch, put a top bar on each shelf and check that
+    // the bar sits at the shelf's bottom edge and the terminal starts one
+    // point under the safe area. Hosts without a notched display skip this.
+    if (macos && !frameProbe) {
+      await accepted("0 toggle_fullscreen");
+      await stable("Windowed");
+      const probe = await command("probe-notched-display");
+      if (probe.startsWith("moved ")) {
+        const originalFrame = probe.slice("moved ".length).trim();
+        const parseRect = (text: string) => text.split(",").map(Number) as [number, number, number, number];
+        for (const side of ["left", "right"] as const) {
+          await writeFile(config, configText("native").replace("[tabs]\nnotch = \"off\"\n", `[tabs]\nalways_show = true\nnotch = "${side}"\n`));
+          await accepted("0 reload_config");
+          await waitFor(async () => (await state()).reloading === "false", `${side} shelf config reload`);
+          await accepted("0 toggle_non_native_fullscreen");
+          const shelved = await stable("NonNative");
+          const shelves = shelved["w0.notch_shelves"];
+          if (!shelves || shelves === "none") throw new Error(`${side} shelf: notched display reported no shelves`);
+          const shelf = parseRect(shelves.split(";")[side === "left" ? 0 : 1]!.slice(2));
+          const [tabX, tabY, tabWidth, tabHeight] = parseRect(shelved["w0.bar_bounds"]!);
+          const safeTop = Number(shelved["w0.insets"]!.split(",")[0]);
+          if (shelved["w0.tab_presentation"] !== "Reserved") throw new Error(`${side} shelf bar was ${shelved["w0.tab_presentation"]}`);
+          if (tabX !== shelf[0] || tabWidth !== shelf[2]) throw new Error(`${side} shelf bar spans ${tabX},${tabWidth} instead of the shelf ${shelf[0]},${shelf[2]}`);
+          if (tabY + tabHeight !== shelf[1] + shelf[3]) throw new Error(`${side} shelf bar bottom ${tabY + tabHeight} is not the shelf bottom ${shelf[1] + shelf[3]}`);
+          if (Number(shelved["w0.terminal"]!.split(",")[1]) !== safeTop + 1) throw new Error(`${side} shelf terminal top ${shelved["w0.terminal"]} is not one point under the safe area ${safeTop}`);
+          await accepted("0 toggle_non_native_fullscreen");
+          await stable("Windowed");
+        }
+        await writeFile(config, configText("native"));
+        await accepted("0 reload_config");
+        await waitFor(async () => (await state()).reloading === "false", "shelf config restored");
+        await accepted(`probe-window-frame\t${originalFrame}`);
+        console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf left right`);
+      } else {
+        console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf skipped no-notched-display`);
+      }
+      await accepted("0 toggle_non_native_fullscreen");
+      await stable("NonNative");
+    }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
     if (macos && !frameProbe) {
       await accepted("0 toggle_fullscreen");

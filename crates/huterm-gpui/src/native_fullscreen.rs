@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, ensure};
-use gpui::{Bounds, Window};
+use gpui::{Bounds, Point, Size, Window};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, NO, Object, Sel, YES};
 use objc::{msg_send, sel, sel_impl};
@@ -323,6 +323,69 @@ impl Adapter {
             );
         }
         Ok("posted".to_owned())
+    }
+
+    /// Move the windowed smoke window onto a display with a notch shelf and
+    /// report the frame it left, or `none` when no such display is attached.
+    pub fn probe_notched_display(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "display probe requires the fullscreen smoke"
+        );
+        // SAFETY: The smoke runs this on the foreground executor outside GPUI
+        // borrows, reading AppKit's screen list and moving only its window.
+        unsafe {
+            let window = self.0.window.0;
+            let current: Bounds<f64> = msg_send![window, frame];
+            let screens: *mut Object =
+                msg_send![Class::get("NSScreen").context("NSScreen")?, screens];
+            let count: usize = msg_send![screens, count];
+            for index in 0..count {
+                let screen: *mut Object =
+                    msg_send![screens, objectAtIndex: index];
+                if screen_notch_shelves(screen).is_none() {
+                    continue;
+                }
+                let visible: Bounds<f64> = msg_send![screen, visibleFrame];
+                let frame = Bounds {
+                    origin: Point {
+                        x: visible.origin.x + 40.0,
+                        y: visible.origin.y + 40.0,
+                    },
+                    size: current.size,
+                };
+                let _: () = msg_send![window, setFrame: frame display: YES];
+                return Ok(format!("moved {}", native_rect(current)));
+            }
+            Ok("none".to_owned())
+        }
+    }
+
+    /// Put the windowed smoke window back on a frame recorded by
+    /// `probe_notched_display`, given as `x,y,w,h` in `AppKit` coordinates.
+    pub fn probe_window_frame(&self, spec: &str) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "display probe requires the fullscreen smoke"
+        );
+        let values = spec
+            .split(',')
+            .map(|value| value.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()?;
+        let &[x, y, width, height] = values.as_slice() else {
+            anyhow::bail!("window frame needs x,y,w,h");
+        };
+        let frame = Bounds {
+            origin: Point { x, y },
+            size: Size { width, height },
+        };
+        // SAFETY: Same foreground-executor discipline as the display probe;
+        // only the smoke's own window moves.
+        unsafe {
+            let _: () =
+                msg_send![self.0.window.0, setFrame: frame display: YES];
+        }
+        Ok(native_rect(frame))
     }
 
     /// Create the stale fullscreen frame produced by a display resize, then
