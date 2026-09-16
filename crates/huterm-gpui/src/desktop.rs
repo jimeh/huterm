@@ -1490,10 +1490,10 @@ impl TerminalView {
     }
 
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
-        windows::ChromeLayout::with_safe_area(
+        windows::ChromeLayout::for_tabs(
             window.viewport_size(),
             terminal_top(self.chrome_hidden),
-            self.tabs_config.position,
+            self.tabs_config,
             self.sidebar_width,
             self.fullscreen_insets,
         )

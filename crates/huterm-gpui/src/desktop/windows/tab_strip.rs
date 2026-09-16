@@ -1,4 +1,4 @@
-use super::{Bounds, CONTROL_SIZE, Pixels, TAB_HEIGHT, point, px, size};
+use super::{Bounds, CONTROL_SLOT, Pixels, TAB_HEIGHT, point, px, size};
 use std::time::Duration;
 
 /// How tab extents along the strip axis are chosen.
@@ -39,7 +39,7 @@ impl TabStrip {
         } else {
             bounds.size.width
         };
-        let viewport = (available - CONTROL_SIZE).max(px(0.0));
+        let viewport = (available - CONTROL_SLOT).max(px(0.0));
         let fit = matches!(extents, TabExtents::Fit(_)) && !vertical;
         let extents = match extents {
             TabExtents::Fit(widths) if !vertical => widths,
@@ -135,7 +135,7 @@ impl TabStrip {
         elapsed: Duration,
     ) -> Pixels {
         let axis = self.axis(pointer);
-        let edge = CONTROL_SIZE.min(self.available() / 2.0);
+        let edge = CONTROL_SLOT.min(self.available() / 2.0);
         let direction = if axis < edge {
             -1.0
         } else if axis > self.available() - edge {
@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     fn bounds() -> Bounds<Pixels> {
-        Bounds::new(point(px(20.0), px(40.0)), size(px(628.0), px(220.0)))
+        Bounds::new(point(px(20.0), px(40.0)), size(px(632.0), px(224.0)))
     }
 
     fn strip(vertical: bool, count: usize, offset: f32) -> TabStrip {
@@ -240,7 +240,7 @@ mod tests {
         let fitting = strip(true, 3, 0.0);
         assert_eq!(fitting.tab_extent(0), px(32.0));
         assert_eq!(fitting.available(), px(96.0));
-        assert_eq!(fitting.bounds.size.width, px(628.0));
+        assert_eq!(fitting.bounds.size.width, px(632.0));
         let overflowing = strip(true, 20, 0.0);
         assert_eq!(overflowing.available(), px(192.0));
         assert_eq!(overflowing.max_offset(), px(448.0));

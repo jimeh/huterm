@@ -32,7 +32,7 @@ use crate::native_quit;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 use crate::native_updater;
 use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
-use huterm_config::TabWidth;
+use huterm_config::{TabStyle, TabWidth};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
     HostEffectRecipientOptions, MuxError, OpenedTab,
@@ -50,10 +50,20 @@ mod tab_bar;
 mod tab_strip;
 pub(super) mod tab_visibility;
 use crate::assets::Icon;
-use tab_bar::{TabColors, TabItem, icon_element, top_chrome_uses_bar};
+use tab_bar::{
+    PILL_HEIGHT, PILL_INSET, PILL_MARGIN, TabColors, TabItem,
+    VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height,
+    top_chrome_uses_bar,
+};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
-const CONTROL_SIZE: Pixels = px(28.0);
+/// Space the tab strip reserves for the new-tab control on its axis.
+const CONTROL_SLOT: Pixels = TAB_HEIGHT;
+/// Visible size of the new-tab and scroll controls. Along the strip they sit
+/// centered in their slot; across it they center in the bar, so a Pill bar
+/// gives them the pill's inset.
+const CONTROL_SIZE: Pixels = PILL_HEIGHT;
+const CONTROL_INSET: Pixels = px(3.0);
 const TAB_DRAG_THRESHOLD: f64 = 4.0;
 
 #[derive(Default)]
@@ -1029,7 +1039,7 @@ fn initial_window_size(
             + if !config.tabs.always_show || config.tabs.position.vertical() {
                 px(0.0)
             } else {
-                TAB_HEIGHT
+                tab_bar_height(config.tabs)
             },
     )
 }
@@ -1559,10 +1569,10 @@ impl WorkspaceView {
     }
 
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
-        ChromeLayout::with_safe_area(
+        ChromeLayout::for_tabs(
             window.viewport_size(),
             terminal_top(self.chrome_hidden()),
-            self.config.tabs.position,
+            self.config.tabs,
             self.sidebar_width,
             self.fullscreen_insets,
         )
@@ -1692,7 +1702,7 @@ impl WorkspaceView {
             TabExtents::Uniform(self.tabs.len())
         };
         TabStrip::new(
-            layout.tabs,
+            strip_bounds(layout.tabs, tabs),
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
@@ -3514,6 +3524,23 @@ fn terminal_corner_radius(window: huterm_config::WindowConfig) -> Pixels {
         .min(TERMINAL_CORNER_RADIUS_LIMIT)
 }
 
+/// The strip's bounds inside the tab bar. Horizontal Pill bars start with a
+/// leading margin so the first pill's visible edge matches the vertical
+/// inset; every other placement and style fills the bar.
+fn strip_bounds(
+    tabs: Bounds<Pixels>,
+    config: huterm_config::TabsConfig,
+) -> Bounds<Pixels> {
+    if config.position.vertical() || config.style != TabStyle::Pill {
+        return tabs;
+    }
+    let lead = (PILL_INSET - PILL_MARGIN).min(tabs.size.width);
+    Bounds::new(
+        point(tabs.origin.x + lead, tabs.origin.y),
+        size(tabs.size.width - lead, tabs.size.height),
+    )
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
@@ -3663,10 +3690,48 @@ impl ChromeLayout {
         )
     }
 
+    /// Lays out with a 32-point horizontal bar; production uses `for_tabs`
+    /// so the Pill style can take its taller bar.
+    #[cfg(test)]
     pub(super) fn with_safe_area(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
         position: TabPosition,
+        sidebar_width: Pixels,
+        safe_area: gpui::Edges<Pixels>,
+    ) -> Self {
+        Self::build(
+            viewport,
+            titlebar,
+            position,
+            TAB_HEIGHT,
+            sidebar_width,
+            safe_area,
+        )
+    }
+
+    pub(super) fn for_tabs(
+        viewport: gpui::Size<Pixels>,
+        titlebar: Pixels,
+        tabs: huterm_config::TabsConfig,
+        sidebar_width: Pixels,
+        safe_area: gpui::Edges<Pixels>,
+    ) -> Self {
+        Self::build(
+            viewport,
+            titlebar,
+            tabs.position,
+            tab_bar_height(tabs),
+            sidebar_width,
+            safe_area,
+        )
+    }
+
+    fn build(
+        viewport: gpui::Size<Pixels>,
+        titlebar: Pixels,
+        position: TabPosition,
+        bar_height: Pixels,
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
     ) -> Self {
@@ -3693,7 +3758,7 @@ impl ChromeLayout {
                 tabs.origin.x += terminal.size.width;
             }
         } else {
-            tabs.size.height = TAB_HEIGHT.min(available.height);
+            tabs.size.height = bar_height.min(available.height);
             terminal.size.height =
                 (available.height - tabs.size.height).max(px(0.0));
             if position == TabPosition::Top {
@@ -3939,6 +4004,9 @@ impl Render for WorkspaceView {
                     },
                 ));
             let tabs = self.config.tabs;
+            // Centers 26-point controls across a horizontal bar.
+            let bar_inset =
+                ((layout.tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0));
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
                 let (title, exited) = tab.label(cx);
@@ -3951,7 +4019,7 @@ impl Render for WorkspaceView {
                 } else {
                     Bounds::new(
                         point(offset, px(0.0)),
-                        size(strip.tab_extent(index), TAB_HEIGHT),
+                        size(strip.tab_extent(index), layout.tabs.size.height),
                     )
                 };
                 let item = TabItem {
@@ -3971,10 +4039,10 @@ impl Render for WorkspaceView {
                     || (!forward && strip.offset > px(0.0))
                 {
                     let edge = if forward {
-                        (strip.available() - CONTROL_SIZE).max(px(0.0))
+                        (strip.available() - CONTROL_SLOT).max(px(0.0))
                     } else {
                         px(0.0)
-                    };
+                    } + CONTROL_INSET;
                     bar = bar.child(
                         div()
                             .id(if forward {
@@ -3990,7 +4058,7 @@ impl Render for WorkspaceView {
                             } else {
                                 edge
                             })
-                            .top(if vertical { edge } else { px(2.0) })
+                            .top(if vertical { edge } else { bar_inset })
                             .w(CONTROL_SIZE)
                             .h(CONTROL_SIZE)
                             .flex()
@@ -4047,30 +4115,35 @@ impl Render for WorkspaceView {
                     .group("new-tab")
                     .occlude()
                     .hover(|style| style.bg(colors.foreground.opacity(0.06)))
-                    .rounded_md()
+                    .rounded(px(7.0))
                     .absolute()
                     .left(
                         layout.tabs.origin.x - clip.origin.x
                             + if vertical {
-                                px(0.0)
+                                VERTICAL_ROW_MARGIN_X
                             } else {
-                                strip.available()
+                                strip.available() + CONTROL_INSET
                             },
                     )
                     .top(
                         layout.tabs.origin.y - clip.origin.y
                             + if vertical {
-                                strip.available()
+                                strip.available() + VERTICAL_ROW_MARGIN_Y
                             } else {
-                                px(0.0)
+                                bar_inset
                             },
                     )
                     .w(if vertical {
-                        layout.tabs.size.width
+                        (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
+                            .max(px(0.0))
                     } else {
                         CONTROL_SIZE
                     })
-                    .h(CONTROL_SIZE)
+                    .h(if vertical {
+                        CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0
+                    } else {
+                        CONTROL_SIZE
+                    })
                     .flex()
                     .items_center()
                     .justify_center()

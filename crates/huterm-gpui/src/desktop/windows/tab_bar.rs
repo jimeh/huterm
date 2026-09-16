@@ -8,15 +8,18 @@ use crate::assets::Icon;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Presentation,
-    StatefulInteractiveElement, Styled, TabId, TabPosition, Theme, Window,
-    WorkspaceView, color, div, px,
+    StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId, TabPosition, Theme,
+    Window, WorkspaceView, color, div, px,
 };
 
 /// Bounds the title width cache so long-lived windows with changing titles
 /// cannot grow it without limit.
 const TITLE_WIDTH_CACHE_LIMIT: usize = 512;
 
-const PILL_HEIGHT: Pixels = px(26.0);
+/// Pills keep 4 points on every side, which makes the Pill bar 34 points
+/// tall; the new-tab control and the strip's leading margin share that inset.
+pub(super) const PILL_HEIGHT: Pixels = px(26.0);
+pub(super) const PILL_INSET: Pixels = px(4.0);
 const ICON_SIZE: Pixels = px(12.0);
 const CLOSE_SIZE: Pixels = px(18.0);
 const STRIP_GAP: Pixels = px(7.0);
@@ -28,7 +31,11 @@ const PILL_PADDING_LEFT: Pixels = px(9.0);
 /// keep their position when the active tab changes.
 const PILL_ACCENT_PADDING_LEFT: Pixels = px(14.0);
 const PILL_PADDING_RIGHT: Pixels = px(5.0);
-const PILL_MARGIN: Pixels = px(2.0);
+pub(super) const PILL_MARGIN: Pixels = px(2.0);
+/// Insets shared by vertical rows and the vertical new-tab button so they
+/// align in the column.
+pub(super) const VERTICAL_ROW_MARGIN_X: Pixels = px(6.0);
+pub(super) const VERTICAL_ROW_MARGIN_Y: Pixels = px(1.0);
 /// Title text size used both to render and to measure Fit tabs.
 pub(super) const TAB_TEXT_SIZE: Pixels = px(13.0);
 
@@ -61,6 +68,17 @@ impl TabColors {
 
     fn hover(self) -> Hsla {
         self.foreground.opacity(0.04)
+    }
+}
+
+/// Height of a horizontal tab bar for `tabs`. Strip keeps the 32-point row
+/// height that vertical bars also use; Pill adds its insets around the pill.
+pub(super) fn tab_bar_height(tabs: TabsConfig) -> Pixels {
+    match tabs.style {
+        TabStyle::Pill if !tabs.position.vertical() => {
+            PILL_HEIGHT + PILL_INSET * 2.0
+        }
+        TabStyle::Strip | TabStyle::Pill => TAB_HEIGHT,
     }
 }
 
@@ -299,8 +317,8 @@ fn vertical_tab(
             .flex_1()
             .min_w_0()
             .h_full()
-            .mx(px(6.0))
-            .my(px(1.0))
+            .mx(VERTICAL_ROW_MARGIN_X)
+            .my(VERTICAL_ROW_MARGIN_Y)
             .rounded(px(7.0))
             .flex()
             .items_center()
@@ -368,12 +386,7 @@ fn pill_tab(
     let active = item.active;
     shell
         .px(PILL_MARGIN)
-        .when(item.divided(), |tab| {
-            // A hovered pill hides its own divider so the highlight stays clean.
-            tab.child(
-                divider(colors).group_hover("tab", |style| style.opacity(0.0)),
-            )
-        })
+        .when(item.divided(), |tab| tab.child(divider(colors)))
         .child(
             div()
                 .relative()
@@ -448,9 +461,9 @@ fn gap(style: TabStyle) -> Pixels {
 
 #[cfg(test)]
 mod tests {
-    use gpui::size;
+    use gpui::{point, size};
 
-    use super::super::{ChromeLayout, terminal_corner_radius};
+    use super::super::{ChromeLayout, strip_bounds, terminal_corner_radius};
     use super::*;
 
     fn tabs(
@@ -601,6 +614,64 @@ mod tests {
         assert_eq!(terminal_corner_radius(window(10.0, 6.5)), px(6.0));
         assert_eq!(terminal_corner_radius(window(0.0, 8.0)), px(0.0));
         assert_eq!(terminal_corner_radius(window(40.0, 40.0)), px(12.0));
+    }
+
+    #[test]
+    fn pill_strips_start_with_a_leading_margin_matching_the_inset() {
+        let tabs =
+            Bounds::new(point(px(10.0), px(20.0)), size(px(600.0), px(32.0)));
+        let pill = |position| TabsConfig {
+            position,
+            style: TabStyle::Pill,
+            ..TabsConfig::default()
+        };
+        let strip = strip_bounds(tabs, pill(TabPosition::Top));
+        // The first pill's own margin plus the lead equals the vertical inset.
+        assert_eq!(strip.origin.x + PILL_MARGIN, tabs.origin.x + PILL_INSET);
+        assert_eq!(strip.right(), tabs.right());
+        assert_eq!(strip.size.height, tabs.size.height);
+        assert_eq!(strip_bounds(tabs, pill(TabPosition::Left)), tabs);
+        assert_eq!(strip_bounds(tabs, TabsConfig::default()), tabs);
+        let tiny = Bounds::new(tabs.origin, size(px(1.0), px(32.0)));
+        assert_eq!(
+            strip_bounds(tiny, pill(TabPosition::Bottom)).size.width,
+            px(0.0)
+        );
+    }
+
+    #[test]
+    fn pill_bars_grow_around_the_pill_while_others_keep_the_row_height() {
+        let tabs = |position, style| TabsConfig {
+            position,
+            style,
+            ..TabsConfig::default()
+        };
+        assert_eq!(
+            tab_bar_height(tabs(TabPosition::Top, TabStyle::Pill)),
+            px(34.0)
+        );
+        assert_eq!(
+            tab_bar_height(tabs(TabPosition::Bottom, TabStyle::Pill)),
+            px(34.0)
+        );
+        assert_eq!(
+            tab_bar_height(tabs(TabPosition::Top, TabStyle::Strip)),
+            TAB_HEIGHT
+        );
+        assert_eq!(
+            tab_bar_height(tabs(TabPosition::Left, TabStyle::Pill)),
+            TAB_HEIGHT
+        );
+        let viewport = size(px(800.0), px(600.0));
+        let layout = ChromeLayout::for_tabs(
+            viewport,
+            px(28.0),
+            tabs(TabPosition::Top, TabStyle::Pill),
+            px(220.0),
+            gpui::Edges::default(),
+        );
+        assert_eq!(layout.tabs.size.height, px(34.0));
+        assert_eq!(layout.terminal.origin.y, px(28.0 + 34.0));
     }
 
     #[test]

@@ -35,8 +35,10 @@ the macOS titlebar. Everything ships in one PR.
 
 - **Defaults.** Strip style with Fill width, which stays closest to today's
   layout.
-- **Bar height.** Both styles keep the existing 32-point `TAB_HEIGHT`, so
-  `ChromeLayout`, PTY sizing, and existing layout tests keep their geometry.
+- **Bar height.** Strip keeps the existing 32-point `TAB_HEIGHT`, which
+  vertical rows also use. Pill bars are 34 points so 26-point pills keep a
+  4-point inset on every side; `ChromeLayout` takes the height from the tab
+  config.
 - **Vertical tabs.** Left and right placement always use the Strip-like row: a
   status slot, the title, and an accent bar inside the rounded active row. A
   secondary directory line waits for directory metadata. `style`, `width`,
@@ -160,7 +162,7 @@ helper beside `TabStrip`. Keep `TabStrip` as the only source of pixel geometry.
   active tab uses the terminal background with a 2-point `tab_accent` line on
   its outer edge, away from the terminal, as in the mock-up. Inactive tabs are
   separated by short `tab_border` dividers.
-- **Pill.** Tabs render as 26-point rounded pills centered in the 32-point bar,
+- **Pill.** Tabs render as 26-point rounded pills centered in the 34-point bar,
   separated by short `tab_border` dividers. The active pill uses
   `tab_active_background`. With `pill_accent = true` it also carries a 3-point
   `tab_accent` bar inside its left edge, and every pill widens its left padding
