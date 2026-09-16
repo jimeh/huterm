@@ -40,9 +40,10 @@ use crate::keymap::{
 };
 use crate::mouse::{MouseState, application_route};
 use crate::renderer::{GridMetrics, TerminalRenderer, rgb_color as color};
-use crate::scroll::{
-    IndicatorVisibility, ScrollController, ScrollbarExpansion,
-    ScrollbarGeometry,
+use crate::scroll::ScrollController;
+use crate::ui::scrollbar::{
+    IndicatorVisibility, Origin, ScrollbarExpansion, ScrollbarGeometry,
+    TrackMargins,
 };
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
@@ -52,6 +53,11 @@ const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
 const SCROLLBAR_WIDTH: Pixels = px(12.0);
 const SCROLLBAR_EXPANDED_WIDTH: Pixels = px(18.0);
+/// Leaves room below the terminal scrollbar track for the scroll label.
+const TERMINAL_TRACK_MARGINS: TrackMargins = TrackMargins {
+    start: 2.0,
+    end: 8.0,
+};
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
 
 mod composition;
@@ -1423,7 +1429,9 @@ impl TerminalView {
         let Some(geometry) = self.scrollbar_geometry(window) else {
             return;
         };
-        let offset = geometry.offset_for_thumb_start(f32::from(thumb_start));
+        let offset = rows_for_offset(
+            geometry.offset_for_thumb_start(f32::from(thumb_start)),
+        );
         if self.scroll.set_desired(offset) {
             self.activate_scrollbar();
             self.start_snapshot_if_needed(cx);
@@ -1432,7 +1440,7 @@ impl TerminalView {
     }
 
     fn scrollbar_geometry(&self, window: &Window) -> Option<ScrollbarGeometry> {
-        ScrollbarGeometry::new(
+        terminal_scrollbar_geometry(
             f32::from(self.viewport(window).height),
             self.last_grid_size.rows,
             self.scroll.history(),
@@ -2104,6 +2112,39 @@ fn begin_visible_snapshot(
     }
 }
 
+/// Terminal scrollbar geometry in rows: `history` rows above `visible_rows`,
+/// with `displayed_offset` counted from the bottom.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "terminal scrollback is capped at 10000 rows"
+)]
+fn terminal_scrollbar_geometry(
+    height: f32,
+    visible_rows: u16,
+    history: usize,
+    displayed_offset: usize,
+) -> Option<ScrollbarGeometry> {
+    let visible = f32::from(visible_rows.max(1));
+    ScrollbarGeometry::new(
+        height,
+        visible + history as f32,
+        visible,
+        displayed_offset.min(history) as f32,
+        Origin::End,
+        TERMINAL_TRACK_MARGINS,
+    )
+}
+
+/// Rounds a scrollbar offset in rows back to a history offset.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a bounded scrollbar ratio maps to at most 10000 rows"
+)]
+fn rows_for_offset(offset: f32) -> usize {
+    offset.round() as usize
+}
+
 fn scrollbar_hit_test(
     position: gpui::Point<Pixels>,
     viewport_width: Pixels,
@@ -2546,7 +2587,7 @@ mod tests {
 
     #[test]
     fn scrollbar_hover_target_expands_only_while_visible() {
-        let geometry = ScrollbarGeometry::new(400.0, 32, 100, 0).unwrap();
+        let geometry = terminal_scrollbar_geometry(400.0, 32, 100, 0).unwrap();
         let position = point(px(85.0), px(200.0));
         assert!(!scrollbar_hit_test(
             position,
@@ -2574,7 +2615,7 @@ mod tests {
 
     #[test]
     fn scrollbar_hit_testing_excludes_insets_and_outside_window() {
-        let geometry = ScrollbarGeometry::new(400.0, 32, 100, 0).unwrap();
+        let geometry = terminal_scrollbar_geometry(400.0, 32, 100, 0).unwrap();
         for position in [
             point(px(99.0), px(1.0)),
             point(px(99.0), px(393.0)),
