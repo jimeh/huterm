@@ -10,8 +10,6 @@ export const iconNames = [
   "plus",
   "chevron-left",
   "chevron-right",
-  "chevron-up",
-  "chevron-down",
   "circle-alert",
 ] as const;
 
