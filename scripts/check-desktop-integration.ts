@@ -91,9 +91,11 @@ async function check(executable: string, engine: string, wm?: X11Process) {
   );
   await writeFile(
     recorder,
-    `import {openSync,writeSync,readFileSync,existsSync,unlinkSync,writeFileSync} from "node:fs";
+    `import {openSync,writeSync,readFileSync,existsSync,unlinkSync,writeFileSync,renameSync} from "node:fs";
 const fd=openSync(${JSON.stringify(bytes)},"a");
-writeFileSync(${JSON.stringify(directory)}+"/started-"+process.pid,process.cwd());
+const started=${JSON.stringify(directory)}+"/started-"+process.pid;
+const startedTemp=${JSON.stringify(directory)}+"/.started-"+process.pid+".tmp";
+writeFileSync(startedTemp,process.cwd());renameSync(startedTemp,started);
 let sequence=0;
 let flood=0;
 const stream=setInterval(()=>{const start=${JSON.stringify(directory)}+"/flood";if(existsSync(start)){unlinkSync(start);flood=500;}if(flood>0){process.stdout.write("\\x1b[10;1Hhttps://noise.test/"+(--flood)+"\\x1b[K");if(flood===0)writeFileSync(${JSON.stringify(directory)}+"/flood-done", "done");}},2);
@@ -323,12 +325,16 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
         `Linux foreground process label was ${localMetadata.process}`,
       );
     }
-    await display("\x07BELL");
-    const flashing = await waitForState(
-      (current) => current.bell_flashing === "true",
-      "active visual bell flash",
+    const bellFlashes = Number((await state()).bell_flashes);
+    await output("\x07BELL");
+    const flashObserved = await waitForState(
+      (current) => Number(current.bell_flashes) > bellFlashes,
+      "active visual bell flash observation",
     );
-    assert(flashing.focused === "true", "active bell moved terminal focus");
+    assert(
+      flashObserved.focused === "true",
+      "active bell moved terminal focus",
+    );
 
     await display("\x1b]7;file://remote.example/tmp/remote-leaf\x07REMOTE");
     await waitForState(

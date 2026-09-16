@@ -202,14 +202,34 @@ pub(crate) fn inspect_all(contexts: Vec<Option<JobContext>>) -> Vec<JobState> {
         .collect()
 }
 
+/// A sampled foreground-process batch awaiting host authorization to publish.
+#[must_use = "a sampled batch must be published or deliberately discarded"]
+#[derive(Debug)]
+pub struct ForegroundProcessBatch {
+    updates: Vec<(RuntimeClient, SampledForegroundGroup, Option<String>)>,
+}
+
+impl ForegroundProcessBatch {
+    /// Publishes the sampled values through each runtime's ordered control queue.
+    pub fn publish(self) {
+        for (client, sampled_group, name) in self.updates {
+            client.update_foreground_process(sampled_group, name);
+        }
+    }
+}
+
 /// Samples foreground-process display names for a batch of terminal runtimes.
 ///
 /// Every runtime context is requested before waiting. The batch then uses one
-/// process-table read and publishes only through each runtime's ordered control
-/// queue, where stale foreground-group samples are rejected.
-pub fn sample_foreground_processes(clients: &[RuntimeClient]) {
+/// process-table read. The host may discard the returned batch when the
+/// configuration generation changes before sampling completes.
+pub fn sample_foreground_processes(
+    clients: &[RuntimeClient],
+) -> ForegroundProcessBatch {
     if clients.is_empty() {
-        return;
+        return ForegroundProcessBatch {
+            updates: Vec::new(),
+        };
     }
     let requests: Vec<Option<Receiver<JobContext>>> = clients
         .iter()
@@ -224,8 +244,15 @@ pub fn sample_foreground_processes(clients: &[RuntimeClient]) {
         })
         .collect();
     let samples = foreground_samples(&contexts, process_table);
-    for (client, (sampled_group, name)) in clients.iter().zip(samples) {
-        client.update_foreground_process(sampled_group, name);
+    ForegroundProcessBatch {
+        updates: clients
+            .iter()
+            .cloned()
+            .zip(samples)
+            .map(|(client, (sampled_group, name))| {
+                (client, sampled_group, name)
+            })
+            .collect(),
     }
 }
 

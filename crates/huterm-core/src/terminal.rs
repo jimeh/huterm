@@ -1671,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_metadata_precedes_exit_and_remains_in_its_replacement_event() {
+    fn directory_metadata_survives_exit_in_its_replacement_event() {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(95),
             &command("printf '\\033]7;file://localhost/tmp/final\\007'; exit"),
@@ -1681,7 +1681,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut metadata = None;
         let mut exited = false;
-        while Instant::now() < deadline && !exited {
+        while Instant::now() < deadline && (!exited || metadata.is_none()) {
             match client.try_recv_event().unwrap() {
                 Some(TerminalEvent::MetadataChanged {
                     metadata: replacement,

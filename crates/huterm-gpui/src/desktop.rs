@@ -298,6 +298,7 @@ struct TerminalView {
     metadata: TerminalMetadata,
     metadata_revision: u64,
     bell: BellPresentation,
+    bell_flash_count: u64,
     visual_bell: bool,
     exited: bool,
     failed: bool,
@@ -510,6 +511,7 @@ impl TerminalView {
             metadata: TerminalMetadata::default(),
             metadata_revision: 0,
             bell: BellPresentation::default(),
+            bell_flash_count: 0,
             visual_bell: config.terminal.bell.visual,
             exited: false,
             failed: false,
@@ -733,9 +735,14 @@ impl TerminalView {
                     }
                 }
                 Ok(Some(TerminalEvent::Bell(_))) => {
+                    let active = self.visible && window.is_window_active();
+                    if active && self.visual_bell {
+                        self.bell_flash_count =
+                            self.bell_flash_count.wrapping_add(1);
+                    }
                     changed |= self.bell.ring(
                         Instant::now(),
-                        self.visible && window.is_window_active(),
+                        active,
                         self.visual_bell,
                     );
                 }

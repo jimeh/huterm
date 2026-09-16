@@ -62,9 +62,10 @@ fn normalize_directory(
     }
     let host = uri.host_str().filter(|host| !host.is_empty());
     let local = host.is_none_or(|host| {
+        let host = host.strip_suffix('.').unwrap_or(host);
         host.eq_ignore_ascii_case("localhost")
             || server_hostname.is_some_and(|server| {
-                host.strip_suffix('.').unwrap_or(host).eq_ignore_ascii_case(
+                host.eq_ignore_ascii_case(
                     server.strip_suffix('.').unwrap_or(server),
                 )
             })
@@ -226,7 +227,9 @@ mod directory_tests {
 
     #[test]
     fn file_directories_decode_and_classify_exact_local_hosts() {
-        for host in ["", "localhost", "WORKSTATION", "workstation."] {
+        for host in
+            ["", "localhost", "localhost.", "WORKSTATION", "workstation."]
+        {
             let value = format!("file://{host}/tmp/hello%20world/%E2%98%83");
             let directory = directory(&value, Some("workstation")).unwrap();
             assert_eq!(directory.path(), "/tmp/hello world/☃");
