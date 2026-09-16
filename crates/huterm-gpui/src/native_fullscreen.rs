@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, ensure};
-use gpui::{Bounds, Window};
+use gpui::{Bounds, Point, Size, Window};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, NO, Object, Sel, YES};
 use objc::{msg_send, sel, sel_impl};
@@ -195,6 +195,30 @@ impl Adapter {
         }
     }
 
+    /// The areas beside the camera housing while custom fullscreen covers the
+    /// screen, or `None` without a notch or outside that mode.
+    pub fn notch_shelves(&self) -> Option<crate::fullscreen::NotchShelves> {
+        if !self
+            .0
+            .saved
+            .borrow()
+            .as_ref()
+            .is_some_and(|saved| saved.complete)
+        {
+            return None;
+        }
+        // SAFETY: Read-only main-thread getters on the retained NSWindow and its
+        // NSScreen; the window frame equals the screen frame in this mode.
+        unsafe {
+            let style: usize = msg_send![self.0.window.0, styleMask];
+            if style & NATIVE != 0 {
+                return None;
+            }
+            let screen: *mut Object = msg_send![self.0.window.0, screen];
+            screen_notch_shelves(screen)
+        }
+    }
+
     /// GPUI's macOS hover flag only reports activation, including when the
     /// cursor has left this fullscreen window for another display.
     pub fn pointer_on_display(&self) -> bool {
@@ -299,6 +323,69 @@ impl Adapter {
             );
         }
         Ok("posted".to_owned())
+    }
+
+    /// Move the windowed smoke window onto a display with a notch shelf and
+    /// report the frame it left, or `none` when no such display is attached.
+    pub fn probe_notched_display(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "display probe requires the fullscreen smoke"
+        );
+        // SAFETY: The smoke runs this on the foreground executor outside GPUI
+        // borrows, reading AppKit's screen list and moving only its window.
+        unsafe {
+            let window = self.0.window.0;
+            let current: Bounds<f64> = msg_send![window, frame];
+            let screens: *mut Object =
+                msg_send![Class::get("NSScreen").context("NSScreen")?, screens];
+            let count: usize = msg_send![screens, count];
+            for index in 0..count {
+                let screen: *mut Object =
+                    msg_send![screens, objectAtIndex: index];
+                if screen_notch_shelves(screen).is_none() {
+                    continue;
+                }
+                let visible: Bounds<f64> = msg_send![screen, visibleFrame];
+                let frame = Bounds {
+                    origin: Point {
+                        x: visible.origin.x + 40.0,
+                        y: visible.origin.y + 40.0,
+                    },
+                    size: current.size,
+                };
+                let _: () = msg_send![window, setFrame: frame display: YES];
+                return Ok(format!("moved {}", native_rect(current)));
+            }
+            Ok("none".to_owned())
+        }
+    }
+
+    /// Put the windowed smoke window back on a frame recorded by
+    /// `probe_notched_display`, given as `x,y,w,h` in `AppKit` coordinates.
+    pub fn probe_window_frame(&self, spec: &str) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "display probe requires the fullscreen smoke"
+        );
+        let values = spec
+            .split(',')
+            .map(|value| value.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()?;
+        let &[x, y, width, height] = values.as_slice() else {
+            anyhow::bail!("window frame needs x,y,w,h");
+        };
+        let frame = Bounds {
+            origin: Point { x, y },
+            size: Size { width, height },
+        };
+        // SAFETY: Same foreground-executor discipline as the display probe;
+        // only the smoke's own window moves.
+        unsafe {
+            let _: () =
+                msg_send![self.0.window.0, setFrame: frame display: YES];
+        }
+        Ok(native_rect(frame))
     }
 
     /// Create the stale fullscreen frame produced by a display resize, then
@@ -978,6 +1065,30 @@ pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
             bottom: insets.bottom,
             left: insets.left,
         }
+    }
+}
+
+/// The auxiliary areas beside a notch, converted from `AppKit` screen
+/// coordinates to top-left window coordinates for a window covering the
+/// screen. `None` when the screen has no notch or the API is unavailable.
+pub(crate) unsafe fn screen_notch_shelves(
+    screen: *mut Object,
+) -> Option<crate::fullscreen::NotchShelves> {
+    if screen.is_null() {
+        return None;
+    }
+    // SAFETY: Callers supply NSScreen on the main thread. The auxiliary area
+    // getters were added in macOS 12 and return NSZeroRect without a notch.
+    unsafe {
+        let supported: objc::runtime::BOOL =
+            msg_send![screen, respondsToSelector: sel!(auxiliaryTopLeftArea)];
+        if supported != YES {
+            return None;
+        }
+        let frame: Bounds<f64> = msg_send![screen, frame];
+        let left: Bounds<f64> = msg_send![screen, auxiliaryTopLeftArea];
+        let right: Bounds<f64> = msg_send![screen, auxiliaryTopRightArea];
+        crate::fullscreen::NotchShelves::from_screen(frame, left, right)
     }
 }
 

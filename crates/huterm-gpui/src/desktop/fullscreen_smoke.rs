@@ -70,6 +70,18 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         cx.update(probe_adapter)
                             .and_then(std::convert::identity)
                             .and_then(|adapter| adapter.probe_display_refit())
+                    } else if command == "probe-notched-display" {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| adapter.probe_notched_display())
+                    } else if let Some(spec) =
+                        command.strip_prefix("probe-window-frame\t")
+                    {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| {
+                                adapter.probe_window_frame(spec)
+                            })
                     } else if command == "probe-native-exit" {
                         cx.update(probe_adapter)
                             .and_then(std::convert::identity)
@@ -207,6 +219,8 @@ fn read_state(cx: &mut App) -> String {
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
             writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();
+            writeln!(output, "w{index}.bar_bounds={}", rect(view.chrome_layout(window).tabs)).unwrap();
+            writeln!(output, "w{index}.notch_shelves={}", view.notch_shelves.map_or_else(|| "none".to_owned(), |shelves| format!("l={};r={}", rect(shelves.left), rect(shelves.right)))).unwrap();
             let mut consistent = true;
             for tab in &view.tabs {
                 let terminal = tab.view.read(cx);

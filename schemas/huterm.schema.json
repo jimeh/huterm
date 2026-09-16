@@ -3462,6 +3462,14 @@
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
+        "scrollbar_thumb": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "scrollbar_track": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
         "selection": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
@@ -3469,9 +3477,65 @@
         "selection_foreground": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
+        },
+        "tab_accent": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_active_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_bar_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_border": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_hover_background": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "tab_inactive_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
         }
       },
       "type": "object"
+    },
+    "TabCloseButton": {
+      "oneOf": [
+        {
+          "const": "hover",
+          "description": "Only while the pointer is over the tab.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "On the active tab, and on any hovered tab.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "On every tab.",
+          "type": "string"
+        }
+      ]
+    },
+    "TabNotch": {
+      "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
+      "enum": [
+        "off",
+        "left",
+        "right"
+      ],
+      "type": "string"
     },
     "TabPosition": {
       "enum": [
@@ -3481,6 +3545,95 @@
         "right"
       ],
       "type": "string"
+    },
+    "TabStyle": {
+      "enum": [
+        "strip",
+        "pill"
+      ],
+      "type": "string"
+    },
+    "TabWidth": {
+      "enum": [
+        "fill",
+        "fit"
+      ],
+      "type": "string"
+    },
+    "TabsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "always_show": {
+          "default": false,
+          "type": "boolean"
+        },
+        "auto_hide_in_fullscreen": {
+          "default": false,
+          "type": "boolean"
+        },
+        "close_button": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabCloseButton"
+            }
+          ],
+          "default": "active",
+          "description": "When a tab shows its close button; hovering a tab always shows it."
+        },
+        "max_width": {
+          "default": 240.0,
+          "format": "float",
+          "maximum": 600,
+          "minimum": 48,
+          "type": "number"
+        },
+        "min_width": {
+          "default": 96.0,
+          "format": "float",
+          "maximum": 600,
+          "minimum": 48,
+          "type": "number"
+        },
+        "notch": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabNotch"
+            }
+          ],
+          "default": "left",
+          "description": "Put a top bar beside a display notch in non-native fullscreen."
+        },
+        "pill_accent": {
+          "default": false,
+          "description": "Draws the accent bar inside the active pill; ignored by other styles.",
+          "type": "boolean"
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabPosition"
+            }
+          ],
+          "default": "top"
+        },
+        "style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabStyle"
+            }
+          ],
+          "default": "pill"
+        },
+        "width": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabWidth"
+            }
+          ],
+          "default": "fit"
+        }
+      },
+      "type": "object"
     },
     "TerminalIdentity": {
       "description": "Terminal identity advertised to local applications.",
@@ -3594,11 +3747,47 @@
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
         },
+        "scrollbar_thumb": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "scrollbar_track": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
         "selection": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
         },
         "selection_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_accent": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_active_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_bar_background": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_border": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_foreground": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "tab_hover_background": {
+          "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
+          "type": "string"
+        },
+        "tab_inactive_foreground": {
           "pattern": "^#[0-9a-fA-F]{6}$",
           "type": "string"
         }
@@ -3625,14 +3814,6 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
-        "always_show_tab_bar": {
-          "default": false,
-          "type": "boolean"
-        },
-        "auto_hide_tab_bar_in_fullscreen": {
-          "default": false,
-          "type": "boolean"
-        },
         "macos_fullscreen_mode": {
           "allOf": [
             {
@@ -3658,14 +3839,6 @@
           "maximum": 256,
           "minimum": 0,
           "type": "number"
-        },
-        "tab_position": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TabPosition"
-            }
-          ],
-          "default": "top"
         }
       },
       "type": "object"
@@ -3704,6 +3877,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/Config"
+        }
+      ]
+    },
+    "tabs": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/TabsConfig"
         }
       ]
     },

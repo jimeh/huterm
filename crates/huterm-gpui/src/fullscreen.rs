@@ -2,7 +2,59 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::WindowBounds;
+use gpui::{Bounds, Pixels, WindowBounds};
+
+/// The display areas beside a camera housing, in window coordinates of a
+/// window that covers the whole screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NotchShelves {
+    pub(crate) left: Bounds<Pixels>,
+    pub(crate) right: Bounds<Pixels>,
+}
+
+impl NotchShelves {
+    /// Converts `AppKit`'s screen `frame` and auxiliary areas, all in screen
+    /// points with a bottom-left origin, to top-left window coordinates for
+    /// a window that covers the screen. `None` when either area is empty,
+    /// which is what a screen without a notch reports.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "AppKit points fit GPUI logical pixels"
+    )]
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(dead_code, reason = "only AppKit reports auxiliary areas")
+    )]
+    pub(crate) fn from_screen(
+        frame: Bounds<f64>,
+        left: Bounds<f64>,
+        right: Bounds<f64>,
+    ) -> Option<Self> {
+        if left.size.width <= 0.0 || right.size.width <= 0.0 {
+            return None;
+        }
+        let convert = |area: Bounds<f64>| {
+            Bounds::new(
+                gpui::point(
+                    gpui::px((area.origin.x - frame.origin.x) as f32),
+                    gpui::px(
+                        (frame.origin.y + frame.size.height
+                            - area.origin.y
+                            - area.size.height) as f32,
+                    ),
+                ),
+                gpui::size(
+                    gpui::px(area.size.width as f32),
+                    gpui::px(area.size.height as f32),
+                ),
+            )
+        };
+        Some(Self {
+            left: convert(left),
+            right: convert(right),
+        })
+    }
+}
 
 use crate::config::MacosFullscreenMode;
 
@@ -1420,5 +1472,39 @@ mod tests {
         c.close();
         assert!(c.toggle(ToggleIntent::Default).is_err());
         assert!(c.next(Instant::now()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod notch_tests {
+    use gpui::{point, px, size};
+
+    use super::NotchShelves;
+
+    #[test]
+    fn shelves_convert_screen_areas_to_top_left_window_points() {
+        // A 14-inch MacBook Pro screen placed left of the primary display.
+        let frame =
+            gpui::Bounds::new(point(-1800.0, 991.0), size(1800.0, 1169.0));
+        let left = gpui::Bounds::new(point(-1800.0, 2122.0), size(790.0, 38.0));
+        let right = gpui::Bounds::new(point(-790.0, 2122.0), size(790.0, 38.0));
+        let shelves = NotchShelves::from_screen(frame, left, right).unwrap();
+        assert_eq!(
+            shelves.left,
+            gpui::Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(790.0), px(38.0))
+            )
+        );
+        assert_eq!(
+            shelves.right,
+            gpui::Bounds::new(
+                point(px(1010.0), px(0.0)),
+                size(px(790.0), px(38.0))
+            )
+        );
+        // Screens without a notch report empty areas.
+        let empty = gpui::Bounds::new(point(0.0, 0.0), size(0.0, 0.0));
+        assert!(NotchShelves::from_screen(frame, empty, right).is_none());
     }
 }

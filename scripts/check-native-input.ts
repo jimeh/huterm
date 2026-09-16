@@ -54,7 +54,7 @@ key = "ctrl-h alt-r alt-f"
 command = "copy"
 `;
   async function configure(policy: string, withConditional = true) {
-    await writeFile(config, `[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n${bindings}${withConditional ? conditional : ""}`);
+    await writeFile(config, `[terminal]\nclose_on_exit = false\nmacos_option_as_alt = "${policy}"\n[tabs]\nwidth = "fill"\n${bindings}${withConditional ? conditional : ""}`);
   }
   await configure("off");
   const recorder = join(directory, "recorder.ts");

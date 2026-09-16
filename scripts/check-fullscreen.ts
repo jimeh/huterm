@@ -94,7 +94,9 @@ writeFileSync(${JSON.stringify(rawReady)}, "ready");
 setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
 for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
 `);
-  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
+  // Keep a top bar below the notch so the safe-area checks see the bar
+  // itself inset rather than moved beside the camera housing.
+  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[tabs]\nnotch = "off"\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do
@@ -199,7 +201,7 @@ done
   const checkReserved = async () => {
     const baseline = await state();
     for (const position of ["top", "left", "bottom", "right"]) {
-      await writeFile(config, initialConfig.replace("[window]", `[window]\ntab_position = "${position}"`));
+      await writeFile(config, initialConfig.replace("[tabs]\n", `[tabs]\nposition = "${position}"\n`));
       await accepted("0 reload_config");
       await waitFor(async () => (await state()).reloading === "false", "reserved config reload");
       const one = await state();
@@ -228,7 +230,7 @@ done
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
     }
-    await writeFile(config, initialConfig.replace("[window]", "[window]\nalways_show_tab_bar = true"));
+    await writeFile(config, initialConfig.replace("[tabs]\n", "[tabs]\nalways_show = true\n"));
     await accepted("0 reload_config");
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s["w0.tab_presentation"] === "Reserved" && s["w0.retained"] === "true"; }, "always-show reserves a single tab");
     await writeFile(config, initialConfig);
@@ -252,7 +254,7 @@ done
       const [width, height] = current["w0.viewport"]!.split(",").map(Number) as [number, number];
       const topInset = Number(current["w0.insets"]!.split(",")[0]);
       const centerX = width / 2; const centerY = height / 2;
-      const source = configText("native").replace("[window]", `[window]\ntab_position = "${position}"\nauto_hide_tab_bar_in_fullscreen = true`);
+      const source = configText("native").replace("[tabs]\n", `[tabs]\nposition = "${position}"\nauto_hide_in_fullscreen = true\n`);
       await move(centerX, centerY);
       await writeFile(config, source);
       await accepted("0 reload_config");
@@ -447,8 +449,9 @@ done
         if (simple["w0.shadow"] !== "false") throw new Error("non-native fullscreen retained its shadow border");
         if (simple["w0.insets"] !== simple["w0.safe_area"]) throw new Error("non-native fullscreen did not apply the display safe area");
         const topInset = Number(simple["w0.safe_area"]!.split(",")[0]);
-        if (Number(simple["w0.tab_bounds"]!.split(",")[1]) !== topInset) throw new Error("tab bar overlaps the display safe area");
-        if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + 32) throw new Error("terminal did not follow inset tab bar");
+        const [, tabTop, , tabHeight] = simple["w0.tab_bounds"]!.split(",").map(Number);
+        if (tabTop !== topInset) throw new Error("tab bar overlaps the display safe area");
+        if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + tabHeight!) throw new Error("terminal did not follow inset tab bar");
         await accepted("probe-display-refit");
         await waitFor(async () => {
           const current = await state();
@@ -496,6 +499,48 @@ done
         if ((await state())["w0.options"] !== options) throw new Error("closing another window released surviving presentation leases");
       }
       console.log(`FULLSCREEN_SMOKE ${engine} native-restore pty-input-resize${macos ? " non-native display-refit native-timeout retained-tabs key-context rapid-toggles reload multiple-leases" : " EWMH-property geometry unavailable-non-native"}`);
+    }
+    // On a display with a notch, put a top bar on each shelf and check that
+    // the bar sits at the shelf's bottom edge and the terminal starts one
+    // point under the safe area. Hosts without a notched display skip this.
+    if (macos && !frameProbe) {
+      await accepted("0 toggle_fullscreen");
+      await stable("Windowed");
+      const probe = await command("probe-notched-display");
+      if (probe.startsWith("error")) throw new Error(`notched display probe: ${probe}`);
+      if (probe.startsWith("moved ")) {
+        const originalFrame = probe.slice("moved ".length).trim();
+        const parseRect = (text: string) => text.split(",").map(Number) as [number, number, number, number];
+        for (const side of ["left", "right"] as const) {
+          await writeFile(config, configText("native").replace("[tabs]\nnotch = \"off\"\n", `[tabs]\nalways_show = true\nnotch = "${side}"\n`));
+          await accepted("0 reload_config");
+          await waitFor(async () => (await state()).reloading === "false", `${side} shelf config reload`);
+          await accepted("0 toggle_non_native_fullscreen");
+          const shelved = await stable("NonNative");
+          const shelves = shelved["w0.notch_shelves"];
+          if (!shelves || shelves === "none") throw new Error(`${side} shelf: notched display reported no shelves`);
+          const shelf = parseRect(shelves.split(";")[side === "left" ? 0 : 1]!.slice(2));
+          const [tabX, tabY, tabWidth, tabHeight] = parseRect(shelved["w0.bar_bounds"]!);
+          const safeTop = Number(shelved["w0.insets"]!.split(",")[0]);
+          if (shelved["w0.tab_presentation"] !== "Reserved") throw new Error(`${side} shelf bar was ${shelved["w0.tab_presentation"]}`);
+          if (tabX !== shelf[0] || tabWidth !== shelf[2]) throw new Error(`${side} shelf bar spans ${tabX},${tabWidth} instead of the shelf ${shelf[0]},${shelf[2]}`);
+          if (tabY + tabHeight !== shelf[1] + shelf[3]) throw new Error(`${side} shelf bar bottom ${tabY + tabHeight} is not the shelf bottom ${shelf[1] + shelf[3]}`);
+          if (Number(shelved["w0.terminal"]!.split(",")[1]) !== safeTop + 1) throw new Error(`${side} shelf terminal top ${shelved["w0.terminal"]} is not one point under the safe area ${safeTop}`);
+          await accepted("0 toggle_non_native_fullscreen");
+          await stable("Windowed");
+        }
+        await writeFile(config, configText("native"));
+        await accepted("0 reload_config");
+        await waitFor(async () => (await state()).reloading === "false", "shelf config restored");
+        await accepted(`probe-window-frame\t${originalFrame}`);
+        console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf left right`);
+      } else if (probe.trim() === "none") {
+        console.log(`FULLSCREEN_SMOKE ${engine} notch-shelf skipped no-notched-display`);
+      } else {
+        throw new Error(`unexpected notched display probe result: ${probe}`);
+      }
+      await accepted("0 toggle_non_native_fullscreen");
+      await stable("NonNative");
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
     if (macos && !frameProbe) {

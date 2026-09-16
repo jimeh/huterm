@@ -23,6 +23,12 @@ pub(super) fn resolve(
         Some(name) => resolve_named(name, inline, directory, &mut Vec::new())?,
         None => Theme::default(),
     };
+    // A `[theme]` that sets nothing is the built-in huterm-dark, with its
+    // hand-picked chrome; one that sets any key, even to a default value,
+    // derives its unset chrome from its own colors.
+    if *selected == ThemeDefinition::default() {
+        return Ok(Theme::huterm_dark());
+    }
     selected.apply(base)
 }
 
@@ -76,7 +82,7 @@ fn resolve_named(
             Ok(source) => parse_file(&source)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if name == "huterm-dark" {
-                    return Ok(Theme::default());
+                    return Ok(Theme::huterm_dark());
                 }
                 let source = bundled(name).ok_or_else(|| {
                     ConfigError::Theme(format!("unknown theme {name:?}"))
@@ -92,6 +98,11 @@ fn resolve_named(
         }
     };
     validate_definition(&definition)?;
+    // An empty definition is huterm-dark itself, as for the `[theme]` table.
+    if definition == ThemeDefinition::default() {
+        stack.pop();
+        return Ok(Theme::huterm_dark());
+    }
     let base = match &definition.extends {
         Some(parent) => resolve_named(parent, inline, directory, stack)?,
         None => Theme::default(),
@@ -139,5 +150,55 @@ fn bundled(name: &str) -> Option<&'static str> {
             Some(include_str!("../themes/tango-with-monokai.toml"))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_bundled_theme_is_registered_and_sets_every_ui_color() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+        let mut count = 0;
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "toml") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            let source = bundled(name)
+                .unwrap_or_else(|| panic!("{name} is not in bundled()"));
+            let definition = parse_file(source).unwrap();
+            for (key, value) in [
+                ("tab_bar_background", &definition.tab_bar_background),
+                ("tab_active_background", &definition.tab_active_background),
+                ("tab_foreground", &definition.tab_foreground),
+                (
+                    "tab_inactive_foreground",
+                    &definition.tab_inactive_foreground,
+                ),
+                ("tab_border", &definition.tab_border),
+                ("tab_accent", &definition.tab_accent),
+            ] {
+                assert!(value.is_some(), "{name} does not set {key}");
+            }
+            count += 1;
+        }
+        assert_eq!(count, 13);
+        let default = Theme::huterm_dark();
+        assert!(
+            [
+                default.tab_bar_background,
+                default.tab_active_background,
+                default.tab_foreground,
+                default.tab_inactive_foreground,
+                default.tab_border,
+                default.tab_accent,
+            ]
+            .iter()
+            .all(Option::is_some),
+            "huterm-dark must set every UI color"
+        );
     }
 }

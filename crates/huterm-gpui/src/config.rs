@@ -7,8 +7,8 @@ use crate::themes;
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
     LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt,
-    RawConfig, TabPosition, TerminalConfig, Theme, UpdateConfig, WindowConfig,
-    keybinding_diagnostic,
+    RawConfig, TabPosition, TabsConfig, TerminalConfig, Theme, UpdateConfig,
+    WindowConfig, keybinding_diagnostic,
 };
 
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
@@ -45,10 +45,26 @@ padding_x = 4.0
 padding_y = 4.0
 # Split unused column space between left and right instead of only the right.
 padding_balance = false
+
+[tabs]
 # Tab placement: top, bottom, left, or right.
-tab_position = "top"
-always_show_tab_bar = false
-auto_hide_tab_bar_in_fullscreen = false
+position = "top"
+always_show = false
+auto_hide_in_fullscreen = false
+# Tab style: pill or strip.
+style = "pill"
+# Draw an accent bar inside the active pill.
+pill_accent = false
+# Show tab close buttons on: active, hover, or always.
+close_button = "active"
+# In fullscreen on a notched display, put a top bar beside the notch: off,
+# left, or right.
+notch = "left"
+# Horizontal tab width: fit or fill.
+width = "fit"
+# Width bounds in logical points for fit mode.
+min_width = 96.0
+max_width = 240.0
 
 [updates]
 # true enables scheduled checks and false disables them. Omit this setting to
@@ -87,6 +103,7 @@ pub(super) struct Config {
     pub(super) warning: Option<String>,
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
+    pub(super) tabs: TabsConfig,
     pub(super) updates: UpdateConfig,
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) terminal: TerminalConfig,
@@ -110,8 +127,9 @@ impl Default for Config {
         Self {
             warning: None,
             font: FontConfig::default(),
-            theme: Theme::default(),
+            theme: Theme::huterm_dark(),
             window: WindowConfig::default(),
+            tabs: TabsConfig::default(),
             updates: UpdateConfig::default(),
             palette: huterm_config::PaletteConfig::default(),
             terminal: TerminalConfig::default(),
@@ -289,6 +307,10 @@ fn parse_engine(name: &str) -> Result<Option<String>, ConfigError> {
 }
 
 fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
+    let value: toml::Value =
+        toml::from_str(source).map_err(ConfigError::Toml)?;
+    reject_moved_tab_settings(&value)?;
+    // Deserialize from source, not the parsed value, so errors keep spans.
     let raw: RawConfig = toml::from_str(source).map_err(ConfigError::Toml)?;
     let warning = match raw.terminal.engine {
         Some(LegacyTerminalEngine::Alacritty) => {
@@ -311,6 +333,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     Ok(Config {
         warning,
         window: raw.window,
+        tabs: raw.tabs,
         updates: raw.updates,
         palette: raw.palette,
         terminal: TerminalConfig {
@@ -337,6 +360,29 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
     })
 }
 
+fn reject_moved_tab_settings(value: &toml::Value) -> Result<(), ConfigError> {
+    let Some(window) = value.get("window").and_then(toml::Value::as_table)
+    else {
+        return Ok(());
+    };
+    for (legacy, message) in [
+        ("tab_position", "window.tab_position moved to tabs.position"),
+        (
+            "always_show_tab_bar",
+            "window.always_show_tab_bar moved to tabs.always_show",
+        ),
+        (
+            "auto_hide_tab_bar_in_fullscreen",
+            "window.auto_hide_tab_bar_in_fullscreen moved to tabs.auto_hide_in_fullscreen",
+        ),
+    ] {
+        if window.contains_key(legacy) {
+            return Err(ConfigError::Invalid(message));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) enum ConfigFileError {
     Io(std::io::Error),
@@ -354,6 +400,8 @@ impl fmt::Display for ConfigFileError {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use huterm_config::{TabCloseButton, TabNotch, TabStyle, TabWidth};
+
     use super::*;
 
     static TEST_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -370,7 +418,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 137);
+        assert_eq!(fixtures.len(), 163);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -417,24 +465,69 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_visibility_defaults_and_overrides() {
+    fn tab_settings_default_and_override_every_field() {
         let config = parse(DEFAULT_CONFIG).unwrap();
-        assert!(!config.window.always_show_tab_bar);
-        assert!(!config.window.auto_hide_tab_bar_in_fullscreen);
+        assert_eq!(config.tabs, TabsConfig::default());
         let config = parse(
             &DEFAULT_CONFIG
+                .replace("position = \"top\"", "position = \"bottom\"")
+                .replace("always_show = false", "always_show = true")
                 .replace(
-                    "always_show_tab_bar = false",
-                    "always_show_tab_bar = true",
+                    "auto_hide_in_fullscreen = false",
+                    "auto_hide_in_fullscreen = true",
                 )
+                .replace("style = \"pill\"", "style = \"strip\"")
+                .replace("pill_accent = false", "pill_accent = true")
                 .replace(
-                    "auto_hide_tab_bar_in_fullscreen = false",
-                    "auto_hide_tab_bar_in_fullscreen = true",
-                ),
+                    "close_button = \"active\"",
+                    "close_button = \"always\"",
+                )
+                .replace("notch = \"left\"", "notch = \"right\"")
+                .replace("width = \"fit\"", "width = \"fill\"")
+                .replace("min_width = 96.0", "min_width = 120.0")
+                .replace("max_width = 240.0", "max_width = 360.0"),
         )
         .unwrap();
-        assert!(config.window.always_show_tab_bar);
-        assert!(config.window.auto_hide_tab_bar_in_fullscreen);
+        assert_eq!(
+            config.tabs,
+            TabsConfig {
+                position: TabPosition::Bottom,
+                always_show: true,
+                auto_hide_in_fullscreen: true,
+                style: TabStyle::Strip,
+                pill_accent: true,
+                close_button: TabCloseButton::Always,
+                notch: TabNotch::Right,
+                width: TabWidth::Fill,
+                min_width: 120.0,
+                max_width: 360.0,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_window_tab_settings_name_their_replacements() {
+        for (legacy, error) in [
+            (
+                "tab_position = 'top'",
+                "window.tab_position moved to tabs.position",
+            ),
+            (
+                "always_show_tab_bar = true",
+                "window.always_show_tab_bar moved to tabs.always_show",
+            ),
+            (
+                "auto_hide_tab_bar_in_fullscreen = true",
+                "window.auto_hide_tab_bar_in_fullscreen moved to tabs.auto_hide_in_fullscreen",
+            ),
+        ] {
+            assert_eq!(
+                parse(&format!("[window]\n{legacy}"))
+                    .unwrap_err()
+                    .to_string(),
+                error
+            );
+        }
     }
 
     #[test]
@@ -728,17 +821,17 @@ mod tests {
             ("right", TabPosition::Right),
         ] {
             let config = parse(&DEFAULT_CONFIG.replace(
-                "tab_position = \"top\"",
-                &format!("tab_position = \"{name}\""),
+                "position = \"top\"",
+                &format!("position = \"{name}\""),
             ))
             .unwrap();
-            assert_eq!(config.window.tab_position, expected);
+            assert_eq!(config.tabs.position, expected);
         }
         assert!(
-            parse(&DEFAULT_CONFIG.replace(
-                "tab_position = \"top\"",
-                "tab_position = \"middle\""
-            ))
+            parse(
+                &DEFAULT_CONFIG
+                    .replace("position = \"top\"", "position = \"middle\"")
+            )
             .is_err()
         );
     }
@@ -776,7 +869,33 @@ background = "#040506"
         assert_eq!(parse("").unwrap(), Config::default());
         assert_eq!(
             parse("[theme]\nname = 'huterm-dark'").unwrap().theme,
-            Theme::default()
+            Theme::huterm_dark()
+        );
+        // No `[theme]`, or an empty one, is huterm-dark with its hand-picked
+        // chrome, so a fresh install matches the named theme.
+        assert_eq!(parse("[theme]").unwrap().theme, Theme::huterm_dark());
+        // Setting a key, even to its default value, is a real definition
+        // that derives its chrome rather than taking the hand-picked set.
+        let same = parse("[theme]\nbackground = '#1d1f21'").unwrap().theme;
+        assert_eq!(same.background, Theme::default().background);
+        assert_eq!(same.tab_bar_background, None);
+        // An empty named definition follows the same rule.
+        assert_eq!(
+            parse("[theme]\nname = 'bare'\n[themes.bare]")
+                .unwrap()
+                .theme,
+            Theme::huterm_dark()
+        );
+        // An unnamed theme derives its chrome from its own colors rather
+        // than inheriting huterm-dark's hand-picked dark set.
+        let light =
+            parse("[theme]\nbackground = '#ffffff'\nforeground = '#000000'")
+                .unwrap()
+                .theme;
+        assert_eq!(light.tab_bar_background, None);
+        assert_ne!(
+            light.ui().tab_bar_background,
+            Theme::huterm_dark().ui().tab_bar_background
         );
         for name in [
             "tokyo-night",
@@ -842,7 +961,7 @@ background = "#040506"
         assert_eq!(theme.ansi[..8], ansi);
         assert_eq!(theme.ansi[8..], ansi);
         let default = parse("[theme]\nname = 'huterm-dark'").unwrap().theme;
-        assert_eq!(default, Theme::default());
+        assert_eq!(default, Theme::huterm_dark());
         assert_ne!(theme, default);
     }
 
@@ -918,6 +1037,7 @@ background = "#040506"
         let parsed = parse(&default_document()).expect("default should parse");
         assert_eq!(parsed.font.family, Config::default().font.family);
         assert_eq!(parsed.window, WindowConfig::default());
+        assert_eq!(parsed.tabs, TabsConfig::default());
     }
 
     #[test]
@@ -958,9 +1078,6 @@ background = "#040506"
                 padding_x: 0.0,
                 padding_y: 0.0,
                 padding_balance: false,
-                tab_position: TabPosition::Top,
-                always_show_tab_bar: false,
-                auto_hide_tab_bar_in_fullscreen: false,
                 macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             }
         );

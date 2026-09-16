@@ -53,13 +53,16 @@ and independent terminal processes. Tabs can appear at the top, bottom, left,
 or right. Hidden tabs keep processing output without preparing viewport
 snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
-even when the pointer leaves the window; releasing commits the clamped
-insertion position. Escape cancels. Drag near a bar edge to scroll toward
-hidden tabs. Horizontal tabs share the window width, shrinking to 120 logical
-pixels before scrolling. Vertical tabs keep a fixed height in a resizable
-sidebar. Scroll the bar with a trackpad or mouse wheel; floating arrows show
-where more tabs remain. The new-tab button stays visible and follows the last
-tab in vertical mode. Moving tabs between windows and tearing tabs out are not
+even when the pointer leaves the window; releasing commits the clamped insertion
+position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
+Horizontal tabs size to their titles by default; with `width = "fill"` they
+share the window width, shrinking to 120 logical pixels before scrolling.
+Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
+bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
+more tabs remain plus a slim, draggable position indicator along their bottom
+edge; vertical bars show an overlay scrollbar that widens on hover and can be
+dragged. The new-tab button stays visible and follows the last tab in
+vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
 
 Closing a tab stops its terminal. Windows attach to sessions. Closing a window
@@ -213,16 +216,39 @@ Terminal padding defaults to 4 logical points on each side. Add or adjust the
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
-tab_position = "top" # top, bottom, left, or right
-always_show_tab_bar = false
-auto_hide_tab_bar_in_fullscreen = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
+
+[tabs]
+position = "top" # top, bottom, left, or right
+always_show = false
+auto_hide_in_fullscreen = false
+style = "pill" # pill or strip
+pill_accent = false # accent bar inside the active pill
+close_button = "active" # active, hover, or always
+notch = "left" # fullscreen top bar beside a display notch: off, left, or right
+width = "fit" # fit or fill
+min_width = 96.0 # logical points; fit only
+max_width = 240.0 # logical points; fit only
 ```
 
 Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+`style` selects Pill (the default) or Strip tabs for every placement. Left and
+right Strip tabs put the accent line on the window edge; left and right Pill
+tabs are rounded rows inset in the column. `pill_accent = true` draws an
+accent bar inside the active pill. `close_button` shows close buttons on
+hovered tabs only,
+on the active tab as well (the default), or on every tab. `notch = "left"` (the
+default) or `"right"` moves a top bar beside the camera housing in non-native
+fullscreen on a notched display, keeping its normal height at the bottom of
+that area and giving the bar's height back to the terminal; `"off"` keeps the
+bar below the notch, and elsewhere the setting is ignored. Themes
+color the tab bar through their tab chrome keys. `width = "fit"` (the default)
+sizes top and bottom tabs to their titles between `min_width` and `max_width`
+logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores
@@ -388,14 +414,21 @@ Names use letters, digits, hyphens, and underscores, without a file extension.
 Lookup prefers inline definitions, then adjacent theme files, then built-ins.
 The first match wins; same-name definitions do not merge. Use a distinct custom
 name when extending a built-in. Without `extends`, a definition starts from
-Huterm Dark. Overrides in the config's `[theme]` table apply last.
+Huterm Dark's palette, and any tab chrome key it leaves unset derives from
+its resulting colors rather than inheriting Huterm Dark's hand-picked set. An
+empty `[theme]` is Huterm Dark itself. Overrides in the config's `[theme]`
+table apply last.
 
 All color keys are flat: `foreground`, `background`, `cursor`, `selection`
 (selection background), optional `selection_foreground`, and `ansi_black`,
 `ansi_red`, `ansi_green`, `ansi_yellow`, `ansi_blue`, `ansi_magenta`,
-`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys.
-Colors use `#rrggbb`. The legacy 16-color `ansi = [...]` array still works;
-individual ANSI keys override its entries. Unspecified fields inherit.
+`ansi_cyan`, `ansi_white`, with corresponding `ansi_bright_*` keys. Window
+chrome keys are `tab_bar_background`, `tab_active_background`,
+`tab_foreground`, `tab_inactive_foreground`, `tab_border`, and `tab_accent`,
+plus the overlays `tab_hover_background`, `scrollbar_thumb`, and
+`scrollbar_track`. Colors use `#rrggbb`; the three overlay keys also accept
+`#rrggbbaa`. The legacy 16-color `ansi = [...]` array still works; individual
+ANSI keys override its entries. Unspecified fields inherit.
 Without `selection_foreground`, selected text retains its original colors.
 Labels and scroll controls derive their colors from the theme.
 

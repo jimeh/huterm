@@ -247,12 +247,7 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
     definitions["UpdateConfig"]["properties"]["check_interval_hours"]["description"] = json!(
         "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours."
     );
-    definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
-        json!(3600);
-    for name in ["padding_x", "padding_y"] {
-        definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
-        definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);
-    }
+    constrain_ranges(definitions);
     definitions["RawTerminal"]["properties"]["link_modifiers"]
         .as_object_mut()
         .map(|field| field.remove("default"));
@@ -287,6 +282,20 @@ fn generate<T: JsonSchema>() -> Result<Value, serde_json::Error> {
             .into_root_schema_for::<T>(),
     )
 }
+fn constrain_ranges(definitions: &mut Value) {
+    definitions["PaletteConfig"]["properties"]["retain_query_seconds"]["maximum"] =
+        json!(3600);
+    for name in ["padding_x", "padding_y"] {
+        definitions["WindowConfig"]["properties"][name]["minimum"] = json!(0);
+        definitions["WindowConfig"]["properties"][name]["maximum"] = json!(256);
+    }
+    // Runtime bounds are 48 through 600 with min_width <= max_width, so each
+    // key carries both ends for editor validation.
+    for name in ["min_width", "max_width"] {
+        definitions["TabsConfig"]["properties"][name]["minimum"] = json!(48);
+        definitions["TabsConfig"]["properties"][name]["maximum"] = json!(600);
+    }
+}
 fn constrain_theme(schema: &mut Value) {
     if let Some(fields) = schema["properties"].as_object_mut() {
         fields.remove("name");
@@ -297,6 +306,12 @@ fn constrain_theme(schema: &mut Value) {
                 value["minItems"] = json!(16);
                 value["maxItems"] = json!(16);
                 value["items"]["pattern"] = json!("^#[0-9a-fA-F]{6}$");
+            } else if matches!(
+                name.as_str(),
+                "tab_hover_background" | "scrollbar_thumb" | "scrollbar_track"
+            ) {
+                // Overlays may carry alpha.
+                value["pattern"] = json!("^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$");
             } else {
                 value["pattern"] = json!("^#[0-9a-fA-F]{6}$");
             }

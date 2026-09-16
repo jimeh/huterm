@@ -41,5 +41,34 @@ colors, with its blue editor cursor. Its translucent terminal selection color
 `~/.dotfiles/config/ghostty/themes/tango-with-monokai`. Its 16 ANSI colors
 match the iTerm version; cursor and selection colors follow Ghostty.
 
+## Window chrome colors
+
+Themes may set six flat keys for Huterm's window chrome: `tab_bar_background`,
+`tab_active_background`, `tab_foreground`, `tab_inactive_foreground`,
+`tab_border`, and `tab_accent`. Like palette colors, they inherit through
+`extends`; a definition without `extends` that sets any key derives the chrome
+it leaves unset from its own colors instead of inheriting Huterm Dark's, while
+an entirely empty definition is Huterm Dark itself. Every bundled theme
+and Huterm Dark set all six, chosen by hand from or to match each palette;
+they are Huterm additions, not upstream colors.
+
+A theme that omits a key derives it from the resolved palette. Dark themes get a
+bar darker than the background, and near-black or light themes get a bar that
+stays distinguishable from the terminal. The active tab background lightens the
+terminal background, inactive text and borders mix the foreground with the bar,
+and the accent is ANSI blue. An explicit bar color also drives the derived
+inactive text and border colors.
+
+Overriding only `background` or `foreground` on top of a bundled theme keeps
+that theme's chrome colors. Set the chrome keys too when they should follow.
+
+Three more optional keys color overlays and accept `#rrggbb` or `#rrggbbaa`:
+`tab_hover_background` for hovered tabs and chrome controls, and
+`scrollbar_thumb` and `scrollbar_track` for every overlay scrollbar, in the
+terminal, the command palette list, and the tab bars. Unset keys derive from
+the resolved `foreground` at fixed alphas: about 4 percent for hover, 73
+percent for the thumb, and 8 percent for the track. Bundled themes leave them
+derived.
+
 The theme TOML files are modified conversions, not original upstream files.
 Keep the upstream license notices with binary distributions.
