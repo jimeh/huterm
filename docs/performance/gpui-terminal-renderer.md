@@ -144,7 +144,7 @@ earlier report.
 | `ascii` | Full rebuild and paint of dense styled text |
 | `blocks` | The `bench:renderer` half-block grid: built-in rectangles only |
 | `boxes` | A bordered TUI whose rounded corners, diagonals, and powerline separators paint as paths |
-| `churn` | A full redraw of about 480 distinct characters after three single-row updates; cache misses show what those updates evicted |
+| `churn` | A full redraw of about 480 distinct characters after two single-row updates; cache misses show what those updates evicted |
 | `scroll` | Output scrolling by one row: retained rows shift and one is rebuilt |
 | `selection` | `ascii` painted under a full-screen selection with a selection foreground |
 
@@ -163,16 +163,27 @@ untracked files but preserves that directory in the worktree's cache volume.
 Container timings come from a virtual machine on macOS, so compare them only
 with reports from the same container and host.
 
-Each frame prepares one step, and once the steps are done each frame takes one
-paint sample. Preparing every step inside one frame hid shaping cost: GPUI keeps
-line layouts for its current and previous frame, so a layout the renderer had
-evicted came back from that cache instead of the platform shaper. Repeated paints
-inside one frame grow that frame's scene and inflated later samples threefold.
-Linux therefore needs `twm`, because Xvfb without a window manager never reports
-the window visible and GPUI stops after one frame. Reports from before the
-one-step-per-frame change are not comparable with later ones: preparation after
-a frame's rendering work starts with colder CPU caches and reads about 50%
-higher for the same code.
+Each frame prepares one step and paints it, and a measured step records both
+timings. Preparing every step inside one frame hid shaping cost: GPUI keeps line
+layouts for its current and previous frame, so a layout the renderer had evicted
+came back from that cache instead of the platform shaper. Repeated paints inside
+one frame grow that frame's scene and inflated later samples threefold. Linux
+therefore needs `twm`, because Xvfb without a window manager never reports the
+window visible and GPUI stops after one frame.
+
+Sampling finishes within about 1.5 seconds of process start, and `elapsed_ms` on
+each process's `phase=window` line reports when it ended. On macOS arm64 the same
+paint cost 2.2 to 2.7 times more once the process was about two seconds old: an
+`ascii` paint measured 0.5 ms early and 1.1 to 1.4 ms later, presumably because
+the scheduler stops favoring a lightly loaded process. The early state repeats
+within about 2%, so it is the one to compare, but a terminal in ordinary use
+spends its time in the slower state. Raising
+`HUTERM_RENDERER_BENCH_ITERATIONS` moves samples into that state.
+
+Reports are comparable only when produced by the same version of the benchmark.
+Moving preparation to one step per frame raised prepare timings about 50% for
+the same code, because each step now starts with colder CPU caches, and
+recording paint alongside each step shifted paint timings by up to 10%.
 Timings include scheduler preemption, so compare medians and minimums, and treat
 paint differences under about 10% as noise. Two consecutive five-run baselines on
 one Linux host differed by about 3% or less in every median; two-run reports in

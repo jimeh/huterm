@@ -2,8 +2,14 @@
 //!
 //! One process measures one scenario. Every sample is a whole `prepare` or
 //! `paint` call against synthetic snapshots, so results do not depend on PTY
-//! throughput or snapshot scheduling. Each frame prepares one step, and once the
-//! steps are done each frame takes one paint sample.
+//! throughput or snapshot scheduling. Each frame prepares one step and paints
+//! it, and a measured step records both timings.
+//!
+//! Sampling must finish early in the process. On macOS the same paint cost 2.2
+//! to 2.7 times more once the process was about two seconds old, presumably
+//! because the scheduler stops favoring a lightly loaded process. A scenario
+//! that sampled paint only after a long prepare phase straddled that change.
+//! `elapsed_ms` on the window line reports when sampling ended.
 //!
 //! Preparing every step inside one frame hid shaping cost: GPUI keeps line
 //! layouts for the current and previous frame, so a layout the renderer had
@@ -78,7 +84,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             },
             |window, cx| {
                 window.set_window_title("Huterm renderer benchmark");
-                let fixture = Fixture::new(scenario, iterations, window, cx);
+                let fixture = Fixture::new(scenario, window, cx);
                 cx.new(|_| fixture)
             },
         )
@@ -122,7 +128,8 @@ impl Scenario {
             "boxes" => Self::alternating("boxes", cycles, box_cell),
             "selection" => Self::selection(cycles),
             "scroll" => Self::scroll(cycles),
-            "churn" => Self::churn(cycles),
+            // Three frames per cycle: fewer cycles keep sampling early.
+            "churn" => Self::churn(WARMUP_CYCLES + iterations * 2 / 3),
             _ => return None,
         })
     }
@@ -191,7 +198,7 @@ impl Scenario {
         }
     }
 
-    /// Single-row updates followed by a full redraw of many distinct
+    /// Two single-row updates followed by a full redraw of many distinct
     /// characters. Only the redraw is recorded: it shows what the earlier
     /// small updates evicted from the glyph layout cache.
     fn churn(cycles: usize) -> Self {
@@ -202,10 +209,13 @@ impl Scenario {
         for cycle in 0..cycles {
             let rows = &full[cycle % 2];
             steps.push((snapshot(rows.clone(), 0), cycle >= WARMUP_CYCLES));
-            for update in 0..3 {
+            // Two updates in their own frames are enough for a cache that
+            // rotates on every prepare, and for GPUI's two-frame layout cache,
+            // to drop the redraw's text.
+            for update in 0..2 {
                 let mut rows = rows.clone();
                 rows[usize::from(ROWS) - 1] = terminal_row(|column| {
-                    prompt_cell(column, cycle * 3 + update)
+                    prompt_cell(column, cycle * 2 + update)
                 });
                 steps.push((snapshot(rows, 0), false));
             }
@@ -383,8 +393,10 @@ fn family() -> &'static str {
 struct State {
     renderer: TerminalRenderer,
     scenario: Scenario,
-    iterations: usize,
+    started: Instant,
     next_step: usize,
+    /// Whether the step prepared in this frame records its timings.
+    frame_measured: bool,
     prepares: Prepares,
     paints: Vec<Duration>,
     finished: bool,
@@ -395,12 +407,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(
-        scenario: Scenario,
-        iterations: usize,
-        window: &Window,
-        cx: &App,
-    ) -> Self {
+    fn new(scenario: Scenario, window: &Window, cx: &App) -> Self {
         let family = family();
         let metrics =
             GridMetrics::resolve(cx.text_system(), family, px(FONT_SIZE))
@@ -416,8 +423,9 @@ impl Fixture {
             state: Rc::new(RefCell::new(State {
                 renderer,
                 scenario,
-                iterations,
+                started: Instant::now(),
                 next_step: 0,
+                frame_measured: false,
                 prepares: Prepares::default(),
                 paints: Vec::new(),
                 finished: false,
@@ -473,23 +481,23 @@ impl Render for Fixture {
                         let started = Instant::now();
                         state.renderer.paint(bounds, window);
                         let elapsed = started.elapsed();
-                        // Frames that prepared a step painted that step.
-                        if state.finished
-                            || state.next_step <= state.scenario.steps.len()
-                        {
+                        if state.finished {
                             return;
                         }
-                        state.paints.push(elapsed);
-                        if state.paints.len()
-                            < WARMUP_CYCLES + state.iterations
-                        {
+                        if state.frame_measured {
+                            state.paints.push(elapsed);
+                        }
+                        // The frame after the last step prepared the paint
+                        // snapshot, whose primitives the report counts.
+                        if state.next_step <= state.scenario.steps.len() {
                             return;
                         }
                         state.finished = true;
                         report_paint(&state);
                         println!(
-                            "RENDERER_BENCH scenario={} phase=window grid={COLUMNS}x{ROWS} grid_px={}x{} viewport_px={}x{} scale={} fits={fits}",
+                            "RENDERER_BENCH scenario={} phase=window elapsed_ms={} grid={COLUMNS}x{ROWS} grid_px={}x{} viewport_px={}x{} scale={} fits={fits}",
                             state.scenario.name,
+                            state.started.elapsed().as_millis(),
                             f32::from(grid.width),
                             f32::from(grid.height),
                             f32::from(viewport.width),
@@ -530,8 +538,8 @@ struct Prepares {
 }
 
 /// Prepares this frame's step. Returns false once every step has run, after
-/// reporting them; `next_step` then moves past the end, which starts paint
-/// sampling in the same frame, against the prepared paint snapshot.
+/// reporting them; `next_step` then moves past the end, and the caller
+/// prepares the paint snapshot for the final frame.
 fn prepare_next_step(state: &mut State, window: &mut Window) -> bool {
     let Some((snapshot, measured)) =
         state.scenario.steps.get(state.next_step).cloned()
@@ -540,9 +548,11 @@ fn prepare_next_step(state: &mut State, window: &mut Window) -> bool {
             report_prepare(state);
         }
         state.next_step = state.scenario.steps.len() + 1;
+        state.frame_measured = false;
         return false;
     };
     state.next_step += 1;
+    state.frame_measured = measured;
     let started = Instant::now();
     state.renderer.prepare(Some(&snapshot), window);
     let elapsed = started.elapsed();
@@ -570,7 +580,7 @@ fn report_prepare(state: &mut State) {
 }
 
 fn report_paint(state: &State) {
-    let samples = state.paints[WARMUP_CYCLES..].to_vec();
+    let samples = state.paints.clone();
     if std::env::var_os("HUTERM_RENDERER_BENCH_SAMPLES").is_some() {
         // Unsorted, so a trend across frames stays visible.
         let samples: Vec<_> = samples
