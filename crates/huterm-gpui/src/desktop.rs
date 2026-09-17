@@ -536,6 +536,9 @@ impl TerminalView {
                             eprintln!("Link lookup unavailable or exceeded its bounded scan; terminal remains usable");
                         }
                         view.links.publish(link_intent, reply.link);
+                        view.renderer
+                            .borrow_mut()
+                            .record_output_applied(reply.invalidated_at);
                         view.apply_snapshot(reply.snapshot);
                     }
                     Err(error) => {

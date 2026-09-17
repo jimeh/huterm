@@ -115,6 +115,68 @@ animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
 `HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.
 
+With `HUTERM_RENDER_STATS=1`, each interval that applied a snapshot also prints
+a `huterm-render output` line. `applied_us` is the delay from a terminal's
+earliest unseen invalidation to its snapshot reaching the view, which includes
+the wait for the window refresh pump. `painted_us` extends that delay to the end
+of the paint that shows the snapshot. Stats mode requests continuous animation
+frames, so `painted_us` can be lower than in a normal session.
+
+### Renderer scenarios
+
+`bench:renderer` depends on PTY throughput and snapshot scheduling, and its
+workload paints only built-in block rectangles. To measure the renderer alone,
+run:
+
+```sh
+mise run bench:renderer-scenarios -- --output baseline.json
+mise run bench:renderer-scenarios -- --compare baseline.json
+```
+
+Each scenario runs the production `prepare` and `paint` against synthetic 160 by
+50 snapshots in a release build, in its own process, five times by default. The
+report gives the median of the per-process medians, the overall minimum, and
+counts that do not depend on timing. `--compare` adds the change against an
+earlier report.
+
+| Scenario | Measures |
+| --- | --- |
+| `ascii` | Full rebuild and paint of dense styled text |
+| `blocks` | The `bench:renderer` half-block grid: built-in rectangles only |
+| `boxes` | A bordered TUI whose rounded corners, diagonals, and powerline separators paint as paths |
+| `churn` | A full redraw of about 480 distinct characters after three single-row updates; cache misses show what those updates evicted |
+| `scroll` | Output scrolling by one row: retained rows shift and one is rebuilt |
+| `selection` | `ascii` painted under a full-screen selection with a selection foreground |
+
+The same task runs in the Linux test container, which suits macOS hosts and
+keeps host load and fonts out of the comparison:
+
+```sh
+mise run linux:exec -- mise run bench:renderer-scenarios -- \
+  --output target/bench/baseline.json
+mise run linux:exec -- mise run bench:renderer-scenarios -- \
+  --compare target/bench/baseline.json
+```
+
+Keep container reports under `target`: the workspace sync deletes other
+untracked files but preserves that directory in the worktree's cache volume.
+Container timings come from a virtual machine on macOS, so compare them only
+with reports from the same container and host.
+
+Preparation samples all come from the first frame. Paint takes one sample per
+frame: repeated paints inside one frame grow that frame's scene and inflated
+later samples threefold. Linux therefore needs `twm`, because Xvfb without a
+window manager never reports the window visible and GPUI stops after one frame.
+Timings include scheduler preemption, so compare medians and minimums, and treat
+paint differences under about 10% as noise. Two consecutive five-run baselines on
+one Linux host differed by about 3% or less in every median; two-run reports in
+the container differed by up to 6%.
+
+Glyph layout cache misses cost far more on some hosts than others, because the
+cost of shaping one cell depends on the installed fonts. The same 426 misses in
+`churn` took 26 ms on a desktop Linux host and 0.7 ms in the container, which
+installs only DejaVu.
+
 `mise run bench:scroll` accounts for this limitation by gating snapshot elapsed
 time, wakeup delay, returned offsets, and queue bounds from completion-time
 records. It also checks renderer elapsed time, row reuse, and input-to-paint

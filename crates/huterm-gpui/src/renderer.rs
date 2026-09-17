@@ -1,3 +1,4 @@
+pub(crate) mod bench;
 mod builtin;
 pub(crate) mod smoke;
 
@@ -102,6 +103,14 @@ pub(super) struct TerminalRenderer {
     selection: Option<BufferRange>,
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
+    last_prepare: PrepareOutcome,
+}
+
+/// Work done by the most recent `prepare` call.
+#[derive(Clone, Copy, Default)]
+struct PrepareOutcome {
+    rebuilt_rows: usize,
+    cache: CacheActivity,
 }
 
 impl TerminalRenderer {
@@ -150,6 +159,7 @@ impl TerminalRenderer {
             selection: None,
             stats,
             scroll_benchmark,
+            last_prepare: PrepareOutcome::default(),
         }
     }
 
@@ -182,6 +192,20 @@ impl TerminalRenderer {
                 returned_offset,
                 wakeup_delay,
             );
+        }
+    }
+
+    /// Records how long the oldest content of an applied snapshot waited, and
+    /// keeps its instant so the next paint reports the delay to pixels.
+    pub(super) fn record_output_applied(
+        &mut self,
+        invalidated_at: Option<Instant>,
+    ) {
+        if let (Some(stats), Some(invalidated_at)) =
+            (&mut self.stats, invalidated_at)
+        {
+            stats.output_applied.push(invalidated_at.elapsed());
+            stats.pending_output.get_or_insert(invalidated_at);
         }
     }
 
@@ -364,6 +388,10 @@ impl TerminalRenderer {
         rebuilt_rows: usize,
         cache: CacheActivity,
     ) {
+        self.last_prepare = PrepareOutcome {
+            rebuilt_rows,
+            cache,
+        };
         let duration = started.map(|started| started.elapsed());
         if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
             stats.record_prepare(duration, rebuilt_rows, cache);
@@ -1030,6 +1058,11 @@ struct RendererStats {
     rebuilt_rows: usize,
     cache_hits: usize,
     cache_misses: usize,
+    /// Delay from a terminal's earliest unseen invalidation to its snapshot
+    /// reaching the view, then to the end of the paint that shows it.
+    output_applied: Vec<Duration>,
+    output_painted: Vec<Duration>,
+    pending_output: Option<Instant>,
 }
 
 impl RendererStats {
@@ -1045,6 +1078,9 @@ impl RendererStats {
             rebuilt_rows: 0,
             cache_hits: 0,
             cache_misses: 0,
+            output_applied: Vec::new(),
+            output_painted: Vec::new(),
+            pending_output: None,
         }
     }
 
@@ -1078,6 +1114,9 @@ impl RendererStats {
         self.paint_calls += 1;
         self.paint_total += duration;
         self.paint_max = self.paint_max.max(duration);
+        if let Some(invalidated_at) = self.pending_output.take() {
+            self.output_painted.push(invalidated_at.elapsed());
+        }
         if self.interval_started.elapsed() < Duration::from_secs(1) {
             return;
         }
@@ -1095,8 +1134,29 @@ impl RendererStats {
             self.cache_hits,
             self.cache_misses,
         );
+        if !self.output_applied.is_empty() {
+            let (applied_median, applied_max) =
+                median_and_max_micros(&mut self.output_applied);
+            let (painted_median, painted_max) =
+                median_and_max_micros(&mut self.output_painted);
+            eprintln!(
+                "huterm-render output snapshots={} applied_us_median={applied_median} applied_us_max={applied_max} paints={} painted_us_median={painted_median} painted_us_max={painted_max}",
+                self.output_applied.len(),
+                self.output_painted.len(),
+            );
+        }
         *self = Self::new();
     }
+}
+
+fn median_and_max_micros(samples: &mut [Duration]) -> (u128, u128) {
+    samples.sort_unstable();
+    let micros =
+        |sample: Option<&Duration>| sample.map_or(0, Duration::as_micros);
+    (
+        micros(samples.get(samples.len() / 2)),
+        micros(samples.last()),
+    )
 }
 
 fn average_micros(total: Duration, count: u64) -> u128 {

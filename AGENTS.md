@@ -53,6 +53,10 @@ Run `mise tasks` to discover the full task set.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
+- `mise run bench:renderer-scenarios` times production `prepare` and `paint`
+  against synthetic snapshots, one scenario per process. Pass
+  `-- --output <file>` to record a report and `-- --compare <file>` to diff
+  against one. Paint takes one sample per frame, so Linux needs `twm`.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint

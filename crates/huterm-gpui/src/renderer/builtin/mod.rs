@@ -170,6 +170,11 @@ impl Geometry {
         canvas.geometry
     }
 
+    /// Rectangle and path primitives emitted by every paint of this glyph.
+    pub(super) fn primitive_counts(&self) -> (usize, usize) {
+        (self.rectangles.len(), self.strokes.len() + self.fills.len())
+    }
+
     pub(super) fn paint(
         &self,
         origin: Point<Pixels>,

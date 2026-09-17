@@ -320,6 +320,9 @@ pub struct SnapshotReply {
     pub snapshot_duration: Duration,
     /// Monotonic instant when snapshot construction completed.
     pub completed_at: Instant,
+    /// Monotonic instant of the earliest invalidation this snapshot is the
+    /// first to include. `None` when nothing changed since the last snapshot.
+    pub invalidated_at: Option<Instant>,
 }
 
 impl SnapshotRequest {
@@ -724,9 +727,11 @@ fn run_terminal(
     drop(message_sender);
     let _ = startup.send(Ok(()));
     let _ = events.send(TerminalEvent::Ready(terminal_id));
+    let mut invalidated_at = None;
     publish_invalidation(
         &events,
         &invalidation_pending,
+        &mut invalidated_at,
         terminal_id,
         engine.generation(),
     );
@@ -788,6 +793,7 @@ fn run_terminal(
                             requested_viewport,
                             snapshot_duration,
                             completed_at: Instant::now(),
+                            invalidated_at: invalidated_at.take(),
                         })
                     })();
                     complete_snapshot_request(
@@ -936,6 +942,7 @@ fn run_terminal(
                 publish_invalidation(
                     &events,
                     &invalidation_pending,
+                    &mut invalidated_at,
                     terminal_id,
                     engine.generation(),
                 );
@@ -1007,6 +1014,7 @@ fn run_terminal(
                 publish_invalidation(
                     &events,
                     &invalidation_pending,
+                    &mut invalidated_at,
                     terminal_id,
                     engine.generation(),
                 );
@@ -1016,6 +1024,7 @@ fn run_terminal(
                     Ok(true) => publish_invalidation(
                         &events,
                         &invalidation_pending,
+                        &mut invalidated_at,
                         terminal_id,
                         engine.generation(),
                     ),
@@ -1323,9 +1332,13 @@ fn input_bytes(input: &TerminalInput) -> usize {
 fn publish_invalidation(
     events: &mpsc::Sender<TerminalEvent>,
     pending: &AtomicBool,
+    invalidated_at: &mut Option<Instant>,
     terminal_id: TerminalId,
     generation: u64,
 ) {
+    // Coalesced invalidations keep the earliest instant, so the next snapshot
+    // reports how long its oldest content waited.
+    invalidated_at.get_or_insert_with(Instant::now);
     if pending
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
