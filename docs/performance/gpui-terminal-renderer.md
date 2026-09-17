@@ -163,10 +163,16 @@ untracked files but preserves that directory in the worktree's cache volume.
 Container timings come from a virtual machine on macOS, so compare them only
 with reports from the same container and host.
 
-Preparation samples all come from the first frame. Paint takes one sample per
-frame: repeated paints inside one frame grow that frame's scene and inflated
-later samples threefold. Linux therefore needs `twm`, because Xvfb without a
-window manager never reports the window visible and GPUI stops after one frame.
+Each frame prepares one step, and once the steps are done each frame takes one
+paint sample. Preparing every step inside one frame hid shaping cost: GPUI keeps
+line layouts for its current and previous frame, so a layout the renderer had
+evicted came back from that cache instead of the platform shaper. Repeated paints
+inside one frame grow that frame's scene and inflated later samples threefold.
+Linux therefore needs `twm`, because Xvfb without a window manager never reports
+the window visible and GPUI stops after one frame. Reports from before the
+one-step-per-frame change are not comparable with later ones: preparation after
+a frame's rendering work starts with colder CPU caches and reads about 50%
+higher for the same code.
 Timings include scheduler preemption, so compare medians and minimums, and treat
 paint differences under about 10% as noise. Two consecutive five-run baselines on
 one Linux host differed by about 3% or less in every median; two-run reports in

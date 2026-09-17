@@ -2,8 +2,12 @@
 //!
 //! One process measures one scenario. Every sample is a whole `prepare` or
 //! `paint` call against synthetic snapshots, so results do not depend on PTY
-//! throughput or snapshot scheduling. Preparation does not touch the scene and
-//! runs entirely in the first frame. Paint takes one sample per frame: repeated
+//! throughput or snapshot scheduling. Each frame prepares one step, and once the
+//! steps are done each frame takes one paint sample.
+//!
+//! Preparing every step inside one frame hid shaping cost: GPUI keeps line
+//! layouts for the current and previous frame, so a layout the renderer had
+//! evicted came back from that cache instead of the platform shaper. Repeated
 //! paints inside one frame grow that frame's scene, and the allocation and
 //! draw-order work for the growing scene inflated later samples threefold.
 
@@ -380,7 +384,8 @@ struct State {
     renderer: TerminalRenderer,
     scenario: Scenario,
     iterations: usize,
-    prepared: bool,
+    next_step: usize,
+    prepares: Prepares,
     paints: Vec<Duration>,
     finished: bool,
 }
@@ -412,7 +417,8 @@ impl Fixture {
                 renderer,
                 scenario,
                 iterations,
-                prepared: false,
+                next_step: 0,
+                prepares: Prepares::default(),
                 paints: Vec::new(),
                 finished: false,
             })),
@@ -457,19 +463,20 @@ impl Render for Fixture {
                 canvas(
                     move |_, window, _| {
                         let mut state = prepare.borrow_mut();
-                        if !state.prepared {
-                            state.prepared = true;
-                            measure_prepare(&mut state, window);
+                        if !prepare_next_step(&mut state, window) {
+                            let snapshot = Arc::clone(&state.scenario.paint);
+                            state.renderer.prepare(Some(&snapshot), window);
                         }
-                        let snapshot = Arc::clone(&state.scenario.paint);
-                        state.renderer.prepare(Some(&snapshot), window);
                     },
                     move |bounds, (), window, cx| {
                         let mut state = paint.borrow_mut();
                         let started = Instant::now();
                         state.renderer.paint(bounds, window);
                         let elapsed = started.elapsed();
-                        if state.finished {
+                        // Frames that prepared a step painted that step.
+                        if state.finished
+                            || state.next_step <= state.scenario.steps.len()
+                        {
                             return;
                         }
                         state.paints.push(elapsed);
@@ -514,29 +521,51 @@ impl Render for Fixture {
     }
 }
 
-fn measure_prepare(state: &mut State, window: &mut Window) {
-    let mut samples = Vec::with_capacity(state.iterations * 2);
-    let (mut rebuilt_rows, mut hits, mut misses) = (0, 0, 0);
-    for (snapshot, measured) in &state.scenario.steps {
-        let started = Instant::now();
-        state.renderer.prepare(Some(snapshot), window);
-        let elapsed = started.elapsed();
-        if *measured {
-            samples.push(elapsed);
-            let outcome = state.renderer.last_prepare;
-            rebuilt_rows += outcome.rebuilt_rows;
-            hits += outcome.cache.hits;
-            misses += outcome.cache.misses;
+#[derive(Default)]
+struct Prepares {
+    samples: Vec<Duration>,
+    rebuilt_rows: usize,
+    hits: usize,
+    misses: usize,
+}
+
+/// Prepares this frame's step. Returns false once every step has run, after
+/// reporting them; `next_step` then moves past the end, which starts paint
+/// sampling in the same frame, against the prepared paint snapshot.
+fn prepare_next_step(state: &mut State, window: &mut Window) -> bool {
+    let Some((snapshot, measured)) =
+        state.scenario.steps.get(state.next_step).cloned()
+    else {
+        if state.next_step == state.scenario.steps.len() {
+            report_prepare(state);
         }
+        state.next_step = state.scenario.steps.len() + 1;
+        return false;
+    };
+    state.next_step += 1;
+    let started = Instant::now();
+    state.renderer.prepare(Some(&snapshot), window);
+    let elapsed = started.elapsed();
+    if measured {
+        let outcome = state.renderer.last_prepare;
+        state.prepares.samples.push(elapsed);
+        state.prepares.rebuilt_rows += outcome.rebuilt_rows;
+        state.prepares.hits += outcome.cache.hits;
+        state.prepares.misses += outcome.cache.misses;
     }
-    let count = samples.len().max(1);
+    true
+}
+
+fn report_prepare(state: &mut State) {
+    let prepares = std::mem::take(&mut state.prepares);
+    let count = prepares.samples.len().max(1);
     println!(
         "RENDERER_BENCH scenario={} phase=prepare {} rebuilt_rows={} cache_hits={} cache_misses={}",
         state.scenario.name,
-        Summary::new(samples),
-        rebuilt_rows / count,
-        hits / count,
-        misses / count,
+        Summary::new(prepares.samples),
+        prepares.rebuilt_rows / count,
+        prepares.hits / count,
+        prepares.misses / count,
     );
 }
 

@@ -56,7 +56,8 @@ Run `mise tasks` to discover the full task set.
 - `mise run bench:renderer-scenarios` times production `prepare` and `paint`
   against synthetic snapshots, one scenario per process. Pass
   `-- --output <file>` to record a report and `-- --compare <file>` to diff
-  against one. Paint takes one sample per frame, so Linux needs `twm`.
+  against one. It takes one prepare or paint sample per frame, so Linux needs
+  `twm`.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
