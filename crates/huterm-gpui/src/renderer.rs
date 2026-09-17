@@ -718,23 +718,48 @@ impl FontVariant {
     }
 }
 
+/// Entries the current generation may hold before the next prepare rotates
+/// it. Two generations bound the cache at twice this many layouts, which is
+/// far more distinct cell texts than ordinary terminal content produces.
+const LAYOUT_GENERATION_CAPACITY: usize = 4096;
+
+/// Shaped cell layouts, evicted in two generations. A lookup promotes its
+/// entry into the current generation, so rotation drops only layouts unused
+/// since the previous rotation.
 struct GlyphLayoutCache<T> {
     current: [VariantLayouts<T>; 4],
     previous: [VariantLayouts<T>; 4],
+    current_len: usize,
+    capacity: usize,
 }
 
 impl<T> Default for GlyphLayoutCache<T> {
     fn default() -> Self {
+        Self::with_capacity(LAYOUT_GENERATION_CAPACITY)
+    }
+}
+
+impl<T> GlyphLayoutCache<T> {
+    fn with_capacity(capacity: usize) -> Self {
         Self {
             current: std::array::from_fn(|_| VariantLayouts::default()),
             previous: std::array::from_fn(|_| VariantLayouts::default()),
+            current_len: 0,
+            capacity,
         }
     }
 }
 
 impl<T: Clone> GlyphLayoutCache<T> {
+    /// Rotates only a full generation. Rotating on every prepare evicted
+    /// everything outside the most recently rebuilt rows, so output scrolling
+    /// by one row and redraws after small updates shaped their text again.
     fn begin_generation(&mut self) {
+        if self.current_len < self.capacity {
+            return;
+        }
         self.previous = std::mem::take(&mut self.current);
+        self.current_len = 0;
     }
 
     fn get_or_insert_with(
@@ -749,15 +774,20 @@ impl<T: Clone> GlyphLayoutCache<T> {
         }
         if let Some(value) = self.previous[index].get(text) {
             self.current[index].insert(text, value.clone());
+            self.current_len += 1;
             return (value, true);
         }
         let value = create();
         self.current[index].insert(text, value.clone());
+        self.current_len += 1;
         (value, false)
     }
 }
 
 struct VariantLayouts<T> {
+    /// Indexed by code point: most cells are ASCII, and hashing each one
+    /// dominated the lookup.
+    ascii: [Option<T>; 128],
     scalars: HashMap<char, T>,
     sequences: HashMap<String, T>,
 }
@@ -765,6 +795,7 @@ struct VariantLayouts<T> {
 impl<T> Default for VariantLayouts<T> {
     fn default() -> Self {
         Self {
+            ascii: std::array::from_fn(|_| None),
             scalars: HashMap::new(),
             sequences: HashMap::new(),
         }
@@ -773,6 +804,9 @@ impl<T> Default for VariantLayouts<T> {
 
 impl<T: Clone> VariantLayouts<T> {
     fn get(&self, text: &str) -> Option<T> {
+        if let &[byte] = text.as_bytes() {
+            return self.ascii[usize::from(byte)].clone();
+        }
         match single_scalar(text) {
             Some(character) => self.scalars.get(&character).cloned(),
             None => self.sequences.get(text).cloned(),
@@ -780,6 +814,10 @@ impl<T: Clone> VariantLayouts<T> {
     }
 
     fn insert(&mut self, text: &str, value: T) {
+        if let &[byte] = text.as_bytes() {
+            self.ascii[usize::from(byte)] = Some(value);
+            return;
+        }
         match single_scalar(text) {
             Some(character) => {
                 self.scalars.insert(character, value);
@@ -1589,7 +1627,7 @@ mod tests {
 
     #[test]
     fn cache_evicts_layouts_unused_for_two_generations() {
-        let mut cache = GlyphLayoutCache::default();
+        let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
         let _ = cache.get_or_insert_with("A", variant, || 1);
         cache.begin_generation();
@@ -1604,7 +1642,7 @@ mod tests {
 
     #[test]
     fn cache_promotes_layouts_from_previous_generation() {
-        let mut cache = GlyphLayoutCache::default();
+        let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
         let _ = cache.get_or_insert_with("A", variant, || 1);
         cache.begin_generation();
@@ -1612,6 +1650,53 @@ mod tests {
         cache.begin_generation();
 
         assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+    }
+
+    #[test]
+    fn cache_keys_ascii_scalars_and_sequences_separately() {
+        let mut cache = GlyphLayoutCache::with_capacity(4);
+        let variant = FontVariant::default();
+        let bold = FontVariant {
+            bold: true,
+            italic: false,
+        };
+        for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
+            assert_eq!(
+                cache.get_or_insert_with(text, variant, || value),
+                (value, false)
+            );
+        }
+        assert_eq!(cache.get_or_insert_with("e", bold, || 9), (9, false));
+        // Every storage path survives promotion out of the older generation.
+        cache.begin_generation();
+        assert_eq!(cache.current_len, 0);
+        for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
+            assert_eq!(
+                cache.get_or_insert_with(text, variant, || 7),
+                (value, true)
+            );
+        }
+    }
+
+    #[test]
+    fn cache_keeps_layouts_until_a_generation_fills() {
+        let mut cache = GlyphLayoutCache::with_capacity(2);
+        let variant = FontVariant::default();
+        let _ = cache.get_or_insert_with("A", variant, || 1);
+        // Small updates must not evict text used by rows they left alone.
+        for _ in 0..3 {
+            cache.begin_generation();
+            let _ = cache.get_or_insert_with("B", variant, || 2);
+        }
+        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+
+        // Two full generations later an unused layout is gone.
+        for text in ["C", "D", "E", "F"] {
+            cache.begin_generation();
+            let _ = cache.get_or_insert_with(text, variant, || 4);
+        }
+        cache.begin_generation();
+        assert_eq!(cache.get_or_insert_with("A", variant, || 5), (5, false));
     }
 
     #[test]
