@@ -211,6 +211,16 @@ run = [
   "bash scripts/headless.sh bun scripts/run-renderer-bench.ts target/release/examples/renderer_bench",
 ]
 
+[tasks."bench:output-latency"]
+depends = ["ghostty:prepare", "scripts:install"]
+description = "Measure delay from terminal output to an applied snapshot; pass echo or flood after --"
+# Mise appends task arguments to the final command.
+run = [
+  "bash scripts/build-exec.sh cargo build --release --locked -p huterm",
+  "bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload",
+  "bash scripts/headless.sh bun scripts/run-output-latency.ts target/release/huterm target/release/examples/render_workload",
+]
+
 [tasks."bench:scroll"]
 depends = ["ghostty:prepare"]
 description = "Measure release-mode scroll coordination and rendering"

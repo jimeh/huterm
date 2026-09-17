@@ -122,6 +122,34 @@ the wait for the window refresh pump. `painted_us` extends that delay to the end
 of the paint that shows the snapshot. Stats mode requests continuous animation
 frames, so `painted_us` can be lower than in a normal session.
 
+### Output latency
+
+`mise run bench:output-latency` runs Huterm against `render_workload` for eight
+seconds and summarizes the `huterm-render output` lines, skipping the first
+interval. The default `echo` mode writes a few bytes about every 100 ms, so each
+write is an isolated update like an echoed keystroke. Pass `-- flood` for the
+animated grid, which checks that sustained output stays paced. `applied_us` is
+valid under Xvfb; `painted_us` there reflects GPUI's 60 Hz refresh timer rather
+than a display.
+
+A terminal view starts a snapshot as soon as its runtime signals activity, when
+it is visible and its last snapshot started at least 8 ms earlier. Otherwise the
+window refresh pump starts it on its next 16 ms tick. The pump remains the only
+consumer of terminal events. A snapshot request also wakes the runtime thread,
+which otherwise polls its control channel every 2 ms. Linux x86_64 medians, with
+maximums in parentheses:
+
+| Configuration | `echo` applied | `flood` applied | `flood` snapshots per second |
+| --- | --- | --- | --- |
+| Pump only | 10.4 ms (17.1) | 16.2 ms (32.4) | 60 |
+| Activity snapshot | 2.2 ms (11.2) | 12.8 ms (31.7) | 89 |
+| Activity snapshot and runtime wake | 0.4 ms (6.3) | 12.3 ms (46.6) | 80 |
+
+After an activity snapshot, the pump still drains the queued invalidation and
+starts one more snapshot, which reuses every row. It cannot be skipped by
+comparing generations: presentation updates invalidate without advancing the
+content generation.
+
 ### Renderer scenarios
 
 `bench:renderer` depends on PTY throughput and snapshot scheduling, and its
