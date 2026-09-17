@@ -96,7 +96,7 @@ pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
-    graphics: HashMap<(char, u16), Arc<builtin::Geometry>>,
+    graphics: builtin::GeometryCache,
     metrics: GridMetrics,
     font_family: String,
     theme: Theme,
@@ -152,7 +152,7 @@ impl TerminalRenderer {
             snapshot: None,
             rows: Vec::new(),
             layouts: GlyphLayoutCache::default(),
-            graphics: HashMap::new(),
+            graphics: builtin::GeometryCache::default(),
             metrics,
             font_family,
             theme,
@@ -277,6 +277,20 @@ impl TerminalRenderer {
             return;
         };
 
+        let metrics = self.metrics;
+        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
+        // One quad covers every cell with the theme background, so rows keep
+        // quads only for cells that differ from it.
+        window.paint_quad(fill(
+            Bounds::new(
+                bounds.origin,
+                size(
+                    grid_width,
+                    metrics.cell_height * f32::from(snapshot.size.rows),
+                ),
+            ),
+            rgb_color(self.theme.background),
+        ));
         for (row_index, row) in self.rows.iter().enumerate() {
             for background in &row.backgrounds {
                 window.paint_quad(fill(
@@ -303,8 +317,6 @@ impl TerminalRenderer {
             );
         }
 
-        let metrics = self.metrics;
-        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
         for (row_index, row) in self.rows.iter().enumerate() {
             let row_bounds = Bounds::new(
                 cell_origin(bounds.origin, 0, row_index, metrics),
@@ -450,7 +462,7 @@ struct PreparedDecoration {
 fn prepare_row(
     cells: &[Cell],
     layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
-    graphics: &mut HashMap<(char, u16), Arc<builtin::Geometry>>,
+    graphics: &mut builtin::GeometryCache,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
     font: (&str, GridMetrics),
@@ -483,15 +495,11 @@ fn prepare_row(
             } else {
                 1
             };
-            let mut hit = true;
-            let geometry = graphics.entry((ch, columns)).or_insert_with(|| {
-                hit = false;
-                Arc::new(builtin::Geometry::new(ch, metrics, columns))
-            });
+            let (geometry, hit) = graphics.get_or_insert(ch, columns, metrics);
             cache_activity.record(hit);
             row.glyphs.push(PreparedGlyph {
                 column: u16::try_from(column).unwrap_or(u16::MAX),
-                content: GlyphContent::Builtin(Arc::clone(geometry)),
+                content: GlyphContent::Builtin(geometry),
                 color: rgb_color(display_foreground(
                     resolve_color(cell.foreground, theme),
                     cell.style.dim,
@@ -537,11 +545,14 @@ fn prepare_backgrounds(
         {
             end += 1;
         }
-        backgrounds.push(PreparedBackground {
-            start: u16::try_from(start).unwrap_or(u16::MAX),
-            columns: u16::try_from(end - start).unwrap_or(u16::MAX),
-            color: rgb_color(background),
-        });
+        // Paint fills the whole grid with the theme background once.
+        if background != theme.background {
+            backgrounds.push(PreparedBackground {
+                start: u16::try_from(start).unwrap_or(u16::MAX),
+                columns: u16::try_from(end - start).unwrap_or(u16::MAX),
+                color: rgb_color(background),
+            });
+        }
         start = end;
     }
     backgrounds
@@ -1650,6 +1661,39 @@ mod tests {
         cache.begin_generation();
 
         assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+    }
+
+    #[test]
+    fn backgrounds_merge_runs_and_omit_the_theme_background() {
+        let theme = Theme::default();
+        let cell = |background| Cell {
+            text: " ".into(),
+            foreground: CellColor::DefaultForeground,
+            background,
+            style: CellStyle::default(),
+        };
+        let red = CellColor::Rgb(Rgb {
+            red: 255,
+            green: 0,
+            blue: 0,
+        });
+        let cells = [
+            cell(CellColor::DefaultBackground),
+            cell(red),
+            cell(red),
+            // An explicit color equal to the theme background needs no quad.
+            cell(CellColor::Rgb(theme.background)),
+            cell(CellColor::Indexed(4)),
+        ];
+
+        let backgrounds = prepare_backgrounds(&cells, &theme);
+
+        let spans: Vec<_> = backgrounds
+            .iter()
+            .map(|background| (background.start, background.columns))
+            .collect();
+        assert_eq!(spans, [(1, 2), (4, 1)]);
+        assert_eq!(backgrounds[1].color, rgb_color(theme.indexed(4)));
     }
 
     #[test]

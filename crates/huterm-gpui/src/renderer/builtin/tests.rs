@@ -502,3 +502,28 @@ fn path_build_propagates_tessellator_capacity_errors() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn every_supported_scalar_has_its_own_cache_slot() {
+    let slots: std::collections::BTreeSet<_> = (0..=0x10_ffff)
+        .filter_map(char::from_u32)
+        .filter_map(slot)
+        .collect();
+    assert_eq!(slots.len(), SLOTS);
+    assert_eq!(slots.last(), Some(&(SLOTS - 1)));
+}
+
+#[test]
+fn geometry_cache_separates_cell_spans_and_clears() {
+    let mut cache = GeometryCache::default();
+    let (narrow, hit) = cache.get_or_insert('█', 1, metrics(8.0, 16.0, 1.0));
+    assert!(!hit);
+    let (wide, _) = cache.get_or_insert('█', 2, metrics(8.0, 16.0, 1.0));
+    assert!(!Arc::ptr_eq(&narrow, &wide));
+    let (again, hit) = cache.get_or_insert('█', 1, metrics(8.0, 16.0, 1.0));
+    assert!(hit && Arc::ptr_eq(&narrow, &again));
+    assert_eq!(cache.len(), 2);
+    cache.clear();
+    assert_eq!(cache.len(), 0);
+    assert!(cache.get('█', 1).is_none());
+}
