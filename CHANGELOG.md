@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/jimeh/huterm/compare/v0.11.2...v0.12.0) (2026-09-18)
+
+
+### Features
+
+* add terminal metadata and visual bell ([#139](https://github.com/jimeh/huterm/issues/139)) ([ee91a54](https://github.com/jimeh/huterm/commit/ee91a54efd20ff760f7295bcc5875965d8279c08))
+
+
+### Performance Improvements
+
+* activity-driven snapshots and renderer overhead cuts ([#141](https://github.com/jimeh/huterm/issues/141)) ([776e567](https://github.com/jimeh/huterm/commit/776e5671af18185ab56e691ef2902e0bf88e9020))
+
 ## [0.11.2](https://github.com/jimeh/huterm/compare/v0.11.1...v0.11.2) (2026-09-18)
 
 
