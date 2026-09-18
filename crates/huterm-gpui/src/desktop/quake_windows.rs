@@ -229,7 +229,16 @@ impl Activation {
         self.next_retry = None;
     }
 
-    fn observe(&mut self, active: bool) {
+    /// Record an activation sample. `settled` means no native fullscreen
+    /// transition is unresolved and the observed fullscreen state matches the
+    /// target. Samples taken mid-transition are ignored: a window that is
+    /// still active while a Space exit begins must not cancel its Show, and
+    /// `AppKit` can revert an activation granted before the Space switch ends.
+    /// Once settled, a later app switch never re-arms retries.
+    fn observe(&mut self, active: bool, settled: bool) {
+        if !settled {
+            return;
+        }
         if active {
             self.seen = true;
             self.cancel();
@@ -721,7 +730,9 @@ fn invoke_now(
                 state.reporter.clone_from(&reporter);
                 state.request(show, !show && active);
                 if unchanged {
-                    state.activation.observe(active);
+                    // Unchanged summons already proved an idle native
+                    // transition and matching fullscreen state.
+                    state.activation.observe(active, true);
                     state.stage = Stage::Activate;
                 }
                 view.sync_quake_visibility(window, cx);
@@ -1009,7 +1020,10 @@ fn step(
             ));
         }
     };
-    state.activation.observe(active);
+    let settled = native_idle
+        && state.observed_fullscreen
+            == (state.profile.fullscreen && !state.regular);
+    state.activation.observe(active, settled);
     state.focus_observations = state.focus_observations.wrapping_add(1);
     if view.close.confirmation.is_some() && !state.transition.visible() {
         state.request(true, false);
@@ -1567,8 +1581,8 @@ mod tests {
         let mut activation = Activation::default();
         activation.request();
         assert!(activation.take_request(now));
-        activation.observe(true);
-        activation.observe(false);
+        activation.observe(true, true);
+        activation.observe(false, true);
         assert!(!activation.take_request(now));
         assert!(!activation.take_retry(
             now + ACTIVATION_RETRY_INTERVAL,
@@ -1582,10 +1596,10 @@ mod tests {
         let now = Instant::now();
         let mut activation = Activation::default();
         activation.request();
-        activation.observe(false);
+        activation.observe(false, true);
         assert!(activation.take_request(now));
         assert!(!activation.seen, "initial activation is still required");
-        activation.observe(true);
+        activation.observe(true, true);
         activation.request();
         assert!(!activation.seen, "a new summon needs fresh activation");
     }
@@ -1609,12 +1623,54 @@ mod tests {
     }
 
     #[test]
+    fn unsettled_active_observation_keeps_the_initial_show_request() {
+        let now = Instant::now();
+        let mut activation = Activation::default();
+        activation.request();
+        // Still active from before a native Space exit began.
+        activation.observe(true, false);
+        assert!(
+            activation.take_request(now),
+            "a mid-transition sample must not cancel the initial Show"
+        );
+    }
+
+    #[test]
+    fn unsettled_activation_does_not_latch_so_retries_continue() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        let mut activation = Activation::default();
+        activation.request();
+        assert!(activation.take_request(now));
+        // AppKit may revert an activation granted before the Space switch
+        // completes, so it must not count as the initial activation.
+        activation.observe(true, false);
+        assert!(!activation.seen);
+        assert!(
+            activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline),
+            "retries continue until a settled activation sample"
+        );
+        activation.observe(true, true);
+        assert!(activation.seen);
+        assert!(
+            !activation
+                .take_retry(now + ACTIVATION_RETRY_INTERVAL * 2, deadline)
+        );
+        activation.observe(false, true);
+        assert!(
+            !activation
+                .take_retry(now + ACTIVATION_RETRY_INTERVAL * 3, deadline),
+            "a settled app switch never re-arms retries"
+        );
+    }
+
+    #[test]
     fn active_observation_before_consumption_cancels_initial_show_and_retry() {
         let now = Instant::now();
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
         activation.request();
-        activation.observe(true);
+        activation.observe(true, true);
         assert!(!activation.take_request(now));
         assert!(
             !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
@@ -1667,8 +1723,8 @@ mod tests {
         let mut activation = Activation::default();
         activation.request();
         assert!(activation.take_request(now));
-        activation.observe(true);
-        activation.observe(false);
+        activation.observe(true, true);
+        activation.observe(false, true);
         assert!(
             !activation.take_retry(now + ACTIVATION_RETRY_INTERVAL, deadline)
         );
@@ -1688,8 +1744,8 @@ mod tests {
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
         activation.request();
-        activation.observe(true);
-        activation.observe(false);
+        activation.observe(true, true);
+        activation.observe(false, true);
         let deadline = activation.refit(
             Stage::Activate,
             deadline,
@@ -1716,7 +1772,7 @@ mod tests {
         let deadline = now + Duration::from_secs(3);
         let mut activation = Activation::default();
         activation.request();
-        activation.observe(false);
+        activation.observe(false, true);
         let refit_deadline = activation.refit(
             Stage::Activate,
             deadline,
@@ -1740,7 +1796,7 @@ mod tests {
         let mut activation = Activation::default();
         activation.request();
         assert!(activation.take_request(now));
-        activation.observe(true);
+        activation.observe(true, true);
         let deadline = activation.refit(Stage::Idle, now, now);
         assert!(
             !activation.take_request(now),

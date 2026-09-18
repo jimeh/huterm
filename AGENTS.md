@@ -953,7 +953,12 @@ so staged README and agent-guide edits receive the same checks as nested docs.
 Quake work-area refits must preserve focus; only explicit summons request it.
 While initial activation has never been observed, SettleVisible may retry Show on
 a bounded cadence within the original deadline. Once observed, later app switches
-must never re-arm retries. A failed return-focus attempt must not undo a successful
+must never re-arm retries. Activation samples taken while a native fullscreen
+transition is unresolved, or while the observed fullscreen state differs from
+the target, are ignored: a still-active window must not cancel its Show as a
+Space exit begins, and AppKit can revert an activation granted before the
+Space switch ends. Hosted runners hit both after a fullscreen-to-windowed
+reload. A failed return-focus attempt must not undo a successful
 native hide.
 
 The XDND source publishes terminal acknowledgements before closing Xlib and
