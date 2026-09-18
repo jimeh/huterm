@@ -506,6 +506,9 @@ work in ordinary `[[keybinding]]` entries. A hidden window keeps its tabs, shell
 scrollback, and selection. Toggling a visible but unfocused window raises it;
 toggling the focused window hides it and returns focus to the previous external
 application. Auto-hide does not take focus back from the application you chose.
+On macOS, launcher-style panels that take keyboard focus without activating
+their application, such as 1Password Quick Access or Alfred, do not hide the
+quake window.
 
 `toggle_fullscreen` switches an associated window between quake and regular
 framed presentation. Regular presentation suspends auto-hide and retains user

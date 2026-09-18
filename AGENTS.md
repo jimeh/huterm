@@ -979,6 +979,13 @@ RandR can return monitors with no primary flag. Missing retained monitors and
 regular-to-quake conversion must fall back to the first remaining monitor.
 For withdrawn X11 windows, merge ABOVE/STICKY into `_NET_WM_STATE` before mapping;
 window managers ignore state client messages until they manage the window.
+Quake auto-hide keys off application deactivation or key status moving to
+another Huterm window, never key loss alone. Non-activating panels from other
+processes, such as 1Password Quick Access, take key status while Huterm stays
+active and `NSApp.keyWindow` is nil or still names the quake window. The macOS
+witness `panel` command covers this in `smoke:macos-quake`; wait for
+`focus_observations` to advance after the observed key change before closing
+the panel, or the step can pass before the hide rule ever sampled the loss.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.
