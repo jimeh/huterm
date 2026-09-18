@@ -9,8 +9,8 @@ use gpui::{
     KeyContext, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
-    SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowControlArea,
-    WindowOptions, canvas, div, point, prelude::*, px, size,
+    SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
+    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,
@@ -301,6 +301,10 @@ struct TerminalView {
     scroll_benchmark: Option<ScrollBenchmark>,
     snapshot_sequence: u64,
     last_snapshot_started: Option<Instant>,
+    /// Dropped with the view, which cancels the waiter. A detached task would
+    /// hold a client clone until the next event and could take one wake from
+    /// a replacement view of the same runtime.
+    _activity_task: Task<()>,
 }
 
 struct TerminalViewAuthority {
@@ -366,7 +370,7 @@ impl TerminalView {
         let pending_input_subscription =
             cx.observe_pending_input(window, Self::pending_input_changed);
         let activity_client = client.clone();
-        cx.spawn(async move |view, cx| {
+        let activity_task = cx.spawn(async move |view, cx| {
             while activity_client.wait_for_activity().await.is_ok() {
                 let updated =
                     view.update(cx, Self::snapshot_on_activity).is_ok();
@@ -374,8 +378,7 @@ impl TerminalView {
                     break;
                 }
             }
-        })
-        .detach();
+        });
         #[cfg(target_os = "macos")]
         let layout_subscription = {
             let view = cx.entity().downgrade();
@@ -458,6 +461,7 @@ impl TerminalView {
             ),
             snapshot_sequence: 0,
             last_snapshot_started: None,
+            _activity_task: activity_task,
         }
     }
 

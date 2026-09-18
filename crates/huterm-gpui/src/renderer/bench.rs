@@ -128,8 +128,9 @@ impl Scenario {
             "boxes" => Self::alternating("boxes", cycles, box_cell),
             "selection" => Self::selection(cycles),
             "scroll" => Self::scroll(cycles),
-            // Three frames per cycle: fewer cycles keep sampling early.
-            "churn" => Self::churn(WARMUP_CYCLES + iterations * 2 / 3),
+            // Three frames per cycle: fewer cycles keep sampling early, but
+            // at least one measured cycle must remain.
+            "churn" => Self::churn(WARMUP_CYCLES + (iterations * 2 / 3).max(1)),
             _ => return None,
         })
     }

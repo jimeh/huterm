@@ -58,9 +58,9 @@ Run `mise tasks` to discover the full task set.
   `-- --output <file>` to record a report and `-- --compare <file>` to diff
   against one. It takes one prepare or paint sample per frame, so Linux needs
   `twm`.
-- `mise run bench:output-latency` reports the delay from terminal output to an
-  applied snapshot for keystroke-paced output; pass `-- flood` to check that
-  sustained output stays paced.
+- `mise run bench:output-latency` reports the delay from a parsed invalidation
+  to an applied snapshot for keystroke-paced output; pass `-- flood` to check
+  that sustained output stays paced.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint

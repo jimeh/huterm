@@ -1204,8 +1204,11 @@ impl RendererStats {
                 median_and_max_micros(&mut self.output_applied);
             let (painted_median, painted_max) =
                 median_and_max_micros(&mut self.output_painted);
+            // Intervals close at the first paint after one second, so the
+            // consumer needs the actual elapsed time to compute rates.
             eprintln!(
-                "huterm-render output snapshots={} applied_us_median={applied_median} applied_us_max={applied_max} paints={} painted_us_median={painted_median} painted_us_max={painted_max}",
+                "huterm-render output elapsed_us={} snapshots={} applied_us_median={applied_median} applied_us_max={applied_max} paints={} painted_us_median={painted_median} painted_us_max={painted_max}",
+                self.interval_started.elapsed().as_micros(),
                 self.output_applied.len(),
                 self.output_painted.len(),
             );
