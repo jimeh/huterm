@@ -988,9 +988,10 @@ witness `panel` command covers this in `smoke:macos-quake`; wait for
 the panel, or the step can pass before the hide rule ever sampled the loss.
 The `ordinary activate_window` smoke command moves key status to the sibling
 Huterm window, which must still hide the quake. The external grab probe walks
-`GRAB_CANDIDATES` for a free chord, publishes it as `chord=` in its ready file
-or writes `failed` and quits; never `expect` a registration inside GPUI's
-launch callback, which cannot unwind and aborts with a crash dialog.
+`GRAB_CANDIDATES`, owns the first free chord as `chord=`, verifies and releases
+a second as `free=` for Huterm's own registration case, or writes `failed` with
+every candidate's error and quits. Nothing in that probe may panic inside
+GPUI's launch callback, which cannot unwind and aborts with a crash dialog.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.

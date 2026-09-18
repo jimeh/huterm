@@ -565,7 +565,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         let grabCleanupError: unknown;
         try {
           await waitFor(async () => await Bun.file(join(grabDirectory,"ready")).exists() || await Bun.file(join(grabDirectory,"failed")).exists(),"separate process reports its external grab");
-          if (await Bun.file(join(grabDirectory,"failed")).exists()) throw new Error(`external grab probe found no free chord: ${await readFile(join(grabDirectory,"failed"),"utf8")}`);
+          if (await Bun.file(join(grabDirectory,"failed")).exists()) throw new Error(`external grab probe found no usable chords: ${await readFile(join(grabDirectory,"failed"),"utf8")}`);
           const grabChord = parseState(await readFile(join(grabDirectory,"ready"),"utf8")).chord;
           if (!grabChord) throw new Error("external grab probe published no chord");
           console.log(`QUAKE_GRAB ${engine} external-chord=${grabChord}`);
@@ -778,17 +778,24 @@ async function check(executable: string, engine: string, witnessExecutable?: str
 /// then release it. `checkOrdinaryExit` needs one for its unregister case.
 export async function probeFreeChord(executable: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-free-chord-"));
-  const probe = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"}, stdout: "ignore", stderr: "ignore"});
+  const probe = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"}, stdout: "ignore", stderr: "pipe"});
+  let diagnostics = "";
+  const errors = (async () => { for await (const chunk of probe.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   try {
-    await waitFor(async () => await Bun.file(join(directory, "ready")).exists() || await Bun.file(join(directory, "failed")).exists(), "free chord probe report");
-    if (await Bun.file(join(directory, "failed")).exists()) throw new Error(`free chord probe found no free chord: ${await readFile(join(directory, "failed"), "utf8")}`);
+    await waitFor(async () => {
+      if (await Bun.file(join(directory, "ready")).exists() || await Bun.file(join(directory, "failed")).exists()) return true;
+      if (probe.exitCode !== null) throw new Error(`free chord probe exited ${probe.exitCode} before reporting: ${diagnostics}`);
+      return false;
+    }, "free chord probe report");
+    if (await Bun.file(join(directory, "failed")).exists()) throw new Error(`free chord probe found no usable chords: ${await readFile(join(directory, "failed"), "utf8")}`);
     const free = parseState(await readFile(join(directory, "ready"), "utf8")).free;
-    if (!free) throw new Error("free chord probe found only one free candidate");
+    if (!free) throw new Error("free chord probe published no free chord");
     return free;
   } finally {
     await writeFile(join(directory, "finish"), "finish");
     await waitFor(async () => probe.exitCode !== null, "free chord probe exit").catch(() => probe.kill("SIGKILL"));
     await probe.exited;
+    await errors;
     await rm(directory, {recursive: true, force: true});
   }
 }
