@@ -192,12 +192,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await checkStackingState(first, false);
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
     let identity = first.text!.match(/READY:(\d+)/)?.[1];
-    await input("first-summon");
-    await waitFor(async () => (await current())?.text?.includes(`ACK:first-summon:${identity}:`) ?? false, "PTY ACK after global summon");
     if (macos) {
       // A non-activating panel from another process borrows key status while
       // Huterm stays active. Auto-hide must ignore it; a hidden quake would
-      // never report active again after the panel closes.
+      // never report active again after the panel closes. The first-summon
+      // ACK below then proves input still reaches the PTY without adding
+      // rows that could scroll READY out of a small hosted-runner grid.
       await native("panel");
       let observed = 0;
       await waitFor(async () => { const value = await current(); observed = Number(value?.focus_observations); return value?.active === "false" && Number.isFinite(observed); }, "non-activating panel takes key status");
@@ -206,9 +206,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(async () => Number((await current())?.focus_observations) >= observed + 2, "quake pump observes the panel holding key status");
       await native("panel_close");
       await waitFor(async () => { const value = await current(); return value?.active === "true" && value.visible === "true" && value.stage === "Idle"; }, "quake stays visible and regains key after the panel closes");
-      await input("after-panel");
-      await waitFor(async () => (await current())?.text?.includes(`ACK:after-panel:${identity}:`) ?? false, "PTY ACK after non-activating panel");
     }
+    await input("first-summon");
+    await waitFor(async () => (await current())?.text?.includes(`ACK:first-summon:${identity}:`) ?? false, "PTY ACK after global summon");
     await hotkey();
     await waitFor(async () => { const value = await current(); return value?.visible === "false" && value.stage === "Idle"; }, "global hide");
     await waitFor(witnessActive, "external focus return");
