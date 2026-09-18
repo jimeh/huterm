@@ -41,6 +41,9 @@ const ROWS: u16 = 50;
 const FONT_SIZE: f32 = 12.0;
 const WARMUP_CYCLES: usize = 3;
 const DEFAULT_ITERATIONS: usize = 30;
+/// Each iteration builds up to three full-grid snapshots up front, so the
+/// count is capped before any scenario allocates.
+const MAX_ITERATIONS: usize = 10_000;
 const FRAME_DEADLINE: Duration = Duration::from_secs(15);
 /// Distinguishes missing frames, a display problem, from benchmark failures.
 const FRAME_STALL_EXIT_CODE: i32 = 3;
@@ -54,8 +57,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
         Ok(value) => value
             .parse::<usize>()
             .ok()
-            .filter(|iterations| *iterations > 0)
-            .context("HUTERM_RENDERER_BENCH_ITERATIONS must be positive")?,
+            .filter(|iterations| (1..=MAX_ITERATIONS).contains(iterations))
+            .with_context(|| {
+                format!(
+                    "HUTERM_RENDERER_BENCH_ITERATIONS must be between 1 and {MAX_ITERATIONS}"
+                )
+            })?,
         Err(_) => DEFAULT_ITERATIONS,
     };
     let Some(scenario) = Scenario::named(&name, iterations) else {

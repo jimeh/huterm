@@ -24,9 +24,9 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
-/** The first interval includes startup, so it is excluded when others exist. */
+/** The first interval includes startup, so it is always excluded. */
 export function summarize(intervals: Interval[]): string {
-  const steady = intervals.length > 1 ? intervals.slice(1) : intervals;
+  const steady = intervals.slice(1);
   if (steady.length === 0) throw new Error("Huterm printed no output latency intervals");
   const snapshots = steady.reduce((total, interval) => total + interval.snapshots, 0);
   // Intervals close at the first paint after one second, so their length varies.
@@ -37,6 +37,9 @@ export function summarize(intervals: Interval[]): string {
 if (import.meta.main) {
   const [executable, workload, mode = "echo", seconds = "8"] = Bun.argv.slice(2);
   if (!executable || !workload) throw new Error("usage: run-output-latency.ts <huterm> <render_workload> [echo|flood] [seconds]");
+  if (mode !== "echo" && mode !== "flood") throw new Error(`mode must be echo or flood, not ${mode}`);
+  const timeoutMs = Number(seconds) * 1_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`seconds must be a positive number, not ${seconds}`);
   // The terminal starts its shell from another directory, so the path must be absolute.
   // An empty configuration keeps the user's font, theme, and global shortcuts
   // out of the measurement; a running Huterm would otherwise own the shortcuts.
@@ -45,11 +48,11 @@ if (import.meta.main) {
   await Bun.write(config, "");
   // "events" records the probe without requesting a frame per display tick;
   // continuous drawing would otherwise hold the main thread in present.
-  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events" };
-  if (mode === "echo") environment.HUTERM_RENDER_WORKLOAD = "echo";
+  // Always set the workload so an inherited value cannot change the mode.
+  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events", HUTERM_RENDER_WORKLOAD: mode };
   try {
     // Huterm runs until stopped, so reaching the deadline is the expected outcome.
-    const outcome = await runSmokeProcess([executable], { timeoutMs: Number(seconds) * 1_000, env: environment, stream: false });
+    const outcome = await runSmokeProcess([executable], { timeoutMs, env: environment, stream: false });
     if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
     console.log(`mode=${mode} ${summarize(parseIntervals(outcome.stderr))}`);
   } finally {

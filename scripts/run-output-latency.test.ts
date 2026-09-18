@@ -17,5 +17,7 @@ test("computes the snapshot rate from elapsed time, not interval count", () => {
 
 test("rejects logs without probe output and malformed probe lines", () => {
   expect(() => summarize(parseIntervals("huterm-render frames=60"))).toThrow("no output latency intervals");
+  // A lone startup interval is not steady state.
+  expect(() => summarize(parseIntervals(line(3, 90_000, 95_000)))).toThrow("no output latency intervals");
   expect(() => parseIntervals("huterm-render output snapshots=1")).toThrow("missing elapsed_us");
 });
