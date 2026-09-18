@@ -24,14 +24,38 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
+export type Summary = { intervals: number; snapshotsPerSecond: number; appliedMedianUs: number; appliedMaxUs: number; paintedMedianUs: number; paintedMaxUs: number };
+
 /** The first interval includes startup, so it is always excluded. */
-export function summarize(intervals: Interval[]): string {
+export function summarize(intervals: Interval[]): Summary {
   const steady = intervals.slice(1);
   if (steady.length === 0) throw new Error("Huterm printed no output latency intervals");
   const snapshots = steady.reduce((total, interval) => total + interval.snapshots, 0);
   // Intervals close at the first paint after one second, so their length varies.
   const elapsedSeconds = steady.reduce((total, interval) => total + interval.elapsedUs, 0) / 1_000_000;
-  return `output-latency intervals=${steady.length} snapshots_per_second=${Math.round(snapshots / elapsedSeconds)} applied_us_median=${median(steady.map(interval => interval.appliedMedianUs))} applied_us_max=${Math.max(...steady.map(interval => interval.appliedMaxUs))} painted_us_median=${median(steady.map(interval => interval.paintedMedianUs))} painted_us_max=${Math.max(...steady.map(interval => interval.paintedMaxUs))}`;
+  return {
+    intervals: steady.length,
+    snapshotsPerSecond: Math.round(snapshots / elapsedSeconds),
+    appliedMedianUs: median(steady.map(interval => interval.appliedMedianUs)),
+    appliedMaxUs: Math.max(...steady.map(interval => interval.appliedMaxUs)),
+    paintedMedianUs: median(steady.map(interval => interval.paintedMedianUs)),
+    paintedMaxUs: Math.max(...steady.map(interval => interval.paintedMaxUs)),
+  };
+}
+
+export function format(summary: Summary): string {
+  return `output-latency intervals=${summary.intervals} snapshots_per_second=${summary.snapshotsPerSecond} applied_us_median=${summary.appliedMedianUs} applied_us_max=${summary.appliedMaxUs} painted_us_median=${summary.paintedMedianUs} painted_us_max=${summary.paintedMaxUs}`;
+}
+
+/**
+ * Gates the activity-driven snapshot path. Without it, an isolated update
+ * waits for the 16 ms refresh pump and the median sits near 8 to 12 ms on
+ * every host measured; with it, the median is well under 1 ms.
+ */
+export function checkAppliedBudget(summary: Summary, budgetUs: number): void {
+  if (summary.appliedMedianUs > budgetUs) {
+    throw new Error(`applied_us_median=${summary.appliedMedianUs} exceeds the budget of ${budgetUs} µs: output is not reaching a snapshot until the refresh pump`);
+  }
 }
 
 if (import.meta.main) {
@@ -40,6 +64,9 @@ if (import.meta.main) {
   if (mode !== "echo" && mode !== "flood") throw new Error(`mode must be echo or flood, not ${mode}`);
   const timeoutMs = Number(seconds) * 1_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`seconds must be a positive number, not ${seconds}`);
+  const budgetValue = process.env.HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US;
+  const budgetUs = budgetValue === undefined ? undefined : Number(budgetValue);
+  if (budgetUs !== undefined && (!Number.isFinite(budgetUs) || budgetUs <= 0)) throw new Error(`HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US must be a positive number, not ${budgetValue}`);
   // The terminal starts its shell from another directory, so the path must be absolute.
   // An empty configuration keeps the user's font, theme, and global shortcuts
   // out of the measurement; a running Huterm would otherwise own the shortcuts.
@@ -54,7 +81,13 @@ if (import.meta.main) {
     // Huterm runs until stopped, so reaching the deadline is the expected outcome.
     const outcome = await runSmokeProcess([executable], { timeoutMs, env: environment, stream: false });
     if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
-    console.log(`mode=${mode} ${summarize(parseIntervals(outcome.stderr))}`);
+    const summary = summarize(parseIntervals(outcome.stderr));
+    console.log(`mode=${mode} ${format(summary)}`);
+    if (budgetUs !== undefined) {
+      if (mode !== "echo") throw new Error("the applied latency budget applies to echo mode only");
+      checkAppliedBudget(summary, budgetUs);
+      console.log(`mode=${mode} applied_budget_us=${budgetUs} passed`);
+    }
   } finally {
     await rm(configDirectory, { recursive: true, force: true });
   }

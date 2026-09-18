@@ -60,7 +60,10 @@ Run `mise tasks` to discover the full task set.
   `twm`.
 - `mise run bench:output-latency` reports the delay from a parsed invalidation
   to an applied snapshot for keystroke-paced output; pass `-- flood` to check
-  that sustained output stays paced.
+  that sustained output stays paced. `ci:benchmarks` runs the `echo` mode with
+  `HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000`, the only automated check of
+  the activity-driven snapshot path: without it the median waits for the
+  16 ms refresh pump.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint

@@ -940,9 +940,13 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll and link lookup budgets for Ghostty"
+description = "Run CI scroll, output latency, and link lookup budgets for Ghostty"
 depends = ["verify:toolchain"]
-run = ["mise run bench:scroll", "mise run bench:links"]
+run = [
+  "mise run bench:scroll",
+  "HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000 mise run bench:output-latency",
+  "mise run bench:links",
+]
 
 [tasks."smoke:renderer"]
 description = "Verify built-in terminal graphics through native GPUI preparation and paint"

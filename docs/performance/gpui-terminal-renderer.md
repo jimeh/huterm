@@ -134,7 +134,10 @@ then print only while output keeps arriving.
 `mise run bench:output-latency` runs Huterm against `render_workload` for eight
 seconds and summarizes the `huterm-render output` lines, skipping the first
 interval. The default `echo` mode writes a few bytes about every 100 ms, so each
-write is an isolated update like an echoed keystroke. Pass `-- flood` for the
+write is an isolated update like an echoed keystroke. Setting
+`HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US` fails the run when the `echo` applied
+median exceeds it; `ci:benchmarks` uses 5000 µs, which pump-paced medians of
+8 to 12 ms exceed on every host measured. Pass `-- flood` for the
 animated grid, which checks that sustained output stays paced. `applied_us` is
 valid under Xvfb; `painted_us` there reflects GPUI's 60 Hz refresh timer rather
 than a display.

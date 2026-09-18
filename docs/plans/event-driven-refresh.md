@@ -314,7 +314,7 @@ These come from AGENTS.md and from failures found while building the groundwork.
 
 | Risk | Evidence |
 | --- | --- |
-| Latency regresses | `bench:output-latency` in `echo` mode, before and after each step, on macOS |
+| Latency regresses | `bench:output-latency` in `echo` mode, before and after each step, on macOS; `ci:benchmarks` enforces a 5 ms applied-median budget on Linux |
 | Sustained output floods the runtime | `bench:output-latency -- flood` snapshot rate, and `bench:engine` throughput |
 | Scroll coordination breaks | `bench:scroll`, which gates snapshot timing, wakeups, offsets, and queue bounds |
 | A missed wake leaves the UI stale | Step 8's fallback report, plus the smokes for input, fullscreen, quake, palette, and quit |
