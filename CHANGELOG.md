@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/jimeh/huterm/compare/v0.11.1...v0.11.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* settle quake activation after fullscreen exits and harden the quake smoke ([#143](https://github.com/jimeh/huterm/issues/143)) ([95c02c1](https://github.com/jimeh/huterm/commit/95c02c13513ffa70caaf251f3a0919f9ebfa4d99))
+
 ## [0.11.1](https://github.com/jimeh/huterm/compare/v0.11.0...v0.11.1) (2026-09-18)
 
 
