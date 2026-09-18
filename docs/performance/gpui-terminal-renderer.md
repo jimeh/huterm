@@ -115,12 +115,19 @@ animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
 `HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.
 
-With `HUTERM_RENDER_STATS=1`, each interval that applied a snapshot also prints
-a `huterm-render output` line. `applied_us` is the delay from a terminal's
-earliest unseen invalidation to its snapshot reaching the view, which includes
-the wait for the window refresh pump. `painted_us` extends that delay to the end
-of the paint that shows the snapshot. Stats mode requests continuous animation
-frames, so `painted_us` can be lower than in a normal session.
+With `HUTERM_RENDER_STATS` set, each interval that applied a snapshot also
+prints a `huterm-render output` line. `applied_us` is the delay from a
+terminal's earliest unseen invalidation to its snapshot reaching the view, which
+includes the wait for the window refresh pump. `painted_us` extends that delay
+to the end of the paint that shows the snapshot.
+
+`HUTERM_RENDER_STATS=1` requests a frame on every display tick. On a real
+display that keeps the main thread in Metal present until vsync, so the
+activity wake and every snapshot wait for the frame: on macOS it reported an
+`echo` applied median of 12.7 ms where an ordinary session applies in 126 µs.
+`HUTERM_RENDER_STATS=events` records the same counters while painting only when
+the application invalidates. Use it for latency; the rolling per-frame counters
+then print only while output keeps arriving.
 
 ### Output latency
 
@@ -144,6 +151,17 @@ maximums in parentheses:
 | Pump only | 10.4 ms (17.1) | 16.2 ms (32.4) | 60 |
 | Activity snapshot | 2.2 ms (11.2) | 12.8 ms (31.7) | 89 |
 | Activity snapshot and runtime wake | 0.4 ms (6.3) | 12.3 ms (46.6) | 80 |
+
+macOS arm64 medians on 2026-09-18 with `HUTERM_RENDER_STATS=events` on a
+MacBook Pro M3 Max built-in display, maximums in parentheses:
+
+| Mode | Applied | Painted | Snapshots per second |
+| --- | --- | --- | --- |
+| `echo` | 126 µs (1.3 ms) | 5.1 ms (8.9) | 10 |
+| `flood` | 14.4 ms (19.6) | 17.2 ms (26.3) | 61 |
+
+`flood` holds 61 snapshots per second because the 16 ms pump paces sustained
+output, even on a display that refreshes faster than 60 Hz.
 
 After an activity snapshot, the pump still drains the queued invalidation and
 starts one more snapshot, which reuses every row. It cannot be skipped by

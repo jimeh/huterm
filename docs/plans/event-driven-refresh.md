@@ -40,7 +40,7 @@ Six commits sit on top of `main` at release 0.11.0:
 | `6b006c9` | Scenario benchmark finishes sampling early in the process |
 | `4072d88` | Snapshot on runtime activity; snapshot requests wake the runtime |
 
-Nothing is pushed and no pull request exists.
+The macOS checks under "First tasks on macOS" ran on 2026-09-17.
 
 ### What `4072d88` does
 
@@ -67,6 +67,10 @@ snapshot, median with maximum in parentheses:
 | Pump only | 10.4 ms (17.1) | 16.2 ms (32.4) | 60 |
 | Activity snapshot and runtime wake | 0.4 ms (6.3) | 12.3 ms (46.6) | 80 |
 
+On macOS with the runtime wake, `echo` applies in 126 µs (1.3 ms) and paints
+in 5.1 ms (8.9), and `flood` holds 61 snapshots per second: the pump paces
+sustained output at 60 Hz regardless of the display's refresh rate.
+
 ### The redundant snapshot
 
 After an activity snapshot, the pump's next tick drains the queued `Invalidated`
@@ -81,8 +85,11 @@ events, which is step 2.
 
 ## First tasks on macOS
 
-Nothing on this branch has run on macOS except the scenario benchmark. Do these
-before starting the conversion, and record the numbers in the pull request.
+These ran on 2026-09-17 on an M3 Max. `check`, `test`, and the renderer,
+input, fullscreen, palette, and quit smokes pass. The quake smoke fails at its
+external-grab step whenever another Huterm build on the host holds a global
+shortcut, such as a parallel smoke session; every earlier phase passes. The
+visual pass and the feel comparison in items 3 and 6 remain to be done.
 
 1. Run `mise run check` and `mise run test`. On Linux both pass at `4072d88`.
 2. Run the macOS smokes: `smoke:renderer`, `smoke:macos-input`,
@@ -121,9 +128,17 @@ before starting the conversion, and record the numbers in the pull request.
 - **GPUI keeps line layouts for its current and previous frame.** Work repeated
   inside one frame hits that cache and hides shaping cost.
 - **Reports are comparable only within one version of a benchmark.**
-- `bench:output-latency` samples the probe only while `HUTERM_RENDER_STATS=1`,
-  which also requests continuous animation frames. `painted_us` can therefore be
-  lower than in a normal session.
+- **Continuous frames hold the main thread.** With `HUTERM_RENDER_STATS=1`,
+  which requests a frame per display tick, the main thread sits in Metal present
+  until vsync, so the activity wake waits for the frame and `echo` reported
+  12.7 ms instead of 126 µs. `bench:output-latency` uses
+  `HUTERM_RENDER_STATS=events` for this reason. Any window that draws
+  continuously, such as `flood` or DOOM-fire, has the same main-thread
+  behaviour in ordinary use; unclamped mode in step 3 must account for it.
+- **An occluded macOS window gets no frames.** GPUI starts its display link
+  only while `occlusionState` reports the window visible, and stops it on the
+  occlusion callback. A locked screen or a covering window stops every
+  frame-driven benchmark and every `on_next_frame` callback.
 
 ## What the pump does today
 
@@ -164,6 +179,10 @@ calls `refresh_tab`.
 Remove the task in `TerminalView::new` in the same change. The signal supports
 one waiter.
 
+Make `HostEffectSink` set the activity signal when it queues an effect. Once the
+pump is no longer a fallback, clipboard writes would otherwise wait for the
+next terminal event.
+
 `refresh` then starts the snapshot itself, as it does today, so each event is
 handled once and the redundant snapshot disappears.
 
@@ -172,6 +191,12 @@ publishes another event at once, so an unpaced loop would run at the PTY chunk
 rate. A visible tab drains at most once per frame, as described next. A hidden
 tab needs only title and exit, so it can drain at most every 100 ms. The view
 ignores `Bell` events today.
+
+Tab visibility is not window visibility. The active tab of an occluded or
+minimized window has no frame clock, yet still needs title, exit, and
+close-on-exit handling. Pace its drain with the hidden-tab timer whenever the
+window delivers no frames, and hold at most one registered `on_next_frame`
+callback per view so an occluded window does not accumulate them.
 
 ### Frame pacing and the refresh clamp
 
@@ -205,6 +230,9 @@ value on config reload like `links`.
 timer. AGENTS.md records that `request_animation_frame` panics outside a view
 render in GPUI 0.2.2; `on_next_frame` does not depend on the current view, but
 verify that before relying on it.
+
+The 16 ms pump caps sustained output at 60 snapshots per second on macOS even
+when the display refreshes faster. The frame clock removes that cap.
 
 ### Animation clock
 
@@ -326,8 +354,13 @@ Measured and set aside, in case a later profile changes the ranking:
 1. Should unclamped mode have a floor between snapshots? Decide from the `flood`
    throughput measurement in step 3.
 2. What should the option be called, and should it live under `[terminal]`?
-3. Does `on_next_frame` fire for an occluded or minimized window on macOS? If
-   not, a deferred snapshot must not wait on it forever; the view becoming
-   visible already invalidates.
-4. Should steps 4 to 8 ship in the same pull request as steps 2 and 3, or
-   separately?
+3. Answered: `on_next_frame` does not fire for an occluded or minimized window
+   on macOS. GPUI's `start_display_link` returns early unless the window's
+   `occlusionState` is visible, and `window_did_change_occlusion_state` stops
+   the link. The callback vector is drained only by the request-frame closure.
+   See "Tab visibility is not window visibility" under the design.
+4. Answered: the groundwork ships first in its own pull request. Steps 2 and 3
+   follow in a second one; steps 4 to 8 later, after measuring idle wakeups
+   with `powermetrics` at `main` and with the pump body stubbed out. GPUI's
+   display link wakes the process on every vsync while a window is visible, so
+   removing the pump lowers per-tick work but not the wakeup rate.
