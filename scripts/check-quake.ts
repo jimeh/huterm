@@ -70,6 +70,7 @@ async function checkHidden(executable: string): Promise<void> {
   const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   try {
     await waitFor(async () => {
+      if (await Bun.file(join(directory, "failed")).exists()) throw new Error(`hidden probe failed: ${await readFile(join(directory, "failed"), "utf8")}`);
       if (app.exitCode !== null) throw new Error(`hidden probe exited ${app.exitCode}: ${diagnostics}`);
       return Bun.file(join(directory, "ready")).exists();
     }, "unmapped window creation");
@@ -562,9 +563,15 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         const grabDirectory = join(directory,"external-grab");
         await import("node:fs/promises").then(fs => fs.mkdir(grabDirectory));
         const grab = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: grabDirectory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"},stdout:"ignore",stderr:"pipe"});
+        let grabDiagnostics = "";
+        const grabErrors = (async () => { for await (const chunk of grab.stderr) grabDiagnostics += Buffer.from(chunk).toString(); })();
         let grabCleanupError: unknown;
         try {
-          await waitFor(async () => await Bun.file(join(grabDirectory,"ready")).exists() || await Bun.file(join(grabDirectory,"failed")).exists(),"separate process reports its external grab");
+          await waitFor(async () => {
+            if (await Bun.file(join(grabDirectory,"ready")).exists() || await Bun.file(join(grabDirectory,"failed")).exists()) return true;
+            if (grab.exitCode !== null) throw new Error(`external grab probe exited ${grab.exitCode} before reporting: ${grabDiagnostics}`);
+            return false;
+          },"separate process reports its external grab");
           if (await Bun.file(join(grabDirectory,"failed")).exists()) throw new Error(`external grab probe found no usable chords: ${await readFile(join(grabDirectory,"failed"),"utf8")}`);
           const grabChord = parseState(await readFile(join(grabDirectory,"ready"),"utf8")).chord;
           if (!grabChord) throw new Error("external grab probe published no chord");
@@ -597,8 +604,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             }
           }
       }
+      await grabErrors;
       if (grabCleanupError !== undefined) throw grabCleanupError;
-      if (await grab.exited !== 0) throw new Error("external grab process failed");
+      if (await grab.exited !== 0) throw new Error(`external grab process failed: ${grabDiagnostics}`);
       await writeFile(config,"[quake.profiles.default]\nwidth = 0");
       await command("app reload_config");
       await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"invalid profile reload rejection");
