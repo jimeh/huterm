@@ -1881,7 +1881,7 @@ impl Render for TerminalView {
         if let Some(benchmark) = &mut self.scroll_benchmark {
             benchmark.display_scale = window.scale_factor();
         }
-        if self.renderer.borrow().records_stats() {
+        if self.renderer.borrow().requests_continuous_frames() {
             window.request_animation_frame();
         }
         let snapshot = self.snapshot.clone();

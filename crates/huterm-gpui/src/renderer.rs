@@ -142,11 +142,14 @@ impl TerminalRenderer {
         theme: Theme,
         metrics: GridMetrics,
     ) -> Self {
-        let stats = renderer_stats_enabled().then(RendererStats::new);
+        let stats = renderer_stats_mode().map(RendererStats::new);
         let scroll_benchmark =
             scroll_benchmark_enabled().then(ScrollBenchmarkStats::default);
-        if stats.is_some() {
-            eprintln!("huterm-render stats=enabled");
+        if let Some(stats) = &stats {
+            eprintln!(
+                "huterm-render stats=enabled continuous_frames={}",
+                stats.continuous_frames
+            );
         }
         Self {
             snapshot: None,
@@ -165,6 +168,17 @@ impl TerminalRenderer {
 
     pub(super) fn records_stats(&self) -> bool {
         timing_enabled(self.stats.is_some(), self.scroll_benchmark.is_some())
+    }
+
+    /// Whether stats collection wants a frame on every display tick. Output
+    /// latency measurements must not: on a real display, continuous drawing
+    /// keeps the main thread in Metal present until vsync, which delays the
+    /// activity wake and paces every snapshot to the frame.
+    pub(super) fn requests_continuous_frames(&self) -> bool {
+        self.stats
+            .as_ref()
+            .is_some_and(|stats| stats.continuous_frames)
+            || self.scroll_benchmark.is_some()
     }
 
     pub(super) fn begin_scroll_sample(
@@ -1112,11 +1126,13 @@ struct RendererStats {
     output_applied: Vec<Duration>,
     output_painted: Vec<Duration>,
     pending_output: Option<Instant>,
+    continuous_frames: bool,
 }
 
 impl RendererStats {
-    fn new() -> Self {
+    fn new(mode: StatsMode) -> Self {
         Self {
+            continuous_frames: mode == StatsMode::ContinuousFrames,
             interval_started: Instant::now(),
             prepare_calls: 0,
             paint_calls: 0,
@@ -1194,7 +1210,12 @@ impl RendererStats {
                 self.output_painted.len(),
             );
         }
-        *self = Self::new();
+        let mode = if self.continuous_frames {
+            StatsMode::ContinuousFrames
+        } else {
+            StatsMode::Events
+        };
+        *self = Self::new(mode);
     }
 }
 
@@ -1212,9 +1233,29 @@ fn average_micros(total: Duration, count: u64) -> u128 {
     total.as_micros() / u128::from(count.max(1))
 }
 
-fn renderer_stats_enabled() -> bool {
-    std::env::var("HUTERM_RENDER_STATS")
-        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+/// How `HUTERM_RENDER_STATS` drives frames while collecting stats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatsMode {
+    /// `1` or `true`: request a frame on every display tick, so rolling
+    /// counters keep printing on hosts without other animation.
+    ContinuousFrames,
+    /// `events`: paint only when the application invalidates, so output
+    /// latency reflects an ordinary session.
+    Events,
+}
+
+fn renderer_stats_mode() -> Option<StatsMode> {
+    stats_mode_from(std::env::var("HUTERM_RENDER_STATS").ok()?.as_str())
+}
+
+fn stats_mode_from(value: &str) -> Option<StatsMode> {
+    if value == "1" || value.eq_ignore_ascii_case("true") {
+        Some(StatsMode::ContinuousFrames)
+    } else if value.eq_ignore_ascii_case("events") {
+        Some(StatsMode::Events)
+    } else {
+        None
+    }
 }
 
 fn timing_enabled(renderer_stats: bool, scroll_benchmark: bool) -> bool {
@@ -1852,6 +1893,15 @@ mod tests {
         assert!(!timing_enabled(false, false));
         assert!(timing_enabled(true, false));
         assert!(timing_enabled(false, true));
+    }
+
+    #[test]
+    fn stats_mode_selects_continuous_frames_only_for_the_boolean_form() {
+        assert_eq!(stats_mode_from("1"), Some(StatsMode::ContinuousFrames));
+        assert_eq!(stats_mode_from("TRUE"), Some(StatsMode::ContinuousFrames));
+        assert_eq!(stats_mode_from("events"), Some(StatsMode::Events));
+        assert_eq!(stats_mode_from("0"), None);
+        assert_eq!(stats_mode_from(""), None);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 /** Run Huterm against the echo workload and summarize its output latency probe. */
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { runSmokeProcess } from "./smoke-process.ts";
 
 const PREFIX = "huterm-render output ";
@@ -34,10 +36,21 @@ if (import.meta.main) {
   const [executable, workload, mode = "echo", seconds = "8"] = Bun.argv.slice(2);
   if (!executable || !workload) throw new Error("usage: run-output-latency.ts <huterm> <render_workload> [echo|flood] [seconds]");
   // The terminal starts its shell from another directory, so the path must be absolute.
-  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_RENDER_STATS: "1" };
+  // An empty configuration keeps the user's font, theme, and global shortcuts
+  // out of the measurement; a running Huterm would otherwise own the shortcuts.
+  const configDirectory = await mkdtemp(join(tmpdir(), "huterm-output-latency-"));
+  const config = join(configDirectory, "config.toml");
+  await Bun.write(config, "");
+  // "events" records the probe without requesting a frame per display tick;
+  // continuous drawing would otherwise hold the main thread in present.
+  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events" };
   if (mode === "echo") environment.HUTERM_RENDER_WORKLOAD = "echo";
-  // Huterm runs until stopped, so reaching the deadline is the expected outcome.
-  const outcome = await runSmokeProcess([executable], { timeoutMs: Number(seconds) * 1_000, env: environment, stream: false });
-  if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
-  console.log(`mode=${mode} ${summarize(parseIntervals(outcome.stderr))}`);
+  try {
+    // Huterm runs until stopped, so reaching the deadline is the expected outcome.
+    const outcome = await runSmokeProcess([executable], { timeoutMs: Number(seconds) * 1_000, env: environment, stream: false });
+    if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
+    console.log(`mode=${mode} ${summarize(parseIntervals(outcome.stderr))}`);
+  } finally {
+    await rm(configDirectory, { recursive: true, force: true });
+  }
 }
