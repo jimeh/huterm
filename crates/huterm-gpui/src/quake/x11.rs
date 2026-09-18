@@ -300,7 +300,8 @@ impl Window {
     /// the pump's sample instead of repeating the server round trips.
     #[expect(
         clippy::unused_self,
-        reason = "platform adapter shares an instance API with macOS"
+        clippy::unnecessary_wraps,
+        reason = "platform adapter shares the fallible instance API with macOS"
     )]
     pub fn blurred(&self, active: bool) -> anyhow::Result<bool> {
         Ok(!active)
