@@ -953,7 +953,12 @@ so staged README and agent-guide edits receive the same checks as nested docs.
 Quake work-area refits must preserve focus; only explicit summons request it.
 While initial activation has never been observed, SettleVisible may retry Show on
 a bounded cadence within the original deadline. Once observed, later app switches
-must never re-arm retries. A failed return-focus attempt must not undo a successful
+must never re-arm retries. Activation samples taken while a native fullscreen
+transition is unresolved, or while the observed fullscreen state differs from
+the target, are ignored: a still-active window must not cancel its Show as a
+Space exit begins, and AppKit can revert an activation granted before the
+Space switch ends. Hosted runners hit both after a fullscreen-to-windowed
+reload. A failed return-focus attempt must not undo a successful
 native hide.
 
 The XDND source publishes terminal acknowledgements before closing Xlib and
@@ -986,6 +991,12 @@ active and `NSApp.keyWindow` is nil or still names the quake window. The macOS
 witness `panel` command covers this in `smoke:macos-quake`; wait for
 `focus_observations` to advance after the observed key change before closing
 the panel, or the step can pass before the hide rule ever sampled the loss.
+The `ordinary activate_window` smoke command moves key status to the sibling
+Huterm window, which must still hide the quake. The external grab probe walks
+`GRAB_CANDIDATES`, owns the first free chord as `chord=`, verifies and releases
+a second as `free=` for Huterm's own registration case, or writes `failed` with
+every candidate's error and quits. Nothing in that probe may panic inside
+GPUI's launch callback, which cannot unwind and aborts with a crash dialog.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.

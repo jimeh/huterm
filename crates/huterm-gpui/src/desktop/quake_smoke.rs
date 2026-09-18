@@ -114,10 +114,17 @@ fn json_string(value: &str) -> String {
     escaped
 }
 fn publish(directory: &Path, name: &str, text: &str) {
-    let temporary = directory.join(format!("{name}.tmp"));
-    std::fs::write(&temporary, text).expect("write quake smoke observation");
-    std::fs::rename(temporary, directory.join(name))
+    try_publish(directory, name, text)
         .expect("publish quake smoke observation");
+}
+fn try_publish(
+    directory: &Path,
+    name: &str,
+    text: &str,
+) -> std::io::Result<()> {
+    let temporary = directory.join(format!("{name}.tmp"));
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(temporary, directory.join(name))
 }
 async fn execute(
     command: &str,
@@ -169,6 +176,15 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             })
             .detach();
         return Ok("native Space transition queued".into());
+    }
+    if name == "activate_window" {
+        handle
+            .context("activation host")?
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                cx.activate(true);
+            })?;
+        return Ok("activated".into());
     }
     if matches!(name, "confirm_close" | "cancel_close") {
         handle.context("confirmation host")?.update(
@@ -301,6 +317,86 @@ fn read_state(cx: &mut App) -> String {
 }
 
 struct HiddenProbe;
+
+/// An external process's exclusive global grab, kept alive with its manager.
+struct ExternalGrab {
+    chord: &'static str,
+    /// A later candidate that registered and was released again, for steps
+    /// that need a chord Huterm itself can own.
+    free: &'static str,
+    _manager: global_hotkey::GlobalHotKeyManager,
+}
+
+/// Candidate chords in Huterm keybinding syntax, least likely to be bound on
+/// a developer machine first. Only registration matters: the smoke never
+/// presses the chord, it only proves Huterm rejects a binding another process
+/// already owns.
+const GRAB_CANDIDATES: &[(&str, global_hotkey::hotkey::Code)] = &[
+    ("ctrl-alt-shift-f20", global_hotkey::hotkey::Code::F20),
+    ("ctrl-alt-shift-f19", global_hotkey::hotkey::Code::F19),
+    ("ctrl-alt-shift-f18", global_hotkey::hotkey::Code::F18),
+    ("ctrl-alt-shift-f17", global_hotkey::hotkey::Code::F17),
+    ("ctrl-alt-shift-f16", global_hotkey::hotkey::Code::F16),
+    // Xvfb's default keymap has no keycodes for the high function keys, so
+    // X11 needs letter and digit fallbacks, and the probe needs two of them.
+    ("ctrl-alt-shift-l", global_hotkey::hotkey::Code::KeyL),
+    ("ctrl-alt-shift-k", global_hotkey::hotkey::Code::KeyK),
+    ("ctrl-alt-shift-j", global_hotkey::hotkey::Code::KeyJ),
+    ("ctrl-alt-shift-9", global_hotkey::hotkey::Code::Digit9),
+    ("ctrl-alt-shift-8", global_hotkey::hotkey::Code::Digit8),
+];
+
+fn grab_free_chord() -> anyhow::Result<ExternalGrab> {
+    let manager = global_hotkey::GlobalHotKeyManager::new()
+        .map_err(|error| anyhow::anyhow!("native grab manager: {error}"))?;
+    let modifiers = global_hotkey::hotkey::Modifiers::CONTROL
+        | global_hotkey::hotkey::Modifiers::ALT
+        | global_hotkey::hotkey::Modifiers::SHIFT;
+    let hotkey = |code: &global_hotkey::hotkey::Code| {
+        global_hotkey::hotkey::HotKey::new(Some(modifiers), *code)
+    };
+    let mut errors = Vec::new();
+    let mut candidates = GRAB_CANDIDATES.iter();
+    let owned = candidates.find_map(|(chord, code)| {
+        match manager.register(hotkey(code)) {
+            Ok(()) => Some(*chord),
+            Err(error) => {
+                errors.push(format!("{chord}: {error}"));
+                None
+            }
+        }
+    });
+    let Some(chord) = owned else {
+        anyhow::bail!(
+            "every external grab candidate is already owned: {}",
+            errors.join("; ")
+        );
+    };
+    let free = candidates.find_map(|(chord, code)| {
+        let attempt = manager
+            .register(hotkey(code))
+            .and_then(|()| manager.unregister(hotkey(code)));
+        match attempt {
+            Ok(()) => Some(*chord),
+            Err(error) => {
+                errors.push(format!("{chord}: {error}"));
+                None
+            }
+        }
+    });
+    // Dropping the manager on this error releases the owned chord first.
+    let Some(free) = free else {
+        anyhow::bail!(
+            "no second free chord after owning {chord}: {}",
+            errors.join("; ")
+        );
+    };
+    Ok(ExternalGrab {
+        chord,
+        free,
+        _manager: manager,
+    })
+}
 impl gpui::Render for HiddenProbe {
     fn render(
         &mut self,
@@ -312,41 +408,25 @@ impl gpui::Render for HiddenProbe {
 }
 fn run_hidden_probe(directory: PathBuf) {
     crate::assets::application().run(move |cx| {
-        let grab = std::env::var_os("HUTERM_QUAKE_GRAB_PROBE").map(|_| {
-            let manager = global_hotkey::GlobalHotKeyManager::new()
-                .expect("native external grab manager");
-            manager
-                .register(global_hotkey::hotkey::HotKey::new(
-                    Some(
-                        global_hotkey::hotkey::Modifiers::CONTROL
-                            | global_hotkey::hotkey::Modifiers::ALT,
-                    ),
-                    global_hotkey::hotkey::Code::KeyL,
-                ))
-                .expect("external control-alt-L grab");
-            manager
-        });
-        let handle = cx
-            .open_window(
-                gpui::WindowOptions {
-                    show: false,
-                    focus: false,
-                    ..gpui::WindowOptions::default()
-                },
-                |_, cx| cx.new(|_| HiddenProbe),
-            )
-            .expect("create hidden native probe");
-        let visible = handle
-            .update(cx, |_, window, cx| {
-                crate::quake::native::Platform::new(cx)
-                    .and_then(|platform| platform.window(window))
-                    .and_then(|native| native.visible())
-            })
-            .expect("read native window")
-            .expect("native visibility");
-        publish(&directory, "ready", &format!("visible={visible}"));
+        // Nothing here may panic: GPUI's launch callback cannot unwind, so a
+        // panic aborts and leaves a crash dialog behind. Report failures
+        // through the `failed` file and request a clean quit instead.
+        let grab = match start_hidden_probe(&directory, cx) {
+            Ok(grab) => grab,
+            Err(error) => {
+                if try_publish(&directory, "failed", &format!("{error:#}"))
+                    .is_err()
+                {
+                    eprintln!("hidden probe failed: {error:#}");
+                }
+                cx.quit();
+                return;
+            }
+        };
         cx.spawn(async move |cx| {
-            for _ in 0..1000 {
+            // Bounded so an abandoned probe never outlives its smoke; the
+            // grab step runs a whole ordinary-exit check while this waits.
+            for _ in 0..6000 {
                 cx.background_executor()
                     .timer(Duration::from_millis(10))
                     .await;
@@ -359,4 +439,41 @@ fn run_hidden_probe(directory: PathBuf) {
         })
         .detach();
     });
+}
+
+/// Register the external grab when requested, open the hidden window, and
+/// publish readiness. Every failure returns instead of panicking.
+fn start_hidden_probe(
+    directory: &Path,
+    cx: &mut App,
+) -> anyhow::Result<Option<ExternalGrab>> {
+    let grab = if std::env::var_os("HUTERM_QUAKE_GRAB_PROBE").is_some() {
+        Some(grab_free_chord()?)
+    } else {
+        None
+    };
+    let handle = cx
+        .open_window(
+            gpui::WindowOptions {
+                show: false,
+                focus: false,
+                ..gpui::WindowOptions::default()
+            },
+            |_, cx| cx.new(|_| HiddenProbe),
+        )
+        .context("create hidden native probe")?;
+    let visible = handle
+        .update(cx, |_, window, cx| {
+            crate::quake::native::Platform::new(cx)
+                .and_then(|platform| platform.window(window))
+                .and_then(|native| native.visible())
+        })
+        .context("read native window")?
+        .context("native visibility")?;
+    let chord = grab.as_ref().map_or(String::new(), |grab| {
+        format!("\nchord={}\nfree={}", grab.chord, grab.free)
+    });
+    try_publish(directory, "ready", &format!("visible={visible}{chord}"))
+        .context("publish readiness")?;
+    Ok(grab)
 }
