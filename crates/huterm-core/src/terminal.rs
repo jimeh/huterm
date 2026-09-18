@@ -39,6 +39,7 @@ pub struct RuntimeClient {
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
     events: Arc<Mutex<Receiver<TerminalEvent>>>,
+    activity: async_channel::Receiver<()>,
     invalidation_pending: Arc<AtomicBool>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     host_effect_sink: HostEffectSink,
@@ -163,6 +164,9 @@ impl RuntimeClient {
                 fail_lookup: false,
             })
             .map_err(|_| RuntimeError::Stopped)?;
+        // The runtime blocks on its message queue between polls of the control
+        // channel. A full queue means it is already busy and will poll soon.
+        let _ = self.messages.try_send(RuntimeMessage::Wake);
         Ok(SnapshotRequest { receiver })
     }
 
@@ -225,6 +229,21 @@ impl RuntimeClient {
             self.invalidation_pending.store(false, Ordering::Release);
         }
         Ok(event)
+    }
+
+    /// Completes once the runtime has published events since the last call.
+    ///
+    /// The signal carries no data and coalesces: drain events with
+    /// [`Self::try_recv_event`]. Clones share one signal, so give it a single
+    /// waiter.
+    ///
+    /// # Errors
+    /// Returns an error when the terminal has stopped.
+    pub async fn wait_for_activity(&self) -> Result<(), RuntimeError> {
+        self.activity
+            .recv()
+            .await
+            .map_err(|_| RuntimeError::Stopped)
     }
 
     /// Checks whether the PTY has a foreground job other than its shell.
@@ -320,6 +339,9 @@ pub struct SnapshotReply {
     pub snapshot_duration: Duration,
     /// Monotonic instant when snapshot construction completed.
     pub completed_at: Instant,
+    /// Monotonic instant of the earliest invalidation this snapshot is the
+    /// first to include. `None` when nothing changed since the last snapshot.
+    pub invalidated_at: Option<Instant>,
 }
 
 impl SnapshotRequest {
@@ -425,7 +447,8 @@ impl TerminalRuntime {
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
-        let (event_sender, event_receiver) = mpsc::channel();
+        let (event_sender, event_receiver, activity) =
+            EventPublisher::channel();
         let invalidation_pending = Arc::new(AtomicBool::new(false));
         let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
@@ -490,6 +513,7 @@ impl TerminalRuntime {
             closing,
             queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
+            activity,
             invalidation_pending,
             shutdown_groups,
             host_effect_sink,
@@ -585,6 +609,8 @@ enum RuntimeMessage {
         cell: CellSize,
     },
     Presentation(Box<PresentationUpdate>),
+    /// Ends the wait on this queue so a queued control is handled promptly.
+    Wake,
 }
 
 #[derive(Debug)]
@@ -614,7 +640,7 @@ enum RuntimeControl {
 fn complete_snapshot_request(
     result: Result<SnapshotReply, RuntimeError>,
     reply: &async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
-    events: &mpsc::Sender<TerminalEvent>,
+    events: &EventPublisher,
     terminal_id: TerminalId,
     closing: &AtomicBool,
 ) {
@@ -644,7 +670,7 @@ fn run_terminal(
     message_sender: SyncSender<RuntimeMessage>,
     controls: Receiver<RuntimeControl>,
     control_sender: Sender<RuntimeControl>,
-    events: mpsc::Sender<TerminalEvent>,
+    events: EventPublisher,
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
@@ -724,9 +750,11 @@ fn run_terminal(
     drop(message_sender);
     let _ = startup.send(Ok(()));
     let _ = events.send(TerminalEvent::Ready(terminal_id));
+    let mut invalidated_at = None;
     publish_invalidation(
         &events,
         &invalidation_pending,
+        &mut invalidated_at,
         terminal_id,
         engine.generation(),
     );
@@ -788,6 +816,7 @@ fn run_terminal(
                             requested_viewport,
                             snapshot_duration,
                             completed_at: Instant::now(),
+                            invalidated_at: invalidated_at.take(),
                         })
                     })();
                     complete_snapshot_request(
@@ -936,6 +965,7 @@ fn run_terminal(
                 publish_invalidation(
                     &events,
                     &invalidation_pending,
+                    &mut invalidated_at,
                     terminal_id,
                     engine.generation(),
                 );
@@ -1007,6 +1037,7 @@ fn run_terminal(
                 publish_invalidation(
                     &events,
                     &invalidation_pending,
+                    &mut invalidated_at,
                     terminal_id,
                     engine.generation(),
                 );
@@ -1016,6 +1047,7 @@ fn run_terminal(
                     Ok(true) => publish_invalidation(
                         &events,
                         &invalidation_pending,
+                        &mut invalidated_at,
                         terminal_id,
                         engine.generation(),
                     ),
@@ -1026,6 +1058,7 @@ fn run_terminal(
                     }
                 }
             }
+            RuntimeMessage::Wake => {}
         }
     }
 
@@ -1130,7 +1163,7 @@ fn observe_child_exit(
     child: &mut dyn portable_pty::Child,
     lifecycle: &crate::jobs::JobLifecycle,
     terminal_id: TerminalId,
-    events: &Sender<TerminalEvent>,
+    events: &EventPublisher,
     exited: &mut bool,
     input_closed: &AtomicBool,
     pending_writes: &mut VecDeque<Vec<u8>>,
@@ -1233,7 +1266,7 @@ fn handle_effect(
     terminal_id: TerminalId,
     writer: &SyncSender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
-    events: &mpsc::Sender<TerminalEvent>,
+    events: &EventPublisher,
 ) -> WriterQueueState {
     match effect {
         EngineEffect::PtyWrite(bytes) => {
@@ -1297,7 +1330,7 @@ fn flush_pending_write(
 }
 
 fn report_failure(
-    events: &mpsc::Sender<TerminalEvent>,
+    events: &EventPublisher,
     terminal_id: TerminalId,
     message: String,
 ) {
@@ -1305,6 +1338,32 @@ fn report_failure(
         terminal_id,
         message,
     });
+}
+
+/// Publishes lifecycle events and signals that a client should drain them.
+#[derive(Clone, Debug)]
+struct EventPublisher {
+    events: Sender<TerminalEvent>,
+    activity: async_channel::Sender<()>,
+}
+
+impl EventPublisher {
+    fn channel() -> (Self, Receiver<TerminalEvent>, async_channel::Receiver<()>)
+    {
+        let (events, receiver) = mpsc::channel();
+        let (activity, signal) = async_channel::bounded(1);
+        (Self { events, activity }, receiver, signal)
+    }
+
+    fn send(
+        &self,
+        event: TerminalEvent,
+    ) -> Result<(), mpsc::SendError<TerminalEvent>> {
+        self.events.send(event)?;
+        // A full signal already has a wake pending for this event.
+        let _ = self.activity.try_send(());
+        Ok(())
+    }
 }
 
 fn input_bytes(input: &TerminalInput) -> usize {
@@ -1321,11 +1380,15 @@ fn input_bytes(input: &TerminalInput) -> usize {
 }
 
 fn publish_invalidation(
-    events: &mpsc::Sender<TerminalEvent>,
+    events: &EventPublisher,
     pending: &AtomicBool,
+    invalidated_at: &mut Option<Instant>,
     terminal_id: TerminalId,
     generation: u64,
 ) {
+    // Coalesced invalidations keep the earliest instant, so the next snapshot
+    // reports how long its oldest content waited.
+    invalidated_at.get_or_insert_with(Instant::now);
     if pending
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -1565,7 +1628,7 @@ mod tests {
     #[test]
     fn snapshot_failure_reports_error_and_enters_runtime_cleanup() {
         let (reply, receiver) = async_channel::bounded(1);
-        let (events, event_receiver) = mpsc::channel();
+        let (events, event_receiver, _activity) = EventPublisher::channel();
         let closing = AtomicBool::new(false);
         let id = TerminalId::new(96);
         complete_snapshot_request(
@@ -1967,6 +2030,43 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn published_events_coalesce_into_one_pending_activity_signal() {
+        let (events, receiver, activity) = EventPublisher::channel();
+        let id = TerminalId::new(97);
+        events.send(TerminalEvent::Ready(id)).unwrap();
+        events.send(TerminalEvent::Bell(id)).unwrap();
+
+        assert!(activity.try_recv().is_ok());
+        assert!(activity.try_recv().is_err(), "signals must coalesce");
+        assert_eq!(receiver.try_iter().count(), 2, "events must not");
+
+        events.send(TerminalEvent::Bell(id)).unwrap();
+        assert!(activity.try_recv().is_ok(), "a drained signal re-arms");
+    }
+
+    #[test]
+    fn runtime_signals_activity_for_its_published_events() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(98),
+            &command("printf READY; IFS= read -r line"),
+        )
+        .expect("runtime should spawn");
+        let client = runtime.client();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while client.activity.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "runtime published no activity signal"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            client.try_recv_event().unwrap().is_some(),
+            "a signal means an event is waiting"
+        );
     }
 
     #[test]

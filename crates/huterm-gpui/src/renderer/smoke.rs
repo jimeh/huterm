@@ -200,6 +200,17 @@ impl Render for Fixture {
     }
 }
 
+fn cached_geometry(
+    renderer: &TerminalRenderer,
+    ch: char,
+    columns: u16,
+) -> &Arc<super::builtin::Geometry> {
+    renderer
+        .graphics
+        .get(ch, columns)
+        .expect("prepared builtin geometry")
+}
+
 fn check(panel: &mut Panel, window: &mut Window) {
     let renderer = &mut panel.renderer;
     assert_eq!(
@@ -209,10 +220,10 @@ fn check(panel: &mut Panel, window: &mut Window) {
     );
     check_wide(panel);
     let renderer = &mut panel.renderer;
-    let first = Arc::clone(&renderer.graphics[&('▐', 1)]);
+    let first = Arc::clone(cached_geometry(renderer, '▐', 1));
     // An unchanged snapshot reuses prepared geometry.
     renderer.prepare(Some(&panel.snapshot), window);
-    assert!(Arc::ptr_eq(&first, &renderer.graphics[&('▐', 1)]));
+    assert!(Arc::ptr_eq(&first, cached_geometry(renderer, '▐', 1)));
 
     let row = &renderer.rows[25];
     assert!(
@@ -247,7 +258,7 @@ fn check(panel: &mut Panel, window: &mut Window) {
     renderer.reconfigure(renderer.font_family.clone(), theme, renderer.metrics);
     renderer.prepare(Some(&panel.snapshot), window);
     assert!(
-        Arc::ptr_eq(&first, &renderer.graphics[&('▐', 1)]),
+        Arc::ptr_eq(&first, cached_geometry(renderer, '▐', 1)),
         "theme reload reuses color-free geometry"
     );
     let original_metrics = renderer.metrics;
@@ -258,7 +269,7 @@ fn check(panel: &mut Panel, window: &mut Window) {
     );
     renderer.prepare(Some(&panel.snapshot), window);
     assert!(
-        !Arc::ptr_eq(&first, &renderer.graphics[&('▐', 1)]),
+        !Arc::ptr_eq(&first, cached_geometry(renderer, '▐', 1)),
         "display scale invalidates geometry"
     );
     renderer.reconfigure(
@@ -418,7 +429,7 @@ fn check_wide(panel: &Panel) {
             panic!("wide builtins must bypass font shaping")
         };
         assert!(
-            Arc::ptr_eq(geometry, &renderer.graphics[&(ch, columns)]),
+            Arc::ptr_eq(geometry, cached_geometry(renderer, ch, columns)),
             "wrong width at column {column}"
         );
     }

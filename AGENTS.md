@@ -53,6 +53,17 @@ Run `mise tasks` to discover the full task set.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
+- `mise run bench:renderer-scenarios` times production `prepare` and `paint`
+  against synthetic snapshots, one scenario per process. Pass
+  `-- --output <file>` to record a report and `-- --compare <file>` to diff
+  against one. It takes one prepare or paint sample per frame, so Linux needs
+  `twm`.
+- `mise run bench:output-latency` reports the delay from a parsed invalidation
+  to an applied snapshot for keystroke-paced output; pass `-- flood` to check
+  that sustained output stays paced. `ci:benchmarks` runs the `echo` mode with
+  `HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000`, the only automated check of
+  the activity-driven snapshot path: without it the median waits for the
+  16 ms refresh pump.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint
@@ -298,8 +309,15 @@ while another workspace spawns or closes. TerminalView destruction only detaches
 window commands use assessed attachment close to detach or delete the final
 view's session.
 Use one refresh pump per window to drain bounded batches of tab events. Only the
-active tab may begin a snapshot request. Keep ChromeLayout as the shared source
-of terminal bounds for painting, mouse input, scrollbars, and PTY resizing.
+active tab may begin a snapshot request. A visible TerminalView also starts a
+snapshot when its runtime signals activity, paced to the leading edge so
+sustained output stays with the pump. That path must not drain terminal events:
+the pump compares each tab's title and exit state around its own drain, so
+events consumed elsewhere leave the tab bar stale and miss close-on-exit. Do not
+skip a pump invalidation by comparing generations; presentation updates
+invalidate without advancing the content generation. Keep ChromeLayout as the
+shared source of terminal bounds for painting, mouse input, scrollbars, and PTY
+resizing.
 GPUI close callbacks must return false while asynchronous checks and cleanup run.
 Carry close intent across pending operations, and defer application quit until
 all pending spawns have published or failed. Foreground checks belong to the PTY

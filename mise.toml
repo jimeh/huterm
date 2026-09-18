@@ -202,6 +202,25 @@ if [ "$status" -ne 124 ]; then
 fi
 '''
 
+[tasks."bench:renderer-scenarios"]
+depends = ["ghostty:prepare", "scripts:install"]
+description = "Measure release renderer prepare and paint per synthetic scenario; pass --output or --compare after --"
+# Mise appends task arguments to the final command.
+run = [
+  "bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example renderer_bench",
+  "bash scripts/headless.sh bun scripts/run-renderer-bench.ts target/release/examples/renderer_bench",
+]
+
+[tasks."bench:output-latency"]
+depends = ["ghostty:prepare", "scripts:install"]
+description = "Measure delay from terminal output to an applied snapshot; pass echo or flood after --"
+# Mise appends task arguments to the final command.
+run = [
+  "bash scripts/build-exec.sh cargo build --release --locked -p huterm",
+  "bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload",
+  "bash scripts/headless.sh bun scripts/run-output-latency.ts target/release/huterm target/release/examples/render_workload",
+]
+
 [tasks."bench:scroll"]
 depends = ["ghostty:prepare"]
 description = "Measure release-mode scroll coordination and rendering"
@@ -474,7 +493,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/linux/entrypoint.sh"
+run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
@@ -921,9 +940,13 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll and link lookup budgets for Ghostty"
+description = "Run CI scroll, output latency, and link lookup budgets for Ghostty"
 depends = ["verify:toolchain"]
-run = ["mise run bench:scroll", "mise run bench:links"]
+run = [
+  "mise run bench:scroll",
+  "HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000 mise run bench:output-latency",
+  "mise run bench:links",
+]
 
 [tasks."smoke:renderer"]
 description = "Verify built-in terminal graphics through native GPUI preparation and paint"

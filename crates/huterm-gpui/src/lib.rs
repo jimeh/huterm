@@ -134,6 +134,16 @@ pub fn run_renderer_smoke() {
     renderer::smoke::run();
 }
 
+/// Runs one isolated renderer benchmark scenario.
+///
+/// # Errors
+/// Returns an error when the scenario or iteration environment is invalid.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_renderer_bench() -> anyhow::Result<()> {
+    renderer::bench::run()
+}
+
 /// Runs the isolated native links and file-drop verification executable.
 #[doc(hidden)]
 #[cfg(any(target_os = "macos", target_os = "linux"))]

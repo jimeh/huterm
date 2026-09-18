@@ -8,6 +8,8 @@ mod box_drawing;
 mod geometric_shapes;
 mod powerline;
 
+use std::sync::Arc;
+
 use gpui::{
     Bounds, Hsla, PathBuilder, Pixels, Point, Size, Window, fill, point, px,
     size,
@@ -20,8 +22,77 @@ use super::GridMetrics;
 pub(super) fn character(text: &str) -> Option<char> {
     let mut chars = text.chars();
     let ch = chars.next()?;
-    (chars.next().is_none() && matches!(ch, '\u{2500}'..='\u{259f}' | '\u{e0b0}'..='\u{e0bf}' | '\u{e0d2}' | '\u{e0d4}' | '\u{25e2}'..='\u{25e5}' | '\u{25f8}'..='\u{25fa}' | '\u{25ff}'))
-        .then_some(ch)
+    (chars.next().is_none() && slot(ch).is_some()).then_some(ch)
+}
+
+const SLOTS: usize = 186;
+
+/// Dense index of a supported scalar. This is the list of built-in glyphs.
+fn slot(ch: char) -> Option<usize> {
+    let code = ch as usize;
+    Some(match ch {
+        '\u{2500}'..='\u{259f}' => code - 0x2500,
+        '\u{e0b0}'..='\u{e0bf}' => 160 + code - 0xe0b0,
+        '\u{e0d2}' => 176,
+        '\u{e0d4}' => 177,
+        '\u{25e2}'..='\u{25e5}' => 178 + code - 0x25e2,
+        '\u{25f8}'..='\u{25fa}' => 182 + code - 0x25f8,
+        '\u{25ff}' => 185,
+        _ => return None,
+    })
+}
+
+/// Shared geometry per glyph and cell span, indexed without hashing because
+/// graphics-heavy screens look one up for almost every cell.
+pub(super) struct GeometryCache {
+    slots: Vec<Option<Arc<Geometry>>>,
+}
+
+impl Default for GeometryCache {
+    fn default() -> Self {
+        Self {
+            slots: vec![None; SLOTS * 2],
+        }
+    }
+}
+
+impl GeometryCache {
+    fn index(ch: char, columns: u16) -> Option<usize> {
+        Some(slot(ch)? * 2 + usize::from(columns > 1))
+    }
+
+    /// Returns the geometry and whether it was already cached. `ch` must come
+    /// from [`character`]; any other scalar yields empty geometry.
+    pub(super) fn get_or_insert(
+        &mut self,
+        ch: char,
+        columns: u16,
+        metrics: GridMetrics,
+    ) -> (Arc<Geometry>, bool) {
+        let Some(entry) = Self::index(ch, columns)
+            .and_then(|index| self.slots.get_mut(index))
+        else {
+            return (Arc::new(Geometry::default()), false);
+        };
+        if let Some(geometry) = entry {
+            return (Arc::clone(geometry), true);
+        }
+        let geometry = Arc::new(Geometry::new(ch, metrics, columns));
+        *entry = Some(Arc::clone(&geometry));
+        (geometry, false)
+    }
+
+    pub(super) fn get(&self, ch: char, columns: u16) -> Option<&Arc<Geometry>> {
+        self.slots.get(Self::index(ch, columns)?)?.as_ref()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.slots.fill(None);
+    }
 }
 
 #[derive(Default)]
@@ -170,28 +241,38 @@ impl Geometry {
         canvas.geometry
     }
 
+    /// Rectangle and path primitives emitted by every paint of this glyph.
+    pub(super) fn primitive_counts(&self) -> (usize, usize) {
+        (self.rectangles.len(), self.strokes.len() + self.fills.len())
+    }
+
     pub(super) fn paint(
         &self,
         origin: Point<Pixels>,
         color: Hsla,
         window: &mut Window,
     ) {
+        // `Canvas::shaded_rect` clamps rectangles to the cell.
+        for rectangle in &self.rectangles {
+            let mut tint = color;
+            tint.a *= rectangle.opacity;
+            window.paint_quad(fill(
+                Bounds::new(
+                    origin + rectangle.bounds.origin,
+                    rectangle.bounds.size,
+                ),
+                tint,
+            ));
+        }
+        if self.strokes.is_empty() && self.fills.is_empty() {
+            return;
+        }
+        // Diagonal strokes overshoot the cell, so only paths need the mask.
         window.with_content_mask(
             Some(gpui::ContentMask {
                 bounds: Bounds::new(origin, self.size),
             }),
             |window| {
-                for rectangle in &self.rectangles {
-                    let mut tint = color;
-                    tint.a *= rectangle.opacity;
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            origin + rectangle.bounds.origin,
-                            rectangle.bounds.size,
-                        ),
-                        tint,
-                    ));
-                }
                 for (stroke, filled) in self
                     .strokes
                     .iter()

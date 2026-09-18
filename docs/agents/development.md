@@ -79,7 +79,10 @@ arguments, including a focused Cargo test or `mise run lint`. Before direct
 Cargo commands on a cold workspace, run `mise run linux:exec -- mise run
 ghostty:prepare`, using the same `--arch` selection for both invocations.
 These checks exercise Linux X11 rendering, not native Wayland or physical GPU
-behavior. Keep timing benchmarks on native hardware.
+behavior. Keep timing benchmarks on native hardware, except
+`bench:renderer-scenarios`: it times CPU work only, so before and after reports
+from the same container are comparable. See
+[the renderer performance notes](../performance/gpui-terminal-renderer.md).
 
 `package:linux:container` builds and verifies the native-architecture AppImage
 and tarball in the pinned Ubuntu 22.04 image, then replaces only the matching

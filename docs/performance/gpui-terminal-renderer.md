@@ -115,6 +115,134 @@ animated grid under Xvfb, and prints `huterm-render` timing lines. Setting only
 `HUTERM_RENDER_STATS=1` while running Huterm enables rolling renderer counters
 on platforms that deliver continuous animation frames.
 
+With `HUTERM_RENDER_STATS` set, each interval that applied a snapshot also
+prints a `huterm-render output` line. `applied_us` is the delay from a
+terminal's earliest unseen invalidation to its snapshot reaching the view, which
+includes the wait for the window refresh pump. `painted_us` extends that delay
+to the end of the paint that shows the snapshot.
+
+`HUTERM_RENDER_STATS=1` requests a frame on every display tick. On a real
+display that keeps the main thread in Metal present until vsync, so the
+activity wake and every snapshot wait for the frame: on macOS it reported an
+`echo` applied median of 12.7 ms where an ordinary session applies in 126 µs.
+`HUTERM_RENDER_STATS=events` records the same counters while painting only when
+the application invalidates. Use it for latency; the rolling per-frame counters
+then print only while output keeps arriving.
+
+### Output latency
+
+`mise run bench:output-latency` runs Huterm against `render_workload` for eight
+seconds and summarizes the `huterm-render output` lines, skipping the first
+interval. The default `echo` mode writes a few bytes about every 100 ms, so each
+write is an isolated update like an echoed keystroke. Setting
+`HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US` fails the run when the `echo` applied
+median exceeds it; `ci:benchmarks` uses 5000 µs, which pump-paced medians of
+8 to 12 ms exceed on every host measured. Pass `-- flood` for the
+animated grid, which checks that sustained output stays paced. `applied_us` is
+valid under Xvfb; `painted_us` there reflects GPUI's 60 Hz refresh timer rather
+than a display.
+
+A terminal view starts a snapshot as soon as its runtime signals activity, when
+it is visible and its last snapshot started at least 8 ms earlier. Otherwise the
+window refresh pump starts it on its next 16 ms tick. The pump remains the only
+consumer of terminal events. A snapshot request also wakes the runtime thread,
+which otherwise polls its control channel every 2 ms. Linux x86_64 medians, with
+maximums in parentheses:
+
+| Configuration | `echo` applied | `flood` applied | `flood` snapshots per second |
+| --- | --- | --- | --- |
+| Pump only | 10.4 ms (17.1) | 16.2 ms (32.4) | 60 |
+| Activity snapshot | 2.2 ms (11.2) | 12.8 ms (31.7) | 89 |
+| Activity snapshot and runtime wake | 0.4 ms (6.3) | 12.3 ms (46.6) | 80 |
+
+macOS arm64 medians on 2026-09-18 with `HUTERM_RENDER_STATS=events` on a
+MacBook Pro M3 Max built-in display, maximums in parentheses:
+
+| Mode | Applied | Painted | Snapshots per second |
+| --- | --- | --- | --- |
+| `echo` | 126 µs (1.3 ms) | 5.1 ms (8.9) | 10 |
+| `flood` | 14.4 ms (19.6) | 17.2 ms (26.3) | 61 |
+
+`flood` holds 61 snapshots per second because the 16 ms pump paces sustained
+output, even on a display that refreshes faster than 60 Hz.
+
+After an activity snapshot, the pump still drains the queued invalidation and
+starts one more snapshot, which reuses every row. It cannot be skipped by
+comparing generations: presentation updates invalidate without advancing the
+content generation.
+
+### Renderer scenarios
+
+`bench:renderer` depends on PTY throughput and snapshot scheduling, and its
+workload paints only built-in block rectangles. To measure the renderer alone,
+run:
+
+```sh
+mise run bench:renderer-scenarios -- --output baseline.json
+mise run bench:renderer-scenarios -- --compare baseline.json
+```
+
+Each scenario runs the production `prepare` and `paint` against synthetic 160 by
+50 snapshots in a release build, in its own process, five times by default. The
+report gives the median of the per-process medians, the overall minimum, and
+counts that do not depend on timing. `--compare` adds the change against an
+earlier report.
+
+| Scenario | Measures |
+| --- | --- |
+| `ascii` | Full rebuild and paint of dense styled text |
+| `blocks` | The `bench:renderer` half-block grid: built-in rectangles only |
+| `boxes` | A bordered TUI whose rounded corners, diagonals, and powerline separators paint as paths |
+| `churn` | A full redraw of about 480 distinct characters after two single-row updates; cache misses show what those updates evicted |
+| `scroll` | Output scrolling by one row: retained rows shift and one is rebuilt |
+| `selection` | `ascii` painted under a full-screen selection with a selection foreground |
+
+The same task runs in the Linux test container, which suits macOS hosts and
+keeps host load and fonts out of the comparison:
+
+```sh
+mise run linux:exec -- mise run bench:renderer-scenarios -- \
+  --output target/bench/baseline.json
+mise run linux:exec -- mise run bench:renderer-scenarios -- \
+  --compare target/bench/baseline.json
+```
+
+Keep container reports under `target`: the workspace sync deletes other
+untracked files but preserves that directory in the worktree's cache volume.
+Container timings come from a virtual machine on macOS, so compare them only
+with reports from the same container and host.
+
+Each frame prepares one step and paints it, and a measured step records both
+timings. Preparing every step inside one frame hid shaping cost: GPUI keeps line
+layouts for its current and previous frame, so a layout the renderer had evicted
+came back from that cache instead of the platform shaper. Repeated paints inside
+one frame grow that frame's scene and inflated later samples threefold. Linux
+therefore needs `twm`, because Xvfb without a window manager never reports the
+window visible and GPUI stops after one frame.
+
+Sampling finishes within about 1.5 seconds of process start, and `elapsed_ms` on
+each process's `phase=window` line reports when it ended. On macOS arm64 the same
+paint cost 2.2 to 2.7 times more once the process was about two seconds old: an
+`ascii` paint measured 0.5 ms early and 1.1 to 1.4 ms later, presumably because
+the scheduler stops favoring a lightly loaded process. The early state repeats
+within about 2%, so it is the one to compare, but a terminal in ordinary use
+spends its time in the slower state. Raising
+`HUTERM_RENDERER_BENCH_ITERATIONS` moves samples into that state.
+
+Reports are comparable only when produced by the same version of the benchmark.
+Moving preparation to one step per frame raised prepare timings about 50% for
+the same code, because each step now starts with colder CPU caches, and
+recording paint alongside each step shifted paint timings by up to 10%.
+Timings include scheduler preemption, so compare medians and minimums, and treat
+paint differences under about 10% as noise. Two consecutive five-run baselines on
+one Linux host differed by about 3% or less in every median; two-run reports in
+the container differed by up to 6%.
+
+Glyph layout cache misses cost far more on some hosts than others, because the
+cost of shaping one cell depends on the installed fonts. The same 426 misses in
+`churn` took 26 ms on a desktop Linux host and 0.7 ms in the container, which
+installs only DejaVu.
+
 `mise run bench:scroll` accounts for this limitation by gating snapshot elapsed
 time, wakeup delay, returned offsets, and queue bounds from completion-time
 records. It also checks renderer elapsed time, row reuse, and input-to-paint

@@ -1,3 +1,4 @@
+pub(crate) mod bench;
 mod builtin;
 pub(crate) mod smoke;
 
@@ -95,13 +96,21 @@ pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
     layouts: GlyphLayoutCache<Arc<LineLayout>>,
-    graphics: HashMap<(char, u16), Arc<builtin::Geometry>>,
+    graphics: builtin::GeometryCache,
     metrics: GridMetrics,
     font_family: String,
     theme: Theme,
     selection: Option<BufferRange>,
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
+    last_prepare: PrepareOutcome,
+}
+
+/// Work done by the most recent `prepare` call.
+#[derive(Clone, Copy, Default)]
+struct PrepareOutcome {
+    rebuilt_rows: usize,
+    cache: CacheActivity,
 }
 
 impl TerminalRenderer {
@@ -133,28 +142,43 @@ impl TerminalRenderer {
         theme: Theme,
         metrics: GridMetrics,
     ) -> Self {
-        let stats = renderer_stats_enabled().then(RendererStats::new);
+        let stats = renderer_stats_mode().map(RendererStats::new);
         let scroll_benchmark =
             scroll_benchmark_enabled().then(ScrollBenchmarkStats::default);
-        if stats.is_some() {
-            eprintln!("huterm-render stats=enabled");
+        if let Some(stats) = &stats {
+            eprintln!(
+                "huterm-render stats=enabled continuous_frames={}",
+                stats.continuous_frames
+            );
         }
         Self {
             snapshot: None,
             rows: Vec::new(),
             layouts: GlyphLayoutCache::default(),
-            graphics: HashMap::new(),
+            graphics: builtin::GeometryCache::default(),
             metrics,
             font_family,
             theme,
             selection: None,
             stats,
             scroll_benchmark,
+            last_prepare: PrepareOutcome::default(),
         }
     }
 
     pub(super) fn records_stats(&self) -> bool {
         timing_enabled(self.stats.is_some(), self.scroll_benchmark.is_some())
+    }
+
+    /// Whether stats collection wants a frame on every display tick. Output
+    /// latency measurements must not: on a real display, continuous drawing
+    /// keeps the main thread in Metal present until vsync, which delays the
+    /// activity wake and paces every snapshot to the frame.
+    pub(super) fn requests_continuous_frames(&self) -> bool {
+        self.stats
+            .as_ref()
+            .is_some_and(|stats| stats.continuous_frames)
+            || self.scroll_benchmark.is_some()
     }
 
     pub(super) fn begin_scroll_sample(
@@ -182,6 +206,20 @@ impl TerminalRenderer {
                 returned_offset,
                 wakeup_delay,
             );
+        }
+    }
+
+    /// Records how long the oldest content of an applied snapshot waited, and
+    /// keeps its instant so the next paint reports the delay to pixels.
+    pub(super) fn record_output_applied(
+        &mut self,
+        invalidated_at: Option<Instant>,
+    ) {
+        if let (Some(stats), Some(invalidated_at)) =
+            (&mut self.stats, invalidated_at)
+        {
+            stats.output_applied.push(invalidated_at.elapsed());
+            stats.pending_output.get_or_insert(invalidated_at);
         }
     }
 
@@ -253,6 +291,20 @@ impl TerminalRenderer {
             return;
         };
 
+        let metrics = self.metrics;
+        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
+        // One quad covers every cell with the theme background, so rows keep
+        // quads only for cells that differ from it.
+        window.paint_quad(fill(
+            Bounds::new(
+                bounds.origin,
+                size(
+                    grid_width,
+                    metrics.cell_height * f32::from(snapshot.size.rows),
+                ),
+            ),
+            rgb_color(self.theme.background),
+        ));
         for (row_index, row) in self.rows.iter().enumerate() {
             for background in &row.backgrounds {
                 window.paint_quad(fill(
@@ -279,8 +331,6 @@ impl TerminalRenderer {
             );
         }
 
-        let metrics = self.metrics;
-        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
         for (row_index, row) in self.rows.iter().enumerate() {
             let row_bounds = Bounds::new(
                 cell_origin(bounds.origin, 0, row_index, metrics),
@@ -364,6 +414,10 @@ impl TerminalRenderer {
         rebuilt_rows: usize,
         cache: CacheActivity,
     ) {
+        self.last_prepare = PrepareOutcome {
+            rebuilt_rows,
+            cache,
+        };
         let duration = started.map(|started| started.elapsed());
         if let (Some(stats), Some(duration)) = (&mut self.stats, duration) {
             stats.record_prepare(duration, rebuilt_rows, cache);
@@ -422,7 +476,7 @@ struct PreparedDecoration {
 fn prepare_row(
     cells: &[Cell],
     layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
-    graphics: &mut HashMap<(char, u16), Arc<builtin::Geometry>>,
+    graphics: &mut builtin::GeometryCache,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
     font: (&str, GridMetrics),
@@ -455,15 +509,11 @@ fn prepare_row(
             } else {
                 1
             };
-            let mut hit = true;
-            let geometry = graphics.entry((ch, columns)).or_insert_with(|| {
-                hit = false;
-                Arc::new(builtin::Geometry::new(ch, metrics, columns))
-            });
+            let (geometry, hit) = graphics.get_or_insert(ch, columns, metrics);
             cache_activity.record(hit);
             row.glyphs.push(PreparedGlyph {
                 column: u16::try_from(column).unwrap_or(u16::MAX),
-                content: GlyphContent::Builtin(Arc::clone(geometry)),
+                content: GlyphContent::Builtin(geometry),
                 color: rgb_color(display_foreground(
                     resolve_color(cell.foreground, theme),
                     cell.style.dim,
@@ -509,11 +559,14 @@ fn prepare_backgrounds(
         {
             end += 1;
         }
-        backgrounds.push(PreparedBackground {
-            start: u16::try_from(start).unwrap_or(u16::MAX),
-            columns: u16::try_from(end - start).unwrap_or(u16::MAX),
-            color: rgb_color(background),
-        });
+        // Paint fills the whole grid with the theme background once.
+        if background != theme.background {
+            backgrounds.push(PreparedBackground {
+                start: u16::try_from(start).unwrap_or(u16::MAX),
+                columns: u16::try_from(end - start).unwrap_or(u16::MAX),
+                color: rgb_color(background),
+            });
+        }
         start = end;
     }
     backgrounds
@@ -690,23 +743,48 @@ impl FontVariant {
     }
 }
 
+/// Entries the current generation may hold before the next prepare rotates
+/// it. Two generations bound the cache at twice this many layouts, which is
+/// far more distinct cell texts than ordinary terminal content produces.
+const LAYOUT_GENERATION_CAPACITY: usize = 4096;
+
+/// Shaped cell layouts, evicted in two generations. A lookup promotes its
+/// entry into the current generation, so rotation drops only layouts unused
+/// since the previous rotation.
 struct GlyphLayoutCache<T> {
     current: [VariantLayouts<T>; 4],
     previous: [VariantLayouts<T>; 4],
+    current_len: usize,
+    capacity: usize,
 }
 
 impl<T> Default for GlyphLayoutCache<T> {
     fn default() -> Self {
+        Self::with_capacity(LAYOUT_GENERATION_CAPACITY)
+    }
+}
+
+impl<T> GlyphLayoutCache<T> {
+    fn with_capacity(capacity: usize) -> Self {
         Self {
             current: std::array::from_fn(|_| VariantLayouts::default()),
             previous: std::array::from_fn(|_| VariantLayouts::default()),
+            current_len: 0,
+            capacity,
         }
     }
 }
 
 impl<T: Clone> GlyphLayoutCache<T> {
+    /// Rotates only a full generation. Rotating on every prepare evicted
+    /// everything outside the most recently rebuilt rows, so output scrolling
+    /// by one row and redraws after small updates shaped their text again.
     fn begin_generation(&mut self) {
+        if self.current_len < self.capacity {
+            return;
+        }
         self.previous = std::mem::take(&mut self.current);
+        self.current_len = 0;
     }
 
     fn get_or_insert_with(
@@ -721,15 +799,20 @@ impl<T: Clone> GlyphLayoutCache<T> {
         }
         if let Some(value) = self.previous[index].get(text) {
             self.current[index].insert(text, value.clone());
+            self.current_len += 1;
             return (value, true);
         }
         let value = create();
         self.current[index].insert(text, value.clone());
+        self.current_len += 1;
         (value, false)
     }
 }
 
 struct VariantLayouts<T> {
+    /// Indexed by code point: most cells are ASCII, and hashing each one
+    /// dominated the lookup.
+    ascii: [Option<T>; 128],
     scalars: HashMap<char, T>,
     sequences: HashMap<String, T>,
 }
@@ -737,6 +820,7 @@ struct VariantLayouts<T> {
 impl<T> Default for VariantLayouts<T> {
     fn default() -> Self {
         Self {
+            ascii: std::array::from_fn(|_| None),
             scalars: HashMap::new(),
             sequences: HashMap::new(),
         }
@@ -745,6 +829,9 @@ impl<T> Default for VariantLayouts<T> {
 
 impl<T: Clone> VariantLayouts<T> {
     fn get(&self, text: &str) -> Option<T> {
+        if let &[byte] = text.as_bytes() {
+            return self.ascii[usize::from(byte)].clone();
+        }
         match single_scalar(text) {
             Some(character) => self.scalars.get(&character).cloned(),
             None => self.sequences.get(text).cloned(),
@@ -752,6 +839,10 @@ impl<T: Clone> VariantLayouts<T> {
     }
 
     fn insert(&mut self, text: &str, value: T) {
+        if let &[byte] = text.as_bytes() {
+            self.ascii[usize::from(byte)] = Some(value);
+            return;
+        }
         match single_scalar(text) {
             Some(character) => {
                 self.scalars.insert(character, value);
@@ -1030,11 +1121,18 @@ struct RendererStats {
     rebuilt_rows: usize,
     cache_hits: usize,
     cache_misses: usize,
+    /// Delay from a terminal's earliest unseen invalidation to its snapshot
+    /// reaching the view, then to the end of the paint that shows it.
+    output_applied: Vec<Duration>,
+    output_painted: Vec<Duration>,
+    pending_output: Option<Instant>,
+    continuous_frames: bool,
 }
 
 impl RendererStats {
-    fn new() -> Self {
+    fn new(mode: StatsMode) -> Self {
         Self {
+            continuous_frames: mode == StatsMode::ContinuousFrames,
             interval_started: Instant::now(),
             prepare_calls: 0,
             paint_calls: 0,
@@ -1045,6 +1143,9 @@ impl RendererStats {
             rebuilt_rows: 0,
             cache_hits: 0,
             cache_misses: 0,
+            output_applied: Vec::new(),
+            output_painted: Vec::new(),
+            pending_output: None,
         }
     }
 
@@ -1078,6 +1179,9 @@ impl RendererStats {
         self.paint_calls += 1;
         self.paint_total += duration;
         self.paint_max = self.paint_max.max(duration);
+        if let Some(invalidated_at) = self.pending_output.take() {
+            self.output_painted.push(invalidated_at.elapsed());
+        }
         if self.interval_started.elapsed() < Duration::from_secs(1) {
             return;
         }
@@ -1095,17 +1199,66 @@ impl RendererStats {
             self.cache_hits,
             self.cache_misses,
         );
-        *self = Self::new();
+        if !self.output_applied.is_empty() {
+            let (applied_median, applied_max) =
+                median_and_max_micros(&mut self.output_applied);
+            let (painted_median, painted_max) =
+                median_and_max_micros(&mut self.output_painted);
+            // Intervals close at the first paint after one second, so the
+            // consumer needs the actual elapsed time to compute rates.
+            eprintln!(
+                "huterm-render output elapsed_us={} snapshots={} applied_us_median={applied_median} applied_us_max={applied_max} paints={} painted_us_median={painted_median} painted_us_max={painted_max}",
+                self.interval_started.elapsed().as_micros(),
+                self.output_applied.len(),
+                self.output_painted.len(),
+            );
+        }
+        let mode = if self.continuous_frames {
+            StatsMode::ContinuousFrames
+        } else {
+            StatsMode::Events
+        };
+        *self = Self::new(mode);
     }
+}
+
+fn median_and_max_micros(samples: &mut [Duration]) -> (u128, u128) {
+    samples.sort_unstable();
+    let micros =
+        |sample: Option<&Duration>| sample.map_or(0, Duration::as_micros);
+    (
+        micros(samples.get(samples.len() / 2)),
+        micros(samples.last()),
+    )
 }
 
 fn average_micros(total: Duration, count: u64) -> u128 {
     total.as_micros() / u128::from(count.max(1))
 }
 
-fn renderer_stats_enabled() -> bool {
-    std::env::var("HUTERM_RENDER_STATS")
-        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+/// How `HUTERM_RENDER_STATS` drives frames while collecting stats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatsMode {
+    /// `1` or `true`: request a frame on every display tick, so rolling
+    /// counters keep printing on hosts without other animation.
+    ContinuousFrames,
+    /// `events`: paint only when the application invalidates, so output
+    /// latency reflects an ordinary session.
+    Events,
+}
+
+fn renderer_stats_mode() -> Option<StatsMode> {
+    stats_mode_from(std::env::var("HUTERM_RENDER_STATS").ok()?.as_str())
+}
+
+fn stats_mode_from(value: &str) -> Option<StatsMode> {
+    if value == "1" || value.eq_ignore_ascii_case("true") {
+        Some(StatsMode::ContinuousFrames)
+    } else if value.eq_ignore_ascii_case("events") {
+        Some(StatsMode::Events)
+    } else {
+        None
+    }
 }
 
 fn timing_enabled(renderer_stats: bool, scroll_benchmark: bool) -> bool {
@@ -1529,7 +1682,7 @@ mod tests {
 
     #[test]
     fn cache_evicts_layouts_unused_for_two_generations() {
-        let mut cache = GlyphLayoutCache::default();
+        let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
         let _ = cache.get_or_insert_with("A", variant, || 1);
         cache.begin_generation();
@@ -1544,7 +1697,7 @@ mod tests {
 
     #[test]
     fn cache_promotes_layouts_from_previous_generation() {
-        let mut cache = GlyphLayoutCache::default();
+        let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
         let _ = cache.get_or_insert_with("A", variant, || 1);
         cache.begin_generation();
@@ -1552,6 +1705,86 @@ mod tests {
         cache.begin_generation();
 
         assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+    }
+
+    #[test]
+    fn backgrounds_merge_runs_and_omit_the_theme_background() {
+        let theme = Theme::default();
+        let cell = |background| Cell {
+            text: " ".into(),
+            foreground: CellColor::DefaultForeground,
+            background,
+            style: CellStyle::default(),
+        };
+        let red = CellColor::Rgb(Rgb {
+            red: 255,
+            green: 0,
+            blue: 0,
+        });
+        let cells = [
+            cell(CellColor::DefaultBackground),
+            cell(red),
+            cell(red),
+            // An explicit color equal to the theme background needs no quad.
+            cell(CellColor::Rgb(theme.background)),
+            cell(CellColor::Indexed(4)),
+        ];
+
+        let backgrounds = prepare_backgrounds(&cells, &theme);
+
+        let spans: Vec<_> = backgrounds
+            .iter()
+            .map(|background| (background.start, background.columns))
+            .collect();
+        assert_eq!(spans, [(1, 2), (4, 1)]);
+        assert_eq!(backgrounds[1].color, rgb_color(theme.indexed(4)));
+    }
+
+    #[test]
+    fn cache_keys_ascii_scalars_and_sequences_separately() {
+        let mut cache = GlyphLayoutCache::with_capacity(4);
+        let variant = FontVariant::default();
+        let bold = FontVariant {
+            bold: true,
+            italic: false,
+        };
+        for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
+            assert_eq!(
+                cache.get_or_insert_with(text, variant, || value),
+                (value, false)
+            );
+        }
+        assert_eq!(cache.get_or_insert_with("e", bold, || 9), (9, false));
+        // Every storage path survives promotion out of the older generation.
+        cache.begin_generation();
+        assert_eq!(cache.current_len, 0);
+        for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
+            assert_eq!(
+                cache.get_or_insert_with(text, variant, || 7),
+                (value, true)
+            );
+        }
+    }
+
+    #[test]
+    fn cache_keeps_layouts_until_a_generation_fills() {
+        let mut cache = GlyphLayoutCache::with_capacity(2);
+        let variant = FontVariant::default();
+        let _ = cache.get_or_insert_with("A", variant, || 1);
+        // Small updates must not evict text used by rows they left alone.
+        for _ in 0..3 {
+            cache.begin_generation();
+            let _ = cache.get_or_insert_with("B", variant, || 2);
+        }
+        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+
+        // Two full generations later an unused layout is gone.
+        for text in ["C", "D", "E", "F"] {
+            cache.begin_generation();
+            let _ = cache.get_or_insert_with(text, variant, || 4);
+        }
+        cache.begin_generation();
+        assert_eq!(cache.get_or_insert_with("A", variant, || 5), (5, false));
     }
 
     #[test]
@@ -1663,6 +1896,15 @@ mod tests {
         assert!(!timing_enabled(false, false));
         assert!(timing_enabled(true, false));
         assert!(timing_enabled(false, true));
+    }
+
+    #[test]
+    fn stats_mode_selects_continuous_frames_only_for_the_boolean_form() {
+        assert_eq!(stats_mode_from("1"), Some(StatsMode::ContinuousFrames));
+        assert_eq!(stats_mode_from("TRUE"), Some(StatsMode::ContinuousFrames));
+        assert_eq!(stats_mode_from("events"), Some(StatsMode::Events));
+        assert_eq!(stats_mode_from("0"), None);
+        assert_eq!(stats_mode_from(""), None);
     }
 
     #[test]
