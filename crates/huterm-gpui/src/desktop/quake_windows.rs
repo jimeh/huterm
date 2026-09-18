@@ -1009,11 +1009,22 @@ fn step(
     if view.close.confirmation.is_some() && !state.transition.visible() {
         state.request(true, false);
     }
+    // Key loss alone is not blur: a non-activating panel from another
+    // application borrows key status while Huterm stays active.
+    let blurred = match native.blurred() {
+        Ok(value) => value,
+        Err(error) => {
+            return Some(NativeEffect::for_state(
+                state,
+                vec![NativeOp::Failure(error)],
+            ));
+        }
+    };
     if !state.regular
         && state.profile.hide_on_focus_loss
         && state.transition.visible()
         && state.activation.seen
-        && !active
+        && blurred
         && now >= state.suppress_blur
         && view.close.confirmation.is_none()
         && !view.busy

@@ -19,6 +19,7 @@ func postKey(_ code: CGKeyCode, _ down: Bool, _ flags: CGEventFlags) throws {
 
 final class Witness: NSObject, NSApplicationDelegate {
     var window: NSWindow!
+    var panel: NSPanel?
     var timer: Timer?
     var sequence = 0
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -73,6 +74,19 @@ final class Witness: NSObject, NSApplicationDelegate {
                 try postKey(code, true, [])
                 try postKey(code, false, [])
             }
+        case "panel":
+            // A non-activating panel takes key status from the frontmost
+            // application without activating this process, like launcher and
+            // quick-entry windows such as 1Password Quick Access.
+            let panel = NSPanel(contentRect: NSRect(x: 150, y: 150, width: 400, height: 120), styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.title = "Quake non-activating panel"
+            panel.level = .floating
+            panel.contentView = NSTextField(labelWithString: "Non-activating panel. Quake must stay visible.")
+            panel.makeKeyAndOrderFront(nil)
+            self.panel = panel
+        case "panel_close":
+            panel?.close()
+            panel = nil
         case "quit": NSApp.terminate(nil)
         default: throw NSError(domain: "QuakeWitness", code: 6, userInfo: [NSLocalizedDescriptionKey: "unknown witness command"])
         }

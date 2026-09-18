@@ -296,6 +296,10 @@ impl Window {
     pub fn active(&self) -> anyhow::Result<bool> {
         Ok(self.platform.focused()? == Some(self.focus_id()))
     }
+    /// X11 focus is per window, so losing the active window is blur.
+    pub fn blurred(&self) -> anyhow::Result<bool> {
+        Ok(!self.active()?)
+    }
     pub fn visible(&self) -> anyhow::Result<bool> {
         Ok(self
             .platform

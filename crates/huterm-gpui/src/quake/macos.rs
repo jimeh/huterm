@@ -374,6 +374,28 @@ impl Window {
             Ok(key == YES && active == YES)
         }
     }
+    /// Whether focus has left this window for another application or another
+    /// Huterm window. A non-activating panel from another process, such as a
+    /// launcher or 1Password Quick Access, takes key status without
+    /// deactivating Huterm and leaves `NSApp.keyWindow` on this window, so it
+    /// does not count as blur.
+    pub fn blurred(&self) -> anyhow::Result<bool> {
+        // SAFETY: Retained main-thread NSWindow and NSApplication getters.
+        unsafe {
+            let app: *mut Object =
+                msg_send![class("NSApplication")?, sharedApplication];
+            let active: BOOL = msg_send![app, isActive];
+            if active != YES {
+                return Ok(true);
+            }
+            let key: BOOL = msg_send![self.0.native.0, isKeyWindow];
+            if key == YES {
+                return Ok(false);
+            }
+            let key_window: *mut Object = msg_send![app, keyWindow];
+            Ok(!key_window.is_null() && key_window != self.0.native.0)
+        }
+    }
     pub fn visible(&self) -> anyhow::Result<bool> {
         // SAFETY: Retained main-thread NSWindow visibility getter.
         unsafe {
