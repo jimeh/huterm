@@ -293,6 +293,9 @@ pub(super) struct Presentation {
     stage: Stage,
     deadline: Instant,
     activation: Activation,
+    /// Pump iterations that have sampled focus; smokes use it as an ordering
+    /// boundary proving the hide rule ran after an observed key change.
+    focus_observations: u64,
     suppress_blur: Instant,
     last_display_check: Instant,
     restore_focus: bool,
@@ -803,6 +806,7 @@ pub(super) fn attach(
             activation.request();
             activation
         },
+        focus_observations: 0,
         suppress_blur: now + Duration::from_millis(200),
         last_display_check: now,
         restore_focus: false,
@@ -1006,12 +1010,13 @@ fn step(
         }
     };
     state.activation.observe(active);
+    state.focus_observations = state.focus_observations.wrapping_add(1);
     if view.close.confirmation.is_some() && !state.transition.visible() {
         state.request(true, false);
     }
     // Key loss alone is not blur: a non-activating panel from another
     // application borrows key status while Huterm stays active.
-    let blurred = match native.blurred() {
+    let blurred = match native.blurred(active) {
         Ok(value) => value,
         Err(error) => {
             return Some(NativeEffect::for_state(
@@ -1483,13 +1488,14 @@ pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfocus_observations={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
         state.native.visible()?,
         state.native.active()?,
         state.activation.seen,
+        state.focus_observations,
         state.native.fullscreen()?,
         state.fullscreen_context(),
         frame.x,

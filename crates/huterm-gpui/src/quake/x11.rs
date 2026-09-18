@@ -296,9 +296,14 @@ impl Window {
     pub fn active(&self) -> anyhow::Result<bool> {
         Ok(self.platform.focused()? == Some(self.focus_id()))
     }
-    /// X11 focus is per window, so losing the active window is blur.
-    pub fn blurred(&self) -> anyhow::Result<bool> {
-        Ok(!self.active()?)
+    /// X11 focus is per window, so losing the active window is blur. Reuse
+    /// the pump's sample instead of repeating the server round trips.
+    #[expect(
+        clippy::unused_self,
+        reason = "platform adapter shares an instance API with macOS"
+    )]
+    pub fn blurred(&self, active: bool) -> anyhow::Result<bool> {
+        Ok(!active)
     }
     pub fn visible(&self) -> anyhow::Result<bool> {
         Ok(self

@@ -199,7 +199,11 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       // Huterm stays active. Auto-hide must ignore it; a hidden quake would
       // never report active again after the panel closes.
       await native("panel");
-      await waitFor(async () => (await current())?.active === "false", "non-activating panel takes key status");
+      let observed = 0;
+      await waitFor(async () => { const value = await current(); observed = Number(value?.focus_observations); return value?.active === "false" && Number.isFinite(observed); }, "non-activating panel takes key status");
+      // The state publisher samples focus independently of the quake pump.
+      // Two further pump observations prove the hide rule ran after key loss.
+      await waitFor(async () => Number((await current())?.focus_observations) >= observed + 2, "quake pump observes the panel holding key status");
       await native("panel_close");
       await waitFor(async () => { const value = await current(); return value?.active === "true" && value.visible === "true" && value.stage === "Idle"; }, "quake stays visible and regains key after the panel closes");
       await input("after-panel");

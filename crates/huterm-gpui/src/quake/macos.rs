@@ -375,22 +375,23 @@ impl Window {
         }
     }
     /// Whether focus has left this window for another application or another
-    /// Huterm window. A non-activating panel from another process, such as a
-    /// launcher or 1Password Quick Access, takes key status without
-    /// deactivating Huterm and leaves `NSApp.keyWindow` on this window, so it
-    /// does not count as blur.
-    pub fn blurred(&self) -> anyhow::Result<bool> {
-        // SAFETY: Retained main-thread NSWindow and NSApplication getters.
+    /// Huterm window, given the `active` sample already read this pump. A
+    /// non-activating panel from another process, such as a launcher or
+    /// 1Password Quick Access, takes key status without deactivating Huterm
+    /// and leaves `NSApp.keyWindow` nil or on this window, so it does not
+    /// count as blur.
+    pub fn blurred(&self, active: bool) -> anyhow::Result<bool> {
+        if active {
+            return Ok(false);
+        }
+        // SAFETY: Retained main-thread NSApplication getters; the key window
+        // pointer is only compared, never messaged.
         unsafe {
             let app: *mut Object =
                 msg_send![class("NSApplication")?, sharedApplication];
-            let active: BOOL = msg_send![app, isActive];
-            if active != YES {
+            let app_active: BOOL = msg_send![app, isActive];
+            if app_active != YES {
                 return Ok(true);
-            }
-            let key: BOOL = msg_send![self.0.native.0, isKeyWindow];
-            if key == YES {
-                return Ok(false);
             }
             let key_window: *mut Object = msg_send![app, keyWindow];
             Ok(!key_window.is_null() && key_window != self.0.native.0)
