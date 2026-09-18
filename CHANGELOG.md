@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/jimeh/huterm/compare/v0.11.0...v0.11.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* keep quake windows open when non-activating panels take focus ([#140](https://github.com/jimeh/huterm/issues/140)) ([1316a12](https://github.com/jimeh/huterm/commit/1316a12bd8ab403728e39f29d850ec497b6de1e9))
+
 ## [0.11.0](https://github.com/jimeh/huterm/compare/v0.10.1...v0.11.0) (2026-09-16)
 
 
