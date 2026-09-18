@@ -986,6 +986,11 @@ active and `NSApp.keyWindow` is nil or still names the quake window. The macOS
 witness `panel` command covers this in `smoke:macos-quake`; wait for
 `focus_observations` to advance after the observed key change before closing
 the panel, or the step can pass before the hide rule ever sampled the loss.
+The `ordinary activate_window` smoke command moves key status to the sibling
+Huterm window, which must still hide the quake. The external grab probe walks
+`GRAB_CANDIDATES` for a free chord, publishes it as `chord=` in its ready file
+or writes `failed` and quits; never `expect` a registration inside GPUI's
+launch callback, which cannot unwind and aborts with a crash dialog.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.

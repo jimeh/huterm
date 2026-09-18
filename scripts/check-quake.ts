@@ -207,6 +207,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await native("panel_close");
       await waitFor(async () => { const value = await current(); return value?.active === "true" && value.visible === "true" && value.stage === "Idle"; }, "quake stays visible and regains key after the panel closes");
     }
+    // Key status moving to another Huterm window is still blur: the quake
+    // must hide even though the application stays active. Re-summon from the
+    // external witness so the later hide returns focus there as before.
+    await command("ordinary activate_window");
+    await waitFor(async () => { const value = await current(); return value?.visible === "false" && value.stage === "Idle"; }, "sibling Huterm window key status hides the quake");
+    await focusWitness();
+    await waitFor(witnessActive, "external witness focus after sibling hide");
+    await hotkey();
+    await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && value.active === "true"; }, "summon after sibling hide");
+    if ((await current())?.native_id !== first.native_id) throw new Error("sibling hide replaced the retained quake window");
     await input("first-summon");
     await waitFor(async () => (await current())?.text?.includes(`ACK:first-summon:${identity}:`) ?? false, "PTY ACK after global summon");
     await hotkey();
@@ -554,12 +564,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         const grab = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: grabDirectory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"},stdout:"ignore",stderr:"pipe"});
         let grabCleanupError: unknown;
         try {
-          await waitFor(() => Bun.file(join(grabDirectory,"ready")).exists(),"separate process owns control-alt-L");
-          await checkOrdinaryExit(executable, true);
+          await waitFor(async () => await Bun.file(join(grabDirectory,"ready")).exists() || await Bun.file(join(grabDirectory,"failed")).exists(),"separate process reports its external grab");
+          if (await Bun.file(join(grabDirectory,"failed")).exists()) throw new Error(`external grab probe found no free chord: ${await readFile(join(grabDirectory,"failed"),"utf8")}`);
+          const grabChord = parseState(await readFile(join(grabDirectory,"ready"),"utf8")).chord;
+          if (!grabChord) throw new Error("external grab probe published no chord");
+          console.log(`QUAKE_GRAB ${engine} external-chord=${grabChord}`);
+          await checkOrdinaryExit(executable, grabChord);
           const beforeState = (await current())!;
           const before = beforeState.frame;
           const beforeWidth = frame(beforeState)[2];
-          await writeFile(config, configText('width = 0.4', '[[global_keybinding]]\nkey = "ctrl-alt-l"\ncommand = "toggle_quake"'));
+          await writeFile(config, configText('width = 0.4', `[[global_keybinding]]\nkey = "${grabChord}"\ncommand = "toggle_quake"`));
           await command("app reload_config");
           await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"OS grab conflict rejection");
           await command("app show_quake");await settled(true);
@@ -760,12 +774,36 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   }
 }
 
-export async function checkOrdinaryExit(executable: string, conflict = false, unregister = false): Promise<void> {
+/// Spawn the external grab probe only to learn a chord this host can register,
+/// then release it. `checkOrdinaryExit` needs one for its unregister case.
+export async function probeFreeChord(executable: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-quake-free-chord-"));
+  const probe = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"}, stdout: "ignore", stderr: "ignore"});
+  try {
+    await waitFor(async () => await Bun.file(join(directory, "ready")).exists() || await Bun.file(join(directory, "failed")).exists(), "free chord probe report");
+    if (await Bun.file(join(directory, "failed")).exists()) throw new Error(`free chord probe found no free chord: ${await readFile(join(directory, "failed"), "utf8")}`);
+    const free = parseState(await readFile(join(directory, "ready"), "utf8")).free;
+    if (!free) throw new Error("free chord probe found only one free candidate");
+    return free;
+  } finally {
+    await writeFile(join(directory, "finish"), "finish");
+    await waitFor(async () => probe.exitCode !== null, "free chord probe exit").catch(() => probe.kill("SIGKILL"));
+    await probe.exited;
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
+/// `conflictChord` is owned by another process and must be rejected at startup;
+/// `unregisterChord` is free and must register, then release on reload.
+export async function checkOrdinaryExit(executable: string, conflictChord?: string, unregisterChord?: string): Promise<void> {
+  const conflict = conflictChord !== undefined;
+  const unregister = unregisterChord !== undefined;
+  const chord = conflictChord ?? unregisterChord;
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-no-grabs-"));
   const config = join(directory,"config.toml");
   const shell = join(directory,"shell");
   const ordinaryConfig = "[terminal]\n";
-  await writeFile(config, ordinaryConfig + (conflict || unregister ? `[[global_keybinding]]\nkey = 'ctrl-alt-${unregister ? "u" : "l"}'\ncommand = 'toggle_quake'\n` : ""));
+  await writeFile(config, ordinaryConfig + (chord ? `[[global_keybinding]]\nkey = '${chord}'\ncommand = 'toggle_quake'\n` : ""));
   await writeFile(shell, "#!/bin/sh\nprintf 'ORDINARY_READY\\n'\nwhile IFS= read -r line; do :; done\n", {mode:0o700});
   const app = Bun.spawn([executable], {env:{...process.env,WAYLAND_DISPLAY:undefined,HUTERM_CONFIG_FILE:config,HUTERM_QUAKE_SMOKE:directory,SHELL:shell},stdout:"ignore",stderr:"pipe"});
   let diagnostics = "";
@@ -819,7 +857,7 @@ if (import.meta.main) {
     if (!process.env.HUTERM_QUAKE_ONLY_HIDDEN) {
       await check(executable, "ghostty", witnessExecutable);
       await checkOrdinaryExit(executable);
-      await checkOrdinaryExit(executable, false, true);
+      await checkOrdinaryExit(executable, undefined, await probeFreeChord(executable));
     }
     passed = true;
   } finally {

@@ -170,6 +170,15 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             .detach();
         return Ok("native Space transition queued".into());
     }
+    if name == "activate_window" {
+        handle
+            .context("activation host")?
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                cx.activate(true);
+            })?;
+        return Ok("activated".into());
+    }
     if matches!(name, "confirm_close" | "cancel_close") {
         handle.context("confirmation host")?.update(
             cx,
@@ -301,6 +310,72 @@ fn read_state(cx: &mut App) -> String {
 }
 
 struct HiddenProbe;
+
+/// An external process's exclusive global grab, kept alive with its manager.
+struct ExternalGrab {
+    chord: &'static str,
+    /// A later candidate that registered and was released again, for steps
+    /// that need a chord Huterm itself can own.
+    free: Option<&'static str>,
+    _manager: global_hotkey::GlobalHotKeyManager,
+}
+
+/// Candidate chords in Huterm keybinding syntax, least likely to be bound on
+/// a developer machine first. Only registration matters: the smoke never
+/// presses the chord, it only proves Huterm rejects a binding another process
+/// already owns.
+const GRAB_CANDIDATES: &[(&str, global_hotkey::hotkey::Code)] = &[
+    ("ctrl-alt-shift-f20", global_hotkey::hotkey::Code::F20),
+    ("ctrl-alt-shift-f19", global_hotkey::hotkey::Code::F19),
+    ("ctrl-alt-shift-f18", global_hotkey::hotkey::Code::F18),
+    ("ctrl-alt-shift-f17", global_hotkey::hotkey::Code::F17),
+    ("ctrl-alt-shift-f16", global_hotkey::hotkey::Code::F16),
+    // Xvfb's default keymap has no keycodes for the high function keys, so
+    // X11 needs letter and digit fallbacks, and the probe needs two of them.
+    ("ctrl-alt-shift-l", global_hotkey::hotkey::Code::KeyL),
+    ("ctrl-alt-shift-k", global_hotkey::hotkey::Code::KeyK),
+    ("ctrl-alt-shift-j", global_hotkey::hotkey::Code::KeyJ),
+    ("ctrl-alt-shift-9", global_hotkey::hotkey::Code::Digit9),
+    ("ctrl-alt-shift-8", global_hotkey::hotkey::Code::Digit8),
+];
+
+fn grab_free_chord() -> anyhow::Result<ExternalGrab> {
+    let manager = global_hotkey::GlobalHotKeyManager::new()
+        .map_err(|error| anyhow::anyhow!("native grab manager: {error}"))?;
+    let modifiers = global_hotkey::hotkey::Modifiers::CONTROL
+        | global_hotkey::hotkey::Modifiers::ALT
+        | global_hotkey::hotkey::Modifiers::SHIFT;
+    let hotkey = |code: &global_hotkey::hotkey::Code| {
+        global_hotkey::hotkey::HotKey::new(Some(modifiers), *code)
+    };
+    let mut errors = Vec::new();
+    let mut candidates = GRAB_CANDIDATES.iter();
+    let owned = candidates.find_map(|(chord, code)| {
+        match manager.register(hotkey(code)) {
+            Ok(()) => Some(*chord),
+            Err(error) => {
+                errors.push(format!("{chord}: {error}"));
+                None
+            }
+        }
+    });
+    let Some(chord) = owned else {
+        anyhow::bail!(
+            "every external grab candidate is already owned: {}",
+            errors.join("; ")
+        );
+    };
+    let free = candidates.find_map(|(chord, code)| {
+        manager.register(hotkey(code)).ok()?;
+        manager.unregister(hotkey(code)).ok()?;
+        Some(*chord)
+    });
+    Ok(ExternalGrab {
+        chord,
+        free,
+        _manager: manager,
+    })
+}
 impl gpui::Render for HiddenProbe {
     fn render(
         &mut self,
@@ -312,20 +387,20 @@ impl gpui::Render for HiddenProbe {
 }
 fn run_hidden_probe(directory: PathBuf) {
     crate::assets::application().run(move |cx| {
-        let grab = std::env::var_os("HUTERM_QUAKE_GRAB_PROBE").map(|_| {
-            let manager = global_hotkey::GlobalHotKeyManager::new()
-                .expect("native external grab manager");
-            manager
-                .register(global_hotkey::hotkey::HotKey::new(
-                    Some(
-                        global_hotkey::hotkey::Modifiers::CONTROL
-                            | global_hotkey::hotkey::Modifiers::ALT,
-                    ),
-                    global_hotkey::hotkey::Code::KeyL,
-                ))
-                .expect("external control-alt-L grab");
-            manager
-        });
+        // A registration failure must not panic here: GPUI's launch callback
+        // cannot unwind, so a panic aborts and leaves a crash dialog behind.
+        let grab = if std::env::var_os("HUTERM_QUAKE_GRAB_PROBE").is_some() {
+            match grab_free_chord() {
+                Ok(grab) => Some(grab),
+                Err(error) => {
+                    publish(&directory, "failed", &format!("{error:#}"));
+                    cx.quit();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let handle = cx
             .open_window(
                 gpui::WindowOptions {
@@ -344,7 +419,14 @@ fn run_hidden_probe(directory: PathBuf) {
             })
             .expect("read native window")
             .expect("native visibility");
-        publish(&directory, "ready", &format!("visible={visible}"));
+        let chord = grab.as_ref().map_or(String::new(), |grab| {
+            format!(
+                "\nchord={}\nfree={}",
+                grab.chord,
+                grab.free.unwrap_or_default()
+            )
+        });
+        publish(&directory, "ready", &format!("visible={visible}{chord}"));
         cx.spawn(async move |cx| {
             for _ in 0..1000 {
                 cx.background_executor()
