@@ -109,6 +109,25 @@ impl TerminalEngine {
         let title_dirty = Rc::new(std::cell::Cell::new(false));
         let title_changed = Rc::clone(&title_dirty);
         terminal.on_title_changed(move |_| title_changed.set(true))?;
+        let directory_effects = Rc::clone(&effects);
+        let server_hostname = server_hostname();
+        terminal.on_pwd_changed(move |terminal| {
+            let Ok(reported) = terminal.pwd() else {
+                return;
+            };
+            match super::normalize_directory(
+                reported,
+                server_hostname.as_deref(),
+            ) {
+                super::DirectoryUpdate::Ignore => {}
+                super::DirectoryUpdate::Clear => directory_effects
+                    .borrow_mut()
+                    .push(EngineEffect::Directory(None)),
+                super::DirectoryUpdate::Set(directory) => directory_effects
+                    .borrow_mut()
+                    .push(EngineEffect::Directory(Some(directory))),
+            }
+        })?;
         // Huterm does not implement Ghostty's image or keyboard extensions.
         terminal.on_device_attributes(|_| {
             Some(DeviceAttributes {
@@ -524,6 +543,16 @@ impl TerminalEngine {
             |error| RuntimeError::Engine(error.to_string()),
         )?))
     }
+}
+
+#[cfg(unix)]
+fn server_hostname() -> Option<String> {
+    nix::unistd::gethostname().ok()?.into_string().ok()
+}
+
+#[cfg(not(unix))]
+fn server_hostname() -> Option<String> {
+    None
 }
 
 fn admit_clipboard(
@@ -1372,5 +1401,77 @@ mod tests {
                 CellColor::Indexed(1)
             );
         }
+    }
+
+    #[test]
+    fn osc7_directory_callbacks_preserve_framing_and_chunk_boundaries() {
+        for terminator in ["\x07", "\x1b\\"] {
+            let sequence = format!(
+                "\x1b]7;file://localhost/tmp/hello%20world{terminator}"
+            );
+            for split in 0..=sequence.len() {
+                let mut engine = engine();
+                let mut effects =
+                    engine.process(&sequence.as_bytes()[..split]).unwrap();
+                effects.extend(
+                    engine.process(&sequence.as_bytes()[split..]).unwrap(),
+                );
+                assert!(effects.iter().any(|effect| matches!(
+                    effect,
+                    EngineEffect::Directory(Some(directory))
+                        if directory.path() == "/tmp/hello world" && directory.is_local()
+                )), "split={split} terminator={terminator:?}");
+            }
+            let mut engine = engine();
+            let mut effects = Vec::new();
+            for byte in sequence.bytes() {
+                effects.extend(engine.process(&[byte]).unwrap());
+            }
+            assert!(effects.iter().any(|effect| matches!(
+                effect,
+                EngineEffect::Directory(Some(directory)) if directory.path() == "/tmp/hello world"
+            )));
+        }
+    }
+
+    #[test]
+    fn empty_osc7_clears_directory_metadata() {
+        let mut engine = engine();
+        let effects = engine
+            .process(b"\x1b]7;file://localhost/tmp\x07\x1b]7;\x07")
+            .unwrap();
+        assert!(matches!(
+            effects.as_slice(),
+            [
+                EngineEffect::Directory(Some(_)),
+                EngineEffect::Directory(None)
+            ]
+        ));
+    }
+
+    #[test]
+    fn iterm_current_directory_reports_bare_display_only_paths() {
+        let mut engine = engine();
+        let effects = engine
+            .process(b"\x1b]1337;CurrentDir=/tmp/bare\x07")
+            .unwrap();
+        assert!(matches!(
+            effects.as_slice(),
+            [EngineEffect::Directory(Some(directory))]
+                if directory.path() == "/tmp/bare" && !directory.is_local()
+        ));
+    }
+
+    #[test]
+    fn malformed_utf8_directory_reports_are_nonfatal_and_ignored() {
+        let mut engine = engine();
+        let effects = engine
+            .process(b"\x1b]7;file://localhost/tmp/\xff\x07")
+            .unwrap();
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, EngineEffect::Directory(_)))
+        );
     }
 }

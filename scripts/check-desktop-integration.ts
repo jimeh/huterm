@@ -2,13 +2,15 @@
 import {
   mkdtemp,
   readFile,
+  realpath,
+  readdir,
   rename,
   rm,
   writeFile,
   mkdir,
   symlink,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const macos = process.platform === "darwin";
@@ -79,18 +81,22 @@ export async function discoverX11Window(app: X11Process, wm: X11Process, timeout
 
 async function check(executable: string, engine: string, wm?: X11Process) {
   const directory = await mkdtemp(join(tmpdir(), "huterm-integration-"));
+  const defaultDirectory = macos ? homedir() : process.cwd();
   const config = join(directory, "config.toml");
   const bytes = join(directory, "bytes");
-  const shell = join(directory, "shell");
+  const shell = join(directory, "hutermfgprobe");
   const recorder = join(directory, "recorder.ts");
   await writeFile(
     config,
-    `[terminal]\nclose_on_exit=false\n`,
+    `[terminal]\nclose_on_exit=false\nnew_tab_directory="inherit"\n\n[terminal.bell]\nvisual=true\n\n[tabs]\nlabel="process_and_directory"\n`,
   );
   await writeFile(
     recorder,
-    `import {openSync,writeSync,readFileSync,existsSync,unlinkSync,writeFileSync} from "node:fs";
+    `import {openSync,writeSync,readFileSync,existsSync,unlinkSync,writeFileSync,renameSync} from "node:fs";
 const fd=openSync(${JSON.stringify(bytes)},"a");
+const started=${JSON.stringify(directory)}+"/started-"+process.pid;
+const startedTemp=${JSON.stringify(directory)}+"/.started-"+process.pid+".tmp";
+writeFileSync(startedTemp,process.cwd());renameSync(startedTemp,started);
 let sequence=0;
 let flood=0;
 const stream=setInterval(()=>{const start=${JSON.stringify(directory)}+"/flood";if(existsSync(start)){unlinkSync(start);flood=500;}if(flood>0){process.stdout.write("\\x1b[10;1Hhttps://noise.test/"+(--flood)+"\\x1b[K");if(flood===0)writeFileSync(${JSON.stringify(directory)}+"/flood-done", "done");}},2);
@@ -103,7 +109,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   );
   await writeFile(
     shell,
-    `#!/bin/sh\nstty raw -echo\nexec ${quote(process.execPath)} ${quote(recorder)}\n`,
+    `#!/bin/sh\nstty raw -echo\n${quote(process.execPath)} ${quote(recorder)}\n`,
     { mode: 0o700 },
   );
   const app = Bun.spawn([executable], {
@@ -188,16 +194,26 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     const result = await readFile(join(directory, `result-${index}`), "utf8");
     assert(result === "ok", result);
   }
-  async function display(value: string) {
-    const before = (await state()).generation;
+  async function output(value: string) {
     await writeFile(join(directory, "output-next"), value);
     await rename(
       join(directory, "output-next"),
       join(directory, `output-${outputSequence++}`),
     );
+  }
+  async function display(value: string) {
+    const before = (await state()).generation;
+    await output(value);
     await waitFor(
       async () => (await state()).generation !== before,
       "new PTY output snapshot",
+    );
+  }
+  async function startedDirectories() {
+    const names = await readdir(directory);
+    return Promise.all(
+      names.filter((name) => name.startsWith("started-"))
+        .map((name) => readFile(join(directory, name), "utf8")),
     );
   }
   async function hover(value: string) {
@@ -290,6 +306,114 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
     await modifiers(0);
+
+    const inheritedDirectory = join(directory, "inherited-directory");
+    await mkdir(inheritedDirectory);
+    const inheritedDirectoryCanonical = await realpath(inheritedDirectory);
+    await display(
+      `\x1b]7;file://localhost${inheritedDirectory}\x07METADATA`,
+    );
+    const localMetadata = await waitForState(
+      (current) =>
+        current.directory === inheritedDirectory &&
+        current.directory_local === "true" &&
+        current.process !== "" &&
+        current.label === `${current.process} · inherited-directory`,
+      "local directory and process tab label",
+    );
+    if (!macos) {
+      assert(
+        localMetadata.process === "hutermfgprobe",
+        `Linux foreground process label was ${localMetadata.process}`,
+      );
+    }
+    const bellFlashes = Number((await state()).bell_flashes);
+    await output("\x07BELL");
+    const flashObserved = await waitForState(
+      (current) => Number(current.bell_flashes) > bellFlashes,
+      "active visual bell flash observation",
+    );
+    assert(
+      flashObserved.focused === "true",
+      "active bell moved terminal focus",
+    );
+
+    await display("\x1b]7;file://remote.example/tmp/remote-leaf\x07REMOTE");
+    await waitForState(
+      (current) =>
+        current.directory === "/tmp/remote-leaf" &&
+        current.directory_local === "false" &&
+        current.label?.endsWith(" · remote-leaf") === true,
+      "remote directory display-only label",
+    );
+    let starts = await startedDirectories();
+    await commandFile("new_tab");
+    await waitFor(async () => {
+      const current = await state();
+      starts = await startedDirectories();
+      return current.tabs === "2" && starts.length === 2;
+    }, "remote-directory fallback tab");
+    assert(
+      starts.filter((cwd) => cwd === defaultDirectory).length === 2 &&
+        !starts.includes("/tmp/remote-leaf"),
+      `remote directory affected spawn cwd: ${JSON.stringify(starts)}`,
+    );
+
+    // The original recorder is the only one watching the current output
+    // sequence, so this raw bell reaches the inactive original tab.
+    await output("\x07");
+    await waitForState(
+      (current) => current.unseen_bells === "1",
+      "inactive tab bell marker",
+    );
+    await commandFile("previous_tab");
+    await waitForState(
+      (current) =>
+        current.unseen_bells === "0" && current.bell_unseen === "false",
+      "bell marker cleared on activation",
+    );
+    await commandFile("next_tab");
+    if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");
+    else run(["xdotool", "key", "ctrl+d"]);
+    await waitForState(
+      (current) => current.exited === "true",
+      "remote fallback tab exit",
+    );
+    await commandFile("close_tab");
+    await waitForState(
+      (current) => current.tabs === "1",
+      "remote fallback tab removal",
+    );
+
+    await display(
+      `\x1b]7;file://localhost${inheritedDirectory}\x07LOCAL`,
+    );
+    starts = await startedDirectories();
+    await commandFile("new_tab");
+    await waitFor(async () => {
+      const current = await state();
+      starts = await startedDirectories();
+      return current.tabs === "2" && starts.length === 3;
+    }, "inherited-directory tab");
+    assert(
+      starts.includes(inheritedDirectoryCanonical),
+      `new tab did not inherit local cwd: ${JSON.stringify(starts)}`,
+    );
+    if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");
+    else run(["xdotool", "key", "ctrl+d"]);
+    await waitForState(
+      (current) => current.exited === "true",
+      "inherited-directory tab exit",
+    );
+    await commandFile("close_tab");
+    await waitForState(
+      (current) => current.tabs === "1",
+      "inherited-directory tab removal",
+    );
+
+    console.log(
+      `DESKTOP_INTEGRATION ${engine} metadata label=${localMetadata.label} cwd=${inheritedDirectory} bell=active+inactive`,
+    );
     const url = "https://example.test/a_(b)?x=1&y=2";
     await display(`\x1b[2J\x1b[H${url}\r\nREADY`);
     await mouse(5, 2, 0);

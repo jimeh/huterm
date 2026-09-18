@@ -19,8 +19,8 @@ use huterm_core::{
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalPresentation,
-    TerminalSnapshot, ids,
+    TerminalCommand, TerminalEvent, TerminalInput, TerminalMetadata,
+    TerminalPresentation, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -78,6 +78,7 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
+const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
 mod composition;
 mod keyboard;
@@ -236,6 +237,54 @@ fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct BellPresentation {
+    unseen: bool,
+    flash_until: Option<Instant>,
+}
+
+impl BellPresentation {
+    fn ring(&mut self, now: Instant, active: bool, enabled: bool) -> bool {
+        if !enabled {
+            return false;
+        }
+        let previous = *self;
+        if active {
+            self.flash_until = Some(now + VISUAL_BELL_DURATION);
+        } else {
+            self.unseen = true;
+        }
+        *self != previous
+    }
+
+    fn viewed(&mut self, active: bool) -> bool {
+        if !active || !self.unseen {
+            return false;
+        }
+        self.unseen = false;
+        true
+    }
+
+    fn advance(&mut self, now: Instant) -> bool {
+        if self.flash_until.is_some_and(|deadline| now >= deadline) {
+            self.flash_until = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn flashing(self, now: Instant) -> bool {
+        self.flash_until.is_some_and(|deadline| now < deadline)
+    }
+
+    fn clear(&mut self) -> bool {
+        let changed = self.unseen || self.flash_until.is_some();
+        *self = Self::default();
+        changed
+    }
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "terminal visibility, lifecycle, and pointer states are independent"
@@ -246,7 +295,13 @@ struct TerminalView {
     pending_presentation: Option<TerminalPresentation>,
     host_effects: HostEffectRecipient,
     title: String,
+    metadata: TerminalMetadata,
+    metadata_revision: u64,
+    bell: BellPresentation,
+    bell_flash_count: u64,
+    visual_bell: bool,
     exited: bool,
+    failed: bool,
     visible: bool,
     input_queue: InputQueue,
     option_as_alt: config::MacosOptionAsAlt,
@@ -360,10 +415,16 @@ impl TerminalView {
         let activation_subscription = cx.observe_window_activation(
             window,
             |view: &mut TerminalView, window, cx| {
-                if view.visible && !window.is_window_active() {
-                    view.clear_composition(cx);
-                    view.blur_mouse(cx);
-                    cx.notify();
+                if view.visible {
+                    if window.is_window_active() {
+                        if view.bell.viewed(true) {
+                            cx.notify();
+                        }
+                    } else {
+                        view.clear_composition(cx);
+                        view.blur_mouse(cx);
+                        cx.notify();
+                    }
                 }
             },
         );
@@ -447,7 +508,13 @@ impl TerminalView {
             theme,
             status: presentation_status,
             title: String::new(),
+            metadata: TerminalMetadata::default(),
+            metadata_revision: 0,
+            bell: BellPresentation::default(),
+            bell_flash_count: 0,
+            visual_bell: config.terminal.bell.visual,
             exited: false,
+            failed: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -621,7 +688,7 @@ impl TerminalView {
         self.snapshot = Some(Arc::new(snapshot));
     }
 
-    fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+    fn refresh(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
         for _ in 0..8 {
             let Some(pending) = self.host_effects.try_next() else {
                 break;
@@ -639,6 +706,7 @@ impl TerminalView {
         let mut changed = false;
         changed |= self.scrollbars.advance(Instant::now());
         changed |= self.resize_visibility.update(Instant::now(), false);
+        changed |= self.bell.advance(Instant::now());
         for _ in 0..64 {
             match self.client.try_recv_event() {
                 Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
@@ -655,6 +723,29 @@ impl TerminalView {
                     self.title = title;
                     changed = true;
                 }
+                Ok(Some(TerminalEvent::MetadataChanged {
+                    revision,
+                    metadata,
+                    ..
+                })) => {
+                    if revision > self.metadata_revision {
+                        self.metadata_revision = revision;
+                        self.metadata = metadata;
+                        changed = true;
+                    }
+                }
+                Ok(Some(TerminalEvent::Bell(_))) => {
+                    let active = self.visible && window.is_window_active();
+                    if active && self.visual_bell {
+                        self.bell_flash_count =
+                            self.bell_flash_count.wrapping_add(1);
+                    }
+                    changed |= self.bell.ring(
+                        Instant::now(),
+                        active,
+                        self.visual_bell,
+                    );
+                }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
                     self.exited = true;
                     self.clear_composition(cx);
@@ -667,6 +758,7 @@ impl TerminalView {
                     self.scroll.invalidate();
                 }
                 Ok(Some(TerminalEvent::Failed { message, .. })) => {
+                    self.failed = true;
                     changed |= self.set_status(message);
                     self.scroll.invalidate();
                 }
@@ -699,6 +791,10 @@ impl TerminalView {
         self.links.disable();
         self.links_enabled = terminal.links;
         self.link_modifiers = terminal.link_modifiers;
+        self.visual_bell = terminal.bell.visual;
+        if !self.visual_bell && self.bell.clear() {
+            cx.notify();
+        }
         if self.option_as_alt != terminal.macos_option_as_alt {
             self.clear_composition(cx);
             self.option_as_alt = terminal.macos_option_as_alt;
@@ -1890,6 +1986,7 @@ impl Render for TerminalView {
         }
         let snapshot = self.snapshot.clone();
         let status = self.status.clone();
+        let bell_flash = self.bell.flashing(Instant::now());
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
         let mouse_view = cx.entity().downgrade();
@@ -2044,6 +2141,14 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             );
+        if bell_flash {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(color(self.theme.foreground).opacity(0.14)),
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             root = root
@@ -2897,6 +3002,37 @@ mod tests {
         );
         assert!(locale_environment(true, true).is_empty());
         assert!(locale_environment(false, false).is_empty());
+    }
+
+    #[test]
+    fn visual_bell_flashes_active_views_and_marks_inactive_views() {
+        let now = Instant::now();
+        let mut active = BellPresentation::default();
+        assert!(active.ring(now, true, true));
+        assert!(active.flashing(now));
+        assert!(!active.unseen);
+        assert!(!active.advance(now + VISUAL_BELL_DURATION / 2));
+        assert!(active.ring(now + VISUAL_BELL_DURATION / 2, true, true));
+        assert!(active.flashing(now + VISUAL_BELL_DURATION));
+        assert!(active.advance(now + VISUAL_BELL_DURATION * 2));
+
+        let mut inactive = BellPresentation::default();
+        assert!(inactive.ring(now, false, true));
+        assert!(inactive.unseen);
+        assert!(!inactive.viewed(false));
+        assert!(inactive.viewed(true));
+        assert!(!inactive.unseen);
+    }
+
+    #[test]
+    fn disabling_visual_bells_clears_transient_presentation() {
+        let now = Instant::now();
+        let mut bell = BellPresentation::default();
+        bell.ring(now, false, true);
+        bell.ring(now, true, true);
+        assert!(bell.clear());
+        assert_eq!(bell, BellPresentation::default());
+        assert!(!bell.ring(now, false, false));
     }
 
     fn selection(generation: u64, anchor: u16, head: u16) -> Selection {

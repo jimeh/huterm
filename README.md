@@ -219,6 +219,7 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 
 [tabs]
+label = "title" # title, process, directory, or process_and_directory
 position = "top" # top, bottom, left, or right
 always_show = false
 auto_hide_in_fullscreen = false
@@ -249,6 +250,30 @@ bar below the notch, and elsewhere the setting is ignored. Themes
 color the tab bar through their tab chrome keys. `width = "fit"` (the default)
 sizes top and bottom tabs to their titles between `min_width` and `max_width`
 logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
+
+Huterm accepts bounded OSC 7 directory reports and uses them as current runtime
+metadata. `label = "directory"` shows the final path component,
+`label = "process"` uses a best-effort local foreground-process name, and
+`label = "process_and_directory"` combines both when available. Each mode
+falls back to the current terminal title and launched program. A custom tab
+name always wins. Process sampling is disabled unless a process label mode is
+active.
+
+New tabs inherit a reported directory by default when OSC 7 identifies it as
+local and it is still an accessible directory. Remote, malformed, deleted, or
+inaccessible paths use the normal platform launch directory instead. Visual
+bells briefly flash the active terminal and mark an inactive tab until viewed:
+
+```toml
+[terminal]
+new_tab_directory = "inherit" # inherit or default
+
+[terminal.bell]
+visual = true
+```
+
+Reloading `visual = false` clears existing bell presentation. Bells never
+select a tab, activate a window, or change focus.
 
 The command palette sits near the top of the window by default and retains a
 cancelled search query for 15 seconds. Reopening it during that window restores

@@ -29,6 +29,8 @@ pub struct KeybindingEntry {
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
     pub close_on_exit: bool,
+    pub new_tab_directory: NewTabDirectory,
+    pub bell: BellConfig,
     pub clipboard_write: ClipboardWritePolicy,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
@@ -40,11 +42,41 @@ impl Default for TerminalConfig {
         Self {
             term: TerminalIdentity::Auto,
             close_on_exit: true,
+            new_tab_directory: NewTabDirectory::Inherit,
+            bell: BellConfig::default(),
             clipboard_write: ClipboardWritePolicy::Allow,
             links: true,
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
+    }
+}
+
+/// Working-directory policy for newly opened tabs.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum NewTabDirectory {
+    /// Use a usable local directory reported by the active terminal.
+    #[default]
+    Inherit,
+    /// Always use Huterm's platform launch default.
+    Default,
+}
+
+/// Terminal bell presentation settings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct BellConfig {
+    pub visual: bool,
+}
+
+impl Default for BellConfig {
+    fn default() -> Self {
+        Self { visual: true }
     }
 }
 
@@ -180,6 +212,7 @@ pub struct TabsConfig {
     pub width: TabWidth,
     pub min_width: f32,
     pub max_width: f32,
+    pub label: TabLabel,
 }
 
 /// Optional overrides for the platform updater.
@@ -223,8 +256,23 @@ impl Default for TabsConfig {
             width: TabWidth::Fit,
             min_width: 96.0,
             max_width: 240.0,
+            label: TabLabel::Title,
         }
     }
+}
+
+/// Metadata used to resolve automatic tab labels.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum TabLabel {
+    #[default]
+    Title,
+    Process,
+    Directory,
+    ProcessAndDirectory,
 }
 
 /// Where the command palette sits within its window.
@@ -751,6 +799,8 @@ pub struct RawTerminal {
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub close_on_exit: bool,
+    pub new_tab_directory: NewTabDirectory,
+    pub bell: BellConfig,
     pub macos_option_as_alt: MacosOptionAsAlt,
 }
 impl Default for RawTerminal {
@@ -762,6 +812,8 @@ impl Default for RawTerminal {
             links: true,
             link_modifiers: LinkModifiers::default(),
             close_on_exit: TerminalConfig::default().close_on_exit,
+            new_tab_directory: NewTabDirectory::Inherit,
+            bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
@@ -1071,7 +1123,7 @@ mod tabs_tests {
     #[test]
     fn tab_settings_accept_every_override() {
         let configured: RawConfig = toml::from_str(
-            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nnotch = 'right'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480",
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nnotch = 'right'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480\nlabel = 'process_and_directory'",
         )
         .expect("tab settings");
         configured.validate_values().expect("valid tab settings");
@@ -1088,8 +1140,32 @@ mod tabs_tests {
                 width: TabWidth::Fit,
                 min_width: 72.0,
                 max_width: 480.0,
+                label: TabLabel::ProcessAndDirectory,
             }
         );
+    }
+
+    #[test]
+    fn metadata_and_bell_settings_use_safe_defaults_and_accept_rollback_values()
+    {
+        let defaults: RawConfig = toml::from_str("").expect("default config");
+        assert_eq!(defaults.tabs.label, TabLabel::Title);
+        assert_eq!(
+            defaults.terminal.new_tab_directory,
+            NewTabDirectory::Inherit
+        );
+        assert!(defaults.terminal.bell.visual);
+
+        let configured: RawConfig = toml::from_str(
+            "[terminal]\nnew_tab_directory = 'default'\n[terminal.bell]\nvisual = false\n[tabs]\nlabel = 'directory'",
+        )
+        .expect("metadata settings");
+        assert_eq!(configured.tabs.label, TabLabel::Directory);
+        assert_eq!(
+            configured.terminal.new_tab_directory,
+            NewTabDirectory::Default
+        );
+        assert!(!configured.terminal.bell.visual);
     }
 
     #[test]

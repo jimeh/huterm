@@ -20,6 +20,17 @@
       ],
       "type": "string"
     },
+    "BellConfig": {
+      "additionalProperties": false,
+      "description": "Terminal bell presentation settings.",
+      "properties": {
+        "visual": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ClipboardWritePolicy": {
       "description": "Permission for clipboard writes requested by terminal content.",
       "oneOf": [
@@ -313,6 +324,21 @@
         "both"
       ],
       "type": "string"
+    },
+    "NewTabDirectory": {
+      "description": "Working-directory policy for newly opened tabs.",
+      "oneOf": [
+        {
+          "const": "inherit",
+          "description": "Use a usable local directory reported by the active terminal.",
+          "type": "string"
+        },
+        {
+          "const": "default",
+          "description": "Always use Huterm's platform launch default.",
+          "type": "string"
+        }
+      ]
     },
     "PaletteConfig": {
       "additionalProperties": false,
@@ -3316,6 +3342,13 @@
     "RawTerminal": {
       "additionalProperties": false,
       "properties": {
+        "bell": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BellConfig"
+            }
+          ]
+        },
         "clipboard_write": {
           "allOf": [
             {
@@ -3356,6 +3389,14 @@
             }
           ],
           "default": "off"
+        },
+        "new_tab_directory": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NewTabDirectory"
+            }
+          ],
+          "default": "inherit"
         },
         "term": {
           "allOf": [
@@ -3528,6 +3569,16 @@
         }
       ]
     },
+    "TabLabel": {
+      "description": "Metadata used to resolve automatic tab labels.",
+      "enum": [
+        "title",
+        "process",
+        "directory",
+        "process_and_directory"
+      ],
+      "type": "string"
+    },
     "TabNotch": {
       "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
       "enum": [
@@ -3579,6 +3630,14 @@
           ],
           "default": "active",
           "description": "When a tab shows its close button; hovering a tab always shows it."
+        },
+        "label": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabLabel"
+            }
+          ],
+          "default": "title"
         },
         "max_width": {
           "default": 240.0,

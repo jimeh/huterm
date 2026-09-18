@@ -22,6 +22,8 @@ term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
+# Open new tabs in a usable local directory reported by the active terminal.
+new_tab_directory = "inherit"
 # Allow terminal content such as tmux to replace the system clipboard.
 # Reload applies this to existing terminals: "allow" or "deny".
 clipboard_write = "allow"
@@ -32,6 +34,10 @@ macos_option_as_alt = "off"
 # Also hold Shift when terminal applications request mouse reporting.
 links = true
 # link_modifiers = "cmd" # Linux default: "ctrl"
+
+# Flash active terminals and mark inactive tabs when a bell rings.
+[terminal.bell]
+visual = true
 
 [font]
 family = "Menlo"
@@ -47,6 +53,8 @@ padding_y = 4.0
 padding_balance = false
 
 [tabs]
+# Automatic label: title, process, directory, or process_and_directory.
+label = "title"
 # Tab placement: top, bottom, left, or right.
 position = "top"
 always_show = false
@@ -339,6 +347,8 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         terminal: TerminalConfig {
             term: raw.terminal.term,
             close_on_exit: raw.terminal.close_on_exit,
+            new_tab_directory: raw.terminal.new_tab_directory,
+            bell: raw.terminal.bell,
             clipboard_write: raw.terminal.clipboard_write,
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
@@ -418,7 +428,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 163);
+        assert_eq!(fixtures.len(), 169);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -501,6 +511,7 @@ mod tests {
                 width: TabWidth::Fill,
                 min_width: 120.0,
                 max_width: 360.0,
+                label: huterm_config::TabLabel::Title,
             }
         );
     }

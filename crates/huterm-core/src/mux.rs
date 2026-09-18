@@ -561,6 +561,17 @@ impl Mux {
             .map(TerminalRuntime::client)
     }
 
+    /// Clones the current terminal clients for one bounded host operation.
+    /// Callers must release the structural lock before using the handles and
+    /// must not retain them beyond that operation.
+    #[must_use]
+    pub fn runtime_clients(&self) -> Vec<RuntimeClient> {
+        self.terminals
+            .values()
+            .map(TerminalRuntime::client)
+            .collect()
+    }
+
     /// Registers one validated attachment view to receive host effects from a terminal.
     ///
     /// # Errors

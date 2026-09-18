@@ -689,6 +689,75 @@ pub struct ExitStatus {
     pub success: bool,
 }
 
+/// A terminal-reported working directory, independent of an operating-system path type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct TerminalDirectory {
+    host: Option<String>,
+    path: String,
+    local: bool,
+}
+
+impl TerminalDirectory {
+    /// Creates a bounded, normalized directory value owned by the runtime.
+    #[must_use]
+    pub fn new(host: Option<String>, path: String, local: bool) -> Self {
+        Self { host, path, local }
+    }
+
+    /// Returns the reported URI host, when the report carried one.
+    #[must_use]
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
+    /// Returns the decoded absolute display path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns whether core classified the directory as local to this runtime host.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+}
+
+/// Current non-cell terminal metadata.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct TerminalMetadata {
+    directory: Option<TerminalDirectory>,
+    foreground_process: Option<String>,
+}
+
+impl TerminalMetadata {
+    /// Creates a complete metadata replacement.
+    #[must_use]
+    pub fn new(
+        directory: Option<TerminalDirectory>,
+        foreground_process: Option<String>,
+    ) -> Self {
+        Self {
+            directory,
+            foreground_process,
+        }
+    }
+
+    /// Returns the latest accepted directory report.
+    #[must_use]
+    pub fn directory(&self) -> Option<&TerminalDirectory> {
+        self.directory.as_ref()
+    }
+
+    /// Returns the current best-effort foreground-process display name.
+    #[must_use]
+    pub fn foreground_process(&self) -> Option<&str> {
+        self.foreground_process.as_deref()
+    }
+}
+
 /// Asynchronous runtime event delivered to clients.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -708,6 +777,15 @@ pub enum TerminalEvent {
         terminal_id: TerminalId,
         /// New title.
         title: String,
+    },
+    /// Non-cell terminal metadata changed. Every event is a full replacement.
+    MetadataChanged {
+        /// Changed terminal.
+        terminal_id: TerminalId,
+        /// Monotonic terminal-local metadata revision.
+        revision: u64,
+        /// Complete current metadata.
+        metadata: TerminalMetadata,
     },
     /// Terminal bell rang.
     Bell(TerminalId),

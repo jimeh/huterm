@@ -14,7 +14,7 @@ use huterm_protocol::TerminalPresentation;
 use huterm_protocol::{
     BufferRange, CellSize, ExitStatus, GridSize, ScrollCommand,
     TerminalCommand, TerminalEvent, TerminalId, TerminalInput,
-    TerminalSnapshot,
+    TerminalMetadata, TerminalSnapshot,
 };
 use thiserror::Error;
 
@@ -266,9 +266,27 @@ impl RuntimeClient {
     }
 
     pub(crate) fn job_context(&self) -> Option<crate::jobs::JobContext> {
+        let receiver = self.request_job_context()?;
+        receiver.recv_timeout(Duration::from_secs(1)).ok()
+    }
+
+    pub(crate) fn request_job_context(
+        &self,
+    ) -> Option<Receiver<crate::jobs::JobContext>> {
         let (reply, receiver) = mpsc::channel();
         self.controls.send(RuntimeControl::JobContext(reply)).ok()?;
-        receiver.recv_timeout(Duration::from_secs(1)).ok()
+        Some(receiver)
+    }
+
+    pub(crate) fn update_foreground_process(
+        &self,
+        sampled_group: crate::jobs::SampledForegroundGroup,
+        name: Option<String>,
+    ) {
+        let _ = self.controls.send(RuntimeControl::ForegroundProcess {
+            sampled_group,
+            name,
+        });
     }
 
     #[cfg(test)]
@@ -617,6 +635,10 @@ enum RuntimeMessage {
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
     JobContext(Sender<crate::jobs::JobContext>),
+    ForegroundProcess {
+        sampled_group: crate::jobs::SampledForegroundGroup,
+        name: Option<String>,
+    },
     #[cfg(test)]
     Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
     PtyEof,
@@ -761,6 +783,8 @@ fn run_terminal(
 
     let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
+    let mut metadata = TerminalMetadata::default();
+    let mut metadata_revision = 0_u64;
     #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
@@ -881,6 +905,31 @@ fn run_terminal(
                         }),
                     });
                 }
+                RuntimeControl::ForegroundProcess {
+                    sampled_group,
+                    name,
+                } => {
+                    let current_group = (!child_exited)
+                        .then(|| master.process_group_leader())
+                        .flatten();
+                    if matches!(
+                        sampled_group,
+                        crate::jobs::SampledForegroundGroup::Unavailable
+                    ) || matches!(
+                        sampled_group,
+                        crate::jobs::SampledForegroundGroup::Observed(sampled)
+                            if sampled == current_group
+                    ) {
+                        publish_metadata(
+                            terminal_id,
+                            metadata.directory().cloned(),
+                            name,
+                            &mut metadata,
+                            &mut metadata_revision,
+                            &events,
+                        );
+                    }
+                }
                 #[cfg(test)]
                 RuntimeControl::Presentation(reply) => {
                     let _ = reply.send((
@@ -950,6 +999,8 @@ fn run_terminal(
                         &writer_sender,
                         &mut pending_writes,
                         &events,
+                        &mut metadata,
+                        &mut metadata_revision,
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1023,6 +1074,8 @@ fn run_terminal(
                         &writer_sender,
                         &mut pending_writes,
                         &events,
+                        &mut metadata,
+                        &mut metadata_revision,
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1267,6 +1320,8 @@ fn handle_effect(
     writer: &SyncSender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
     events: &EventPublisher,
+    metadata: &mut TerminalMetadata,
+    metadata_revision: &mut u64,
 ) -> WriterQueueState {
     match effect {
         EngineEffect::PtyWrite(bytes) => {
@@ -1277,11 +1332,43 @@ fn handle_effect(
                 events.send(TerminalEvent::TitleChanged { terminal_id, title });
             WriterQueueState::Drained
         }
+        EngineEffect::Directory(directory) => {
+            publish_metadata(
+                terminal_id,
+                directory,
+                metadata.foreground_process().map(str::to_owned),
+                metadata,
+                metadata_revision,
+                events,
+            );
+            WriterQueueState::Drained
+        }
         EngineEffect::Bell => {
             let _ = events.send(TerminalEvent::Bell(terminal_id));
             WriterQueueState::Drained
         }
     }
+}
+
+fn publish_metadata(
+    terminal_id: TerminalId,
+    directory: Option<huterm_protocol::TerminalDirectory>,
+    foreground_process: Option<String>,
+    current: &mut TerminalMetadata,
+    revision: &mut u64,
+    events: &EventPublisher,
+) {
+    let replacement = TerminalMetadata::new(directory, foreground_process);
+    if *current == replacement {
+        return;
+    }
+    *current = replacement;
+    *revision = revision.saturating_add(1);
+    let _ = events.send(TerminalEvent::MetadataChanged {
+        terminal_id,
+        revision: *revision,
+        metadata: current.clone(),
+    });
 }
 
 fn queue_write(
@@ -1510,6 +1597,109 @@ mod tests {
         for runtime in runtimes {
             runtime.shutdown().unwrap();
         }
+    }
+
+    #[test]
+    fn directory_metadata_replaces_state_orders_revisions_and_suppresses_duplicates()
+     {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(92),
+            &command("printf '\\033]7;file://localhost/tmp/one\\007\\033]7;file://localhost/tmp/one\\007\\033]7;file://localhost/tmp/two\\007READY'; read line"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut changes = Vec::new();
+        while Instant::now() < deadline && changes.len() < 2 {
+            if let Some(TerminalEvent::MetadataChanged {
+                revision,
+                metadata,
+                ..
+            }) = client.try_recv_event().unwrap()
+            {
+                changes.push((
+                    revision,
+                    metadata
+                        .directory()
+                        .map(|directory| directory.path().to_owned()),
+                ));
+            } else {
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+        assert_eq!(
+            changes,
+            [
+                (1, Some("/tmp/one".to_owned())),
+                (2, Some("/tmp/two".to_owned()))
+            ]
+        );
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stale_foreground_samples_are_rejected_before_the_next_ordered_update() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(94),
+            &command("printf READY; read line"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        client.update_foreground_process(
+            crate::jobs::SampledForegroundGroup::Observed(Some(-1)),
+            Some("stale".into()),
+        );
+        client.update_foreground_process(
+            crate::jobs::SampledForegroundGroup::Unavailable,
+            Some("current".into()),
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let event = loop {
+            if let Some(TerminalEvent::MetadataChanged { metadata, .. }) =
+                client.try_recv_event().unwrap()
+            {
+                break metadata;
+            }
+            assert!(Instant::now() < deadline, "metadata update timed out");
+            thread::yield_now();
+        };
+        assert_eq!(event.foreground_process(), Some("current"));
+        assert!(client.try_recv_event().unwrap().is_none());
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn directory_metadata_survives_exit_in_its_replacement_event() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(95),
+            &command("printf '\\033]7;file://localhost/tmp/final\\007'; exit"),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut metadata = None;
+        let mut exited = false;
+        while Instant::now() < deadline && (!exited || metadata.is_none()) {
+            match client.try_recv_event().unwrap() {
+                Some(TerminalEvent::MetadataChanged {
+                    metadata: replacement,
+                    ..
+                }) => metadata = Some(replacement),
+                Some(TerminalEvent::Exited { .. }) => exited = true,
+                _ => thread::yield_now(),
+            }
+        }
+        assert!(exited);
+        assert_eq!(
+            metadata
+                .as_ref()
+                .and_then(TerminalMetadata::directory)
+                .map(huterm_protocol::TerminalDirectory::path),
+            Some("/tmp/final")
+        );
+        runtime.shutdown().unwrap();
     }
 
     #[test]
