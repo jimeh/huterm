@@ -131,6 +131,52 @@ the command. AMD64 execution on an ARM64 engine uses emulation and can be
 slower than native ARM64. Native x86_64 CI remains the architecture-specific
 check.
 
+## macOS smokes through Tart
+
+On Apple Silicon, the macOS desktop smokes can run in a disposable
+[Tart](https://tart.run) VM instead of on the host display. The VM keeps smoke
+windows, focus changes, fullscreen Spaces, cursor warps, and global hotkeys off
+the host, so parallel sessions do not collide. Install Tart first; these
+tasks sit alongside the host `smoke:macos-*` tasks and do not replace them.
+
+```sh
+mise run vm:macos:smoke
+mise run vm:macos:smoke -- macos-quake
+mise run vm:macos:exec -- \
+  bun scripts/check-palette.ts target/debug/examples/palette_smoke
+mise run vm:macos:dev
+mise run vm:macos:clean
+```
+
+`vm:macos:smoke` builds the CI smoke binaries on the host, then runs
+`ci:smoke:run`, or the named `HUTERM_CI_SMOKE_STEP`, in a headless guest.
+`vm:macos:exec` runs a command against whatever host outputs already exist and
+does not build. `vm:macos:dev` builds `target/debug/huterm`, opens a Tart
+window, and streams the app's output to the host terminal; quitting Huterm or
+closing the window removes the VM.
+
+The first run pulls the digest-pinned Cirrus Labs macOS 27 base image (about
+33 GB) and provisions a local `huterm-macos-<hash>` image with pinned Mise,
+Bun from `mise.lock`, and tmux. The hash covers the base image,
+`scripts/macos-vm/provision.sh`, and `mise.lock`. Each run clones that image
+through APFS copy-on-write, shares the checkout read-only, copies the sources
+and host-built runtime outputs into the guest, and deletes the clone
+afterwards. Expect about 35 seconds of overhead per run. The guest never
+compiles, so its macOS version must satisfy host-built binaries: Swift
+witnesses built with Xcode 27 require macOS 27.
+
+Virtualization.framework runs at most two macOS guests per host. The runner
+queues for one of two slots, shared by every worktree, and waits up to 30
+minutes. macOS VMs started outside these tasks, including other Tart, UTM, or
+Parallels guests, also count toward the limit; Tart then fails with "The
+number of VMs exceeds the system limit".
+
+`vm:macos:clean` removes provisioned images and leftover run VMs once no run
+holds a slot. The base image stays cached; remove it with
+`tart delete <image>` using the reference printed by the task. The guest has
+one 1280x800 display without a notch, and paravirtualized Metal, so keep
+benchmarks, notch and safe-area checks, and multi-display QA on real hardware.
+
 The initial desktop client runs on macOS and Linux:
 
 ```sh

@@ -76,6 +76,9 @@ Run `mise tasks` to discover the full task set.
   elapsed time, reuse, and input latency when the host delivers enough frames.
 - `mise run package:macos` builds and verifies a Sparkle-free universal
   `Huterm.app`; `package:macos-release` is the updater-enabled release input.
+- `mise run vm:macos:smoke` runs the macOS desktop smokes in a disposable
+  headless Tart VM so they do not take over the host display; `vm:macos:dev`
+  runs a dev build in a VM window. See the development guide.
 - `mise run package:linux:container` builds verified Linux packages in the
   pinned Ubuntu 22.04 container and exports them to host `dist/`.
 - `mise run format` writes Rust formatting and refreshes action pins.
@@ -777,6 +780,15 @@ inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.
 Use Bun's process timeout and output checks for portable smoke runners. CI's
 macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
+
+Tart macOS VMs run host-built binaries; the guest never compiles. Stage the
+read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
+for extended attributes on symlinks, so `ditto` and `cp` fail on
+`Sparkle.framework`. `tart list` and `tart get` fail while any VM with an ASIF
+disk is running, so run lifecycles must not depend on them. Background
+processes started through `tart exec` die when exec returns; keep guest
+commands in the foreground. Virtualization.framework refuses a third running
+macOS guest, so runs share two host-wide slot locks.
 
 Linux Docker validation keeps the checkout read-only and syncs source into a
 worktree/architecture-scoped volume. Exclude host `target`, `.native`, and

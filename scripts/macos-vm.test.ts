@@ -1,0 +1,133 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { BASE_IMAGE, argumentsFor, imageName, runName, tryLock } from "./macos-vm";
+
+const directories: string[] = [];
+afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+
+const root = resolve(import.meta.dir, "..");
+const image = imageName(root);
+const macos = process.platform === "darwin" && process.arch === "arm64";
+
+function fixture(overrides: Record<string, string> = {}) {
+  const directory = mkdtempSync(join(tmpdir(), "huterm-macos-vm-test-"));
+  directories.push(directory);
+  const log = join(directory, "tart.jsonl");
+  const vms = join(directory, "vms");
+  writeFileSync(log, "");
+  writeFileSync(vms, "");
+  const tart = join(directory, "tart");
+  writeFileSync(tart, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+const env = process.env;
+appendFileSync(env.TART_TEST_LOG, JSON.stringify(args) + '\\n');
+const names = () => readFileSync(env.TART_TEST_VMS, 'utf8').split('\\n').filter(Boolean);
+const save = (list) => writeFileSync(env.TART_TEST_VMS, list.map((name) => name + '\\n').join(''));
+const marker = (name) => env.TART_TEST_VMS + '.' + name + '.stopped';
+switch (args[0]) {
+  case 'get': process.exit(names().includes(args[1]) ? 0 : 1);
+  case 'list': console.log(names().join('\\n')); break;
+  case 'clone': save([...names(), args[2]]); break;
+  case 'rename': save(names().map((name) => name === args[1] ? args[2] : name)); break;
+  case 'delete': if (!names().includes(args[1])) process.exit(1); save(names().filter((name) => name !== args[1])); break;
+  case 'stop': writeFileSync(marker(args.at(-1)), ''); break;
+  case 'run':
+    rmSync(marker(args[1]), { force: true });
+    while (!existsSync(marker(args[1]))) await Bun.sleep(20);
+    break;
+  case 'exec': {
+    const action = args.includes('true') && args.length === 3 ? 'ready'
+      : args.some((arg) => arg.endsWith('provision.sh')) ? 'provision' : args[3]?.endsWith('guest.sh') ? args[4] : 'unknown';
+    process.exit(Number(env['TART_TEST_' + action.toUpperCase() + '_EXIT'] || 0));
+  }
+}
+`);
+  chmodSync(tart, 0o755);
+  const state = join(directory, "state");
+  const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TART_TEST_LOG: log, TART_TEST_VMS: vms, HUTERM_MACOS_VM_STATE: state, ...overrides };
+  return {
+    state,
+    vms: () => readFileSync(vms, "utf8").split("\n").filter(Boolean),
+    seed: (...names: string[]) => writeFileSync(vms, names.map((name) => `${name}\n`).join("")),
+    calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
+    run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "macos-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
+  };
+}
+
+describe("macOS VM runner", () => {
+  test("arguments select the smoke step and preserve exec commands verbatim", () => {
+    expect(argumentsFor(["smoke"]).command).toEqual(["mise", "run", "ci:smoke:run"]);
+    expect(argumentsFor(["smoke", "--", "macos-quake"]).command).toEqual(["env", "HUTERM_CI_SMOKE_STEP=macos-quake", "mise", "run", "ci:smoke:run"]);
+    expect(argumentsFor(["exec", "--", "bun", "--version"]).command).toEqual(["bun", "--version"]);
+    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", graphics: true, command: ["target/debug/huterm"] });
+    expect(() => argumentsFor(["smoke", "renderer", "macos-input"])).toThrow("at most one");
+    expect(() => argumentsFor(["exec"])).toThrow("requires a command");
+    expect(() => argumentsFor(["clean", "extra"])).toThrow("takes no arguments");
+    expect(() => argumentsFor(["shell"])).toThrow("expected smoke, exec, dev, or clean");
+  });
+
+  test.skipIf(!macos)("provisions and publishes the image before running in a disposable clone", () => {
+    const vm = fixture();
+    const result = vm.run("exec", "--", "sw_vers");
+    expect(result.exitCode).toBe(0);
+    const calls = vm.calls().filter((args) => !(args[0] === "exec" && args[2] === "true"));
+    const build = `${image}-build`;
+    const index = (args: string[]) => calls.findIndex((call) => JSON.stringify(call) === JSON.stringify(args));
+    expect(index(["clone", BASE_IMAGE, build])).toBeGreaterThanOrEqual(0);
+    expect(index(["rename", build, image])).toBeGreaterThan(index(["stop", "--timeout", "30", build]));
+    expect(index(["clone", image, runName(0)])).toBeGreaterThan(index(["rename", build, image]));
+    const command = calls.find((args) => args[0] === "exec" && args.includes("sw_vers"))!;
+    expect(command.slice(0, 3)).toEqual(["exec", runName(0), "/bin/sh"]);
+    expect(command.slice(4)).toEqual(["exec", "sw_vers"]);
+    expect(vm.vms()).toEqual([image]);
+  });
+
+  test.skipIf(!macos)("failed provisioning discards the build without publishing an image", () => {
+    const vm = fixture({ TART_TEST_PROVISION_EXIT: "7" });
+    const result = vm.run("smoke");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("guest provisioning failed with status 7");
+    expect(vm.calls().some((args) => args[0] === "rename")).toBe(false);
+    expect(vm.calls().some((args) => args[0] === "clone" && args[1] === image)).toBe(false);
+    expect(vm.vms()).toEqual([]);
+  });
+
+  test.skipIf(!macos)("command failures propagate after the run VM is stopped and deleted", () => {
+    const vm = fixture({ TART_TEST_EXEC_EXIT: "3" });
+    vm.seed(image);
+    const result = vm.run("smoke", "macos-input");
+    expect(result.exitCode).toBe(3);
+    expect(vm.calls().some((args) => args[0] === "clone" && args[1] === BASE_IMAGE)).toBe(false);
+    expect(vm.calls()).toContainEqual(["stop", "--timeout", "2", runName(0)]);
+    expect(vm.vms()).toEqual([image]);
+  });
+
+  test.skipIf(!macos)("a held slot moves the run to the next VM name", () => {
+    const vm = fixture();
+    vm.seed(image);
+    mkdirSync(vm.state, { recursive: true });
+    const release = tryLock(join(vm.state, "slot-0.lock"))!;
+    try {
+      expect(vm.run("exec", "true").exitCode).toBe(0);
+    } finally { release(); }
+    expect(vm.calls().some((args) => args[0] === "clone" && args[2] === runName(0))).toBe(false);
+    expect(vm.calls()).toContainEqual(["clone", image, runName(1)]);
+  });
+
+  test.skipIf(!macos)("clean removes only Huterm VMs and refuses while a run holds a slot", () => {
+    const vm = fixture();
+    vm.seed(image, runName(1), "someone-else", BASE_IMAGE);
+    mkdirSync(vm.state, { recursive: true });
+    const release = tryLock(join(vm.state, "slot-1.lock"))!;
+    let blocked;
+    try { blocked = vm.run("clean"); } finally { release(); }
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.stderr.toString()).toContain("a macOS VM run is active");
+    expect(vm.vms()).toEqual([image, runName(1), "someone-else", BASE_IMAGE]);
+    expect(vm.run("clean").exitCode).toBe(0);
+    expect(vm.vms()).toEqual(["someone-else", BASE_IMAGE]);
+  });
+});

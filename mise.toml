@@ -493,7 +493,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh"
+run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh && bash -n scripts/macos-vm/provision.sh && bash -n scripts/macos-vm/guest.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
@@ -977,6 +977,24 @@ run = "bun scripts/linux.ts exec"
 [tasks."linux:clean"]
 description = "Remove this worktree's Linux cache volumes for the selected architecture"
 run = "bun scripts/linux.ts clean"
+
+[tasks."vm:macos:smoke"]
+description = "Run macOS desktop smokes in a disposable headless Tart VM, optionally one step"
+depends = ["ghostty:prepare", "sparkle:prepare"]
+run = "mise run ci:smoke:build && bun scripts/macos-vm.ts smoke"
+
+[tasks."vm:macos:exec"]
+description = "Run a command against host-built outputs in a disposable headless Tart VM"
+run = "bun scripts/macos-vm.ts exec"
+
+[tasks."vm:macos:dev"]
+description = "Build Huterm and run it in a disposable Tart VM window"
+depends = ["ghostty:prepare", "terminfo:prepare"]
+run = "bash scripts/build-exec.sh cargo build --locked -p huterm && bun scripts/macos-vm.ts dev"
+
+[tasks."vm:macos:clean"]
+description = "Remove Huterm's provisioned and leftover Tart VMs"
+run = "bun scripts/macos-vm.ts clean"
 
 [tasks."bench:links"]
 depends = ["ghostty:prepare"]
