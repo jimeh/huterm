@@ -1,15 +1,24 @@
 # Event-driven window refresh
 
-Status: in progress. Step 1 is committed in `94f8028`, step 2 in `dae1ccb`,
-and step 3 in `ef6e859`. Reader and idle-writer waits are converted in `52f716b`
-and `7d7a6d4`. The remaining Unix runtime and writer waits now use explicit
-notifications, a blocking child waiter, and cancellable PTY readiness.
-Core and workspace checks pass; native acceptance remains pending.
+Status: steps 1 to 3 and the Unix runtime wait conversion are implemented and
+committed. Step 1 is in `94f8028`, step 2 in `dae1ccb`, and step 3 in `ef6e859`.
+Reader, writer, and runtime waits are in `52f716b`, `7d7a6d4`, and `1d42558`.
+Workspace verification and all seven macOS input, clipboard, integration,
+fullscreen, palette, Quit, and Quake smokes pass.
 
-Native smokes and display benchmarks are blocked because the host screen is
-locked. Noninteractive sudo cannot run `powermetrics` because it requires a
-password. Steps 4 to 8 remain conditional on the measurements described below.
-Do not infer their benefit from removed timers alone.
+The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
+single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
+to 120 per second. With 50 idle tabs, visible CPU fell from 124.6% to 2.2% of
+one logical core, and interrupt wakeups fell from about 59,700/s to 180/s.
+See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#post-refresh-measurements-2026-09-19)
+for methods, latency distributions, tradeoffs, and remaining coverage limits.
+
+Steps 4 to 8 are deferred under the measurement gate. The retained pump no
+longer drains every tab. An empty-pump-body probe kept the timer and measured
+only modest CPU savings, with unchanged wakeups and no tab-count scaling.
+The display link accounts for most remaining visible wakeups; removing the
+pump would leave that cost while adding animation and native-lifecycle risk.
+Revisit these steps if profiles show material remaining cost.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -45,7 +54,7 @@ not directly reduce the cost of painting a genuinely changed frame. Shared
 attachments and split panes remain future work; the scheduling boundary must
 allow them without putting desktop frame policy into core.
 
-## Where main stands
+## Baseline architecture before this implementation
 
 The groundwork merged in #141 on 2026-09-18 as squash commit `776e567`. The
 hashes below are its pre-squash branch commits and are not on `main`:
@@ -139,9 +148,9 @@ The same benchmark set was then repeated with explicit built-in-display
 selection and frame diagnostics. Echo and flood delivered approximately 120
 callbacks per second while flood still applied 60 snapshots per second. Use
 the [built-in baseline](../performance/gpui-terminal-renderer.md#built-in-display-baseline-2026-09-19)
-and `target/bench/2026-09-19-builtin/renderer.json` for the next comparison.
-The targeting/diagnostic harness is present, but refresh implementation remains
-unchanged.
+for the original scale-2 measurements. The final comparison below uses a fresh
+baseline at scale 1 because the display topology changed. The targeting and
+diagnostic harness was committed before the refresh implementation.
 
 This is step 1. These ran on 2026-09-17 on an M3 Max. `check`, `test`, and the renderer,
 input, fullscreen, palette, and quit smokes pass. The quake smoke fails at its
@@ -500,12 +509,16 @@ smokes, which exercise close consent.
 
 ## Steps
 
-Convert one duty at a time with the pump still running, so every step is
-shippable and bisectable. Remove the timer last.
+The original sequence follows. Steps 1 to 3 and the runtime prerequisite are
+complete; steps 4 to 8 remain design notes for a future measured need. True
+60 Hz native pacing and the subjective editor/DOOM feel comparison remain
+unverified. Convert one duty at a time with the pump still running so changes
+remain bisectable. Remove the timer last.
 
 1. **Record macOS baselines.** Done; see "First tasks on macOS" above.
-2. **Single event consumer and scheduler.** Add `refresh_tab`, compact refresh
-   results, owned activity tasks, and bounded drain continuations; remove the
+2. **Single event consumer and scheduler.** Implemented in `dae1ccb`.
+   Add `refresh_tab`, compact refresh results, owned activity tasks, and bounded
+   drain continuations; remove the
    task in `TerminalView::new`. Implement and test event backlog policy before
    slowing consumers. The pump routes through the same scheduler as a temporary
    fallback, without bypassing budgets. Success: `echo` stays near its current median,
@@ -513,8 +526,9 @@ shippable and bisectable. Remove the timer last.
    start snapshots, and title, bell, exit, and close-on-exit still work for
    active and hidden tabs. More than one batch of events or host effects drains
    without a new producer wake. Idle task cancellation releases its client.
-3. **Frame pacing and the clamp option.** Replace the 8 ms rule with the frame
-   clock at the common snapshot admission point and add the configuration option.
+3. **Frame pacing and the clamp option.** Implemented in `ef6e859`.
+   Replace the 8 ms rule with the frame clock at the common snapshot admission
+   point and add the configuration option.
    Resolve frame availability and resume handling. Success: clamped requests do
    not exceed one per terminal view per observed frame interval under flood;
    verify on 60 Hz and 120 Hz displays and record delivered ticks. Preserve
@@ -537,8 +551,10 @@ shippable and bisectable. Remove the timer last.
 
 Steps 2 and 3 deliver the latency and correctness benefits and ship together.
 The runtime loop change ships separately, before steps 4 to 8. Steps 4 to 8
-carry most of the risk. Decide their scope from `powermetrics` measurements of
-`main` with the pump body stubbed out, taken after the runtime loop change. If
+carry most of the risk. The scope decision above uses per-process CPU and
+interrupt-wakeup counters from `proc_pid_rusage`, comparing the baseline, feature,
+and feature with its
+pump body stubbed out. `powermetrics` required unavailable sudo access. If
 the display link dominates the remaining wakeups, reduce the pump's per-tick
 work, such as hidden-tab refreshes and title clones, instead of removing the
 timer.
@@ -621,17 +637,26 @@ Measured and set aside, in case a later profile changes the ranking:
 - **Smaller prepare items:** flatten single-glyph layouts, memoize `Hsla`
   conversion across runs of one color, reuse row vectors.
 
-## Unresolved questions
+## Decisions and remaining coverage
 
-1. Should unclamped mode have a floor between snapshots? Decide from the `flood`
-   throughput measurement in step 3.
-2. Which event coalescing/admission policy bounds title, metadata, and bell
-   backlogs while preserving lifecycle progress and required ordering? Resolve
-   and test in step 2 before reducing drain frequency.
-3. Which GPUI/native signals establish frame availability and resumption without
-   an always-running probe? Resolve in step 3; event draining never depends on
-   that answer or on frame delivery.
-4. Which replacement does each runtime wait use? Settle child ownership,
-   interruptible reader readiness, and fresh foreground-group evidence first.
-5. Do measured remaining costs justify steps 4 to 8 in full? Decide after the
-   runtime change; retain a cheaper pump if complete removal brings little gain.
+1. Unlimited mode keeps one request in flight without an added timer floor.
+   Measured flood throughput was 216 to 223 snapshots/s versus 120 in display
+   mode. It is opt-in; the default follows observed frames.
+2. Step 2 coalesces title, metadata, bell, and invalidation events by variant,
+   retaining the first pending lifecycle event of each kind. Bounded drains
+   and owned activity tasks preserve progress without frame delivery.
+3. Step 3 uses one pending GPUI frame callback per window and weak terminal
+   registrations. Event draining is independent of frames. Deterministic tests
+   cover admission; native 120 Hz flood matches delivered callbacks. A macOS
+   60 Hz mode request still delivered about 120 callbacks/s, so actual 60 Hz
+   native acceptance remains open.
+4. Unix runtime waits use explicit work notifications, blocking child wait,
+   cancellable reader/writer readiness, and bounded queue admission. Non-Unix
+   fallbacks remain. The child waiter adds one sleeping thread per terminal;
+   measured resident memory increased about 18 MiB at 50 idle tabs, without
+   isolating how much of that increase comes from the waiter.
+5. Steps 4 to 8 are deferred based on the measured residual cost. The pump still
+   owns animations, pointer reveal, retries, and native fullscreen coordination.
+6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
+   and long-running interactive workloads still need human acceptance; the
+   benchmark's paint marker does not measure physical presentation latency.

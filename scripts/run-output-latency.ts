@@ -68,11 +68,13 @@ if (import.meta.main) {
   const budgetUs = budgetValue === undefined ? undefined : Number(budgetValue);
   if (budgetUs !== undefined && (!Number.isFinite(budgetUs) || budgetUs <= 0)) throw new Error(`HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US must be a positive number, not ${budgetValue}`);
   // The terminal starts its shell from another directory, so the path must be absolute.
-  // An empty configuration keeps the user's font, theme, and global shortcuts
+  // An isolated configuration keeps the user's font, theme, and global shortcuts
   // out of the measurement; a running Huterm would otherwise own the shortcuts.
+  const refresh = process.env.HUTERM_BENCH_REFRESH;
+  if (refresh !== undefined && refresh !== "display" && refresh !== "unlimited") throw new Error(`HUTERM_BENCH_REFRESH must be display or unlimited, not ${refresh}`);
   const configDirectory = await mkdtemp(join(tmpdir(), "huterm-output-latency-"));
   const config = join(configDirectory, "config.toml");
-  await Bun.write(config, "");
+  await Bun.write(config, refresh === undefined ? "" : `[terminal]\nrefresh = "${refresh}"\n`);
   // "events" records the probe without requesting a frame per display tick;
   // continuous drawing would otherwise hold the main thread in present.
   // Always set the workload so an inherited value cannot change the mode.

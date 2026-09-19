@@ -379,3 +379,144 @@ satisfy that condition; run the same task from a frame-delivering macOS session
 for those measurements.
 The scroll timings use a monotonic wall clock and include scheduler preemption;
 they do not measure per-thread CPU time.
+
+### Post-refresh measurements, 2026-09-19
+
+Compared `1d42558` with a fresh release build of the pre-change baseline
+`94f8028`, using separate worktrees and Cargo target directories. The current
+setup exposes only built-in display 1 at scale 1, 2704 by 1756, with roughly
+120 GPUI callbacks/s. Earlier scale-2 reports are not directly comparable.
+Builds finished before sampling; baseline and feature benchmarks ran serially
+after the overloaded-host checks described below.
+
+The output-latency harness accepts `HUTERM_BENCH_REFRESH=display` or `unlimited`
+and writes that policy into its isolated config. With no override it writes an
+empty config, preserving compatibility with the baseline executable. Early
+baseline runs that passed the unsupported `refresh` field were excluded.
+
+#### Output latency and frame pacing
+
+Three runs per mode, each using the harness's six measured intervals. Values
+are medians of per-run medians, not pooled sample medians. Painted latency ends
+at the renderer's paint marker; it does not measure physical presentation.
+
+| Build and policy | Echo applied µs | Echo painted µs | Flood snapshots/s | Flood applied µs | Flood painted µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 134 | 5,682 | 60 | 14,895 | 18,847 |
+| Feature, display | 146 | 6,768 | 120 | 13,184 | 15,414 |
+| Feature, unlimited | 169 | 6,649 | 217 | 2,146 | 8,219 |
+
+Default flood throughput now follows the observed 120 Hz callbacks. Unlimited
+runs produced 216 to 223 snapshots/s while retaining one request in flight.
+An additional timer floor is not introduced; display pacing remains the default.
+Worst observed flood painted latency across the three runs was 45.2 ms for the
+baseline, 21.9 ms for display pacing, and 18.6 ms for unlimited mode.
+
+Echo application stays below 0.2 ms in every per-run median. The first set's
+painted median increased by about 1.1 ms; baseline per-run medians ranged from
+5.1 to 6.6 ms and display-mode medians from 5.7 to 7.0 ms. This overlaps, but is
+not evidence that painted echo latency is unchanged. A second set alternating
+baseline and feature runs measured applied medians of 180 versus 205 µs and
+painted medians of 5,836 versus 6,592 µs. Individual painted medians ranged from
+5.4 to 7.3 ms for the baseline and 6.3 to 7.3 ms for the feature. This leaves a
+small possible painted-echo regression; its cause has not been isolated.
+
+The macOS API accepted a temporary change to the same-size 60 Hz display mode,
+but GPUI still delivered about 120 callbacks/s and flood applied about 118
+snapshots/s. The original 120 Hz mode was restored. Those runs are retained as
+an inconclusive 60 Hz attempt, not counted as 60 Hz acceptance. Admission tests
+exercise explicit frame ticks, but a native host delivering 60 Hz is still
+needed to complete that coverage.
+
+#### Idle CPU and wakeups
+
+Each row is the median of three five-second samples, following two seconds of
+settling, with one window and the stated number of idle shell tabs. Process
+labels were disabled (`tabs.label = "title"`). Hidden means the application was
+hidden through AppKit; it does not cover every form of window occlusion.
+`proc_pid_rusage` measured the Huterm process, not WindowServer or shell CPU.
+CPU counters were converted with `mach_timebase_info` and checked against a
+known CPU interval. 100% CPU denotes one logical core. Interrupt wakeups are
+not all context switches and do not establish power consumption in watts.
+`powermetrics` was unavailable without interactive sudo.
+
+| Tabs | Window | Baseline CPU % | Feature CPU % | Baseline interrupt wakeups/s | Feature interrupt wakeups/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Visible | 2.86 | 2.07 | 1,258 | 181 |
+| 1 | Hidden | 2.76 | 0.89 | 1,256 | 60 |
+| 10 | Visible | 22.81 | 1.84 | 12,198 | 180 |
+| 10 | Hidden | 19.65 | 0.93 | 12,067 | 60 |
+| 50 | Visible | 124.62 | 2.18 | 59,729 | 180 |
+| 50 | Hidden | 77.91 | 0.89 | 60,450 | 60 |
+
+A temporary startup hook created tabs through the normal `new_tab` path and
+finished before sampling. The harness verified the exact child count and
+readiness. Both builds used that hook; no continuous benchmark frame observer
+was enabled. The hook and the following empty-pump probe were removed before
+rebuilding production binaries. No instrumentation ships in the application.
+
+A third build removed the refresh pump's body while retaining its timer. Its
+visible CPU medians were 1.03%, 1.83%, and 1.47% for 1, 10, and 50 tabs; hidden
+medians were 0.82%, 0.81%, and 0.77%. Interrupt wakeups remained 180/s visible
+and 60/s hidden. The main implementation removes per-tab idle scaling; the
+remaining pump body offers modest, variable savings. The visible/hidden delta
+is consistent with the 120 Hz display link plus the retained 60 Hz timer.
+
+Steps 4 to 8 of the event-driven plan are therefore deferred. The timer remains
+responsible for animations, pointer reveal, retries, and native fullscreen
+coordination. Removing it would save residual wakeups, especially while hidden,
+but would not remove the visible display-link cost. Revisit that tradeoff if
+profiles or battery measurements justify the additional lifecycle work.
+
+Resident memory at 50 visible tabs rose from 177.3 MiB to 195.5 MiB. The Unix
+implementation adds one blocked child-wait thread per terminal; this experiment
+did not isolate its contribution to the roughly 18 MiB increase. Separate
+process-label overhead and direct battery impact were not measured.
+
+#### Renderer and scroll regression checks
+
+Five fresh runs per renderer scenario, under the same scale-1 setup:
+
+| Scenario | Baseline prepare µs | Feature prepare µs | Baseline paint µs | Feature paint µs |
+| --- | ---: | ---: | ---: | ---: |
+| ascii | 162.3 | 162.6 | 494.5 | 502.5 |
+| blocks | 204.5 | 206.1 | 257.2 | 259.6 |
+| boxes | 137.2 | 135.5 | 968.1 | 972.1 |
+| churn | 179.6 | 186.9 | 547.0 | 557.5 |
+| scroll | 11.2 | 10.8 | 518.4 | 510.4 |
+| selection | 164.7 | 162.6 | 554.6 | 552.6 |
+
+Prepare medians changed by -3.7% to +4.1%, and paint medians by -1.6% to +1.9%.
+All scenarios retained zero glyph-layout misses and identical operation counts.
+These results show no material change to renderer preparation or paint encoding.
+
+The feature scroll gate passed with 70 snapshot and 69 paint samples. Median
+snapshot elapsed time was 315 µs, p95 input-to-snapshot 8,043 µs, median wakeup
+23 µs, median paint elapsed time 640 µs, and p95 input-to-paint 11,289 µs.
+Maximum concurrent requests and queued updates both remained one. Timings
+include scheduling and are not per-thread CPU measurements. A fresh baseline
+scroll run also passed: 311 µs median snapshot, 10,021 µs p95 input-to-snapshot,
+23 µs median wakeup, 667 µs median paint, and 11,082 µs p95 input-to-paint, with
+70 snapshot and 68 paint samples and the same queue bounds.
+
+#### Native acceptance and artifacts
+
+Native input, clipboard, integration, fullscreen, palette, Quit, and Quake
+smokes all passed on the implemented source. Earlier Quake attempts timed out
+creating a hidden window or acquiring external witness focus. Some ran while
+host load exceeded 330; one later witness state identified `loginwindow` as
+frontmost despite the screen reporting unlocked. After a standalone witness
+successfully activated, the complete Quake smoke passed without product changes
+or relaxed assertions. The exact cause of those setup failures was not isolated.
+
+`mise run verify` passed. Native physical IMEs, subjective shell/editor/DOOM
+feel, and long-running interactive workloads remain outside these automated
+checks. A genuine 60 Hz callback source remains an acceptance gap.
+
+Local artifacts are in `target/bench/refresh-native/`: `latency-summary.json`,
+`idle-summary.json`, per-tab-count idle JSON reports, baseline/feature renderer
+JSON and logs, scroll logs, native smoke logs, and probe sources. The valid idle
+reports include `cpu_timebase_factor`; earlier exploratory reports without it
+used unconverted clock ticks and are excluded. Files prefixed
+`excluded-config-baseline` are also excluded. Temporary probes and binaries are
+local evidence, not committed product changes.
