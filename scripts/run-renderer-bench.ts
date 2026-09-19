@@ -118,6 +118,7 @@ if (import.meta.main) {
         throw new Error(`${scenario}: benchmark ${outcome.timedOut ? "timed out" : `exited ${outcome.exitCode ?? outcome.signalCode}`}\n${outcome.stderr}`);
       }
       const parsed = parseRun(scenario, outcome.stdout);
+      for (const line of outcome.stderr.split(/\r?\n/).filter(line => line.startsWith("HUTERM_BENCH "))) console.log(`scenario=${scenario} run=${run + 1} ${line}`);
       collected.prepare.push(parsed.prepare);
       collected.paint.push(parsed.paint);
     }

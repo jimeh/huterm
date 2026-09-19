@@ -81,6 +81,7 @@ if (import.meta.main) {
     // Huterm runs until stopped, so reaching the deadline is the expected outcome.
     const outcome = await runSmokeProcess([executable], { timeoutMs, env: environment, stream: false });
     if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
+    for (const line of outcome.stderr.split(/\r?\n/).filter(line => line.startsWith("HUTERM_BENCH "))) console.log(line);
     const summary = summarize(parseIntervals(outcome.stderr));
     console.log(`mode=${mode} ${format(summary)}`);
     if (budgetUs !== undefined) {

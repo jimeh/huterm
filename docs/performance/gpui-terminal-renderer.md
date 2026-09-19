@@ -171,6 +171,134 @@ starts one more snapshot, which reuses every row. It cannot be skipped by
 comparing generations: presentation updates invalidate without advancing the
 content generation.
 
+### Pre-refresh-change baseline, 2026-09-19
+
+Fresh native macOS runs used revision
+`ee91a54efd20ff760f7295bcc5875965d8279c08`, before event-driven refresh
+implementation. Product and benchmark sources matched that revision; the only
+working-tree change when measurements started was the refresh plan. The renderer
+report consequently labels the revision `ee91a54-dirty`.
+
+Host: M3 Max with 40 GPU cores and 64 GiB RAM, macOS 27.0 build `26A428`,
+Xcode 27.0 build `27A266a`, on AC power. The main display was an external LG
+at 60 Hz, with the built-in display and an external BenQ also online. The
+inventory does not establish each benchmark window's actual display or delivered
+frame rate. Compare future runs under the same display setup; do not treat the
+older built-in-display measurements as a controlled before/after comparison.
+
+All tasks ran serially. `bench:renderer-scenarios` used its default five runs
+per scenario. `bench:output-latency` ran three times each in `echo` and `flood`
+mode, eight seconds per run, with the runner's isolated empty configuration and
+`HUTERM_RENDER_STATS=events`. Each latency result summarizes six steady intervals
+after excluding startup. All six runs and the scroll benchmark passed.
+
+| Mode/run | Applied median µs | Applied max µs | Painted median µs | Painted max µs | Snapshots/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| echo 1 | 100 | 263 | 9,777 | 17,038 | 10 |
+| echo 2 | 127 | 243 | 12,970 | 17,364 | 10 |
+| echo 3 | 111 | 259 | 10,469 | 16,978 | 10 |
+| flood 1 | 14,844 | 19,717 | 24,956 | 33,261 | 60 |
+| flood 2 | 14,808 | 25,868 | 25,836 | 32,473 | 60 |
+| flood 3 | 14,837 | 17,048 | 25,604 | 27,932 | 60 |
+
+Renderer timings below are medians of per-process medians, in microseconds.
+Every scenario reported zero glyph layout cache misses. `scroll` rebuilt one
+row; the other scenarios rebuilt 50.
+
+| Scenario | Prepare µs | Paint encoding µs |
+| --- | ---: | ---: |
+| ascii | 180.0 | 525.0 |
+| blocks | 218.8 | 273.6 |
+| boxes | 148.3 | 1,070.2 |
+| churn | 193.8 | 585.8 |
+| scroll | 14.4 | 539.3 |
+| selection | 182.3 | 576.8 |
+
+`bench:scroll` passed snapshot and presentation gates with 70 snapshot samples
+and 60 paint samples. Median snapshot elapsed time was 173 µs, p95 input to
+snapshot was 655 µs, and median wakeup was 10 µs. Median paint elapsed time was
+356 µs and p95 input to paint was 1,409 µs. Maximum concurrent requests and
+maximum queued updates were both one. These are CPU-side completion/encoding
+measurements, not proof of GPU presentation time.
+
+Local artifacts are under `target/bench/2026-09-19-baseline/`: `host.json`,
+`renderer.json`, `summary.json`, `latency-runs.json`, and the task logs. Use
+`renderer.json` with the scenario runner's `--compare` option. These ignored
+artifacts are local; the tables above retain the results in repository docs.
+This refresh did not rerun the full test/smoke suite, measure idle power/wakeups,
+or establish a 120 Hz baseline. Those remain separate verification work.
+
+### Built-in display baseline, 2026-09-19
+
+The baseline was repeated with `HUTERM_BENCH_DISPLAY_ID=1`, explicitly selecting
+the built-in panel while leaving the external LG as the primary display. macOS
+reported a 120 Hz maximum for display 1. Every renderer run reported display 1;
+echo and flood probes verified the window stayed on it throughout sampling.
+After the first callback interval, both modes delivered 119.9 to 120.1 callbacks
+per second. This establishes actual 120 Hz delivery during these latency runs,
+not just the panel's capability. Callback timing is not GPU presentation timing.
+
+The base revision remains `ee91a54`; the working tree adds only display selection
+and benchmark diagnostics to executable code. Refresh scheduling is unchanged.
+The opt-in callback observer does not request redraws, but it adds diagnostic
+work. Use the same instrumentation for subsequent comparisons. An initial
+renderer run overlapped compilation and is retained as `warmup-*`, excluded
+from the baseline. All reported runs were serial, after compilation/checks.
+
+| Mode/run | Applied median µs | Applied max µs | Painted median µs | Painted max µs | Snapshots/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| echo 1 | 116 | 1,492 | 6,048 | 8,506 | 10 |
+| echo 2 | 132 | 1,206 | 4,172 | 9,413 | 10 |
+| echo 3 | 120 | 440 | 5,668 | 9,024 | 10 |
+| flood 1 | 14,205 | 17,123 | 18,907 | 25,814 | 60 |
+| flood 2 | 14,491 | 20,924 | 19,083 | 29,563 | 60 |
+| flood 3 | 14,673 | 20,489 | 20,773 | 29,716 | 60 |
+
+Despite 120 Hz callbacks, flood still produced 60 snapshots per second. This is
+the baseline for assessing removal of the pump's sustained-output cap.
+
+| Scenario | Prepare median µs | Paint encoding median µs |
+| --- | ---: | ---: |
+| ascii | 175.4 | 527.7 |
+| blocks | 212.0 | 264.8 |
+| boxes | 146.6 | 994.3 |
+| churn | 193.2 | 571.2 |
+| scroll | 13.0 | 530.5 |
+| selection | 172.7 | 567.3 |
+
+The renderer used five runs per scenario, all with zero glyph layout cache
+misses. Render intervals had medians near 8.33 ms, with longer gaps in some
+processes; per-run interval counts and elapsed times are preserved in the log.
+Do not infer uninterrupted 120 fps from those renderer medians alone.
+
+The scroll benchmark passed with 70 snapshot and 67 paint samples, median
+snapshot elapsed time 179 µs, p95 input to snapshot 10,615 µs, median wakeup
+6,433 µs, median paint elapsed time 385 µs, and p95 input to paint 10,949 µs.
+Maximum concurrent requests and queued updates remained one. These scroll
+latencies are materially higher than the earlier external-display run; retain
+both results and compare future changes on the same display and instrumentation.
+The cause of that difference has not been isolated.
+
+Artifacts are in `target/bench/2026-09-19-builtin/`, including `renderer.json`,
+`summary.json`, `runs.json`, display inventory, task logs, and a copy of the
+harness changes. Use this renderer report for the upcoming built-in-display
+comparison. The earlier external-display report remains intact.
+
+Display targeting applies to the existing renderer, output-latency, and scroll
+tasks. For this host's current display ID:
+
+```sh
+HUTERM_BENCH_DISPLAY_ID=1 mise run bench:renderer-scenarios -- --output target/bench/builtin.json
+HUTERM_BENCH_DISPLAY_ID=1 mise run bench:output-latency
+HUTERM_BENCH_DISPLAY_ID=1 mise run bench:output-latency -- flood
+HUTERM_BENCH_DISPLAY_ID=1 mise run bench:scroll
+```
+
+Display IDs identify currently connected displays; do not assume `1` is always
+the built-in panel on another host or after a topology change. The override
+rejects missing or invalid IDs instead of silently selecting the primary display.
+Without it, window placement retains its normal behavior.
+
 ### Renderer scenarios
 
 `bench:renderer` depends on PTY throughput and snapshot scheduling, and its

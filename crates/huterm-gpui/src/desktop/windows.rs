@@ -1277,10 +1277,19 @@ fn open_window_with_profile(
             return;
         }
     };
+    let display_id = match crate::benchmark_display::selected(cx) {
+        Ok(display) => display,
+        Err(error) => {
+            report_deferred_failure(cx, reporter, error.to_string());
+            maybe_exit(cx);
+            return;
+        }
+    };
     let bounds =
-        Bounds::centered(None, initial_window_size(&config, metrics), cx);
+        Bounds::centered(display_id, initial_window_size(&config, metrics), cx);
     let result = cx.open_window(
         WindowOptions {
+            display_id,
             show: profile.is_none(),
             focus: profile.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1294,6 +1303,9 @@ fn open_window_with_profile(
             ..WindowOptions::default()
         },
         |window, cx| {
+            if let Some(display) = display_id {
+                crate::benchmark_display::observe(window, cx, display);
+            }
             let scaled_metrics = metrics.at_scale(window.scale_factor());
             if scaled_metrics != metrics {
                 window.resize(initial_window_size(&config, scaled_metrics));

@@ -5,6 +5,8 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod assets;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod benchmark_display;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod commands;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod config;
