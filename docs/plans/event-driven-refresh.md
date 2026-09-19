@@ -9,7 +9,8 @@ without frames; repeated output stays coalesced until a snapshot is requested.
 `mise run verify` passes. Native smokes and display benchmarks remain pending
 because the host screen is locked. Runtime wait removal is in progress: the
 reader now uses a cancellable readiness wait and blocking bounded queue
-admission. Runtime and writer polling remain.
+admission. The idle writer blocks on its bounded channel, which closes explicitly
+on root exit. Runtime polling and writer readiness retries remain.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -452,7 +453,10 @@ replacement wake source before the timeout can go:
 The reader checkpoint replaces the Unix readiness timeout with a second
 descriptor that becomes readable on explicit cancellation. Teardown signals it
 before joining the reader. Blocking bounded output admission ends when teardown
-drops the runtime receiver. A cancellation test covers notification before and
+drops the runtime receiver. The idle writer uses blocking channel receive;
+root exit closes that channel and shutdown drops its sender. Its active
+`WouldBlock` retry remains timed. A cancellation test covers notification before
+and
 after worker startup; existing saturated-input, child-exit, and cleanup tests
 cover integration. Non-Unix readiness retains its fallback polling.
 

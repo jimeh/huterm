@@ -745,7 +745,8 @@ fn run_terminal(
             return Err(error);
         }
     };
-    let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
+    let (writer_sender, writer_receiver) =
+        async_channel::bounded(WRITER_CAPACITY);
     let input_closed = Arc::new(AtomicBool::new(false));
     let writer_join = match spawn_writer(
         terminal_id,
@@ -964,6 +965,11 @@ fn run_terminal(
         }
         if closing.load(Ordering::Acquire) {
             break;
+        }
+        if child_exited {
+            // Closing the channel wakes an idle writer even when no input
+            // arrives after root exit. Queued writes are rejected by input_closed.
+            writer_sender.close();
         }
         match flush_pending_write(&writer_sender, &mut pending_writes) {
             WriterQueueState::Drained => {}
@@ -1245,7 +1251,7 @@ fn observe_child_exit(
 fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
-    messages: Receiver<WriterMessage>,
+    messages: async_channel::Receiver<WriterMessage>,
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     input_closed: Arc<AtomicBool>,
@@ -1258,11 +1264,9 @@ fn spawn_writer(
                 && !input_closed.load(Ordering::Acquire)
             {
                 if current.is_none() {
-                    current = match messages.recv_timeout(RUNTIME_POLL_INTERVAL)
-                    {
+                    current = match messages.recv_blocking() {
                         Ok(WriterMessage::Write(bytes)) => Some((bytes, 0)),
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(_) => break,
                     };
                 }
                 if input_closed.load(Ordering::Acquire) {
@@ -1318,7 +1322,7 @@ fn spawn_writer(
 fn handle_effect(
     effect: EngineEffect,
     terminal_id: TerminalId,
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
     events: &EventPublisher,
     metadata: &mut TerminalMetadata,
@@ -1374,7 +1378,7 @@ fn publish_metadata(
 
 fn queue_write(
     bytes: Vec<u8>,
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending: &mut VecDeque<Vec<u8>>,
 ) -> WriterQueueState {
     if !pending.is_empty() {
@@ -1383,11 +1387,13 @@ fn queue_write(
     }
     match writer.try_send(WriterMessage::Write(bytes)) {
         Ok(()) => WriterQueueState::Drained,
-        Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+        Err(async_channel::TrySendError::Full(WriterMessage::Write(bytes))) => {
             pending.push_back(bytes);
             WriterQueueState::Full
         }
-        Err(TrySendError::Disconnected(_)) => WriterQueueState::Disconnected,
+        Err(async_channel::TrySendError::Closed(_)) => {
+            WriterQueueState::Disconnected
+        }
     }
 }
 
@@ -1399,17 +1405,19 @@ enum WriterQueueState {
 }
 
 fn flush_pending_write(
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending: &mut VecDeque<Vec<u8>>,
 ) -> WriterQueueState {
     while let Some(bytes) = pending.pop_front() {
         match writer.try_send(WriterMessage::Write(bytes)) {
             Ok(()) => {}
-            Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+            Err(async_channel::TrySendError::Full(WriterMessage::Write(
+                bytes,
+            ))) => {
                 pending.push_front(bytes);
                 return WriterQueueState::Full;
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(async_channel::TrySendError::Closed(_)) => {
                 return WriterQueueState::Disconnected;
             }
         }
@@ -2491,7 +2499,7 @@ mod tests {
 
     #[test]
     fn pending_writer_spill_should_drain_fifo_until_full() {
-        let (sender, receiver) = mpsc::sync_channel(2);
+        let (sender, receiver) = async_channel::bounded(2);
         let mut pending = VecDeque::from([
             b"one".to_vec(),
             b"two".to_vec(),
@@ -2514,6 +2522,52 @@ mod tests {
             WriterQueueState::Drained
         );
         assert_eq!(receive(), b"three".to_vec());
+    }
+
+    #[test]
+    fn idle_writer_closes_without_an_input_message() {
+        struct IdleWriter {
+            started: Sender<()>,
+            dropped: Sender<()>,
+        }
+        impl Write for IdleWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                panic!("idle writer must not receive input");
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.started.send(()).unwrap();
+                Ok(())
+            }
+        }
+        impl Drop for IdleWriter {
+            fn drop(&mut self) {
+                let _ = self.dropped.send(());
+            }
+        }
+        let (dropped, observed) = mpsc::channel();
+        let (started, ready) = mpsc::channel();
+        let (sender, receiver) = async_channel::bounded(1);
+        let (controls, _control_receiver) = mpsc::channel();
+        let input_closed = Arc::new(AtomicBool::new(false));
+        let worker = spawn_writer(
+            TerminalId::new(19),
+            Box::new(IdleWriter { started, dropped }),
+            receiver,
+            controls,
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&input_closed),
+        )
+        .unwrap();
+        sender
+            .send_blocking(WriterMessage::Write(Vec::new()))
+            .unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        input_closed.store(true, Ordering::Release);
+        sender.close();
+        observed.recv_timeout(Duration::from_secs(2)).expect(
+            "idle writer did not release its descriptor on input closure",
+        );
+        worker.join().unwrap();
     }
 
     #[derive(Debug)]
@@ -2550,7 +2604,7 @@ mod tests {
             bytes: Arc::clone(&bytes),
             block_next: false,
         };
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = async_channel::bounded(1);
         let (controls, _control_receiver) = mpsc::channel();
         let closing = Arc::new(AtomicBool::new(false));
         let join = spawn_writer(
@@ -2563,7 +2617,7 @@ mod tests {
         )
         .expect("writer worker should start");
         sender
-            .send(WriterMessage::Write(b"abcdef".to_vec()))
+            .send_blocking(WriterMessage::Write(b"abcdef".to_vec()))
             .expect("write should queue");
 
         let deadline = Instant::now() + Duration::from_secs(1);
