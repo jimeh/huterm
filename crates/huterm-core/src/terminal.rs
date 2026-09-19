@@ -19,6 +19,7 @@ use huterm_protocol::{
 use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
+use crate::events::{EventPublisher, EventReceiver};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -38,7 +39,7 @@ pub struct RuntimeClient {
     controls: Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
-    events: Arc<Mutex<Receiver<TerminalEvent>>>,
+    events: Arc<Mutex<EventReceiver>>,
     activity: async_channel::Receiver<()>,
     invalidation_pending: Arc<AtomicBool>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
@@ -206,6 +207,9 @@ impl RuntimeClient {
     }
 
     /// Receives the next queued runtime event without blocking.
+    ///
+    /// Pending titles, metadata, invalidations, and bells coalesce to their
+    /// latest state. Lifecycle transitions remain observable under a flood.
     ///
     /// # Errors
     ///
@@ -471,7 +475,10 @@ impl TerminalRuntime {
         let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
         let queued_input_bytes = Arc::new(AtomicUsize::new(0));
-        let host_effect_sink = HostEffectSink::new(terminal_id);
+        let host_effect_sink = HostEffectSink::new_with_activity(
+            terminal_id,
+            Some(Arc::downgrade(&event_sender.activity)),
+        );
         let runtime_host_effect_sink = host_effect_sink.clone();
 
         let runtime_sender = message_sender.clone();
@@ -1427,32 +1434,6 @@ fn report_failure(
     });
 }
 
-/// Publishes lifecycle events and signals that a client should drain them.
-#[derive(Clone, Debug)]
-struct EventPublisher {
-    events: Sender<TerminalEvent>,
-    activity: async_channel::Sender<()>,
-}
-
-impl EventPublisher {
-    fn channel() -> (Self, Receiver<TerminalEvent>, async_channel::Receiver<()>)
-    {
-        let (events, receiver) = mpsc::channel();
-        let (activity, signal) = async_channel::bounded(1);
-        (Self { events, activity }, receiver, signal)
-    }
-
-    fn send(
-        &self,
-        event: TerminalEvent,
-    ) -> Result<(), mpsc::SendError<TerminalEvent>> {
-        self.events.send(event)?;
-        // A full signal already has a wake pending for this event.
-        let _ = self.activity.try_send(());
-        Ok(())
-    }
-}
-
 fn input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
@@ -1609,14 +1590,11 @@ mod tests {
         .unwrap();
         let client = runtime.client();
         wait_for_text(&client, "READY");
-        let deadline = Instant::now() + Duration::from_secs(3);
         let mut changes = Vec::new();
-        while Instant::now() < deadline && changes.len() < 2 {
-            if let Some(TerminalEvent::MetadataChanged {
-                revision,
-                metadata,
-                ..
-            }) = client.try_recv_event().unwrap()
+        while let Some(event) = client.try_recv_event().unwrap() {
+            if let TerminalEvent::MetadataChanged {
+                revision, metadata, ..
+            } = event
             {
                 changes.push((
                     revision,
@@ -1624,17 +1602,11 @@ mod tests {
                         .directory()
                         .map(|directory| directory.path().to_owned()),
                 ));
-            } else {
-                thread::sleep(Duration::from_millis(2));
             }
         }
-        assert_eq!(
-            changes,
-            [
-                (1, Some("/tmp/one".to_owned())),
-                (2, Some("/tmp/two".to_owned()))
-            ]
-        );
+        // READY is parsed after all OSCs. Only the latest full replacement is
+        // pending, and the duplicate OSC did not advance its revision.
+        assert_eq!(changes, [(2, Some("/tmp/two".to_owned()))]);
         runtime.shutdown().unwrap();
     }
 
@@ -2231,7 +2203,9 @@ mod tests {
 
         assert!(activity.try_recv().is_ok());
         assert!(activity.try_recv().is_err(), "signals must coalesce");
-        assert_eq!(receiver.try_iter().count(), 2, "events must not");
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_err());
 
         events.send(TerminalEvent::Bell(id)).unwrap();
         assert!(activity.try_recv().is_ok(), "a drained signal re-arms");

@@ -355,11 +355,13 @@ struct TerminalView {
     selection_edge_direction: i64,
     scroll_benchmark: Option<ScrollBenchmark>,
     snapshot_sequence: u64,
-    last_snapshot_started: Option<Instant>,
-    /// Dropped with the view, which cancels the waiter. A detached task would
-    /// hold a client clone until the next event and could take one wake from
-    /// a replacement view of the same runtime.
-    _activity_task: Task<()>,
+}
+
+#[derive(Default)]
+struct RefreshResult {
+    changed: bool,
+    exited: bool,
+    more: bool,
 }
 
 struct TerminalViewAuthority {
@@ -430,16 +432,6 @@ impl TerminalView {
         );
         let pending_input_subscription =
             cx.observe_pending_input(window, Self::pending_input_changed);
-        let activity_client = client.clone();
-        let activity_task = cx.spawn(async move |view, cx| {
-            while activity_client.wait_for_activity().await.is_ok() {
-                let updated =
-                    view.update(cx, Self::snapshot_on_activity).is_ok();
-                if !updated {
-                    break;
-                }
-            }
-        });
         #[cfg(target_os = "macos")]
         let layout_subscription = {
             let view = cx.entity().downgrade();
@@ -527,8 +519,6 @@ impl TerminalView {
                 window.scale_factor(),
             ),
             snapshot_sequence: 0,
-            last_snapshot_started: None,
-            _activity_task: activity_task,
         }
     }
 
@@ -571,7 +561,6 @@ impl TerminalView {
             }
         };
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
-        self.last_snapshot_started = Some(Instant::now());
         if self
             .scroll_benchmark
             .as_ref()
@@ -638,22 +627,6 @@ impl TerminalView {
         .detach();
     }
 
-    /// Starts a snapshot as soon as the runtime reports activity, without
-    /// waiting for the window refresh pump's next tick. The pump stays the only
-    /// consumer of terminal events: it compares tab titles and exit state
-    /// around each drain, so draining here would hide those changes from it.
-    fn snapshot_on_activity(&mut self, cx: &mut Context<'_, Self>) {
-        if !starts_snapshot_on_activity(
-            self.visible,
-            self.last_snapshot_started,
-            Instant::now(),
-        ) {
-            return;
-        }
-        self.scroll.invalidate();
-        self.start_snapshot_if_needed(cx);
-    }
-
     fn apply_snapshot(&mut self, snapshot: TerminalSnapshot) {
         if self.mouse.observe_modes(snapshot.modes) {
             self.input_queue.cancel_motion();
@@ -688,11 +661,19 @@ impl TerminalView {
         self.snapshot = Some(Arc::new(snapshot));
     }
 
-    fn refresh(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
+    fn refresh(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> RefreshResult {
+        let previously_exited = self.exited;
+        let mut host_count = 0;
+        let mut event_count = 0;
         for _ in 0..8 {
             let Some(pending) = self.host_effects.try_next() else {
                 break;
             };
+            host_count += 1;
             if let HostEffect::ClipboardWrite(write) = pending.effect() {
                 let item = ClipboardItem::new_string(write.text().to_owned());
                 if self.host_effects.is_current(&pending) {
@@ -704,11 +685,12 @@ impl TerminalView {
             self.cancel_mouse();
         }
         let mut changed = false;
-        changed |= self.scrollbars.advance(Instant::now());
-        changed |= self.resize_visibility.update(Instant::now(), false);
-        changed |= self.bell.advance(Instant::now());
         for _ in 0..64 {
-            match self.client.try_recv_event() {
+            let event = self.client.try_recv_event();
+            if matches!(event, Ok(Some(_))) {
+                event_count += 1;
+            }
+            match event {
                 Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
                     if self.selection.is_some_and(|selection| {
                         selection.generation != generation
@@ -766,6 +748,22 @@ impl TerminalView {
                 Ok(None) | Err(_) => break,
             }
         }
+        self.start_snapshot_if_needed(cx);
+        if changed {
+            cx.notify();
+        }
+        RefreshResult {
+            changed,
+            exited: !previously_exited && self.exited,
+            more: host_count == 8 || event_count == 64,
+        }
+    }
+
+    fn advance_presentation(&mut self, cx: &mut Context<'_, Self>) {
+        let now = Instant::now();
+        let mut changed = self.scrollbars.advance(now)
+            | self.resize_visibility.update(now, false)
+            | self.bell.advance(now);
         changed |= self.retry_client_messages();
         if let Some(benchmark) = &mut self.scroll_benchmark {
             changed |= benchmark.drive(
@@ -2262,24 +2260,6 @@ impl Render for TerminalView {
     }
 }
 
-/// Shortest gap between snapshots started by runtime activity.
-const ACTIVITY_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(8);
-
-/// Leading-edge pacing: an isolated update, such as an echoed keystroke, gets
-/// a snapshot immediately, while sustained output waits for the refresh pump.
-/// Unpaced, a flooding program would drive snapshots at their round-trip rate
-/// on the runtime thread that also parses its output.
-fn starts_snapshot_on_activity(
-    visible: bool,
-    last_started: Option<Instant>,
-    now: Instant,
-) -> bool {
-    visible
-        && last_started.is_none_or(|started| {
-            now.saturating_duration_since(started) >= ACTIVITY_SNAPSHOT_INTERVAL
-        })
-}
-
 fn begin_visible_snapshot(
     scroll: &mut ScrollController,
     visible: bool,
@@ -2652,34 +2632,6 @@ fn control_byte(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn activity_starts_snapshots_on_the_leading_edge_only() {
-        let started = Instant::now();
-        let after = |elapsed| started + elapsed;
-        let interval = ACTIVITY_SNAPSHOT_INTERVAL;
-
-        assert!(starts_snapshot_on_activity(true, None, started));
-        assert!(starts_snapshot_on_activity(
-            true,
-            Some(started),
-            after(interval)
-        ));
-        // Sustained output is left to the refresh pump.
-        assert!(!starts_snapshot_on_activity(
-            true,
-            Some(started),
-            after(interval / 2)
-        ));
-        // A hidden tab never starts a snapshot.
-        assert!(!starts_snapshot_on_activity(false, None, started));
-        // A start recorded after `now` was sampled must not underflow.
-        assert!(!starts_snapshot_on_activity(
-            true,
-            Some(after(interval)),
-            started
-        ));
-    }
 
     #[test]
     fn terminal_presentation_uses_the_resolved_theme() {

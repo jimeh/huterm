@@ -1,10 +1,13 @@
 # Event-driven window refresh
 
-Status: in progress. The groundwork in "Where main stands" merged in #141, and
-step 1 is done. Steps 2 and 3 are next, in one pull request. The runtime loop
-change under "Runtime thread polling" is a separate pull request. The scheduling
-contracts below incorporate the architecture review; implementation has not
-started on steps 2 and 3.
+Status: in progress. Step 1 and the reviewed plan are committed in `94f8028`.
+Step 2 is implemented: terminal events coalesce by kind, clipboard admission
+signals activity, and tab-owned tasks drain events without the pump. Each drain
+is bounded with an explicit continuation. The temporary activity cadence is
+8 ms until step 3 introduces frame admission. `mise run verify` passes. Native
+input verification is pending: two attempts stopped before event 0 because the
+host screen was locked and AppKit had no key window. Resume native smokes and
+benchmarks on an unlocked display. Step 3 and runtime wait removal are next.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read

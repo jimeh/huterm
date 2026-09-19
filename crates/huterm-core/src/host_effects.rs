@@ -282,6 +282,7 @@ struct SinkState {
 
 #[derive(Debug)]
 struct SinkInner {
+    activity: Option<Weak<async_channel::Sender<()>>>,
     terminal_id: TerminalId,
     closed: AtomicBool,
     terminal_budget: Arc<Budget>,
@@ -307,9 +308,18 @@ pub(crate) struct HostEffectSink {
 }
 
 impl HostEffectSink {
+    #[cfg(test)]
     pub(crate) fn new(terminal_id: TerminalId) -> Self {
+        Self::new_with_activity(terminal_id, None)
+    }
+
+    pub(crate) fn new_with_activity(
+        terminal_id: TerminalId,
+        activity: Option<Weak<async_channel::Sender<()>>>,
+    ) -> Self {
         Self {
             inner: Arc::new(SinkInner {
+                activity,
                 terminal_id,
                 closed: AtomicBool::new(false),
                 terminal_budget: Arc::new(Budget::new(
@@ -424,6 +434,12 @@ impl HostEffectSink {
                 bytes: actual_bytes,
             },
         });
+        drop(queue);
+        if let Some(signal) =
+            self.inner.activity.as_ref().and_then(Weak::upgrade)
+        {
+            let _ = signal.try_send(());
+        }
         HostEffectAdmission::Accepted
     }
 
@@ -559,6 +575,29 @@ mod tests {
             HostEffect::ClipboardWrite(write) => write.text(),
             effect => panic!("unexpected host effect: {effect:?}"),
         }
+    }
+
+    #[test]
+    fn admitted_effect_wakes_without_a_terminal_event_and_does_not_keep_signal_alive()
+     {
+        let (sender, signal) = async_channel::bounded(1);
+        let sender = Arc::new(sender);
+        let sink = HostEffectSink::new_with_activity(
+            TerminalId::new(1),
+            Some(Arc::downgrade(&sender)),
+        );
+        let process = DesktopHostEffectClient::new();
+        let recipient = recipient(
+            &sink,
+            &process,
+            1,
+            HostEffectRecipientOptions::local_desktop(true),
+        );
+        assert_eq!(sink.admit_borrowed("copy"), HostEffectAdmission::Accepted);
+        signal.try_recv().unwrap();
+        assert_eq!(text(&recipient.try_next().unwrap()), "copy");
+        drop(sender);
+        assert!(signal.is_closed());
     }
 
     #[test]

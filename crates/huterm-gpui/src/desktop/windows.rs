@@ -1412,31 +1412,9 @@ fn open_window_with_profile(
                                 {
                                     cx.notify();
                                 }
-                                let mut metadata_changed = false;
                                 for tab in &view.tabs {
                                     tab.view.update(cx, |terminal, cx| {
-                                        let previous = (
-                                            terminal.title.clone(),
-                                            terminal.exited,
-                                            terminal.failed,
-                                            terminal.metadata_revision,
-                                            terminal.bell.unseen,
-                                        );
-                                        terminal.refresh(window, cx);
-                                        view.exited_tabs.observe(
-                                            tab.id,
-                                            previous.1,
-                                            terminal.exited,
-                                            view.config.terminal.close_on_exit,
-                                        );
-                                        metadata_changed |= previous
-                                            != (
-                                                terminal.title.clone(),
-                                                terminal.exited,
-                                                terminal.failed,
-                                                terminal.metadata_revision,
-                                                terminal.bell.unseen,
-                                            );
+                                        terminal.advance_presentation(cx);
                                     });
                                 }
                                 view.resume_close(window, cx);
@@ -1445,9 +1423,6 @@ fn open_window_with_profile(
                                     palette.update(cx, |palette, cx| {
                                         palette.advance(Instant::now(), cx);
                                     });
-                                }
-                                if metadata_changed {
-                                    cx.notify();
                                 }
                             });
                         })
@@ -1475,6 +1450,7 @@ struct TabView {
     id: TabId,
     record: huterm_core::Tab,
     view: Entity<TerminalView>,
+    _activity_task: Task<()>,
 }
 
 impl TabView {
@@ -2365,6 +2341,32 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
+    fn refresh_tab(
+        &mut self,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<bool> {
+        let tab = self.tabs.iter().find(|tab| tab.id == tab_id)?;
+        let result = tab
+            .view
+            .update(cx, |terminal, cx| terminal.refresh(window, cx));
+        if result.exited {
+            self.exited_tabs.observe(
+                tab_id,
+                false,
+                true,
+                self.config.terminal.close_on_exit,
+            );
+        }
+        if result.changed {
+            cx.notify();
+        }
+        self.resume_close(window, cx);
+        self.refresh_palette(cx);
+        Some(result.more)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "asynchronous tab creation owns publication and orphan cleanup"
@@ -2443,6 +2445,7 @@ impl WorkspaceView {
                                     .clipboard_write
                                     .is_allowed(),
                             );
+                            let activity_client = opened.client.clone();
                             let terminal = cx.new(|cx| {
                                 TerminalView::new(
                                     opened.client,
@@ -2456,10 +2459,47 @@ impl WorkspaceView {
                                 )
                             });
                             let tab_id = opened.tab.id;
+                            let activity_task =
+                                cx.spawn_in(window, async move |view, cx| {
+                                    loop {
+                                        let stopped = activity_client
+                                            .wait_for_activity()
+                                            .await
+                                            .is_err();
+                                        loop {
+                                            let more = view.update_in(
+                                                cx,
+                                                |view, window, cx| {
+                                                    view.refresh_tab(
+                                                        tab_id, window, cx,
+                                                    )
+                                                },
+                                            );
+                                            match more {
+                                                Ok(Some(true)) => {
+                                                    cx.background_executor()
+                                                        .timer(Duration::ZERO)
+                                                        .await;
+                                                }
+                                                Ok(Some(false)) => break,
+                                                _ => return,
+                                            }
+                                        }
+                                        if stopped {
+                                            return;
+                                        }
+                                        // Bound flood work independently of frame delivery. Step 3
+                                        // centralizes snapshot admission on the display clock.
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(8))
+                                            .await;
+                                    }
+                                });
                             view.tabs.push(TabView {
                                 id: tab_id,
                                 record: opened.tab,
                                 view: terminal,
+                                _activity_task: activity_task,
                             });
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
