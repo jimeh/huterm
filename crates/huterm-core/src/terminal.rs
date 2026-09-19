@@ -721,6 +721,7 @@ fn run_terminal(
     } = parts;
     let mut process_groups = pty::process_groups(child.process_id());
     pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    let reader_cancel = reader_waiter.cancellation();
     let reader_join = match spawn_reader(
         terminal_id,
         reader,
@@ -766,6 +767,7 @@ fn run_terminal(
             );
             drop(master);
             drop(messages);
+            reader_cancel.cancel();
             join_worker(reader_join);
             let _ = pty::reap_child(child);
             return Err(error);
@@ -1141,6 +1143,7 @@ fn run_terminal(
     drop(writer_sender);
     drop(master);
     drop(messages);
+    reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
     if pty::reap_child(child) {
@@ -1170,20 +1173,13 @@ fn spawn_reader(
             let mut pending = None;
             while !closing.load(Ordering::Acquire) {
                 if let Some(bytes) = pending.take() {
-                    match messages.try_send(RuntimeMessage::PtyOutput(bytes)) {
-                        Ok(()) => continue,
-                        Err(TrySendError::Full(RuntimeMessage::PtyOutput(
-                            bytes,
-                        ))) => {
-                            pending = Some(bytes);
-                            thread::sleep(RUNTIME_POLL_INTERVAL);
-                            continue;
-                        }
-                        Err(TrySendError::Disconnected(_)) => break,
-                        Err(TrySendError::Full(_)) => unreachable!(
-                            "reader only sends PTY output messages"
-                        ),
+                    // Teardown drops the receiver before joining this worker,
+                    // so bounded backpressure also has an explicit cancellation path.
+                    if messages.send(RuntimeMessage::PtyOutput(bytes)).is_err()
+                    {
+                        break;
                     }
+                    continue;
                 }
                 match reader.read(&mut buffer) {
                     Ok(0) => {
@@ -1196,9 +1192,7 @@ fn spawn_reader(
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        if let Err(error) =
-                            reader_waiter.wait(RUNTIME_POLL_INTERVAL)
-                        {
+                        if let Err(error) = reader_waiter.wait(None) {
                             let _ = controls.send(
                                 RuntimeControl::WorkerFailed(format!(
                                     "PTY readiness wait failed: {error}"

@@ -2,6 +2,8 @@
 use filedescriptor::{AsRawFileDescriptor, FileDescriptor, RawFileDescriptor};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::{fd::AsRawFd, unix::net::UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -112,6 +114,24 @@ pub(crate) struct PtyParts {
 pub(crate) struct ReaderWaiter {
     #[cfg(unix)]
     fd: FileDescriptor,
+    #[cfg(unix)]
+    cancellation: UnixStream,
+    cancel: ReaderCancellation,
+}
+
+/// A separate descriptor interrupts readiness without closing a descriptor
+/// underneath select, which is not a reliable cross-thread wakeup.
+#[derive(Clone)]
+pub(crate) struct ReaderCancellation {
+    #[cfg(unix)]
+    stream: Arc<UnixStream>,
+}
+
+impl ReaderCancellation {
+    pub(crate) fn cancel(&self) {
+        #[cfg(unix)]
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+    }
 }
 
 #[cfg(unix)]
@@ -134,26 +154,50 @@ impl ReaderWaiter {
                 ))?;
             let fd = FileDescriptor::dup(&MasterDescriptor(master_fd))
                 .map_err(|error| RuntimeError::Pty(error.to_string()))?;
-            Ok(Self { fd })
+            let (cancellation, cancel) = UnixStream::pair()
+                .map_err(|error| RuntimeError::Pty(error.to_string()))?;
+            Ok(Self {
+                fd,
+                cancellation,
+                cancel: ReaderCancellation {
+                    stream: Arc::new(cancel),
+                },
+            })
         }
         #[cfg(not(unix))]
         {
             let _ = master;
-            Ok(Self {})
+            Ok(Self {
+                cancel: ReaderCancellation {},
+            })
         }
     }
 
-    pub(crate) fn wait(&self, timeout: Duration) -> std::io::Result<()> {
+    pub(crate) fn cancellation(&self) -> ReaderCancellation {
+        self.cancel.clone()
+    }
+
+    pub(crate) fn wait(
+        &self,
+        timeout: Option<Duration>,
+    ) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             // filedescriptor uses select(2) on macOS, where poll(2) is not
             // reliable for PTY descriptors.
-            let mut descriptors = [filedescriptor::pollfd {
-                fd: self.fd.as_raw_file_descriptor(),
-                events: filedescriptor::POLLIN,
-                revents: 0,
-            }];
-            match filedescriptor::poll(&mut descriptors, Some(timeout)) {
+            let mut descriptors = [
+                filedescriptor::pollfd {
+                    fd: self.fd.as_raw_file_descriptor(),
+                    events: filedescriptor::POLLIN,
+                    revents: 0,
+                },
+                filedescriptor::pollfd {
+                    fd: self.cancellation.as_raw_fd(),
+                    events: filedescriptor::POLLIN,
+                    revents: 0,
+                },
+            ];
+            match filedescriptor::poll(&mut descriptors, timeout) {
                 Ok(_) => Ok(()),
                 Err(error) if poll_was_interrupted(&error) => Ok(()),
                 Err(error) => Err(std::io::Error::other(error)),
@@ -161,7 +205,7 @@ impl ReaderWaiter {
         }
         #[cfg(not(unix))]
         {
-            thread::sleep(timeout);
+            thread::sleep(timeout.unwrap_or(POLL_INTERVAL));
             Ok(())
         }
     }
@@ -494,6 +538,42 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn readiness_cancellation_survives_notification_before_or_during_wait() {
+        for cancel_first in [true, false] {
+            // Use a quiet stream as the data descriptor so only cancellation
+            // can release the readiness wait.
+            let (data, _peer) = UnixStream::pair().unwrap();
+            let (cancellation, cancel_stream) = UnixStream::pair().unwrap();
+            let cancel = ReaderCancellation {
+                stream: Arc::new(cancel_stream),
+            };
+            let waiter = ReaderWaiter {
+                fd: FileDescriptor::dup(&MasterDescriptor(data.as_raw_fd()))
+                    .unwrap(),
+                cancellation,
+                cancel: cancel.clone(),
+            };
+            if cancel_first {
+                cancel.cancel();
+            }
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx.send(waiter.wait(None)).unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            cancel.cancel();
+            done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("cancellation did not release readiness wait")
+                .unwrap();
+            worker.join().unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn dropping_writer_does_not_inject_terminal_input() {
         let pair = portable_pty::native_pty_system()
             .openpty(PtySize {
@@ -524,7 +604,7 @@ mod tests {
             match reader.read(&mut output) {
                 Ok(count) => ready.extend_from_slice(&output[..count]),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    reader_waiter.wait(POLL_INTERVAL).unwrap();
+                    reader_waiter.wait(Some(POLL_INTERVAL)).unwrap();
                 }
                 result => panic!("shell readiness failed: {result:?}"),
             }
@@ -547,7 +627,7 @@ mod tests {
                 Ok(0) => break,
                 Ok(count) => observed.extend_from_slice(&output[..count]),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    reader_waiter.wait(POLL_INTERVAL).unwrap();
+                    reader_waiter.wait(Some(POLL_INTERVAL)).unwrap();
                 }
                 Err(_) => break,
             }

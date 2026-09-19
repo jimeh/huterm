@@ -1,12 +1,15 @@
 # Event-driven window refresh
 
 Status: in progress. Step 1 and the reviewed plan are committed in `94f8028`;
-step 2 is committed in `dae1ccb`. Step 3 now centralizes snapshot admission with
+step 2 is committed in `dae1ccb` and step 3 in `ef6e859`. Step 3 centralizes
+snapshot admission with
 one weak frame callback per window, adds the reloadable display/unlimited policy,
 and rearms output invalidation on snapshot construction. Events continue draining
 without frames; repeated output stays coalesced until a snapshot is requested.
 `mise run verify` passes. Native smokes and display benchmarks remain pending
-because the host screen is locked. Runtime wait removal is next.
+because the host screen is locked. Runtime wait removal is in progress: the
+reader now uses a cancellable readiness wait and blocking bounded queue
+admission. Runtime and writer polling remain.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -415,7 +418,7 @@ because element `on_mouse_move` filters by hover. Two details need care:
 
 ## Runtime thread polling
 
-Each terminal's runtime thread in `huterm-core` loops on
+At the baseline, each terminal's runtime thread in `huterm-core` loops on
 `messages.recv_timeout(RUNTIME_POLL_INTERVAL)`, which is 2 ms. Control requests
 arrive on a separate `std::sync::mpsc` channel that the thread cannot block on
 together with `messages`, so it polls. `RuntimeMessage::Wake` exists only to
@@ -430,7 +433,7 @@ wakeup rate. The window pump also wakes every 16 ms, and GPUI's display link
 wakes on every vsync while a window is visible. Runtime I/O is therefore a likely
 major source to measure first. It is contained in `huterm-core` and does
 not touch the fullscreen, quake, or overlay invariants that steps 4 to 8 carry.
-Ship it as its own pull request, independent of steps 2 and 3.
+Keep its changes in separate commits from steps 2 and 3.
 
 The loop turnover currently does more than read controls. Each of these needs a
 replacement wake source before the timeout can go:
@@ -446,7 +449,15 @@ replacement wake source before the timeout can go:
 | PTY reader readiness | `ReaderWaiter::wait(2 ms)` after `WouldBlock` | Interruptible readiness wait covering both PTY readability and explicit shutdown; preserve the macOS-safe `filedescriptor` path |
 | Reader queue pressure and writer readiness | Reader retries a full message queue; writer sleeps on `WouldBlock` | Capacity/readiness notification with a shutdown escape; distinguish idle waits from active backpressure |
 
-Settle child ownership and shutdown ordering before changing these loops. A
+The reader checkpoint replaces the Unix readiness timeout with a second
+descriptor that becomes readable on explicit cancellation. Teardown signals it
+before joining the reader. Blocking bounded output admission ends when teardown
+drops the runtime receiver. A cancellation test covers notification before and
+after worker startup; existing saturated-input, child-exit, and cleanup tests
+cover integration. Non-Unix readiness retains its fallback polling.
+
+Settle child ownership and shutdown ordering before changing the remaining
+loops. A
 blocking child waiter must not hold a lock needed to signal, close descriptors,
 or finish bounded teardown. Preserve immediate root-exit observation, final
 output parsing, retained history, and deferred reaping after cleanup timeout.
