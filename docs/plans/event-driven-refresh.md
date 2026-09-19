@@ -1,16 +1,15 @@
 # Event-driven window refresh
 
-Status: in progress. Step 1 and the reviewed plan are committed in `94f8028`;
-step 2 is committed in `dae1ccb` and step 3 in `ef6e859`. Step 3 centralizes
-snapshot admission with
-one weak frame callback per window, adds the reloadable display/unlimited policy,
-and rearms output invalidation on snapshot construction. Events continue draining
-without frames; repeated output stays coalesced until a snapshot is requested.
-`mise run verify` passes. Native smokes and display benchmarks remain pending
-because the host screen is locked. Runtime wait removal is in progress: the
-reader now uses a cancellable readiness wait and blocking bounded queue
-admission. The idle writer blocks on its bounded channel, which closes explicitly
-on root exit. Runtime polling and writer readiness retries remain.
+Status: in progress. Step 1 is committed in `94f8028`, step 2 in `dae1ccb`,
+and step 3 in `ef6e859`. Reader and idle-writer waits are converted in `52f716b`
+and `7d7a6d4`. The remaining Unix runtime and writer waits now use explicit
+notifications, a blocking child waiter, and cancellable PTY readiness.
+Core and workspace checks pass; native acceptance remains pending.
+
+Native smokes and display benchmarks are blocked because the host screen is
+locked. Noninteractive sudo cannot run `powermetrics` because it requires a
+password. Steps 4 to 8 remain conditional on the measurements described below.
+Do not infer their benefit from removed timers alone.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -447,18 +446,33 @@ replacement wake source before the timeout can go:
 | Observe `closing` | `while !closing.load(..)` | A message sent wherever `closing` is set outside the loop |
 | Retry a full writer queue | `WriterQueueState::Full` sleeps 2 ms | A writer acknowledgement when its queue drains |
 | Writer thread | `recv_timeout` in the writer loop | Block on `recv`; wake it explicitly on close and input closure |
-| PTY reader readiness | `ReaderWaiter::wait(2 ms)` after `WouldBlock` | Interruptible readiness wait covering both PTY readability and explicit shutdown; preserve the macOS-safe `filedescriptor` path |
+| PTY reader readiness | `ReadinessWaiter::wait(2 ms)` after `WouldBlock` | Interruptible readiness wait covering both PTY readability and explicit shutdown; preserve the macOS-safe `filedescriptor` path |
 | Reader queue pressure and writer readiness | Reader retries a full message queue; writer sleeps on `WouldBlock` | Capacity/readiness notification with a shutdown escape; distinguish idle waits from active backpressure |
 
-The reader checkpoint replaces the Unix readiness timeout with a second
-descriptor that becomes readable on explicit cancellation. Teardown signals it
-before joining the reader. Blocking bounded output admission ends when teardown
-drops the runtime receiver. The idle writer uses blocking channel receive;
-root exit closes that channel and shutdown drops its sender. Its active
-`WouldBlock` retry remains timed. A cancellation test covers notification before
-and
-after worker startup; existing saturated-input, child-exit, and cleanup tests
-cover integration. Non-Unix readiness retains its fallback polling.
+The runtime checkpoint keeps bounded data and separate priority controls, with a
+coalesced condition-variable wake shared by their senders. Controls drain in
+bounded batches before data gets a turn. Writer dequeue notifies queue capacity;
+reader admission blocks until capacity or receiver closure. Unix reader and
+writer readiness include a separate cancellation descriptor, signaled before
+joining their workers. Idle writer input blocks until data or channel closure.
+Non-Unix paths retain their existing polling fallback.
+
+A dedicated thread owns the physical child and blocks in `wait`. The runtime
+reads cached status through a child proxy and wakes when reaping finishes. No
+shared lock spans the physical wait. Thread creation failure returns the original
+child for cleanup; interrupted and failed waits retain ownership until reaped.
+The existing bounded shutdown and deferred reaper operate through that proxy.
+This adds one sleeping thread per terminal, which must be included in memory and
+thread-count measurements.
+
+Tests cover cancellation before and after worker startup, idle writer closure,
+notification handoff, waiter creation failure, and repeated wait errors. Existing
+PTY and close-assessment tests cover silent exits, saturated queues, retained
+history, foreground changes, shutdown escalation, and descriptor cleanup.
+
+Foreground sampling now runs on runtime work and again at live teardown. A
+close-assessment control wakes the runtime even when the foreground job is
+silent. Native Quit and close smokes remain required before release.
 
 Settle child ownership and shutdown ordering before changing the remaining
 loops. A

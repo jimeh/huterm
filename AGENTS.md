@@ -40,6 +40,12 @@ Keep view destruction and detachment separate from explicit close.
   instead of sleeping before every retry. Use `filedescriptor` for this wait:
   its macOS implementation avoids the platform's unreliable PTY `poll(2)` by
   using `select(2)`.
+- Runtime data and priority controls share a coalesced wake; keep control drains
+  bounded so output cannot starve. Writer dequeue signals capacity. Unix PTY
+  readiness waits include cancellation descriptors; signal them and drop the
+  data receiver before joining workers. The child waiter owns the physical
+  child without holding a shared lock across `wait`; bounded teardown uses its
+  cached-status proxy. Never join it before signalling and closing PTY handles.
 
 ## Commands
 

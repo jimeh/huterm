@@ -46,9 +46,11 @@ impl PtyProcess {
                 "PTY process is missing an owned component",
             ));
         }
-        let reader_waiter = ReaderWaiter::new(self.master.as_deref().ok_or(
-            RuntimeError::Invariant("PTY process has no master handle"),
-        )?)?;
+        let master = self.master.as_deref().ok_or(RuntimeError::Invariant(
+            "PTY process has no master handle",
+        ))?;
+        let reader_waiter = ReadinessWaiter::new(master, Readiness::Read)?;
+        let writer_waiter = ReadinessWaiter::new(master, Readiness::Write)?;
         match (
             self.master.take(),
             self.reader.take(),
@@ -66,6 +68,7 @@ impl PtyProcess {
                 master,
                 reader,
                 reader_waiter,
+                writer_waiter,
                 writer,
                 child,
                 killer,
@@ -105,29 +108,38 @@ impl Drop for PtyProcess {
 pub(crate) struct PtyParts {
     pub(crate) master: Box<dyn MasterPty + Send>,
     pub(crate) reader: Box<dyn Read + Send>,
-    pub(crate) reader_waiter: ReaderWaiter,
+    pub(crate) reader_waiter: ReadinessWaiter,
+    pub(crate) writer_waiter: ReadinessWaiter,
     pub(crate) writer: Box<dyn Write + Send>,
     pub(crate) child: Box<dyn Child + Send + Sync>,
     pub(crate) killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
-pub(crate) struct ReaderWaiter {
+#[derive(Clone, Copy)]
+enum Readiness {
+    Read,
+    Write,
+}
+
+pub(crate) struct ReadinessWaiter {
+    #[cfg(unix)]
+    interest: Readiness,
     #[cfg(unix)]
     fd: FileDescriptor,
     #[cfg(unix)]
     cancellation: UnixStream,
-    cancel: ReaderCancellation,
+    cancel: IoCancellation,
 }
 
 /// A separate descriptor interrupts readiness without closing a descriptor
 /// underneath select, which is not a reliable cross-thread wakeup.
 #[derive(Clone)]
-pub(crate) struct ReaderCancellation {
+pub(crate) struct IoCancellation {
     #[cfg(unix)]
     stream: Arc<UnixStream>,
 }
 
-impl ReaderCancellation {
+impl IoCancellation {
     pub(crate) fn cancel(&self) {
         #[cfg(unix)]
         let _ = self.stream.shutdown(std::net::Shutdown::Write);
@@ -144,8 +156,11 @@ impl AsRawFileDescriptor for MasterDescriptor {
     }
 }
 
-impl ReaderWaiter {
-    fn new(master: &dyn MasterPty) -> Result<Self, RuntimeError> {
+impl ReadinessWaiter {
+    fn new(
+        master: &dyn MasterPty,
+        interest: Readiness,
+    ) -> Result<Self, RuntimeError> {
         #[cfg(unix)]
         {
             let master_fd =
@@ -157,23 +172,24 @@ impl ReaderWaiter {
             let (cancellation, cancel) = UnixStream::pair()
                 .map_err(|error| RuntimeError::Pty(error.to_string()))?;
             Ok(Self {
+                interest,
                 fd,
                 cancellation,
-                cancel: ReaderCancellation {
+                cancel: IoCancellation {
                     stream: Arc::new(cancel),
                 },
             })
         }
         #[cfg(not(unix))]
         {
-            let _ = master;
+            let _ = (master, interest);
             Ok(Self {
-                cancel: ReaderCancellation {},
+                cancel: IoCancellation {},
             })
         }
     }
 
-    pub(crate) fn cancellation(&self) -> ReaderCancellation {
+    pub(crate) fn cancellation(&self) -> IoCancellation {
         self.cancel.clone()
     }
 
@@ -188,7 +204,10 @@ impl ReaderWaiter {
             let mut descriptors = [
                 filedescriptor::pollfd {
                     fd: self.fd.as_raw_file_descriptor(),
-                    events: filedescriptor::POLLIN,
+                    events: match self.interest {
+                        Readiness::Read => filedescriptor::POLLIN,
+                        Readiness::Write => filedescriptor::POLLOUT,
+                    },
                     revents: 0,
                 },
                 filedescriptor::pollfd {
@@ -544,10 +563,11 @@ mod tests {
             // can release the readiness wait.
             let (data, _peer) = UnixStream::pair().unwrap();
             let (cancellation, cancel_stream) = UnixStream::pair().unwrap();
-            let cancel = ReaderCancellation {
+            let cancel = IoCancellation {
                 stream: Arc::new(cancel_stream),
             };
-            let waiter = ReaderWaiter {
+            let waiter = ReadinessWaiter {
+                interest: Readiness::Read,
                 fd: FileDescriptor::dup(&MasterDescriptor(data.as_raw_fd()))
                     .unwrap(),
                 cancellation,
@@ -584,7 +604,9 @@ mod tests {
             })
             .unwrap();
         set_nonblocking(pair.master.as_ref()).unwrap();
-        let reader_waiter = ReaderWaiter::new(pair.master.as_ref()).unwrap();
+        let reader_waiter =
+            ReadinessWaiter::new(pair.master.as_ref(), Readiness::Read)
+                .unwrap();
         let mut reader = pair.master.try_clone_reader().unwrap();
         let writer = clone_writer(pair.master.as_ref()).unwrap();
         let mut probe_writer = clone_writer(pair.master.as_ref()).unwrap();
