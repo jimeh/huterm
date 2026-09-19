@@ -1,5 +1,23 @@
 [
   {
+    "name": "terminal refresh display",
+    "toml": "[terminal]\nrefresh = \"display\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal refresh unlimited",
+    "toml": "[terminal]\nrefresh = \"unlimited\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal refresh unknown",
+    "toml": "[terminal]\nrefresh = \"unknown\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "empty config",
     "toml": "",
     "valid": true,

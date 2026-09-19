@@ -122,6 +122,12 @@ does not keep the terminal open or trigger a warning after shell exit.
 Detached processes cannot always be attributed or terminated. Process creation
 or identity changes after the final live-process snapshot are inherently racy.
 
+Terminal snapshots follow the window's delivered display frames by default.
+Set `[terminal] refresh = "unlimited"` to request another dirty snapshot as soon
+as the previous request completes. This can increase CPU work without increasing
+visible frames. Reload applies the policy to existing tabs. Hidden tabs continue
+processing terminal events without building viewport snapshots.
+
 ## Mouse interaction
 
 Applications can request button reports with mode 1000, held-button motion with

@@ -314,7 +314,13 @@ not also drain events. Pending titles, metadata, invalidations, and bells coales
 lifecycle transitions stay observable under a flood. Budget exhaustion schedules
 a continuation without waiting for another producer wake. Host-effect admission
 signals the same activity channel through a weak sender so it cannot keep a
-stopped runtime's waiter alive. Only visible terminal views request snapshots.
+stopped runtime's waiter alive. Rearm invalidation on the runtime owner thread
+when constructing a snapshot, not when draining its notification, so hidden or
+frame-blocked views do not wake for every output chunk. Only visible terminal
+views request snapshots. All request paths pass the shared admission gate; one
+weak callback per window replenishes per-view frame allowances. It does not
+request idle redraws. Keep in-flight scroll and dirtiness separate from frame
+allowance, including on config reload and snapshot completion.
 Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
 as the

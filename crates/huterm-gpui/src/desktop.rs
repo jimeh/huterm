@@ -84,6 +84,7 @@ mod composition;
 mod keyboard;
 mod links;
 pub(crate) mod palette;
+mod refresh;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
     presentation_query_smoke, quake_smoke,
@@ -355,6 +356,9 @@ struct TerminalView {
     selection_edge_direction: i64,
     scroll_benchmark: Option<ScrollBenchmark>,
     snapshot_sequence: u64,
+    snapshot_pacer: refresh::SnapshotPacer,
+    refresh_mode: huterm_config::RefreshMode,
+    frame_clock: Rc<refresh::FrameClock>,
 }
 
 #[derive(Default)]
@@ -371,9 +375,14 @@ struct TerminalViewAuthority {
 
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "terminal construction needs its window-owned frame clock"
+    )]
     fn new(
         client: RuntimeClient,
         authority: TerminalViewAuthority,
+        frame_clock: Rc<refresh::FrameClock>,
         config: &Config,
         font_family: String,
         metrics: GridMetrics,
@@ -519,6 +528,9 @@ impl TerminalView {
                 window.scale_factor(),
             ),
             snapshot_sequence: 0,
+            snapshot_pacer: refresh::SnapshotPacer::default(),
+            refresh_mode: config.terminal.refresh,
+            frame_clock,
         }
     }
 
@@ -540,11 +552,16 @@ impl TerminalView {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
+        if !self.snapshot_pacer.admits(self.refresh_mode) {
+            return;
+        }
         let Some(viewport) =
             begin_visible_snapshot(&mut self.scroll, self.visible)
         else {
             return;
         };
+        self.snapshot_pacer.started();
+        self.frame_clock.schedule(cx.entity().downgrade(), cx);
         let link_intent = self.links.intent();
         let link_started = Instant::now();
         self.link_requests += u64::from(link_intent.is_some());
@@ -786,6 +803,8 @@ impl TerminalView {
     ) {
         self.host_effects
             .set_allowed(terminal.clipboard_write.is_allowed());
+        self.refresh_mode = terminal.refresh;
+        self.start_snapshot_if_needed(cx);
         self.links.disable();
         self.links_enabled = terminal.links;
         self.link_modifiers = terminal.link_modifiers;

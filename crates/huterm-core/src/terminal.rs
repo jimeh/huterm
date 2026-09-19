@@ -41,7 +41,6 @@ pub struct RuntimeClient {
     queued_input_bytes: Arc<AtomicUsize>,
     events: Arc<Mutex<EventReceiver>>,
     activity: async_channel::Receiver<()>,
-    invalidation_pending: Arc<AtomicBool>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     host_effect_sink: HostEffectSink,
 }
@@ -229,9 +228,6 @@ impl RuntimeClient {
                 return Err(RuntimeError::Stopped);
             }
         };
-        if matches!(event, Some(TerminalEvent::Invalidated { .. })) {
-            self.invalidation_pending.store(false, Ordering::Release);
-        }
         Ok(event)
     }
 
@@ -539,7 +535,6 @@ impl TerminalRuntime {
             queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
             activity,
-            invalidation_pending,
             shutdown_groups,
             host_effect_sink,
         };
@@ -823,6 +818,11 @@ fn run_terminal(
                     #[cfg(test)]
                     fail_lookup,
                 } => {
+                    // Rearm on the owner thread at snapshot construction, not
+                    // when a client merely drains its notification. Hidden or
+                    // frame-blocked clients already know they are dirty and
+                    // must not wake again for every PTY chunk.
+                    invalidation_pending.store(false, Ordering::Release);
                     let started = Instant::now();
                     let result = (|| {
                         let requested_viewport =
@@ -2355,6 +2355,59 @@ mod tests {
             .expect_err("missing executable should fail");
 
         assert!(matches!(error, RuntimeError::Spawn(_)));
+    }
+
+    #[test]
+    fn draining_dirty_notification_does_not_rearm_until_snapshot() {
+        fn title(client: &RuntimeClient, expected: &str) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if matches!(client.try_recv_event().unwrap(), Some(TerminalEvent::TitleChanged { title, .. }) if title == expected)
+                {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "missing title {expected}");
+                thread::yield_now();
+            }
+        }
+        fn invalidation(client: &RuntimeClient) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if matches!(
+                    client.try_recv_event().unwrap(),
+                    Some(TerminalEvent::Invalidated { .. })
+                ) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "missing invalidation");
+                thread::yield_now();
+            }
+        }
+        let runtime = TerminalRuntime::spawn(TerminalId::new(99), &command(
+            "stty -echo; printf READY; while IFS= read -r line; do printf '%s\\033]2;%s\\007' \"$line\" \"$line\"; done"
+        )).unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        while client.try_recv_event().unwrap().is_some() {}
+        client
+            .send_input(TerminalInput::Text("one\n".into()))
+            .unwrap();
+        invalidation(&client);
+        client
+            .send_input(TerminalInput::Text("two\n".into()))
+            .unwrap();
+        title(&client, "two");
+        // This ordered control completes after the output that published the title.
+        client.job_context().unwrap();
+        while let Some(event) = client.try_recv_event().unwrap() {
+            assert!(!matches!(event, TerminalEvent::Invalidated { .. }));
+        }
+        client.read_snapshot().unwrap();
+        client
+            .send_input(TerminalInput::Text("three\n".into()))
+            .unwrap();
+        invalidation(&client);
+        runtime.shutdown().unwrap();
     }
 
     #[test]

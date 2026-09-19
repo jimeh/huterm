@@ -1323,7 +1323,9 @@ fn open_window_with_profile(
                 .inspect_err(|error| eprintln!("Quake creation: {error}"))
                 .ok()
             });
+            let frame_clock = refresh::FrameClock::new(window);
             let view = cx.new(|cx| WorkspaceView {
+                frame_clock,
                 quake,
                 attachment: None,
                 bounds: window.window_bounds(),
@@ -1523,6 +1525,7 @@ fn resolve_tab_label(
 }
 
 struct WorkspaceView {
+    frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
@@ -2450,6 +2453,7 @@ impl WorkspaceView {
                                 TerminalView::new(
                                     opened.client,
                                     authority,
+                                    Rc::clone(&view.frame_clock),
                                     &view.config,
                                     view.family.clone(),
                                     view.metrics
@@ -2478,7 +2482,7 @@ impl WorkspaceView {
                                             match more {
                                                 Ok(Some(true)) => {
                                                     cx.background_executor()
-                                                        .timer(Duration::ZERO)
+                                                        .timer(Duration::from_millis(1))
                                                         .await;
                                                 }
                                                 Ok(Some(false)) => break,
@@ -2488,10 +2492,9 @@ impl WorkspaceView {
                                         if stopped {
                                             return;
                                         }
-                                        // Bound flood work independently of frame delivery. Step 3
-                                        // centralizes snapshot admission on the display clock.
+                                        // Bound metadata floods independently of frame delivery.
                                         cx.background_executor()
-                                            .timer(Duration::from_millis(8))
+                                            .timer(Duration::from_millis(1))
                                             .await;
                                     }
                                 });

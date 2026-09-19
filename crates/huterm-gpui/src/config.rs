@@ -22,6 +22,8 @@ term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true
+# Snapshot pacing: display follows frame delivery; unlimited removes that cap.
+refresh = "display"
 # Open new tabs in a usable local directory reported by the active terminal.
 new_tab_directory = "inherit"
 # Allow terminal content such as tmux to replace the system clipboard.
@@ -347,6 +349,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
         terminal: TerminalConfig {
             term: raw.terminal.term,
             close_on_exit: raw.terminal.close_on_exit,
+            refresh: raw.terminal.refresh,
             new_tab_directory: raw.terminal.new_tab_directory,
             bell: raw.terminal.bell,
             clipboard_write: raw.terminal.clipboard_write,
@@ -428,7 +431,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 169);
+        assert_eq!(fixtures.len(), 172);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();

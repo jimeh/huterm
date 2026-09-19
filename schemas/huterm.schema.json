@@ -3398,6 +3398,14 @@
           ],
           "default": "inherit"
         },
+        "refresh": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RefreshMode"
+            }
+          ],
+          "default": "display"
+        },
         "term": {
           "allOf": [
             {
@@ -3409,6 +3417,21 @@
         }
       },
       "type": "object"
+    },
+    "RefreshMode": {
+      "description": "Client-side terminal snapshot admission policy.",
+      "oneOf": [
+        {
+          "const": "display",
+          "description": "Admit at most one snapshot per delivered display frame.",
+          "type": "string"
+        },
+        {
+          "const": "unlimited",
+          "description": "Admit another dirty snapshot as soon as its predecessor completes.",
+          "type": "string"
+        }
+      ]
     },
     "SelectedTheme": {
       "additionalProperties": false,

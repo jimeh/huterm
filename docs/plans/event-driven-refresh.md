@@ -1,13 +1,12 @@
 # Event-driven window refresh
 
-Status: in progress. Step 1 and the reviewed plan are committed in `94f8028`.
-Step 2 is implemented: terminal events coalesce by kind, clipboard admission
-signals activity, and tab-owned tasks drain events without the pump. Each drain
-is bounded with an explicit continuation. The temporary activity cadence is
-8 ms until step 3 introduces frame admission. `mise run verify` passes. Native
-input verification is pending: two attempts stopped before event 0 because the
-host screen was locked and AppKit had no key window. Resume native smokes and
-benchmarks on an unlocked display. Step 3 and runtime wait removal are next.
+Status: in progress. Step 1 and the reviewed plan are committed in `94f8028`;
+step 2 is committed in `dae1ccb`. Step 3 now centralizes snapshot admission with
+one weak frame callback per window, adds the reloadable display/unlimited policy,
+and rearms output invalidation on snapshot construction. Events continue draining
+without frames; repeated output stays coalesced until a snapshot is requested.
+`mise run verify` passes. Native smokes and display benchmarks remain pending
+because the host screen is locked. Runtime wait removal is next.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
