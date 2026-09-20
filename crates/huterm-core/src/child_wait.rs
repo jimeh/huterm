@@ -65,6 +65,7 @@ fn observe_with(
         };
         // No shared lock is held across wait. Signals and descriptor closure
         // remain available even when the child never voluntarily exits.
+        let mut reported_error = false;
         loop {
             match child.wait() {
                 Ok(status) => {
@@ -82,6 +83,10 @@ fn observe_with(
                 Err(error)
                     if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => {
+                    if !reported_error {
+                        eprintln!("Child wait failed ({error}); retrying");
+                        reported_error = true;
+                    }
                     observing
                         .result
                         .lock()
@@ -90,7 +95,7 @@ fn observe_with(
                     wake.notify();
                     // Error recovery only. Retain ownership until reaped, as
                     // the deferred teardown reaper does for repeated errors.
-                    std::thread::sleep(Duration::from_millis(2));
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
