@@ -595,6 +595,9 @@ mod tests {
             )
             .unwrap();
         ready(&opened.client, "READY");
+        let shell_group =
+            i32::try_from(opened.client.job_context().unwrap().shell.unwrap())
+                .unwrap();
         opened
             .client
             .send_input(TerminalInput::Text("go\n".into()))
@@ -605,11 +608,27 @@ mod tests {
                 .prepare_close(CloseRequest::Session(session))
                 .unwrap()
                 .check_jobs();
-            if assessment.jobs().iter().any(|state| matches!(state, JobState::Running(jobs) if jobs.iter().any(|job| job.foreground))) { break assessment; }
-            assert!(Instant::now() < deadline, "foreground job not observed");
+            // A just-forked child can still be in the shell's foreground group.
+            // Wait until job control has moved it into its own foreground group.
+            if assessment.jobs().iter().any(|state| {
+                matches!(state, JobState::Running(jobs) if jobs.iter().any(|job| job.foreground && job.group != shell_group))
+            }) {
+                break assessment;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "foreground job not observed: {:?}",
+                assessment.jobs()
+            );
         };
-        mux.commit_close(&foreground, &foreground.recheck(), true)
-            .unwrap();
+        let rechecked = foreground.recheck();
+        let result = mux.commit_close(&foreground, &rechecked, true);
+        assert!(
+            result.is_ok(),
+            "close failed: {result:?}; assessed: {:?}; rechecked: {:?}",
+            foreground.jobs(),
+            rechecked.jobs()
+        );
         let session = mux.create_session(None).unwrap();
         let workspace = mux.create_workspace(session, None).unwrap();
         let exited = mux.open_tab(workspace, &command("printf DONE")).unwrap();
