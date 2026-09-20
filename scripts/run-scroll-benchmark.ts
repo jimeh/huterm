@@ -20,6 +20,7 @@ function snapshotCount(log: string): number {
 }
 
 export function scrollBenchmarkReady(log: string): boolean {
+  log = log.slice(0, log.lastIndexOf("\n") + 1);
   if (snapshotCount(log) < SNAPSHOT_COLLECTION_TARGET) return false;
   const latestQueue = log.split(/\r?\n/).filter(line => line.startsWith(QUEUE_PREFIX)).at(-1);
   return latestQueue !== undefined
@@ -73,6 +74,11 @@ export async function runScrollBenchmark(
   if (outcome.kind !== "exit") child.kill();
   await child.exited;
   await pumps;
+  if (outcome.kind === "ready") {
+    // Intentional termination can interrupt the next diagnostic write. Only
+    // complete records count as evidence; retain full output on actual failures.
+    output = output.slice(0, output.lastIndexOf("\n") + 1);
+  }
   await Bun.write(reportPath, output);
   process.stdout.write(output);
 
