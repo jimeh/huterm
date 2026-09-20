@@ -164,9 +164,9 @@ fn show(cx: &mut App) -> anyhow::Result<()> {
     })
 }
 
+#[cfg(target_os = "macos")]
 async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| workspace(cx, |_, window, _| window.minimize_window()))??;
-    #[cfg(target_os = "macos")]
     wait(cx, "native window occluded", |cx| {
         let occluded = workspace(cx, |_, window, _| native::occluded(window))??;
         Ok((occluded, format!("occluded={occluded}")))
@@ -182,6 +182,7 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
             && s.stage == Stage::Waiting
     })
     .await?;
+    #[cfg(target_os = "macos")]
     pause(cx).await?;
     cx.update(|cx| send(cx, "PAUSED_FIRST"))??;
     wait_state(cx, "pending native callback while occluded", |s| {
@@ -213,6 +214,7 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
     .await?;
     eprintln!("REFRESH_SMOKE frame_stop_resume passed");
 
+    #[cfg(target_os = "macos")]
     pause(cx).await?;
     cx.update(|cx| send(cx, "PENDING_DROP"))??;
     wait_state(
