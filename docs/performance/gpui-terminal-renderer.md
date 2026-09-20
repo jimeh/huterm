@@ -520,3 +520,85 @@ reports include `cpu_timebase_factor`; earlier exploratory reports without it
 used unconverted clock ticks and are excluded. Files prefixed
 `excluded-config-baseline` are also excluded. Temporary probes and binaries are
 local evidence, not committed product changes.
+
+### Hardening follow-up, 2026-09-20
+
+The independent review of `94f8028..52b1037` found no verified correctness defect
+in the wake handoff, bounded drains, cancellation ordering, child ownership,
+hidden-tab handling, or weak frame registrations. That is inspection evidence,
+not a replacement for regression tests. Direct coverage of the real GPUI frame
+callback's stop/resume behavior and idle activity-task cancellation remains thin.
+The existing pacing tests exercise the admission state, not callback wiring.
+
+#### Native 60 Hz coverage
+
+Keeping the display-mode helper alive during the benchmark resolved the earlier
+60 Hz setup problem. CoreGraphics reported mode 115 at 60 Hz; GPUI delivered
+about 60 callbacks/s, with median intervals near 16,667 µs. The default flood
+benchmark applied 60 snapshots/s across ten measured intervals. Applied latency
+was 15,780 µs median and 22,020 µs maximum; painted latency was 31,193 µs median
+and 34,802 µs maximum. These are absolute 60 Hz measurements, not a comparison
+against a fresh 60 Hz baseline. The original mode 114 at 120 Hz was restored and
+queried afterward.
+
+#### Longer echo comparison
+
+Four 30-second runs in baseline/feature/feature/baseline order each delivered
+27 measured intervals at about 120 callbacks/s:
+
+| Build | Applied median µs, by run | Painted median µs, by run |
+| --- | --- | --- |
+| Baseline | 137, 108 | 5,817, 5,829 |
+| Feature | 181, 183 | 6,239, 6,385 |
+
+The small increase persists in these longer runs. It should not be dismissed as
+noise or described as a uniform latency improvement. Source inspection found no
+mandatory additional frame wait for isolated output: the previous callback
+normally replenishes admission long before the next roughly 100 ms update.
+The feature does route activity through the workspace and bounded event drain,
+and the runtime now uses a separate coalesced wake instead of a timed receive.
+These are candidates for tracing, not established explanations of the delta.
+
+A temporary probe carried a producer wall-clock timestamp in the terminal text
+and measured only replies whose original `invalidated_at` was present. That
+avoids counting baseline duplicate snapshots. After unlocking, a paired
+30-second comparison measured producer-to-application medians of 220 versus
+389 µs and producer-to-paint medians of 6,786 versus 6,979 µs. Both reported
+27 intervals and about ten updates/s. Earlier valid origin runs measured
+340/6,093 µs for baseline and 539/7,192 and 517/6,618 µs for feature.
+The producer-origin results do not support dismissing the increase as merely
+an earlier invalidation timestamp. They also show that its painted magnitude
+varies. Wall-clock stability and lack of coalesced-away emissions are assumptions
+of this short diagnostic; it still does not measure physical presentation.
+
+#### Memory decomposition
+
+An initial VM comparison at 50 tabs measured 4,752 KiB versus 5,680 KiB of
+resident stack memory, despite roughly 100 MiB more reserved stack address space.
+The added resident stacks therefore explain under 1 MiB of the total increase.
+Allocated heap bytes were 76.6 MiB versus 92.2 MiB. The allocation histogram
+contained roughly 50 additional blocks in the 272 KiB size class; a correlation
+with thread count alone does not identify their owner.
+
+A one-tab allocation-stack probe then identified 278,528-byte allocations through
+`dyld::ThreadLocalVariables::instantiateVariable` at Rust thread startup. The
+linked executable's `__thread_bss` contains a 256 KiB
+`Thread.maybeAttachSignalStack.global.signal_stack` symbol. The pinned Zig 0.16.0
+standard library declares that buffer as `threadlocal`, with the default
+`signal_stack_size = 1 << 18`. The statically linked image's TLS block is
+materialized even for Rust threads that do not parse terminal output.
+Fifty additional blocks at the observed allocation size account for 13.28 MiB,
+which explains most of the increase. Reducing ordinary thread stack reservation
+would not fix this cost. Changing the native library's signal-stack policy is a
+separate safety and upstream integration decision, not part of this pass.
+
+A second setup waited for every tab's `READY` snapshot before creating the next
+tab. Resident memory still differed by about 15.2 MiB, and allocated heap bytes
+were 75.7 MiB versus 90.5 MiB. Initial snapshot population does not explain away
+the difference. This setup does not guarantee identical prepared renderer-cache
+population, so it cannot attribute every remaining byte to the child waiter.
+
+Artifacts are under `target/bench/refresh-hardening/`. A screen lock interrupted
+one producer-origin run and prevented a frame-dependent allocation fixture from
+starting; those runs are excluded. Product sources were restored byte-for-byte
+and production binaries rebuilt after temporary probes.

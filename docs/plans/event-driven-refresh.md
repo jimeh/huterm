@@ -25,6 +25,13 @@ primary Huterm platform and the only one here with a real display. Read
 [AGENTS.md](../../AGENTS.md) first. The measurements it relies on are described
 in [the renderer performance notes](../performance/gpui-terminal-renderer.md).
 
+The [2026-09-20 hardening follow-up](../performance/gpui-terminal-renderer.md#hardening-follow-up-2026-09-20)
+verified native 60 Hz pacing and found no concrete correctness defect in an
+independent source review. Longer echo runs retain a small latency increase;
+memory probing traced most of the increase to per-thread TLS allocation,
+dominated by Zig's 256 KiB signal-stack buffer. Retain the blocking waiter;
+changing native signal-stack policy needs separate validation.
+
 ## Outcome
 
 First remove redundant snapshots and centralize refresh scheduling. Complete
@@ -510,10 +517,10 @@ smokes, which exercise close consent.
 ## Steps
 
 The original sequence follows. Steps 1 to 3 and the runtime prerequisite are
-complete; steps 4 to 8 remain design notes for a future measured need. True
-60 Hz native pacing and the subjective editor/DOOM feel comparison remain
-unverified. Convert one duty at a time with the pump still running so changes
-remain bisectable. Remove the timer last.
+complete; steps 4 to 8 remain design notes for a future measured need. Native
+60 Hz pacing was verified in the 2026-09-20 hardening follow-up. The subjective
+editor/DOOM feel comparison remains unverified. Convert one duty at a time
+with the pump still running so changes remain bisectable. Remove the timer last.
 
 1. **Record macOS baselines.** Done; see "First tasks on macOS" above.
 2. **Single event consumer and scheduler.** Implemented in `dae1ccb`.
@@ -595,8 +602,9 @@ These come from AGENTS.md and from failures found while building the groundwork.
 Unit-test scheduler decisions with injected time and frame ticks. Add focused
 integration tests for the real queues and task lifecycle. Required cases:
 
-- More than 64 events or 8 host effects arrive before one coalesced wake; no
-  further producer activity occurs. All admitted work finishes.
+- Coalesced terminal events and all eight admissible host effects drain after
+  one wake. A concurrent host-effect producer refills released capacity during
+  a drain, then becomes silent. All admitted work finishes without another wake.
 - An event arrives during drain-to-wait handoff, and the channel closes with
   queued work. Neither loses pending work or spins after completion.
 - Invalidation arrives during an in-flight request; completion preserves it and
@@ -647,14 +655,16 @@ Measured and set aside, in case a later profile changes the ranking:
    and owned activity tasks preserve progress without frame delivery.
 3. Step 3 uses one pending GPUI frame callback per window and weak terminal
    registrations. Event draining is independent of frames. Deterministic tests
-   cover admission; native 120 Hz flood matches delivered callbacks. A macOS
-   60 Hz mode request still delivered about 120 callbacks/s, so actual 60 Hz
-   native acceptance remains open.
+   cover admission; native 120 Hz flood matches delivered callbacks. The 2026-09-20
+   retry held the display-mode helper open and verified 60 callbacks and 60
+   snapshots/s at 60 Hz, then restored 120 Hz.
 4. Unix runtime waits use explicit work notifications, blocking child wait,
    cancellable reader/writer readiness, and bounded queue admission. Non-Unix
    fallbacks remain. The child waiter adds one sleeping thread per terminal;
    measured resident memory increased about 18 MiB at 50 idle tabs, without
-   isolating how much of that increase comes from the waiter.
+   isolating how much of that increase comes from the waiter in the first run.
+   The follow-up traced 13.28 MiB for 50 added threads to the linked image's
+   TLS blocks, dominated by Zig's signal-stack buffer.
 5. Steps 4 to 8 are deferred based on the measured residual cost. The pump still
    owns animations, pointer reveal, retries, and native fullscreen coordination.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
