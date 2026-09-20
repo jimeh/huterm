@@ -526,9 +526,31 @@ local evidence, not committed product changes.
 The independent review of `94f8028..52b1037` found no verified correctness defect
 in the wake handoff, bounded drains, cancellation ordering, child ownership,
 hidden-tab handling, or weak frame registrations. That is inspection evidence,
-not a replacement for regression tests. Direct coverage of the real GPUI frame
-callback's stop/resume behavior and idle activity-task cancellation remains thin.
-The existing pacing tests exercise the admission state, not callback wiring.
+not a replacement for regression tests. The focused follow-up adds
+`mise run smoke:macos-refresh` to exercise the real callback wiring:
+
+- Minimize the native window and observe AppKit occlusion before producing
+  output. Title events must continue while snapshots remain blocked behind one
+  pending callback. Restore the window and require the latest output to appear
+  without another producer event.
+- Remove the tab while its activity task is waiting, retaining the core terminal.
+  Require the task future to drop before waking the runtime, then request a
+  snapshot to prove the core terminal remains usable.
+- Create a replacement tab with the old callback pending. Require one callback
+  for the window, then restore frames and observe the replacement snapshot and
+  release of the old view. GPUI may retain the old rendered scene until repaint.
+
+The smoke observes production task lifetime through a probe installed only by
+its entrypoint. It counts the weak clock references owned by actual deferred
+registrations/native callbacks; it does not substitute a frame dispatcher.
+Bounded polling observes state changes rather than assuming animation or PTY
+completion after a fixed delay. This is native macOS coverage; it does not extend
+Linux frame-delivery coverage or measure latency.
+
+Two temporary negative controls failed at their intended assertions: detaching
+instead of owning the activity task left its probe waiting after removal;
+removing the frame-registration guard created a duplicate callback during tab
+replacement. Both source changes were restored before the final passing run.
 
 #### Native 60 Hz coverage
 

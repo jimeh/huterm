@@ -87,7 +87,7 @@ pub(crate) mod palette;
 mod refresh;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
-    presentation_query_smoke, quake_smoke,
+    presentation_query_smoke, quake_smoke, refresh_smoke,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;

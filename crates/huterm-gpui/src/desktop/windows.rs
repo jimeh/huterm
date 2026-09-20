@@ -16,6 +16,8 @@ pub(crate) mod presentation_query_smoke;
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
 mod quake_windows;
+#[path = "refresh_smoke.rs"]
+pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
@@ -2463,13 +2465,21 @@ impl WorkspaceView {
                                 )
                             });
                             let tab_id = opened.tab.id;
+                            let activity_probe =
+                                refresh_smoke::ActivityProbe::new(tab_id, cx);
                             let activity_task =
                                 cx.spawn_in(window, async move |view, cx| {
                                     loop {
+                                        if let Some(probe) = &activity_probe {
+                                            probe.waiting(true);
+                                        }
                                         let stopped = activity_client
                                             .wait_for_activity()
                                             .await
                                             .is_err();
+                                        if let Some(probe) = &activity_probe {
+                                            probe.waiting(false);
+                                        }
                                         loop {
                                             let more = view.update_in(
                                                 cx,

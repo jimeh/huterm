@@ -658,6 +658,10 @@ Measured and set aside, in case a later profile changes the ranking:
    cover admission; native 120 Hz flood matches delivered callbacks. The 2026-09-20
    retry held the display-mode helper open and verified 60 callbacks and 60
    snapshots/s at 60 Hz, then restored 120 Hz.
+   The focused native refresh smoke now covers occlusion and resume, coalesced
+   callbacks across tab replacement, and idle activity-task cancellation while
+   the core terminal remains alive. Run `mise run smoke:macos-refresh` in an
+   unlocked macOS GUI session.
 4. Unix runtime waits use explicit work notifications, blocking child wait,
    cancellable reader/writer readiness, and bounded queue admission. Non-Unix
    fallbacks remain. The child waiter adds one sleeping thread per terminal;

@@ -153,6 +153,13 @@ pub fn run_integration_smoke() -> anyhow::Result<()> {
     desktop::integration_smoke::run()
 }
 
+/// Runs native refresh scheduling and attachment-lifetime regression checks.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_refresh_smoke() -> anyhow::Result<()> {
+    desktop::refresh_smoke::run()
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::APP_ID;
