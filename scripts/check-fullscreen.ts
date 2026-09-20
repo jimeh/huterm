@@ -94,9 +94,12 @@ writeFileSync(${JSON.stringify(rawReady)}, "ready");
 setInterval(() => { if (existsSync(${JSON.stringify(rawStop)})) process.exit(0); }, 10);
 for await (const bytes of Bun.stdin.stream()) writeSync(fd, bytes);
 `);
+  // Without a WM, Xvfb does not deliver the frames that replenish snapshot
+  // admission. This fixture tests ignored EWMH requests.
+  const refresh = noWm ? 'refresh = "unlimited"\n' : "";
   // Keep a top bar below the notch so the safe-area checks see the bar
   // itself inset rather than moved beside the camera housing.
-  const configText = (mode: string) => `[terminal]\nclose_on_exit = false\n[tabs]\nnotch = "off"\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
+  const configText = (mode: string) => `[terminal]\n${refresh}close_on_exit = false\n[tabs]\nnotch = "off"\n[window]\nmacos_fullscreen_mode = "${mode}"\n[[keybinding]]\nkey = "ctrl-shift-g"\ncommand = "new_tab"\nwhen = "fullscreen"\n` + (macos ? `[[keybinding]]\nkey = "cmd-e"\ncommand = "unbind"\n` : "");
   await writeFile(shell, `#!/bin/sh
 printf 'READY\\n'
 while IFS= read -r line; do

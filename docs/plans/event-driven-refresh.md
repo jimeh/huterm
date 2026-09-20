@@ -415,7 +415,9 @@ reconcile against current time so expired flashes and holds cannot remain stuck.
 
 Headless Xvfb delivers frames only with a window manager. Every Linux smoke and
 benchmark that depends on animation progress must keep working; check how each
-starts its X session before removing its timer-driven progress.
+starts its X session before removing its timer-driven progress. The fullscreen
+smoke uses unlimited snapshots only for its intentional no-WM ignored-EWMH
+fixture; the Openbox fixture retains default display pacing.
 
 ### Pointer-driven reveal
 
