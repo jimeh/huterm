@@ -6356,13 +6356,24 @@ mod tests {
 
     #[test]
     fn hidden_tabs_coalesce_invalidations_without_requesting_snapshots() {
+        use huterm_config::RefreshMode;
+
+        let mut pacer = super::super::refresh::SnapshotPacer::default();
         let mut scroll = ScrollController::default();
         for _ in 0..100 {
             scroll.invalidate();
-            assert!(begin_visible_snapshot(&mut scroll, false).is_none());
+            assert!(
+                pacer
+                    .begin(&mut scroll, false, RefreshMode::Display)
+                    .is_none()
+            );
         }
         assert_eq!(scroll.diagnostics().requests_started, 0);
-        assert!(begin_visible_snapshot(&mut scroll, true).is_some());
+        assert!(
+            pacer
+                .begin(&mut scroll, true, RefreshMode::Display)
+                .is_some()
+        );
         assert_eq!(scroll.diagnostics().requests_started, 1);
     }
 

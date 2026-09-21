@@ -3423,7 +3423,7 @@
       "oneOf": [
         {
           "const": "display",
-          "description": "Admit at most one snapshot per delivered display frame.",
+          "description": "Admit one snapshot per delivered display frame, plus at most one extra\nsnapshot for pending viewport changes.",
           "type": "string"
         },
         {

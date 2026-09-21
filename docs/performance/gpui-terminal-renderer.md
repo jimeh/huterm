@@ -624,3 +624,57 @@ Artifacts are under `target/bench/refresh-hardening/`. A screen lock interrupted
 one producer-origin run and prevented a frame-dependent allocation fixture from
 starting; those runs are excluded. Product sources were restored byte-for-byte
 and production binaries rebuilt after temporary probes.
+
+### Scroll admission follow-up (2026-09-21)
+
+The original shared frame allowance regressed scrolling on Linux under Xvfb.
+Same-runner comparisons rebuilt baseline `c3ab933` and the PR's `0a5d541`
+implementation in separate worktrees and target directories. The diagnostic
+branch applied a bounded viewport allowance only after measuring both originals.
+Each candidate run retained 70 measured snapshot samples, 65 matching paint
+samples, and maximum in-flight and queued counts of one.
+
+P95 input-to-matching-paint elapsed time, in milliseconds:
+
+| Runner | Baseline | Original PR | Extra viewport allowance, two runs |
+| --- | --- | --- | --- |
+| AMD EPYC 9V45 | 4.249 | 25.596 | 16.352, 7.798 |
+| AMD EPYC 7763 | 12.493 | 44.692 | 12.581, 12.507 |
+
+The [9V45 comparison](https://github.com/jimeh/huterm/actions/runs/35547784317)
+shows an improvement with remaining variation. The
+[7763 comparison](https://github.com/jimeh/huterm/actions/runs/35548088830)
+reproduces the original 33.4 ms budget failure and brings both candidate runs
+back to baseline. Diagnostic workflow steps continue after benchmark failures
+to collect every comparison arm; the workflow's overall success is not evidence
+that every benchmark passed. These timings end at CPU paint encoding, not
+physical display presentation.
+
+A separate [GPUI trace](https://github.com/jimeh/huterm/actions/runs/35547291793)
+on an Intel Xeon 8370C recorded about 15 ms inside native presentation, while
+frame acquisition and GPUI's explicit previous-frame GPU wait took only
+microseconds. Completed snapshots waited for that UI-thread call to return.
+The X11 refresh timer also sometimes advanced over a missed 16 ms slot,
+producing 32 ms callback intervals. This establishes the blocking boundary,
+not the internal driver cost. Removing the benchmark's early redraw or deferring
+snapshot starts until after drawing had not improved the earlier failure.
+
+Display mode now admits one normal snapshot and at most one additional snapshot
+for pending viewport work between observed frames. Output or link work alone
+cannot use the extra allowance. Both allowances replenish only on a native
+frame; visibility, one in-flight request, and coalesced pending scroll still
+apply. Returning to live output also qualifies. This deliberately refines the
+original one-snapshot policy instead of removing its bounds.
+
+Three regression scenarios failed at their intended assertions under the old
+policy, then passed with the viewport allowance. They exercise admission through
+the real scroll controller, including completion, pending invalidation,
+in-flight retries, hidden views, and further scroll requests without a frame.
+The native refresh smoke additionally covers a single extra viewport request
+while frames are paused and catch-up after resume.
+
+Native validation of this follow-up remains pending. Fresh macOS comparisons
+were excluded after the user confirmed concurrent VM smoke testing imposed
+heavier load than the earlier measurements. They do not establish either a
+macOS regression or its absence. Repeat the baseline/candidate comparison and
+native refresh/input smokes on an idle Mac before closing this validation gap.

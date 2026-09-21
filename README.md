@@ -123,6 +123,8 @@ Detached processes cannot always be attributed or terminated. Process creation
 or identity changes after the final live-process snapshot are inherently racy.
 
 Terminal snapshots follow the window's delivered display frames by default.
+Pending viewport changes may use one additional snapshot per frame to keep
+scrolling responsive when an output snapshot has used the normal allowance.
 Set `[terminal] refresh = "unlimited"` to request another dirty snapshot as soon
 as the previous request completes. This can increase CPU work without increasing
 visible frames. Reload applies the policy to existing tabs. Hidden tabs continue

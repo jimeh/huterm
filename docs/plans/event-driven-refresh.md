@@ -39,7 +39,8 @@ removal of the window's 16 ms pump is a later, measurement-dependent step.
 Work happens when something changes: a
 terminal publishes events, an animation is running, a native notification
 arrives, or the pointer moves. A configuration option decides whether terminal
-snapshots are clamped to the display's refresh rate.
+output-driven snapshots are clamped to the display's refresh rate, with a
+bounded exception for pending viewport changes.
 
 The planned stages target four costs that remain after the groundwork:
 
@@ -362,9 +363,18 @@ Clamped mode, the default:
 - Otherwise retain pending work and use the window's single `on_next_frame`
   registration to reconsider admission. This replaces
   `ACTIVITY_SNAPSHOT_INTERVAL` and applies to completion-triggered requests too.
-- Start with scroll and link requests sharing the same admission policy. Verify
-  their latency explicitly; any exception needs a documented reason and separate
-  accounting rather than an accidental bypass.
+- Output and link requests share one allowance. Pending viewport changes may use
+  one additional allowance per delivered frame. Consume normal allowance first;
+  the extra allowance cannot admit output or link work alone. Both allowances
+  replenish only on an observed frame, including after reload. Keep one request
+  in flight and coalesce pending scroll, so stopped frames permit only a finite
+  remaining burst.
+- This viewport exception avoids holding scroll behind an output snapshot while
+  GPUI presents a frame. Same-runner Linux comparisons exposed an additional
+  frame of latency under the original shared allowance. Returning to live output
+  also counts as a viewport change. The extra snapshot includes current terminal
+  output; this is a bound of two total requests per frame during viewport work,
+  not two independent output and scroll streams.
 
 A callback runs before drawing, but the snapshot completes asynchronously.
 Starting it there does not guarantee its result appears in that draw. Measure

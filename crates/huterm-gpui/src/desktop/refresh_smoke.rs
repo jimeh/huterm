@@ -88,6 +88,7 @@ struct State {
     title: String,
     text: String,
     snapshots: u64,
+    displayed_offset: usize,
     callbacks: usize,
     stage: Stage,
 }
@@ -106,6 +107,7 @@ fn state(cx: &mut App) -> anyhow::Result<State> {
             title: terminal.title.clone(),
             text: text.trim_end().to_owned(),
             snapshots: terminal.snapshot_sequence,
+            displayed_offset: terminal.scroll.displayed(),
             // Each deferred registration / native callback owns exactly one weak clock.
             // Count those actual closures, not calls to a test frame dispatcher.
             callbacks: Rc::weak_count(&view.frame_clock),
@@ -164,6 +166,15 @@ fn show(cx: &mut App) -> anyhow::Result<()> {
     })
 }
 
+fn scroll_to(cx: &mut App, offset: usize) -> anyhow::Result<()> {
+    workspace(cx, |view, _, cx| {
+        view.tabs[0].view.update(cx, |terminal, cx| {
+            terminal.scroll.set_desired(offset);
+            terminal.start_snapshot_if_needed(cx);
+        });
+    })
+}
+
 #[cfg(target_os = "macos")]
 async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
     cx.update(|cx| workspace(cx, |_, window, _| window.minimize_window()))??;
@@ -172,6 +183,35 @@ async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
         Ok((occluded, format!("occluded={occluded}")))
     })
     .await?;
+    Ok(())
+}
+
+async fn check_paused_scroll(
+    cx: &mut AsyncApp,
+    sequence: u64,
+) -> anyhow::Result<()> {
+    cx.update(|cx| scroll_to(cx, 1))??;
+    wait_state(cx, "one viewport snapshot while frames are paused", |s| {
+        s.displayed_offset == 1 && s.snapshots == sequence + 1
+    })
+    .await?;
+    // Title delivery proves the event drain revisited snapshot admission after
+    // each scroll request. Neither input nor completion replenishes allowance.
+    for (offset, marker) in [(2, "SCROLL_SECOND"), (3, "SCROLL_FINAL")] {
+        cx.update(|cx| scroll_to(cx, offset))??;
+        cx.update(|cx| send(cx, marker))??;
+        wait_state(cx, "title progressed with scroll pending", |s| {
+            s.title == marker
+        })
+        .await?;
+        let observed = cx.update(state)??;
+        ensure!(
+            observed.snapshots == sequence + 1
+                && observed.displayed_offset == 1
+                && observed.callbacks == 1,
+            "paused scroll exceeded its allowance: {observed:?}"
+        );
+    }
     Ok(())
 }
 
@@ -207,12 +247,16 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
             "paused frames admitted a snapshot or duplicate callback: {observed:?}"
         );
     }
+    check_paused_scroll(cx, sequence).await?;
     cx.update(show)??;
     wait_state(cx, "resume catches up without new producer activity", |s| {
-        s.text.contains("PAUSED_FINAL") && s.callbacks == 0
+        s.text.contains("SCROLL_FINAL")
+            && s.displayed_offset == 3
+            && s.callbacks == 0
     })
     .await?;
     eprintln!("REFRESH_SMOKE frame_stop_resume passed");
+    eprintln!("REFRESH_SMOKE bounded_scroll_while_paused passed");
 
     #[cfg(target_os = "macos")]
     pause(cx).await?;

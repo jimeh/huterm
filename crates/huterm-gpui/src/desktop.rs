@@ -552,15 +552,13 @@ impl TerminalView {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
-        if !self.snapshot_pacer.admits(self.refresh_mode) {
-            return;
-        }
-        let Some(viewport) =
-            begin_visible_snapshot(&mut self.scroll, self.visible)
-        else {
+        let Some(viewport) = self.snapshot_pacer.begin(
+            &mut self.scroll,
+            self.visible,
+            self.refresh_mode,
+        ) else {
             return;
         };
-        self.snapshot_pacer.started();
         self.frame_clock.schedule(cx.entity().downgrade(), cx);
         let link_intent = self.links.intent();
         let link_started = Instant::now();
@@ -2276,17 +2274,6 @@ impl Render for TerminalView {
                     .child(status),
             )
         })
-    }
-}
-
-fn begin_visible_snapshot(
-    scroll: &mut ScrollController,
-    visible: bool,
-) -> Option<huterm_protocol::Viewport> {
-    if visible {
-        scroll.begin_request()
-    } else {
-        None
     }
 }
 

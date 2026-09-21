@@ -61,7 +61,8 @@ impl Default for TerminalConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum RefreshMode {
-    /// Admit at most one snapshot per delivered display frame.
+    /// Admit one snapshot per delivered display frame, plus at most one extra
+    /// snapshot for pending viewport changes.
     #[default]
     Display,
     /// Admit another dirty snapshot as soon as its predecessor completes.

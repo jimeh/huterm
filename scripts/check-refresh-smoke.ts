@@ -15,6 +15,11 @@ try {
     '[terminal]\nclose_on_exit=false\n[tabs]\nlabel="title"\n',
   );
   await writeFile(shell, `#!/bin/sh
+i=0
+while [ "$i" -lt 100 ]; do
+  printf 'history %s\\n' "$i"
+  i=$((i + 1))
+done
 printf '\\033[2J\\033[HREADY\\n\\033]0;READY\\007'
 while IFS= read -r marker; do
   printf '\\033[2J\\033[H%s\\n\\033]0;%s\\007' "$marker" "$marker"
@@ -27,6 +32,7 @@ done
   });
   const markers = [
     "frame_stop_resume",
+    "bounded_scroll_while_paused",
     "silent_task_cancellation",
     "stale_callback_after_detach",
   ];

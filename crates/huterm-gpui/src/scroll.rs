@@ -29,6 +29,10 @@ impl ScrollController {
         self.pixel_remainder = 0.0;
     }
 
+    pub(super) fn has_pending_scroll(&self) -> bool {
+        self.pending_scroll.is_some()
+    }
+
     pub(super) fn desired(&self) -> usize {
         self.desired
     }
