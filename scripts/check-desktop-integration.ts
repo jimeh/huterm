@@ -148,10 +148,14 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     label: string,
   ) {
     let current: Record<string, string> = {};
-    await waitFor(async () => {
-      current = await state();
-      return predicate(current);
-    }, label);
+    try {
+      await waitFor(async () => {
+        current = await state();
+        return predicate(current);
+      }, label);
+    } catch (cause) {
+      throw new Error(`${label}; last observed ${JSON.stringify(current)}`, { cause });
+    }
     return current;
   }
   async function discoverWindow() {
@@ -519,7 +523,15 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     }
     await modifiers(command);
     await hover(url);
+    await waitForState(
+      (current) => current.owned === "false", "previous link press released",
+    );
     await mouse(1, 2, 0);
+    // The new tab changes hit-test geometry. Consume the native press first so
+    // a delayed X11 event cannot land on the newly visible tab bar.
+    await waitForState(
+      (current) => current.owned === "true", "link press owned before tab switch",
+    );
     await commandFile("new_tab");
     await waitFor(async () => {
       const current = await state();
