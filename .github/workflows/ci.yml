@@ -68,13 +68,15 @@ jobs:
           cd "$RUNNER_TEMP/huterm-baseline"
           mise run bench:scroll
 
-      - name: Queue snapshot starts after synchronous frame drawing
-        run: cp scripts/pr147-refresh-candidate.txt crates/huterm-gpui/src/desktop/refresh.rs
+      - name: Instrument GPUI in this disposable runner
+        run: |
+          mise exec -- python3 scripts/trace-frame-loop.py
+          mise exec -- cargo clean --release -p gpui
 
-      - name: Measure corrected benchmark on the same runner
+      - name: Trace original PR frame loop
         continue-on-error: true
-        run: mise run bench:scroll
+        run: HUTERM_FRAME_TRACE=1 mise run bench:scroll
 
-      - name: Repeat corrected benchmark on the same runner
+      - name: Repeat original PR frame loop trace
         continue-on-error: true
-        run: mise run bench:scroll
+        run: HUTERM_FRAME_TRACE=1 mise run bench:scroll
