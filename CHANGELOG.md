@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/jimeh/huterm/compare/v0.12.0...v0.12.1) (2026-09-21)
+
+
+### Performance Improvements
+
+* make terminal activity and runtime waits event-driven ([#147](https://github.com/jimeh/huterm/issues/147)) ([e28924b](https://github.com/jimeh/huterm/commit/e28924bdb717580f5c21d5d57e4f11b43dc19acd))
+
 ## [0.12.0](https://github.com/jimeh/huterm/compare/v0.11.2...v0.12.0) (2026-09-18)
 
 
