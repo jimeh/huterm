@@ -79,6 +79,9 @@ Run `mise tasks` to discover the full task set.
 - `mise run vm:macos:smoke` runs the macOS desktop smokes in a disposable
   headless Tart VM so they do not take over the host display; `vm:macos:dev`
   runs a dev build in a VM window. See the development guide.
+- `mise run vm:linux:dev` runs a container-built Linux binary in a GNOME desktop
+  Tart VM for manual QA; `vm:linux:dev:x11` selects Xorg over Wayland. Docker
+  remains the path for Linux tests and smokes. See the development guide.
 - `mise run package:linux:container` builds verified Linux packages in the
   pinned Ubuntu 22.04 container and exports them to host `dist/`.
 - `mise run format` writes Rust formatting and refreshes action pins.
@@ -789,6 +792,26 @@ disk is running, so run lifecycles must not depend on them. Background
 processes started through `tart exec` die when exec returns; keep guest
 commands in the foreground. Virtualization.framework refuses a third running
 macOS guest, so runs share two host-wide slot locks.
+
+Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
+GNOME aborts its Wayland session with "No GSettings schemas are installed"
+unless provisioning runs `glib-compile-schemas` after installing the desktop,
+and GDM then falls back to Xorg silently. GDM selects the session from the
+autologin user's AccountsService record, so set it together with WaylandEnable
+and restart gdm3. Apple's virtio GPU is not PCI, so Ubuntu's 61-gdm.rules
+virtual-GPU checks never match. X can start without working GL while mutter
+cannot, which makes a silent Xorg fallback the normal symptom of a broken
+Wayland session. Unref a `tart run` child that is deliberately left running, or
+Bun's event loop keeps the finished command alive.
+Ubuntu desktop ships `/usr/lib/netplan/00-network-manager-all.yaml`, so the
+guest needs `network-manager` explicitly under `--no-install-recommends` or
+netplan leaves every interface unmanaged and the VM has no network at all.
+Shared NAT is sufficient; bridged networking is not required. End guest
+provisioning with `sync`, because the image is published as soon as the script
+exits and unflushed writes are lost. Prefer regular files under `/etc` for
+provisioned overrides: a `systemctl mask` symlink did not survive cloning,
+while a unit drop-in did. Bound `systemd-networkd-wait-online`, whose
+two-minute timeout otherwise delays every boot before the guest agent answers.
 
 Linux Docker validation keeps the checkout read-only and syncs source into a
 worktree/architecture-scoped volume. Exclude host `target`, `.native`, and

@@ -493,7 +493,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh && bash -n scripts/macos-vm/provision.sh && bash -n scripts/macos-vm/guest.sh"
+run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh && bash -n scripts/macos-vm/provision.sh && bash -n scripts/macos-vm/guest.sh && bash -n scripts/linux-vm/provision.sh && bash -n scripts/linux-vm/guest.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
@@ -995,6 +995,22 @@ run = "bash scripts/build-exec.sh cargo build --locked -p huterm && bun scripts/
 [tasks."vm:macos:clean"]
 description = "Remove Huterm's provisioned and leftover Tart VMs"
 run = "bun scripts/macos-vm.ts clean"
+
+[tasks."vm:linux:dev"]
+description = "Build Huterm for Linux and run it in a persistent Tart VM's GNOME Wayland session"
+run = "bun scripts/linux-vm.ts dev"
+
+[tasks."vm:linux:dev:x11"]
+description = "Build Huterm for Linux and run it in a persistent Tart VM's GNOME Xorg session"
+run = "bun scripts/linux-vm.ts dev --session x11"
+
+[tasks."vm:linux:exec"]
+description = "Run a command in this worktree's Linux VM desktop session"
+run = "bun scripts/linux-vm.ts exec"
+
+[tasks."vm:linux:clean"]
+description = "Remove Huterm's provisioned and per-worktree Linux Tart VMs"
+run = "bun scripts/linux-vm.ts clean"
 
 [tasks."bench:links"]
 depends = ["ghostty:prepare"]

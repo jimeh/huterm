@@ -1,0 +1,169 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { BASE_IMAGE, argumentsFor, imageName, tryLock, vmName } from "./linux-vm";
+
+const directories: string[] = [];
+afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+
+const root = resolve(import.meta.dir, "..");
+const image = imageName(root);
+const vm = vmName(root);
+const macos = process.platform === "darwin" && process.arch === "arm64";
+
+function fixture(overrides: Record<string, string> = {}) {
+  const directory = mkdtempSync(join(tmpdir(), "huterm-linux-vm-test-"));
+  directories.push(directory);
+  const log = join(directory, "tart.jsonl");
+  const vms = join(directory, "vms");
+  writeFileSync(log, "");
+  writeFileSync(vms, "");
+  const tart = join(directory, "tart");
+  writeFileSync(tart, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+const env = process.env;
+appendFileSync(env.TART_TEST_LOG, JSON.stringify(args) + '\\n');
+const names = () => readFileSync(env.TART_TEST_VMS, 'utf8').split('\\n').filter(Boolean);
+const save = (list) => writeFileSync(env.TART_TEST_VMS, list.map((name) => name + '\\n').join(''));
+const marker = (name) => env.TART_TEST_VMS + '.' + name + '.stopped';
+switch (args[0]) {
+  case 'get': process.exit(names().includes(args[1]) ? 0 : 1);
+  case 'list': console.log(names().join('\\n')); break;
+  case 'clone': save([...names(), args[2]]); break;
+  case 'rename': save(names().map((name) => name === args[1] ? args[2] : name)); break;
+  case 'delete': if (!names().includes(args[1])) process.exit(1); save(names().filter((name) => name !== args[1])); break;
+  case 'stop':
+    rmSync(env.TART_TEST_VMS + '.' + args.at(-1) + '.booted', { force: true });
+    writeFileSync(marker(args.at(-1)), '');
+    break;
+  case 'run':
+    rmSync(marker(args[1]), { force: true });
+    writeFileSync(env.TART_TEST_VMS + '.' + args[1] + '.booted', '');
+    while (!existsSync(marker(args[1]))) await Bun.sleep(20);
+    break;
+  case 'exec': {
+    // 'tart exec <vm> true' is the guest-agent probe; a VM is reachable only
+    // once it has been started, unless the fixture declares it already running.
+    if (args[2] === 'true' && args.length === 3) {
+      process.exit(env.TART_TEST_RUNNING === args[1] || existsSync(env.TART_TEST_VMS + '.' + args[1] + '.booted') ? 0 : 1);
+    }
+    if (args.some((arg) => arg.endsWith('provision.sh'))) process.exit(Number(env.TART_TEST_PROVISION_EXIT || 0));
+    const action = args[4] ?? '';
+    if (action === 'session-type') { console.log(env.TART_TEST_SESSION || 'wayland'); break; }
+    if (action === 'run') process.exit(Number(env.TART_TEST_RUN_EXIT || 0));
+    break;
+  }
+}
+`);
+  chmodSync(tart, 0o755);
+  const state = join(directory, "state");
+  const env = {
+    ...process.env, PATH: `${directory}:${process.env.PATH}`,
+    TART_TEST_LOG: log, TART_TEST_VMS: vms, HUTERM_LINUX_VM_STATE: state, ...overrides,
+  };
+  return {
+    state,
+    vms: () => readFileSync(vms, "utf8").split("\n").filter(Boolean),
+    seed: (...entries: string[]) => writeFileSync(vms, entries.map((name) => `${name}\n`).join("")),
+    boot: (name: string) => writeFileSync(`${vms}.${name}.booted`, ""),
+    calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
+    run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "linux-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
+    // A VM deliberately left running inherits the runner's stdio, so a piped
+    // parent would block on EOF long after the runner itself exits.
+    runDetached: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "linux-vm.ts"), ...args], { env, stdout: "ignore", stderr: "ignore" }),
+  };
+}
+
+describe("Linux VM runner", () => {
+  test("arguments select the session and preserve exec commands verbatim", () => {
+    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", session: "wayland", command: ["/mnt/shared/huterm/target/debug/huterm"] });
+    expect(argumentsFor(["dev", "--session", "x11"]).session).toBe("x11");
+    expect(argumentsFor(["dev", "--session=x11"]).session).toBe("x11");
+    expect(argumentsFor(["exec", "--", "uname", "-a"]).command).toEqual(["uname", "-a"]);
+    expect(() => argumentsFor(["dev", "--session", "mir"])).toThrow("wayland or x11");
+    expect(() => argumentsFor(["exec"])).toThrow("requires a command");
+    expect(() => argumentsFor(["clean", "extra"])).toThrow("takes no arguments");
+    expect(() => argumentsFor(["shell"])).toThrow("expected dev, exec, or clean");
+  });
+
+  test("image and VM names are scoped to their inputs", () => {
+    expect(image).toMatch(/^huterm-linux-image-[a-f0-9]{16}$/);
+    expect(vm).toMatch(/^huterm-linux-vm-[a-f0-9]{16}$/);
+    expect(vmName("/somewhere/else")).not.toBe(vm);
+  });
+
+  test("provisions the image, then boots and stops a per-worktree VM", () => {
+    if (!macos) return;
+    const fake = fixture();
+    expect(fake.run("exec", "--", "true").exitCode).toBe(0);
+    const calls = fake.calls().filter((args) => !(args[0] === "exec" && args[2] === "true"));
+    const build = `${image}-build`;
+    const index = (args: string[]) => calls.findIndex((call) => JSON.stringify(call) === JSON.stringify(args));
+    expect(index(["clone", BASE_IMAGE, build])).toBeGreaterThanOrEqual(0);
+    expect(index(["rename", build, image])).toBeGreaterThan(index(["stop", "--timeout", "30", build]));
+    expect(index(["clone", image, vm])).toBeGreaterThan(index(["rename", build, image]));
+    // The session already matches, so the VM is not restarted into another one.
+    expect(calls.some((args) => args.includes("set-session"))).toBe(false);
+    expect(calls).toContainEqual(["exec", vm, "/bin/sh", "/mnt/shared/huterm/guest.sh", "run", "true"]);
+    expect(calls).toContainEqual(["stop", "--timeout", "10", vm]);
+    expect(fake.vms()).toEqual([image, vm]);
+  });
+
+  test("a mismatched session is switched before the command runs", () => {
+    if (!macos) return;
+    const fake = fixture({ TART_TEST_SESSION: "x11" });
+    fake.seed(image, vm);
+    expect(fake.run("exec", "--", "true").exitCode).toBe(0);
+    const calls = fake.calls();
+    const switched = calls.findIndex((args) => args.includes("set-session") && args.includes("wayland"));
+    const command = calls.findIndex((args) => args.includes("run") && args.includes("true"));
+    expect(switched).toBeGreaterThanOrEqual(0);
+    expect(command).toBeGreaterThan(switched);
+  });
+
+  test("an already running VM is reused and left running", () => {
+    if (!macos) return;
+    const fake = fixture({ TART_TEST_RUNNING: vm });
+    fake.seed(image, vm);
+    expect(fake.run("exec", "--", "true").exitCode).toBe(0);
+    const calls = fake.calls();
+    expect(calls.some((args) => args[0] === "run")).toBe(false);
+    expect(calls.some((args) => args[0] === "stop")).toBe(false);
+  });
+
+  test("a concurrent command keeps the VM running after this one finishes", () => {
+    if (!macos) return;
+    const fake = fixture();
+    fake.seed(image);
+    mkdirSync(fake.state, { recursive: true });
+    const other = tryLock(join(fake.state, "active.lock"), true)!;
+    try {
+      expect(fake.runDetached("exec", "--", "true").exitCode).toBe(0);
+    } finally { other(); }
+    expect(fake.calls().some((args) => args[0] === "stop" && args.at(-1) === vm)).toBe(false);
+  });
+
+  test("command failures propagate", () => {
+    if (!macos) return;
+    const fake = fixture({ TART_TEST_RUN_EXIT: "4" });
+    fake.seed(image, vm);
+    expect(fake.run("exec", "--", "false").exitCode).toBe(4);
+  });
+
+  test("clean removes only Huterm VMs and refuses while a command is active", () => {
+    if (!macos) return;
+    const fake = fixture();
+    fake.seed(image, vm, "someone-else", BASE_IMAGE);
+    mkdirSync(fake.state, { recursive: true });
+    const active = tryLock(join(fake.state, "active.lock"), true)!;
+    let blocked;
+    try { blocked = fake.run("clean"); } finally { active(); }
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.stderr.toString()).toContain("a Linux VM command is active");
+    expect(fake.vms()).toEqual([image, vm, "someone-else", BASE_IMAGE]);
+    expect(fake.run("clean").exitCode).toBe(0);
+    expect(fake.vms()).toEqual(["someone-else", BASE_IMAGE]);
+  });
+});
