@@ -673,8 +673,32 @@ in-flight retries, hidden views, and further scroll requests without a frame.
 The native refresh smoke additionally covers a single extra viewport request
 while frames are paused and catch-up after resume.
 
-Native validation of this follow-up remains pending. Fresh macOS comparisons
-were excluded after the user confirmed concurrent VM smoke testing imposed
-heavier load than the earlier measurements. They do not establish either a
-macOS regression or its absence. Repeat the baseline/candidate comparison and
-native refresh/input smokes on an idle Mac before closing this validation gap.
+After concurrent VM testing finished, the idle Mac15,8 comparison used the
+built-in display (ID 1) with observed median callbacks near 8.33 ms. All release
+builds completed before measurement, with separate target directories. Run order
+was baseline, original PR, fixed, fixed, original PR, baseline.
+
+| macOS revision | P95 input-to-matching-paint, two runs (ms) |
+| --- | --- |
+| Baseline `94f8028` | 9.429, 9.031 |
+| Original PR `0a5d541` | 12.134, 11.646 |
+| Fixed `24a7def` | 5.509, 9.564 |
+
+The baseline carries the preimplementation benchmark harness; its relevant
+runtime, desktop, and scroll benchmark source matches `c3ab933`. Each run had
+70 snapshot samples and 65 to 69 matching paint samples. All presentation and
+budget gates passed, with maximum in-flight and queued counts of one. The
+original PR also incurred a smaller penalty on macOS. The fix returned results
+to approximately the baseline range, with variation between runs; these two
+runs do not establish a uniform 5.5 ms latency. Measurements taken during VM
+load remain excluded.
+
+On `24a7def`, native macOS refresh, input, desktop integration, and Quake smokes
+passed.
+The refresh smoke observed the bounded extra scroll request while frames were
+paused, then the final coalesced viewport after resume. The integration smoke
+also exercised the held-link acknowledgement added to prevent a late native
+press from reaching a newly visible tab bar.
+The Quake smoke passed all 40 animation cases and native focus/fullscreen
+transitions. An earlier hosted focus timeout did not recur locally or in the
+latest CI run; no Quake production code was changed.

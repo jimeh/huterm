@@ -674,6 +674,11 @@ Measured and set aside, in case a later profile changes the ranking:
    callbacks across tab replacement, and idle activity-task cancellation while
    the core terminal remains alive. Run `mise run smoke:macos-refresh` in an
    unlocked macOS GUI session.
+   The 2026-09-21 scroll follow-up adds one bounded viewport allowance per
+   delivered frame, preserving output-only pacing and one in-flight request.
+   Controlled Linux and idle 120 Hz macOS comparisons recovered baseline scroll
+   latency. Native coverage also verifies the extra allowance while frames are
+   paused. See the [performance results](../performance/gpui-terminal-renderer.md#scroll-admission-follow-up-2026-09-21).
 4. Unix runtime waits use explicit work notifications, blocking child wait,
    cancellable reader/writer readiness, and bounded queue admission. Non-Unix
    fallbacks remain. The child waiter adds one sleeping thread per terminal;
