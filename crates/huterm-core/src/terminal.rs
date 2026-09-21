@@ -2,8 +2,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
-    self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
-    TrySendError,
+    self, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -19,6 +18,7 @@ use huterm_protocol::{
 use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
+use crate::events::{EventPublisher, EventReceiver};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -27,20 +27,18 @@ use crate::pty::{self, PtyProcess};
 const MESSAGE_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
-const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// In-process client handle for one terminal runtime.
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
     terminal_id: TerminalId,
-    messages: SyncSender<RuntimeMessage>,
-    controls: Sender<RuntimeControl>,
+    messages: crate::wake::SyncSender<RuntimeMessage>,
+    controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
-    events: Arc<Mutex<Receiver<TerminalEvent>>>,
+    events: Arc<Mutex<EventReceiver>>,
     activity: async_channel::Receiver<()>,
-    invalidation_pending: Arc<AtomicBool>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     host_effect_sink: HostEffectSink,
 }
@@ -164,9 +162,6 @@ impl RuntimeClient {
                 fail_lookup: false,
             })
             .map_err(|_| RuntimeError::Stopped)?;
-        // The runtime blocks on its message queue between polls of the control
-        // channel. A full queue means it is already busy and will poll soon.
-        let _ = self.messages.try_send(RuntimeMessage::Wake);
         Ok(SnapshotRequest { receiver })
     }
 
@@ -207,6 +202,9 @@ impl RuntimeClient {
 
     /// Receives the next queued runtime event without blocking.
     ///
+    /// Pending titles, metadata, invalidations, and bells coalesce to their
+    /// latest state. Lifecycle transitions remain observable under a flood.
+    ///
     /// # Errors
     ///
     /// Returns an error if another client poisoned the shared event receiver.
@@ -225,9 +223,6 @@ impl RuntimeClient {
                 return Err(RuntimeError::Stopped);
             }
         };
-        if matches!(event, Some(TerminalEvent::Invalidated { .. })) {
-            self.invalidation_pending.store(false, Ordering::Release);
-        }
         Ok(event)
     }
 
@@ -465,13 +460,20 @@ impl TerminalRuntime {
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
+        let wake = Arc::new(crate::wake::Wake::default());
+        let message_sender =
+            crate::wake::SyncSender::new(message_sender, Arc::clone(&wake));
+        let control_sender = crate::wake::Sender::new(control_sender, wake);
         let (event_sender, event_receiver, activity) =
             EventPublisher::channel();
         let invalidation_pending = Arc::new(AtomicBool::new(false));
         let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
         let queued_input_bytes = Arc::new(AtomicUsize::new(0));
-        let host_effect_sink = HostEffectSink::new(terminal_id);
+        let host_effect_sink = HostEffectSink::new_with_activity(
+            terminal_id,
+            Some(Arc::downgrade(&event_sender.activity)),
+        );
         let runtime_host_effect_sink = host_effect_sink.clone();
 
         let runtime_sender = message_sender.clone();
@@ -532,7 +534,6 @@ impl TerminalRuntime {
             queued_input_bytes,
             events: Arc::new(Mutex::new(event_receiver)),
             activity,
-            invalidation_pending,
             shutdown_groups,
             host_effect_sink,
         };
@@ -627,8 +628,6 @@ enum RuntimeMessage {
         cell: CellSize,
     },
     Presentation(Box<PresentationUpdate>),
-    /// Ends the wait on this queue so a queued control is handled promptly.
-    Wake,
 }
 
 #[derive(Debug)]
@@ -689,9 +688,9 @@ fn run_terminal(
     mut engine: TerminalEngine,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
-    message_sender: SyncSender<RuntimeMessage>,
+    message_sender: crate::wake::SyncSender<RuntimeMessage>,
     controls: Receiver<RuntimeControl>,
-    control_sender: Sender<RuntimeControl>,
+    control_sender: crate::wake::Sender<RuntimeControl>,
     events: EventPublisher,
     invalidation_pending: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
@@ -699,6 +698,7 @@ fn run_terminal(
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     startup: &SyncSender<Result<(), RuntimeError>>,
 ) -> Result<(), RuntimeError> {
+    let wake = Arc::clone(&control_sender.wake);
     let parts = match process.into_parts() {
         Ok(parts) => parts,
         Err(error) => {
@@ -713,12 +713,32 @@ fn run_terminal(
         master,
         reader,
         reader_waiter,
+        writer_waiter,
         writer,
         mut child,
         mut killer,
     } = parts;
+    #[cfg(unix)]
+    {
+        child = match crate::child_wait::observe(child, Arc::clone(&wake)) {
+            Ok(child) => child,
+            Err((error, mut child)) => {
+                let mut groups = pty::process_groups(child.process_id());
+                pty::record_foreground_group(master.as_ref(), &mut groups);
+                pty::terminate_child(child.as_mut(), killer.as_mut(), &groups);
+                drop(reader);
+                drop(reader_waiter);
+                drop(writer_waiter);
+                drop(writer);
+                drop(master);
+                let _ = pty::reap_child(child);
+                return Err(RuntimeError::Thread(error.to_string()));
+            }
+        };
+    }
     let mut process_groups = pty::process_groups(child.process_id());
     pty::record_foreground_group(master.as_ref(), &mut process_groups);
+    let reader_cancel = reader_waiter.cancellation();
     let reader_join = match spawn_reader(
         terminal_id,
         reader,
@@ -737,16 +757,20 @@ fn run_terminal(
                 &process_groups,
             );
             drop(writer);
+            drop(writer_waiter);
             drop(master);
             let _ = pty::reap_child(child);
             return Err(error);
         }
     };
-    let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_CAPACITY);
+    let (writer_sender, writer_receiver) =
+        async_channel::bounded(WRITER_CAPACITY);
     let input_closed = Arc::new(AtomicBool::new(false));
+    let writer_cancel = writer_waiter.cancellation();
     let writer_join = match spawn_writer(
         terminal_id,
         writer,
+        WriterReadiness::Pty(writer_waiter),
         writer_receiver,
         control_sender,
         Arc::clone(&closing),
@@ -764,6 +788,7 @@ fn run_terminal(
             );
             drop(master);
             drop(messages);
+            reader_cancel.cancel();
             join_worker(reader_join);
             let _ = pty::reap_child(child);
             return Err(error);
@@ -804,7 +829,12 @@ fn run_terminal(
             report_failure(&events, terminal_id, error);
             closing.store(true, Ordering::Release);
         }
-        while let Ok(control) = controls.try_recv() {
+        let mut controls_drained = 0;
+        while controls_drained < MESSAGE_CAPACITY {
+            let Ok(control) = controls.try_recv() else {
+                break;
+            };
+            controls_drained += 1;
             if closing.load(Ordering::Acquire) {
                 break;
             }
@@ -816,6 +846,11 @@ fn run_terminal(
                     #[cfg(test)]
                     fail_lookup,
                 } => {
+                    // Rearm on the owner thread at snapshot construction, not
+                    // when a client merely drains its notification. Hidden or
+                    // frame-blocked clients already know they are dirty and
+                    // must not wake again for every PTY chunk.
+                    invalidation_pending.store(false, Ordering::Release);
                     let started = Instant::now();
                     let result = (|| {
                         let requested_viewport =
@@ -956,10 +991,18 @@ fn run_terminal(
         if closing.load(Ordering::Acquire) {
             break;
         }
+        if child_exited {
+            // Closing the channel wakes an idle writer even when no input
+            // arrives after root exit. Queued writes are rejected by input_closed.
+            writer_sender.close();
+            writer_cancel.cancel();
+        }
         match flush_pending_write(&writer_sender, &mut pending_writes) {
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
-                thread::sleep(RUNTIME_POLL_INTERVAL);
+                if controls_drained < MESSAGE_CAPACITY {
+                    wake.wait();
+                }
                 continue;
             }
             WriterQueueState::Disconnected => {
@@ -972,10 +1015,15 @@ fn run_terminal(
                 continue;
             }
         }
-        let message = match messages.recv_timeout(RUNTIME_POLL_INTERVAL) {
+        let message = match messages.try_recv() {
             Ok(message) => message,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {
+                if controls_drained < MESSAGE_CAPACITY {
+                    wake.wait();
+                }
+                continue;
+            }
+            Err(TryRecvError::Disconnected) => break,
         };
         match message {
             RuntimeMessage::PtyOutput(bytes) => {
@@ -1111,7 +1159,6 @@ fn run_terminal(
                     }
                 }
             }
-            RuntimeMessage::Wake => {}
         }
     }
 
@@ -1131,9 +1178,11 @@ fn run_terminal(
             .collect();
     }
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
+    writer_cancel.cancel();
     drop(writer_sender);
     drop(master);
     drop(messages);
+    reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
     if pty::reap_child(child) {
@@ -1151,9 +1200,9 @@ fn run_terminal(
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
-    reader_waiter: pty::ReaderWaiter,
-    messages: SyncSender<RuntimeMessage>,
-    controls: Sender<RuntimeControl>,
+    reader_waiter: pty::ReadinessWaiter,
+    messages: crate::wake::SyncSender<RuntimeMessage>,
+    controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
@@ -1163,20 +1212,13 @@ fn spawn_reader(
             let mut pending = None;
             while !closing.load(Ordering::Acquire) {
                 if let Some(bytes) = pending.take() {
-                    match messages.try_send(RuntimeMessage::PtyOutput(bytes)) {
-                        Ok(()) => continue,
-                        Err(TrySendError::Full(RuntimeMessage::PtyOutput(
-                            bytes,
-                        ))) => {
-                            pending = Some(bytes);
-                            thread::sleep(RUNTIME_POLL_INTERVAL);
-                            continue;
-                        }
-                        Err(TrySendError::Disconnected(_)) => break,
-                        Err(TrySendError::Full(_)) => unreachable!(
-                            "reader only sends PTY output messages"
-                        ),
+                    // Teardown drops the receiver before joining this worker,
+                    // so bounded backpressure also has an explicit cancellation path.
+                    if messages.send(RuntimeMessage::PtyOutput(bytes)).is_err()
+                    {
+                        break;
                     }
+                    continue;
                 }
                 match reader.read(&mut buffer) {
                     Ok(0) => {
@@ -1189,9 +1231,7 @@ fn spawn_reader(
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        if let Err(error) =
-                            reader_waiter.wait(RUNTIME_POLL_INTERVAL)
-                        {
+                        if let Err(error) = reader_waiter.wait(None) {
                             let _ = controls.send(
                                 RuntimeControl::WorkerFailed(format!(
                                     "PTY readiness wait failed: {error}"
@@ -1241,11 +1281,28 @@ fn observe_child_exit(
     Ok(())
 }
 
+enum WriterReadiness {
+    Pty(pty::ReadinessWaiter),
+    #[cfg(test)]
+    Immediate,
+}
+
+impl WriterReadiness {
+    fn wait(&self) -> std::io::Result<()> {
+        match self {
+            Self::Pty(waiter) => waiter.wait(None),
+            #[cfg(test)]
+            Self::Immediate => Ok(()),
+        }
+    }
+}
+
 fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
-    messages: Receiver<WriterMessage>,
-    controls: Sender<RuntimeControl>,
+    readiness: WriterReadiness,
+    messages: async_channel::Receiver<WriterMessage>,
+    controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     input_closed: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
@@ -1257,11 +1314,12 @@ fn spawn_writer(
                 && !input_closed.load(Ordering::Acquire)
             {
                 if current.is_none() {
-                    current = match messages.recv_timeout(RUNTIME_POLL_INTERVAL)
-                    {
-                        Ok(WriterMessage::Write(bytes)) => Some((bytes, 0)),
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => break,
+                    current = match messages.recv_blocking() {
+                        Ok(WriterMessage::Write(bytes)) => {
+                            controls.wake.notify();
+                            Some((bytes, 0))
+                        }
+                        Err(_) => break,
                     };
                 }
                 if input_closed.load(Ordering::Acquire) {
@@ -1277,7 +1335,15 @@ fn spawn_writer(
                             if error.kind()
                                 == std::io::ErrorKind::WouldBlock =>
                         {
-                            thread::sleep(RUNTIME_POLL_INTERVAL);
+                            if let Err(error) = readiness.wait() {
+                                let message = format!(
+                                    "PTY write readiness wait failed: {error}"
+                                );
+                                let _ = controls.send(
+                                    RuntimeControl::WriterFailed(message),
+                                );
+                                break;
+                            }
                         }
                         Err(error) => {
                             let _ =
@@ -1300,7 +1366,14 @@ fn spawn_writer(
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        thread::sleep(RUNTIME_POLL_INTERVAL);
+                        if let Err(error) = readiness.wait() {
+                            let message = format!(
+                                "PTY write readiness wait failed: {error}"
+                            );
+                            let _ = controls
+                                .send(RuntimeControl::WriterFailed(message));
+                            break;
+                        }
                     }
                     Err(error) => {
                         let _ = controls.send(RuntimeControl::WriterFailed(
@@ -1317,7 +1390,7 @@ fn spawn_writer(
 fn handle_effect(
     effect: EngineEffect,
     terminal_id: TerminalId,
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
     events: &EventPublisher,
     metadata: &mut TerminalMetadata,
@@ -1373,7 +1446,7 @@ fn publish_metadata(
 
 fn queue_write(
     bytes: Vec<u8>,
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending: &mut VecDeque<Vec<u8>>,
 ) -> WriterQueueState {
     if !pending.is_empty() {
@@ -1382,11 +1455,13 @@ fn queue_write(
     }
     match writer.try_send(WriterMessage::Write(bytes)) {
         Ok(()) => WriterQueueState::Drained,
-        Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+        Err(async_channel::TrySendError::Full(WriterMessage::Write(bytes))) => {
             pending.push_back(bytes);
             WriterQueueState::Full
         }
-        Err(TrySendError::Disconnected(_)) => WriterQueueState::Disconnected,
+        Err(async_channel::TrySendError::Closed(_)) => {
+            WriterQueueState::Disconnected
+        }
     }
 }
 
@@ -1398,17 +1473,19 @@ enum WriterQueueState {
 }
 
 fn flush_pending_write(
-    writer: &SyncSender<WriterMessage>,
+    writer: &async_channel::Sender<WriterMessage>,
     pending: &mut VecDeque<Vec<u8>>,
 ) -> WriterQueueState {
     while let Some(bytes) = pending.pop_front() {
         match writer.try_send(WriterMessage::Write(bytes)) {
             Ok(()) => {}
-            Err(TrySendError::Full(WriterMessage::Write(bytes))) => {
+            Err(async_channel::TrySendError::Full(WriterMessage::Write(
+                bytes,
+            ))) => {
                 pending.push_front(bytes);
                 return WriterQueueState::Full;
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(async_channel::TrySendError::Closed(_)) => {
                 return WriterQueueState::Disconnected;
             }
         }
@@ -1425,32 +1502,6 @@ fn report_failure(
         terminal_id,
         message,
     });
-}
-
-/// Publishes lifecycle events and signals that a client should drain them.
-#[derive(Clone, Debug)]
-struct EventPublisher {
-    events: Sender<TerminalEvent>,
-    activity: async_channel::Sender<()>,
-}
-
-impl EventPublisher {
-    fn channel() -> (Self, Receiver<TerminalEvent>, async_channel::Receiver<()>)
-    {
-        let (events, receiver) = mpsc::channel();
-        let (activity, signal) = async_channel::bounded(1);
-        (Self { events, activity }, receiver, signal)
-    }
-
-    fn send(
-        &self,
-        event: TerminalEvent,
-    ) -> Result<(), mpsc::SendError<TerminalEvent>> {
-        self.events.send(event)?;
-        // A full signal already has a wake pending for this event.
-        let _ = self.activity.try_send(());
-        Ok(())
-    }
 }
 
 fn input_bytes(input: &TerminalInput) -> usize {
@@ -1609,14 +1660,11 @@ mod tests {
         .unwrap();
         let client = runtime.client();
         wait_for_text(&client, "READY");
-        let deadline = Instant::now() + Duration::from_secs(3);
         let mut changes = Vec::new();
-        while Instant::now() < deadline && changes.len() < 2 {
-            if let Some(TerminalEvent::MetadataChanged {
-                revision,
-                metadata,
-                ..
-            }) = client.try_recv_event().unwrap()
+        while let Some(event) = client.try_recv_event().unwrap() {
+            if let TerminalEvent::MetadataChanged {
+                revision, metadata, ..
+            } = event
             {
                 changes.push((
                     revision,
@@ -1624,17 +1672,11 @@ mod tests {
                         .directory()
                         .map(|directory| directory.path().to_owned()),
                 ));
-            } else {
-                thread::sleep(Duration::from_millis(2));
             }
         }
-        assert_eq!(
-            changes,
-            [
-                (1, Some("/tmp/one".to_owned())),
-                (2, Some("/tmp/two".to_owned()))
-            ]
-        );
+        // READY is parsed after all OSCs. Only the latest full replacement is
+        // pending, and the duplicate OSC did not advance its revision.
+        assert_eq!(changes, [(2, Some("/tmp/two".to_owned()))]);
         runtime.shutdown().unwrap();
     }
 
@@ -2231,7 +2273,9 @@ mod tests {
 
         assert!(activity.try_recv().is_ok());
         assert!(activity.try_recv().is_err(), "signals must coalesce");
-        assert_eq!(receiver.try_iter().count(), 2, "events must not");
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_err());
 
         events.send(TerminalEvent::Bell(id)).unwrap();
         assert!(activity.try_recv().is_ok(), "a drained signal re-arms");
@@ -2384,6 +2428,59 @@ mod tests {
     }
 
     #[test]
+    fn draining_dirty_notification_does_not_rearm_until_snapshot() {
+        fn title(client: &RuntimeClient, expected: &str) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if matches!(client.try_recv_event().unwrap(), Some(TerminalEvent::TitleChanged { title, .. }) if title == expected)
+                {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "missing title {expected}");
+                thread::yield_now();
+            }
+        }
+        fn invalidation(client: &RuntimeClient) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if matches!(
+                    client.try_recv_event().unwrap(),
+                    Some(TerminalEvent::Invalidated { .. })
+                ) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "missing invalidation");
+                thread::yield_now();
+            }
+        }
+        let runtime = TerminalRuntime::spawn(TerminalId::new(99), &command(
+            "stty -echo; printf READY; while IFS= read -r line; do printf '%s\\033]2;%s\\007' \"$line\" \"$line\"; done"
+        )).unwrap();
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        while client.try_recv_event().unwrap().is_some() {}
+        client
+            .send_input(TerminalInput::Text("one\n".into()))
+            .unwrap();
+        invalidation(&client);
+        client
+            .send_input(TerminalInput::Text("two\n".into()))
+            .unwrap();
+        title(&client, "two");
+        // This ordered control completes after the output that published the title.
+        client.job_context().unwrap();
+        while let Some(event) = client.try_recv_event().unwrap() {
+            assert!(!matches!(event, TerminalEvent::Invalidated { .. }));
+        }
+        client.read_snapshot().unwrap();
+        client
+            .send_input(TerminalInput::Text("three\n".into()))
+            .unwrap();
+        invalidation(&client);
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
     fn invalidation_should_coalesce_until_client_consumes_it() {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(14),
@@ -2470,7 +2567,7 @@ mod tests {
 
     #[test]
     fn pending_writer_spill_should_drain_fifo_until_full() {
-        let (sender, receiver) = mpsc::sync_channel(2);
+        let (sender, receiver) = async_channel::bounded(2);
         let mut pending = VecDeque::from([
             b"one".to_vec(),
             b"two".to_vec(),
@@ -2493,6 +2590,57 @@ mod tests {
             WriterQueueState::Drained
         );
         assert_eq!(receive(), b"three".to_vec());
+    }
+
+    #[test]
+    fn idle_writer_closes_without_an_input_message() {
+        struct IdleWriter {
+            started: Sender<()>,
+            dropped: Sender<()>,
+        }
+        impl Write for IdleWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                panic!("idle writer must not receive input");
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.started.send(()).unwrap();
+                Ok(())
+            }
+        }
+        impl Drop for IdleWriter {
+            fn drop(&mut self) {
+                let _ = self.dropped.send(());
+            }
+        }
+        let (dropped, observed) = mpsc::channel();
+        let (started, ready) = mpsc::channel();
+        let (sender, receiver) = async_channel::bounded(1);
+        let (controls, _control_receiver) = mpsc::channel();
+        let controls = crate::wake::Sender::new(
+            controls,
+            Arc::new(crate::wake::Wake::default()),
+        );
+        let input_closed = Arc::new(AtomicBool::new(false));
+        let worker = spawn_writer(
+            TerminalId::new(19),
+            Box::new(IdleWriter { started, dropped }),
+            WriterReadiness::Immediate,
+            receiver,
+            controls,
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&input_closed),
+        )
+        .unwrap();
+        sender
+            .send_blocking(WriterMessage::Write(Vec::new()))
+            .unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        input_closed.store(true, Ordering::Release);
+        sender.close();
+        observed.recv_timeout(Duration::from_secs(2)).expect(
+            "idle writer did not release its descriptor on input closure",
+        );
+        worker.join().unwrap();
     }
 
     #[derive(Debug)]
@@ -2529,12 +2677,17 @@ mod tests {
             bytes: Arc::clone(&bytes),
             block_next: false,
         };
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = async_channel::bounded(1);
         let (controls, _control_receiver) = mpsc::channel();
+        let controls = crate::wake::Sender::new(
+            controls,
+            Arc::new(crate::wake::Wake::default()),
+        );
         let closing = Arc::new(AtomicBool::new(false));
         let join = spawn_writer(
             TerminalId::new(18),
             Box::new(writer),
+            WriterReadiness::Immediate,
             receiver,
             controls,
             Arc::clone(&closing),
@@ -2542,7 +2695,7 @@ mod tests {
         )
         .expect("writer worker should start");
         sender
-            .send(WriterMessage::Write(b"abcdef".to_vec()))
+            .send_blocking(WriterMessage::Write(b"abcdef".to_vec()))
             .expect("write should queue");
 
         let deadline = Instant::now() + Duration::from_secs(1);

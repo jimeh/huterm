@@ -16,6 +16,8 @@ pub(crate) mod presentation_query_smoke;
 pub(crate) mod quake_smoke;
 #[path = "quake_windows.rs"]
 mod quake_windows;
+#[path = "refresh_smoke.rs"]
+pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
@@ -1277,10 +1279,19 @@ fn open_window_with_profile(
             return;
         }
     };
+    let display_id = match crate::benchmark_display::selected(cx) {
+        Ok(display) => display,
+        Err(error) => {
+            report_deferred_failure(cx, reporter, error.to_string());
+            maybe_exit(cx);
+            return;
+        }
+    };
     let bounds =
-        Bounds::centered(None, initial_window_size(&config, metrics), cx);
+        Bounds::centered(display_id, initial_window_size(&config, metrics), cx);
     let result = cx.open_window(
         WindowOptions {
+            display_id,
             show: profile.is_none(),
             focus: profile.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1294,6 +1305,9 @@ fn open_window_with_profile(
             ..WindowOptions::default()
         },
         |window, cx| {
+            if let Some(display) = display_id {
+                crate::benchmark_display::observe(window, cx, display);
+            }
             let scaled_metrics = metrics.at_scale(window.scale_factor());
             if scaled_metrics != metrics {
                 window.resize(initial_window_size(&config, scaled_metrics));
@@ -1311,7 +1325,9 @@ fn open_window_with_profile(
                 .inspect_err(|error| eprintln!("Quake creation: {error}"))
                 .ok()
             });
+            let frame_clock = refresh::FrameClock::new(window);
             let view = cx.new(|cx| WorkspaceView {
+                frame_clock,
                 quake,
                 attachment: None,
                 bounds: window.window_bounds(),
@@ -1400,31 +1416,9 @@ fn open_window_with_profile(
                                 {
                                     cx.notify();
                                 }
-                                let mut metadata_changed = false;
                                 for tab in &view.tabs {
                                     tab.view.update(cx, |terminal, cx| {
-                                        let previous = (
-                                            terminal.title.clone(),
-                                            terminal.exited,
-                                            terminal.failed,
-                                            terminal.metadata_revision,
-                                            terminal.bell.unseen,
-                                        );
-                                        terminal.refresh(window, cx);
-                                        view.exited_tabs.observe(
-                                            tab.id,
-                                            previous.1,
-                                            terminal.exited,
-                                            view.config.terminal.close_on_exit,
-                                        );
-                                        metadata_changed |= previous
-                                            != (
-                                                terminal.title.clone(),
-                                                terminal.exited,
-                                                terminal.failed,
-                                                terminal.metadata_revision,
-                                                terminal.bell.unseen,
-                                            );
+                                        terminal.advance_presentation(cx);
                                     });
                                 }
                                 view.resume_close(window, cx);
@@ -1433,9 +1427,6 @@ fn open_window_with_profile(
                                     palette.update(cx, |palette, cx| {
                                         palette.advance(Instant::now(), cx);
                                     });
-                                }
-                                if metadata_changed {
-                                    cx.notify();
                                 }
                             });
                         })
@@ -1463,6 +1454,7 @@ struct TabView {
     id: TabId,
     record: huterm_core::Tab,
     view: Entity<TerminalView>,
+    _activity_task: Task<()>,
 }
 
 impl TabView {
@@ -1535,6 +1527,7 @@ fn resolve_tab_label(
 }
 
 struct WorkspaceView {
+    frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
@@ -2353,6 +2346,32 @@ impl WorkspaceView {
             .map(|tab| tab.view.clone())
     }
 
+    fn refresh_tab(
+        &mut self,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<bool> {
+        let tab = self.tabs.iter().find(|tab| tab.id == tab_id)?;
+        let result = tab
+            .view
+            .update(cx, |terminal, cx| terminal.refresh(window, cx));
+        if result.exited {
+            self.exited_tabs.observe(
+                tab_id,
+                false,
+                true,
+                self.config.terminal.close_on_exit,
+            );
+        }
+        if result.changed {
+            cx.notify();
+        }
+        self.resume_close(window, cx);
+        self.refresh_palette(cx);
+        Some(result.more)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "asynchronous tab creation owns publication and orphan cleanup"
@@ -2431,10 +2450,12 @@ impl WorkspaceView {
                                     .clipboard_write
                                     .is_allowed(),
                             );
+                            let activity_client = opened.client.clone();
                             let terminal = cx.new(|cx| {
                                 TerminalView::new(
                                     opened.client,
                                     authority,
+                                    Rc::clone(&view.frame_clock),
                                     &view.config,
                                     view.family.clone(),
                                     view.metrics
@@ -2444,10 +2465,54 @@ impl WorkspaceView {
                                 )
                             });
                             let tab_id = opened.tab.id;
+                            let activity_probe =
+                                refresh_smoke::ActivityProbe::new(tab_id, cx);
+                            let activity_task =
+                                cx.spawn_in(window, async move |view, cx| {
+                                    loop {
+                                        if let Some(probe) = &activity_probe {
+                                            probe.waiting(true);
+                                        }
+                                        let stopped = activity_client
+                                            .wait_for_activity()
+                                            .await
+                                            .is_err();
+                                        if let Some(probe) = &activity_probe {
+                                            probe.waiting(false);
+                                        }
+                                        loop {
+                                            let more = view.update_in(
+                                                cx,
+                                                |view, window, cx| {
+                                                    view.refresh_tab(
+                                                        tab_id, window, cx,
+                                                    )
+                                                },
+                                            );
+                                            match more {
+                                                Ok(Some(true)) => {
+                                                    cx.background_executor()
+                                                        .timer(Duration::from_millis(1))
+                                                        .await;
+                                                }
+                                                Ok(Some(false)) => break,
+                                                _ => return,
+                                            }
+                                        }
+                                        if stopped {
+                                            return;
+                                        }
+                                        // Bound metadata floods independently of frame delivery.
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(1))
+                                            .await;
+                                    }
+                                });
                             view.tabs.push(TabView {
                                 id: tab_id,
                                 record: opened.tab,
                                 view: terminal,
+                                _activity_task: activity_task,
                             });
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
@@ -6291,13 +6356,24 @@ mod tests {
 
     #[test]
     fn hidden_tabs_coalesce_invalidations_without_requesting_snapshots() {
+        use huterm_config::RefreshMode;
+
+        let mut pacer = super::super::refresh::SnapshotPacer::default();
         let mut scroll = ScrollController::default();
         for _ in 0..100 {
             scroll.invalidate();
-            assert!(begin_visible_snapshot(&mut scroll, false).is_none());
+            assert!(
+                pacer
+                    .begin(&mut scroll, false, RefreshMode::Display)
+                    .is_none()
+            );
         }
         assert_eq!(scroll.diagnostics().requests_started, 0);
-        assert!(begin_visible_snapshot(&mut scroll, true).is_some());
+        assert!(
+            pacer
+                .begin(&mut scroll, true, RefreshMode::Display)
+                .is_some()
+        );
         assert_eq!(scroll.diagnostics().requests_started, 1);
     }
 

@@ -29,6 +29,7 @@ pub struct KeybindingEntry {
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
     pub close_on_exit: bool,
+    pub refresh: RefreshMode,
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
     pub clipboard_write: ClipboardWritePolicy,
@@ -42,6 +43,7 @@ impl Default for TerminalConfig {
         Self {
             term: TerminalIdentity::Auto,
             close_on_exit: true,
+            refresh: RefreshMode::default(),
             new_tab_directory: NewTabDirectory::Inherit,
             bell: BellConfig::default(),
             clipboard_write: ClipboardWritePolicy::Allow,
@@ -50,6 +52,21 @@ impl Default for TerminalConfig {
             macos_option_as_alt: MacosOptionAsAlt::Off,
         }
     }
+}
+
+/// Client-side terminal snapshot admission policy.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum RefreshMode {
+    /// Admit one snapshot per delivered display frame, plus at most one extra
+    /// snapshot for pending viewport changes.
+    #[default]
+    Display,
+    /// Admit another dirty snapshot as soon as its predecessor completes.
+    Unlimited,
 }
 
 /// Working-directory policy for newly opened tabs.
@@ -799,6 +816,7 @@ pub struct RawTerminal {
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub close_on_exit: bool,
+    pub refresh: RefreshMode,
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
     pub macos_option_as_alt: MacosOptionAsAlt,
@@ -812,6 +830,7 @@ impl Default for RawTerminal {
             links: true,
             link_modifiers: LinkModifiers::default(),
             close_on_exit: TerminalConfig::default().close_on_exit,
+            refresh: RefreshMode::default(),
             new_tab_directory: NewTabDirectory::Inherit,
             bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,

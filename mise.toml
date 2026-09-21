@@ -1052,3 +1052,15 @@ run = "cargo run --locked -p huterm-config --features schema --bin huterm-schema
 description = "Verify command completion and argument diagnostics with installed Taplo"
 depends = ["schema:check"]
 run = "bun scripts/smoke-schema-editor.ts"
+
+[tasks."smoke:macos-refresh"]
+depends = ["ghostty:prepare"]
+description = "Verify native frame stop/resume and silent tab activity cancellation"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native refresh smoke requires macOS" >&2
+  exit 1
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example refresh_smoke
+bun scripts/check-refresh-smoke.ts target/debug/examples/refresh_smoke
+'''

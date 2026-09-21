@@ -2,9 +2,12 @@
 
 #![deny(missing_docs)]
 
+#[cfg(unix)]
+mod child_wait;
 mod commands;
 pub use commands::execute;
 mod engine;
+mod events;
 mod host_effects;
 mod input;
 mod jobs;
@@ -19,6 +22,7 @@ mod mux;
 mod presentation;
 mod pty;
 mod terminal;
+mod wake;
 
 pub use mux::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket,

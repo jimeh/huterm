@@ -40,6 +40,12 @@ Keep view destruction and detachment separate from explicit close.
   instead of sleeping before every retry. Use `filedescriptor` for this wait:
   its macOS implementation avoids the platform's unreliable PTY `poll(2)` by
   using `select(2)`.
+- Runtime data and priority controls share a coalesced wake; keep control drains
+  bounded so output cannot starve. Writer dequeue signals capacity. Unix PTY
+  readiness waits include cancellation descriptors; signal them and drop the
+  data receiver before joining workers. The child waiter owns the physical
+  child without holding a shared lock across `wait`; bounded teardown uses its
+  cached-status proxy. Never join it before signalling and closing PTY handles.
 
 ## Commands
 
@@ -308,14 +314,22 @@ send directly to their own runtime, so sibling input and snapshots continue
 while another workspace spawns or closes. TerminalView destruction only detaches;
 window commands use assessed attachment close to detach or delete the final
 view's session.
-Use one refresh pump per window to drain bounded batches of tab events. Only the
-active tab may begin a snapshot request. A visible TerminalView also starts a
-snapshot when its runtime signals activity, paced to the leading edge so
-sustained output stays with the pump. That path must not drain terminal events:
-the pump compares each tab's title and exit state around its own drain, so
-events consumed elsewhere leave the tab bar stale and miss close-on-exit. Do not
-skip a pump invalidation by comparing generations; presentation updates
-invalidate without advancing the content generation. Keep ChromeLayout as the
+Each tab owns one cancellable activity task that drains bounded terminal-event
+and host-effect batches through its WorkspaceView. The presentation pump must
+not also drain events. Pending titles, metadata, invalidations, and bells coalesce;
+lifecycle transitions stay observable under a flood. Budget exhaustion schedules
+a continuation without waiting for another producer wake. Host-effect admission
+signals the same activity channel through a weak sender so it cannot keep a
+stopped runtime's waiter alive. Rearm invalidation on the runtime owner thread
+when constructing a snapshot, not when draining its notification, so hidden or
+frame-blocked views do not wake for every output chunk. Only visible terminal
+views request snapshots. All request paths pass the shared admission gate; one
+weak callback per window replenishes per-view frame allowances. It does not
+request idle redraws. Keep in-flight scroll and dirtiness separate from frame
+allowance, including on config reload and snapshot completion.
+Do not suppress invalidation by comparing content generations: presentation
+updates invalidate without advancing the content generation. Keep ChromeLayout
+as the
 shared source of terminal bounds for painting, mouse input, scrollbars, and PTY
 resizing.
 GPUI close callbacks must return false while asynchronous checks and cleanup run.

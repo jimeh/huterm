@@ -72,6 +72,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
         );
     };
     crate::assets::application().run(move |cx| {
+        let display_id = crate::benchmark_display::selected(cx)
+            .expect("select benchmark display");
         let metrics =
             GridMetrics::resolve(cx.text_system(), family(), px(FONT_SIZE))
                 .expect("benchmark font");
@@ -83,6 +85,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         );
         cx.open_window(
             WindowOptions {
+                display_id,
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     point(px(20.0), px(40.0)),
                     grid,
@@ -90,6 +93,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 ..WindowOptions::default()
             },
             |window, cx| {
+                if let Some(display) = display_id {
+                    crate::benchmark_display::verify(window, cx, display);
+                }
                 window.set_window_title("Huterm renderer benchmark");
                 let fixture = Fixture::new(scenario, window, cx);
                 cx.new(|_| fixture)
@@ -408,6 +414,7 @@ struct State {
     prepares: Prepares,
     paints: Vec<Duration>,
     finished: bool,
+    frames: crate::benchmark_display::FrameIntervals,
 }
 
 struct Fixture {
@@ -437,6 +444,7 @@ impl Fixture {
                 prepares: Prepares::default(),
                 paints: Vec::new(),
                 finished: false,
+                frames: crate::benchmark_display::FrameIntervals::default(),
             })),
         }
     }
@@ -450,6 +458,7 @@ impl Render for Fixture {
     ) -> impl IntoElement {
         let metrics = {
             let mut state = self.state.borrow_mut();
+            state.frames.tick();
             let metrics =
                 state.renderer.metrics.at_scale(window.scale_factor());
             if metrics != state.renderer.metrics {
@@ -501,6 +510,9 @@ impl Render for Fixture {
                             return;
                         }
                         state.finished = true;
+                        if let Some(display) = window.display(cx) {
+                            state.frames.report("renderer", display.id());
+                        }
                         report_paint(&state);
                         println!(
                             "RENDERER_BENCH scenario={} phase=window elapsed_ms={} grid={COLUMNS}x{ROWS} grid_px={}x{} viewport_px={}x{} scale={} fits={fits}",
