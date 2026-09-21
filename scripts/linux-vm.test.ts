@@ -107,7 +107,11 @@ describe("Linux VM runner", () => {
     // The session already matches, so the VM is not restarted into another one.
     expect(calls.some((args) => args.includes("set-session"))).toBe(false);
     expect(calls).toContainEqual(["exec", vm, "/bin/sh", "/mnt/shared/huterm/guest.sh", "run", "true"]);
-    expect(calls).toContainEqual(["stop", "--timeout", "10", vm]);
+    // Guest writes must be flushed before the VM stops, or kept state is lost.
+    const flushed = calls.findIndex((args) => JSON.stringify(args) === JSON.stringify(["exec", vm, "sync"]));
+    const stopped = calls.findIndex((args) => JSON.stringify(args) === JSON.stringify(["stop", "--timeout", "30", vm]));
+    expect(flushed).toBeGreaterThanOrEqual(0);
+    expect(stopped).toBeGreaterThan(flushed);
     expect(fake.vms()).toEqual([image, vm]);
   });
 

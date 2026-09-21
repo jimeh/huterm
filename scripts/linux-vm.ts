@@ -319,7 +319,12 @@ async function main(args: string[]): Promise<number> {
       // Leave the VM running for commands that started while this one ran.
       const exclusive = tryLock(activePath);
       if (exclusive) {
-        try { await machine.stop(10); } finally { exclusive(); }
+        try {
+          // Stopping without flushing loses recent guest writes, which this
+          // kept VM is supposed to retain.
+          capture(["tart", "exec", name, "sync"], false);
+          await machine.stop(30);
+        } finally { exclusive(); }
       } else {
         machine.detach();
       }

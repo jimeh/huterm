@@ -30,3 +30,7 @@ cd "$tools"
 /usr/local/bin/mise trust --quiet "$tools/mise.toml"
 MISE_YES=1 /usr/local/bin/mise install bun
 /usr/local/bin/mise exec bun -- bun --version
+
+# The image is published as soon as this exits, and the VM is stopped without
+# waiting for writeback, so late provisioning writes would otherwise be lost.
+sudo sync

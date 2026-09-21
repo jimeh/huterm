@@ -152,18 +152,22 @@ mise run vm:macos:clean
 `ci:smoke:run`, or the named `HUTERM_CI_SMOKE_STEP`, in a headless guest.
 `vm:macos:exec` runs a command against whatever host outputs already exist and
 does not build. `vm:macos:dev` builds `target/debug/huterm`, opens a Tart
-window, and streams the app's output to the host terminal; quitting Huterm or
-closing the window removes the VM.
+window, and streams the app's output to the host terminal. Quitting Huterm or
+closing the window stops that VM but keeps it, like the Linux one, so anything
+installed or configured in it survives. One dev session runs per worktree at a
+time.
 
 The first run pulls the digest-pinned Cirrus Labs macOS 27 base image (about
 33 GB) and provisions a local `huterm-macos-<hash>` image with pinned Mise,
 Bun from `mise.lock`, and tmux. The hash covers the base image,
-`scripts/macos-vm/provision.sh`, and `mise.lock`. Each run clones that image
-through APFS copy-on-write, shares the checkout read-only, copies the sources
-and host-built runtime outputs into the guest, and deletes the clone
-afterwards. Expect about 35 seconds of overhead per run. The guest never
-compiles, so its macOS version must satisfy host-built binaries: Swift
-witnesses built with Xcode 27 require macOS 27.
+`scripts/macos-vm/provision.sh`, and `mise.lock`. Every run clones that image
+through APFS copy-on-write, shares the checkout read-only, and copies the
+sources and host-built runtime outputs into the guest. Smokes and `exec` delete
+their clone afterwards; `dev` keeps `huterm-macos-vm-<hash>` for next time. A
+kept dev VM still uses the image it was cloned from, so remove it with
+`vm:macos:clean` to pick up a newer one. Expect about 35 seconds of overhead
+per run. The guest never compiles, so its macOS version must satisfy host-built
+binaries: Swift witnesses built with Xcode 27 require macOS 27.
 
 Virtualization.framework runs at most two macOS guests per host. The runner
 queues for one of two slots, shared by every worktree, and waits up to 30
@@ -171,8 +175,8 @@ minutes. macOS VMs started outside these tasks, including other Tart, UTM, or
 Parallels guests, also count toward the limit; Tart then fails with "The
 number of VMs exceeds the system limit".
 
-`vm:macos:clean` removes provisioned images and leftover run VMs once no run
-holds a slot. The base image stays cached; remove it with
+`vm:macos:clean` removes provisioned images, kept dev VMs, and leftover run VMs
+once no run holds a slot. The base image stays cached; remove it with
 `tart delete <image>` using the reference printed by the task. The guest has
 one 1280x800 display without a notch, and paravirtualized Metal, so keep
 benchmarks, notch and safe-area checks, and multi-display QA on real hardware.

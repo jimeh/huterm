@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { BASE_IMAGE, argumentsFor, imageName, runName, tryLock } from "./macos-vm";
+import { BASE_IMAGE, argumentsFor, imageName, runName, tryLock, vmName } from "./macos-vm";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 const root = resolve(import.meta.dir, "..");
 const image = imageName(root);
+const vm = vmName(root);
 const macos = process.platform === "darwin" && process.arch === "arm64";
 
 function fixture(overrides: Record<string, string> = {}) {
@@ -33,14 +34,22 @@ switch (args[0]) {
   case 'clone': save([...names(), args[2]]); break;
   case 'rename': save(names().map((name) => name === args[1] ? args[2] : name)); break;
   case 'delete': if (!names().includes(args[1])) process.exit(1); save(names().filter((name) => name !== args[1])); break;
-  case 'stop': writeFileSync(marker(args.at(-1)), ''); break;
+  case 'stop':
+    rmSync(env.TART_TEST_VMS + '.' + args.at(-1) + '.booted', { force: true });
+    writeFileSync(marker(args.at(-1)), '');
+    break;
   case 'run':
     rmSync(marker(args[1]), { force: true });
+    writeFileSync(env.TART_TEST_VMS + '.' + args[1] + '.booted', '');
     while (!existsSync(marker(args[1]))) await Bun.sleep(20);
     break;
   case 'exec': {
-    const action = args.includes('true') && args.length === 3 ? 'ready'
-      : args.some((arg) => arg.endsWith('provision.sh')) ? 'provision' : args[3]?.endsWith('guest.sh') ? args[4] : 'unknown';
+    // A VM answers its guest agent only once started, unless the fixture
+    // declares it already running.
+    if (args.includes('true') && args.length === 3) {
+      process.exit(env.TART_TEST_RUNNING === args[1] || existsSync(env.TART_TEST_VMS + '.' + args[1] + '.booted') ? 0 : 1);
+    }
+    const action = args.some((arg) => arg.endsWith('provision.sh')) ? 'provision' : args[3]?.endsWith('guest.sh') ? args[4] : 'unknown';
     process.exit(Number(env['TART_TEST_' + action.toUpperCase() + '_EXIT'] || 0));
   }
 }
@@ -115,6 +124,34 @@ describe("macOS VM runner", () => {
     } finally { release(); }
     expect(vm.calls().some((args) => args[0] === "clone" && args[2] === runName(0))).toBe(false);
     expect(vm.calls()).toContainEqual(["clone", image, runName(1)]);
+  });
+
+  test.skipIf(!macos)("dev keeps its per-worktree VM instead of deleting it", () => {
+    const fake = fixture();
+    fake.seed(image);
+    expect(fake.run("dev").exitCode).toBe(0);
+    const calls = fake.calls();
+    expect(calls).toContainEqual(["clone", image, vm]);
+    expect(calls.some((args) => args[0] === "clone" && args[2]?.startsWith("huterm-macos-run-"))).toBe(false);
+    // A window is needed for interactive use, unlike the headless smoke runs.
+    expect(calls.find((args) => args[0] === "run" && args[1] === vm)).not.toContain("--no-graphics");
+    // Guest writes must be flushed before the VM stops, or kept state is lost.
+    const flushed = calls.findIndex((args) => JSON.stringify(args) === JSON.stringify(["exec", vm, "sync"]));
+    const stopped = calls.findIndex((args) => JSON.stringify(args) === JSON.stringify(["stop", "--timeout", "60", vm]));
+    expect(flushed).toBeGreaterThanOrEqual(0);
+    expect(stopped).toBeGreaterThan(flushed);
+    expect(calls.some((args) => args[0] === "delete" && args[1] === vm)).toBe(false);
+    expect(fake.vms()).toEqual([image, vm]);
+  });
+
+  test.skipIf(!macos)("a second dev run reuses the existing VM without cloning it", () => {
+    const fake = fixture({ TART_TEST_RUNNING: vm });
+    fake.seed(image, vm);
+    expect(fake.run("dev").exitCode).toBe(0);
+    const calls = fake.calls();
+    expect(calls.some((args) => args[0] === "clone")).toBe(false);
+    expect(calls.some((args) => args[0] === "run")).toBe(false);
+    expect(fake.vms()).toEqual([image, vm]);
   });
 
   test.skipIf(!macos)("clean removes only Huterm VMs and refuses while a run holds a slot", () => {

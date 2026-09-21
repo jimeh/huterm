@@ -48,6 +48,10 @@ export function imageName(root: string): string {
 
 export const runName = (slot: number) => `huterm-macos-run-${slot}`;
 
+/** Each worktree keeps its own dev VM so installed state survives between runs. */
+export const vmName = (root: string) =>
+  `huterm-macos-vm-${createHash("sha256").update(root).digest("hex").slice(0, 16)}`;
+
 function stateDirectory(): string {
   const directory = process.env.HUTERM_MACOS_VM_STATE ?? join(homedir(), "Library/Caches/huterm-macos-vm");
   mkdirSync(directory, { recursive: true });
@@ -109,6 +113,9 @@ async function run(args: string[]): Promise<number> {
   return interrupted || status;
 }
 
+const guestReady = (name: string) =>
+  Bun.spawnSync(["tart", "exec", name, "true"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+
 /** A VM runs until stopped; its `tart run` process owns the guest lifetime. */
 class Machine {
   private process: ReturnType<typeof Bun.spawn>;
@@ -125,7 +132,7 @@ class Machine {
 
   async ready(): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_MS;
-    while (Bun.spawnSync(["tart", "exec", this.name, "true"], { stdout: "ignore", stderr: "ignore" }).exitCode !== 0) {
+    while (!guestReady(this.name)) {
       if (interrupted) throw new Error("interrupted");
       if (this.exited) throw new Error(`tart run ${this.name} exited with status ${await this.exit} before the guest agent answered`);
       if (Date.now() > deadline) throw new Error(`guest agent in ${this.name} did not answer within ${READY_TIMEOUT_MS / 1000}s`);
@@ -204,7 +211,7 @@ async function clean(state: string): Promise<number> {
 
 async function main(args: string[]): Promise<number> {
   if (args[0] === "--help" || args[1] === "--help") {
-    console.log("Usage: mise run vm:macos:{smoke [step],exec -- <command ...>,dev,clean}\nRuns host-built binaries in a disposable headless Tart VM; dev opens a VM window running target/debug/huterm.");
+  console.log("Usage: mise run vm:macos:{smoke [step],exec -- <command ...>,dev,clean}\nSmokes and exec use a disposable headless VM; dev runs target/debug/huterm in this worktree's persistent VM window.");
     return 0;
   }
   const options = argumentsFor(args);
@@ -225,26 +232,50 @@ async function main(args: string[]): Promise<number> {
   process.on("SIGINT", onInterrupt);
   process.on("SIGTERM", onTerminate);
   let slot: { index: number; release: () => void } | undefined;
+  let session: { release: () => void } | undefined;
+  // Smokes want a clean guest every run; a dev VM keeps whatever was installed
+  // or configured in it, like the Linux one.
+  const persistent = options.mode === "dev";
+  const name = persistent ? vmName(root) : undefined;
   try {
     const image = await ensureImage(root, state);
+    if (persistent) {
+      // One dev session per worktree: a second would stop the first one's VM.
+      session = await waitForLock([join(state, `${name}.lock`)], "this worktree's dev VM");
+    }
     slot = await waitForLock([...Array(SLOTS).keys()].map((index) => join(state, `slot-${index}.lock`)), `one of ${SLOTS} macOS VM slots`);
-    const name = runName(slot.index);
-    discard(name);
-    capture(["clone", image, name]);
+    const target = name ?? runName(slot.index);
+    if (persistent) {
+      // tart get fails while a VM runs, so an answering guest agent also counts.
+      if (capture(["get", target], false) === undefined && !guestReady(target)) {
+        capture(["clone", image, target]);
+      }
+    } else {
+      discard(target);
+      capture(["clone", image, target]);
+    }
     try {
-      machine = new Machine(name, root, options.graphics);
-      await machine.ready();
-      let status = await run(["exec", name, "/bin/sh", GUEST, "stage"]);
+      if (!guestReady(target)) {
+        machine = new Machine(target, root, options.graphics);
+        await machine.ready();
+      }
+      let status = await run(["exec", target, "/bin/sh", GUEST, "stage"]);
       if (status !== 0) return status;
-      console.log(`macOS VM ${name}: ${options.command.join(" ")}`);
-      status = await run(["exec", name, "/bin/sh", GUEST, "exec", ...options.command]);
+      console.log(`macOS VM ${target}: ${options.command.join(" ")}`);
+      status = await run(["exec", target, "/bin/sh", GUEST, "exec", ...options.command]);
       return status;
     } finally {
-      await machine?.stop(2);
-      capture(["delete", name], false);
+      if (persistent) {
+        // Stopping without flushing loses recent guest writes, which a kept VM
+        // is supposed to retain. Disposable clones are deleted regardless.
+        capture(["exec", target, "sync"], false);
+      }
+      await machine?.stop(persistent ? 60 : 2);
+      if (!persistent) capture(["delete", target], false);
     }
   } finally {
     slot?.release();
+    session?.release();
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);
   }

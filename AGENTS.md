@@ -78,7 +78,8 @@ Run `mise tasks` to discover the full task set.
   `Huterm.app`; `package:macos-release` is the updater-enabled release input.
 - `mise run vm:macos:smoke` runs the macOS desktop smokes in a disposable
   headless Tart VM so they do not take over the host display; `vm:macos:dev`
-  runs a dev build in a VM window. See the development guide.
+  runs a dev build in this worktree's persistent VM window. See the development
+  guide.
 - `mise run vm:linux:dev` runs a container-built Linux binary in a GNOME desktop
   Tart VM for manual QA; `vm:linux:dev:x11` selects Xorg over Wayland. Docker
   remains the path for Linux tests and smokes. See the development guide.
@@ -792,6 +793,11 @@ disk is running, so run lifecycles must not depend on them. Background
 processes started through `tart exec` die when exec returns; keep guest
 commands in the foreground. Virtualization.framework refuses a third running
 macOS guest, so runs share two host-wide slot locks.
+Smokes and `exec` use disposable clones; `dev` keeps a per-worktree VM. Flush a
+kept guest with `tart exec <vm> sync` before stopping it, or recent writes are
+lost. `tart clone` onto an existing name silently replaces that VM, so guard
+reuse with `tart get`. Changing the provisioning inputs renames the image and
+leaves the previous one on disk until `vm:{macos,linux}:clean` removes it.
 
 Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
 GNOME aborts its Wayland session with "No GSettings schemas are installed"
