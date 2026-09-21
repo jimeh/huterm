@@ -47,6 +47,9 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
+      - name: Remove cached GPUI instrumentation
+        run: mise exec -- cargo clean --release -p gpui
+
       - name: Measure PR head
         continue-on-error: true
         run: mise run bench:scroll
@@ -68,15 +71,13 @@ jobs:
           cd "$RUNNER_TEMP/huterm-baseline"
           mise run bench:scroll
 
-      - name: Instrument GPUI in this disposable runner
-        run: |
-          mise exec -- python3 scripts/trace-frame-loop.py
-          mise exec -- cargo clean --release -p gpui
+      - name: Apply bounded scroll admission probe
+        run: mise exec -- python3 scripts/probe-scroll-admission.py
 
-      - name: Trace original PR frame loop
+      - name: Measure bounded scroll admission
         continue-on-error: true
-        run: HUTERM_FRAME_TRACE=1 mise run bench:scroll
+        run: mise run bench:scroll
 
-      - name: Repeat original PR frame loop trace
+      - name: Repeat bounded scroll admission
         continue-on-error: true
-        run: HUTERM_FRAME_TRACE=1 mise run bench:scroll
+        run: mise run bench:scroll
