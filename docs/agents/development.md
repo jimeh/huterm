@@ -142,7 +142,7 @@ tasks sit alongside the host `smoke:macos-*` tasks and do not replace them.
 ```sh
 mise run vm:macos:smoke
 mise run vm:macos:smoke -- macos-quake
-mise run vm:macos:exec -- \
+mise run vm:macos:exec -- mise exec -- \
   bun scripts/check-palette.ts target/debug/examples/palette_smoke
 mise run vm:macos:dev
 mise run vm:macos:clean
@@ -151,8 +151,10 @@ mise run vm:macos:clean
 `vm:macos:smoke` builds the CI smoke binaries on the host, then runs
 `ci:smoke:run`, or the named `HUTERM_CI_SMOKE_STEP`, in a headless guest.
 `vm:macos:exec` runs a command against whatever host outputs already exist and
-does not build. `vm:macos:dev` builds `target/debug/huterm`, opens a Tart
-window, and streams the app's output to the host terminal.
+does not build. Use `mise exec --` inside the guest command for managed tools
+such as Bun; raw `exec` does not activate their paths. `vm:macos:dev` builds
+`target/debug/huterm`, opens a Tart window, and streams the app's output to the
+host terminal.
 
 `dev` then stays in charge of that instance so an edit costs a rebuild instead
 of another boot. Press `r` to rebuild and replace the running app, `w` to

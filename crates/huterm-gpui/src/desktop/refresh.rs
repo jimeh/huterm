@@ -1,13 +1,16 @@
-//! One frame registration per window, shared by all terminal views.
+//! One frame registration and earliest animation deadline per window.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
-use gpui::{AnyWindowHandle, App, WeakEntity, Window};
+use gpui::{AnyWindowHandle, App, Context, EntityId, Task, WeakEntity, Window};
+
 use huterm_config::RefreshMode;
 use huterm_protocol::Viewport;
 
 use crate::scroll::ScrollController;
+use crate::ui::animation::AnimationSchedule;
 
 use super::TerminalView;
 
@@ -65,10 +68,41 @@ impl SnapshotPacer {
     }
 }
 
+pub(super) trait Animated: Sized + 'static {
+    fn animation_schedule(&self, now: Instant) -> AnimationSchedule;
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    );
+}
+
+type AnimationTick =
+    Rc<dyn Fn(Instant, &mut Window, &mut App) -> AnimationSchedule>;
+
+struct Animation {
+    id: EntityId,
+    schedule: AnimationSchedule,
+    tick: AnimationTick,
+}
+
+// Counts owned native/deferred frame callbacks, independently of timer weak refs.
+struct PendingFrame(Rc<Cell<usize>>);
+impl Drop for PendingFrame {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
 pub(super) struct FrameClock {
     window: AnyWindowHandle,
     registered: Cell<bool>,
+    frame_callbacks: Rc<Cell<usize>>,
     waiting: RefCell<Vec<WeakEntity<TerminalView>>>,
+    animations: RefCell<Vec<Animation>>,
+    deadline: Cell<Option<Instant>>,
+    timer: RefCell<Option<Task<()>>>,
 }
 
 impl FrameClock {
@@ -76,8 +110,81 @@ impl FrameClock {
         Rc::new(Self {
             window: window.window_handle(),
             registered: Cell::new(false),
+            frame_callbacks: Rc::new(Cell::new(0)),
             waiting: RefCell::new(Vec::new()),
+            animations: RefCell::new(Vec::new()),
+            deadline: Cell::new(None),
+            timer: RefCell::new(None),
         })
+    }
+
+    pub(super) fn pending_callbacks(&self) -> usize {
+        self.frame_callbacks.get()
+    }
+
+    /// Entity notifications arm animation work even when its window cannot paint.
+    pub(super) fn observe<V: Animated>(
+        self: &Rc<Self>,
+        cx: &mut Context<'_, V>,
+    ) {
+        let clock = Rc::downgrade(self);
+        let id = cx.entity_id();
+        cx.on_release(move |_, cx| {
+            if let Some(clock) = clock.upgrade() {
+                clock.animations.borrow_mut().retain(|entry| entry.id != id);
+                clock.arm(cx);
+            }
+        })
+        .detach();
+        let clock = Rc::clone(self);
+        cx.observe_self(move |view, cx| {
+            clock.animate(
+                cx.entity().downgrade(),
+                view.animation_schedule(Instant::now()),
+                cx,
+            );
+        })
+        .detach();
+        let clock = Rc::clone(self);
+        let entity = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = entity.update(cx, |view, cx| {
+                clock.animate(
+                    cx.entity().downgrade(),
+                    view.animation_schedule(Instant::now()),
+                    cx,
+                );
+            });
+        });
+    }
+
+    pub(super) fn animate<V: Animated>(
+        self: &Rc<Self>,
+        view: WeakEntity<V>,
+        schedule: AnimationSchedule,
+        cx: &mut App,
+    ) {
+        let id = view.entity_id();
+        let mut animations = self.animations.borrow_mut();
+        if schedule == AnimationSchedule::IDLE {
+            animations.retain(|entry| entry.id != id);
+        } else if let Some(entry) =
+            animations.iter_mut().find(|entry| entry.id == id)
+        {
+            entry.schedule = schedule;
+        } else {
+            let tick =
+                Rc::new(move |now, window: &mut Window, cx: &mut App| {
+                    view.update(cx, |view, cx| {
+                        view.advance_animation(now, window, cx);
+                        view.animation_schedule(now)
+                    })
+                    .unwrap_or_default()
+                });
+            animations.push(Animation { id, schedule, tick });
+        }
+        drop(animations);
+        self.arm(cx);
     }
 
     pub(super) fn schedule(
@@ -93,30 +200,96 @@ impl FrameClock {
             waiting.push(view);
         }
         drop(waiting);
-        if self.registered.replace(true) {
-            return;
-        }
-        let clock = Rc::downgrade(self);
-        let window = self.window;
-        // Snapshot admission is also called from view updates and input handlers.
-        // Access the window only after those borrows have unwound.
-        cx.defer(move |cx| {
-            let _ = window.update(cx, |_, window, _| {
-                window.on_next_frame(move |_, cx| {
-                    let Some(clock) = clock.upgrade() else {
-                        return;
-                    };
-                    clock.registered.set(false);
-                    let waiting = clock.waiting.take();
-                    for view in waiting {
-                        let _ = view.update(cx, |view, cx| {
-                            view.snapshot_pacer.frame();
-                            view.start_snapshot_if_needed(cx);
-                        });
-                    }
+        self.arm(cx);
+    }
+
+    fn arm(self: &Rc<Self>, cx: &mut App) {
+        let frames = !self.waiting.borrow().is_empty()
+            || self
+                .animations
+                .borrow()
+                .iter()
+                .any(|entry| entry.schedule.frame);
+        if frames && !self.registered.replace(true) {
+            self.frame_callbacks.set(self.frame_callbacks.get() + 1);
+            let registration = PendingFrame(Rc::clone(&self.frame_callbacks));
+            let clock = Rc::downgrade(self);
+            let window = self.window;
+            // Input and entity observers can run while the window is borrowed.
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, _| {
+                    window.on_next_frame(move |window, cx| {
+                        drop(registration);
+                        let Some(clock) = clock.upgrade() else {
+                            return;
+                        };
+                        clock.registered.set(false);
+                        let waiting = clock.waiting.take();
+                        for view in waiting {
+                            let _ = view.update(cx, |view, cx| {
+                                view.snapshot_pacer.frame();
+                                view.start_snapshot_if_needed(cx);
+                            });
+                        }
+                        clock.tick(true, window, cx);
+                    });
                 });
             });
-        });
+        }
+        let next = self
+            .animations
+            .borrow()
+            .iter()
+            .filter_map(|entry| entry.schedule.deadline)
+            .min();
+        if self.deadline.replace(next) == next {
+            return;
+        }
+        self.timer.borrow_mut().take();
+        if let Some(at) = next {
+            let clock = Rc::downgrade(self);
+            let window = self.window;
+            *self.timer.borrow_mut() = Some(cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(at.saturating_duration_since(Instant::now()))
+                    .await;
+                let Some(clock) = clock.upgrade() else {
+                    return;
+                };
+                clock.deadline.set(None);
+                let _ = window
+                    .update(cx, |_, window, cx| clock.tick(false, window, cx));
+            }));
+        }
+    }
+
+    fn tick(self: &Rc<Self>, frame: bool, window: &mut Window, cx: &mut App) {
+        let now = Instant::now();
+        let due: Vec<_> = self
+            .animations
+            .borrow()
+            .iter()
+            .filter(|entry| {
+                (frame && entry.schedule.frame)
+                    || entry.schedule.deadline.is_some_and(|at| at <= now)
+            })
+            .map(|entry| (entry.id, Rc::clone(&entry.tick)))
+            .collect();
+        for (id, tick) in due {
+            let schedule = tick(now, window, cx);
+            if let Some(entry) = self
+                .animations
+                .borrow_mut()
+                .iter_mut()
+                .find(|entry| entry.id == id)
+            {
+                entry.schedule = schedule;
+            }
+        }
+        self.animations
+            .borrow_mut()
+            .retain(|entry| entry.schedule != AnimationSchedule::IDLE);
+        self.arm(cx);
     }
 }
 

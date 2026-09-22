@@ -108,9 +108,7 @@ fn state(cx: &mut App) -> anyhow::Result<State> {
             text: text.trim_end().to_owned(),
             snapshots: terminal.snapshot_sequence,
             displayed_offset: terminal.scroll.displayed(),
-            // Each deferred registration / native callback owns exactly one weak clock.
-            // Count those actual closures, not calls to a test frame dispatcher.
-            callbacks: Rc::weak_count(&view.frame_clock),
+            callbacks: view.frame_clock.pending_callbacks(),
             stage: cx.global::<Probes>().0.borrow()[&tab.id].get(),
         })
     })?
@@ -215,13 +213,193 @@ async fn check_paused_scroll(
     Ok(())
 }
 
-async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
+async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let samples = Rc::new(RefCell::new(Vec::<(f32, Instant)>::new()));
+    let observed = Rc::clone(&samples);
+    let _subscription = cx.update(|cx| {
+        workspace(cx, |view, _, cx| {
+            view.tabs[0].view.update(cx, |_, cx| {
+                cx.observe_self(move |terminal, _| {
+                    let opacity = terminal.resize_visibility.opacity;
+                    let mut samples = observed.borrow_mut();
+                    if opacity > 0.0
+                        && opacity < 1.0
+                        && samples.last().is_none_or(|(previous, _)| {
+                            (opacity - previous).abs() > f32::EPSILON
+                        })
+                    {
+                        samples.push((opacity, Instant::now()));
+                    }
+                })
+            })
+        })
+    })??;
+    cx.update(|cx| {
+        workspace(cx, |view, _, cx| {
+            view.tabs[0].view.update(cx, |terminal, cx| {
+                terminal.resize_visibility =
+                    super::IndicatorVisibility::with_hold(
+                        Duration::from_millis(100),
+                    );
+                terminal.resize_visibility.activate(Instant::now());
+                terminal.bell.ring(Instant::now(), true, true);
+                cx.notify();
+            });
+        })
+    })??;
+    wait(cx, "indicator fades on delivered frames", |cx| {
+        workspace(cx, |view, _, cx| {
+            let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
+            Ok((opacity > 0.0 && opacity < 1.0, format!("opacity={opacity}")))
+        })?
+    })
+    .await?;
+    wait(cx, "animations settle without recurring callbacks", |cx| {
+        workspace(cx, |view, _, cx| {
+            let terminal = view.tabs[0].view.read(cx);
+            let opacity = terminal.resize_visibility.opacity;
+            let flash = terminal.bell.flash_until;
+            let callbacks = view.frame_clock.pending_callbacks();
+            Ok((
+                opacity == 0.0 && flash.is_none() && callbacks == 0,
+                format!(
+                    "opacity={opacity}, flash={flash:?}, callbacks={callbacks}"
+                ),
+            ))
+        })?
+    })
+    .await?;
+    let samples = samples.borrow();
+    ensure!(
+        samples.len() >= 2,
+        "fade skipped intermediate presentation states: {samples:?}"
+    );
+    let mut intervals: Vec<_> = samples
+        .windows(2)
+        .map(|pair| pair[1].1.duration_since(pair[0].1).as_micros())
+        .collect();
+    intervals.sort_unstable();
+    let median = intervals[intervals.len() / 2];
+    eprintln!(
+        "REFRESH_ANIMATION samples={} median_interval_us={median}",
+        samples.len()
+    );
+    if let Ok(budget) = std::env::var("HUTERM_ANIMATION_FRAME_BUDGET_US") {
+        let budget: u128 = budget.parse()?;
+        ensure!(
+            median <= budget,
+            "animation median {median} us exceeds {budget} us"
+        );
+    }
+    eprintln!("REFRESH_SMOKE animation_hold_fade_idle passed");
+    Ok(())
+}
+
+async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let (original, requests) = cx.update(|cx| {
+        workspace(cx, |view, window, cx| {
+            let original = window.viewport_size();
+            let requests = view.tabs[0].view.read(cx).resize_requests;
+            window.resize(gpui::size(
+                original.width + gpui::px(1.0),
+                original.height,
+            ));
+            (original, requests)
+        })
+    })??;
+    wait(
+        cx,
+        "one-pixel resize activates the indicator without resizing the grid",
+        |cx| {
+            workspace(cx, |view, window, cx| {
+                let terminal = view.tabs[0].view.read(cx);
+                ensure!(
+                    terminal.resize_requests == requests,
+                    "fixture crossed a grid boundary"
+                );
+                let opacity = terminal.resize_visibility.opacity;
+                Ok((
+                    window.viewport_size().width > original.width
+                        && opacity > 0.0,
+                    format!(
+                        "size={:?}, opacity={opacity}",
+                        window.viewport_size()
+                    ),
+                ))
+            })?
+        },
+    )
+    .await?;
+    wait(
+        cx,
+        "render-time resize indicator expires without a terminal event",
+        |cx| {
+            workspace(cx, |view, _, cx| {
+                let terminal = view.tabs[0].view.read(cx);
+                ensure!(
+                    terminal.resize_requests == requests,
+                    "fixture resized the grid"
+                );
+                let opacity = terminal.resize_visibility.opacity;
+                Ok((opacity <= f32::EPSILON, format!("opacity={opacity}")))
+            })?
+        },
+    )
+    .await?;
+    cx.update(|cx| workspace(cx, |_, window, _| window.resize(original)))??;
+    wait(cx, "restored viewport and settled indicator", |cx| {
+        workspace(cx, |view, window, cx| {
+            let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
+            Ok((
+                window.viewport_size() == original
+                    && opacity <= f32::EPSILON
+                    && view.frame_clock.pending_callbacks() == 0,
+                format!("size={:?}, opacity={opacity}", window.viewport_size()),
+            ))
+        })?
+    })
+    .await?;
+    eprintln!("REFRESH_SMOKE render_time_resize_deadline passed");
+    Ok(())
+}
+
+async fn check_paused_animation(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    cx.update(|cx| {
+        workspace(cx, |view, _, cx| {
+            view.tabs[0].view.update(cx, |terminal, cx| {
+                terminal.bell.ring(Instant::now(), true, true);
+                cx.notify();
+            });
+        })
+    })??;
+    wait(cx, "bell deadline expires without display frames", |cx| {
+        workspace(cx, |view, _, cx| {
+            let flash = view.tabs[0].view.read(cx).bell.flash_until;
+            Ok((flash.is_none(), format!("flash={flash:?}")))
+        })?
+    })
+    .await?;
+    ensure!(
+        cx.update(state)??.callbacks == 1,
+        "deadline duplicated the paused frame callback"
+    );
+    eprintln!("REFRESH_SMOKE animation_deadline_while_paused passed");
+    Ok(())
+}
+
+async fn check_initial_presentation(cx: &mut AsyncApp) -> anyhow::Result<()> {
     wait_state(cx, "initial snapshot and frame", |s| {
         s.text.contains("READY")
             && s.callbacks == 0
             && s.stage == Stage::Waiting
     })
     .await?;
+    check_animations(cx).await?;
+    check_render_resize(cx).await
+}
+
+async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    check_initial_presentation(cx).await?;
     #[cfg(target_os = "macos")]
     pause(cx).await?;
     cx.update(|cx| send(cx, "PAUSED_FIRST"))??;
@@ -248,6 +426,7 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
         );
     }
     check_paused_scroll(cx, sequence).await?;
+    check_paused_animation(cx).await?;
     cx.update(show)??;
     wait_state(cx, "resume catches up without new producer activity", |s| {
         s.text.contains("SCROLL_FINAL")

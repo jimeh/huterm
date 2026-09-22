@@ -43,6 +43,7 @@ use crate::renderer::{
     GridMetrics, TerminalRenderer, rgb_color as color, rgba_color,
 };
 use crate::scroll::ScrollController;
+use crate::ui::animation::AnimationSchedule;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, IndicatorVisibility, Origin, Press,
     ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
@@ -393,6 +394,7 @@ impl TerminalView {
             presentation,
             host_effects,
         } = authority;
+        frame_clock.observe(cx);
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
         let initial_presentation = terminal_presentation(&theme);
@@ -774,12 +776,8 @@ impl TerminalView {
         }
     }
 
-    fn advance_presentation(&mut self, cx: &mut Context<'_, Self>) {
-        let now = Instant::now();
-        let mut changed = self.scrollbars.advance(now)
-            | self.resize_visibility.update(now, false)
-            | self.bell.advance(now);
-        changed |= self.retry_client_messages();
+    fn refresh_pending_work(&mut self, cx: &mut Context<'_, Self>) {
+        let mut changed = self.retry_client_messages();
         if let Some(benchmark) = &mut self.scroll_benchmark {
             changed |= benchmark.drive(
                 &mut self.scroll,
@@ -1776,7 +1774,7 @@ impl TerminalView {
         self.blur_mouse(cx);
         self.mouse.forget_released_buttons();
         self.links.forget_press();
-        self.scrollbars.pointer_left();
+        self.scrollbars.pointer_left(Instant::now());
         self.visible = false;
     }
 
@@ -1844,6 +1842,36 @@ impl TerminalView {
         } else {
             self.status = Some(status);
             true
+        }
+    }
+}
+
+impl refresh::Animated for TerminalView {
+    fn animation_schedule(&self, now: Instant) -> AnimationSchedule {
+        let mut next = self
+            .scrollbars
+            .schedule(now)
+            .merge(self.resize_visibility.schedule(now));
+        if let Some(at) = self.bell.flash_until {
+            next = next.merge(AnimationSchedule::at(at));
+        }
+        if !self.visible {
+            next.frame = false;
+        }
+        next
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.scrollbars.advance(now)
+            | self.resize_visibility.update(now, false)
+            | self.bell.advance(now)
+        {
+            cx.notify();
         }
     }
 }
@@ -1987,6 +2015,13 @@ impl Render for TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.resize_if_needed(window);
+        // Native layout can activate an indicator without a terminal event or
+        // entity notification (for example, a resize within the same grid cell).
+        self.frame_clock.animate(
+            cx.entity().downgrade(),
+            refresh::Animated::animation_schedule(self, Instant::now()),
+            cx,
+        );
         self.update_link_pointer(
             window.mouse_position(),
             window.modifiers(),
@@ -2019,7 +2054,7 @@ impl Render for TerminalView {
         let mut root = div()
             .id("terminal")
             .on_hover(cx.listener(|view, hovering, _, cx| {
-                if !hovering && view.scrollbars.pointer_left() {
+                if !hovering && view.scrollbars.pointer_left(Instant::now()) {
                     view.activate_scrollbar();
                     cx.notify();
                 }

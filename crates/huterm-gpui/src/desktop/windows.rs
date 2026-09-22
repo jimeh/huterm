@@ -1374,6 +1374,7 @@ fn open_window_with_profile(
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
             });
+            view.update(cx, |view, cx| view.frame_clock.observe(cx));
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
                 let _ = weak.update(cx, |view, cx| {
@@ -1410,24 +1411,13 @@ fn open_window_with_profile(
                             let _ = pump_view.update(cx, |view, cx| {
                                 view.refresh_fullscreen(window, cx);
                                 view.refresh_tab_visibility(window, cx);
-                                let now = Instant::now();
-                                if view.advance_tab_scroll(now, window)
-                                    | view.tab_scrollbars.advance(now)
-                                {
-                                    cx.notify();
-                                }
                                 for tab in &view.tabs {
                                     tab.view.update(cx, |terminal, cx| {
-                                        terminal.advance_presentation(cx);
+                                        terminal.refresh_pending_work(cx);
                                     });
                                 }
                                 view.resume_close(window, cx);
                                 view.refresh_palette(cx);
-                                if let Some(palette) = view.palette.clone() {
-                                    palette.update(cx, |palette, cx| {
-                                        palette.advance(Instant::now(), cx);
-                                    });
-                                }
                             });
                         })
                         .is_err()
@@ -1447,6 +1437,42 @@ fn open_window_with_profile(
             format!("Cannot open window: {error}"),
         );
         maybe_exit(cx);
+    }
+}
+
+impl refresh::Animated for WorkspaceView {
+    fn animation_schedule(&self, now: Instant) -> AnimationSchedule {
+        let mut next = self
+            .tab_scrollbars
+            .schedule(now)
+            .merge(self.reveal.schedule(now));
+        if self.scroll_target.is_some()
+            || self.reorder.as_ref().is_some_and(|drag| {
+                drag.dragging
+                    && drag
+                        .strip
+                        .autoscroll(drag.pointer, Duration::from_millis(16))
+                        != self.tab_scroll
+            })
+        {
+            next = next.merge(AnimationSchedule::FRAME);
+        }
+        next
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.advance_tab_scroll(now, window)
+            | self.tab_scrollbars.advance(now)
+            | self.reveal.tick(now)
+        {
+            self.sync_tab_layout(window, cx);
+            cx.notify();
+        }
     }
 }
 
@@ -1930,7 +1956,7 @@ impl WorkspaceView {
                 || self.resizing_sidebar);
         if self
             .reveal
-            .advance(Instant::now(), hover, enabled && !gesture)
+            .set_input(Instant::now(), hover, enabled && !gesture)
         {
             cx.notify();
         }
@@ -2229,6 +2255,11 @@ impl WorkspaceView {
         }
         let strip = self.tab_strip(window);
         if let Some(drag) = &mut self.reorder {
+            let was_scrolling = drag.dragging
+                && drag
+                    .strip
+                    .autoscroll(drag.pointer, Duration::from_millis(16))
+                    != self.tab_scroll;
             drag.pointer = pointer;
             if !drag.dragging
                 && (pointer - drag.origin).magnitude() > TAB_DRAG_THRESHOLD
@@ -2236,6 +2267,9 @@ impl WorkspaceView {
                 drag.dragging = true;
             }
             drag.strip = strip;
+            if !was_scrolling {
+                self.last_scroll = Instant::now();
+            }
         }
         cx.notify();
     }
@@ -2721,7 +2755,10 @@ impl WorkspaceView {
         };
         self.palette_generation = self.palette_generation.wrapping_add(1);
         let generation = self.palette_generation;
-        let palette = cx.new(|cx| CommandPalette::open(open, cx));
+        let palette = cx.new(|cx| {
+            self.frame_clock.observe(cx);
+            CommandPalette::open(open, cx)
+        });
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
         self.palette = Some(palette.clone());
@@ -3588,6 +3625,7 @@ impl WorkspaceView {
         let visible = self.quake_visible();
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
+                let was_visible = view.visible;
                 view.visible = visible && tab.id == id;
                 if view.visible {
                     view.bell.viewed(window.is_window_active());
@@ -3596,6 +3634,9 @@ impl WorkspaceView {
                     view.start_initial_snapshot(cx);
                 } else {
                     view.hide(cx);
+                }
+                if was_visible != view.visible {
+                    cx.notify();
                 }
             });
         }
@@ -4415,9 +4456,6 @@ impl Render for WorkspaceView {
     ) -> impl IntoElement {
         self.measure_tab_widths(window, cx);
         self.sync_tab_layout(window, cx);
-        if self.reveal.progress > 0.0 && self.reveal.progress < 1.0 {
-            window.request_animation_frame();
-        }
         let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
         let foreground = color(self.config.theme.foreground);
@@ -4593,7 +4631,15 @@ impl Render for WorkspaceView {
         let vertical = strip.vertical;
         self.tab_scroll = strip.offset;
         if let Some(drag) = &mut self.reorder {
+            let was_scrolling = drag.dragging
+                && drag
+                    .strip
+                    .autoscroll(drag.pointer, Duration::from_millis(16))
+                    != self.tab_scroll;
             drag.strip = strip.clone();
+            if !was_scrolling {
+                self.last_scroll = Instant::now();
+            }
         }
         if self.presentation() == Presentation::Reserved
             || self.presentation() == Presentation::Overlay
@@ -4753,6 +4799,9 @@ impl Render for WorkspaceView {
                                         .available()
                                         * if forward { 0.75 } else { -0.75 };
                                     let strip = view.tab_strip(window);
+                                    if view.scroll_target.is_none() {
+                                        view.last_scroll = Instant::now();
+                                    }
                                     view.scroll_target = Some(
                                         (view
                                             .scroll_target
@@ -4886,7 +4935,7 @@ impl Render for WorkspaceView {
                     self.tab_scrollbars.wants_strip(axis) && geometry.is_some();
                 if !show_strip {
                     // No element means no leave event, so clear hover here.
-                    self.tab_scrollbars.pointer_left();
+                    self.tab_scrollbars.pointer_left(Instant::now());
                 }
                 if show_strip {
                     chrome = chrome.child(
@@ -4909,7 +4958,9 @@ impl Render for WorkspaceView {
                             .on_hover(cx.listener(
                                 |view, hovering: &bool, _, cx| {
                                     if !hovering
-                                        && view.tab_scrollbars.pointer_left()
+                                        && view
+                                            .tab_scrollbars
+                                            .pointer_left(Instant::now())
                                     {
                                         cx.notify();
                                     }
@@ -5168,6 +5219,12 @@ impl Render for WorkspaceView {
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
         }
+        // Layout may change drag geometry or clear hover without an input event.
+        self.frame_clock.animate(
+            cx.entity().downgrade(),
+            refresh::Animated::animation_schedule(self, Instant::now()),
+            cx,
+        );
         root
     }
 }
