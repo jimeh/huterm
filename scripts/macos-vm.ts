@@ -142,11 +142,15 @@ async function stopApp(name: string): Promise<void> {
   );
 }
 
+let buildChild: ReturnType<typeof Bun.spawn> | undefined;
+
 async function host(command: string[], root: string): Promise<number> {
   const build = Bun.spawn(command, { cwd: root, stdin: "ignore", stdout: "inherit", stderr: "inherit" });
   child = build;
+  buildChild = build;
   const status = await build.exited;
   if (child === build) child = undefined;
+  if (buildChild === build) buildChild = undefined;
   return interrupted || status;
 }
 
@@ -187,6 +191,16 @@ class Machine {
   }
 }
 
+/**
+ * `tart get` also fails for a VM that is running, so only a genuine not-found
+ * answer may lead to cloning: cloning onto an existing name replaces it.
+ */
+function vmMissing(name: string): boolean {
+  const result = Bun.spawnSync(["tart", "get", name], { stdout: "ignore", stderr: "pipe" });
+  if (result.exitCode === 0) return false;
+  return /does not exist/i.test(result.stderr.toString());
+}
+
 /** Remove a VM left behind by a killed runner. Callers must hold the name's lock. */
 function discard(name: string): void {
   capture(["stop", "--timeout", "5", name], false);
@@ -225,7 +239,7 @@ async function ensureImage(root: string, state: string): Promise<string> {
   }
 }
 
-async function clean(state: string): Promise<number> {
+async function clean(state: string, root: string): Promise<number> {
   const held = [...Array(SLOTS).keys()].map((slot) => tryLock(join(state, `slot-${slot}.lock`)));
   const image = tryLock(join(state, "image.lock"));
   try {
@@ -233,7 +247,10 @@ async function clean(state: string): Promise<number> {
     // tart list cannot inspect the ASIF disk of any running VM, including unrelated ones.
     const listing = capture(["list", "--source", "local", "--quiet"], false);
     if (listing === undefined) throw new Error("tart list failed; stop running Tart VMs and retry");
-    const names = listing.split("\n").filter((name) => /^huterm-macos-/.test(name));
+    // Other worktrees keep their own dev VMs; only this one's is ours to remove.
+    const mine = vmName(root);
+    const names = listing.split("\n").filter((name) =>
+      /^huterm-macos-/.test(name) && (!/^huterm-macos-vm-/.test(name) || name === mine));
     for (const name of names) {
       discard(name);
       console.log(`Removed ${name}`);
@@ -247,14 +264,18 @@ async function clean(state: string): Promise<number> {
 }
 
 /** Rebuilds and relaunches inside the running VM instead of booting again. */
+let activeSession: DevSession | undefined;
+
 async function develop(root: string, target: string, command: string[]): Promise<number> {
   const session = new DevSession({
     rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm"], root),
     stage: () => run(["exec", target, "/bin/sh", GUEST, "stage"]),
     launch: () => spawnTart(["exec", target, "/bin/sh", GUEST, "exec", ...command]),
     stopApp: () => stopApp(target),
+    cancelBuild: () => buildChild?.kill("SIGTERM"),
     log: (message) => console.log(`[dev] ${message}`),
   }, false, !process.stdin.isTTY);
+  activeSession = session;
   const status = await session.start();
   if (status !== 0) return status;
   const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
@@ -263,6 +284,7 @@ async function develop(root: string, target: string, command: string[]): Promise
     return await session.wait();
   } finally {
     detach();
+    activeSession = undefined;
   }
 }
 
@@ -277,11 +299,14 @@ async function main(args: string[]): Promise<number> {
   // Tart's --dir syntax separates its fields with colons.
   if (root.includes(":")) throw new Error("repository paths containing colons cannot be shared with Tart");
   const state = stateDirectory();
-  if (options.mode === "clean") return clean(state);
+  if (options.mode === "clean") return clean(state, root);
 
   let machine: Machine | undefined;
   const stop = (signal: "SIGINT" | "SIGTERM") => {
     interrupted = signal === "SIGINT" ? 130 : 143;
+    // A dev session owns its guest instance; killing the child alone would
+    // leave the runner waiting with the VM still up.
+    if (activeSession) { void activeSession.stop(); return; }
     child?.kill(signal);
   };
   const onInterrupt = () => stop("SIGINT");
@@ -295,16 +320,16 @@ async function main(args: string[]): Promise<number> {
   const persistent = options.mode === "dev";
   const name = persistent ? vmName(root) : undefined;
   try {
-    const image = await ensureImage(root, state);
     if (persistent) {
       // One dev session per worktree: a second would stop the first one's VM.
       session = await waitForLock([join(state, `${name}.lock`)], "this worktree's dev VM");
     }
+    // Provisioning boots a guest of its own, so it needs a slot as well.
     slot = await waitForLock([...Array(SLOTS).keys()].map((index) => join(state, `slot-${index}.lock`)), `one of ${SLOTS} macOS VM slots`);
+    const image = await ensureImage(root, state);
     const target = name ?? runName(slot.index);
     if (persistent) {
-      // tart get fails while a VM runs, so an answering guest agent also counts.
-      if (capture(["get", target], false) === undefined && !guestReady(target)) {
+      if (vmMissing(target)) {
         capture(["clone", image, target]);
       }
     } else {
@@ -331,7 +356,9 @@ async function main(args: string[]): Promise<number> {
         // is supposed to retain. Disposable clones are deleted regardless.
         capture(["exec", target, "sync"], false);
       }
-      await machine?.stop(persistent ? 60 : 2);
+      if (machine) await machine.stop(persistent ? 60 : 2);
+      // An adopted VM has no local handle, but this run still owns its lock.
+      else capture(["stop", "--timeout", persistent ? "60" : "2", target], false);
       if (!persistent) capture(["delete", target], false);
     }
   } finally {

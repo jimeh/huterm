@@ -29,7 +29,17 @@ const names = () => readFileSync(env.TART_TEST_VMS, 'utf8').split('\\n').filter(
 const save = (list) => writeFileSync(env.TART_TEST_VMS, list.map((name) => name + '\\n').join(''));
 const marker = (name) => env.TART_TEST_VMS + '.' + name + '.stopped';
 switch (args[0]) {
-  case 'get': process.exit(names().includes(args[1]) ? 0 : 1);
+  case 'get': {
+    // tart distinguishes a missing VM from one it cannot inspect, such as a
+    // running VM with an ASIF disk; only the former may lead to cloning.
+    if (env.TART_TEST_GET_FAILS === args[1]) {
+      process.stderr.write('failed to retrieve info: Resource temporarily unavailable');
+      process.exit(1);
+    }
+    if (names().includes(args[1])) process.exit(0);
+    process.stderr.write('the specified VM "' + args[1] + '" does not exist');
+    process.exit(2);
+  }
   case 'list': console.log(names().join('\\n')); break;
   case 'clone': save([...names(), args[2]]); break;
   case 'rename': save(names().map((name) => name === args[1] ? args[2] : name)); break;
@@ -127,14 +137,25 @@ describe("Linux VM runner", () => {
     expect(command).toBeGreaterThan(switched);
   });
 
-  test("an already running VM is reused and left running", () => {
+  test("an already running VM is reused, and the last command out stops it", () => {
     if (!macos) return;
     const fake = fixture({ TART_TEST_RUNNING: vm });
     fake.seed(image, vm);
     expect(fake.run("exec", "--", "true").exitCode).toBe(0);
     const calls = fake.calls();
     expect(calls.some((args) => args[0] === "run")).toBe(false);
-    expect(calls.some((args) => args[0] === "stop")).toBe(false);
+    // Whichever run booted it, leaving it behind would strand the VM forever.
+    expect(calls).toContainEqual(["stop", "--timeout", "30", vm]);
+  });
+
+  test("a VM that cannot be inspected is never cloned over", () => {
+    if (!macos) return;
+    // The VM exists but is unreachable, as during boot or after a wedged agent.
+    const fake = fixture({ TART_TEST_GET_FAILS: vm });
+    fake.seed(image, vm);
+    expect(fake.run("exec", "--", "true").exitCode).toBe(0);
+    // Cloning onto an existing name replaces it, discarding the kept guest.
+    expect(fake.calls().some((args) => args[0] === "clone" && args[2] === vm)).toBe(false);
   });
 
   test("a concurrent command keeps the VM running after this one finishes", () => {
@@ -154,6 +175,16 @@ describe("Linux VM runner", () => {
     const fake = fixture({ TART_TEST_RUN_EXIT: "4" });
     fake.seed(image, vm);
     expect(fake.run("exec", "--", "false").exitCode).toBe(4);
+  });
+
+  test("clean spares another worktree's dev VM", () => {
+    if (!macos) return;
+    const fake = fixture();
+    const other = "huterm-linux-vm-0123456789abcdef";
+    fake.seed(image, vm, other, "someone-else");
+    mkdirSync(fake.state, { recursive: true });
+    expect(fake.run("clean").exitCode).toBe(0);
+    expect(fake.vms()).toEqual([other, "someone-else"]);
   });
 
   test("clean removes only Huterm VMs and refuses while a command is active", () => {

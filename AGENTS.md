@@ -795,8 +795,10 @@ commands in the foreground. Virtualization.framework refuses a third running
 macOS guest, so runs share two host-wide slot locks.
 Smokes and `exec` use disposable clones; `dev` keeps a per-worktree VM. Flush a
 kept guest with `tart exec <vm> sync` before stopping it, or recent writes are
-lost. `tart clone` onto an existing name silently replaces that VM, so guard
-reuse with `tart get`. Changing the provisioning inputs renames the image and
+lost. `tart clone` onto an existing name silently replaces that VM, so clone only
+after `tart get` reports its specific not-found error: `tart get` also fails
+for a VM that is merely running, and reading that as absence destroys a kept
+guest. Changing the provisioning inputs renames the image and
 leaves the previous one on disk until `vm:{macos,linux}:clean` removes it.
 
 Both dev sessions keep one guest instance under host control, with `r` to
@@ -804,7 +806,9 @@ rebuild and relaunch, `w` to toggle watching, and `q` to quit. Their Mise tasks
 set `raw = true`: Mise otherwise pipes task stdio to prefix output, so the
 runner sees no terminal and those keys never arrive. `tart exec` can outlive the
 guest process it started, so close the host side after asking the app to stop or
-the session hangs on quit.
+the session hangs on quit. Route SIGINT and SIGTERM through the session, settle
+an in-flight rebuild before completing a quit, and let whichever command leaves
+last stop a shared VM, whether or not it booted that VM.
 
 Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
 GNOME aborts its Wayland session with "No GSettings schemas are installed"

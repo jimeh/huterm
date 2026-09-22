@@ -83,6 +83,7 @@ export function tryLock(path: string, shared = false): (() => void) | undefined 
 }
 
 let interrupted = 0;
+let activeSession: DevSession | undefined;
 
 async function waitForLock(path: string, description: string, shared = false): Promise<() => void> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -182,6 +183,16 @@ class Machine {
   }
 }
 
+/**
+ * `tart get` also fails for a VM that is running, so only a genuine not-found
+ * answer may lead to cloning: cloning onto an existing name replaces it.
+ */
+function vmMissing(name: string): boolean {
+  const result = Bun.spawnSync(["tart", "get", name], { stdout: "ignore", stderr: "pipe" });
+  if (result.exitCode === 0) return false;
+  return /does not exist/i.test(result.stderr.toString());
+}
+
 /** Remove a VM left behind by a killed runner. Callers must hold its lock. */
 function discard(name: string): void {
   capture(["tart", "stop", "--timeout", "5", name], false);
@@ -244,25 +255,41 @@ export async function buildAndStage(root: string, stage: string): Promise<number
   ]);
   if (status !== 0) return status;
   const volume = cacheNames(root, ARCH).volumes[0]!;
-  const container = capture(["docker", "create", "-v", `${volume}:/workspace`, containerImage(root, ARCH), "true"])!;
+  const container = capture(["docker", "create", "-v", `${volume}:/workspace`, containerImage(root, ARCH), "true"], false);
+  if (container === undefined) {
+    console.error("could not create the export container for the Linux build");
+    return 1;
+  }
   try {
     mkdirSync(join(stage, "target/debug"), { recursive: true });
-    capture(["docker", "cp", `${container}:/workspace/target/debug/huterm`, join(stage, "target/debug/")]);
-    capture(["docker", "cp", `${container}:/workspace/target/terminfo`, join(stage, "target/")]);
+    for (const [from, to] of [["target/debug/huterm", "target/debug/"], ["target/terminfo", "target/"]] as const) {
+      if (capture(["docker", "cp", `${container}:/workspace/${from}`, join(stage, to)], false) === undefined) {
+        console.error(`could not copy ${from} out of the Linux build container`);
+        return 1;
+      }
+    }
   } finally {
     capture(["docker", "rm", "--force", container], false);
   }
   return 0;
 }
 
-async function clean(state: string): Promise<number> {
+async function clean(state: string, root: string): Promise<number> {
+  // Commands take the lifecycle and image locks before their active lock, so
+  // cleanup needs all three to avoid deleting under a starting run.
   const active = tryLock(join(state, "active.lock"));
+  const lifecycle = tryLock(join(state, "lifecycle.lock"));
+  const image = tryLock(join(state, "image.lock"));
   try {
-    if (!active) throw new Error("a Linux VM command is active; retry after it finishes");
+    if (!active || !lifecycle || !image) throw new Error("a Linux VM command is active; retry after it finishes");
     // tart list cannot inspect the disk of any running VM, including unrelated ones.
     const listing = capture(["tart", "list", "--source", "local", "--quiet"], false);
     if (listing === undefined) throw new Error("tart list failed; stop running Tart VMs and retry");
-    for (const name of listing.split("\n").filter((entry) => /^huterm-linux-/.test(entry))) {
+    // Other worktrees keep their own dev VMs; only this one's is ours to remove.
+    const mine = vmName(root);
+    const removable = (entry: string) =>
+      /^huterm-linux-/.test(entry) && (!/^huterm-linux-vm-/.test(entry) || entry === mine);
+    for (const name of listing.split("\n").filter(removable)) {
       discard(name);
       console.log(`Removed ${name}`);
     }
@@ -270,6 +297,8 @@ async function clean(state: string): Promise<number> {
     return 0;
   } finally {
     active?.();
+    lifecycle?.();
+    image?.();
   }
 }
 
@@ -284,10 +313,13 @@ async function main(args: string[]): Promise<number> {
   // Tart's --dir syntax separates its fields with colons.
   if (root.includes(":")) throw new Error("repository paths containing colons cannot be shared with Tart");
   const state = stateDirectory();
-  if (options.mode === "clean") return clean(state);
+  if (options.mode === "clean") return clean(state, root);
 
   const stop = (signal: "SIGINT" | "SIGTERM") => {
     interrupted = signal === "SIGINT" ? 130 : 143;
+    // A dev session owns its guest instance; killing the child alone would
+    // leave the runner waiting with the VM still up.
+    if (activeSession) { void activeSession.stop(); return; }
     child?.kill(signal);
   };
   const onInterrupt = () => stop("SIGINT");
@@ -309,9 +341,7 @@ async function main(args: string[]): Promise<number> {
     // so a dev session and an exec command can share one VM.
     const lifecycle = await waitForLock(join(state, "lifecycle.lock"), "another Linux VM command to finish starting or stopping the VM");
     try {
-      if (capture(["tart", "get", name], false) === undefined && !guestReady(name)) {
-        capture(["tart", "clone", image, name]);
-      }
+      if (vmMissing(name)) capture(["tart", "clone", image, name]);
       if (!guestReady(name)) {
         machine = new Machine(name, stage);
         await machine.ready();
@@ -343,8 +373,10 @@ async function main(args: string[]): Promise<number> {
       stage: () => Promise.resolve(0),
       launch: () => spawnTart(["exec", name, "/bin/sh", GUEST, "run", ...options.command]),
       stopApp: () => stopApp(name),
+      cancelBuild: () => child?.kill("SIGTERM"),
       log: (message) => console.log(`[dev] ${message}`),
     }, false, !process.stdin.isTTY);
+    activeSession = session;
     const started = await session.start();
     if (started !== 0) return started;
     const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
@@ -353,22 +385,27 @@ async function main(args: string[]): Promise<number> {
       return await session.wait();
     } finally {
       detach();
+      activeSession = undefined;
     }
   } finally {
     active?.();
-    if (machine) {
-      // Leave the VM running for commands that started while this one ran.
-      const exclusive = tryLock(activePath);
+    // Whoever leaves last stops the VM, even if another run booted it; a
+    // command that started meanwhile still holds the shared lock.
+    const lifecycle = tryLock(join(state, "lifecycle.lock"));
+    const exclusive = lifecycle ? tryLock(activePath) : undefined;
+    try {
       if (exclusive) {
-        try {
-          // Stopping without flushing loses recent guest writes, which this
-          // kept VM is supposed to retain.
-          capture(["tart", "exec", name, "sync"], false);
-          await machine.stop(30);
-        } finally { exclusive(); }
+        // Stopping without flushing loses recent guest writes, which this kept
+        // VM is supposed to retain.
+        capture(["tart", "exec", name, "sync"], false);
+        if (machine) await machine.stop(30);
+        else capture(["tart", "stop", "--timeout", "30", name], false);
       } else {
-        machine.detach();
+        machine?.detach();
       }
+    } finally {
+      exclusive?.();
+      lifecycle?.();
     }
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);

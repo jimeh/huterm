@@ -28,6 +28,7 @@ function harness(options: { watching?: boolean; autoQuit?: boolean } = {}) {
       instances.push(instance);
       return instance.promise;
     },
+    cancelBuild: () => { calls.push("cancelBuild"); gate?.resolve(0); },
     stopApp: async () => {
       calls.push("stopApp");
       // The guest app exits when asked, like pkill ending the foreground exec.
@@ -165,6 +166,22 @@ describe("DevSession", () => {
     expect(await waited).toBe(0);
     expect(it.calls.at(-1)).toBe("stopApp");
     expect(it.session.isRunning).toBe(false);
+  });
+
+  test("quitting during a rebuild cancels it and stages nothing afterwards", async () => {
+    const it = harness({ watching: true });
+    await it.session.start();
+    it.block();
+    const rebuilding = it.session.changed();
+    const waited = it.session.wait();
+    await it.session.key("q");
+    await rebuilding;
+    expect(await waited).toBe(0);
+    expect(it.calls).toContain("cancelBuild");
+    // The caller stops the VM once the session completes, so nothing may stage
+    // or launch into it after the quit.
+    const quitAt = it.calls.indexOf("cancelBuild");
+    expect(it.calls.slice(quitAt).filter((call) => call === "stage" || call === "launch")).toEqual([]);
   });
 
   test("stopping waits for the app, then closes a stuck exec session", async () => {

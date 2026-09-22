@@ -9,6 +9,8 @@ export type DevActions = {
   launch: () => Promise<number>;
   /** Ask the running guest app to exit, and settle its host-side process. */
   stopApp: () => Promise<void>;
+  /** Stop an in-flight build so quitting does not wait for it. */
+  cancelBuild?: () => void;
   log: (message: string) => void;
 };
 
@@ -20,6 +22,7 @@ export const KEY_HELP = "r = rebuild and relaunch, w = toggle watch, q = quit";
  */
 export class DevSession {
   private running: Promise<number> | undefined;
+  private cycling: Promise<number> | undefined;
   private busy = false;
   private quit = false;
   private pending = false;
@@ -68,6 +71,11 @@ export class DevSession {
   async stop(): Promise<void> {
     if (this.quit) return;
     this.quit = true;
+    // Finish the current cycle first: the caller stops the VM once this
+    // resolves, and a build still staging into it would fail or, worse, stage
+    // into a VM that is being reused.
+    this.actions.cancelBuild?.();
+    await this.cycling?.catch(() => 0);
     const running = this.running;
     this.running = undefined;
     if (running) {
@@ -104,7 +112,13 @@ export class DevSession {
     });
   }
 
-  private async cycle(first: boolean): Promise<number> {
+  private cycle(first: boolean): Promise<number> {
+    const running = this.runCycle(first);
+    this.cycling = running;
+    return running.finally(() => { if (this.cycling === running) this.cycling = undefined; });
+  }
+
+  private async runCycle(first: boolean): Promise<number> {
     this.busy = true;
     try {
       this.actions.log(first ? "building..." : "rebuilding...");
@@ -114,6 +128,7 @@ export class DevSession {
         this.actions.log(`build failed with status ${built}; keeping the running app`);
         return first ? built : 0;
       }
+      if (this.quit) return 0;
       const staged = await this.actions.stage();
       if (staged !== 0) {
         this.actions.log(`staging failed with status ${staged}; keeping the running app`);
@@ -142,17 +157,21 @@ export function attachControls(
   watch: (path: string, listener: () => void) => { close: () => void },
   debounceMs = 300,
 ): () => void {
+  const report = (error: unknown) => {
+    console.error(`dev session: ${error instanceof Error ? error.message : String(error)}`);
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => { void session.changed(); }, debounceMs);
+    timer = setTimeout(() => { void session.changed().catch(report); }, debounceMs);
   };
   const watchers = paths.map((path) => watch(path, schedule));
   const onData = (data: Buffer) => {
     const key = data.toString();
     // Raw mode delivers the interrupt as a byte rather than a signal.
-    if (key === "\u0003") void session.stop();
-    else void session.key(key);
+    // A rejected action must not become an unhandled rejection and kill the run.
+    if (key === "\u0003") void session.stop().catch(report);
+    else void session.key(key).catch(report);
   };
   const interactive = Boolean(process.stdin.isTTY);
   if (interactive) {

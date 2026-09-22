@@ -182,8 +182,9 @@ minutes. macOS VMs started outside these tasks, including other Tart, UTM, or
 Parallels guests, also count toward the limit; Tart then fails with "The
 number of VMs exceeds the system limit".
 
-`vm:macos:clean` removes provisioned images, kept dev VMs, and leftover run VMs
-once no run holds a slot. The base image stays cached; remove it with
+`vm:macos:clean` removes provisioned images, this worktree's kept dev VM, and
+leftover run VMs once no run holds a slot. Other worktrees keep their own dev
+VMs. The base image stays cached; remove it with
 `tart delete <image>` using the reference printed by the task. The guest has
 one 1280x800 display without a notch, and paravirtualized Metal, so keep
 benchmarks, notch and safe-area checks, and multi-display QA on real hardware.
@@ -233,9 +234,9 @@ A dev session and an `exec` command can share one VM. Commands hold a shared
 lock for their duration, and only the last one out stops the VM. Changing
 sessions requires that no other command is running.
 
-`vm:linux:clean` removes the provisioned image and per-worktree VMs once no
-command is active. The base image stays cached; remove it with `tart delete`
-using the reference the task prints.
+`vm:linux:clean` removes the provisioned image and this worktree's VM once no
+command is active; other worktrees keep their own. The base image stays cached;
+remove it with `tart delete` using the reference the task prints.
 
 The initial desktop client runs on macOS and Linux:
 

@@ -29,7 +29,17 @@ const names = () => readFileSync(env.TART_TEST_VMS, 'utf8').split('\\n').filter(
 const save = (list) => writeFileSync(env.TART_TEST_VMS, list.map((name) => name + '\\n').join(''));
 const marker = (name) => env.TART_TEST_VMS + '.' + name + '.stopped';
 switch (args[0]) {
-  case 'get': process.exit(names().includes(args[1]) ? 0 : 1);
+  case 'get': {
+    // tart distinguishes a missing VM from one it cannot inspect, such as a
+    // running VM with an ASIF disk; only the former may lead to cloning.
+    if (env.TART_TEST_GET_FAILS === args[1]) {
+      process.stderr.write('failed to retrieve info: Resource temporarily unavailable');
+      process.exit(1);
+    }
+    if (names().includes(args[1])) process.exit(0);
+    process.stderr.write('the specified VM "' + args[1] + '" does not exist');
+    process.exit(2);
+  }
   case 'list': console.log(names().join('\\n')); break;
   case 'clone': save([...names(), args[2]]); break;
   case 'rename': save(names().map((name) => name === args[1] ? args[2] : name)); break;
@@ -160,6 +170,34 @@ describe("macOS VM runner", () => {
     expect(calls.some((args) => args[0] === "clone")).toBe(false);
     expect(calls.some((args) => args[0] === "run")).toBe(false);
     expect(fake.vms()).toEqual([image, vm]);
+  });
+
+  test.skipIf(!macos)("a VM that cannot be inspected is never cloned over", () => {
+    // The VM exists but is unreachable, as during boot or after a wedged agent.
+    const fake = fixture({ TART_TEST_GET_FAILS: vm });
+    fake.seed(image, vm);
+    expect(fake.run("dev").exitCode).toBe(0);
+    // Cloning onto an existing name replaces it, discarding the kept guest.
+    expect(fake.calls().some((args) => args[0] === "clone" && args[2] === vm)).toBe(false);
+  });
+
+  test.skipIf(!macos)("a dev VM adopted from a dead runner is still stopped on exit", () => {
+    const fake = fixture({ TART_TEST_RUNNING: vm });
+    fake.seed(image, vm);
+    expect(fake.run("dev").exitCode).toBe(0);
+    const calls = fake.calls();
+    expect(calls.some((args) => args[0] === "run")).toBe(false);
+    expect(calls).toContainEqual(["stop", "--timeout", "60", vm]);
+    expect(calls.some((args) => args[0] === "delete" && args[1] === vm)).toBe(false);
+  });
+
+  test.skipIf(!macos)("clean spares another worktree's dev VM", () => {
+    const fake = fixture();
+    const other = "huterm-macos-vm-0123456789abcdef";
+    fake.seed(image, vm, other, "someone-else");
+    mkdirSync(fake.state, { recursive: true });
+    expect(fake.run("clean").exitCode).toBe(0);
+    expect(fake.vms()).toEqual([other, "someone-else"]);
   });
 
   test.skipIf(!macos)("clean removes only Huterm VMs and refuses while a run holds a slot", () => {
