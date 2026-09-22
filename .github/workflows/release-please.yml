@@ -16,6 +16,7 @@ jobs:
     name: Prepare release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release-please
     permissions:
       contents: write
       issues: write
@@ -44,26 +45,28 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
-  build-release:
-    name: Build release
+  dispatch-release:
+    name: Dispatch release
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
-      actions: read
-      artifact-metadata: write
-      attestations: write
-      contents: write
-      id-token: write
-    # GitHub Actions still requires ./ syntax for local reusable workflows.
-    uses: ./.github/workflows/release.yml # zizmor: ignore[self-repository]
-    with:
-      publish: true
-      sha: ${{ needs.release-please.outputs.sha }}
-      tag: ${{ needs.release-please.outputs.tag }}
-      version: ${{ needs.release-please.outputs.version }}
-    secrets:
-      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-      MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
-      MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
-      APPLE_NOTARIZATION_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARIZATION_KEY_P8_BASE64 }}
-      SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch protected release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
+            -f publish=true \
+            -f sha="$RELEASE_SHA" \
+            -f tag="$RELEASE_TAG" \
+            -f version="$RELEASE_VERSION"
