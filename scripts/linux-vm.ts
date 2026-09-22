@@ -144,6 +144,17 @@ async function stopApp(name: string): Promise<void> {
   );
 }
 
+/** Tracked separately from the app so cancelling a build never signals it. */
+async function runBuild(command: string[]): Promise<number> {
+  const build = Bun.spawn(command, { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  child = build;
+  buildChild = build;
+  const status = await build.exited;
+  if (child === build) child = undefined;
+  if (buildChild === build) buildChild = undefined;
+  return interrupted || status;
+}
+
 const guestReady = (name: string) =>
   Bun.spawnSync(["tart", "exec", name, "true"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -209,10 +220,10 @@ const guest = (name: string, ...args: string[]) => ["tart", "exec", name, "/bin/
 
 async function ensureImage(root: string, state: string): Promise<string> {
   const image = imageName(root);
-  if (capture(["tart", "get", image], false) !== undefined) return image;
+  if (!vmMissing(image)) return image;
   const release = await waitForLock(join(state, "image.lock"), "another run to finish provisioning the Linux image");
   try {
-    if (capture(["tart", "get", image], false) !== undefined) return image;
+    if (!vmMissing(image)) return image;
     const build = `${image}-build`;
     discard(build);
     const share = mkdtempSync(join(tmpdir(), "huterm-linux-vm-provision-"));
@@ -248,8 +259,10 @@ async function ensureImage(root: string, state: string): Promise<string> {
 }
 
 /** Build in the pinned Ubuntu container; the VM never compiles. */
+let buildChild: ReturnType<typeof Bun.spawn> | undefined;
+
 export async function buildAndStage(root: string, stage: string): Promise<number> {
-  const status = await run([
+  const status = await runBuild([
     "bun", join(root, "scripts/linux.ts"), "exec", "--arch", ARCH, "bash", "-lc",
     "mise run ghostty:prepare && mise run terminfo:prepare && mise run build:exec -- cargo build --locked -p huterm",
   ]);
@@ -319,7 +332,7 @@ async function main(args: string[]): Promise<number> {
     interrupted = signal === "SIGINT" ? 130 : 143;
     // A dev session owns its guest instance; killing the child alone would
     // leave the runner waiting with the VM still up.
-    if (activeSession) { void activeSession.stop(); return; }
+    if (activeSession) { void activeSession.stop().catch(() => {}); return; }
     child?.kill(signal);
   };
   const onInterrupt = () => stop("SIGINT");
@@ -332,15 +345,23 @@ async function main(args: string[]): Promise<number> {
   const activePath = join(state, "active.lock");
   let machine: Machine | undefined;
   let active: (() => void) | undefined;
+  let devSession: (() => void) | undefined;
   try {
     mkdirSync(stage, { recursive: true });
     copyFileSync(join(root, "scripts/linux-vm/guest.sh"), join(stage, "guest.sh"));
-    const image = await ensureImage(root, state);
+    if (options.mode === "dev") {
+      // Two dev sessions in one guest would kill each other's app, since
+      // stopping one asks the guest to end every huterm process.
+      devSession = await waitForLock(join(state, "dev.lock"), "this worktree's Linux dev session");
+    }
 
     // Lifecycle changes are exclusive; running commands only hold a shared lock,
-    // so a dev session and an exec command can share one VM.
+    // so a dev session and an exec command can share one VM. Provisioning stays
+    // inside it: releasing between phases would let cleanup delete the image
+    // this command just selected.
     const lifecycle = await waitForLock(join(state, "lifecycle.lock"), "another Linux VM command to finish starting or stopping the VM");
     try {
+      const image = await ensureImage(root, state);
       if (vmMissing(name)) capture(["tart", "clone", image, name]);
       if (!guestReady(name)) {
         machine = new Machine(name, stage);
@@ -373,18 +394,23 @@ async function main(args: string[]): Promise<number> {
       stage: () => Promise.resolve(0),
       launch: () => spawnTart(["exec", name, "/bin/sh", GUEST, "run", ...options.command]),
       stopApp: () => stopApp(name),
-      cancelBuild: () => child?.kill("SIGTERM"),
+      cancelBuild: () => buildChild?.kill("SIGTERM"),
       log: (message) => console.log(`[dev] ${message}`),
     }, false, !process.stdin.isTTY);
     activeSession = session;
-    const started = await session.start();
-    if (started !== 0) return started;
-    const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
-      (path, listener) => watch(path, { recursive: true }, listener));
     try {
-      return await session.wait();
+      const started = await session.start();
+      if (started !== 0) return interrupted || started;
+      const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
+        (path, listener) => watch(path, { recursive: true }, listener));
+      try {
+        const status = await session.wait();
+        // A signal tore the session down deliberately; report it as one.
+        return interrupted || status;
+      } finally {
+        detach();
+      }
     } finally {
-      detach();
       activeSession = undefined;
     }
   } finally {
@@ -406,6 +432,7 @@ async function main(args: string[]): Promise<number> {
     } finally {
       exclusive?.();
       lifecycle?.();
+      devSession?.();
     }
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);

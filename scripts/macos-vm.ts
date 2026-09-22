@@ -209,10 +209,10 @@ function discard(name: string): void {
 
 async function ensureImage(root: string, state: string): Promise<string> {
   const image = imageName(root);
-  if (capture(["get", image], false) !== undefined) return image;
+  if (!vmMissing(image)) return image;
   const lock = await waitForLock([join(state, "image.lock")], "another run to finish provisioning the macOS image");
   try {
-    if (capture(["get", image], false) !== undefined) return image;
+    if (!vmMissing(image)) return image;
     const build = `${image}-build`;
     discard(build);
     console.log(`Provisioning ${image} from ${BASE_IMAGE} (the first pull downloads about 33 GB)`);
@@ -276,14 +276,19 @@ async function develop(root: string, target: string, command: string[]): Promise
     log: (message) => console.log(`[dev] ${message}`),
   }, false, !process.stdin.isTTY);
   activeSession = session;
-  const status = await session.start();
-  if (status !== 0) return status;
-  const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
-    (path, listener) => watch(path, { recursive: true }, listener));
   try {
-    return await session.wait();
+    const started = await session.start();
+    if (started !== 0) return interrupted || started;
+    const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
+      (path, listener) => watch(path, { recursive: true }, listener));
+    try {
+      const status = await session.wait();
+      // A signal tore the session down deliberately; report it as one.
+      return interrupted || status;
+    } finally {
+      detach();
+    }
   } finally {
-    detach();
     activeSession = undefined;
   }
 }
@@ -306,7 +311,7 @@ async function main(args: string[]): Promise<number> {
     interrupted = signal === "SIGINT" ? 130 : 143;
     // A dev session owns its guest instance; killing the child alone would
     // leave the runner waiting with the VM still up.
-    if (activeSession) { void activeSession.stop(); return; }
+    if (activeSession) { void activeSession.stop().catch(() => {}); return; }
     child?.kill(signal);
   };
   const onInterrupt = () => stop("SIGINT");

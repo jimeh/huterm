@@ -788,8 +788,9 @@ macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
 Tart macOS VMs run host-built binaries; the guest never compiles. Stage the
 read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
 for extended attributes on symlinks, so `ditto` and `cp` fail on
-`Sparkle.framework`. `tart list` and `tart get` fail while any VM with an ASIF
-disk is running, so run lifecycles must not depend on them. Background
+`Sparkle.framework`. `tart list` fails while any VM with an ASIF disk is
+running, so cleanup cannot enumerate VMs then; `tart get` fails only for the
+running VM itself. Background
 processes started through `tart exec` die when exec returns; keep guest
 commands in the foreground. Virtualization.framework refuses a third running
 macOS guest, so runs share two host-wide slot locks.

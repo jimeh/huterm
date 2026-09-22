@@ -59,7 +59,17 @@ switch (args[0]) {
     if (args.includes('true') && args.length === 3) {
       process.exit(env.TART_TEST_RUNNING === args[1] || existsSync(env.TART_TEST_VMS + '.' + args[1] + '.booted') ? 0 : 1);
     }
+    if (args.includes('pkill')) {
+      writeFileSync(env.TART_TEST_VMS + '.' + args[1] + '.killed', '');
+      process.exit(0);
+    }
     const action = args.some((arg) => arg.endsWith('provision.sh')) ? 'provision' : args[3]?.endsWith('guest.sh') ? args[4] : 'unknown';
+    if (action === 'exec' && env.TART_TEST_APP_HANGS) {
+      // The app keeps running until the guest is asked to stop it.
+      const killed = env.TART_TEST_VMS + '.' + args[1] + '.killed';
+      while (!existsSync(killed)) await Bun.sleep(20);
+      process.exit(143);
+    }
     process.exit(Number(env['TART_TEST_' + action.toUpperCase() + '_EXIT'] || 0));
   }
 }
@@ -78,6 +88,7 @@ switch (args[0]) {
     seed: (...names: string[]) => writeFileSync(vms, names.map((name) => `${name}\n`).join("")),
     builds: () => (existsSync(`${log}.cargo`) ? readFileSync(`${log}.cargo`, "utf8").trim().split("\n") : []),
     calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
+    spawn: (...args: string[]) => Bun.spawn([process.execPath, join(import.meta.dir, "macos-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
     run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "macos-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
   };
 }
@@ -189,6 +200,24 @@ describe("macOS VM runner", () => {
     expect(calls.some((args) => args[0] === "run")).toBe(false);
     expect(calls).toContainEqual(["stop", "--timeout", "60", vm]);
     expect(calls.some((args) => args[0] === "delete" && args[1] === vm)).toBe(false);
+  });
+
+  test.skipIf(!macos)("a signal ends the dev session and reports termination", async () => {
+    const fake = fixture({ TART_TEST_APP_HANGS: "1" });
+    fake.seed(image, vm);
+    const runner = fake.spawn("dev");
+    const deadline = Date.now() + 20_000;
+    // Wait until the app is actually running in the guest.
+    while (!fake.calls().some((args) => args.at(-1) === "target/debug/huterm") && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
+    runner.kill("SIGTERM");
+    expect(await runner.exited).toBe(143);
+    const calls = fake.calls();
+    // The app is asked to stop in the guest, then the kept VM is flushed.
+    expect(calls.some((args) => args.includes("pkill"))).toBe(true);
+    expect(calls).toContainEqual(["exec", vm, "sync"]);
+    expect(calls).toContainEqual(["stop", "--timeout", "60", vm]);
   });
 
   test.skipIf(!macos)("clean spares another worktree's dev VM", () => {
