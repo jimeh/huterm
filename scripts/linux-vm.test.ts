@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BASE_IMAGE, argumentsFor, imageName, tryLock, vmName } from "./linux-vm";
@@ -20,7 +20,7 @@ function fixture(overrides: Record<string, string> = {}) {
   writeFileSync(log, "");
   writeFileSync(vms, "");
   const tart = join(directory, "tart");
-  writeFileSync(tart, `#!/usr/bin/env bun
+  writeFileSync(tart, `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const env = process.env;
@@ -68,6 +68,18 @@ switch (args[0]) {
 }
 `);
   chmodSync(tart, 0o755);
+  // The dev path builds through the container; fake both tools it shells out to.
+  const fakeBun = join(directory, "bun");
+  writeFileSync(fakeBun, `#!/bin/sh\nexit \${BUN_TEST_EXIT:-0}\n`);
+  chmodSync(fakeBun, 0o755);
+  const docker = join(directory, "docker");
+  writeFileSync(docker, `#!/bin/sh\ncase "$1" in
+  create) echo fake-container ;;
+  cp) exit \${DOCKER_TEST_CP_EXIT:-0} ;;
+esac
+exit 0
+`);
+  chmodSync(docker, 0o755);
   const state = join(directory, "state");
   const env = {
     ...process.env, PATH: `${directory}:${process.env.PATH}`,
@@ -163,11 +175,22 @@ describe("Linux VM runner", () => {
     const fake = fixture();
     fake.seed(image);
     mkdirSync(fake.state, { recursive: true });
-    const other = tryLock(join(fake.state, "active.lock"), true)!;
+    const other = tryLock(join(fake.state, `${vm}.active.lock`), true)!;
     try {
       expect(fake.runDetached("exec", "--", "true").exitCode).toBe(0);
     } finally { other(); }
     expect(fake.calls().some((args) => args[0] === "stop" && args.at(-1) === vm)).toBe(false);
+  });
+
+  test("a container export failure ends the run instead of crashing it", () => {
+    if (!macos) return;
+    const fake = fixture({ DOCKER_TEST_CP_EXIT: "1" });
+    fake.seed(image, vm);
+    const result = fake.run("dev");
+    expect(result.exitCode).toBe(1);
+    // A rejection here used to kill the runner before it stopped the VM.
+    expect(result.stderr.toString()).not.toContain("error:");
+    expect(fake.calls()).toContainEqual(["exec", vm, "sync"]);
   });
 
   test("command failures propagate", () => {
@@ -175,6 +198,20 @@ describe("Linux VM runner", () => {
     const fake = fixture({ TART_TEST_RUN_EXIT: "4" });
     fake.seed(image, vm);
     expect(fake.run("exec", "--", "false").exitCode).toBe(4);
+  });
+
+  test("locks name the VM they guard, so other worktrees are unaffected", () => {
+    if (!macos) return;
+    const fake = fixture();
+    fake.seed(image, vm);
+    // dev takes the most locks, including the session lock exec never touches.
+    expect(fake.run("dev").exitCode).toBe(0);
+    // A host-wide lock would serialize unrelated worktrees, whose guests are
+    // separate and cannot disturb each other.
+    const locks = readdirSync(fake.state).filter((entry) => entry.endsWith(".lock"));
+    expect(locks.length).toBeGreaterThan(0);
+    // Only the shared image lock may be host-wide; the rest name this VM.
+    expect(locks.filter((entry) => entry !== "image.lock" && !entry.startsWith(vm))).toEqual([]);
   });
 
   test("clean spares another worktree's dev VM", () => {
@@ -192,7 +229,7 @@ describe("Linux VM runner", () => {
     const fake = fixture();
     fake.seed(image, vm, "someone-else", BASE_IMAGE);
     mkdirSync(fake.state, { recursive: true });
-    const active = tryLock(join(fake.state, "active.lock"), true)!;
+    const active = tryLock(join(fake.state, `${vm}.active.lock`), true)!;
     let blocked;
     try { blocked = fake.run("clean"); } finally { active(); }
     expect(blocked.exitCode).toBe(1);

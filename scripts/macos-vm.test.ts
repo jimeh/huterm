@@ -20,7 +20,7 @@ function fixture(overrides: Record<string, string> = {}) {
   writeFileSync(log, "");
   writeFileSync(vms, "");
   const tart = join(directory, "tart");
-  writeFileSync(tart, `#!/usr/bin/env bun
+  writeFileSync(tart, `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const env = process.env;
@@ -206,11 +206,11 @@ describe("macOS VM runner", () => {
     const fake = fixture({ TART_TEST_APP_HANGS: "1" });
     fake.seed(image, vm);
     const runner = fake.spawn("dev");
+    const launched = () => fake.calls().some((args) => args.at(-1) === "target/debug/huterm");
     const deadline = Date.now() + 20_000;
-    // Wait until the app is actually running in the guest.
-    while (!fake.calls().some((args) => args.at(-1) === "target/debug/huterm") && Date.now() < deadline) {
-      await Bun.sleep(50);
-    }
+    while (!launched() && Date.now() < deadline) await Bun.sleep(50);
+    // Signalling before the launch would fail somewhere unrelated.
+    expect(launched() || `last calls: ${JSON.stringify(fake.calls().slice(-3))}`).toBe(true);
     runner.kill("SIGTERM");
     expect(await runner.exited).toBe(143);
     const calls = fake.calls();

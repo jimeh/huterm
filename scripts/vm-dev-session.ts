@@ -123,6 +123,7 @@ export class DevSession {
     try {
       this.actions.log(first ? "building..." : "rebuilding...");
       const built = await this.actions.rebuild();
+      if (this.quit) return 0;
       if (built !== 0) {
         // Keep any running instance: a broken build should not close the app.
         this.actions.log(`build failed with status ${built}; keeping the running app`);

@@ -288,10 +288,11 @@ export async function buildAndStage(root: string, stage: string): Promise<number
 }
 
 async function clean(state: string, root: string): Promise<number> {
-  // Commands take the lifecycle and image locks before their active lock, so
-  // cleanup needs all three to avoid deleting under a starting run.
-  const active = tryLock(join(state, "active.lock"));
-  const lifecycle = tryLock(join(state, "lifecycle.lock"));
+  // Commands take their VM's locks and the shared image lock, so cleanup needs
+  // all of them to avoid deleting under a starting run.
+  const name = vmName(root);
+  const active = tryLock(join(state, `${name}.active.lock`));
+  const lifecycle = tryLock(join(state, `${name}.lifecycle.lock`));
   const image = tryLock(join(state, "image.lock"));
   try {
     if (!active || !lifecycle || !image) throw new Error("a Linux VM command is active; retry after it finishes");
@@ -342,7 +343,9 @@ async function main(args: string[]): Promise<number> {
 
   const stage = join(root, "target/linux-vm/stage");
   const name = vmName(root);
-  const activePath = join(state, "active.lock");
+  // Each worktree owns a VM, so its locks name it; a command in one worktree
+  // must not block or strand another's guest.
+  const activePath = join(state, `${name}.active.lock`);
   let machine: Machine | undefined;
   let active: (() => void) | undefined;
   let devSession: (() => void) | undefined;
@@ -352,14 +355,14 @@ async function main(args: string[]): Promise<number> {
     if (options.mode === "dev") {
       // Two dev sessions in one guest would kill each other's app, since
       // stopping one asks the guest to end every huterm process.
-      devSession = await waitForLock(join(state, "dev.lock"), "this worktree's Linux dev session");
+      devSession = await waitForLock(join(state, `${name}.dev.lock`), "this worktree's Linux dev session");
     }
 
     // Lifecycle changes are exclusive; running commands only hold a shared lock,
     // so a dev session and an exec command can share one VM. Provisioning stays
     // inside it: releasing between phases would let cleanup delete the image
     // this command just selected.
-    const lifecycle = await waitForLock(join(state, "lifecycle.lock"), "another Linux VM command to finish starting or stopping the VM");
+    const lifecycle = await waitForLock(join(state, `${name}.lifecycle.lock`), "another command to finish starting or stopping this worktree's VM");
     try {
       const image = await ensureImage(root, state);
       if (vmMissing(name)) capture(["tart", "clone", image, name]);
@@ -417,7 +420,7 @@ async function main(args: string[]): Promise<number> {
     active?.();
     // Whoever leaves last stops the VM, even if another run booted it; a
     // command that started meanwhile still holds the shared lock.
-    const lifecycle = tryLock(join(state, "lifecycle.lock"));
+    const lifecycle = tryLock(join(state, `${name}.lifecycle.lock`));
     const exclusive = lifecycle ? tryLock(activePath) : undefined;
     try {
       if (exclusive) {
