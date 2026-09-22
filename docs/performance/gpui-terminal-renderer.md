@@ -756,7 +756,7 @@ VM smokes. Baseline p95 measured 2.910 / 5.460 ms; step 4 measured
 65 to 69 matching paint samples, and maximum in-flight and queued counts of one.
 The latest pairs show a scroll-latency penalty despite earlier close pairs;
 its cause remains unresolved. Do not claim latency neutrality or improvement
-from this change. Investigate that difference before proposing the follow-up PR.
+from this change. That difference prompted the repeat measurements below.
 No new idle-CPU or power-saving claim is made; the recurring pump timer remains.
 
 Controlled-time tests cover hold extension, fade completion, settled hover,
@@ -778,3 +778,44 @@ new regression failed on that opacity assertion before explicit scheduling
 after layout changes, then passed. Tab layout also rearms after render-time
 hover and drag-geometry changes; reveal no longer registers a second GPUI
 animation callback from rendering.
+
+### Animation review follow-up (2026-09-23)
+
+At `106b57b`, drag release renews the scrollbar expansion hold even when no
+animation ticks occurred during a long interaction. Deadline extensions also
+reuse an earlier armed timer: that wake consults current work and rearms if
+needed. Earlier required deadlines still preempt the timer, and removing the
+last deadline cancels it. Both controlled-time regressions failed at their
+intended assertions before the fixes.
+
+After Time Machine finished, comparisons used the preserved `4723405` baseline
+and the corrected `fbcb2d1` release binary on the same 120 Hz display. No build
+or VM smoke ran during measurement. Background macOS services remained active;
+the short-run set began with a one-minute load average of 14.37. The order was
+baseline, branch, branch, baseline, then the same order again.
+
+| Build | P95 input-to-matching-paint encoding, four short runs |
+| --- | --- |
+| Baseline `4723405` | 16.878 / 9.630 / 10.574 / 9.641 ms |
+| Corrected branch `fbcb2d1` | 9.557 / 9.148 / 9.953 / 9.915 ms |
+
+Each run supplied 70 post-warmup snapshot samples and 65 to 70 matching paint
+samples. All budgets passed and maximum in-flight and queued counts stayed at
+one. An additional longer collection used the unchanged workload and budget
+checker with a temporary runner collecting 750 snapshots instead of 75. That
+window includes the workload's live output after four seconds, so it is not a
+like-for-like extension of the initial static portion. Baseline p95 was
+6.254 / 9.895 ms; branch p95 was 10.335 / 9.931 ms. All budgets passed.
+
+These repeats did not reproduce a consistent branch-specific latency penalty.
+The earlier slower results remain recorded; host and UI reply-delivery timing
+still limit attribution. This is evidence against the earlier large consistent
+gap, not proof of identical latency or a speedup. The timer change fixes churn
+in real scroll/hover activity; the synthetic driver does not activate scrollbar
+holds, so its measurements cannot establish a gain from timer reuse.
+
+`mise run verify` passed at `fbcb2d1`, including 396 GPUI tests and 463 script
+tests. The post-fix native refresh smoke passed hold/fade, same-grid resize,
+paused-frame expiry, bounded scroll admission, and stale callback cleanup. It
+recorded 48 intermediate fade samples at a median 8.299 ms, with delivered
+callbacks at 8.328 ms. The built-in display remains at 120 Hz.

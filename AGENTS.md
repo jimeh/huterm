@@ -348,7 +348,9 @@ can require a future wake without a redraw. Entity notifications arm animations;
 render-time layout changes must also rearm them, including resizes within one
 grid cell. Release removes their weak registrations. Keep runtime retries and
 lifecycle progress independent of display frames. The remaining pump samples
-reveal input but must not also advance migrated animations.
+reveal input but must not also advance migrated animations. Reuse an armed earlier
+deadline when a hold extends; do not allocate a timer per interaction. Interaction
+endings must renew holds explicitly because settled drags and hovers have no ticks.
 Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
 as the
@@ -423,7 +425,7 @@ cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus
 during the drag to avoid false application focus-out/in reports. TabStrip owns
 pixel geometry for rendering, reveal, wheel input, and drag slots;
 WorkspaceView owns its only scroll offset. Include that offset in drop
-mapping. Edge autoscroll runs in the window refresh pump with bounded elapsed
+mapping. Edge autoscroll runs on the window animation clock with bounded elapsed
 time. Manual scrolling must not pin the active tab. Pass the same preferred
 sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
 retained views on resize and before activation. Resolve window-size caps

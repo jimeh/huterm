@@ -566,9 +566,11 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    and reveal's hold-to-fade boundary. The native refresh smoke covers animation
    cadence, idle completion, bell expiry while frames stop, and stale callbacks.
    Physical display runs passed at 60 Hz and 120 Hz on 2026-09-22.
-   Final scroll comparisons passed the budgets but showed higher p95 than the
-   baseline; investigate that difference before a PR. See the renderer
-   performance report for both the close intermediate and slower final pairs.
+   Review fixes renew expansion holds after settled drags and reuse earlier
+   deadline timers when holds extend. Repeat scroll comparisons on 2026-09-23
+   passed all budgets without reproducing a consistent branch-specific penalty.
+   See the renderer performance report for the earlier slower pairs, repeated
+   measurements, and attribution limits.
 5. **Pointer-driven reveal.**
 6. **Call-site triggers.** `resume_close`, `refresh_palette`, and
    `retry_client_messages`.
