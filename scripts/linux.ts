@@ -45,6 +45,20 @@ export function argumentsFor(args: string[]): { mode: Mode; arch: string; comman
   return { mode, arch, command: selected };
 }
 
+const imageInputs = [
+  ["scripts/linux/Dockerfile", "Dockerfile"],
+  ["scripts/linux/entrypoint.sh", "entrypoint.sh"],
+  ["mise.toml", "mise.toml"], ["mise.lock", "mise.lock"],
+  ["rust-toolchain.toml", "rust-toolchain.toml"],
+] as const;
+
+/** Image reuse depends on the tool and container inputs, not on source edits. */
+export function imageName(root: string, arch: Architecture): string {
+  const digest = createHash("sha256");
+  for (const [source] of imageInputs) digest.update(source).update("\0").update(readFileSync(join(root, source)));
+  return `huterm-linux:${arch}-${digest.digest("hex").slice(0, 16)}`;
+}
+
 export function cacheNames(root: string, arch: Architecture) {
   const worktree = createHash("sha256").update(root).digest("hex").slice(0, 16);
   const name = `huterm-linux-${worktree}-${arch}`;
@@ -130,15 +144,7 @@ async function main(args: string[]): Promise<number> {
     throw new Error(`cannot resolve source commit time: ${sourceDateEpoch.stderr.toString().trim()}`);
   }
 
-  const inputs = [
-    ["scripts/linux/Dockerfile", "Dockerfile"],
-    ["scripts/linux/entrypoint.sh", "entrypoint.sh"],
-    ["mise.toml", "mise.toml"], ["mise.lock", "mise.lock"],
-    ["rust-toolchain.toml", "rust-toolchain.toml"],
-  ] as const;
-  const digest = createHash("sha256");
-  for (const [source] of inputs) digest.update(source).update("\0").update(readFileSync(join(root, source)));
-  const image = `huterm-linux:${arch}-${digest.digest("hex").slice(0, 16)}`;
+  const image = imageName(root, arch);
   console.log(`Linux ${arch}${arch !== architecture(daemonArch!) ? " (emulated)" : " (native)"}: ${options.command.join(" ")}`);
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let container: string | undefined;
@@ -162,7 +168,7 @@ async function main(args: string[]): Promise<number> {
     if (capture(["image", "inspect", image], false) === undefined) {
       const context = mkdtempSync(join(tmpdir(), "huterm-linux-build-"));
       try {
-        for (const [source, target] of inputs) copyFileSync(join(root, source), join(context, target));
+        for (const [source, target] of imageInputs) copyFileSync(join(root, source), join(context, target));
         const status = await run(["docker", "build", "--load", "--platform", `linux/${arch}`, "--tag", image, context]);
         if (status !== 0) return status;
       } finally { rmSync(context, { recursive: true, force: true }); }

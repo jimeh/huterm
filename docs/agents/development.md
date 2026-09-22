@@ -131,6 +131,113 @@ the command. AMD64 execution on an ARM64 engine uses emulation and can be
 slower than native ARM64. Native x86_64 CI remains the architecture-specific
 check.
 
+## macOS smokes through Tart
+
+On Apple Silicon, the macOS desktop smokes can run in a disposable
+[Tart](https://tart.run) VM instead of on the host display. The VM keeps smoke
+windows, focus changes, fullscreen Spaces, cursor warps, and global hotkeys off
+the host, so parallel sessions do not collide. Install Tart first; these
+tasks sit alongside the host `smoke:macos-*` tasks and do not replace them.
+
+```sh
+mise run vm:macos:smoke
+mise run vm:macos:smoke -- macos-quake
+mise run vm:macos:exec -- \
+  bun scripts/check-palette.ts target/debug/examples/palette_smoke
+mise run vm:macos:dev
+mise run vm:macos:clean
+```
+
+`vm:macos:smoke` builds the CI smoke binaries on the host, then runs
+`ci:smoke:run`, or the named `HUTERM_CI_SMOKE_STEP`, in a headless guest.
+`vm:macos:exec` runs a command against whatever host outputs already exist and
+does not build. `vm:macos:dev` builds `target/debug/huterm`, opens a Tart
+window, and streams the app's output to the host terminal.
+
+`dev` then stays in charge of that instance so an edit costs a rebuild instead
+of another boot. Press `r` to rebuild and replace the running app, `w` to
+toggle watching the source trees, and `q` to quit. A save while watching
+rebuilds automatically, and edits arriving during a build collapse into one
+follow-up cycle. A failed build leaves the running app alone. Quitting Huterm
+inside the VM returns to the same prompt rather than ending the session, and
+`q` stops the VM while keeping it, so anything installed or configured in it
+survives. One dev session runs per worktree at a time. With a warm build the
+cycle is about 6 seconds, against roughly 35 for a boot.
+
+The first run pulls the digest-pinned Cirrus Labs macOS 27 base image (about
+33 GB) and provisions a local `huterm-macos-<hash>` image with pinned Mise,
+Bun from `mise.lock`, and tmux. The hash covers the base image,
+`scripts/macos-vm/provision.sh`, and `mise.lock`. Every run clones that image
+through APFS copy-on-write, shares the checkout read-only, and copies the
+sources and host-built runtime outputs into the guest. Smokes and `exec` delete
+their clone afterwards; `dev` keeps `huterm-macos-vm-<hash>` for next time. A
+kept dev VM still uses the image it was cloned from, so remove it with
+`vm:macos:clean` to pick up a newer one. Expect about 35 seconds of overhead
+per run. The guest never compiles, so its macOS version must satisfy host-built
+binaries: Swift witnesses built with Xcode 27 require macOS 27.
+
+Virtualization.framework runs at most two macOS guests per host. The runner
+queues for one of two slots, shared by every worktree, and waits up to 30
+minutes. macOS VMs started outside these tasks, including other Tart, UTM, or
+Parallels guests, also count toward the limit; Tart then fails with "The
+number of VMs exceeds the system limit".
+
+`vm:macos:clean` removes provisioned images, this worktree's kept dev VM, and
+leftover run VMs once no run holds a slot. Other worktrees keep their own dev
+VMs. The base image stays cached; remove it with
+`tart delete <image>` using the reference printed by the task. The guest has
+one 1280x800 display without a notch, and paravirtualized Metal, so keep
+benchmarks, notch and safe-area checks, and multi-display QA on real hardware.
+
+## Interactive Linux desktop through Tart
+
+On Apple Silicon, `vm:linux:*` runs a Linux build in a GNOME desktop VM. Docker
+stays the path for Linux tests and smokes; this VM is for manual and visual QA
+that needs a real desktop session, a window manager, a file manager, or
+Wayland. Install Tart first.
+
+```sh
+mise run vm:linux:dev
+mise run vm:linux:dev:x11
+mise run vm:linux:exec -- uname -a
+mise run vm:linux:clean
+```
+
+`vm:linux:dev` builds `huterm` in the pinned Ubuntu 22.04 container, copies the
+executable and terminfo out of the container's workspace volume, boots this
+worktree's VM with a window, and runs the binary in the desktop session with its
+output streamed to the host terminal. It then keeps the same `r`, `w` and `q`
+controls as the macOS session, rebuilding through the container and replacing
+the running instance in place; a warm rebuild cycle is a few seconds. `q` stops
+the VM. The VM
+itself is kept, so installed packages and files survive; a run with a warm
+container build takes about 20 seconds end to end, of which the guest boots in
+roughly 8. `vm:linux:dev` uses the GNOME Wayland session, where Huterm runs
+through XWayland, and `vm:linux:dev:x11` uses GNOME on Xorg. Switching sessions
+restarts GDM and takes about 25 seconds; running the same session again does
+not. `vm:linux:exec` runs any command in that session and does not build.
+
+The first run pulls the digest-pinned Ubuntu 24.04 base image (about 3 GB) and
+provisions `huterm-linux-image-<hash>` with GNOME, GDM autologin, software
+Vulkan, and fonts. The hash covers the base image and
+`scripts/linux-vm/provision.sh`. Ubuntu 24.04 is deliberate: it is the last LTS
+shipping both the Wayland and Xorg GNOME sessions. Expect about 7 GB for the
+image plus each worktree's VM.
+
+Cross-compiling from macOS is not supported. `huterm-gpui` links Linux system
+libraries, and the container reproduces the glibc 2.35 ABI ceiling that CI and
+packaging depend on. Tart guests are arm64 only, because
+Virtualization.framework does not emulate; use the container's `--arch amd64`
+emulation for x86_64 checks.
+
+A dev session and an `exec` command can share one VM. Commands hold a shared
+lock for their duration, and only the last one out stops the VM. Changing
+sessions requires that no other command is running.
+
+`vm:linux:clean` removes the provisioned image and this worktree's VM once no
+command is active; other worktrees keep their own. The base image stays cached;
+remove it with `tart delete` using the reference the task prints.
+
 The initial desktop client runs on macOS and Linux:
 
 ```sh

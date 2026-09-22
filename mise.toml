@@ -493,7 +493,7 @@ run = "bun test scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
-run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh"
+run = "bash -n scripts/ci-toolchain.sh && bash -n scripts/build-exec.sh && bash -n scripts/headless.sh && bash -n scripts/linux/entrypoint.sh && bash -n scripts/macos-vm/provision.sh && bash -n scripts/macos-vm/guest.sh && bash -n scripts/linux-vm/provision.sh && bash -n scripts/linux-vm/guest.sh"
 
 [tasks."check:scripts"]
 description = "Check TypeScript tooling and shell scripts"
@@ -977,6 +977,43 @@ run = "bun scripts/linux.ts exec"
 [tasks."linux:clean"]
 description = "Remove this worktree's Linux cache volumes for the selected architecture"
 run = "bun scripts/linux.ts clean"
+
+[tasks."vm:macos:smoke"]
+description = "Run macOS desktop smokes in a disposable headless Tart VM, optionally one step"
+depends = ["ghostty:prepare", "sparkle:prepare"]
+run = "mise run ci:smoke:build && bun scripts/macos-vm.ts smoke"
+
+[tasks."vm:macos:exec"]
+description = "Run a command against host-built outputs in a disposable headless Tart VM"
+run = "bun scripts/macos-vm.ts exec"
+
+[tasks."vm:macos:dev"]
+description = "Run Huterm in this worktree's Tart VM window, rebuilding on request"
+depends = ["ghostty:prepare", "terminfo:prepare"]
+run = "bun scripts/macos-vm.ts dev"
+raw = true
+
+[tasks."vm:macos:clean"]
+description = "Remove Huterm's provisioned and leftover Tart VMs"
+run = "bun scripts/macos-vm.ts clean"
+
+[tasks."vm:linux:dev"]
+description = "Run Huterm in a persistent Tart VM's GNOME Wayland session, rebuilding on request"
+run = "bun scripts/linux-vm.ts dev"
+raw = true
+
+[tasks."vm:linux:dev:x11"]
+description = "Run Huterm in a persistent Tart VM's GNOME Xorg session, rebuilding on request"
+run = "bun scripts/linux-vm.ts dev --session x11"
+raw = true
+
+[tasks."vm:linux:exec"]
+description = "Run a command in this worktree's Linux VM desktop session"
+run = "bun scripts/linux-vm.ts exec"
+
+[tasks."vm:linux:clean"]
+description = "Remove Huterm's provisioned and per-worktree Linux Tart VMs"
+run = "bun scripts/linux-vm.ts clean"
 
 [tasks."bench:links"]
 depends = ["ghostty:prepare"]
