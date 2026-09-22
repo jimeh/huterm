@@ -1,40 +1,6 @@
 name: Release
 
 on:
-  workflow_call:
-    inputs:
-      publish:
-        description: Publish the existing draft release after verification
-        required: true
-        type: boolean
-      sha:
-        description: Expected workflow event SHA (must equal github.sha)
-        required: true
-        type: string
-      tag:
-        description: Exact tag associated with the draft release
-        required: true
-        type: string
-      version:
-        description: Exact release version without the v prefix
-        required: true
-        type: string
-    secrets:
-      RELEASE_BOT_PRIVATE_KEY:
-        description: Private key for the release bot GitHub App
-        required: true
-      MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64:
-        description: Base64-encoded Developer ID Application identity
-        required: true
-      MACOS_DEVELOPER_ID_APPLICATION_P12_PASSWORD:
-        description: Password for the Developer ID PKCS#12 identity
-        required: true
-      APPLE_NOTARIZATION_KEY_P8_BASE64:
-        description: Base64-encoded App Store Connect API private key
-        required: true
-      SPARKLE_EDDSA_PRIVATE_KEY:
-        description: Repository secret for appcast signing, required when publishing
-        required: false
   workflow_dispatch:
     inputs:
       publish:
@@ -72,6 +38,7 @@ jobs:
     name: Validate release inputs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: read
     outputs:
@@ -97,12 +64,10 @@ jobs:
           # Fail before expensive builds if the workflow identity cannot issue
           # attestations for this release source.
           if [[ "$RELEASE_PUBLISH" == true ]]; then
-            if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
-              :
-            elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]; then
               :
             else
-              echo "publishing attestations requires the normal main ref or an exact-tag recovery dispatch" >&2
+              echo "publishing attestations requires an exact-tag dispatch" >&2
               exit 1
             fi
           fi
@@ -169,6 +134,7 @@ jobs:
     needs: preflight
     runs-on: macos-15
     timeout-minutes: 90
+    environment: release
     permissions:
       contents: read
     outputs:
@@ -558,13 +524,10 @@ jobs:
             echo "workflow source SHA $GITHUB_SHA does not match release SHA $RELEASE_SHA" >&2
             exit 1
           fi
-          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
-            exit 0
-          fi
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]; then
             exit 0
           fi
-          echo "publishing attestations requires the normal main ref or an exact-tag recovery dispatch" >&2
+          echo "publishing attestations requires an exact-tag dispatch" >&2
           exit 1
 
       - name: Check out exact release commit

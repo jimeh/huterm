@@ -2,8 +2,11 @@
 
 Huterm uses Release Please to maintain one release pull request on `main`.
 Merging that pull request creates a `v<version>` tag and a draft GitHub Release.
-The same workflow passes Release Please's exact SHA, tag, and version outputs to
-the reusable release workflow. There is no independent tag trigger.
+Release Please dispatches a separate `Release` workflow at the exact release
+tag, passing its SHA, tag, and version outputs. There is no tag-push trigger.
+The dispatch job uses `GITHUB_TOKEN` with Actions write permission. A successful
+Release Please run confirms dispatch; monitor the separate Release run for the
+build and publication result.
 
 The first public release is `v0.1.0`. Later versions follow conventional commit
 types: `fix` produces a patch, `feat` produces a minor release, and a breaking
@@ -13,14 +16,15 @@ version.
 ## Repository configuration
 
 Install a GitHub App on the repository with read/write access to Contents,
-Issues, and Pull requests. Add these GitHub Actions variables:
+Issues, and Pull requests. Create a protected GitHub Environment named `release`
+and add these GitHub Actions variables to it:
 
 - `RELEASE_BOT_CLIENT_ID`: client ID of the installed GitHub App.
 - `APPLE_TEAM_ID`: ten-character Apple Developer team ID.
 - `APPLE_NOTARIZATION_KEY_ID`: ten-character App Store Connect API key ID.
 - `APPLE_NOTARIZATION_ISSUER_ID`: App Store Connect API issuer UUID.
 
-Add these GitHub Actions repository secrets:
+Add these GitHub Actions secrets to the `release` environment:
 
 - `RELEASE_BOT_PRIVATE_KEY`: PEM private key downloaded for the GitHub App.
 - `MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`: base64-encoded Developer ID
@@ -35,13 +39,42 @@ Connect key must match the configured key and issuer IDs and have permission to
 submit notarization requests. Keep all secret values out of the repository
 and workflow logs.
 
-Create a protected GitHub Environment named `release`. Restrict it to the
-production branch and recovery tags. Only the publishing job enters the
-environment. Release Please explicitly forwards `SPARKLE_EDDSA_PRIVATE_KEY` to
-the reusable release workflow, which exposes it only to the appcast signing
-step. Repository secrets can also be referenced by other repository workflows.
-Do not keep an environment secret with the same name: it would override the
-repository secret in the publishing job.
+Create a separate `release-please` environment with the `RELEASE_BOT_CLIENT_ID`
+variable and `RELEASE_BOT_PRIVATE_KEY` secret. Release Please uses this environment
+to maintain the release PR and create the draft release. Keep both bot credentials
+in `release` too: preflight and publication use them for draft validation and
+publishing.
+
+Allow `main` in the `release-please` environment's deployment rules. Allow `main`
+and release tags (`v*`) in `release`, which preflight, macOS signing, and
+publication enter. Required reviewers apply independently to each environment;
+release PR maintenance follows the `release-please` rules. Manual verification
+from another branch requires explicitly allowing that branch in `release`.
+
+Protect `refs/tags/v*` with active repository rulesets before publishing:
+
+- Restrict creation, allowing only the Release Please GitHub App to bypass.
+- Restrict updates and deletions in a separate ruleset with no bypass actors,
+  so permission to create a release tag does not permit retargeting it.
+
+Environment deployment rules control job access, not tag mutation. Workflow SHA
+checks cannot prevent a tag change between validation and publication. Keep
+these tag rules separate from the environment reviewer rules above. Recover a
+failed release using its existing tag; publish a new version to change its source.
+
+Jobs in the same environment can reference all its secrets. The workflows only
+reference Apple credentials in the macOS signing step and the Sparkle private
+key in the publication step. Linux builds, assembly, candidate verification,
+and dispatch do not enter the environment.
+
+To migrate existing repository credentials, first land these workflow changes,
+then add the variables and original secret values to the environments described
+above. GitHub cannot return existing secret values; use the original credentials
+or encrypted backup.
+Environment values take precedence while both scopes exist. Remove the
+repository copies after verifying both environment configurations. Existing tags
+retain their old workflow definitions, so these changes apply to tags created
+from commits containing the updated workflows.
 
 ## Sparkle signing authority
 
@@ -61,17 +94,17 @@ sparkle_key_dir="$(mktemp -d)"
 Commit `assets/macos/SparklePublicKey`. The release package injects it as
 `SUPublicEDKey`; the source `assets/macos/Info.plist` remains Sparkle-free. Store
 the exact exported private-key contents as the
-`SPARKLE_EDDSA_PRIVATE_KEY` repository secret and keep an encrypted offline
+`SPARKLE_EDDSA_PRIVATE_KEY` environment secret and keep an encrypted offline
 recovery copy. Ordinary builds and `mise run package:macos` need neither key.
 
 ```sh
-gh secret set --repo jimeh/huterm \
+gh secret set --repo jimeh/huterm --env release \
   SPARKLE_EDDSA_PRIVATE_KEY \
   < "$sparkle_key_dir/huterm-sparkle-private-key"
 ```
 
 After checking the secret name with
-`gh secret list --repo jimeh/huterm`, delete the transient export.
+`gh secret list --repo jimeh/huterm --env release`, delete the transient export.
 GitHub never returns the secret value. Keep the Keychain item created by
 `generate_keys` unless deliberately transferring update authority to another
 trusted Mac.
@@ -96,8 +129,7 @@ assembly:
    preflight requires the supplied SHA to match before checkout, then validates
    the checked-out source, Cargo package versions, and committed schemas.
    Publishing mode subsequently mints a short-lived token to validate the exact
-   tag and draft target; manual
-   verification does not receive that release credential.
+   tag and draft target; manual verification does not mint that token.
 2. An Apple Silicon runner runs `package:macos-release`, which builds the
    updater-enabled universal app, injects the committed public key and production
    feed, and copies the verified Sparkle framework. It signs every retained
@@ -185,13 +217,14 @@ required.
 Before checkout, the workflow requires the supplied SHA to match `github.sha`.
 It also requires ancestry on `main`, except for the exact branch commit selected
 by a manual, non-publishing dispatch. It verifies the checkout and Cargo versions
-again before exposing the signing and
-notarization credentials. Publishing always requires ancestry on `main`.
+again before using the signing and notarization credentials. The preflight and
+macOS jobs require release environment access even in verification mode.
+Publishing always requires ancestry on `main`.
 
 Verification mode does not inspect, create, update, or publish a GitHub Release
-or tag. It never receives the production Sparkle private key or attestation
-authority. It does submit the app to Apple's notarization service and creates
-the temporary Actions artifact.
+or tag. It never references the production Sparkle private key or receives
+attestation authority. It does submit the app to Apple's notarization service
+and creates the temporary Actions artifact.
 
 This does not verify the production Sparkle private key, draft-asset uploads,
 GitHub attestation issuance, final publication, or the public updater feed.
@@ -207,10 +240,10 @@ revalidates this source identity before rebuilding the artifacts, replaces the
 ten expected assets when they already exist, and refuses to publish if the
 draft contains any unexpected asset.
 
-A manual dispatch of the outer `Release Please` workflow runs from a branch and
-therefore cannot publish attestations. If it creates a draft and tag, finish it
-through the exact-tag recovery dispatch above. Automatic `main` push runs remain
-the normal publishing path.
+Both automatic and manual runs of `Release Please` dispatch the separate release
+workflow at the newly created tag. Manual recovery uses that same exact-tag
+publication path. If dispatch fails after creating the draft, use this recovery
+procedure; rerunning Release Please may not report that release as newly created.
 
 ## Linux package contract
 
