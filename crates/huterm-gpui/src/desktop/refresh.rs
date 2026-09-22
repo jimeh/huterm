@@ -242,6 +242,7 @@ impl FrameClock {
             .iter()
             .filter_map(|entry| entry.schedule.deadline)
             .min();
+        let next = deadline_to_arm(self.deadline.get(), next);
         if self.deadline.replace(next) == next {
             return;
         }
@@ -293,9 +294,44 @@ impl FrameClock {
     }
 }
 
+fn deadline_to_arm(
+    armed: Option<Instant>,
+    required: Option<Instant>,
+) -> Option<Instant> {
+    // Extending a hold can reuse an earlier wake. It will recheck current work
+    // and arm the later deadline, avoiding one platform timer per input event.
+    match (armed, required) {
+        (Some(armed), Some(required)) => Some(armed.min(required)),
+        (_, required) => required,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hold_extensions_reuse_the_pending_wake_but_earlier_work_preempts_it() {
+        use std::time::Duration;
+        let now = Instant::now();
+        let first = now + Duration::from_secs(2);
+        let mut armed = deadline_to_arm(None, Some(first));
+        for offset in 1..100 {
+            let extended = first + Duration::from_millis(offset);
+            armed = deadline_to_arm(armed, Some(extended));
+            assert_eq!(
+                armed,
+                Some(first),
+                "extensions must reuse the pending timer"
+            );
+        }
+        let earlier = now + Duration::from_millis(100);
+        assert_eq!(deadline_to_arm(armed, Some(earlier)), Some(earlier));
+        assert_eq!(deadline_to_arm(armed, None), None);
+        // Once the old wake fires, the still-required later deadline is armed.
+        let later = first + Duration::from_secs(1);
+        assert_eq!(deadline_to_arm(None, Some(later)), Some(later));
+    }
 
     #[test]
     fn output_admission_per_frame_with_immediate_first_update_after_idle() {

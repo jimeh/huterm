@@ -849,6 +849,7 @@ impl Scrollbars {
         for (_, scrollbar) in self.enabled_mut() {
             if scrollbar.drag.take().is_some() {
                 scrollbar.visibility.activate(now);
+                scrollbar.expand(now);
                 released = true;
             }
         }
@@ -924,6 +925,51 @@ mod tests {
 
     fn vertical(expand_on_hover: bool, track_press: TrackPress) -> Scrollbars {
         Scrollbars::vertical(options(expand_on_hover, track_press))
+    }
+
+    #[test]
+    fn settled_drag_release_restarts_the_expanded_hold() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometry = rows(400.0, 32.0, 100.0, 50.0).unwrap();
+        let geometries = ScrollbarGeometries::vertical(Some(geometry));
+        let mut scrollbars = Scrollbars::vertical(ScrollbarOptions {
+            hold: Duration::from_secs(10),
+            ..options(true, TrackPress::Jump)
+        });
+        scrollbars.show(Axis::Vertical, now);
+        assert_eq!(
+            scrollbars.press(
+                &geometries,
+                bounds,
+                point(px(95.0), px(geometry.thumb_start + 5.0)),
+                now
+            ),
+            Some((Axis::Vertical, Press::Grabbed))
+        );
+        scrollbars.advance(now + SCROLLBAR_EXPAND);
+        assert_eq!(
+            scrollbars.schedule(now + SCROLLBAR_EXPAND),
+            AnimationSchedule::IDLE
+        );
+        // The idle scheduler does not advance a settled off-strip drag.
+        let released = now + Duration::from_secs(30);
+        assert!(scrollbars.release(released));
+        scrollbars.advance(released);
+        assert!(
+            (scrollbars.vertical.as_ref().unwrap().expansion.progress - 1.0)
+                .abs()
+                < f32::EPSILON
+        );
+        let deadline = released + SCROLLBAR_EXPANDED_HOLD;
+        assert_eq!(
+            scrollbars.schedule(released),
+            AnimationSchedule::at(deadline)
+        );
+        scrollbars.advance(deadline + SCROLLBAR_EXPAND / 2);
+        let progress = scrollbars.vertical.as_ref().unwrap().expansion.progress;
+        assert!(progress > 0.0 && progress < 1.0);
     }
 
     #[test]
