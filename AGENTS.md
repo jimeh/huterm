@@ -123,9 +123,14 @@ exact Actions artifact ID and digest.
 Release Please requires a scalar `package.version` in the root and every member
 manifest. Keep internal exact versions centralized in `workspace.dependencies`
 and annotate those lines with `# x-release-please-version`; the generic extra
-Cargo.toml updater advances them with the package versions. The release workflow
-must receive Release Please's exact SHA, tag, and version outputs, validate the
-matching draft, and publish only after remote asset names, sizes, and digests
+Cargo.toml updater advances them with the package versions. Release Please must
+dispatch the independent release workflow at its exact tag,
+passing its SHA, tag, and version outputs. Release Please reads bot credentials
+from `release-please`; release preflight, signing, and publication use `release`.
+Keep bot credentials in both environments. Do not forward secrets through
+`workflow_call`.
+The release workflow must validate the matching draft and publish only after
+remote asset names, sizes, and digests
 match. Keep the final release draft on every earlier failure.
 Manual verification is non-publishing by default. It validates a SHA and version
 from `main` or the exact branch commit selected by manual dispatch, exercises

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -222,5 +222,39 @@ test("local release verification rejects missing, extra, empty, and changed sche
     await rm(join(root, "extra"));
     await writeFile(join(root, names.payloads[0]!), "");
     await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).rejects.toThrow("empty");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("release dispatch passes the exact release outputs and propagates dispatch failures", async () => {
+  type Step = { run: string; env: Record<string, string> };
+  type Job = { if: string; permissions: Record<string, string>; steps: Step[] };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release-please.yml"), "utf8")) as { jobs: Record<string, Job> };
+  const job = workflow.jobs["dispatch-release"]!;
+  expect(job.if).toBe("needs.release-please.outputs.release_created == 'true'");
+  expect(job.permissions).toEqual({ actions: "write", contents: "read" });
+  const step = job.steps[0]!;
+  expect(step.env).toEqual({
+    GH_TOKEN: "${{ github.token }}",
+    RELEASE_SHA: "${{ needs.release-please.outputs.sha }}",
+    RELEASE_TAG: "${{ needs.release-please.outputs.tag }}",
+    RELEASE_VERSION: "${{ needs.release-please.outputs.version }}",
+  });
+  const root = await mkdtemp(join(tmpdir(), "huterm-release-dispatch-"));
+  try {
+    const gh = join(root, "gh");
+    await writeFile(gh, '#!/bin/bash\nprintf "%s\\n" "$@" > "$TEST_ARGUMENTS"\nexit "$TEST_EXIT"\n');
+    await chmod(gh, 0o755);
+    for (const status of [0, 1]) {
+      const result = Bun.spawnSync(["bash", "-c", step.run], { env: {
+        ...process.env, PATH: `${root}:${process.env.PATH}`, GITHUB_REPOSITORY: "fixture/huterm",
+        RELEASE_SHA: inputs.sha, RELEASE_TAG: inputs.tag, RELEASE_VERSION: inputs.version,
+        TEST_ARGUMENTS: join(root, "arguments"), TEST_EXIT: String(status),
+      } });
+      expect(result.exitCode, result.stderr.toString()).toBe(status);
+      expect((await readFile(join(root, "arguments"), "utf8")).trim().split("\n")).toEqual([
+        "workflow", "run", "release.yml", "--repo", "fixture/huterm", "--ref", inputs.tag,
+        "-f", "publish=true", "-f", `sha=${inputs.sha}`, "-f", `tag=${inputs.tag}`, "-f", `version=${inputs.version}`,
+      ]);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

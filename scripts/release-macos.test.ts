@@ -113,7 +113,7 @@ test("package verification checks static linkage without rg and rejects failed i
   }
 });
 
-test("pre-checkout guard permits exact branch verification but keeps publishing on main", async () => {
+test("pre-checkout guard permits exact branch verification but requires tag dispatch for publishing", async () => {
   const workflow = Bun.YAML.parse(await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
     jobs: { preflight: { steps: { name?: string; run?: string }[] } };
   };
@@ -131,7 +131,9 @@ test("pre-checkout guard permits exact branch verification but keeps publishing 
       ["false", "workflow_dispatch", "refs/heads/fix", "b".repeat(40), "behind", 1],
       ["true", "workflow_dispatch", "refs/heads/main", inputs.sha, "identical", 1],
       ["true", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "identical", 0],
-      ["true", "push", "refs/heads/main", inputs.sha, "identical", 0],
+      ["true", "workflow_dispatch", "refs/tags/v0.2.0", inputs.sha, "identical", 1],
+      ["true", "workflow_dispatch", "refs/tags/v0.1.0", inputs.sha, "behind", 1],
+      ["true", "push", "refs/heads/main", inputs.sha, "identical", 1],
       ["true", "push", "refs/heads/main", "b".repeat(40), "ahead", 1],
       ["false", "workflow_dispatch", "refs/heads/main", "b".repeat(40), "ahead", 1],
       ["false", "workflow_dispatch", "refs/heads/fix", "invalid", "ahead", 1],
@@ -321,7 +323,7 @@ test("macOS CI prepares Sparkle before compiling updater smokes", async () => {
   expect(steps[prepare]!.run).toContain("mise run sparkle:prepare");
 });
 
-test("release workflows use the documented repository credential names", async () => {
+test("release workflows read documented credentials from their own environments", async () => {
   const releasePleaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release-please.yml"), "utf8");
   const releaseWorkflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
   const releaseGuide = await readFile(resolve(repoRoot, "docs/agents/releases.md"), "utf8");
@@ -346,13 +348,20 @@ test("release workflows use the documented repository credential names", async (
   for (const secret of secrets) {
     expect(releaseGuide).toContain(`\`${secret}\``);
     expect(releaseWorkflow).toContain(`secrets.${secret}`);
-    expect(releasePleaseWorkflow).toContain(`secrets.${secret}`);
   }
-  const caller = Bun.YAML.parse(releasePleaseWorkflow) as {
-    jobs: Record<string, { secrets?: Record<string, string> }>;
-  };
-  expect(caller.jobs["build-release"]!.secrets?.SPARKLE_EDDSA_PRIVATE_KEY)
-    .toBe("${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}");
+  type Job = { environment?: string; secrets?: unknown };
+  const caller = Bun.YAML.parse(releasePleaseWorkflow) as { jobs: Record<string, Job> };
+  const release = Bun.YAML.parse(releaseWorkflow) as { on: Record<string, unknown>; jobs: Record<string, Job> };
+  expect(caller.jobs["release-please"]!.environment).toBe("release-please");
+  expect(releasePleaseWorkflow).toContain("secrets.RELEASE_BOT_PRIVATE_KEY");
+  for (const secret of secrets.slice(1)) expect(releasePleaseWorkflow).not.toContain(`secrets.${secret}`);
+  expect(caller.jobs["dispatch-release"]!.secrets).toBeUndefined();
+  expect(caller.jobs["dispatch-release"]!.environment).toBeUndefined();
+  expect(Object.keys(release.on)).toEqual(["workflow_dispatch"]);
+  for (const name of ["preflight", "macos", "publish"]) expect(release.jobs[name]!.environment).toBe("release");
+  for (const name of ["linux_x86_64", "linux_aarch64", "assemble", "verify_candidate"]) {
+    expect(release.jobs[name]!.environment).toBeUndefined();
+  }
 });
 
 test("manual verification signs without requiring or publishing a GitHub release", async () => {
@@ -371,7 +380,7 @@ test("manual verification signs without requiring or publishing a GitHub release
   expect(releaseWorkflow.slice(releaseWorkflow.indexOf("\n  publish:\n"))).toContain("if: inputs.publish");
 });
 
-test("protected publication alone receives updater signing and attestation authority", async () => {
+test("only publication references the updater key and receives attestation authority", async () => {
   const workflow = await readFile(resolve(repoRoot, ".github/workflows/release.yml"), "utf8");
   const jobs = workflow.indexOf("\njobs:\n");
   const publishJob = workflow.indexOf("\n  publish:\n");
