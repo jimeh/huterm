@@ -1,10 +1,11 @@
 /** Run Huterm's Linux desktop interactively in a persistent Tart VM. */
 import { dlopen } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, watch } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cacheNames, imageName as containerImage } from "./linux";
+import { DevSession, attachControls, stopWithFallback } from "./vm-dev-session";
 
 const repository = resolve(import.meta.dir, "..");
 /** Cirrus Labs Ubuntu 24.04, the last LTS shipping both GNOME sessions. */
@@ -13,6 +14,8 @@ export const BASE_IMAGE = "ghcr.io/cirruslabs/ubuntu@sha256:e1814edfeddabeaed5e6
 const ARCH = "arm64";
 const WORKSPACE = "/mnt/shared/huterm";
 const GUEST = `${WORKSPACE}/guest.sh`;
+/** Source trees whose edits change the dev build. */
+const WATCHED = ["crates", "src", "assets"];
 const READY_TIMEOUT_MS = 180_000;
 const LOCK_TIMEOUT_MS = 30 * 60_000;
 
@@ -113,6 +116,31 @@ async function run(command: string[]): Promise<number> {
   const status = await child.exited;
   child = undefined;
   return interrupted || status;
+}
+
+let appChild: ReturnType<typeof Bun.spawn> | undefined;
+
+/** Spawns without awaiting, so the dev loop can replace a running instance. */
+function spawnTart(args: string[]): Promise<number> {
+  const app = Bun.spawn(["tart", ...args], { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  child = app;
+  appChild = app;
+  return app.exited.then((status) => {
+    if (child === app) child = undefined;
+    if (appChild === app) appChild = undefined;
+    return status;
+  });
+}
+
+/** The guest agent can hold an exec session open after its process is gone, so
+ *  close the host side once the app has had a moment to exit on its own. */
+async function stopApp(name: string): Promise<void> {
+  const app = appChild;
+  await stopWithFallback(
+    () => { capture(["tart", "exec", name, "pkill", "-x", "huterm"], false); },
+    () => appChild !== app,
+    () => app?.kill("SIGKILL"),
+  );
 }
 
 const guestReady = (name: string) =>
@@ -275,10 +303,6 @@ async function main(args: string[]): Promise<number> {
   try {
     mkdirSync(stage, { recursive: true });
     copyFileSync(join(root, "scripts/linux-vm/guest.sh"), join(stage, "guest.sh"));
-    if (options.mode === "dev") {
-      const status = await buildAndStage(root, stage);
-      if (status !== 0) return status;
-    }
     const image = await ensureImage(root, state);
 
     // Lifecycle changes are exclusive; running commands only hold a shared lock,
@@ -312,7 +336,24 @@ async function main(args: string[]): Promise<number> {
     }
 
     console.log(`Linux VM ${name} (${options.session}): ${options.command.join(" ")}`);
-    return await run(guest(name, "run", ...options.command));
+    if (options.mode !== "dev") return await run(guest(name, "run", ...options.command));
+    // The share exposes the staged build directly, so no guest-side copy runs.
+    const session = new DevSession({
+      rebuild: () => buildAndStage(root, stage),
+      stage: () => Promise.resolve(0),
+      launch: () => spawnTart(["exec", name, "/bin/sh", GUEST, "run", ...options.command]),
+      stopApp: () => stopApp(name),
+      log: (message) => console.log(`[dev] ${message}`),
+    }, false, !process.stdin.isTTY);
+    const started = await session.start();
+    if (started !== 0) return started;
+    const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
+      (path, listener) => watch(path, { recursive: true }, listener));
+    try {
+      return await session.wait();
+    } finally {
+      detach();
+    }
   } finally {
     active?.();
     if (machine) {

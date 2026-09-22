@@ -799,6 +799,13 @@ lost. `tart clone` onto an existing name silently replaces that VM, so guard
 reuse with `tart get`. Changing the provisioning inputs renames the image and
 leaves the previous one on disk until `vm:{macos,linux}:clean` removes it.
 
+Both dev sessions keep one guest instance under host control, with `r` to
+rebuild and relaunch, `w` to toggle watching, and `q` to quit. Their Mise tasks
+set `raw = true`: Mise otherwise pipes task stdio to prefix output, so the
+runner sees no terminal and those keys never arrive. `tart exec` can outlive the
+guest process it started, so close the host side after asking the app to stop or
+the session hangs on quit.
+
 Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
 GNOME aborts its Wayland session with "No GSettings schemas are installed"
 unless provisioning runs `glib-compile-schemas` after installing the desktop,

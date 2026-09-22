@@ -152,10 +152,17 @@ mise run vm:macos:clean
 `ci:smoke:run`, or the named `HUTERM_CI_SMOKE_STEP`, in a headless guest.
 `vm:macos:exec` runs a command against whatever host outputs already exist and
 does not build. `vm:macos:dev` builds `target/debug/huterm`, opens a Tart
-window, and streams the app's output to the host terminal. Quitting Huterm or
-closing the window stops that VM but keeps it, like the Linux one, so anything
-installed or configured in it survives. One dev session runs per worktree at a
-time.
+window, and streams the app's output to the host terminal.
+
+`dev` then stays in charge of that instance so an edit costs a rebuild instead
+of another boot. Press `r` to rebuild and replace the running app, `w` to
+toggle watching the source trees, and `q` to quit. A save while watching
+rebuilds automatically, and edits arriving during a build collapse into one
+follow-up cycle. A failed build leaves the running app alone. Quitting Huterm
+inside the VM returns to the same prompt rather than ending the session, and
+`q` stops the VM while keeping it, so anything installed or configured in it
+survives. One dev session runs per worktree at a time. With a warm build the
+cycle is about 6 seconds, against roughly 35 for a boot.
 
 The first run pulls the digest-pinned Cirrus Labs macOS 27 base image (about
 33 GB) and provisions a local `huterm-macos-<hash>` image with pinned Mise,
@@ -198,7 +205,10 @@ mise run vm:linux:clean
 `vm:linux:dev` builds `huterm` in the pinned Ubuntu 22.04 container, copies the
 executable and terminfo out of the container's workspace volume, boots this
 worktree's VM with a window, and runs the binary in the desktop session with its
-output streamed to the host terminal. Quitting Huterm stops the VM. The VM
+output streamed to the host terminal. It then keeps the same `r`, `w` and `q`
+controls as the macOS session, rebuilding through the container and replacing
+the running instance in place; a warm rebuild cycle is a few seconds. `q` stops
+the VM. The VM
 itself is kept, so installed packages and files survive; a run with a warm
 container build takes about 20 seconds end to end, of which the guest boots in
 roughly 8. `vm:linux:dev` uses the GNOME Wayland session, where Huterm runs

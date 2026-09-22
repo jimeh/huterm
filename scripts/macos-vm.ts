@@ -1,9 +1,10 @@
 /** Run macOS desktop workflows in disposable Tart VMs so they never take over the host display. */
 import { dlopen } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { DevSession, attachControls, stopWithFallback } from "./vm-dev-session";
 
 const repository = resolve(import.meta.dir, "..");
 /** Cirrus Labs macOS 27 base image with auto-login, TCC grants, and the Tart guest agent. */
@@ -104,12 +105,48 @@ function capture(args: string[], required = true): string | undefined {
   return result.stdout.toString().trim();
 }
 
+/** Source trees whose edits change the dev build. */
+const WATCHED = ["crates", "src", "assets"];
+
 let child: ReturnType<typeof Bun.spawn> | undefined;
 
 async function run(args: string[]): Promise<number> {
   child = Bun.spawn(["tart", ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
   const status = await child.exited;
   child = undefined;
+  return interrupted || status;
+}
+
+let appChild: ReturnType<typeof Bun.spawn> | undefined;
+
+/** Spawns without awaiting, so the dev loop can replace a running instance. */
+function spawnTart(args: string[]): Promise<number> {
+  const app = Bun.spawn(["tart", ...args], { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  child = app;
+  appChild = app;
+  return app.exited.then((status) => {
+    if (child === app) child = undefined;
+    if (appChild === app) appChild = undefined;
+    return status;
+  });
+}
+
+/** The guest agent can hold an exec session open after its process is gone, so
+ *  close the host side once the app has had a moment to exit on its own. */
+async function stopApp(name: string): Promise<void> {
+  const app = appChild;
+  await stopWithFallback(
+    () => { capture(["exec", name, "pkill", "-x", "huterm"], false); },
+    () => appChild !== app,
+    () => app?.kill("SIGKILL"),
+  );
+}
+
+async function host(command: string[], root: string): Promise<number> {
+  const build = Bun.spawn(command, { cwd: root, stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  child = build;
+  const status = await build.exited;
+  if (child === build) child = undefined;
   return interrupted || status;
 }
 
@@ -209,6 +246,26 @@ async function clean(state: string): Promise<number> {
   }
 }
 
+/** Rebuilds and relaunches inside the running VM instead of booting again. */
+async function develop(root: string, target: string, command: string[]): Promise<number> {
+  const session = new DevSession({
+    rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm"], root),
+    stage: () => run(["exec", target, "/bin/sh", GUEST, "stage"]),
+    launch: () => spawnTart(["exec", target, "/bin/sh", GUEST, "exec", ...command]),
+    stopApp: () => stopApp(target),
+    log: (message) => console.log(`[dev] ${message}`),
+  }, false, !process.stdin.isTTY);
+  const status = await session.start();
+  if (status !== 0) return status;
+  const detach = attachControls(session, WATCHED.map((path) => join(root, path)),
+    (path, listener) => watch(path, { recursive: true }, listener));
+  try {
+    return await session.wait();
+  } finally {
+    detach();
+  }
+}
+
 async function main(args: string[]): Promise<number> {
   if (args[0] === "--help" || args[1] === "--help") {
   console.log("Usage: mise run vm:macos:{smoke [step],exec -- <command ...>,dev,clean}\nSmokes and exec use a disposable headless VM; dev runs target/debug/huterm in this worktree's persistent VM window.");
@@ -258,6 +315,10 @@ async function main(args: string[]): Promise<number> {
       if (!guestReady(target)) {
         machine = new Machine(target, root, options.graphics);
         await machine.ready();
+      }
+      if (persistent) {
+        console.log(`macOS VM ${target}: ${options.command.join(" ")}`);
+        return await develop(root, target, options.command);
       }
       let status = await run(["exec", target, "/bin/sh", GUEST, "stage"]);
       if (status !== 0) return status;

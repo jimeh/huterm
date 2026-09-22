@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BASE_IMAGE, argumentsFor, imageName, runName, tryLock, vmName } from "./macos-vm";
@@ -55,12 +55,18 @@ switch (args[0]) {
 }
 `);
   chmodSync(tart, 0o755);
+  // build-exec.sh execs its argument, so a fake cargo keeps dev runs from
+  // compiling the workspace during tests.
+  const cargo = join(directory, "cargo");
+  writeFileSync(cargo, `#!/bin/sh\necho "cargo $*" >> "$TART_TEST_LOG.cargo"\nexit \${CARGO_TEST_EXIT:-0}\n`);
+  chmodSync(cargo, 0o755);
   const state = join(directory, "state");
   const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TART_TEST_LOG: log, TART_TEST_VMS: vms, HUTERM_MACOS_VM_STATE: state, ...overrides };
   return {
     state,
     vms: () => readFileSync(vms, "utf8").split("\n").filter(Boolean),
     seed: (...names: string[]) => writeFileSync(vms, names.map((name) => `${name}\n`).join("")),
+    builds: () => (existsSync(`${log}.cargo`) ? readFileSync(`${log}.cargo`, "utf8").trim().split("\n") : []),
     calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]),
     run: (...args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "macos-vm.ts"), ...args], { env, stdout: "pipe", stderr: "pipe" }),
   };
@@ -132,6 +138,8 @@ describe("macOS VM runner", () => {
     expect(fake.run("dev").exitCode).toBe(0);
     const calls = fake.calls();
     expect(calls).toContainEqual(["clone", image, vm]);
+    // The runner owns the build now, so r can rebuild without restarting it.
+    expect(fake.builds().some((line) => line.startsWith("cargo build"))).toBe(true);
     expect(calls.some((args) => args[0] === "clone" && args[2]?.startsWith("huterm-macos-run-"))).toBe(false);
     // A window is needed for interactive use, unlike the headless smoke runs.
     expect(calls.find((args) => args[0] === "run" && args[1] === vm)).not.toContain("--no-graphics");
