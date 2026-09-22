@@ -127,6 +127,9 @@ Cargo.toml updater advances them with the package versions. Release Please must
 dispatch the independent release workflow at its exact tag,
 passing its SHA, tag, and version outputs. Release Please reads bot credentials
 from `release-please`; release preflight, signing, and publication use `release`.
+Protect `refs/tags/v*` with separate rulesets: creation bypass only for the
+Release Please app, and update/deletion restrictions with no bypass actors.
+Environment deployment rules do not make tags immutable.
 Keep bot credentials in both environments. Do not forward secrets through
 `workflow_call`.
 The release workflow must validate the matching draft and publish only after

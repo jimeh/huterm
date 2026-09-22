@@ -51,6 +51,17 @@ publication enter. Required reviewers apply independently to each environment;
 release PR maintenance follows the `release-please` rules. Manual verification
 from another branch requires explicitly allowing that branch in `release`.
 
+Protect `refs/tags/v*` with active repository rulesets before publishing:
+
+- Restrict creation, allowing only the Release Please GitHub App to bypass.
+- Restrict updates and deletions in a separate ruleset with no bypass actors,
+  so permission to create a release tag does not permit retargeting it.
+
+Environment deployment rules control job access, not tag mutation. Workflow SHA
+checks cannot prevent a tag change between validation and publication. Keep
+these tag rules separate from the environment reviewer rules above. Recover a
+failed release using its existing tag; publish a new version to change its source.
+
 Jobs in the same environment can reference all its secrets. The workflows only
 reference Apple credentials in the macOS signing step and the Sparkle private
 key in the publication step. Linux builds, assembly, candidate verification,
