@@ -294,8 +294,11 @@ async function clean(state: string, root: string): Promise<number> {
   const active = tryLock(join(state, `${name}.active.lock`));
   const lifecycle = tryLock(join(state, `${name}.lifecycle.lock`));
   const image = tryLock(join(state, "image.lock"));
+  // Images are shared, so no command in any worktree may be between selecting
+  // one and cloning from it.
+  const imageUse = tryLock(join(state, "image-use.lock"));
   try {
-    if (!active || !lifecycle || !image) throw new Error("a Linux VM command is active; retry after it finishes");
+    if (!active || !lifecycle || !image || !imageUse) throw new Error("a Linux VM command is active; retry after it finishes");
     // tart list cannot inspect the disk of any running VM, including unrelated ones.
     const listing = capture(["tart", "list", "--source", "local", "--quiet"], false);
     if (listing === undefined) throw new Error("tart list failed; stop running Tart VMs and retry");
@@ -313,6 +316,7 @@ async function clean(state: string, root: string): Promise<number> {
     active?.();
     lifecycle?.();
     image?.();
+    imageUse?.();
   }
 }
 
@@ -349,6 +353,7 @@ async function main(args: string[]): Promise<number> {
   let machine: Machine | undefined;
   let active: (() => void) | undefined;
   let devSession: (() => void) | undefined;
+  let imageUse: (() => void) | undefined;
   try {
     mkdirSync(stage, { recursive: true });
     copyFileSync(join(root, "scripts/linux-vm/guest.sh"), join(stage, "guest.sh"));
@@ -358,14 +363,20 @@ async function main(args: string[]): Promise<number> {
       devSession = await waitForLock(join(state, `${name}.dev.lock`), "this worktree's Linux dev session");
     }
 
+    // Hold the image in use across selection and cloning: cleanup in another
+    // worktree would otherwise delete the image this command just chose.
+    imageUse = await waitForLock(join(state, "image-use.lock"), "cleanup to finish removing shared images", true);
+
     // Lifecycle changes are exclusive; running commands only hold a shared lock,
     // so a dev session and an exec command can share one VM. Provisioning stays
-    // inside it: releasing between phases would let cleanup delete the image
-    // this command just selected.
+    // inside it, so cleanup cannot delete the image between phases.
     const lifecycle = await waitForLock(join(state, `${name}.lifecycle.lock`), "another command to finish starting or stopping this worktree's VM");
     try {
       const image = await ensureImage(root, state);
       if (vmMissing(name)) capture(["tart", "clone", image, name]);
+      // The image is only needed until the clone exists.
+      imageUse?.();
+      imageUse = undefined;
       if (!guestReady(name)) {
         machine = new Machine(name, stage);
         await machine.ready();
@@ -435,6 +446,7 @@ async function main(args: string[]): Promise<number> {
     } finally {
       exclusive?.();
       lifecycle?.();
+      imageUse?.();
       devSession?.();
     }
     process.off("SIGINT", onInterrupt);

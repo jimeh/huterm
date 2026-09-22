@@ -210,8 +210,23 @@ describe("Linux VM runner", () => {
     // separate and cannot disturb each other.
     const locks = readdirSync(fake.state).filter((entry) => entry.endsWith(".lock"));
     expect(locks.length).toBeGreaterThan(0);
-    // Only the shared image lock may be host-wide; the rest name this VM.
-    expect(locks.filter((entry) => entry !== "image.lock" && !entry.startsWith(vm))).toEqual([]);
+    // Only the shared image locks may be host-wide; the rest name this VM.
+    const shared = ["image.lock", "image-use.lock"];
+    expect(locks.filter((entry) => !shared.includes(entry) && !entry.startsWith(vm))).toEqual([]);
+  });
+
+  test("clean waits while any worktree is between selecting and cloning an image", () => {
+    if (!macos) return;
+    const fake = fixture();
+    fake.seed(image, vm);
+    mkdirSync(fake.state, { recursive: true });
+    // Another worktree holds the shared image in use.
+    const inUse = tryLock(join(fake.state, "image-use.lock"), true)!;
+    let blocked;
+    try { blocked = fake.run("clean"); } finally { inUse(); }
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.stderr.toString()).toContain("a Linux VM command is active");
+    expect(fake.vms()).toEqual([image, vm]);
   });
 
   test("clean spares another worktree's dev VM", () => {
