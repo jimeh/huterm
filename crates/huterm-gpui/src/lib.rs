@@ -160,6 +160,13 @@ pub fn run_refresh_smoke() -> anyhow::Result<()> {
     desktop::refresh_smoke::run()
 }
 
+/// Runs the startup-only macOS idle benchmark fixture.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_idle_bench() -> anyhow::Result<()> {
+    desktop::idle_bench::run()
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::APP_ID;

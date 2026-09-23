@@ -955,3 +955,57 @@ frames are paused, requires a shell title acknowledgement, preserves snapshot
 allowances, and verifies task cancellation after view release. Disabling the
 admission wake made it fail at the expected pending-work assertion; restoring
 the wake made it pass.
+
+### Reproducible idle checkpoint tooling
+
+`mise run bench:idle` builds the release `idle_bench` example and measures one
+and fifty tabs **per window**, with one and two windows, visible and AppKit-hidden.
+It requires an unlocked macOS console session. Close build/VM workloads before
+collecting comparison evidence, and preserve the same desktop/display conditions.
+The task respects `CARGO_TARGET_DIR`; use separate baseline and feature targets:
+
+```sh
+CARGO_TARGET_DIR=target/fullscreen-baseline mise run bench:idle -- \
+  --duration 5 --repeats 3 --settle 2 --output target/bench/fullscreen-baseline.json
+```
+
+Startup uses production `new_tab` and `new_window` commands, waits for each
+fixture shell's initial snapshot, and asserts installed native fullscreen
+adapters and no Quake ownership. Its startup task ends at the readiness line.
+The fixture shell blocks in `read`; configuration uses `tabs.label = "title"`
+and no Quake profiles. Inherited `HUTERM_*` instrumentation is removed unless
+explicitly supplied in an arm's `env`. The sampling interval has no Huterm control
+commands or recurring benchmark state probe. Settling is an excluded interval,
+not proof of startup readiness.
+
+To compare preserved binaries without rebuilding, pass `--arms arms.json`.
+Each arm requires `label`, `executable`, and the exact source `revision`; optional
+`env` supplies development switches. Paths are relative to the working directory.
+For example, replace the revision placeholders with the recorded commit SHAs:
+
+```json
+[
+  {"label":"baseline","executable":"target/fullscreen-baseline/release/examples/idle_bench","revision":"BASELINE_SHA"},
+  {"label":"feature","executable":"target/fullscreen-feature/release/examples/idle_bench","revision":"FEATURE_SHA"}
+]
+```
+
+Run `mise run bench:idle -- --arms arms.json --output target/bench/paired.json`.
+Arm order reverses across repetitions and scenarios. `--tabs 1,50`, `--windows
+1,2`, `--duration`, `--repeats`, and `--settle` select the matrix. A third arm can
+reuse a binary with a different explicit `env` to isolate a development switch.
+
+The report retains executable hashes, revision labels, runner dirt, configuration,
+load averages, host/display context, startup window scale/bounds, and per-sample
+CPU, interrupt wakeups, resident memory, and thread counts. CPU uses Mach timebase
+conversion; 100% is one logical core. RSS and CPU exclude child shells.
+A zero display refresh rate means the OS did not report a fixed rate.
+Visible means AppKit-unhidden; two overlapping windows need not both be
+unoccluded.
+The sampler checks console lock state before and after each interval and rejects
+samples on a lock notification during it. A process-scoped `caffeinate` assertion
+prevents idle display sleep, not deliberate locking. Invalid samples remain marked
+invalid in the report, and the run stops. Per-process logs, native sampler, and
+cleanup results remain in the report's artifact directory. Cleanup requests native
+Quit, waits up to ten seconds, then reports failure and kills only that
+fixture PID.

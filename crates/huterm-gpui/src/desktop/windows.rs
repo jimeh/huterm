@@ -4,6 +4,9 @@ pub(crate) mod clipboard_smoke;
 #[path = "fullscreen_smoke.rs"]
 pub(crate) mod fullscreen_smoke;
 #[cfg(target_os = "macos")]
+#[path = "idle_bench.rs"]
+pub(crate) mod idle_bench;
+#[cfg(target_os = "macos")]
 #[path = "input_smoke.rs"]
 pub(crate) mod input_smoke;
 #[path = "integration_smoke.rs"]

@@ -163,6 +163,32 @@ occlusion; a new cross-platform scheduler adds abstractions beyond this duty.
 The per-window task keeps platform mechanics in the adapter and policy in the
 existing controller.
 
+## Checkpoint event-source inventory
+
+The checkpoint tooling leaves the production fullscreen pump unchanged. The
+following producer map is the implementation checklist for its replacement:
+
+| Current source or duty | Replacement trigger or boundary |
+| --- | --- |
+| `desktop/windows.rs` per-window 16 ms `refresh_fullscreen` | Window-owned coalesced task, canceled on close. |
+| `observe_fullscreen` samples windowed restore bounds and native flags | Bounds callback signals only; explicit compatibility sampler only after macOS adapter construction failure. |
+| Fullscreen command router observes before selecting intent | Preserve inline observation, then signal/rearm after advancement and failure. |
+| Native Will/Did observer event queue | Ordered queue plus non-reentrant wake for every enqueue. |
+| `native_fullscreen::Adapter::emit` completion/failure | Signal after enqueue, including deferred completions. |
+| Native `screen_changed` and `Adapter::drain` deferred refit | Signal initial work; publish successful/unchanged completion; coalesce mid-refit retries behind a 16 ms deadline. |
+| Deferred native-exit settling | Completion wake even without another event or geometry change. |
+| Controller `defer_next` following Did | Explicit continuation on a later foreground executor turn. |
+| Controller five-second pending-operation deadline | Earliest cancellable deadline independent of frames; re-read current generation. |
+| Safe-area and notch presentation after deferred work | Completion reconciliation compares presentation and notifies only on change. |
+| X11 `_NET_WM_STATE` PropertyNotify mutates fullscreen bit | Vendored bounds callback after state borrow release, only when the bit changes. |
+| Quake attachment/detachment replaces ownership/controller | Explicit wake and mutation gate; suppress ordinary fallback while Quake owns the window. |
+| Close, approved Quit, adapter removal | Permanently disarm on controller close; taking an adapter must not enable fallback. |
+
+The separate Quake global pump, conditional macOS pointer probe, busy-runtime
+pending-work retries, and GPUI display link remain outside this migration.
+The [idle checkpoint tooling](../performance/gpui-terminal-renderer.md#reproducible-idle-checkpoint-tooling)
+excludes Quake and process labels and does not add a measurement-period state loop.
+
 ## Implementation and verification sequence
 
 1. **Capture a fresh checkpoint and event-source inventory.** Start from current
