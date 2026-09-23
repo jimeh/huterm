@@ -100,6 +100,9 @@ async function main(executableArgument: string): Promise<void> {
     const index = await writeCommand(name);
     const result = await waitFor(() => readOptional(join(directory, `result-${index}`)), `command ${name}`);
     if (result.toString() !== "ok") throw new Error(`${name}: ${result}`);
+    // The state file is sampled before command dispatch. Wait for a later sample
+    // so an earlier reloading=false cannot acknowledge this command's reload.
+    await waitFor(async () => Number((await state())?.commands) > index ? true : undefined, `state after command ${name}`);
   };
   const childPids = async () => (await readdir(directory))
     .flatMap(name => /^child-(\d+)$/.exec(name)?.[1] ?? [])
@@ -128,6 +131,7 @@ async function main(executableArgument: string): Promise<void> {
       const value = await state();
       return value?.reloading === "false" && value.tabs === "2"
         && value["tab0.visible"] === "false"
+        && value["tab0.padding"] === "40,40"
         && value["tab0.grid"] === value["tab0.layout_grid"]
         && value["tab0.grid"] !== initial["tab0.grid"]
         && value["tab0.cell"] === initial["tab0.cell"] ? value : undefined;
