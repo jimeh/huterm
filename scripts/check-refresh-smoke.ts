@@ -32,6 +32,9 @@ done
   });
   const markers = [
     "frame_stop_resume",
+    "animation_hold_fade_idle",
+    "render_time_resize_deadline",
+    "animation_deadline_while_paused",
     "bounded_scroll_while_paused",
     "silent_task_cancellation",
     "stale_callback_after_detach",

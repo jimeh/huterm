@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{Bounds, Div, Hsla, Pixels, div, prelude::*, px};
 
+use super::animation::AnimationSchedule;
+
 const MIN_THUMB_SIZE: f32 = 24.0;
 /// How long an indicator stays fully visible after activity before fading.
 pub(crate) const INDICATOR_HOLD: Duration = Duration::from_secs(2);
@@ -335,6 +337,21 @@ impl ScrollbarExpansion {
         (previous - self.progress).abs() > f32::EPSILON
     }
 
+    fn schedule(&self, now: Instant, interacting: bool) -> AnimationSchedule {
+        let mut next = AnimationSchedule::IDLE;
+        if self
+            .started
+            .is_some_and(|start| now < start + SCROLLBAR_EXPAND)
+            || (self.progress - self.target).abs() > f32::EPSILON
+        {
+            next = AnimationSchedule::FRAME;
+        }
+        if !interacting && let Some(at) = self.collapse_at {
+            next = next.merge(AnimationSchedule::at(at));
+        }
+        next
+    }
+
     fn sample(&mut self, now: Instant) {
         if let Some(started) = self.started {
             let elapsed =
@@ -373,6 +390,14 @@ impl IndicatorVisibility {
     pub(crate) fn activate(&mut self, now: Instant) {
         self.fade_start = Some(now + self.hold);
         self.opacity = 1.0;
+    }
+
+    pub(crate) fn schedule(&self, now: Instant) -> AnimationSchedule {
+        match self.fade_start {
+            Some(at) if now < at => AnimationSchedule::at(at),
+            Some(_) if self.opacity > 0.0 => AnimationSchedule::FRAME,
+            _ => AnimationSchedule::IDLE,
+        }
     }
 
     pub(crate) fn update(&mut self, now: Instant, interacting: bool) -> bool {
@@ -485,6 +510,16 @@ impl AxisScrollbar {
             interacting && self.options.expand_on_hover,
         );
         changed
+    }
+
+    fn schedule(&self, now: Instant) -> AnimationSchedule {
+        let interacting = self.interacting();
+        let visibility = if interacting {
+            AnimationSchedule::IDLE
+        } else {
+            self.visibility.schedule(now)
+        };
+        visibility.merge(self.expansion.schedule(now, interacting))
     }
 
     fn layers(
@@ -641,7 +676,14 @@ impl Scrollbars {
         }
     }
 
-    /// Advances fades and expansion from a refresh pump; true when a redraw
+    pub(crate) fn schedule(&self, now: Instant) -> AnimationSchedule {
+        self.enabled()
+            .fold(AnimationSchedule::IDLE, |next, (_, scrollbar)| {
+                next.merge(scrollbar.schedule(now))
+            })
+    }
+
+    /// Advances fades and expansion; true when a redraw
     /// is needed.
     pub(crate) fn advance(&mut self, now: Instant) -> bool {
         let mut changed = false;
@@ -722,6 +764,10 @@ impl Scrollbars {
                 scrollbar.expand(now);
                 scrollbar.visibility.activate(now);
             }
+            if !hovering && scrollbar.hovering {
+                scrollbar.visibility.activate(now);
+                scrollbar.expand(now);
+            }
             if hovering != scrollbar.hovering {
                 scrollbar.hovering = hovering;
                 changed = true;
@@ -731,12 +777,31 @@ impl Scrollbars {
     }
 
     /// Clears hover when the pointer leaves the strips; true when it was set.
-    pub(crate) fn pointer_left(&mut self) -> bool {
+    pub(crate) fn pointer_left(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for (_, scrollbar) in self.enabled_mut() {
             changed |= scrollbar.hovering;
+            if scrollbar.hovering {
+                scrollbar.visibility.activate(now);
+                if scrollbar.options.expand_on_hover {
+                    scrollbar.expansion.activate(now);
+                }
+            }
             scrollbar.hovering = false;
         }
+        changed
+    }
+
+    /// Clears interaction and animation state when an axis's strip is unmounted.
+    /// Returns whether state changed, preserving the axis's configured options.
+    pub(crate) fn unmount(&mut self, axis: Axis) -> bool {
+        let Some(scrollbar) = self.slot_mut(axis) else {
+            return false;
+        };
+        let changed = scrollbar.interacting()
+            || scrollbar.visibility.fade_start.is_some()
+            || scrollbar.expansion.started.is_some();
+        *scrollbar = AxisScrollbar::new(scrollbar.options);
         changed
     }
 
@@ -797,6 +862,7 @@ impl Scrollbars {
         for (_, scrollbar) in self.enabled_mut() {
             if scrollbar.drag.take().is_some() {
                 scrollbar.visibility.activate(now);
+                scrollbar.expand(now);
                 released = true;
             }
         }
@@ -872,6 +938,184 @@ mod tests {
 
     fn vertical(expand_on_hover: bool, track_press: TrackPress) -> Scrollbars {
         Scrollbars::vertical(options(expand_on_hover, track_press))
+    }
+
+    #[test]
+    fn settled_drag_release_restarts_the_expanded_hold() {
+        let now = Instant::now();
+        let bounds =
+            Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(400.0)));
+        let geometry = rows(400.0, 32.0, 100.0, 50.0).unwrap();
+        let geometries = ScrollbarGeometries::vertical(Some(geometry));
+        let mut scrollbars = Scrollbars::vertical(ScrollbarOptions {
+            hold: Duration::from_secs(10),
+            ..options(true, TrackPress::Jump)
+        });
+        scrollbars.show(Axis::Vertical, now);
+        assert_eq!(
+            scrollbars.press(
+                &geometries,
+                bounds,
+                point(px(95.0), px(geometry.thumb_start + 5.0)),
+                now
+            ),
+            Some((Axis::Vertical, Press::Grabbed))
+        );
+        scrollbars.advance(now + SCROLLBAR_EXPAND);
+        assert_eq!(
+            scrollbars.schedule(now + SCROLLBAR_EXPAND),
+            AnimationSchedule::IDLE
+        );
+        // The idle scheduler does not advance a settled off-strip drag.
+        let released = now + Duration::from_secs(30);
+        assert!(scrollbars.release(released));
+        scrollbars.advance(released);
+        assert!(
+            (scrollbars.vertical.as_ref().unwrap().expansion.progress - 1.0)
+                .abs()
+                < f32::EPSILON
+        );
+        let deadline = released + SCROLLBAR_EXPANDED_HOLD;
+        assert_eq!(
+            scrollbars.schedule(released),
+            AnimationSchedule::at(deadline)
+        );
+        scrollbars.advance(deadline + SCROLLBAR_EXPAND / 2);
+        let progress = scrollbars.vertical.as_ref().unwrap().expansion.progress;
+        assert!(progress > 0.0 && progress < 1.0);
+    }
+
+    #[test]
+    fn animation_schedule_preserves_hold_extension_and_finishes_fade() {
+        let now = Instant::now();
+        let mut indicator =
+            IndicatorVisibility::with_hold(Duration::from_secs(1));
+        indicator.activate(now);
+        assert!(!indicator.update(now + Duration::from_millis(100), false));
+        assert_eq!(
+            indicator.schedule(now),
+            AnimationSchedule::at(now + Duration::from_secs(1))
+        );
+        indicator.activate(now + Duration::from_millis(500));
+        assert_eq!(
+            indicator.schedule(now),
+            AnimationSchedule::at(now + Duration::from_millis(1500))
+        );
+        let fade = now + Duration::from_millis(1600);
+        assert!(indicator.update(fade, false));
+        assert_eq!(indicator.schedule(fade), AnimationSchedule::FRAME);
+        assert!(indicator.update(now + Duration::from_secs(3), false));
+        assert_eq!(
+            indicator.schedule(now + Duration::from_secs(3)),
+            AnimationSchedule::IDLE
+        );
+    }
+
+    #[test]
+    fn settled_hover_does_not_need_frames_and_leave_restarts_hold() {
+        let now = Instant::now();
+        let mut bar = AxisScrollbar::new(options(true, TrackPress::Jump));
+        bar.hovering = true;
+        bar.visibility.activate(now);
+        bar.expand(now);
+        bar.advance(now + SCROLLBAR_EXPAND);
+        assert_eq!(
+            bar.schedule(now + SCROLLBAR_EXPAND),
+            AnimationSchedule::IDLE
+        );
+        let mut bars = Scrollbars::vertical(options(true, TrackPress::Jump));
+        bars.vertical = Some(bar);
+        let left = now + Duration::from_secs(10);
+        assert!(bars.pointer_left(left));
+        assert_eq!(
+            bars.schedule(left).deadline,
+            Some(left + bars.vertical.as_ref().unwrap().options.hold)
+        );
+        assert!(!bars.schedule(left).frame);
+    }
+
+    #[test]
+    fn unmounted_strip_cancels_hover_drag_and_animation_until_reactivated() {
+        let now = Instant::now();
+        let config = ScrollbarOptions {
+            hold: Duration::from_secs(7),
+            reveal_on_hover: true,
+            ..options(true, TrackPress::Jump)
+        };
+        for elapsed in [Duration::ZERO, SCROLLBAR_EXPAND] {
+            let mut bars = Scrollbars::vertical(config);
+            let bar = bars.vertical.as_mut().unwrap();
+            bar.hovering = true;
+            bar.drag = Some(5.0);
+            bar.visibility.activate(now);
+            bar.expand(now);
+            bars.advance(now + elapsed);
+            assert!(bars.visible(Axis::Vertical));
+            assert!(bars.dragging());
+
+            assert!(bars.unmount(Axis::Vertical));
+            assert_eq!(bars.schedule(now + elapsed), AnimationSchedule::IDLE);
+            assert!(!bars.visible(Axis::Vertical));
+            assert!(!bars.dragging());
+            assert!(!bars.pointer_left(now + elapsed));
+            assert!(!bars.advance(now + Duration::from_secs(30)));
+            assert!(!bars.unmount(Axis::Vertical));
+
+            // The strip can be mounted and revealed again with its original hold.
+            assert!(bars.wants_strip(Axis::Vertical));
+            let remounted = now + Duration::from_secs(60);
+            bars.show(Axis::Vertical, remounted);
+            assert!(bars.visible(Axis::Vertical));
+            assert_eq!(
+                bars.schedule(remounted),
+                AnimationSchedule::at(remounted + config.hold)
+            );
+            let bounds = Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(100.0), px(400.0)),
+            );
+            let geometries =
+                ScrollbarGeometries::vertical(rows(400.0, 32.0, 100.0, 0.0));
+            assert!(bars.pointer_moved(
+                &geometries,
+                bounds,
+                point(px(95.0), px(200.0)),
+                remounted,
+            ));
+            assert!(bars.schedule(remounted).frame);
+            let resting_extent = bars.strip_extent(Axis::Vertical);
+            bars.advance(remounted + SCROLLBAR_EXPAND);
+            assert!(bars.strip_extent(Axis::Vertical) > resting_extent);
+        }
+    }
+
+    #[test]
+    fn unmount_cancels_an_existing_fade_only_on_its_own_axis() {
+        let now = Instant::now();
+        let mut bars = vertical(true, TrackPress::Jump);
+        bars.set_axis(
+            Axis::Horizontal,
+            Some(ScrollbarOptions {
+                edge: Edge::Bottom,
+                ..options(true, TrackPress::Jump)
+            }),
+        );
+        bars.show(Axis::Vertical, now);
+        let fading = now + INDICATOR_HOLD + INDICATOR_FADE / 2;
+        bars.advance(fading);
+        assert_eq!(bars.schedule(fading), AnimationSchedule::FRAME);
+        bars.show(Axis::Horizontal, fading);
+
+        assert!(bars.unmount(Axis::Vertical));
+        assert!(!bars.visible(Axis::Vertical));
+        assert!(bars.visible(Axis::Horizontal));
+        assert_eq!(
+            bars.schedule(fading),
+            AnimationSchedule::at(fading + INDICATOR_HOLD)
+        );
+        assert!(bars.unmount(Axis::Horizontal));
+        assert_eq!(bars.schedule(fading), AnimationSchedule::IDLE);
+        assert!(!Scrollbars::default().unmount(Axis::Vertical));
     }
 
     #[test]
@@ -1028,7 +1272,7 @@ mod tests {
             .set_axis(Axis::Vertical, Some(options(true, TrackPress::Jump)));
         assert!(scrollbars.visible(Axis::Vertical));
         // Hover survived, so leaving now reports a change.
-        assert!(scrollbars.pointer_left());
+        assert!(scrollbars.pointer_left(now));
         // Different options rebuild the axis from scratch.
         scrollbars.set_axis(
             Axis::Vertical,
@@ -1038,7 +1282,7 @@ mod tests {
             }),
         );
         assert!(!scrollbars.visible(Axis::Vertical));
-        assert!(!scrollbars.pointer_left());
+        assert!(!scrollbars.pointer_left(now));
     }
 
     #[test]
@@ -1340,8 +1584,8 @@ mod tests {
             scrollbars.hit(&geometries, bounds, position),
             Some((Axis::Vertical, 200.0))
         );
-        assert!(scrollbars.pointer_left());
-        assert!(!scrollbars.pointer_left());
+        assert!(scrollbars.pointer_left(now));
+        assert!(!scrollbars.pointer_left(now));
     }
 
     #[test]

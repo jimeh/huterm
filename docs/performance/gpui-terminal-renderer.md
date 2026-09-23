@@ -702,3 +702,127 @@ press from reaching a newly visible tab bar.
 The Quake smoke passed all 40 animation cases and native focus/fullscreen
 transitions. An earlier hosted focus timeout did not recur locally or in the
 latest CI run; no Quake production code was changed.
+
+### Frame-driven animations (2026-09-22)
+
+Step 4 moves terminal and tab scrollbars, the resize indicator, visual bell,
+tab scrolling, palette scrollbar, and tab reveal off the 16 ms pump. They share
+the snapshot clock's window callback and one timer for the earliest animation
+deadline. Static holds do not request frames. Notifications and render-time
+layout changes arm animation state; destruction removes weak registrations. Snapshot
+allowances and runtime activity handling are unchanged. The remaining pump
+still handles pointer sampling, retries, palette availability, close, and
+fullscreen coordination.
+
+A native refresh smoke observes distinct intermediate resize-indicator opacities
+through the production scheduler. On the Mac15,8 built-in display, it recorded:
+
+| Physical display mode | Intermediate fade samples | Median animation interval | Median delivered callback interval |
+| --- | ---: | ---: | ---: |
+| 120 Hz | 40 | 9.069 ms | 8.845 ms |
+| 60 Hz | 26 | 16.650 ms | 16.665 ms |
+
+Both runs passed hold/fade completion, idle callback cleanup, bell expiry while
+frames were paused, bounded scroll admission, and stale callback cleanup after
+tab replacement. CoreGraphics mode 97 supplied 60 Hz; mode 96 at 120 Hz was
+restored and verified. These measurements describe animation updates, not
+physical display presentation or power consumption.
+
+The fresh release baseline at `4723405` measured 7.942 ms p95 scroll input to
+matching paint encoding. An initial step-4 run measured 17.008 ms, and another
+paired comparison measured baseline 8.931/9.053 ms versus 16.624/13.332 ms.
+A temporary scheduling trace found no active animation requesting frames in
+this benchmark; that run measured 5.854 ms. The trace was removed. Initial
+animation registration now schedules existing state directly instead of
+notifying a redraw solely to register it.
+
+An intermediate comparison preserved the baseline executable, completed both builds
+before measurement, and ran baseline, step 4, step 4, baseline on the same
+120 Hz display:
+
+| Build | P95 input-to-matching-paint, two runs |
+| --- | --- |
+| Baseline `4723405` | 5.273 / 4.656 ms |
+| Step 4 | 5.486 / 4.837 ms |
+
+Every run passed the presentation and queue budgets. These runs each had
+70 snapshot samples, 65 matching paint samples, and maximum in-flight and queued
+counts of one.
+
+After the render-time scheduling correction below, the final comparison ran in
+the same baseline, step 4, step 4, baseline order without concurrent builds or
+VM smokes. Baseline p95 measured 2.910 / 5.460 ms; step 4 measured
+12.872 / 10.050 ms. All four runs passed the budgets, with 70 snapshot samples,
+65 to 69 matching paint samples, and maximum in-flight and queued counts of one.
+The latest pairs show a scroll-latency penalty despite earlier close pairs;
+its cause remains unresolved. Do not claim latency neutrality or improvement
+from this change. That difference prompted the repeat measurements below.
+No new idle-CPU or power-saving claim is made; the recurring pump timer remains.
+
+Controlled-time tests cover hold extension, fade completion, settled hover,
+finishing a partial reveal during its dismissal hold, and fresh dismissal holds
+after settled hover re-entry or renewed activity. These reveal boundary
+regressions failed at their intended assertions before their fixes. The native
+refresh checks also passed in a Tart macOS guest. The broader Linux desktop
+smokes passed. The macOS VM suite encountered the previously observed Quake
+visible-but-inactive focus timeout; its isolated rerun passed all 40 animation
+cases and focus checks. No Quake production behavior was changed.
+
+The final `mise run verify` passed, including 394 GPUI unit tests and 462 script
+tests. Focused macOS and Linux fullscreen/tab-reveal reruns passed after the
+partial-reveal correction and explicit animation rearming on tab activation.
+
+A one-pixel native resize exposed a missing render-time wake: the indicator
+activated without a grid resize or entity notification and stayed opaque. The
+new regression failed on that opacity assertion before explicit scheduling
+after layout changes, then passed. Tab layout also rearms after render-time
+hover and drag-geometry changes; reveal no longer registers a second GPUI
+animation callback from rendering.
+
+### Animation review follow-up (2026-09-23)
+
+At `106b57b`, drag release renews the scrollbar expansion hold even when no
+animation ticks occurred during a long interaction. Deadline extensions also
+reuse an earlier armed timer: that wake consults current work and rearms if
+needed. Earlier required deadlines still preempt the timer, and removing the
+last deadline cancels it. Both controlled-time regressions failed at their
+intended assertions before the fixes.
+
+After Time Machine finished, comparisons used the preserved `4723405` baseline
+and the corrected `fbcb2d1` release binary on the same 120 Hz display. No build
+or VM smoke ran during measurement. Background macOS services remained active;
+the short-run set began with a one-minute load average of 14.37. The order was
+baseline, branch, branch, baseline, then the same order again.
+
+| Build | P95 input-to-matching-paint encoding, four short runs |
+| --- | --- |
+| Baseline `4723405` | 16.878 / 9.630 / 10.574 / 9.641 ms |
+| Corrected branch `fbcb2d1` | 9.557 / 9.148 / 9.953 / 9.915 ms |
+
+Each run supplied 70 post-warmup snapshot samples and 65 to 70 matching paint
+samples. All budgets passed and maximum in-flight and queued counts stayed at
+one. An additional longer collection used the unchanged workload and budget
+checker with a temporary runner collecting 750 snapshots instead of 75. That
+window includes the workload's live output after four seconds, so it is not a
+like-for-like extension of the initial static portion. Baseline p95 was
+6.254 / 9.895 ms; branch p95 was 10.335 / 9.931 ms. All budgets passed.
+
+These repeats did not reproduce a consistent branch-specific latency penalty.
+The earlier slower results remain recorded; host and UI reply-delivery timing
+still limit attribution. This is evidence against the earlier large consistent
+gap, not proof of identical latency or a speedup. The timer change fixes churn
+in real scroll/hover activity; the synthetic driver does not activate scrollbar
+holds, so its measurements cannot establish a gain from timer reuse.
+
+`mise run verify` passed at `fbcb2d1`, including 396 GPUI tests and 463 script
+tests. The post-fix native refresh smoke passed hold/fade, same-grid resize,
+paused-frame expiry, bounded scroll admission, and stale callback cleanup. It
+recorded 48 intermediate fade samples at a median 8.299 ms, with delivered
+callbacks at 8.328 ms. The built-in display remains at 120 Hz.
+
+The review follow-up also wires this native refresh smoke into the macOS CI
+job and the default VM smoke set. `mise run vm:macos:smoke -- macos-refresh`
+passed with the new task routing. The supervised `ci:smoke:step` entrypoint
+also passed in the VM with `HUTERM_CI_SMOKE_STEP=macos-refresh`, and
+`mise run ci:workflows` passed. Cadence budgets remain opt-in for explicitly
+selected physical display modes.

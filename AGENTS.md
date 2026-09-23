@@ -296,9 +296,9 @@ Protocol selection ranges include both endpoints. Keep a mouse-down anchor
 without exposing a range until dragging reaches another cell; use that same
 optional range for highlighting and text extraction.
 Use the same inset track for painting and drag mapping. Indicator visibility
-depends on recent interaction, including at offset zero; advance its fade in
-the UI refresh loop so idle terminals redraw it. Keep the label background
-opaque before applying the indicator's fade opacity.
+depends on recent interaction, including at offset zero; schedule its hold
+deadline and frame-driven fade so idle terminals redraw it. Keep the label
+background opaque before applying the indicator's fade opacity.
 Theme reload must invalidate prepared row colors even when the terminal snapshot
 is unchanged. Font changes must also invalidate glyph layouts and update PTY cell
 pixel dimensions even if the row/column count stays the same. Keep bundled theme
@@ -342,6 +342,15 @@ views request snapshots. All request paths pass the shared admission gate; one
 weak callback per window replenishes per-view frame allowances. It does not
 request idle redraws. Keep in-flight scroll and dirtiness separate from frame
 allowance, including on config reload and snapshot completion.
+Animations share that window callback and one earliest-deadline timer. Report
+frame work and deadline work separately from presentation changes: a static hold
+can require a future wake without a redraw. Entity notifications arm animations;
+render-time layout changes must also rearm them, including resizes within one
+grid cell. Release removes their weak registrations. Keep runtime retries and
+lifecycle progress independent of display frames. The remaining pump samples
+reveal input but must not also advance migrated animations. Reuse an armed earlier
+deadline when a hold extends; do not allocate a timer per interaction. Interaction
+endings must renew holds explicitly because settled drags and hovers have no ticks.
 Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
 as the
@@ -416,7 +425,7 @@ cancels a drag: GPUI then skips raw keystroke observers. Keep terminal focus
 during the drag to avoid false application focus-out/in reports. TabStrip owns
 pixel geometry for rendering, reveal, wheel input, and drag slots;
 WorkspaceView owns its only scroll offset. Include that offset in drop
-mapping. Edge autoscroll runs in the window refresh pump with bounded elapsed
+mapping. Edge autoscroll runs on the window animation clock with bounded elapsed
 time. Manual scrolling must not pin the active tab. Pass the same preferred
 sidebar width to ChromeLayout in WorkspaceView and TerminalView; synchronize
 retained views on resize and before activation. Resolve window-size caps

@@ -528,9 +528,10 @@ smokes, which exercise close consent.
 
 ## Steps
 
-The original sequence follows. Steps 1 to 3 and the runtime prerequisite are
-complete; steps 4 to 8 remain design notes for a future measured need. Native
-60 Hz pacing was verified in the 2026-09-20 hardening follow-up. The subjective
+The original sequence follows. Steps 1 to 3 and the runtime prerequisite shipped
+in PR #147. Step 4 is implemented in the follow-up; steps 5 to 8 remain design
+notes for a future measured need. Native 60 Hz pacing was verified in the
+2026-09-20 hardening follow-up. The subjective
 editor/DOOM feel comparison remains unverified. Convert one duty at a time
 with the pump still running so changes remain bisectable. Remove the timer last.
 
@@ -553,10 +554,23 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    verify on 60 Hz and 120 Hz displays and record delivered ticks. Preserve
    leading-edge latency after idle, scroll/link responsiveness, and progress
    while occluded. Check reload and completion cannot bypass admission.
-4. **Animation clock.** Move terminal scrollbars, the resize indicator, tab
-   scrolling, tab scrollbars, the palette scrollbar, and `Reveal` onto it. The
-   pump stops advancing them. Verify hold, fade, expiry, extension, and resume
-   with injected time; changed=false must not cancel a future deadline.
+4. **Animation clock.** Implemented in the follow-up. Terminal scrollbars,
+   the resize indicator, visual bell, tab scrolling, tab scrollbars, palette
+   scrollbar, and `Reveal` share the window frame clock and one earliest-deadline
+   timer. Notifications and render-time layout changes arm work; weak targets and
+   release cleanup keep scheduling separate from view ownership. Each component
+   reports pending frame work and deadlines independently of redraw changes.
+   The pump no longer advances these animations. It still samples pointer reveal
+   intent and handles retries, palette availability, close, and fullscreen work.
+   Controlled-time tests cover holds, extension, fade completion, settled hover,
+   and reveal's hold-to-fade boundary. The native refresh smoke covers animation
+   cadence, idle completion, bell expiry while frames stop, and stale callbacks.
+   Physical display runs passed at 60 Hz and 120 Hz on 2026-09-22.
+   Review fixes renew expansion holds after settled drags and reuse earlier
+   deadline timers when holds extend. Repeat scroll comparisons on 2026-09-23
+   passed all budgets without reproducing a consistent branch-specific penalty.
+   See the renderer performance report for the earlier slower pairs, repeated
+   measurements, and attribution limits.
 5. **Pointer-driven reveal.**
 6. **Call-site triggers.** `resume_close`, `refresh_palette`, and
    `retry_client_messages`.
@@ -673,7 +687,8 @@ Measured and set aside, in case a later profile changes the ranking:
    The focused native refresh smoke now covers occlusion and resume, coalesced
    callbacks across tab replacement, and idle activity-task cancellation while
    the core terminal remains alive. Run `mise run smoke:macos-refresh` in an
-   unlocked macOS GUI session.
+   unlocked macOS GUI session. The same test runs as the `macos-refresh` CI
+   smoke step; physical 60/120 Hz cadence budgets remain explicit native checks.
    The 2026-09-21 scroll follow-up adds one bounded viewport allowance per
    delivered frame, preserving output-only pacing and one in-flight request.
    Controlled Linux and idle 120 Hz macOS comparisons recovered baseline scroll
@@ -686,8 +701,10 @@ Measured and set aside, in case a later profile changes the ranking:
    isolating how much of that increase comes from the waiter in the first run.
    The follow-up traced 13.28 MiB for 50 added threads to the linked image's
    TLS blocks, dominated by Zig's signal-stack buffer.
-5. Steps 4 to 8 are deferred based on the measured residual cost. The pump still
-   owns animations, pointer reveal, retries, and native fullscreen coordination.
+5. Step 4 now follows delivered frames for animations and uses deadlines for
+   static holds. Steps 5 to 8 remain deferred: the pump still samples pointer
+   reveal and handles retries, palette availability, close, and native fullscreen
+   coordination. Removing that timer remains a separate measured decision.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
    and long-running interactive workloads still need human acceptance; the
    benchmark's paint marker does not measure physical presentation latency.

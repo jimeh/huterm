@@ -689,7 +689,7 @@ impl CommandPalette {
         self.show_scrollbar();
     }
 
-    /// Reveals the list scrollbar; the window pump fades it out.
+    /// Reveals the list scrollbar; the animation clock fades it out.
     fn show_scrollbar(&mut self) {
         self.scrollbars.show(Axis::Vertical, Instant::now());
     }
@@ -700,8 +700,7 @@ impl CommandPalette {
         cx.notify();
     }
 
-    /// Advances the scrollbar fade and expansion from the window refresh
-    /// pump.
+    /// Advances the scrollbar fade and expansion from the window animation clock.
     pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
         if self.scrollbars.advance(now) {
             cx.notify();
@@ -743,7 +742,7 @@ impl CommandPalette {
     }
 
     fn scrollbar_pointer_left(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.pointer_left() {
+        if self.scrollbars.pointer_left(Instant::now()) {
             cx.notify();
         }
     }
@@ -1996,6 +1995,24 @@ impl CommandPalette {
     }
 }
 
+impl super::refresh::Animated for CommandPalette {
+    fn animation_schedule(
+        &self,
+        now: Instant,
+    ) -> crate::ui::animation::AnimationSchedule {
+        self.scrollbars.schedule(now)
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: Instant,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.advance(now, cx);
+    }
+}
+
 impl Render for CommandPalette {
     #[expect(
         clippy::too_many_lines,
@@ -2088,8 +2105,10 @@ impl Render for CommandPalette {
         let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
             && (geometries.vertical.is_some() || unmeasured);
         if !show_strip {
-            // The strip is not mounted, so no leave event will arrive.
-            self.scrollbars.pointer_left();
+            // No strip remains to paint its leave animation.
+            if self.scrollbars.unmount(Axis::Vertical) {
+                cx.notify();
+            }
         }
         let scrollbar = show_strip.then(|| {
             let width = self.scrollbars.strip_extent(Axis::Vertical);
