@@ -306,6 +306,8 @@ struct TerminalView {
     failed: bool,
     visible: bool,
     input_queue: InputQueue,
+    pending_work: async_channel::Sender<()>,
+    _pending_work_task: Task<()>,
     option_as_alt: config::MacosOptionAsAlt,
     composition: composition::Composition,
     #[cfg(target_os = "macos")]
@@ -451,12 +453,36 @@ impl TerminalView {
                     view.update(cx, |view, _| view.clear_option_composition());
             })
         };
-        TerminalView {
+        let (pending_work, wakes) = async_channel::bounded(1);
+        let pending_work_task = cx.spawn(async move |view, cx| {
+            while wakes.recv().await.is_ok() {
+                loop {
+                    while wakes.try_recv().is_ok() {}
+                    let Ok(pending) = view.update(cx, |view, cx| {
+                        view.refresh_pending_work(cx);
+                        view.has_pending_work()
+                    }) else {
+                        return;
+                    };
+                    if !pending {
+                        break;
+                    }
+                    // Busy runtimes need a bounded retry even without activity
+                    // or display frames. Idle terminals never arm this timer.
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                }
+            }
+        });
+        let view = TerminalView {
             client,
             presentation,
             pending_presentation,
             host_effects,
             input_queue: InputQueue::default(),
+            pending_work,
+            _pending_work_task: pending_work_task,
             option_as_alt: config.terminal.macos_option_as_alt,
             composition: composition::Composition::default(),
             #[cfg(target_os = "macos")]
@@ -533,7 +559,9 @@ impl TerminalView {
             snapshot_pacer: refresh::SnapshotPacer::default(),
             refresh_mode: config.terminal.refresh,
             frame_clock,
-        }
+        };
+        view.wake_pending_work();
+        view
     }
 
     fn start_initial_snapshot(&mut self, cx: &mut Context<'_, Self>) {
@@ -701,7 +729,7 @@ impl TerminalView {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
-        let mut changed = false;
+        let mut changed = self.retry_client_messages();
         for _ in 0..64 {
             let event = self.client.try_recv_event();
             if matches!(event, Ok(Some(_))) {
@@ -776,6 +804,19 @@ impl TerminalView {
         }
     }
 
+    fn has_pending_work(&self) -> bool {
+        !self.input_queue.is_empty()
+            || self.pending_resize.is_some()
+            || self.pending_presentation.is_some()
+            || self.scroll_benchmark.is_some()
+    }
+
+    fn wake_pending_work(&self) {
+        if self.has_pending_work() {
+            let _ = self.pending_work.try_send(());
+        }
+    }
+
     fn refresh_pending_work(&mut self, cx: &mut Context<'_, Self>) {
         let mut changed = self.retry_client_messages();
         if let Some(benchmark) = &mut self.scroll_benchmark {
@@ -824,6 +865,7 @@ impl TerminalView {
                 self.status = Some(error.to_string());
             }
         }
+        self.wake_pending_work();
     }
 
     fn pending_input_changed(
@@ -1731,8 +1773,12 @@ impl TerminalView {
         match self.client.resize(size, cell) {
             Ok(()) => self.pending_resize = None,
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
-            Err(error) => self.status = Some(error.to_string()),
+            Err(error) => {
+                self.pending_resize = None;
+                self.status = Some(error.to_string());
+            }
         }
+        self.wake_pending_work();
     }
 
     fn enqueue_input(&mut self, input: TerminalInput) -> bool {
@@ -1750,7 +1796,7 @@ impl TerminalView {
         if self.exited {
             return (false, false);
         }
-        match self.input_queue.enqueue(input, release, |input| self.client.send_input(input)) {
+        let result = match self.input_queue.enqueue(input, release, |input| self.client.send_input(input)) {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
@@ -1759,7 +1805,9 @@ impl TerminalView {
                 self.mouse = MouseState::default();
                 (false, self.set_status(error.to_string()))
             }
-        }
+        };
+        self.wake_pending_work();
+        result
     }
 
     fn cancel_mouse(&mut self) {

@@ -347,8 +347,14 @@ frame work and deadline work separately from presentation changes: a static hold
 can require a future wake without a redraw. Entity notifications arm animations;
 render-time layout changes must also rearm them, including resizes within one
 grid cell. Release removes their weak registrations. Keep runtime retries and
-lifecycle progress independent of display frames. The remaining pump samples
-reveal input but must not also advance migrated animations. Reuse an armed earlier
+lifecycle progress independent of display frames. Each terminal owns a bounded
+pending-work wake and cancellable task; signal queued input even when admission
+returns no presentation change. Retry timers run only while work remains.
+Workspace notifications reconcile close and palette state. Config and bounds
+changes mark terminal geometry pending and synchronize it without waiting for a
+frame, including hidden-tab font and padding changes. Pointer-only updates must
+not scan every tab for geometry. The remaining pump
+only reconciles fullscreen state. Reuse an armed earlier
 deadline when a hold extends; do not allocate a timer per interaction. Interaction
 endings must renew holds explicitly because settled drags and hovers have no ticks.
 Do not suppress invalidation by comparing content generations: presentation
@@ -486,7 +492,8 @@ member. New groups or unknown-state widening require reassessment. Use fresh
 members for cleanup. Native cancellation tests must send input and observe a
 unique shell ACK after cancel and retry; an exited terminal retains snapshots.
 
-The window refresh pump queues shell-exit transitions once for assessed tab close.
+The terminal activity drain queues shell-exit transitions once for assessed tab
+close.
 Keep automatic exit requests separate from the merged manual close intent, so
 canceling one prompt does not lose inactive siblings. Config reload changes only
 future exit events. Exited tabs retain history and local selection/scrolling;
@@ -971,14 +978,18 @@ diagnostics; it does not provide command-specific argument completion.
 Make Bun test tasks that import packages depend directly on `scripts:install`.
 A sibling typecheck's install dependency does not order parallel test startup.
 
-Advance tab-overlay animation in the window refresh pump with `cx.notify()`;
+Advance tab-overlay animation through the shared window frame clock;
 call GPUI's `request_animation_frame` only while rendering. Despite its wording,
 the GPUI 0.2.2 method requires a current view and panics from a timer callback.
 Terminal gestures retain move/release ownership beneath an overlay until the
-next refresh hides it; overlay hit bounds alone must never discard that release.
+deferred pointer reconciliation hides it; overlay hit bounds alone must never
+discard that release.
 GPUI's macOS window-hover flag reports activation and can retain the last mouse
 position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
-display membership so leaving for another display dismisses the overlay.
+display membership so leaving for another display dismisses the overlay. Keep a
+slow pointer deadline only while revealed or while the native fullscreen top
+edge can receive pointer entry outside the content view. Capture pointer events
+before terminal handlers and reconcile after gesture ownership changes.
 
 Quake native effects run after returning from GPUI's App/window update borrow;
 AppKit frame, style, and visibility changes can synchronously reenter GPUI.

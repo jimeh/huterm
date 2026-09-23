@@ -1,10 +1,9 @@
 # Event-driven window refresh
 
-Status: steps 1 to 3 and the Unix runtime wait conversion are implemented and
-committed. Step 1 is in `94f8028`, step 2 in `dae1ccb`, and step 3 in `ef6e859`.
-Reader, writer, and runtime waits are in `52f716b`, `7d7a6d4`, and `1d42558`.
-Workspace verification and all seven macOS input, clipboard, integration,
-fullscreen, palette, Quit, and Quake smokes pass.
+Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
+Step 4, including animation scheduling and scrollbar cleanup, shipped in
+PR #153 as `42117b6`. Steps 5 and 6 are implemented on the current branch;
+fullscreen notification migration and final pump removal remain deferred.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
 single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
@@ -13,8 +12,10 @@ one logical core, and interrupt wakeups fell from about 59,700/s to 180/s.
 See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#post-refresh-measurements-2026-09-19)
 for methods, latency distributions, tradeoffs, and remaining coverage limits.
 
-Steps 4 to 8 are deferred under the measurement gate. The retained pump no
-longer drains every tab. An empty-pump-body probe kept the timer and measured
+Steps 7 and 8 remain under the measurement gate. The retained pump no
+longer drains terminal events or visits tabs for pending-work checks. It now
+only reconciles fullscreen state.
+An empty-pump-body probe kept the timer and measured
 only modest CPU savings, with unchanged wakeups and no tab-count scaling.
 The display link accounts for most remaining visible wakeups; removing the
 pump would leave that cost while adding animation and native-lifecycle risk.
@@ -33,6 +34,20 @@ dominated by Zig's 256 KiB signal-stack buffer. Retain the blocking waiter;
 changing native signal-stack policy needs separate validation.
 
 ## Outcome
+
+The goal is lower visual latency, CPU work, allocation pressure, and resident
+memory, with consistent presentation as the display cadence changes. Delivered
+frames govern presentation opportunities; 60 Hz and 120 Hz are validation
+cases, not scheduling constants. Runtime I/O and lifecycle work must continue
+without display frames. Completing the numbered steps is a means to those
+outcomes, not a performance result by itself.
+
+The fresh `42117b6` checkpoint is recorded in the
+[2026-09-23 performance notes](../performance/gpui-terminal-renderer.md#pointer-and-pending-work-checkpoint-2026-09-23).
+Steps 5 and 6 target remaining coordination work. Reassess active-frame encoding
+and memory costs before choosing between renderer changes and steps 7 and 8.
+Keep this implementation separate from changes to glyph encoding, snapshot
+representation, fullscreen ownership, or GPUI's display-link policy.
 
 First remove redundant snapshots and centralize refresh scheduling. Complete
 removal of the window's 16 ms pump is a later, measurement-dependent step.
@@ -529,7 +544,7 @@ smokes, which exercise close consent.
 ## Steps
 
 The original sequence follows. Steps 1 to 3 and the runtime prerequisite shipped
-in PR #147. Step 4 is implemented in the follow-up; steps 5 to 8 remain design
+in PR #147. Steps 4 to 6 are implemented; steps 7 and 8 remain design
 notes for a future measured need. Native 60 Hz pacing was verified in the
 2026-09-20 hardening follow-up. The subjective
 editor/DOOM feel comparison remains unverified. Convert one duty at a time
@@ -560,8 +575,8 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    timer. Notifications and render-time layout changes arm work; weak targets and
    release cleanup keep scheduling separate from view ownership. Each component
    reports pending frame work and deadlines independently of redraw changes.
-   The pump no longer advances these animations. It still samples pointer reveal
-   intent and handles retries, palette availability, close, and fullscreen work.
+   The pump no longer advances these animations. Steps 5 and 6 below remove
+   pointer reveal, retries, palette availability, and close work from it.
    Controlled-time tests cover holds, extension, fade completion, settled hover,
    and reveal's hold-to-fade boundary. The native refresh smoke covers animation
    cadence, idle completion, bell expiry while frames stop, and stale callbacks.
@@ -571,9 +586,27 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    passed all budgets without reproducing a consistent branch-specific penalty.
    See the renderer performance report for the earlier slower pairs, repeated
    measurements, and attribution limits.
-5. **Pointer-driven reveal.**
-6. **Call-site triggers.** `resume_close`, `refresh_palette`, and
-   `retry_client_messages`.
+5. **Pointer-driven reveal.** Implemented. Capture listeners coalesce mouse move,
+   press, release, exit, and modifier changes into a deferred reconciliation after
+   gesture ownership settles. Activation, bounds, notifications, and rendering
+   cover layout changes. A 100 ms macOS fallback remains only for a revealed
+   overlay or the native fullscreen top edge outside the content view. It shares
+   the animation deadline timer and does not request idle redraws.
+6. **Call-site triggers.** Implemented. Workspace notifications reconcile
+   `resume_close` and `refresh_palette`; async completion paths notify explicitly.
+   Each terminal owns a cancellable task and bounded wake channel for queued
+   input, resize, and presentation updates. Admission signals
+   work without requiring a redraw. Activity delivery also retries; a 16 ms
+   backstop runs only while work remains. The opt-in scroll benchmark uses this
+   task for its workload cadence. Production idle terminals arm no retry timer.
+   Mouse motion now flushes on the next executor turn instead of waiting for the
+   old 16 ms tick. Queued motion still coalesces and preserves bounded ordering,
+   but this may send more motion reports to the PTY; that traffic is not measured.
+   Config and window-bounds changes explicitly reconcile retained terminal
+   geometry without waiting for a frame. The presentation-query smoke checks
+   inactive-tab font and padding-only reloads against actual PTY replies.
+   Native coverage queues input and controls while display frames are paused,
+   observes a shell acknowledgement, and checks cancellation after view release.
 7. **Fullscreen.** Drive `refresh_fullscreen` from the native observer callback
    and a deadline timer. This has the most platform invariants; read the
    fullscreen sections of AGENTS.md before touching it.
@@ -701,10 +734,10 @@ Measured and set aside, in case a later profile changes the ranking:
    isolating how much of that increase comes from the waiter in the first run.
    The follow-up traced 13.28 MiB for 50 added threads to the linked image's
    TLS blocks, dominated by Zig's signal-stack buffer.
-5. Step 4 now follows delivered frames for animations and uses deadlines for
-   static holds. Steps 5 to 8 remain deferred: the pump still samples pointer
-   reveal and handles retries, palette availability, close, and native fullscreen
-   coordination. Removing that timer remains a separate measured decision.
+5. Steps 4 to 6 follow delivered frames for animation, deadlines for holds,
+   pointer events for reveal, and targeted wakes for pending terminal work. The
+   pump only reconciles fullscreen state. Steps 7 and 8, including removal of
+   that timer, remain a separate measured decision.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
    and long-running interactive workloads still need human acceptance; the
    benchmark's paint marker does not measure physical presentation latency.

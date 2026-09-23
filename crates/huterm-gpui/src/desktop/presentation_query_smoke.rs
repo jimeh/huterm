@@ -20,7 +20,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
                     .await;
-                let state = cx.update(read_state).expect("query smoke state");
+                let mut state =
+                    cx.update(read_state).expect("query smoke state");
+                writeln!(state, "commands={sequence}").unwrap();
                 publish(&directory, "state", &state);
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
@@ -125,6 +127,13 @@ fn read_state(cx: &mut App) -> String {
                     output,
                     "tab{index}.font={}",
                     f32::from(terminal.font_size)
+                )
+                .unwrap();
+                writeln!(
+                    output,
+                    "tab{index}.padding={},{}",
+                    terminal.window_config.padding_x,
+                    terminal.window_config.padding_y
                 )
                 .unwrap();
                 writeln!(

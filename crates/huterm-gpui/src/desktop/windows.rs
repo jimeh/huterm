@@ -1358,6 +1358,8 @@ fn open_window_with_profile(
                 resizing_sidebar: false,
                 reveal: Reveal::default(),
                 reveal_context: None,
+                pointer_reveal: PointerReveal::default(),
+                layout_pending: false,
                 reorder: None,
                 config,
                 family,
@@ -1374,7 +1376,28 @@ fn open_window_with_profile(
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
             });
-            view.update(cx, |view, cx| view.frame_clock.observe(cx));
+            view.update(cx, |view, cx| {
+                view.frame_clock.observe(cx);
+                cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
+                    view.refresh_tab_visibility(window, cx);
+                    if view.layout_pending {
+                        view.sync_tab_layout(window, cx);
+                    }
+                    view.resume_close(window, cx);
+                    view.refresh_palette(cx);
+                })
+                .detach();
+                cx.observe_window_activation(window, |view, window, cx| {
+                    view.refresh_tab_visibility(window, cx);
+                })
+                .detach();
+                cx.observe_window_bounds(window, |view, window, cx| {
+                    view.layout_pending = true;
+                    view.refresh_tab_visibility(window, cx);
+                    view.sync_tab_layout(window, cx);
+                })
+                .detach();
+            });
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
                 let _ = weak.update(cx, |view, cx| {
@@ -1410,14 +1433,6 @@ fn open_window_with_profile(
                         .update(cx, |_, window, cx| {
                             let _ = pump_view.update(cx, |view, cx| {
                                 view.refresh_fullscreen(window, cx);
-                                view.refresh_tab_visibility(window, cx);
-                                for tab in &view.tabs {
-                                    tab.view.update(cx, |terminal, cx| {
-                                        terminal.refresh_pending_work(cx);
-                                    });
-                                }
-                                view.resume_close(window, cx);
-                                view.refresh_palette(cx);
                             });
                         })
                         .is_err()
@@ -1446,6 +1461,9 @@ impl refresh::Animated for WorkspaceView {
             .tab_scrollbars
             .schedule(now)
             .merge(self.reveal.schedule(now));
+        if let Some(at) = self.pointer_reveal.probe_at {
+            next = next.merge(AnimationSchedule::at(at));
+        }
         if self.scroll_target.is_some()
             || self.reorder.as_ref().is_some_and(|drag| {
                 drag.dragging
@@ -1466,6 +1484,9 @@ impl refresh::Animated for WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
+            self.refresh_tab_visibility(window, cx);
+        }
         if self.advance_tab_scroll(now, window)
             | self.tab_scrollbars.advance(now)
             | self.reveal.tick(now)
@@ -1473,6 +1494,7 @@ impl refresh::Animated for WorkspaceView {
             self.sync_tab_layout(window, cx);
             cx.notify();
         }
+        self.update_pointer_probe(now, window);
     }
 }
 
@@ -1552,6 +1574,13 @@ fn resolve_tab_label(
     }
 }
 
+#[derive(Default)]
+struct PointerReveal {
+    refresh_pending: bool,
+    outside: bool,
+    probe_at: Option<Instant>,
+}
+
 struct WorkspaceView {
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
@@ -1576,6 +1605,8 @@ struct WorkspaceView {
     resizing_sidebar: bool,
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
+    pointer_reveal: PointerReveal,
+    layout_pending: bool,
     reorder: Option<TabReorder>,
     /// Fit tab widths measured during the last render.
     tab_widths: Vec<Pixels>,
@@ -1860,7 +1891,10 @@ impl WorkspaceView {
         )
     }
 
-    fn sync_tab_layout(&self, window: &Window, cx: &mut Context<'_, Self>) {
+    fn sync_tab_layout(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
+        // Config and bounds changes must reach hidden or frame-blocked PTYs.
+        // Consume this once; pointer events do not require scanning every tab.
+        let geometry_changed = std::mem::take(&mut self.layout_pending);
         let presentation = self.presentation();
         let chrome_hidden = self.chrome_hidden();
         let notch_shelf = self.notch_shelf();
@@ -1883,14 +1917,18 @@ impl WorkspaceView {
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets
                     || terminal.notch_shelf != notch_shelf;
-                changed_any |= changed || scale_changed || cell_changed;
+                changed_any |= geometry_changed
+                    || changed
+                    || scale_changed
+                    || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 terminal.notch_shelf = notch_shelf;
-                if changed || scale_changed || cell_changed {
+                if geometry_changed || changed || scale_changed || cell_changed
+                {
                     terminal.resize_if_needed(window);
                     cx.notify();
                 }
@@ -1899,6 +1937,41 @@ impl WorkspaceView {
         if changed_any {
             cx.notify();
         }
+    }
+
+    fn defer_pointer_refresh(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.pointer_reveal.refresh_pending {
+            return;
+        }
+        self.pointer_reveal.refresh_pending = true;
+        // Capture runs before terminal gesture handlers. Reconcile after they
+        // have acquired or released ownership, even if they stop propagation.
+        cx.defer_in(window, |view, window, cx| {
+            view.pointer_reveal.refresh_pending = false;
+            view.refresh_tab_visibility(window, cx);
+        });
+    }
+
+    fn update_pointer_probe(&mut self, now: Instant, window: &Window) {
+        let needed = cfg!(target_os = "macos")
+            && self.presentation() == Presentation::Overlay
+            && self.quake_visible()
+            && window.is_window_active()
+            && self.close.confirmation.is_none()
+            && (self.reveal.progress > 0.0
+                // AppKit's native fullscreen top edge can be outside the
+                // content view and never deliver a window mouse event.
+                || (self.config.tabs.position == TabPosition::Top
+                    && window.is_fullscreen()));
+        self.pointer_reveal.probe_at = tab_visibility::pointer_probe_deadline(
+            self.pointer_reveal.probe_at,
+            now,
+            needed,
+        );
     }
 
     fn refresh_tab_visibility(
@@ -1927,7 +2000,8 @@ impl WorkspaceView {
         let layout = self.chrome_layout(window);
         let pointer = window.mouse_position();
         let bounds = layout.terminal;
-        let hovered = window.is_window_hovered();
+        let hovered =
+            window.is_window_hovered() && !self.pointer_reveal.outside;
         #[cfg(target_os = "macos")]
         let hovered = hovered
             && self.native_fullscreen.as_ref().is_none_or(
@@ -1960,7 +2034,12 @@ impl WorkspaceView {
         {
             cx.notify();
         }
-        self.sync_tab_layout(window, cx);
+        self.update_pointer_probe(Instant::now(), window);
+        self.frame_clock.animate(
+            cx.entity().downgrade(),
+            refresh::Animated::animation_schedule(self, Instant::now()),
+            cx,
+        );
     }
 
     fn tab_strip(&self, window: &Window) -> TabStrip {
@@ -3844,9 +3923,11 @@ impl WorkspaceView {
                     }
                     None => {}
                 }
+                cx.notify();
             });
         })
         .detach();
+        cx.notify();
     }
 
     fn cancel_close(
@@ -4035,6 +4116,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.resizing_sidebar = false;
                             view.scroll_target = None;
                             view.config = config.clone();
+                            view.layout_pending = true;
                             view.title_widths.clear();
                             view.fullscreen.set_default(
                                 config.window.macos_fullscreen_mode,
@@ -4455,6 +4537,7 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.measure_tab_widths(window, cx);
+        self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
         let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
@@ -4506,6 +4589,9 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::invoke_palette));
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
+        let press_view = move_view.clone();
+        let exit_view = move_view.clone();
+        let modifiers_view = move_view.clone();
         // Register before terminal children so capture consumes drag movement
         // and release even beyond the bar/window, before application mouse input.
         root = root.child(
@@ -4516,6 +4602,8 @@ impl Render for WorkspaceView {
                         move |event: &MouseMoveEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = move_view.update(cx, |view, cx| {
+                                    view.pointer_reveal.outside = false;
+                                    view.defer_pointer_refresh(window, cx);
                                     if view.resizing_sidebar {
                                         view.resize_sidebar(
                                             event.position,
@@ -4543,11 +4631,38 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
+                        move |_: &gpui::MouseDownEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = press_view.update(cx, |view, cx| {
+                                    view.pointer_reveal.outside = false;
+                                    view.defer_pointer_refresh(window, cx);
+                                });
+                            }
+                        },
+                    );
+                    window.on_mouse_event(
+                        move |_: &gpui::MouseExitEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = exit_view.update(cx, |view, cx| {
+                                    view.pointer_reveal.outside = true;
+                                    view.defer_pointer_refresh(window, cx);
+                                });
+                            }
+                        },
+                    );
+                    window.on_modifiers_changed(move |_, window, cx| {
+                        let _ = modifiers_view.update(cx, |view, cx| {
+                            view.defer_pointer_refresh(window, cx);
+                        });
+                    });
+                    window.on_mouse_event(
                         move |event: &MouseUpEvent, phase, window, cx| {
-                            if phase == DispatchPhase::Capture
-                                && event.button == MouseButton::Left
-                            {
+                            if phase == DispatchPhase::Capture {
                                 let _ = release_view.update(cx, |view, cx| {
+                                    view.defer_pointer_refresh(window, cx);
+                                    if event.button != MouseButton::Left {
+                                        return;
+                                    }
                                     if view.resizing_sidebar {
                                         view.resize_sidebar(
                                             event.position,

@@ -24,7 +24,7 @@ fn child() -> anyhow::Result<()> {
         .args(["raw", "-echo", "min", "0", "time", "1"])
         .status()?;
     anyhow::ensure!(status.success(), "stty configuration failed: {status}");
-    for phase in ["initial", "reload"] {
+    for phase in ["initial", "padding", "reload"] {
         if !wait_for(
             &directory.join(format!("query-{phase}-{pid}")),
             &directory,

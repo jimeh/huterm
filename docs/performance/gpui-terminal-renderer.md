@@ -826,3 +826,132 @@ passed with the new task routing. The supervised `ci:smoke:step` entrypoint
 also passed in the VM with `HUTERM_CI_SMOKE_STEP=macos-refresh`, and
 `mise run ci:workflows` passed. Cadence budgets remain opt-in for explicitly
 selected physical display modes.
+
+### Pointer and pending-work checkpoint (2026-09-23)
+
+Baseline: merged `main` at `42117b6`, before steps 5 and 6. The native Mac15,8
+was unlocked with one connected built-in display, maximum 120 Hz, scale 1,
+and logical dimensions 2294 by 1490. Delivered callbacks were approximately
+120/s with 8.33 ms median intervals. The initial load average was about 6;
+normal desktop applications remained active. Builds finished before serial
+measurement, with no concurrent agent builds or VM smokes.
+
+Three 12-second echo and flood runs used the existing release workload and
+runner. First intervals were excluded by the runner. Echo applied medians were
+107 / 167 / 134 microseconds; paint-encoding medians were
+5.449 / 6.924 / 6.200 ms. Flood delivered 120 snapshots/s in each run, with
+paint-encoding medians of 14.916 / 14.721 / 14.615 ms. These are elapsed pipeline
+measurements, not CPU utilization or physical presentation latency.
+
+Three scroll runs passed every snapshot, presentation, and queue budget. P95
+input-to-matching-paint encoding was 8.741 / 6.524 / 3.846 ms. Maximum in-flight
+and queued requests stayed at one. This baseline variability limits claims
+based on small timing differences.
+
+The renderer scenarios ran three times each. Median preparation/paint encoding
+was 13.0 / 533.3 microseconds for scrolling (one rebuilt row),
+189.6 / 595.2 microseconds for churn, and 142.4 / 1030.0 microseconds for boxes.
+The native animation smoke passed every marker with its explicit 120 Hz budget.
+
+Idle measurements used a temporary startup-only hook to create tabs through the
+normal path, waiting for each tab's initial snapshot before creating the next.
+The hook ended before sampling and was removed from source after building a
+separate probe executable. No continuous frame observer ran in this probe.
+Process labels were disabled. Each entry is the median of three five-second
+samples after two seconds of settling; hidden means AppKit-hidden.
+
+| Tabs | State | CPU, % of one core | Interrupt wakeups/s | Resident MiB |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | Visible | 1.741 | 179.818 | 101.25 |
+| 1 | Hidden | 0.795 | 59.939 | 100.86 |
+| 10 | Visible | 1.750 | 180.341 | 120.80 |
+| 10 | Hidden | 0.772 | 59.947 | 120.41 |
+| 50 | Visible | 1.778 | 180.021 | 194.02 |
+| 50 | Hidden | 0.908 | 60.147 | 193.58 |
+
+CPU counters include the Mach timebase conversion. Resident memory includes the
+process and its native libraries, not child-shell memory. These observations do
+not establish power consumption or attribute memory to individual subsystems.
+
+Raw logs, JSON reports, preserved release binaries, and profiling artifacts are
+local under `target/bench/pending-work-2026-09-23/`. A separate Metal System Trace
+captured 1,377 target-process drawable presentation requests over 11.702 seconds,
+with median/p95 intervals of 8.341/9.540 ms. These requests confirm approximately
+120 Hz submission under instrumentation; they do not measure physical display
+latency or GPU utilization. The recorder exited 54 after terminating its launched
+process at the capture limit, but the saved trace exported successfully.
+
+The Allocations instrument failed to attach to the target process. Its trace is
+not valid allocation evidence. Resident-memory measurements above remain valid;
+allocation-rate attribution is still pending.
+
+### Pointer and pending-work implementation (2026-09-23)
+
+Production revision: `425d51d`, compared with the preserved `42117b6` binaries
+above. The window pump now only reconciles fullscreen state. Pointer events and
+window changes update reveal intent; each terminal wakes its own pending-work
+task only when needed. The 16 ms retry interval is a busy-runtime backstop, not
+a rendering cadence. The opt-in scroll workload retains its timed drive loop.
+
+The serial 120 Hz release runs passed all output and scroll budgets:
+
+| Measurement | Baseline, three runs | Feature, three runs |
+| --- | --- | --- |
+| Echo applied median, microseconds | 107 / 167 / 134 | 131 / 137 / 140 |
+| Echo paint median, ms | 5.449 / 6.924 / 6.200 | 6.354 / 5.729 / 6.239 |
+| Flood snapshots/s | 120 / 120 / 120 | 120 / 120 / 120 |
+| Flood paint median, ms | 14.916 / 14.721 / 14.615 | 13.952 / 13.952 / 14.025 |
+| Scroll input-to-paint p95, ms | 8.741 / 6.524 / 3.846 | 4.218 / 6.835 / 8.278 |
+
+Scroll queues remained bounded at one in-flight and one queued request. The
+renderer scenarios remained similar: scroll preparation/paint encoding was
+13.0/541.4 microseconds, churn 194.1/585.2, and boxes 143.3/1014.1. The feature
+runs began with load averages around 11 after builds and VM checks had stopped,
+versus about 5 at baseline. These data support preserved pacing and latency
+budgets; they do not establish a visual-latency improvement.
+
+The first idle sequence stopped when the Mac locked before the ten-tab sample.
+Its one-tab samples are excluded from the comparison because the lock boundary
+was not recorded. The repeated comparison checks the lock state before and after
+each run and alternates baseline/feature order for one and fifty tabs.
+
+The repeated unlocked comparison used the same three five-second samples per
+state. One-tab runs used baseline then feature; fifty-tab runs reversed that
+order. Builds and VMs had stopped; normal desktop applications remained active.
+A process-scoped `caffeinate` assertion kept the display awake during this run.
+The initial load average was 14 after the VM, so absolute CPU values should not
+be compared with another machine or an otherwise idle host.
+
+| Tabs | State | Baseline CPU, % core | Feature CPU, % core | Baseline MiB | Feature MiB |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Visible | 1.323 | 0.976 | 102.12 | 102.55 |
+| 1 | Hidden | 0.592 | 0.594 | 101.69 | 102.19 |
+| 50 | Visible | 1.667 | 1.237 | 193.53 | 194.34 |
+| 50 | Hidden | 0.876 | 0.773 | 193.05 | 193.92 |
+
+Visible idle CPU fell 26.2% with one tab and 25.8% with fifty tabs in these pairs,
+about 0.35 and 0.43 percentage points of one core respectively. Hidden one-tab
+CPU was unchanged; hidden fifty-tab CPU fell 11.8%. Interrupt wakeups remained
+approximately 180/s visible and 60/s hidden in both builds. The fullscreen timer
+and GPUI display link remain, so this change reduces work per wake rather than
+eliminating those wakes. Resident memory was 0.43 to 0.87 MiB higher in these
+samples; the new task/channel contribution was not isolated. There is no measured
+memory saving.
+
+The ten-tab feature checkpoint was 1.412% visible / 0.690% hidden CPU,
+179.816 / 59.994 interrupt wakeups/s, and 120.67 / 120.25 MiB resident. It was
+not paired with a fresh ten-tab baseline and is included only as a scaling
+checkpoint. The earlier ten-tab baseline is recorded above.
+
+The final physical-display refresh smoke passed every marker and the explicit
+12,000-microsecond animation budget, with 50 intermediate fade samples and an
+8,328-microsecond median interval. No fixed 120 Hz scheduling interval was added.
+
+Verification includes the full `mise run verify` gate, Linux fullscreen, palette,
+and input smokes, and macOS refresh, desktop integration, fullscreen, palette,
+and Quit smokes. The new native pending-work regression queues input and
+controls while
+frames are paused, requires a shell title acknowledgement, preserves snapshot
+allowances, and verifies task cancellation after view release. Disabling the
+admission wake made it fail at the expected pending-work assertion; restoring
+the wake made it pass.

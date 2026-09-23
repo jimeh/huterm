@@ -32,6 +32,8 @@ done
   });
   const markers = [
     "frame_stop_resume",
+    "pending_work_without_frames",
+    "pending_work_cancellation",
     "animation_hold_fade_idle",
     "render_time_resize_deadline",
     "animation_deadline_while_paused",
