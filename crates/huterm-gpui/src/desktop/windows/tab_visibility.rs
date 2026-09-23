@@ -29,6 +29,19 @@ impl Presentation {
     }
 }
 
+/// Fallback for pointer positions that `AppKit` does not deliver to the window.
+pub(super) fn pointer_probe_deadline(
+    armed: Option<Instant>,
+    now: Instant,
+    needed: bool,
+) -> Option<Instant> {
+    needed.then(|| {
+        armed
+            .filter(|at| *at > now)
+            .unwrap_or(now + Duration::from_millis(100))
+    })
+}
+
 #[derive(Default)]
 pub(super) struct Reveal {
     pub(super) progress: f32,
@@ -154,6 +167,27 @@ impl Reveal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_probe_stops_when_unneeded_and_keeps_its_existing_deadline() {
+        let now = Instant::now();
+        assert_eq!(pointer_probe_deadline(None, now, false), None);
+        let due = now + Duration::from_millis(100);
+        assert_eq!(pointer_probe_deadline(None, now, true), Some(due));
+        assert_eq!(
+            pointer_probe_deadline(
+                Some(due),
+                now + Duration::from_millis(90),
+                true
+            ),
+            Some(due)
+        );
+        assert_eq!(pointer_probe_deadline(Some(due), now, false), None);
+        assert_eq!(
+            pointer_probe_deadline(Some(due), due, true),
+            Some(due + Duration::from_millis(100))
+        );
+    }
+
     #[test]
     fn returning_to_a_settled_reveal_starts_a_fresh_leave_hold() {
         let now = Instant::now();
