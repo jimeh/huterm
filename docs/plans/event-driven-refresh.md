@@ -1,10 +1,9 @@
 # Event-driven window refresh
 
-Status: steps 1 to 3 and the Unix runtime wait conversion are implemented and
-committed. Step 1 is in `94f8028`, step 2 in `dae1ccb`, and step 3 in `ef6e859`.
-Reader, writer, and runtime waits are in `52f716b`, `7d7a6d4`, and `1d42558`.
-Workspace verification and all seven macOS input, clipboard, integration,
-fullscreen, palette, Quit, and Quake smokes pass.
+Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
+Step 4, including animation scheduling and scrollbar cleanup, shipped in
+PR #153 as `42117b6`. Steps 5 and 6 are the current implementation scope;
+fullscreen notification migration and final pump removal remain deferred.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
 single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
@@ -13,8 +12,9 @@ one logical core, and interrupt wakeups fell from about 59,700/s to 180/s.
 See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#post-refresh-measurements-2026-09-19)
 for methods, latency distributions, tradeoffs, and remaining coverage limits.
 
-Steps 4 to 8 are deferred under the measurement gate. The retained pump no
-longer drains every tab. An empty-pump-body probe kept the timer and measured
+Steps 7 and 8 remain under the measurement gate. The retained pump no
+longer drains terminal events, but still visits tabs for pending-work checks.
+An empty-pump-body probe kept the timer and measured
 only modest CPU savings, with unchanged wakeups and no tab-count scaling.
 The display link accounts for most remaining visible wakeups; removing the
 pump would leave that cost while adding animation and native-lifecycle risk.
@@ -33,6 +33,20 @@ dominated by Zig's 256 KiB signal-stack buffer. Retain the blocking waiter;
 changing native signal-stack policy needs separate validation.
 
 ## Outcome
+
+The goal is lower visual latency, CPU work, allocation pressure, and resident
+memory, with consistent presentation as the display cadence changes. Delivered
+frames govern presentation opportunities; 60 Hz and 120 Hz are validation
+cases, not scheduling constants. Runtime I/O and lifecycle work must continue
+without display frames. Completing the numbered steps is a means to those
+outcomes, not a performance result by itself.
+
+The fresh `42117b6` checkpoint is recorded in the
+[2026-09-23 performance notes](../performance/gpui-terminal-renderer.md#pointer-and-pending-work-checkpoint-2026-09-23).
+Steps 5 and 6 target remaining coordination work. Reassess active-frame encoding
+and memory costs before choosing between renderer changes and steps 7 and 8.
+Keep this implementation separate from changes to glyph encoding, snapshot
+representation, fullscreen ownership, or GPUI's display-link policy.
 
 First remove redundant snapshots and centralize refresh scheduling. Complete
 removal of the window's 16 ms pump is a later, measurement-dependent step.

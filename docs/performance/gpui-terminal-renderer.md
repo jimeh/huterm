@@ -826,3 +826,54 @@ passed with the new task routing. The supervised `ci:smoke:step` entrypoint
 also passed in the VM with `HUTERM_CI_SMOKE_STEP=macos-refresh`, and
 `mise run ci:workflows` passed. Cadence budgets remain opt-in for explicitly
 selected physical display modes.
+
+### Pointer and pending-work checkpoint (2026-09-23)
+
+Baseline: merged `main` at `42117b6`, before steps 5 and 6. The native Mac15,8
+was unlocked with one connected built-in display, maximum 120 Hz, scale 1,
+and logical dimensions 2294 by 1490. Delivered callbacks were approximately
+120/s with 8.33 ms median intervals. The initial load average was about 6;
+normal desktop applications remained active. Builds finished before serial
+measurement, with no concurrent agent builds or VM smokes.
+
+Three 12-second echo and flood runs used the existing release workload and
+runner. First intervals were excluded by the runner. Echo applied medians were
+107 / 167 / 134 microseconds; paint-encoding medians were
+5.449 / 6.924 / 6.200 ms. Flood delivered 120 snapshots/s in each run, with
+paint-encoding medians of 14.916 / 14.721 / 14.615 ms. These are elapsed pipeline
+measurements, not CPU utilization or physical presentation latency.
+
+Three scroll runs passed every snapshot, presentation, and queue budget. P95
+input-to-matching-paint encoding was 8.741 / 6.524 / 3.846 ms. Maximum in-flight
+and queued requests stayed at one. This baseline variability limits claims
+based on small timing differences.
+
+The renderer scenarios ran three times each. Median preparation/paint encoding
+was 13.0 / 533.3 microseconds for scrolling (one rebuilt row),
+189.6 / 595.2 microseconds for churn, and 142.4 / 1030.0 microseconds for boxes.
+The native animation smoke passed every marker with its explicit 120 Hz budget.
+
+Idle measurements used a temporary startup-only hook to create tabs through the
+normal path, waiting for each tab's initial snapshot before creating the next.
+The hook ended before sampling and was removed from source after building a
+separate probe executable. No continuous frame observer ran in this probe.
+Process labels were disabled. Each entry is the median of three five-second
+samples after two seconds of settling; hidden means AppKit-hidden.
+
+| Tabs | State | CPU, % of one core | Interrupt wakeups/s | Resident MiB |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | Visible | 1.741 | 179.818 | 101.25 |
+| 1 | Hidden | 0.795 | 59.939 | 100.86 |
+| 10 | Visible | 1.750 | 180.341 | 120.80 |
+| 10 | Hidden | 0.772 | 59.947 | 120.41 |
+| 50 | Visible | 1.778 | 180.021 | 194.02 |
+| 50 | Hidden | 0.908 | 60.147 | 193.58 |
+
+CPU counters include the Mach timebase conversion. Resident memory includes the
+process and its native libraries, not child-shell memory. These observations do
+not establish power consumption or attribute memory to individual subsystems.
+
+Raw logs, JSON reports, preserved release binaries, and profiling artifacts are
+local under `target/bench/pending-work-2026-09-23/`. GPU presentation and allocation
+traces are collected separately because instrumentation changes the workload.
+Their capture and analysis status must be established before interpreting them.
