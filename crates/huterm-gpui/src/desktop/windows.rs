@@ -1359,6 +1359,7 @@ fn open_window_with_profile(
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
+                layout_pending: false,
                 reorder: None,
                 config,
                 family,
@@ -1379,6 +1380,9 @@ fn open_window_with_profile(
                 view.frame_clock.observe(cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.refresh_tab_visibility(window, cx);
+                    if view.layout_pending {
+                        view.sync_tab_layout(window, cx);
+                    }
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
                 })
@@ -1388,7 +1392,9 @@ fn open_window_with_profile(
                 })
                 .detach();
                 cx.observe_window_bounds(window, |view, window, cx| {
+                    view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);
+                    view.sync_tab_layout(window, cx);
                 })
                 .detach();
             });
@@ -1600,6 +1606,7 @@ struct WorkspaceView {
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
+    layout_pending: bool,
     reorder: Option<TabReorder>,
     /// Fit tab widths measured during the last render.
     tab_widths: Vec<Pixels>,
@@ -1884,7 +1891,10 @@ impl WorkspaceView {
         )
     }
 
-    fn sync_tab_layout(&self, window: &Window, cx: &mut Context<'_, Self>) {
+    fn sync_tab_layout(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
+        // Config and bounds changes must reach hidden or frame-blocked PTYs.
+        // Consume this once; pointer events do not require scanning every tab.
+        let geometry_changed = std::mem::take(&mut self.layout_pending);
         let presentation = self.presentation();
         let chrome_hidden = self.chrome_hidden();
         let notch_shelf = self.notch_shelf();
@@ -1907,14 +1917,18 @@ impl WorkspaceView {
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets
                     || terminal.notch_shelf != notch_shelf;
-                changed_any |= changed || scale_changed || cell_changed;
+                changed_any |= geometry_changed
+                    || changed
+                    || scale_changed
+                    || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 terminal.notch_shelf = notch_shelf;
-                if changed || scale_changed || cell_changed {
+                if geometry_changed || changed || scale_changed || cell_changed
+                {
                     terminal.resize_if_needed(window);
                     cx.notify();
                 }
@@ -4102,6 +4116,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.resizing_sidebar = false;
                             view.scroll_target = None;
                             view.config = config.clone();
+                            view.layout_pending = true;
                             view.title_widths.clear();
                             view.fullscreen.set_default(
                                 config.window.macos_fullscreen_mode,

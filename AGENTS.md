@@ -350,7 +350,10 @@ grid cell. Release removes their weak registrations. Keep runtime retries and
 lifecycle progress independent of display frames. Each terminal owns a bounded
 pending-work wake and cancellable task; signal queued input even when admission
 returns no presentation change. Retry timers run only while work remains.
-Workspace notifications reconcile close and palette state. The remaining pump
+Workspace notifications reconcile close and palette state. Config and bounds
+changes mark terminal geometry pending and synchronize it without waiting for a
+frame, including hidden-tab font and padding changes. Pointer-only updates must
+not scan every tab for geometry. The remaining pump
 only reconciles fullscreen state. Reuse an armed earlier
 deadline when a hold extends; do not allocate a timer per interaction. Interaction
 endings must renew holds explicitly because settled drags and hovers have no ticks.

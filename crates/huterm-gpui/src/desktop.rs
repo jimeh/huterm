@@ -308,7 +308,6 @@ struct TerminalView {
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
     _pending_work_task: Task<()>,
-    snapshot_retry: bool,
     option_as_alt: config::MacosOptionAsAlt,
     composition: composition::Composition,
     #[cfg(target_os = "macos")]
@@ -484,7 +483,6 @@ impl TerminalView {
             input_queue: InputQueue::default(),
             pending_work,
             _pending_work_task: pending_work_task,
-            snapshot_retry: false,
             option_as_alt: config.terminal.macos_option_as_alt,
             composition: composition::Composition::default(),
             #[cfg(target_os = "macos")]
@@ -581,7 +579,6 @@ impl TerminalView {
     }
 
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
-        self.snapshot_retry = false;
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
@@ -604,8 +601,6 @@ impl TerminalView {
             Ok(request) => request,
             Err(error) => {
                 self.scroll.fail();
-                self.snapshot_retry = matches!(error, RuntimeError::Busy);
-                self.wake_pending_work();
                 self.set_status(error.to_string());
                 return;
             }
@@ -813,7 +808,6 @@ impl TerminalView {
         !self.input_queue.is_empty()
             || self.pending_resize.is_some()
             || self.pending_presentation.is_some()
-            || self.snapshot_retry
             || self.scroll_benchmark.is_some()
     }
 

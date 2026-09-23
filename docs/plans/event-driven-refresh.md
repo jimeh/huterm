@@ -595,10 +595,16 @@ with the pump still running so changes remain bisectable. Remove the timer last.
 6. **Call-site triggers.** Implemented. Workspace notifications reconcile
    `resume_close` and `refresh_palette`; async completion paths notify explicitly.
    Each terminal owns a cancellable task and bounded wake channel for queued
-   input, resize, presentation, and busy snapshot requests. Admission signals
+   input, resize, and presentation updates. Admission signals
    work without requiring a redraw. Activity delivery also retries; a 16 ms
    backstop runs only while work remains. The opt-in scroll benchmark uses this
    task for its workload cadence. Production idle terminals arm no retry timer.
+   Mouse motion now flushes on the next executor turn instead of waiting for the
+   old 16 ms tick. Queued motion still coalesces and preserves bounded ordering,
+   but this may send more motion reports to the PTY; that traffic is not measured.
+   Config and window-bounds changes explicitly reconcile retained terminal
+   geometry without waiting for a frame. The presentation-query smoke checks
+   inactive-tab font and padding-only reloads against actual PTY replies.
    Native coverage queues input and controls while display frames are paused,
    observes a shell acknowledgement, and checks cancellation after view release.
 7. **Fullscreen.** Drive `refresh_fullscreen` from the native observer callback

@@ -66,7 +66,7 @@ async function main(executableArgument: string): Promise<void> {
   const config = join(directory, "config.toml");
   const shell = join(directory, "shell");
   const family = process.platform === "darwin" ? "Menlo" : "monospace";
-  const configText = (font: number, foreground: string, background: string) => `[terminal]\nclose_on_exit = false\nterm = "xterm-256color"\n[font]\nfamily = "${family}"\nsize = ${font}.0\n[theme]\nforeground = "#${foreground}"\nbackground = "#${background}"\n`;
+  const configText = (font: number, foreground: string, background: string, padding = 4) => `[window]\npadding_x = ${padding}.0\npadding_y = ${padding}.0\n[terminal]\nclose_on_exit = false\nterm = "xterm-256color"\n[font]\nfamily = "${family}"\nsize = ${font}.0\n[theme]\nforeground = "#${foreground}"\nbackground = "#${background}"\n`;
   await writeFile(config, configText(14, "123456", "abcdef"));
   await writeFile(shell, `#!/bin/sh\nHUTERM_QUERY_CHILD=1 exec '${executable.replaceAll("'", "'\\''")}' "$@"\n`);
   await chmod(shell, 0o700);
@@ -122,6 +122,19 @@ async function main(executableArgument: string): Promise<void> {
 
     await command("new_tab");
     await waitFor(async () => (await childPids()).length === 2 ? true : undefined, "second child");
+    await writeFile(config, configText(14, "123456", "abcdef", 40));
+    await command("reload_config");
+    const padded = await waitFor(async () => {
+      const value = await state();
+      return value?.reloading === "false" && value.tabs === "2"
+        && value["tab0.visible"] === "false"
+        && value["tab0.grid"] === value["tab0.layout_grid"]
+        && value["tab0.grid"] !== initial["tab0.grid"]
+        && value["tab0.cell"] === initial["tab0.cell"] ? value : undefined;
+    }, "inactive tab padding-only reload");
+    await writeFile(join(directory, `query-padding-${firstPid}`), "query");
+    const paddingReplies = await queryReplies("padding", firstPid);
+    if (!paddingReplies.equals(expectedReplies(padded, 0))) throw new Error(`padding replies differ: ${paddingReplies.toString("hex")}`);
     await writeFile(config, configText(22, "fedcba", "102030"));
     await command("reload_config");
     const reloaded = await waitFor(async () => {
@@ -136,7 +149,7 @@ async function main(executableArgument: string): Promise<void> {
     await writeFile(join(directory, `query-reload-${firstPid}`), "query");
     const reloadReplies = await queryReplies("reload", firstPid);
     if (!reloadReplies.equals(expectedReplies(reloaded, 0))) throw new Error(`reload replies differ: ${reloadReplies.toString("hex")}`);
-    console.log(`PRESENTATION_QUERY_SMOKE native=${process.platform} inactive=true initial=${initialReplies.toString("hex")} reload=${reloadReplies.toString("hex")}`);
+    console.log(`PRESENTATION_QUERY_SMOKE native=${process.platform} inactive=true initial=${initialReplies.toString("hex")} padding=${paddingReplies.toString("hex")} reload=${reloadReplies.toString("hex")}`);
     await writeFile(join(directory, "stop-all"), "stop");
     const pids = await childPids();
     await waitFor(async () => (await Promise.all(pids.map(pid => Bun.file(join(directory, `stopped-${pid}`)).exists()))).every(Boolean) ? true : undefined, "query children to stop");
