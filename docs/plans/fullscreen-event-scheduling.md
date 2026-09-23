@@ -1,6 +1,8 @@
 # Fullscreen event scheduling and refresh-pump removal
 
-Status: proposed for the next PR. This implements steps 7 and 8 of the
+Status: checkpoint captured; scheduler migration under verification with the
+legacy pump retained as an opt-in comparison arm. This implements steps 7 and 8
+of the
 [event-driven refresh plan](event-driven-refresh.md), following PR #155. The
 inspected production source is `99aef30`, equivalent to merged `84e6fca`; `main`
 subsequently added the 0.12.3 release bump (`a3b35f0`). Refresh the base and
@@ -221,7 +223,7 @@ excludes Quake and process labels and does not add a measurement-period state lo
    refresh, Quake, and Quit smokes plus targeted extensions below. Verify the
    X11 property callback and the explicit macOS no-adapter fallback before
    removal. Xvfb/Openbox with controlled event ordering is the automated gate; a
-   Linux GNOME VM provides supplementary real-WM integration evidence. Also use
+   Docker runs the supported Linux integration checks. Also use
    a no-WM Xvfb property-only fixture for unchanged bounds, without counting it
    as proof of real window-manager behavior. Use native physical-display checks
    for display migration/notch behavior that the VM cannot establish. Mark
@@ -244,6 +246,25 @@ improvement. If native coverage cannot be established, retain the existing path
 for that platform and explicitly leave its removal incomplete. Do not increase
 architectural scope just to finish the checklist.
 
+## Migration checkpoint
+
+The fresh baseline at `f3ec40e` is recorded in the
+[performance report](../performance/gpui-terminal-renderer.md#fullscreen-scheduling-checkpoint-2026-09-23).
+The new window-owned task defaults to pump-off; `HUTERM_FULLSCREEN_OLD_PUMP=1`
+retains the old loop only for the required three-arm comparison before removal.
+A separately spawned foreground task provides the continuation boundary. Native
+wake callbacks never reconcile inline. Scheduled native event batches are capped
+at 32; effects wait until ordered backlog drains. Commands retain the original
+observation-before-intent behavior by consuming the finite snapshot of events
+already in the inbox, without a loop that chases new producers.
+
+Refit retries carry operation and native-generation identity, and ownership
+changes invalidate them. Completion wakes publish presentation without consuming
+a future retry early. Fullscreen counters are opt-in through the smoke or
+`HUTERM_FULLSCREEN_STATS`. The forced adapter failure is available only when the
+fullscreen smoke is running. Baseline/feature performance comparison, final
+legacy-loop removal, and the broad handoff gates remain pending.
+
 ## Acceptance evidence
 
 | Failure or requirement | Evidence required |
@@ -265,8 +286,9 @@ architectural scope just to finish the checklist.
 Use `mise tasks` to confirm exact invocations. Relevant tasks currently include
 `smoke:macos-fullscreen`, `smoke:linux-fullscreen`, `smoke:macos-refresh`,
 `smoke:macos-quake`, `smoke:linux-quake`, `smoke:macos-quit`, and
-`smoke:presentation-queries`. Use the macOS VM for supported automated scenarios
-and Linux container/Xvfb with a WM where frames are required; retain the
+`smoke:presentation-queries`. Use the native macOS host and Linux Docker/Xvfb
+with a WM where frames are
+required. Do not create or use development VMs for this implementation; retain the
 existing no-WM ignored-EWMH fixture. Run `mise run verify` before delivery.
 
 Tests synchronize on observed events, acknowledgements, state changes, and task

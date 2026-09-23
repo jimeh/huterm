@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
+import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -46,4 +46,12 @@ describe("fullscreen evidence checker", () => {
     expect(nativeFrameIsUsable(moved)).toBe(true);
     expect(nativeFrameIsUsable({ ...moved, "w0.content": "556,832,808,584" })).toBe(false);
   });
+});
+
+
+test("refit cadence uses actual native attempt timestamps, not runner elapsed time", () => {
+  expect(() => assertRefitIntervals("16000,17000,18000")).not.toThrow();
+  expect(() => assertRefitIntervals("100,100,100")).toThrow("16 ms");
+  expect(() => assertRefitIntervals("16000,100,20000")).toThrow("16 ms");
+  expect(() => assertRefitIntervals(undefined)).toThrow("16 ms");
 });

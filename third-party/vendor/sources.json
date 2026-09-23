@@ -53,6 +53,11 @@
           "file": "patches/gpui/taffy-grid-security-update.patch",
           "description": "Update Taffy to 0.9.2 so the workspace can resolve grid 1.0.1 with checked dimension growth.",
           "upstream": "https://github.com/advisories/GHSA-38c5-483c-4qqp"
+        },
+        {
+          "name": "fullscreen-state-notification",
+          "file": "patches/gpui/fullscreen-state-notification.patch",
+          "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
         }
       ]
     },

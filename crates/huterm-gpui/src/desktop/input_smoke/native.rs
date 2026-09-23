@@ -2,7 +2,7 @@
 #![allow(unsafe_code, unexpected_cfgs)]
 
 use anyhow::{Context as _, ensure};
-use objc::runtime::{Class, NO, Object};
+use objc::runtime::{Class, NO, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use std::ffi::{CString, c_void};
 
@@ -14,7 +14,80 @@ unsafe extern "C" {
     fn CGWarpMouseCursorPosition(point: gpui::Point<f64>) -> i32;
 }
 
+thread_local! {
+    static FULLSCREEN_PROBE: std::cell::RefCell<Option<FullscreenProbe>> = const { std::cell::RefCell::new(None) };
+}
+struct FullscreenProbe(*mut Object);
+impl Drop for FullscreenProbe {
+    fn drop(&mut self) {
+        // SAFETY: The smoke owns this main-thread notification observer.
+        unsafe {
+            if let Some(class) = Class::get("NSNotificationCenter") {
+                let center: *mut Object = msg_send![class, defaultCenter];
+                let _: () = msg_send![center, removeObserver: self.0];
+            }
+            let _: () = msg_send![self.0, release];
+        }
+    }
+}
+fn publish_fullscreen_probe(mode: &str) {
+    if let Some(directory) = std::env::var_os("HUTERM_FULLSCREEN_SMOKE") {
+        let _ = std::fs::write(
+            std::path::PathBuf::from(directory).join("native-did"),
+            mode,
+        );
+    }
+}
+extern "C" fn probe_did_enter(_: &Object, _: Sel, _: *mut Object) {
+    publish_fullscreen_probe("Native");
+}
+extern "C" fn probe_did_exit(_: &Object, _: Sel, _: *mut Object) {
+    publish_fullscreen_probe("Windowed");
+}
+fn install_fullscreen_probe(window: *mut Object) -> anyhow::Result<()> {
+    FULLSCREEN_PROBE.with(|probe| {
+        if probe.borrow().is_some() { return Ok(()); }
+        // SAFETY: Main-thread smoke-only observer acknowledges actual AppKit Did
+        // notifications; it has no connection to the production scheduler.
+        unsafe {
+            let class = if let Some(class) = Class::get("HutermFullscreenSmokeObserver") { class } else {
+                let mut class = objc::declare::ClassDecl::new("HutermFullscreenSmokeObserver", Class::get("NSObject").context("NSObject")?).context("smoke observer")?;
+                class.add_method(sel!(didEnter:), probe_did_enter as extern "C" fn(&Object, Sel, *mut Object));
+                class.add_method(sel!(didExit:), probe_did_exit as extern "C" fn(&Object, Sel, *mut Object));
+                class.register()
+            };
+            let observer: *mut Object = msg_send![class, new];
+            let center: *mut Object = msg_send![Class::get("NSNotificationCenter").context("NSNotificationCenter")?, defaultCenter];
+            for (name, selector) in [(c"NSWindowDidEnterFullScreenNotification", sel!(didEnter:)), (c"NSWindowDidExitFullScreenNotification", sel!(didExit:))] {
+                let name: *mut Object = msg_send![Class::get("NSString").context("NSString")?, stringWithUTF8String: name.as_ptr()];
+                let _: () = msg_send![center, addObserver: observer selector: selector name: name object: window];
+            }
+            *probe.borrow_mut() = Some(FullscreenProbe(observer));
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn post(command: &str) -> anyhow::Result<()> {
+    if command == "fullscreen" {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "fullscreen smoke required"
+        );
+        // SAFETY: Same main-thread NSWindow action as the green button, outside
+        // GPUI's window borrow and without invoking Huterm's command observer.
+        unsafe {
+            let app: *mut Object = msg_send![
+                Class::get("NSApplication").context("NSApplication")?,
+                sharedApplication
+            ];
+            let window: *mut Object = msg_send![app, keyWindow];
+            ensure!(!window.is_null(), "no key window");
+            install_fullscreen_probe(window)?;
+            let _: () = msg_send![window, toggleFullScreen: std::ptr::null_mut::<Object>()];
+        }
+        return Ok(());
+    }
     if matches!(command, "cursor-center" | "cursor-restore") {
         return position_cursor(command == "cursor-center");
     }

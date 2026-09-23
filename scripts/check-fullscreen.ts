@@ -60,6 +60,13 @@ export function ptyMatchesGrid(state: State, word: string): boolean {
   return new RegExp(`ACK:${word}:\\s*${rows}\\s+${columns}`).test(state["w0.text"] ?? "");
 }
 
+export function assertRefitIntervals(value: string | undefined): void {
+  const intervals = value?.split(",").map(Number) ?? [];
+  if (intervals.length !== 3 || intervals.some(interval => !Number.isFinite(interval) || interval < 16_000)) {
+    throw new Error(`display refits bypassed their 16 ms deadlines: ${value}`);
+  }
+}
+
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
   if (result.exitCode !== 0) throw new Error(`${args.join(" ")}: ${result.stderr.toString()}`);
@@ -74,7 +81,7 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
   }
 }
 
-async function check(executable: string, engine: string, noWm: boolean, frameProbe = false): Promise<void> {
+async function check(executable: string, engine: string, noWm: boolean, frameProbe = false, fallback = false, schedulerOnly = false): Promise<void> {
   const macos = process.platform === "darwin";
   const directory = await mkdtemp(join(tmpdir(), "huterm-fullscreen-"));
   const shell = join(directory, "shell");
@@ -117,7 +124,7 @@ done
   const initialConfig = macos ? configText("native").replace('macos_fullscreen_mode = "native"\n', "") : configText("native");
   await writeFile(config, initialConfig);
   const app = Bun.spawn([executable], {
-    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_FULLSCREEN_SMOKE: directory, SHELL: shell },
+    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_OLD_PUMP: "0", HUTERM_FULLSCREEN_NO_ADAPTER: fallback ? "1" : undefined, SHELL: shell },
     stdout: "pipe", stderr: "pipe",
   });
   let stderr = "";
@@ -131,14 +138,51 @@ done
     await writeFile(`${filename}.tmp`, text);
     await rename(`${filename}.tmp`, filename);
     await waitFor(() => Bun.file(join(directory, `result-${index}`)).exists(), `command ${text}`);
+    // State is published before dispatch; require a subsequent iteration so
+    // an already-true predicate cannot accept pre-command state.
+    await waitFor(async () => app.exitCode !== null || Number((await state()).command_sequence) >= sequence, `state acknowledgement ${text}`);
     return readFile(join(directory, `result-${index}`), "utf8");
   };
   const stable = async (mode: string, index = 0): Promise<State> => {
     await waitFor(async () => {
       const current = await state();
-      return current[`w${index}.mode`] === mode && current[`w${index}.pending`] === "false";
+      return Number(current.command_sequence) >= sequence && current[`w${index}.mode`] === mode && current[`w${index}.pending`] === "false";
     }, `${index} ${mode}`);
     return state();
+  };
+  const quiet = async (expected?: State) => {
+    await waitFor(async () => {
+      const current = await state();
+      return Number(current.command_sequence) >= sequence && current["w0.fullscreen_armed"] === "false" && Number(current["w0.fullscreen_passes"]) > 0;
+    }, "fullscreen task quiescence");
+    let before = expected ?? await state();
+    // The read-only probe supplies an observable ordering boundary spanning eight
+    // native probe ticks. No command reconciles state during this absence check.
+    await waitFor(async () => {
+      const current = await state();
+      if (current["w0.fullscreen_passes"] !== before["w0.fullscreen_passes"] || current["w0.fullscreen_timers"] !== before["w0.fullscreen_timers"] || current["w0.fullscreen_armed"] !== "false") {
+        if (expected) throw new Error("settled fullscreen scheduler woke without a producer");
+        // Initial mapping and native geometry callbacks may still be queued.
+        // Establish a quiet boundary before testing absence after a known input.
+        before = current;
+        return false;
+      }
+      return Number(current.state_sequence) >= Number(before.state_sequence) + 8;
+    }, "no unsolicited fullscreen work");
+  };
+  const checkRefitRetry = async () => {
+    const retryBefore = await state();
+    const attempts = Number(retryBefore["w0.refit_attempts"]);
+    await accepted("probe-refit-retry");
+    await waitFor(async () => {
+      const current = await state();
+      return Number(current["w0.refit_attempts"]) >= attempts + 4 && current["w0.refit_retry"] === "false" && current["w0.fullscreen_armed"] === "false";
+    }, "display churn settles without another producer");
+    if ((await state())["w0.refit_notifications"] !== "3") throw new Error("fresh refit notifications were not injected during retries");
+    assertRefitIntervals((await state())["w0.refit_intervals_us"]);
+    if (Number((await state())["w0.fullscreen_timers"]) < Number(retryBefore["w0.fullscreen_timers"]) + 3) throw new Error("refit retries bypassed the scheduler timer");
+    await quiet();
+    console.log("FULLSCREEN_SMOKE refit-retry-deadlines-settled");
   };
   const waitForRestored = async (before: State, native: boolean, allowReposition = false): Promise<State> => {
     try {
@@ -362,10 +406,27 @@ done
       windowId = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/)[0]!;
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
-    if (!noWm && !frameProbe) await checkReserved();
+    if (!noWm && !frameProbe && !fallback && !schedulerOnly) await checkReserved();
     const original = await stable("Windowed");
+    if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
-    if (frameProbe) {
+    if (fallback) {
+      if (original["w0.fullscreen_fallback"] !== "true" || original["w0.fullscreen_armed"] !== "true") throw new Error("forced fallback did not arm");
+      await accepted("native\tfullscreen");
+      await stable("Native");
+      await waitFor(async () => await Bun.file(join(directory, "native-did")).exists() && await readFile(join(directory, "native-did"), "utf8") === "Native", "external native DidEnter");
+      await accepted("native\tfullscreen");
+      await stable("Windowed");
+      await waitFor(async () => await readFile(join(directory, "native-did"), "utf8") === "Windowed", "external native DidExit");
+      console.log("FULLSCREEN_SMOKE no-adapter external-toggle");
+    } else if (schedulerOnly) {
+      await accepted("0 toggle_non_native_fullscreen");
+      await stable("NonNative");
+      await checkRefitRetry();
+      await accepted("0 toggle_non_native_fullscreen");
+      await stable("Windowed");
+      console.log("FULLSCREEN_SMOKE scheduler-only");
+    } else if (frameProbe) {
       const expected = await command("probe-native-exit");
       if (expected.startsWith("error")) throw new Error(expected);
       await waitFor(async () => {
@@ -376,12 +437,46 @@ done
       }, "offscreen native exit reconciliation");
       console.log(`FULLSCREEN_SMOKE ${engine} offscreen-native-frame-reconciled`);
     } else if (noWm) {
+      // No WM and unchanged geometry: PropertyNotify alone must publish state.
+      run(["xprop", "-id", windowId, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN"]);
+      await stable("Native");
+      if (run(["xdotool", "getwindowgeometry", "--shell", windowId]) !== originalGeometry) throw new Error("property-only fixture changed bounds");
+      await quiet();
+      const propertyIdle = await state();
+      run(["xprop", "-id", windowId, "-f", "_HUTERM_UNRELATED", "8s", "-set", "_HUTERM_UNRELATED", "unrelated"]);
+      run(["xprop", "-id", windowId, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN"]);
+      await quiet(propertyIdle);
+      run(["xprop", "-id", windowId, "-remove", "_NET_WM_STATE"]);
+      await stable("Windowed");
+      const [width, height] = original["w0.viewport"]!.split(",").map(Number) as [number, number];
+      // Configure first, then the property: an earlier bounds event must not
+      // consume the only chance to observe the later fullscreen bit.
+      run(["xdotool", "windowsize", "--sync", windowId, String(width + 1), String(height + 1)]);
+      await waitFor(async () => (await state())["w0.viewport"] === `${width + 1},${height + 1}`, "configure before property");
+      run(["xprop", "-id", windowId, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN"]);
+      await stable("Native");
+      // Property first, then another Configure. Neither ordering requires a
+      // later Huterm command to make the controller see the native state.
+      run(["xdotool", "windowsize", "--sync", windowId, String(width), String(height)]);
+      await waitFor(async () => (await state())["w0.viewport"] === `${width},${height}`, "property before configure");
+      await stable("Native");
+      run(["xprop", "-id", windowId, "-remove", "_NET_WM_STATE"]);
+      await stable("Windowed");
+      console.log("FULLSCREEN_SMOKE property-only unchanged-bounds both-event-orders unrelated-property-idle");
       run(["xdotool", "key", "F11"]);
       await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "ignored EWMH timeout");
       await waitFor(async () => stderr.includes("Fullscreen transition timed out"), "fullscreen timeout diagnostic");
       assertTimeout(await state(), stderr);
       console.log("FULLSCREEN_SMOKE no-ewmh one-status-error pending-cleared");
     } else {
+      if (!macos) {
+        await accepted("0 external_fullscreen");
+        await stable("Native");
+        await accepted("0 external_fullscreen");
+        await stable("Windowed");
+        await quiet();
+        console.log("FULLSCREEN_SMOKE wm-external-transition");
+      }
       if (macos) {
         if (original["w0.default"] !== "NonNative") throw new Error("macOS did not default to non-native fullscreen");
         await accepted(`native\t36\t${1 << 20}\t\r\t\r`);
@@ -455,6 +550,7 @@ done
         const [, tabTop, , tabHeight] = simple["w0.tab_bounds"]!.split(",").map(Number);
         if (tabTop !== topInset) throw new Error("tab bar overlaps the display safe area");
         if (Number(simple["w0.terminal"]!.split(",")[1]) !== topInset + tabHeight!) throw new Error("terminal did not follow inset tab bar");
+        await checkRefitRetry();
         await accepted("probe-display-refit");
         await waitFor(async () => {
           const current = await state();
@@ -506,7 +602,7 @@ done
     // On a display with a notch, put a top bar on each shelf and check that
     // the bar sits at the shelf's bottom edge and the terminal starts one
     // point under the safe area. Hosts without a notched display skip this.
-    if (macos && !frameProbe) {
+    if (macos && !frameProbe && !fallback && !schedulerOnly) {
       await accepted("0 toggle_fullscreen");
       await stable("Windowed");
       const probe = await command("probe-notched-display");
@@ -546,12 +642,12 @@ done
       await stable("NonNative");
     }
     // Exercise the real assessed Quit/finish_close capture while fullscreen.
-    if (macos && !frameProbe) {
+    if (macos && !frameProbe && !fallback && !schedulerOnly) {
       await accepted("0 toggle_fullscreen");
       const released = await stable("Windowed");
       if (released["w0.options"] !== original["w0.options"]) throw new Error("final non-native lease was not released");
     }
-    if ((await state())["w0.mode"] === "Windowed" && !noWm && !frameProbe) {
+    if ((await state())["w0.mode"] === "Windowed" && !noWm && !frameProbe && !fallback && !schedulerOnly) {
       await accepted("0 toggle_fullscreen"); await stable("Native");
     }
     const saved = (await state())["w0.restore"];
@@ -563,7 +659,10 @@ done
     if (await app.exited !== 0) throw new Error(`app exit ${app.exitCode}`);
     const restored = parseState(await readFile(join(directory, "restore"), "utf8"));
     if (restored.restore0 !== saved) throw new Error(`Quit captured fullscreen bounds: ${restored.restore0} != ${saved}`);
-    console.log(`FULLSCREEN_SMOKE ${engine} quit-windowed-bounds`);
+    const quitState = parseState(await readFile(join(directory, "quit-state"), "utf8"));
+    if (Object.entries(quitState).some(([key, value]) => key.endsWith(".fullscreen_armed") && value !== "false")) throw new Error("approved Quit left a fullscreen timer armed");
+    if (fallback && quitState["w0.fullscreen_closed"] !== "true") throw new Error("fallback did not permanently close before Quit");
+    console.log(`FULLSCREEN_SMOKE ${engine} quit-windowed-bounds timers-disarmed`);
   } catch (error) {
     try { process.stderr.write(`FULLSCREEN_SMOKE last state\n${await readFile(join(directory, "state"), "utf8")}\n`); } catch {}
     throw error;
@@ -598,8 +697,13 @@ if (import.meta.main) {
       await waitFor(async () => run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"]).includes("window id"), "Openbox EWMH readiness");
       await check(executable, "ghostty", false);
     } finally { wm.kill(); await wm.exited; process.stderr.write(await new Response(wm.stderr).text()); }
+  } else if (process.platform === "darwin" && Bun.argv.includes("--scheduler-only")) {
+    await check(executable, "ghostty", false, false, false, true);
+  } else if (process.platform === "darwin" && Bun.argv.includes("--fallback-only")) {
+    await check(executable, "ghostty", false, false, true);
   } else if (process.platform === "darwin") {
     await check(executable, "ghostty", false);
     await check(executable, "ghostty", false, true);
+    await check(executable, "ghostty", false, false, true);
   } else throw new Error("fullscreen smoke requires macOS or X11 Linux");
 }

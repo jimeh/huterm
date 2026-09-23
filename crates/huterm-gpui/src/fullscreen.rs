@@ -135,6 +135,29 @@ pub(crate) mod native_policy {
         }
     }
 
+    #[derive(Clone, Copy)]
+    pub(crate) struct RefitRetry {
+        deadline: std::time::Instant,
+        generation: u64,
+        native_generation: u64,
+    }
+    impl RefitRetry {
+        pub fn new(now: std::time::Instant, gate: &OperationGate) -> Self {
+            Self {
+                deadline: now + std::time::Duration::from_millis(16),
+                generation: gate.generation(),
+                native_generation: gate.native_generation(),
+            }
+        }
+        pub fn deadline(
+            self,
+            gate: &OperationGate,
+        ) -> Option<std::time::Instant> {
+            gate.can_refit(self.generation, self.native_generation)
+                .then_some(self.deadline)
+        }
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub(crate) struct Display {
         pub id: u32,
@@ -768,6 +791,13 @@ pub(crate) enum Effect {
     ExitNonNative,
 }
 
+#[derive(Debug)]
+pub(crate) enum Next {
+    Operation(Operation),
+    ContinueLater,
+    Idle,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Operation {
     pub generation: u64,
@@ -828,6 +858,11 @@ impl FullscreenController {
             macos,
             defer_next: false,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn resume_generation(&mut self, generation: u64) {
+        self.generation = self.generation.max(generation);
     }
 
     pub fn set_default(&mut self, default: MacosFullscreenMode) {
@@ -896,12 +931,31 @@ impl FullscreenController {
         }
     }
 
-    pub fn next(&mut self, now: Instant) -> Option<Operation> {
+    pub fn deadline(&self) -> Option<Instant> {
+        if self.closing {
+            None
+        } else {
+            self.pending.map(|op| op.deadline)
+        }
+    }
+    pub fn is_closed(&self) -> bool {
+        self.closing
+    }
+
+    #[cfg(test)]
+    fn next(&mut self, now: Instant) -> Option<Operation> {
+        match self.schedule(now) {
+            Next::Operation(operation) => Some(operation),
+            Next::ContinueLater | Next::Idle => None,
+        }
+    }
+
+    pub fn schedule(&mut self, now: Instant) -> Next {
         if self.closing || self.pending.is_some() {
-            return None;
+            return Next::Idle;
         }
         if std::mem::take(&mut self.defer_next) {
-            return None;
+            return Next::ContinueLater;
         }
         let (effect, target) = match self.observed {
             Mode::Native if self.desired != Mode::Native => {
@@ -919,7 +973,7 @@ impl FullscreenController {
             Mode::Windowed if self.desired == Mode::NonNative => {
                 (Effect::EnterNonNative, Mode::NonNative)
             }
-            _ => return None,
+            _ => return Next::Idle,
         };
         self.generation += 1;
         let operation = Operation {
@@ -929,7 +983,7 @@ impl FullscreenController {
             deadline: now + Duration::from_secs(5),
         };
         self.pending = Some(operation);
-        Some(operation)
+        Next::Operation(operation)
     }
 
     #[cfg(any(target_os = "macos", test))]
@@ -1088,6 +1142,69 @@ mod tests {
             MacosFullscreenMode::Native,
             macos,
         )
+    }
+
+    #[test]
+    fn continuation_and_deadline_are_distinct_from_idle() {
+        let mut c = controller(true);
+        let now = Instant::now();
+        assert!(matches!(c.schedule(now), Next::Idle));
+        c.toggle(ToggleIntent::Native).unwrap();
+        assert!(matches!(c.schedule(now), Next::Operation(_)));
+        assert_eq!(c.deadline(), Some(now + Duration::from_secs(5)));
+        c.native_event(NativeEvent::WillEnter, now);
+        c.toggle(ToggleIntent::Native).unwrap();
+        c.native_event(NativeEvent::DidEnter, now);
+        assert_eq!(c.deadline(), None);
+        assert!(matches!(c.schedule(now), Next::ContinueLater));
+        assert!(matches!(c.schedule(now), Next::Operation(_)));
+        c.close();
+        assert!(c.is_closed());
+        assert_eq!(c.deadline(), None);
+        assert!(matches!(c.schedule(now), Next::Idle));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detached_controller_advances_beyond_adapter_events_discarded_by_quake() {
+        let gate = native_policy::OperationGate::default();
+        gate.native_event(true);
+        gate.native_event(false);
+        gate.native_event(true);
+        gate.native_event(false);
+        let mut c = controller(true);
+        c.resume_generation(gate.generation());
+        c.toggle(ToggleIntent::NonNative).unwrap();
+        let operation = c.next(Instant::now()).unwrap();
+        gate.reserve(operation);
+        assert!(gate.valid(operation));
+    }
+
+    #[test]
+    fn display_retry_waits_and_invalidates_on_generation_or_close() {
+        use native_policy::{OperationGate, RefitRetry};
+        let now = Instant::now();
+        let gate = OperationGate::default();
+        let retry = RefitRetry::new(now, &gate);
+        assert_eq!(
+            retry.deadline(&gate),
+            Some(now + Duration::from_millis(16))
+        );
+        // Repeated notifications do not alter the stored retry or permit it early.
+        for elapsed in 0..16 {
+            assert!(
+                retry.deadline(&gate).unwrap()
+                    > now + Duration::from_millis(elapsed)
+            );
+        }
+        gate.native_event(false);
+        assert_eq!(retry.deadline(&gate), None);
+        let retry = RefitRetry::new(now, &gate);
+        gate.cancel(gate.generation() + 1);
+        assert_eq!(retry.deadline(&gate), None);
+        let retry = RefitRetry::new(now, &gate);
+        gate.close();
+        assert_eq!(retry.deadline(&gate), None);
     }
 
     #[test]

@@ -987,11 +987,19 @@ fn step(
         state.generation.set(state.generation.get() + 1);
         cx.global_mut::<Desktop>().quake.windows.remove(&state.name);
         view.quake.take();
+        view.fullscreen_work.wake.signal();
         view.fullscreen = FullscreenController::new(
             window.window_bounds(),
             view.config.window.macos_fullscreen_mode,
             cfg!(target_os = "macos"),
         );
+        #[cfg(target_os = "macos")]
+        if let Some(adapter) = &view.native_fullscreen {
+            // Quake discards ordinary lifecycle events while the native mutation
+            // gate still advances. Its replacement controller must catch up.
+            view.fullscreen.resume_generation(adapter.generation());
+        }
+        view.fullscreen.observe_native_flag(window.is_fullscreen());
         view.bounds = window.window_bounds();
         view.sync_quake_visibility(window, cx);
         return None;

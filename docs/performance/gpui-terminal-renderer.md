@@ -1009,3 +1009,53 @@ invalid in the report, and the run stops. Per-process logs, native sampler, and
 cleanup results remain in the report's artifact directory. Cleanup requests native
 Quit, waits up to thirty seconds for multi-terminal cleanup, then reports failure
 and kills only that fixture PID.
+
+### Fullscreen scheduling checkpoint (2026-09-23)
+
+The fresh production baseline is `f3ec40e645293f68da952d77320db56406e874b0`,
+recorded before scheduler edits. `target/bench/fullscreen-baseline-complete.json`
+contains 24 valid unlocked samples and twelve clean native Quit results, using
+three five-second samples per case after two seconds of settling. The built-in
+display reported 120 Hz and window scale 1. Initial host load averages were
+10.16 / 12.39 / 10.01; ordinary desktop applications remained active.
+
+| Windows | Tabs per window | State | CPU, % of one core | Interrupt wakeups/s | Resident MiB | Threads |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 1 | Visible | 1.558 | 179.649 | 101.47 | 10 |
+| 1 | 1 | Hidden | 0.824 | 60.083 | 101.56 | 9 |
+| 1 | 50 | Visible | 1.518 | 180.090 | 193.62 | 206 |
+| 1 | 50 | Hidden | 0.865 | 60.100 | 193.64 | 205 |
+| 2 | 1 | Visible | 2.192 | 300.085 | 106.25 | 16 |
+| 2 | 1 | Hidden | 0.889 | 61.542 | 106.27 | 13 |
+| 2 | 50 | Visible | 1.866 | 300.813 | 286.95 | 408 |
+| 2 | 50 | Hidden | 0.906 | 59.692 | 286.92 | 405 |
+
+These are process counters, not attribution to particular timers. Two windows
+can share wakeups; removing two timers does not imply twice the wakeup reduction.
+`target/bench/fullscreen-checkpoint-2026-09-23/` retains the baseline executable
+hashes and three echo, flood, and scroll runs. All scroll budget checks passed,
+with maximum in-flight and queued requests both one. Feature comparisons remain
+pending; no improvement is claimed from the checkpoint alone.
+
+The migration keeps an explicit paired-measurement arm:
+`HUTERM_FULLSCREEN_OLD_PUMP=1` enables the old per-window loop alongside the new
+scheduler. Its default is off. Use two feature arms pointing to the same preserved
+feature executable, with `env` set to `{"HUTERM_FULLSCREEN_OLD_PUMP":"1"}` and
+`{"HUTERM_FULLSCREEN_OLD_PUMP":"0"}`, plus the preserved baseline arm. Keep
+`HUTERM_FULLSCREEN_STATS` unset in these measurements. Diagnostics are enabled
+only for that explicit variable or the fullscreen smoke.
+
+Fullscreen correctness uses the pump-off smoke. The focused native retry path is:
+
+```sh
+mise exec -- bun scripts/check-fullscreen.ts \
+  target/debug/examples/fullscreen_smoke --scheduler-only
+```
+
+`--fallback-only` exercises the deliberately missing adapter. Normal smoke runs
+include both paths. Actual native refit attempt intervals must each be at least
+16 ms, including a fresh notification during a pending retry. The read-only state
+probe checks settled task counters and absence of an armed fullscreen timer.
+The fallback probe acknowledges AppKit Did notifications independently before
+issuing its opposite external toggle, because style-mask changes can precede
+animation completion. That acknowledgement never wakes the production scheduler.

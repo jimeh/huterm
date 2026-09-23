@@ -16,6 +16,7 @@ mod desktop;
 mod file_drop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod fullscreen;
+mod fullscreen_work;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

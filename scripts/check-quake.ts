@@ -686,10 +686,32 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       const scratch = profile(await state(),"scratch")!;
       if (scratch.native_id === first.native_id) throw new Error("two profiles share a native window");
       const scratchPid = scratch.text?.match(/READY:(\d+)/)?.[1];
+      if (macos) {
+        const generation = Number(scratch.adapter_generation);
+        await command("scratch toggle_fullscreen");
+        await waitFor(async () => { const value = profile(await state(), "scratch"); return value?.regular === "true" && value.stage === "Idle"; }, "scratch regular before native Space");
+        await command("scratch native_space");
+        await waitFor(async () => { const value = profile(await state(), "scratch"); return value?.fullscreen === "true" && value.native_idle === "true" && Number(value.adapter_generation) > generation; }, "scratch native Space entered");
+        await command("scratch toggle_fullscreen");
+        await waitFor(async () => { const value = profile(await state(), "scratch"); return value?.regular === "false" && value.stage === "Idle" && value.native_idle === "true" && Number(value.adapter_generation) >= generation + 2; }, "scratch native lifecycle advances gate before detach");
+      }
       await command("app hide_quake scratch");await settled(false,"scratch");
       if ((await current())?.fullscreen !== "true" || (macos && (await current())?.options !== sharedOptions)) throw new Error("hiding one fullscreen profile released another profile presentation");
       await reload("animation_ms = 150");
       await waitFor(async () => !profile(await state(),"scratch"),"removed profile conversion");
+      if (macos) {
+        const convertedMode = async (mode: string) => {
+          const value = await state();
+          const key = Object.keys(value).find(key => key.endsWith(".window_id") && value[key] === scratch.window_id);
+          const prefix = key?.slice(0, key.indexOf("."));
+          return prefix !== undefined && value[`${prefix}.ordinary_fullscreen`] === mode && value[`${prefix}.ordinary_pending`] === "false";
+        };
+        await command(`id:${scratch.window_id} toggle_non_native_fullscreen`);
+        await waitFor(() => convertedMode("NonNative"), "detached profile enters ordinary fullscreen", 4_000);
+        await command(`id:${scratch.window_id} toggle_non_native_fullscreen`);
+        await waitFor(() => convertedMode("Windowed"), "detached profile restores ordinary window", 4_000);
+        console.log("QUAKE_FULLSCREEN detached-controller ordinary-entry-exit");
+      }
       await command(`id:${scratch.window_id} new_tab`);
       await waitFor(async () => Object.entries(await state()).some(([key,value]) => key.endsWith(".tabs") && value === "2"),"converted window stays usable");
       await command(`id:${scratch.window_id} close_window`);
