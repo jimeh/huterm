@@ -115,6 +115,7 @@ async function main(): Promise<void> {
           }
         } finally {
           if (timer) clearTimeout(timer);
+          const cleanupStarted = performance.now();
           Bun.spawnSync([sampler, "terminate", String(child.pid)], { stdout: "ignore", stderr: "ignore" });
           let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
           let forcedCleanup = false;
@@ -122,12 +123,12 @@ async function main(): Promise<void> {
             forcedCleanup = true;
             child.kill("SIGKILL");
             resolveTimeout();
-          }, 10_000); })]);
+          }, 30_000); })]);
           if (cleanupTimer) clearTimeout(cleanupTimer);
           const exitCode = await child.exited;
           await pump;
           await writeFile(join(directory, "stdout.log"), stdout);
-          await writeFile(join(directory, "cleanup.json"), JSON.stringify({ exit_code: exitCode, forced: forcedCleanup }));
+          await writeFile(join(directory, "cleanup.json"), JSON.stringify({ exit_code: exitCode, forced: forcedCleanup, elapsed_ms: performance.now() - cleanupStarted }));
           if (forcedCleanup || exitCode !== 0) throw new Error(`benchmark cleanup failed (exit ${exitCode}, forced ${forcedCleanup}): ${directory}`);
         }
       }

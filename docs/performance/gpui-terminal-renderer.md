@@ -1007,5 +1007,5 @@ samples on a lock notification during it. A process-scoped `caffeinate` assertio
 prevents idle display sleep, not deliberate locking. Invalid samples remain marked
 invalid in the report, and the run stops. Per-process logs, native sampler, and
 cleanup results remain in the report's artifact directory. Cleanup requests native
-Quit, waits up to ten seconds, then reports failure and kills only that
-fixture PID.
+Quit, waits up to thirty seconds for multi-terminal cleanup, then reports failure
+and kills only that fixture PID.
