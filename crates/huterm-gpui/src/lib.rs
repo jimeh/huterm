@@ -17,6 +17,8 @@ mod file_drop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod fullscreen;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod fullscreen_work;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod input_queue;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod keymap;
@@ -158,6 +160,13 @@ pub fn run_integration_smoke() -> anyhow::Result<()> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run_refresh_smoke() -> anyhow::Result<()> {
     desktop::refresh_smoke::run()
+}
+
+/// Runs the startup-only macOS idle benchmark fixture.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_idle_bench() -> anyhow::Result<()> {
+    desktop::idle_bench::run()
 }
 
 #[cfg(test)]

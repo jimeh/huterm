@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use anyhow::{Context as _, ensure};
 use gpui::{Bounds, Point, Size, Window};
@@ -20,7 +21,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::fullscreen::native_policy::{
     Display, DisplayChange, Leases, OperationGate, PresentationLease,
-    display_change, restore_frame,
+    RefitRetry, display_change, restore_frame,
 };
 use crate::fullscreen::{Effect, NativeEvent, Operation};
 
@@ -52,6 +53,35 @@ struct Inbox {
     refit_scheduled: Cell<bool>,
     native_transition: Cell<bool>,
     gate: OperationGate,
+    wake: RefCell<Option<crate::fullscreen_work::Wake>>,
+    refit_retry: Cell<Option<RefitRetry>>,
+    quake: Cell<bool>,
+    ownership: Cell<u64>,
+    probe_refit_retries: Cell<usize>,
+    probe_refit_notifications: Cell<usize>,
+    refit_attempts: Cell<u64>,
+    probe_refit_times: RefCell<Vec<Instant>>,
+}
+
+impl Inbox {
+    fn take_events(&self, command: bool) -> Vec<QueuedEvent> {
+        let mut queue = self.events.borrow_mut();
+        // Commands preserve observation-before-intent for the finite snapshot
+        // already queued. Scheduled passes use a bounded lifecycle batch.
+        let count = if command {
+            queue.len()
+        } else {
+            queue.len().min(32)
+        };
+        queue.drain(..count).collect()
+    }
+    fn signal(&self) {
+        if !self.gate.closing()
+            && let Some(wake) = self.wake.borrow().as_ref()
+        {
+            wake.signal();
+        }
+    }
 }
 
 thread_local! {
@@ -286,7 +316,21 @@ impl Adapter {
                 .as_ref()
                 .is_some_and(|saved| saved.complete);
             Ok(format!(
-                "style={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
+                "refit_notifications={}\nrefit_intervals_us={}\nrefit_attempts={}\nrefit_retry={}\nstyle={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
+                self.0.inbox.probe_refit_notifications.get(),
+                self.0
+                    .inbox
+                    .probe_refit_times
+                    .borrow()
+                    .windows(2)
+                    .map(|times| times[1]
+                        .duration_since(times[0])
+                        .as_micros()
+                        .to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                self.0.inbox.refit_attempts.get(),
+                self.deadline().is_some(),
                 native_rect(frame),
                 native_rect(content),
                 native_rect(screen.frame),
@@ -536,15 +580,85 @@ impl Adapter {
 
     /// Quake owns frame and style effects while associated. Native transition
     /// flags are updated directly by callbacks, but ordinary effects are not run.
+    pub fn generation(&self) -> u64 {
+        self.0.inbox.gate.generation()
+    }
+
+    pub fn set_wake(&self, wake: crate::fullscreen_work::Wake) {
+        *self.0.inbox.wake.borrow_mut() = Some(wake);
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        let retry = self.0.inbox.refit_retry.get()?;
+        (!self.0.inbox.quake.get())
+            .then(|| retry.deadline(&self.0.inbox.gate))
+            .flatten()
+    }
+
+    fn probe_screen_change(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "fullscreen smoke required"
+        );
+        ensure!(
+            self.deadline()
+                .is_some_and(|deadline| deadline > Instant::now()),
+            "probe requires a pending future refit retry"
+        );
+        self.0.inbox.screen_changed.set(true);
+        self.0.inbox.signal();
+        Ok("pending retry notified".to_owned())
+    }
+
+    /// Inject display churn through the same retry path, only in the native smoke.
+    pub fn probe_refit_retry(&self) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some(),
+            "fullscreen smoke required"
+        );
+        self.0.inbox.probe_refit_retries.set(3);
+        self.0.inbox.probe_refit_notifications.set(0);
+        self.0.inbox.probe_refit_times.borrow_mut().clear();
+        self.0.inbox.screen_changed.set(true);
+        self.0.inbox.signal();
+        Ok("refit retries queued".into())
+    }
+
+    fn retry_refit(&self) {
+        self.0.inbox.screen_changed.set(true);
+        self.0
+            .inbox
+            .refit_retry
+            .set(Some(RefitRetry::new(Instant::now(), &self.0.inbox.gate)));
+    }
+
     pub fn discard_quake_events(&self) {
+        if !self.0.inbox.quake.replace(true) {
+            self.0.inbox.ownership.set(self.0.inbox.ownership.get() + 1);
+        }
+        self.0.inbox.refit_retry.set(None);
         self.0.inbox.events.borrow_mut().clear();
         self.0.inbox.screen_changed.set(false);
     }
 
-    pub fn drain(&self) -> Vec<Event> {
-        if self.0.inbox.screen_changed.replace(false)
-            && !self.0.inbox.refit_scheduled.replace(true)
+    fn schedule_refit(&self) {
+        if self.0.inbox.quake.replace(false) {
+            self.0.inbox.ownership.set(self.0.inbox.ownership.get() + 1);
+        }
+        let retry_ready = self
+            .deadline()
+            .is_none_or(|deadline| Instant::now() >= deadline);
+        if retry_ready
+            && !self.0.inbox.refit_scheduled.get()
+            && self.0.inbox.gate.can_refit(
+                self.0.inbox.gate.generation(),
+                self.0.inbox.gate.native_generation(),
+            )
+            && self.0.inbox.screen_changed.replace(false)
         {
+            self.0.inbox.refit_retry.set(None);
+            self.0.inbox.refit_scheduled.set(true);
+            let ownership = self.0.inbox.ownership.get();
             let adapter = self.clone();
             let generation = self.0.inbox.gate.generation();
             let native_generation = self.0.inbox.gate.native_generation();
@@ -552,12 +666,15 @@ impl Adapter {
                 .executor
                 .spawn(async move {
                     adapter.0.inbox.refit_scheduled.set(false);
-                    if !adapter
-                        .0
-                        .inbox
-                        .gate
-                        .can_refit(generation, native_generation)
+                    if adapter.0.inbox.ownership.get() != ownership
+                        || adapter.0.inbox.quake.get()
+                        || !adapter
+                            .0
+                            .inbox
+                            .gate
+                            .can_refit(generation, native_generation)
                     {
+                        adapter.0.inbox.signal();
                         return;
                     }
                     if let Err(error) = adapter.reconcile_display() {
@@ -571,11 +688,23 @@ impl Adapter {
                             adapter.emit(Event::Recover);
                         }
                     }
+                    // Even an unchanged refit can publish new safe-area insets.
+                    adapter.0.inbox.signal();
                 })
                 .detach();
         }
-        let queued: Vec<_> =
-            self.0.inbox.events.borrow_mut().drain(..).collect();
+    }
+
+    pub fn has_events(&self) -> bool {
+        !self.0.inbox.events.borrow().is_empty()
+    }
+
+    pub fn drain(&self, command: bool) -> Vec<Event> {
+        self.schedule_refit();
+        let queued = self.0.inbox.take_events(command);
+        if !self.0.inbox.events.borrow().is_empty() {
+            self.0.inbox.signal();
+        }
         let mut events = Vec::new();
         for event in queued {
             match event {
@@ -584,16 +713,20 @@ impl Adapter {
                     generation,
                     native_generation,
                 } => {
+                    let ownership = self.0.inbox.ownership.get();
                     let adapter = self.clone();
                     self.0
                         .executor
                         .spawn(async move {
-                            if !adapter
-                                .0
-                                .inbox
-                                .gate
-                                .native_is_current(native_generation)
+                            if adapter.0.inbox.ownership.get() != ownership
+                                || adapter.0.inbox.quake.get()
+                                || !adapter
+                                    .0
+                                    .inbox
+                                    .gate
+                                    .native_is_current(native_generation)
                             {
+                                adapter.0.inbox.signal();
                                 return;
                             }
                             // A timeout cancels mutation, but the actual exit must
@@ -608,12 +741,15 @@ impl Adapter {
                             } else {
                                 Ok(())
                             };
-                            if !adapter
-                                .0
-                                .inbox
-                                .gate
-                                .native_is_current(native_generation)
+                            if adapter.0.inbox.ownership.get() != ownership
+                                || adapter.0.inbox.quake.get()
+                                || !adapter
+                                    .0
+                                    .inbox
+                                    .gate
+                                    .native_is_current(native_generation)
                             {
+                                adapter.0.inbox.signal();
                                 return;
                             }
                             adapter.emit(Event::Native(NativeEvent::DidExit));
@@ -683,6 +819,7 @@ impl Adapter {
     }
     pub fn close_gate(&self) {
         self.0.inbox.gate.close();
+        self.0.inbox.refit_retry.set(None);
     }
     pub fn close(&self) {
         self.close_gate();
@@ -704,6 +841,7 @@ impl Adapter {
             .events
             .borrow_mut()
             .push_back(QueuedEvent::Publish(event));
+        self.0.inbox.signal();
     }
     fn valid(&self, operation: Operation) -> bool {
         self.0.inbox.gate.valid(operation)
@@ -918,6 +1056,35 @@ impl Adapter {
     }
 
     fn reconcile_display(&self) -> anyhow::Result<()> {
+        if self.0.inbox.probe_refit_retries.get() > 0
+            || self.0.inbox.probe_refit_times.borrow().len() == 3
+        {
+            self.0
+                .inbox
+                .probe_refit_times
+                .borrow_mut()
+                .push(Instant::now());
+        }
+        if std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some() {
+            self.0
+                .inbox
+                .refit_attempts
+                .set(self.0.inbox.refit_attempts.get() + 1);
+        }
+        if let Some(remaining) =
+            self.0.inbox.probe_refit_retries.get().checked_sub(1)
+        {
+            self.0.inbox.probe_refit_retries.set(remaining);
+            self.retry_refit();
+            // Inject a fresh notification at the established retry boundary;
+            // external smoke commands cannot reliably arrive within 16 ms.
+            self.probe_screen_change()?;
+            self.0
+                .inbox
+                .probe_refit_notifications
+                .set(self.0.inbox.probe_refit_notifications.get() + 1);
+            return Ok(());
+        }
         let mut saved = self.0.saved.borrow_mut();
         let Some(saved) = saved.as_mut() else {
             return Ok(());
@@ -956,7 +1123,7 @@ impl Adapter {
                                 && display.frame != target.frame
                         })
                     {
-                        self.0.inbox.screen_changed.set(true);
+                        self.retry_refit();
                         return Ok(());
                     }
                     ensure!(
@@ -1178,6 +1345,7 @@ fn enqueue(observer: &Object, event: Option<NativeEvent>) {
             } else {
                 inbox.screen_changed.set(true);
             }
+            inbox.signal();
         }
     });
 }
@@ -1203,6 +1371,30 @@ extern "C" fn screen_parameters(observer: &Object, _: Sel, _: *mut Object) {
 #[cfg(test)]
 mod retained_tests {
     use super::Retained;
+
+    #[test]
+    fn lifecycle_batches_preserve_order_and_command_snapshot_drains_remaining()
+    {
+        let inbox = super::Inbox::default();
+        for generation in 0..70 {
+            inbox
+                .events
+                .borrow_mut()
+                .push_back(super::QueuedEvent::Publish(
+                    super::Event::Complete(generation, false),
+                ));
+        }
+        let first = inbox.take_events(false);
+        assert_eq!(first.len(), 32);
+        assert_eq!(inbox.events.borrow().len(), 38);
+        let rest = inbox.take_events(true);
+        assert!(inbox.events.borrow().is_empty());
+        for (expected, event) in first.into_iter().chain(rest).enumerate() {
+            assert!(
+                matches!(event, super::QueuedEvent::Publish(super::Event::Complete(generation, false)) if generation == expected as u64)
+            );
+        }
+    }
 
     #[test]
     fn nil_retained_object_can_be_retained_and_dropped() {

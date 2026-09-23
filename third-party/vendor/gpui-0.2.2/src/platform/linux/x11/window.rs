@@ -905,7 +905,19 @@ impl X11WindowStatePtr {
     pub fn property_notify(&self, event: xproto::PropertyNotifyEvent) -> anyhow::Result<()> {
         let mut state = self.state.borrow_mut();
         if event.atom == state.atoms._NET_WM_STATE {
+            let was_fullscreen = state.fullscreen;
             self.set_wm_properties(state)?;
+            let state = self.state.borrow();
+            let resize = (was_fullscreen != state.fullscreen)
+                .then(|| (state.content_size(), state.scale_factor));
+            drop(state);
+            // The WM may publish this property after ConfigureNotify, or without
+            // changing geometry. Notify GPUI only after releasing window state.
+            if let Some((size, scale)) = resize
+                && let Some(callback) = self.callbacks.borrow_mut().resize.as_mut()
+            {
+                callback(size, scale);
+            }
         } else if event.atom == state.atoms._GTK_EDGE_CONSTRAINTS {
             self.set_edge_constraints(state)?;
         }

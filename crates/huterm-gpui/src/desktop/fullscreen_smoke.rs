@@ -9,6 +9,10 @@ use huterm_protocol::{CommandInvocation, lookup};
 
 use super::{Desktop, WorkspaceView};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one smoke dispatch loop keeps command acknowledgements ordered"
+)]
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory =
         std::path::PathBuf::from(std::env::var("HUTERM_FULLSCREEN_SMOKE")?);
@@ -18,6 +22,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             #[cfg(target_os = "macos")]
             super::input_smoke::post_event("cursor-restore")
                 .expect("restore smoke cursor");
+            publish(&quit_directory, "quit-state", &read_state(cx));
             let runtime = &cx.global::<Desktop>().runtime;
             if let Some(snapshot) = runtime.restore.lock().unwrap().as_ref() {
                 let mut output = String::new();
@@ -36,6 +41,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         .detach();
         cx.spawn(async move |cx| {
             let mut sequence = 0;
+            let mut state_sequence = 0;
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
@@ -45,8 +51,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 publish(
                     &directory,
                     "state",
-                    &format!("command_sequence={sequence}\n{state}"),
+                    &format!("command_sequence={sequence}\nstate_sequence={state_sequence}\n{state}"),
                 );
+                state_sequence += 1;
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
                 ) {
@@ -66,6 +73,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
                                     command == "probe-native-settled",
                                 )
                             })
+
+                    } else if command == "probe-refit-retry" {
+                        cx.update(probe_adapter)
+                            .and_then(std::convert::identity)
+                            .and_then(|adapter| adapter.probe_refit_retry())
                     } else if command == "probe-display-refit" {
                         cx.update(probe_adapter)
                             .and_then(std::convert::identity)
@@ -138,6 +150,17 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let mut outcomes = Vec::new();
     // Multiple commands in one file deliberately share a single GPUI turn.
     for name in fields {
+        if name == "external_fullscreen" {
+            // Request native/WM presentation without observing or mutating the
+            // Huterm controller; only platform notifications can reconcile it.
+            cx.windows()
+                .get(index)
+                .copied()
+                .context("external window")?
+                .update(cx, |_, window, _| window.toggle_fullscreen())?;
+            outcomes.push("external request posted".to_owned());
+            continue;
+        }
         if matches!(name, "confirm_close" | "cancel_close") {
             let handle = cx
                 .windows()
@@ -209,6 +232,8 @@ fn read_state(cx: &mut App) -> String {
         let _ = handle.update(cx, |root, window, cx| {
             let Ok(root) = root.downcast::<WorkspaceView>() else { return; };
             let view = root.read(cx);
+            let (passes, timers, armed) = view.fullscreen_work.wake.counters();
+            writeln!(output, "w{index}.fullscreen_passes={passes}\nw{index}.fullscreen_timers={timers}\nw{index}.fullscreen_armed={armed}\nw{index}.fullscreen_closed={}\nw{index}.fullscreen_fallback={}", view.fullscreen.is_closed(), view.fullscreen_work.fallback).unwrap();
             writeln!(output, "w{index}.default={:?}", view.config.window.macos_fullscreen_mode).unwrap();
             writeln!(output, "w{index}.window_bounds={}", bounds(window.window_bounds())).unwrap();
             writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.status={}\nw{index}.confirming={}",

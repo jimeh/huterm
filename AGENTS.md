@@ -353,9 +353,8 @@ returns no presentation change. Retry timers run only while work remains.
 Workspace notifications reconcile close and palette state. Config and bounds
 changes mark terminal geometry pending and synchronize it without waiting for a
 frame, including hidden-tab font and padding changes. Pointer-only updates must
-not scan every tab for geometry. The remaining pump
-only reconciles fullscreen state. Reuse an armed earlier
-deadline when a hold extends; do not allocate a timer per interaction. Interaction
+not scan every tab for geometry. Reuse an armed earlier deadline when a hold
+extends; do not allocate a timer per interaction. Interaction
 endings must renew holds explicitly because settled drags and hovers have no ticks.
 Do not suppress invalidation by comparing content generations: presentation
 updates invalidate without advancing the content generation. Keep ChromeLayout
@@ -729,7 +728,10 @@ strict. Do not interpret Linux WindowBounds::Windowed as absence of fullscreen;
 the X11 backend reports it even while its fullscreen flag is true.
 Fullscreen native observers own a separate event queue and operation gate.
 Invalidate deferred non-native work in the notification callback itself, then
-let the window pump reconcile mode. AppKit setters and presentation cleanup,
+signal the window-owned coalesced wake to reconcile mode on a later turn.
+Fullscreen scheduling uses events and one earliest-deadline timer; only macOS
+windows created without a native adapter retain fallback polling. Keep the
+separate global Quake pump independent. AppKit setters and presentation cleanup,
 including unexpected view release, run outside GPUI update borrows.
 Observe queued native notifications and the current fullscreen flag before
 accepting a toggle; dispatch effects only after that intent is accepted. Native

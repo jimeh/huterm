@@ -955,3 +955,185 @@ frames are paused, requires a shell title acknowledgement, preserves snapshot
 allowances, and verifies task cancellation after view release. Disabling the
 admission wake made it fail at the expected pending-work assertion; restoring
 the wake made it pass.
+
+### Reproducible idle checkpoint tooling
+
+`mise run bench:idle` builds the release `idle_bench` example and measures one
+and fifty tabs **per window**, with one and two windows, visible and AppKit-hidden.
+It requires an unlocked macOS console session. Close build/VM workloads before
+collecting comparison evidence, and preserve the same desktop/display conditions.
+The task respects `CARGO_TARGET_DIR`; use separate baseline and feature targets:
+
+```sh
+CARGO_TARGET_DIR=target/fullscreen-baseline mise run bench:idle -- \
+  --duration 5 --repeats 3 --settle 2 --output target/bench/fullscreen-baseline.json
+```
+
+Startup uses production `new_tab` and `new_window` commands, waits for each
+fixture shell's initial snapshot, and asserts installed native fullscreen
+adapters and no Quake ownership. Its startup task ends at the readiness line.
+The fixture shell blocks in `read`; configuration uses `tabs.label = "title"`
+and no Quake profiles. Inherited `HUTERM_*` instrumentation is removed unless
+explicitly supplied in an arm's `env`. The sampling interval has no Huterm control
+commands or recurring benchmark state probe. Settling is an excluded interval,
+not proof of startup readiness.
+
+To compare preserved binaries without rebuilding, pass `--arms arms.json`.
+Each arm requires `label`, `executable`, and the exact source `revision`; optional
+`env` supplies development switches. Paths are relative to the working directory.
+For example, replace the revision placeholders with the recorded commit SHAs:
+
+```json
+[
+  {"label":"baseline","executable":"target/fullscreen-baseline/release/examples/idle_bench","revision":"BASELINE_SHA"},
+  {"label":"feature","executable":"target/fullscreen-feature/release/examples/idle_bench","revision":"FEATURE_SHA"}
+]
+```
+
+Run `mise run bench:idle -- --arms arms.json --output target/bench/paired.json`.
+Arm order reverses across repetitions and scenarios. `--tabs 1,50`, `--windows
+1,2`, `--duration`, `--repeats`, and `--settle` select the matrix. A third arm can
+reuse a binary with a different explicit `env` to isolate a development switch.
+
+The report retains executable hashes, revision labels, runner dirt, configuration,
+load averages, host/display context, startup window scale/bounds, and per-sample
+CPU, interrupt wakeups, resident memory, and thread counts. CPU uses Mach timebase
+conversion; 100% is one logical core. RSS and CPU exclude child shells.
+A zero display refresh rate means the OS did not report a fixed rate.
+Visible means AppKit-unhidden; two overlapping windows need not both be
+unoccluded.
+The sampler checks console lock state before and after each interval and rejects
+samples on a lock notification during it. A process-scoped `caffeinate` assertion
+prevents idle display sleep, not deliberate locking. Invalid samples remain marked
+invalid in the report, and the run stops. Per-process logs, native sampler, and
+cleanup results remain in the report's artifact directory. Cleanup requests native
+Quit, waits up to thirty seconds for multi-terminal cleanup, then reports failure
+and kills only that fixture PID.
+
+### Fullscreen scheduling checkpoint (2026-09-23)
+
+The fresh production baseline is `f3ec40e645293f68da952d77320db56406e874b0`,
+recorded before scheduler edits. `target/bench/fullscreen-baseline-complete.json`
+contains 24 valid unlocked samples and twelve clean native Quit results, using
+three five-second samples per case after two seconds of settling. The built-in
+display reported 120 Hz and window scale 1. Initial host load averages were
+10.16 / 12.39 / 10.01; ordinary desktop applications remained active.
+
+| Windows | Tabs per window | State | CPU, % of one core | Interrupt wakeups/s | Resident MiB | Threads |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 1 | Visible | 1.558 | 179.649 | 101.47 | 10 |
+| 1 | 1 | Hidden | 0.824 | 60.083 | 101.56 | 9 |
+| 1 | 50 | Visible | 1.518 | 180.090 | 193.62 | 206 |
+| 1 | 50 | Hidden | 0.865 | 60.100 | 193.64 | 205 |
+| 2 | 1 | Visible | 2.192 | 300.085 | 106.25 | 16 |
+| 2 | 1 | Hidden | 0.889 | 61.542 | 106.27 | 13 |
+| 2 | 50 | Visible | 1.866 | 300.813 | 286.95 | 408 |
+| 2 | 50 | Hidden | 0.906 | 59.692 | 286.92 | 405 |
+
+These are process counters, not attribution to particular timers. Two windows
+can share wakeups; removing two timers does not imply twice the wakeup reduction.
+`target/bench/fullscreen-checkpoint-2026-09-23/` retains the baseline executable
+hashes and three echo, flood, and scroll runs. All scroll budget checks passed,
+with maximum in-flight and queued requests both one. The completed idle and
+latency comparisons follow below.
+
+The comparison executable built at `1d589d1` supported the temporary old-pump
+switch used for the three-arm measurement below. The final source removes both
+the legacy loop and its switch. Normal idle arms leave diagnostics disabled.
+
+An explicit `force_fallback: true` arm reuses the smoke-only adapter construction
+skip. Startup validates missing adapters and fallback eligibility in every window,
+then reports the actual adapter count; only this arm accepts zero. Its startup task
+ends before sampling, without the fullscreen smoke's recurring state writer.
+The smoke seam enables pass/timer counters, so fallback measurements include that
+small instrumentation difference and must be reported separately.
+
+Fullscreen correctness uses the pump-off smoke. The focused native retry path is:
+
+```sh
+mise exec -- bun scripts/check-fullscreen.ts \
+  target/debug/examples/fullscreen_smoke --scheduler-only
+```
+
+`--fallback-only` exercises the deliberately missing adapter. Normal smoke runs
+include both paths. Actual native refit attempt intervals must each be at least
+16 ms, including a fresh notification during a pending retry. The read-only state
+probe checks settled task counters and absence of an armed fullscreen timer.
+The fallback probe acknowledges AppKit Did notifications independently before
+issuing its opposite external toggle, because style-mask changes can precede
+animation completion. That acknowledgement never wakes the production scheduler.
+
+## Fullscreen three-arm comparison (2026-09-23)
+
+The unlocked native host used the same 120 Hz display for baseline `f3ec40e` and
+feature `1d589d1`. Each cell below is the median of three five-second samples.
+The 72 accepted samples exclude six opening samples that overlapped script tests;
+a replacement run supplied those six samples. Raw reports and exclusions are in
+`target/bench/fullscreen-three-arm-summary.json`, with source reports named there.
+CPU is percent of one logical core; wakeups are process interrupt wakeups/second.
+
+| Windows | Tabs/window | Visibility | CPU baseline / pump on / pump off | Wakeups baseline / pump on / pump off |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | visible | 1.458% / 1.296% / 0.660% | 180.5 / 179.9 / 121.8 |
+| 1 | 1 | hidden | 0.695% / 0.670% / 0.025% | 60.1 / 59.9 / 1.6 |
+| 1 | 50 | visible | 1.395% / 1.537% / 0.711% | 179.9 / 179.8 / 121.6 |
+| 1 | 50 | hidden | 0.637% / 0.683% / 0.016% | 60.3 / 60.1 / 1.4 |
+| 2 | 1 | visible | 2.016% / 1.972% / 1.123% | 300.1 / 300.0 / 242.0 |
+| 2 | 1 | hidden | 0.775% / 0.907% / 0.018% | 60.1 / 60.3 / 1.4 |
+| 2 | 50 | visible | 1.992% / 1.936% / 1.064% | 321.5 / 300.4 / 241.9 |
+| 2 | 50 | hidden | 0.967% / 0.851% / 0.024% | 59.9 / 60.3 / 1.4 |
+
+Removing the pump reduces visible CPU 44–55% and hidden CPU 96–98% versus the
+baseline. Hidden wakeups fall from about 60/s to 1.4–1.6/s. Visible wakeups retain
+the display-link cost. RSS remains within about 1 MiB of baseline (102–287 MiB),
+and thread counts differ by at most two, with the same scaling by terminal count.
+The pump-on control retains approximately baseline wakeups, supporting attribution
+to removal of the timer rather than the new reconciliation body alone.
+
+These idle measurements do not establish input latency or physical display
+presentation performance.
+
+### Final latency and fallback checks
+
+The final pump-free build at `44efdf9` was compared with preserved baseline
+`f3ec40e` in three alternating rounds per workload. Echo and flood runs lasted
+12 seconds each; scroll used its existing sample and queue-completion gates.
+Logs and executable hashes are in `target/bench/fullscreen-paired-latency/`.
+The table gives medians across the three run summaries, not pooled percentiles.
+
+| Metric | Baseline | Feature |
+| --- | ---: | ---: |
+| Echo output-to-applied snapshot, median | 116 µs | 105 µs |
+| Echo output-to-paint marker, median | 4,965 µs | 5,417 µs |
+| Flood snapshots/second | 118 | 120 |
+| Flood output-to-paint marker, median | 14,526 µs | 14,624 µs |
+| Scroll input-to-paint marker, run p95 | 9,857 µs | 8,854 µs |
+
+All six echo runs passed the 5,000 µs applied-snapshot budget. All six scroll
+runs passed snapshot, paint, presentation, latency, and queue gates, with maximum
+in-flight and queued requests both one. Scroll p95 ranged from 5,509–10,625 µs
+in baseline and 7,340–9,784 µs in feature. These overlapping results support
+retaining current pacing; they do not establish a latency improvement. Paint
+markers are CPU-side observations, not physical presentation timestamps.
+
+A separate final-build comparison used one window and one tab, with three
+five-second samples per visible/hidden state and alternating normal/fallback
+order (`target/bench/fullscreen-fallback.json`). Normal versus forced-fallback
+CPU was 0.690% versus 1.485% visible, and 0.015% versus 0.814% hidden. Wakeups were
+121.8 versus 180.0/s visible and 1.6 versus 60.3/s hidden. The fallback includes
+smoke counters as noted above. It intentionally retains polling; normal windows
+assert successful observer installation and never enter that path.
+
+`mise run verify` passed 596 Rust tests and 468 script tests, with three ignored
+Rust benchmarks. Native fullscreen, Quake, refresh, Quit, and presentation-query
+checks passed; Docker Linux fullscreen, Quake, and presentation-query checks
+passed. The native refresh smoke measured an 8,325 µs median frame interval.
+An isolated captured-revision perturbation bypassing the refit deadline failed
+at the intended assertion with 42, 23, and 22 µs retry intervals. Restoring the
+source made the same smoke pass. The strengthened fallback smoke also proves
+repeated idle timer firings before external native transitions and Quit disarm.
+
+Physical notch checks passed on the built-in display. Multi-display migration,
+hotplug, and a native 60 Hz run remain untested for this change. Remaining polling
+includes the explicit no-adapter compatibility sampler, separate Quake pump,
+conditional macOS pointer probe, busy-runtime retries, and GPUI display-link work.

@@ -296,6 +296,11 @@ fn read_state(cx: &mut App) -> String {
             let view=root.read(cx);
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
             writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}\nw{index}.status={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden(),view.status.as_deref().unwrap_or("")).unwrap();
+            writeln!(output, "w{index}.ordinary_fullscreen={:?}\nw{index}.ordinary_pending={}", view.fullscreen.observed, view.fullscreen.is_pending()).unwrap();
+            #[cfg(target_os = "macos")]
+            if let Some(adapter) = &view.native_fullscreen {
+                writeln!(output, "w{index}.adapter_generation={}\nw{index}.native_idle={}", adapter.generation(), adapter.check_native_transition().is_ok()).unwrap();
+            }
             let viewport = window.viewport_size();
             writeln!(output, "w{index}.gpui_viewport={},{}\nw{index}.gpui_scale={}", f32::from(viewport.width), f32::from(viewport.height), window.scale_factor()).unwrap();
             if let Some(state)=&view.quake {

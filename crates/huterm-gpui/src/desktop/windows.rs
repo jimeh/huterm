@@ -4,6 +4,9 @@ pub(crate) mod clipboard_smoke;
 #[path = "fullscreen_smoke.rs"]
 pub(crate) mod fullscreen_smoke;
 #[cfg(target_os = "macos")]
+#[path = "idle_bench.rs"]
+pub(crate) mod idle_bench;
+#[cfg(target_os = "macos")]
 #[path = "input_smoke.rs"]
 pub(crate) mod input_smoke;
 #[path = "integration_smoke.rs"]
@@ -1170,6 +1173,7 @@ fn approved_quit(cx: &mut App) {
             quake_windows::shutdown(cx);
             for view in cx.global::<Desktop>().windows.clone() {
                 let _ = view.update(cx, |view, _| {
+                    view.fullscreen_work.wake.stop();
                     view.fullscreen.close();
                     #[cfg(target_os = "macos")]
                     if let Some(adapter) = view.native_fullscreen.take() {
@@ -1326,6 +1330,32 @@ fn open_window_with_profile(
                 .ok()
             });
             let frame_clock = refresh::FrameClock::new(window);
+            #[cfg(target_os = "macos")]
+            let native_fullscreen =
+                if std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
+                    && std::env::var_os("HUTERM_FULLSCREEN_NO_ADAPTER")
+                        .is_some()
+                {
+                    None
+                } else {
+                    crate::native_fullscreen::Adapter::new(window, cx)
+                        .inspect_err(|error| {
+                            eprintln!("Fullscreen observer: {error}");
+                        })
+                        .ok()
+                };
+            #[cfg(target_os = "macos")]
+            let fallback = native_fullscreen.is_none();
+            #[cfg(not(target_os = "macos"))]
+            let fallback = false;
+            let fullscreen_work = crate::fullscreen_work::Work::new(fallback);
+            #[cfg(target_os = "macos")]
+            if let Some(adapter) = &native_fullscreen {
+                adapter.set_wake(fullscreen_work.wake.clone());
+                if quake.is_some() {
+                    adapter.discard_quake_events();
+                }
+            }
             let view = cx.new(|cx| WorkspaceView {
                 frame_clock,
                 quake,
@@ -1339,11 +1369,8 @@ fn open_window_with_profile(
                     cfg!(target_os = "macos"),
                 ),
                 #[cfg(target_os = "macos")]
-                native_fullscreen: crate::native_fullscreen::Adapter::new(
-                    window, cx,
-                )
-                .inspect_err(|error| eprintln!("Fullscreen observer: {error}"))
-                .ok(),
+                native_fullscreen,
+                fullscreen_work,
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -1392,6 +1419,7 @@ fn open_window_with_profile(
                 })
                 .detach();
                 cx.observe_window_bounds(window, |view, window, cx| {
+                    view.fullscreen_work.wake.signal();
                     view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);
                     view.sync_tab_layout(window, cx);
@@ -1422,26 +1450,41 @@ fn open_window_with_profile(
                         .update(cx, |_, window, _| window.remove_window());
                 });
             }
-            let pump_view = view.downgrade();
-            let pump_window = window.window_handle();
-            cx.spawn(async move |cx| {
-                loop {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(16))
+            view.update(cx, |view, cx| {
+                let Some(wakes) = view.fullscreen_work.receiver.take() else {
+                    return;
+                };
+                let handle = window.window_handle();
+                view.fullscreen_work.task =
+                    Some(cx.spawn(async move |weak, cx| {
+                        let foreground = cx.foreground_executor().clone();
+                        crate::fullscreen_work::run(
+                            wakes,
+                            || {
+                                handle
+                                    .update(cx, |_, window, cx| {
+                                        weak.update(cx, |view, cx| {
+                                            if view.fullscreen.is_closed() {
+                                                return None;
+                                            }
+                                            view.fullscreen_work.wake.passed();
+                                            let continuation = view
+                                                .refresh_fullscreen(window, cx);
+                                            view.arm_fullscreen(cx);
+                                            Some(continuation)
+                                        })
+                                        .ok()
+                                        .flatten()
+                                    })
+                                    .ok()
+                                    .flatten()
+                            },
+                            || foreground.spawn(async {}),
+                        )
                         .await;
-                    if pump_window
-                        .update(cx, |_, window, cx| {
-                            let _ = pump_view.update(cx, |view, cx| {
-                                view.refresh_fullscreen(window, cx);
-                            });
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .detach();
+                    }));
+                view.fullscreen_work.wake.signal();
+            });
             view
         },
     );
@@ -1587,6 +1630,7 @@ struct WorkspaceView {
     attachment: Option<AttachmentId>,
     bounds: WindowBounds,
     fullscreen: FullscreenController,
+    fullscreen_work: crate::fullscreen_work::Work,
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Areas beside a display notch while custom fullscreen covers it.
     notch_shelves: Option<crate::fullscreen::NotchShelves>,
@@ -1641,6 +1685,7 @@ struct PaletteRefreshState {
 
 impl Drop for WorkspaceView {
     fn drop(&mut self) {
+        self.fullscreen_work.wake.stop();
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
         if let Some(adapter) = self.native_fullscreen.take() {
@@ -3368,7 +3413,8 @@ impl WorkspaceView {
                     self.check_fullscreen_available(invocation.id)?;
                     return quake_windows::toggle(self, window, cx);
                 }
-                self.observe_fullscreen(window, cx);
+                self.observe_fullscreen(window, cx, true);
+                self.fullscreen_work.wake.signal();
                 let intent = match invocation.id {
                     ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
                     ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
@@ -3380,7 +3426,10 @@ impl WorkspaceView {
                 self.fullscreen
                     .toggle_checked(intent, || Ok(()))
                     .map_err(CommandError::Unavailable)?;
-                self.advance_fullscreen(window, cx);
+                if self.advance_fullscreen(window, cx) {
+                    self.fullscreen_work.wake.signal();
+                }
+                self.arm_fullscreen(cx);
                 Ok(CommandOutcome::Accepted)
             }
             ids::MINIMIZE => {
@@ -3486,20 +3535,49 @@ impl WorkspaceView {
         }
     }
 
+    fn arm_fullscreen(&self, cx: &App) {
+        if self.fullscreen.is_closed() {
+            self.fullscreen_work.wake.stop();
+            return;
+        }
+        let mut deadline = self.fullscreen.deadline();
+        #[cfg(target_os = "macos")]
+        if let Some(adapter) = &self.native_fullscreen {
+            deadline = deadline.into_iter().chain(adapter.deadline()).min();
+        }
+        if self.quake.is_some() {
+            deadline = None;
+        } else if self.fullscreen_work.fallback {
+            deadline = deadline
+                .into_iter()
+                .chain(Some(Instant::now() + Duration::from_millis(16)))
+                .min();
+        }
+        self.fullscreen_work.wake.arm(deadline, cx);
+    }
+
     fn refresh_fullscreen(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
+    ) -> bool {
         if self.quake.is_some() {
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &self.native_fullscreen {
                 adapter.discard_quake_events();
             }
-            return;
+            return false;
         }
-        self.observe_fullscreen(window, cx);
-        self.advance_fullscreen(window, cx);
+        self.observe_fullscreen(window, cx, false);
+        #[cfg(target_os = "macos")]
+        if self
+            .native_fullscreen
+            .as_ref()
+            .is_some_and(crate::native_fullscreen::Adapter::has_events)
+        {
+            return true;
+        }
+        self.advance_fullscreen(window, cx)
     }
 
     // Commands must reconcile queued native changes before choosing a target.
@@ -3508,7 +3586,10 @@ impl WorkspaceView {
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
+        command: bool,
     ) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = command;
         let previous = (
             self.fullscreen.chrome_hidden,
             self.fullscreen.observed,
@@ -3518,7 +3599,7 @@ impl WorkspaceView {
         let now = Instant::now();
         #[cfg(target_os = "macos")]
         if let Some(adapter) = &self.native_fullscreen {
-            for event in adapter.drain() {
+            for event in adapter.drain(command) {
                 use crate::native_fullscreen::Event;
                 match event {
                     Event::Native(event) => {
@@ -3607,10 +3688,15 @@ impl WorkspaceView {
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) {
+    ) -> bool {
         #[cfg(not(target_os = "macos"))]
         let _ = cx;
-        if let Some(operation) = self.fullscreen.next(Instant::now()) {
+        let operation = match self.fullscreen.schedule(Instant::now()) {
+            crate::fullscreen::Next::Operation(operation) => operation,
+            crate::fullscreen::Next::ContinueLater => return true,
+            crate::fullscreen::Next::Idle => return false,
+        };
+        {
             match operation.effect {
                 Effect::ToggleNative => {
                     #[cfg(target_os = "macos")]
@@ -3621,7 +3707,8 @@ impl WorkspaceView {
                         self.status =
                             Some(format!("Fullscreen failed: {error}"));
                         cx.notify();
-                        return;
+                        self.fullscreen_work.wake.signal();
+                        return false;
                     }
                     window.toggle_fullscreen();
                 }
@@ -3647,6 +3734,7 @@ impl WorkspaceView {
                 }
             }
         }
+        false
     }
 
     fn remove_window(
@@ -3656,6 +3744,7 @@ impl WorkspaceView {
         quit_after: bool,
     ) {
         quake_windows::close(self, cx);
+        self.fullscreen_work.wake.stop();
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
         {
@@ -4118,6 +4207,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                             view.config = config.clone();
                             view.layout_pending = true;
                             view.title_widths.clear();
+                            view.fullscreen_work.wake.signal();
                             view.fullscreen.set_default(
                                 config.window.macos_fullscreen_mode,
                             );

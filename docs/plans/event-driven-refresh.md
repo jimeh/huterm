@@ -2,8 +2,9 @@
 
 Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
 Step 4, including animation scheduling and scrollbar cleanup, shipped in
-PR #153 as `42117b6`. Steps 5 and 6 are implemented on the current branch;
-fullscreen notification migration and final pump removal remain deferred.
+PR #153 as `42117b6`. Steps 5 and 6 shipped in PR #155. Steps 7 and 8 are
+implemented in PR #157, with fullscreen notification scheduling and removal of
+the per-window pump. Paired measurements and local validation are complete.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
 single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
@@ -12,14 +13,12 @@ one logical core, and interrupt wakeups fell from about 59,700/s to 180/s.
 See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#post-refresh-measurements-2026-09-19)
 for methods, latency distributions, tradeoffs, and remaining coverage limits.
 
-Steps 7 and 8 remain under the measurement gate. The retained pump no
-longer drains terminal events or visits tabs for pending-work checks. It now
-only reconciles fullscreen state.
-An empty-pump-body probe kept the timer and measured
-only modest CPU savings, with unchanged wakeups and no tab-count scaling.
-The display link accounts for most remaining visible wakeups; removing the
-pump would leave that cost while adding animation and native-lifecycle risk.
-Revisit these steps if profiles show material remaining cost.
+The 2026-09-23 fullscreen comparison accepted 72 samples from baseline `f3ec40e`
+and feature `1d589d1`, including an old-pump-enabled control. Visible CPU fell
+44–55% and hidden CPU 96–98%; RSS and thread counts were essentially unchanged.
+The legacy loop is now removed. The display link still accounts for most visible
+wakeups. See the [fullscreen comparison](../performance/gpui-terminal-renderer.md#fullscreen-three-arm-comparison-2026-09-23)
+for absolute values and coverage limits.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -544,8 +543,9 @@ smokes, which exercise close consent.
 ## Steps
 
 The original sequence follows. Steps 1 to 3 and the runtime prerequisite shipped
-in PR #147. Steps 4 to 6 are implemented; steps 7 and 8 remain design
-notes for a future measured need. Native 60 Hz pacing was verified in the
+in PR #147. Steps 4 to 6 shipped in PRs #153 and #155; steps 7 and 8 are
+implemented in PR #157 after the three-arm comparison. Native 60 Hz pacing was
+verified in the
 2026-09-20 hardening follow-up. The subjective
 editor/DOOM feel comparison remains unverified. Convert one duty at a time
 with the pump still running so changes remain bisectable. Remove the timer last.
@@ -607,23 +607,21 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    inactive-tab font and padding-only reloads against actual PTY replies.
    Native coverage queues input and controls while display frames are paused,
    observes a shell acknowledgement, and checks cancellation after view release.
-7. **Fullscreen.** Drive `refresh_fullscreen` from the native observer callback
-   and a deadline timer. This has the most platform invariants; read the
-   fullscreen sections of AGENTS.md before touching it.
-8. **Remove the pump timer if measurements justify it.** Keep optional diagnostic
-   reporting for one release for work found by a slow fallback tick. Verify with
-   that tick disabled; a repairing fallback is not evidence of correct event
-   scheduling. If enabled during measurement, report its cost separately.
+7. **Fullscreen.** Implemented through a coalesced window-owned task, native
+   notifications, the X11 property callback, and explicit operation/refit
+   deadlines. See the [fullscreen plan](fullscreen-event-scheduling.md).
+8. **Remove the pump timer after measurement.** Implemented after the accepted
+   three-arm comparison and pump-off correctness checks. Opt-in counters remain,
+   with no repairing diagnostic tick. Only macOS adapter construction failure
+   retains the explicit compatibility sampler; its cost is measured separately.
 
 Steps 2 and 3 deliver the latency and correctness benefits and ship together.
 The runtime loop change ships separately, before steps 4 to 8. Steps 4 to 8
-carry most of the risk. The scope decision above uses per-process CPU and
-interrupt-wakeup counters from `proc_pid_rusage`, comparing the baseline, feature,
-and feature with its
-pump body stubbed out. `powermetrics` required unavailable sudo access. If
-the display link dominates the remaining wakeups, reduce the pump's per-tick
-work, such as hidden-tab refreshes and title clones, instead of removing the
-timer.
+carry most of the risk. The earlier scope decision used per-process CPU and
+interrupt-wakeup counters from `proc_pid_rusage` with a stubbed pump body.
+`powermetrics` required unavailable sudo access. The later three-arm comparison
+measured the timer itself and established the benefit of removing it, while
+leaving display-link work outside this migration.
 
 ## Invariants to preserve
 
@@ -736,8 +734,9 @@ Measured and set aside, in case a later profile changes the ranking:
    TLS blocks, dominated by Zig's signal-stack buffer.
 5. Steps 4 to 6 follow delivered frames for animation, deadlines for holds,
    pointer events for reveal, and targeted wakes for pending terminal work. The
-   pump only reconciles fullscreen state. Steps 7 and 8, including removal of
-   that timer, remain a separate measured decision.
+   fullscreen migration in steps 7 and 8 now removes the remaining timer after
+   the accepted three-arm comparison. Local validation is complete; physical
+   display migration and a fresh 60 Hz run remain untested.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
    and long-running interactive workloads still need human acceptance; the
    benchmark's paint marker does not measure physical presentation latency.

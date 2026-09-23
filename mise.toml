@@ -211,6 +211,11 @@ run = [
   "bash scripts/headless.sh bun scripts/run-renderer-bench.ts target/release/examples/renderer_bench",
 ]
 
+[tasks."bench:idle"]
+depends = ["ghostty:prepare", "scripts:install"]
+description = "Measure opt-in macOS idle CPU, wakeups, RSS and threads; pass --arms for preserved binaries"
+run = "bun scripts/run-idle-benchmark.ts"
+
 [tasks."bench:output-latency"]
 depends = ["ghostty:prepare", "scripts:install"]
 description = "Measure delay from terminal output to an applied snapshot; pass echo or flood after --"
@@ -489,7 +494,7 @@ run = "bun node_modules/typescript/bin/tsc --noEmit"
 [tasks."test:scripts"]
 description = "Test repository tooling with Bun"
 depends = ["scripts:install"]
-run = "bun test scripts"
+run = "bun test ./scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"

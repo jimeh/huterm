@@ -96,7 +96,7 @@ mod windows;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 pub(crate) use windows::updater_smoke;
 #[cfg(target_os = "macos")]
-pub(crate) use windows::{clipboard_smoke, input_smoke};
+pub(crate) use windows::{clipboard_smoke, idle_bench, input_smoke};
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
