@@ -12,6 +12,7 @@ export function validateArms(value: unknown): Arm[] {
     if (!arm || typeof arm !== "object" || ![arm.label, arm.executable, arm.revision].every(v => typeof v === "string" && v.length > 0)) {
       throw new Error("each arm requires label, executable and revision strings");
     }
+    if (arm.env?.HUTERM_QUAKE_SMOKE !== undefined) throw new Error("idle arms must disable the periodic Quake smoke publisher");
     if (arm.force_fallback !== undefined && typeof arm.force_fallback !== "boolean") throw new Error("force_fallback must be boolean");
     if (labels.has(arm.label)) throw new Error(`duplicate arm label: ${arm.label}`);
     labels.add(arm.label);
@@ -29,6 +30,26 @@ export function readiness(stdout: string, windows: number, tabs: number, forced:
     throw new Error("unexpected idle fixture window, tab or adapter count");
   }
   return true;
+}
+
+export function quakeWindowIds(stdout: string, windows: number, hidden: boolean): number[] {
+  const profiles = stdout.split("\n").filter(line => line.startsWith("huterm-idle profile="));
+  if (profiles.length !== windows) throw new Error("unexpected Quake profile count");
+  const ids = profiles.map(line => {
+    if (!line.includes(" stage=Idle ") || !line.includes(` desired=${!hidden} `) || !line.includes(` visible=${!hidden} `)) {
+      throw new Error("Quake fixture did not settle at requested visibility");
+    }
+    const id = / native_id=(\d+)(?: |$)/.exec(line);
+    if (!id || Number(id[1]) <= 0) throw new Error("missing native Quake window ID");
+    return Number(id[1]);
+  });
+  if (new Set(ids).size !== windows) throw new Error("duplicate native Quake window ID");
+  return ids;
+}
+
+export function fixtureConfig(presentation: string, windows: number): string {
+  return '[tabs]\nlabel = "title"\n' + (presentation === "quake"
+    ? Array.from({ length: windows }, (_, i) => `\n[quake.profiles.idle${i}]\nhide_on_focus_loss = false\nanimation = "none"\ndisplay = "primary"\nposition = "${i === 0 ? "top" : "bottom"}"\nheight = 0.5\n`).join("") : "");
 }
 
 export function armOrder<T>(arms: T[], round: number): T[] {
@@ -70,6 +91,7 @@ async function main(): Promise<void> {
     arms: { type: "string" }, output: { type: "string", default: "target/bench/idle/report.json" },
     duration: { type: "string", default: "5" }, repeats: { type: "string", default: "3" },
     settle: { type: "string", default: "2" }, tabs: { type: "string", default: "1,50" },
+    presentations: { type: "string", default: "ordinary,quake" },
     windows: { type: "string", default: "1,2" },
   }, strict: true });
   if (process.platform !== "darwin") throw new Error("bench:idle currently requires macOS");
@@ -77,6 +99,8 @@ async function main(): Promise<void> {
   const tabs = values.tabs!.split(",").map(Number), windows = values.windows!.split(",").map(Number);
   if (!Number.isFinite(duration) || duration <= 0 || !Number.isInteger(repeats) || repeats < 1 || !Number.isFinite(settle) || settle < 0
     || tabs.some(n => !Number.isInteger(n) || n < 1 || n > 50) || windows.some(n => n !== 1 && n !== 2)) throw new Error("invalid benchmark dimensions or duration");
+  const presentations = values.presentations!.split(",");
+  if (presentations.some(p => p !== "ordinary" && p !== "quake")) throw new Error("invalid presentation");
   const output = resolve(values.output!);
   await mkdir(dirname(output), { recursive: true });
   const artifacts = await mkdtemp(join(dirname(output), "idle-artifacts-"));
@@ -96,7 +120,7 @@ async function main(): Promise<void> {
     host: { model: run(["sysctl", "-n", "hw.model"]), os: release(), cpus: cpus(), display: context,
       display_details: run(["system_profiler", "SPDisplaysDataType", "-json"]), load_start: loadavg() },
     runner_revision: run(["git", "rev-parse", "HEAD"]), runner_dirty: run(["git", "status", "--porcelain"]),
-    configuration: 'isolated config; tabs.label="title"; no Quake; blocking fixture shell; tabs are per window',
+    configuration: 'isolated config; tabs.label="title"; ordinary and genuine Quake profiles; Quake hide_on_focus_loss=false; blocking fixture shell; tabs are per window',
     arms: await Promise.all(arms.map(async arm => ({ ...arm, sha256: new Bun.CryptoHasher("sha256").update(await Bun.file(arm.executable).arrayBuffer()).digest("hex") }))),
     samples: [] as Record<string, unknown>[],
   };
@@ -105,17 +129,19 @@ async function main(): Promise<void> {
   const caffeinate = Bun.spawn(["caffeinate", "-di", "-w", String(process.pid)], { stdout: "ignore", stderr: "ignore" });
   let sequence = 0;
   await runWithCleanup(async () => {
-    for (let repeat = 0; repeat < repeats; repeat++) for (const windowCount of windows) for (const tabCount of tabs) {
+    for (let repeat = 0; repeat < repeats; repeat++) for (const windowCount of windows) for (const tabCount of tabs) for (const presentation of presentations) for (const visibility of ["visible", "hidden"]) {
       for (const arm of armOrder(arms, repeat + windows.indexOf(windowCount) + tabs.indexOf(tabCount))) {
+        if (presentation === "quake" && arm.force_fallback) throw new Error("forced fullscreen fallback is an ordinary-window control only");
         const directory = await mkdtemp(join(artifacts, "run-"));
         const shell = join(directory, "shell");
         await writeFile(shell, "#!/bin/sh\nprintf 'HUTERM_IDLE_READY\\n'\nwhile IFS= read -r line; do :; done\n");
         await chmod(shell, 0o755);
         const config = join(directory, "config.toml");
-        await writeFile(config, '[tabs]\nlabel = "title"\n');
+        await writeFile(config, fixtureConfig(presentation, windowCount));
         const child = Bun.spawn([arm.executable], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("HUTERM_"))), ...arm.env,
           ...(arm.force_fallback ? { HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_NO_ADAPTER: "1" } : {}),
           SHELL: shell, HUTERM_CONFIG_FILE: config, HUTERM_IDLE_TABS: String(tabCount), HUTERM_IDLE_WINDOWS: String(windowCount),
+          HUTERM_IDLE_PRESENTATION: presentation, HUTERM_IDLE_VISIBILITY: visibility,
           XDG_STATE_HOME: join(directory, "state"),
         }, stdout: "pipe", stderr: Bun.file(join(directory, "stderr.log")) });
         let stdout = "";
@@ -132,16 +158,17 @@ async function main(): Promise<void> {
           await Promise.race([ready, pump.then(() => { throw new Error(`startup stream ended: ${directory}`); }), child.exited.then(code => { throw new Error(`startup exited ${code}: ${directory}`); }),
             new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`startup timeout: ${directory}`)), 100_000); })]);
           if (timer) clearTimeout(timer);
-          for (const visibility of ["visible", "hidden"]) {
+          {
+            const nativeIds = presentation === "quake" ? quakeWindowIds(stdout, windowCount, visibility === "hidden") : [];
             const loadBefore = loadavg();
-            const sample = Bun.spawn([sampler, String(child.pid), visibility, String(duration), String(settle)], { stdout: "pipe", stderr: "pipe" });
+            const sample = Bun.spawn([sampler, String(child.pid), visibility, String(duration), String(settle), ...(nativeIds.length ? [nativeIds.join(",")] : [])], { stdout: "pipe", stderr: "pipe" });
             const [text, error, code] = await Promise.all([new Response(sample.stdout).text(), new Response(sample.stderr).text(), sample.exited]);
             const counters = text.trim() ? JSON.parse(text) : { valid: false, error };
-            report.samples.push({ sequence: sequence++, repeat, arm: arm.label, windows: windowCount, tabs_per_window: tabCount, visibility,
+            report.samples.push({ sequence: sequence++, repeat, arm: arm.label, windows: windowCount, tabs_per_window: tabCount, presentation, visibility, native_ids: nativeIds,
               pid: child.pid, startup: stdout, timestamp: new Date().toISOString(), load_before: loadBefore, load_after: loadavg(), directory, ...counters });
             await save();
             if (code !== 0 || !counters.valid) throw new Error(`discarded invalid sample: ${error || text}`);
-            console.log(`${arm.label} ${windowCount}w/${tabCount}t ${visibility}: CPU ${counters.cpu_percent_one_core.toFixed(3)}%, wakeups ${counters.interrupt_wakeups_per_second.toFixed(2)}/s`);
+            console.log(`${arm.label} ${presentation} ${windowCount}w/${tabCount}t ${visibility}: CPU ${counters.cpu_percent_one_core.toFixed(3)}%, wakeups ${counters.interrupt_wakeups_per_second.toFixed(2)}/s`);
           }
         }, async () => {
           if (timer) clearTimeout(timer);

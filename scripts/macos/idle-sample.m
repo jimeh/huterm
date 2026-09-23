@@ -21,6 +21,28 @@ static void emit(NSDictionary *value) {
     puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
 }
 
+static NSArray *windowVisibility(pid_t pid, NSArray<NSString *> *ids) {
+    NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSString *identifier in ids) {
+        BOOL visible = NO;
+        for (NSDictionary *window in windows) {
+            if ([window[(__bridge NSString *)kCGWindowOwnerPID] intValue] == pid
+                && [window[(__bridge NSString *)kCGWindowNumber] intValue] == identifier.intValue) {
+                visible = [window[(__bridge NSString *)kCGWindowIsOnscreen] boolValue];
+                break;
+            }
+        }
+        [result addObject:@{@"id":@(identifier.intValue), @"visible":@(visible)}];
+    }
+    return result;
+}
+
+static BOOL expectedVisibility(NSArray *windows, BOOL hidden) {
+    for (NSDictionary *window in windows) if ([window[@"visible"] boolValue] == hidden) return NO;
+    return YES;
+}
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (argc == 2 && strcmp(argv[1], "context") == 0) {
@@ -35,11 +57,16 @@ int main(int argc, const char **argv) {
             emit(@{@"unlocked":@(unlocked()), @"screens":screens});
             return 0;
         }
+        if (argc == 4 && strcmp(argv[1], "visibility") == 0) {
+            NSArray *ids = [[NSString stringWithUTF8String:argv[3]] componentsSeparatedByString:@","];
+            emit(@{@"windows":windowVisibility(atoi(argv[2]), ids)});
+            return 0;
+        }
         if (argc == 3 && strcmp(argv[1], "terminate") == 0) {
             return [[NSRunningApplication runningApplicationWithProcessIdentifier:atoi(argv[2])] terminate] ? 0 : 1;
         }
-        if (argc != 5) {
-            fprintf(stderr, "usage: idle-sample PID visible|hidden SECONDS SETTLE_SECONDS\n");
+        if (argc != 5 && argc != 6) {
+            fprintf(stderr, "usage: idle-sample PID visible|hidden SECONDS SETTLE_SECONDS [QUAKE_WINDOW_IDS]\n");
             return 2;
         }
         pid_t pid = atoi(argv[1]);
@@ -51,15 +78,19 @@ int main(int argc, const char **argv) {
             fprintf(stderr, "target unavailable or GUI session locked/off-console\n");
             return 1;
         }
-        if (hidden) [app hide];
-        else { [app unhide]; [app activateWithOptions:0]; }
-        NSDate *visibilityDeadline = [NSDate dateWithTimeIntervalSinceNow:5];
-        while (app.hidden != hidden && visibilityDeadline.timeIntervalSinceNow > 0) {
-            [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-        }
-        if (app.hidden != hidden) {
-            fprintf(stderr, "requested visibility was not acknowledged\n");
-            return 1;
+        NSArray *ids = argc == 6 ? [[NSString stringWithUTF8String:argv[5]] componentsSeparatedByString:@","] : @[];
+        BOOL quake = ids.count > 0;
+        if (!quake) {
+            if (hidden) [app hide];
+            else { [app unhide]; [app activateWithOptions:0]; }
+            NSDate *visibilityDeadline = [NSDate dateWithTimeIntervalSinceNow:5];
+            while (app.hidden != hidden && visibilityDeadline.timeIntervalSinceNow > 0) {
+                [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            }
+            if (app.hidden != hidden) {
+                fprintf(stderr, "requested visibility was not acknowledged\n");
+                return 1;
+            }
         }
         // Settling is an explicitly excluded timing interval, not a readiness test.
         [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:settle]];
@@ -68,6 +99,7 @@ int main(int argc, const char **argv) {
             addObserverForName:@"com.apple.screenIsLocked" object:nil queue:NSOperationQueue.mainQueue
             usingBlock:^(NSNotification *note) { (void)note; crossedLock = YES; }];
         BOOL beforeUnlocked = unlocked();
+        NSArray *windowsBefore = windowVisibility(pid, ids);
         struct rusage_info_v4 before = {0}, after = {0};
         struct proc_taskinfo beforeTask = {0}, afterTask = {0};
         if (!counters(pid, &before, &beforeTask)) return 1;
@@ -76,14 +108,15 @@ int main(int argc, const char **argv) {
         uint64_t end = mach_absolute_time();
         if (!counters(pid, &after, &afterTask)) return 1;
         BOOL afterUnlocked = unlocked();
+        NSArray *windowsAfter = windowVisibility(pid, ids);
         [NSDistributedNotificationCenter.defaultCenter removeObserver:observer];
         mach_timebase_info_data_t timebase;
         mach_timebase_info(&timebase);
         double nanosPerTick = (double)timebase.numer / timebase.denom;
         double elapsed = (end - start) * nanosPerTick / 1e9;
         double cpu = ((after.ri_user_time - before.ri_user_time) + (after.ri_system_time - before.ri_system_time)) * nanosPerTick / 1e9;
-        BOOL valid = beforeUnlocked && afterUnlocked && !crossedLock && app.hidden == hidden && !app.terminated;
-        emit(@{@"valid":@(valid), @"unlocked_before":@(beforeUnlocked), @"unlocked_after":@(afterUnlocked),
+        BOOL valid = beforeUnlocked && afterUnlocked && !crossedLock && (quake ? (expectedVisibility(windowsBefore, hidden) && expectedVisibility(windowsAfter, hidden)) : app.hidden == hidden) && !app.terminated;
+        emit(@{@"valid":@(valid), @"windows_before":windowsBefore, @"windows_after":windowsAfter, @"unlocked_before":@(beforeUnlocked), @"unlocked_after":@(afterUnlocked),
             @"lock_notification":@(crossedLock), @"hidden_after":@(app.hidden), @"elapsed_seconds":@(elapsed),
             @"cpu_seconds":@(cpu), @"cpu_percent_one_core":@(100 * cpu / elapsed),
             @"interrupt_wakeups_per_second":@((after.ri_interrupt_wkups - before.ri_interrupt_wkups) / elapsed),
