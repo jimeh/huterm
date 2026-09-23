@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { armOrder, readiness, validateArms } from "./run-idle-benchmark.ts";
+import { armOrder, readiness, runWithCleanup, validateArms } from "./run-idle-benchmark.ts";
 
 test("preserved binaries require explicit revision provenance", () => {
   expect(() => validateArms([{ label: "baseline", executable: "/tmp/baseline" }])).toThrow("revision");
@@ -34,4 +34,23 @@ test("fallback arms explicitly validate absent adapters", () => {
   expect(() => readiness(absent, 2, 50, false)).toThrow("adapter count");
   expect(() => readiness(installed, 2, 50, true)).toThrow("adapter count");
   expect(() => readiness(absent, 1, 50, true)).toThrow("window");
+});
+
+test("benchmark cleanup follows successful work and propagates cleanup-only failures", async () => {
+  const order: string[] = [];
+  await runWithCleanup(async () => { order.push("run"); }, async () => { order.push("cleanup"); });
+  expect(order).toEqual(["run", "cleanup"]);
+  const cleanupError = new Error("cleanup exit 1");
+  await expect(runWithCleanup(async () => {}, async () => { throw cleanupError; })).rejects.toBe(cleanupError);
+});
+
+test("benchmark errors survive successful or failed cleanup", async () => {
+  const primaryError = new Error("invalid sample");
+  let cleanups = 0;
+  await expect(runWithCleanup(async () => { throw primaryError; }, async () => { cleanups++; })).rejects.toBe(primaryError);
+  await expect(runWithCleanup(async () => { throw primaryError; }, async () => {
+    cleanups++;
+    throw new Error("cleanup exit 1");
+  })).rejects.toBe(primaryError);
+  expect(cleanups).toBe(2);
 });

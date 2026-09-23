@@ -35,6 +35,25 @@ export function armOrder<T>(arms: T[], round: number): T[] {
   return round % 2 === 0 ? [...arms] : [...arms].reverse();
 }
 
+/** Always clean up, retaining the benchmark failure if cleanup also fails. */
+export async function runWithCleanup(run: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
+  let failed = false;
+  let primaryError: unknown;
+  try {
+    await run();
+  } catch (error) {
+    failed = true;
+    primaryError = error;
+  }
+  try {
+    await cleanup();
+  } catch (error) {
+    if (!failed) throw error;
+    console.error("Benchmark cleanup also failed:", error);
+  }
+  if (failed) throw primaryError;
+}
+
 function run(args: string[]): string {
   const child = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
   if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr.toString()}`);
@@ -85,7 +104,7 @@ async function main(): Promise<void> {
   await save();
   const caffeinate = Bun.spawn(["caffeinate", "-di", "-w", String(process.pid)], { stdout: "ignore", stderr: "ignore" });
   let sequence = 0;
-  try {
+  await runWithCleanup(async () => {
     for (let repeat = 0; repeat < repeats; repeat++) for (const windowCount of windows) for (const tabCount of tabs) {
       for (const arm of armOrder(arms, repeat + windows.indexOf(windowCount) + tabs.indexOf(tabCount))) {
         const directory = await mkdtemp(join(artifacts, "run-"));
@@ -109,7 +128,7 @@ async function main(): Promise<void> {
           }
         })();
         let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
+        await runWithCleanup(async () => {
           await Promise.race([ready, pump.then(() => { throw new Error(`startup stream ended: ${directory}`); }), child.exited.then(code => { throw new Error(`startup exited ${code}: ${directory}`); }),
             new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`startup timeout: ${directory}`)), 100_000); })]);
           if (timer) clearTimeout(timer);
@@ -124,7 +143,7 @@ async function main(): Promise<void> {
             if (code !== 0 || !counters.valid) throw new Error(`discarded invalid sample: ${error || text}`);
             console.log(`${arm.label} ${windowCount}w/${tabCount}t ${visibility}: CPU ${counters.cpu_percent_one_core.toFixed(3)}%, wakeups ${counters.interrupt_wakeups_per_second.toFixed(2)}/s`);
           }
-        } finally {
+        }, async () => {
           if (timer) clearTimeout(timer);
           const cleanupStarted = performance.now();
           Bun.spawnSync([sampler, "terminate", String(child.pid)], { stdout: "ignore", stderr: "ignore" });
@@ -141,14 +160,14 @@ async function main(): Promise<void> {
           await writeFile(join(directory, "stdout.log"), stdout);
           await writeFile(join(directory, "cleanup.json"), JSON.stringify({ exit_code: exitCode, forced: forcedCleanup, elapsed_ms: performance.now() - cleanupStarted }));
           if (forcedCleanup || exitCode !== 0) throw new Error(`benchmark cleanup failed (exit ${exitCode}, forced ${forcedCleanup}): ${directory}`);
-        }
+        });
       }
     }
-  } finally {
+  }, async () => {
     caffeinate.kill();
     await caffeinate.exited;
     await save();
-  }
+  });
   console.log(`Idle report: ${output}`);
 }
 
