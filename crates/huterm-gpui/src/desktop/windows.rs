@@ -1485,36 +1485,6 @@ fn open_window_with_profile(
                     }));
                 view.fullscreen_work.wake.signal();
             });
-            // Temporary paired-measurement arm. Correctness defaults to pump-off.
-            if std::env::var("HUTERM_FULLSCREEN_OLD_PUMP").as_deref() == Ok("1")
-            {
-                let weak = view.downgrade();
-                let handle = window.window_handle();
-                cx.spawn(async move |cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(16))
-                            .await;
-                        if !handle
-                            .update(cx, |_, window, cx| {
-                                weak.update(cx, |view, cx| {
-                                    if view.fullscreen.is_closed() {
-                                        return false;
-                                    }
-                                    view.refresh_fullscreen(window, cx);
-                                    view.arm_fullscreen(cx);
-                                    true
-                                })
-                                .unwrap_or(false)
-                            })
-                            .unwrap_or(false)
-                        {
-                            break;
-                        }
-                    }
-                })
-                .detach();
-            }
             view
         },
     );

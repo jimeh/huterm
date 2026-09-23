@@ -494,7 +494,7 @@ run = "bun node_modules/typescript/bin/tsc --noEmit"
 [tasks."test:scripts"]
 description = "Test repository tooling with Bun"
 depends = ["scripts:install"]
-run = "bun test scripts"
+run = "bun test ./scripts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"

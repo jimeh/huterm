@@ -4,7 +4,7 @@ import { cpus, loadavg, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-type Arm = { label: string; executable: string; revision: string; env?: Record<string, string> };
+type Arm = { label: string; executable: string; revision: string; env?: Record<string, string>; force_fallback?: boolean };
 export function validateArms(value: unknown): Arm[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error("arms must be a nonempty array");
   const labels = new Set<string>();
@@ -12,6 +12,7 @@ export function validateArms(value: unknown): Arm[] {
     if (!arm || typeof arm !== "object" || ![arm.label, arm.executable, arm.revision].every(v => typeof v === "string" && v.length > 0)) {
       throw new Error("each arm requires label, executable and revision strings");
     }
+    if (arm.force_fallback !== undefined && typeof arm.force_fallback !== "boolean") throw new Error("force_fallback must be boolean");
     if (labels.has(arm.label)) throw new Error(`duplicate arm label: ${arm.label}`);
     labels.add(arm.label);
     if (arm.env !== undefined && (typeof arm.env !== "object" || arm.env === null || Array.isArray(arm.env) || Object.values(arm.env).some(v => typeof v !== "string"))) {
@@ -19,6 +20,15 @@ export function validateArms(value: unknown): Arm[] {
     }
   }
   return value as Arm[];
+}
+
+export function readiness(stdout: string, windows: number, tabs: number, forced: boolean): boolean {
+  const match = /^huterm-idle ready windows=(\d+) tabs_per_window=(\d+) adapters=(\d+)$/m.exec(stdout);
+  if (!match) return false;
+  if (Number(match[1]) !== windows || Number(match[2]) !== tabs || Number(match[3]) !== (forced ? 0 : windows)) {
+    throw new Error("unexpected idle fixture window, tab or adapter count");
+  }
+  return true;
 }
 
 export function armOrder<T>(arms: T[], round: number): T[] {
@@ -85,6 +95,7 @@ async function main(): Promise<void> {
         const config = join(directory, "config.toml");
         await writeFile(config, '[tabs]\nlabel = "title"\n');
         const child = Bun.spawn([arm.executable], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("HUTERM_"))), ...arm.env,
+          ...(arm.force_fallback ? { HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_NO_ADAPTER: "1" } : {}),
           SHELL: shell, HUTERM_CONFIG_FILE: config, HUTERM_IDLE_TABS: String(tabCount), HUTERM_IDLE_WINDOWS: String(windowCount),
           XDG_STATE_HOME: join(directory, "state"),
         }, stdout: "pipe", stderr: Bun.file(join(directory, "stderr.log")) });
@@ -94,12 +105,12 @@ async function main(): Promise<void> {
         const pump = (async () => {
           for await (const chunk of child.stdout) {
             stdout += new TextDecoder().decode(chunk);
-            if (stdout.includes(`huterm-idle ready windows=${windowCount} tabs_per_window=${tabCount} adapters=${windowCount}\n`)) resolveReady();
+            if (readiness(stdout, windowCount, tabCount, arm.force_fallback === true)) resolveReady();
           }
         })();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await Promise.race([ready, child.exited.then(code => { throw new Error(`startup exited ${code}: ${directory}`); }),
+          await Promise.race([ready, pump.then(() => { throw new Error(`startup stream ended: ${directory}`); }), child.exited.then(code => { throw new Error(`startup exited ${code}: ${directory}`); }),
             new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`startup timeout: ${directory}`)), 100_000); })]);
           if (timer) clearTimeout(timer);
           for (const visibility of ["visible", "hidden"]) {

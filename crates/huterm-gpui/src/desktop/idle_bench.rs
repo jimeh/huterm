@@ -18,13 +18,13 @@ pub(crate) fn run() -> anyhow::Result<()> {
             loop {
                 let result = cx.update(|cx| advance(cx, tabs, windows));
                 match result.and_then(std::convert::identity) {
-                    Ok(true) => {
+                    Ok(Some(adapters)) => {
                         // No persistent observer, state writer or control loop survives
                         // this acknowledgement. The native runner samples externally.
-                        println!("huterm-idle ready windows={windows} tabs_per_window={tabs} adapters={windows}");
+                        println!("huterm-idle ready windows={windows} tabs_per_window={tabs} adapters={adapters}");
                         break;
                     }
-                    Ok(false) if Instant::now() < deadline => {}
+                    Ok(None) if Instant::now() < deadline => {}
                     result => {
                         eprintln!("huterm-idle startup failed: {result:?}");
                         let _ = cx.update(|cx| cx.quit());
@@ -38,11 +38,18 @@ pub(crate) fn run() -> anyhow::Result<()> {
     })
 }
 
-fn advance(cx: &mut App, tabs: usize, windows: usize) -> anyhow::Result<bool> {
+fn advance(
+    cx: &mut App,
+    tabs: usize,
+    windows: usize,
+) -> anyhow::Result<Option<usize>> {
     if cx.global::<Desktop>().pending_spawns != 0 {
-        return Ok(false);
+        return Ok(None);
     }
     let handles = cx.windows();
+    let forced = std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
+        && std::env::var_os("HUTERM_FULLSCREEN_NO_ADAPTER").is_some();
+    let mut adapters = 0;
     for handle in &handles {
         let ready = handle.update(cx, |root, _, cx| {
             let root = root
@@ -55,9 +62,11 @@ fn advance(cx: &mut App, tabs: usize, windows: usize) -> anyhow::Result<bool> {
                 "idle benchmark cannot include Quake"
             );
             ensure!(
-                view.native_fullscreen.is_some(),
-                "native fullscreen adapter missing"
+                view.native_fullscreen.is_some() != forced
+                    && view.fullscreen_work.fallback == forced,
+                "unexpected native fullscreen adapter or fallback state"
             );
+            adapters += usize::from(view.native_fullscreen.is_some());
             ensure!(view.status.is_none(), "startup status: {:?}", view.status);
             let ready = view.active_view().is_some_and(|terminal| {
                 terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
@@ -71,17 +80,17 @@ fn advance(cx: &mut App, tabs: usize, windows: usize) -> anyhow::Result<bool> {
             Ok::<_, anyhow::Error>((ready && !view.busy, view.tabs.len()))
         })??;
         if !ready.0 {
-            return Ok(false);
+            return Ok(None);
         }
         if ready.1 < tabs {
             invoke(cx, "new_tab", Some(*handle))?;
-            return Ok(false);
+            return Ok(None);
         }
         ensure!(ready.1 == tabs, "unexpected tab count");
     }
     if handles.len() < windows {
         invoke(cx, "new_window", None)?;
-        return Ok(false);
+        return Ok(None);
     }
     ensure!(handles.len() == windows, "unexpected window count");
     for (index, handle) in handles.iter().enumerate() {
@@ -93,7 +102,7 @@ fn advance(cx: &mut App, tabs: usize, windows: usize) -> anyhow::Result<bool> {
             );
         })?;
     }
-    Ok(true)
+    Ok(Some(adapters))
 }
 
 fn invoke(

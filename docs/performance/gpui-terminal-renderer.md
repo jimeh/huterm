@@ -1034,16 +1034,19 @@ These are process counters, not attribution to particular timers. Two windows
 can share wakeups; removing two timers does not imply twice the wakeup reduction.
 `target/bench/fullscreen-checkpoint-2026-09-23/` retains the baseline executable
 hashes and three echo, flood, and scroll runs. All scroll budget checks passed,
-with maximum in-flight and queued requests both one. Feature comparisons remain
-pending; no improvement is claimed from the checkpoint alone.
+with maximum in-flight and queued requests both one. Feature latency comparisons
+remain pending; the completed idle comparison follows below.
 
-The migration keeps an explicit paired-measurement arm:
-`HUTERM_FULLSCREEN_OLD_PUMP=1` enables the old per-window loop alongside the new
-scheduler. Its default is off. Use two feature arms pointing to the same preserved
-feature executable, with `env` set to `{"HUTERM_FULLSCREEN_OLD_PUMP":"1"}` and
-`{"HUTERM_FULLSCREEN_OLD_PUMP":"0"}`, plus the preserved baseline arm. Keep
-`HUTERM_FULLSCREEN_STATS` unset in these measurements. Diagnostics are enabled
-only for that explicit variable or the fullscreen smoke.
+The preserved comparison executable at `1d589d1` supports the temporary old-pump
+switch used for the three-arm measurement below. The final source removes both
+the legacy loop and its switch. Normal idle arms leave diagnostics disabled.
+
+An explicit `force_fallback: true` arm reuses the smoke-only adapter construction
+skip. Startup validates missing adapters and fallback eligibility in every window,
+then reports the actual adapter count; only this arm accepts zero. Its startup task
+ends before sampling, without the fullscreen smoke's recurring state writer.
+The smoke seam enables pass/timer counters, so fallback measurements include that
+small instrumentation difference and must be reported separately.
 
 Fullscreen correctness uses the pump-off smoke. The focused native retry path is:
 
@@ -1059,3 +1062,34 @@ probe checks settled task counters and absence of an armed fullscreen timer.
 The fallback probe acknowledges AppKit Did notifications independently before
 issuing its opposite external toggle, because style-mask changes can precede
 animation completion. That acknowledgement never wakes the production scheduler.
+
+## Fullscreen three-arm comparison (2026-09-23)
+
+The unlocked native host used the same 120 Hz display for baseline `f3ec40e` and
+feature `1d589d1`. Each cell below is the median of three five-second samples.
+The 72 accepted samples exclude six opening samples that overlapped script tests;
+a replacement run supplied those six samples. Raw reports and exclusions are in
+`target/bench/fullscreen-three-arm-summary.json`, with source reports named there.
+CPU is percent of one logical core; wakeups are process interrupt wakeups/second.
+
+| Windows | Tabs/window | Visibility | CPU baseline / pump on / pump off | Wakeups baseline / pump on / pump off |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | visible | 1.458% / 1.296% / 0.660% | 180.5 / 179.9 / 121.8 |
+| 1 | 1 | hidden | 0.695% / 0.670% / 0.025% | 60.1 / 59.9 / 1.6 |
+| 1 | 50 | visible | 1.395% / 1.537% / 0.711% | 179.9 / 179.8 / 121.6 |
+| 1 | 50 | hidden | 0.637% / 0.683% / 0.016% | 60.3 / 60.1 / 1.4 |
+| 2 | 1 | visible | 2.016% / 1.972% / 1.123% | 300.1 / 300.0 / 242.0 |
+| 2 | 1 | hidden | 0.775% / 0.907% / 0.018% | 60.1 / 60.3 / 1.4 |
+| 2 | 50 | visible | 1.992% / 1.936% / 1.064% | 321.5 / 300.4 / 241.9 |
+| 2 | 50 | hidden | 0.967% / 0.851% / 0.024% | 59.9 / 60.3 / 1.4 |
+
+Removing the pump reduces visible CPU 44–55% and hidden CPU 96–98% versus the
+baseline. Hidden wakeups fall from about 60/s to 1.4–1.6/s. Visible wakeups retain
+the display-link cost. RSS remains within about 1 MiB of baseline (102–287 MiB),
+and thread counts differ by at most two, with the same scaling by terminal count.
+The pump-on control retains approximately baseline wakeups, supporting attribution
+to removal of the timer rather than the new reconciliation body alone.
+
+Final latency comparisons, separate forced-no-adapter cost, captured-revision
+perturbation, and broad verification remain pending. These idle measurements do
+not establish input latency or physical display presentation performance.

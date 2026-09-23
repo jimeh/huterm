@@ -1,8 +1,8 @@
 # Fullscreen event scheduling and refresh-pump removal
 
-Status: checkpoint captured; scheduler migration under verification with the
-legacy pump retained as an opt-in comparison arm. This implements steps 7 and 8
-of the
+Status: scheduler migration and legacy-pump removal implemented after the
+accepted three-arm comparison. Final validation remains pending. This implements
+steps 7 and 8 of the
 [event-driven refresh plan](event-driven-refresh.md), following PR #155. The
 inspected production source is `99aef30`, equivalent to merged `84e6fca`; `main`
 subsequently added the 0.12.3 release bump (`a3b35f0`). Refresh the base and
@@ -222,11 +222,12 @@ excludes Quake and process labels and does not add a measurement-period state lo
 3. **Prove platform behavior without the pump.** Run the existing fullscreen,
    refresh, Quake, and Quit smokes plus targeted extensions below. Verify the
    X11 property callback and the explicit macOS no-adapter fallback before
-   removal. Xvfb/Openbox with controlled event ordering is the automated gate; a
+   removal. Xvfb/Openbox with controlled event ordering is the automated gate.
    Docker runs the supported Linux integration checks. Also use
    a no-WM Xvfb property-only fixture for unchanged bounds, without counting it
    as proof of real window-manager behavior. Use native physical-display checks
-   for display migration/notch behavior that the VM cannot establish. Mark
+   for display migration/notch behavior that headless fixtures cannot establish.
+   Mark
    unavailable physical cases explicitly.
 4. **Measure and remove the redundant loop.** Repeat the checkpoint and the
    output/scroll benchmarks with matched conditions. Remove the global
@@ -250,8 +251,8 @@ architectural scope just to finish the checklist.
 
 The fresh baseline at `f3ec40e` is recorded in the
 [performance report](../performance/gpui-terminal-renderer.md#fullscreen-scheduling-checkpoint-2026-09-23).
-The new window-owned task defaults to pump-off; `HUTERM_FULLSCREEN_OLD_PUMP=1`
-retains the old loop only for the required three-arm comparison before removal.
+The three-arm comparison accepted 72 samples at 120 Hz on the unlocked native
+host. The window-owned task replaces the legacy loop, which is now removed.
 A separately spawned foreground task provides the continuation boundary. Native
 wake callbacks never reconcile inline. Scheduled native event batches are capped
 at 32; effects wait until ordered backlog drains. Commands retain the original
@@ -262,8 +263,10 @@ Refit retries carry operation and native-generation identity, and ownership
 changes invalidate them. Completion wakes publish presentation without consuming
 a future retry early. Fullscreen counters are opt-in through the smoke or
 `HUTERM_FULLSCREEN_STATS`. The forced adapter failure is available only when the
-fullscreen smoke is running. Baseline/feature performance comparison, final
-legacy-loop removal, and the broad handoff gates remain pending.
+fullscreen smoke seam is enabled, including the explicit idle fallback arm.
+Visible CPU fell 44–55% and hidden CPU 96–98% against the fresh baseline; absolute
+CPU and wakeup values are in the performance report. Forced-fallback cost, latency
+comparison, and the broad handoff gates remain pending.
 
 ## Acceptance evidence
 

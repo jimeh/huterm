@@ -3,7 +3,8 @@
 Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
 Step 4, including animation scheduling and scrollbar cleanup, shipped in
 PR #153 as `42117b6`. Steps 5 and 6 are implemented on the current branch;
-fullscreen notification migration and final pump removal remain deferred.
+steps 7 and 8 now implement fullscreen notification scheduling and remove the
+remaining pump. Final latency, fallback-cost and broad validation gates remain.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
 single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
@@ -12,14 +13,12 @@ one logical core, and interrupt wakeups fell from about 59,700/s to 180/s.
 See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#post-refresh-measurements-2026-09-19)
 for methods, latency distributions, tradeoffs, and remaining coverage limits.
 
-Steps 7 and 8 remain under the measurement gate. The retained pump no
-longer drains terminal events or visits tabs for pending-work checks. It now
-only reconciles fullscreen state.
-An empty-pump-body probe kept the timer and measured
-only modest CPU savings, with unchanged wakeups and no tab-count scaling.
-The display link accounts for most remaining visible wakeups; removing the
-pump would leave that cost while adding animation and native-lifecycle risk.
-Revisit these steps if profiles show material remaining cost.
+The 2026-09-23 fullscreen comparison accepted 72 samples from baseline `f3ec40e`
+and feature `1d589d1`, including an old-pump-enabled control. Visible CPU fell
+44–55% and hidden CPU 96–98%; RSS and thread counts were essentially unchanged.
+The legacy loop is now removed. The display link still accounts for most visible
+wakeups. See the [fullscreen comparison](../performance/gpui-terminal-renderer.md#fullscreen-three-arm-comparison-2026-09-23)
+for absolute values and remaining gates.
 
 This plan is written for an agent continuing the work on macOS, which is the
 primary Huterm platform and the only one here with a real display. Read
@@ -736,8 +735,8 @@ Measured and set aside, in case a later profile changes the ranking:
    TLS blocks, dominated by Zig's signal-stack buffer.
 5. Steps 4 to 6 follow delivered frames for animation, deadlines for holds,
    pointer events for reveal, and targeted wakes for pending terminal work. The
-   pump only reconciles fullscreen state. Steps 7 and 8, including removal of
-   that timer, remain a separate measured decision.
+   fullscreen migration in steps 7 and 8 now removes the remaining timer after
+   the accepted three-arm comparison. Final validation remains pending.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
    and long-running interactive workloads still need human acceptance; the
    benchmark's paint marker does not measure physical presentation latency.

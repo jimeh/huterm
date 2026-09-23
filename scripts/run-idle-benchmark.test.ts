@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { armOrder, validateArms } from "./run-idle-benchmark.ts";
+import { armOrder, readiness, validateArms } from "./run-idle-benchmark.ts";
 
 test("preserved binaries require explicit revision provenance", () => {
   expect(() => validateArms([{ label: "baseline", executable: "/tmp/baseline" }])).toThrow("revision");
@@ -19,4 +19,19 @@ test("paired order reverses across rounds without changing input arms", () => {
   expect(armOrder(arms, 1)).toEqual(["pump-off", "pump-on", "baseline"]);
   expect(armOrder(arms, 2)).toEqual(arms);
   expect(arms).toEqual(["baseline", "pump-on", "pump-off"]);
+});
+
+
+test("fallback arms explicitly validate absent adapters", () => {
+  const arm = { label: "fallback", executable: "/tmp/fixture", revision: "abc123" };
+  expect(() => validateArms([{ ...arm, force_fallback: "true" }])).toThrow("boolean");
+  expect(validateArms([{ ...arm, force_fallback: true }])[0]?.force_fallback).toBe(true);
+  expect(readiness("starting", 2, 50, false)).toBe(false);
+  const absent = "huterm-idle ready windows=2 tabs_per_window=50 adapters=0\n";
+  const installed = "huterm-idle ready windows=2 tabs_per_window=50 adapters=2\n";
+  expect(readiness(absent, 2, 50, true)).toBe(true);
+  expect(readiness(installed, 2, 50, false)).toBe(true);
+  expect(() => readiness(absent, 2, 50, false)).toThrow("adapter count");
+  expect(() => readiness(installed, 2, 50, true)).toThrow("adapter count");
+  expect(() => readiness(absent, 1, 50, true)).toThrow("window");
 });
