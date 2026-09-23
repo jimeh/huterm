@@ -1034,8 +1034,8 @@ These are process counters, not attribution to particular timers. Two windows
 can share wakeups; removing two timers does not imply twice the wakeup reduction.
 `target/bench/fullscreen-checkpoint-2026-09-23/` retains the baseline executable
 hashes and three echo, flood, and scroll runs. All scroll budget checks passed,
-with maximum in-flight and queued requests both one. Feature latency comparisons
-remain pending; the completed idle comparison follows below.
+with maximum in-flight and queued requests both one. The completed idle and
+latency comparisons follow below.
 
 The preserved comparison executable at `1d589d1` supports the temporary old-pump
 switch used for the three-arm measurement below. The final source removes both
@@ -1090,6 +1090,50 @@ and thread counts differ by at most two, with the same scaling by terminal count
 The pump-on control retains approximately baseline wakeups, supporting attribution
 to removal of the timer rather than the new reconciliation body alone.
 
-Final latency comparisons, separate forced-no-adapter cost, captured-revision
-perturbation, and broad verification remain pending. These idle measurements do
-not establish input latency or physical display presentation performance.
+These idle measurements do not establish input latency or physical display
+presentation performance.
+
+### Final latency and fallback checks
+
+The final pump-free build at `44efdf9` was compared with preserved baseline
+`f3ec40e` in three alternating rounds per workload. Echo and flood runs lasted
+12 seconds each; scroll used its existing sample and queue-completion gates.
+Logs and executable hashes are in `target/bench/fullscreen-paired-latency/`.
+The table gives medians across the three run summaries, not pooled percentiles.
+
+| Metric | Baseline | Feature |
+| --- | ---: | ---: |
+| Echo output-to-applied snapshot, median | 116 µs | 105 µs |
+| Echo output-to-paint marker, median | 4,965 µs | 5,417 µs |
+| Flood snapshots/second | 118 | 120 |
+| Flood output-to-paint marker, median | 14,526 µs | 14,624 µs |
+| Scroll input-to-paint marker, run p95 | 9,857 µs | 8,854 µs |
+
+All six echo runs passed the 5,000 µs applied-snapshot budget. All six scroll
+runs passed snapshot, paint, presentation, latency, and queue gates, with maximum
+in-flight and queued requests both one. Scroll p95 ranged from 5,509–10,625 µs
+in baseline and 7,340–9,784 µs in feature. These overlapping results support
+retaining current pacing; they do not establish a latency improvement. Paint
+markers are CPU-side observations, not physical presentation timestamps.
+
+A separate final-build comparison used one window and one tab, with three
+five-second samples per visible/hidden state and alternating normal/fallback
+order (`target/bench/fullscreen-fallback.json`). Normal versus forced-fallback
+CPU was 0.690% versus 1.485% visible, and 0.015% versus 0.814% hidden. Wakeups were
+121.8 versus 180.0/s visible and 1.6 versus 60.3/s hidden. The fallback includes
+smoke counters as noted above. It intentionally retains polling; normal windows
+assert successful observer installation and never enter that path.
+
+`mise run verify` passed 596 Rust tests and 468 script tests, with three ignored
+Rust benchmarks. Native fullscreen, Quake, refresh, Quit, and presentation-query
+checks passed; Docker Linux fullscreen, Quake, and presentation-query checks
+passed. The native refresh smoke measured an 8,325 µs median frame interval.
+An isolated captured-revision perturbation bypassing the refit deadline failed
+at the intended assertion with 42, 23, and 22 µs retry intervals. Restoring the
+source made the same smoke pass. The strengthened fallback smoke also proves
+repeated idle timer firings before external native transitions and Quit disarm.
+
+Physical notch checks passed on the built-in display. Multi-display migration,
+hotplug, and a native 60 Hz run remain untested for this change. Remaining polling
+includes the explicit no-adapter compatibility sampler, separate Quake pump,
+conditional macOS pointer probe, busy-runtime retries, and GPUI display-link work.

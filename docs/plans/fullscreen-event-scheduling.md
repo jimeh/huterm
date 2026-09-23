@@ -1,7 +1,8 @@
 # Fullscreen event scheduling and refresh-pump removal
 
 Status: scheduler migration and legacy-pump removal implemented after the
-accepted three-arm comparison. Final validation remains pending. This implements
+accepted three-arm comparison. Paired performance and local validation are
+complete. This implements
 steps 7 and 8 of the
 [event-driven refresh plan](event-driven-refresh.md), following PR #155. The
 inspected production source is `99aef30`, equivalent to merged `84e6fca`; `main`
@@ -265,8 +266,10 @@ a future retry early. Fullscreen counters are opt-in through the smoke or
 `HUTERM_FULLSCREEN_STATS`. The forced adapter failure is available only when the
 fullscreen smoke seam is enabled, including the explicit idle fallback arm.
 Visible CPU fell 44–55% and hidden CPU 96–98% against the fresh baseline; absolute
-CPU and wakeup values are in the performance report. Forced-fallback cost, latency
-comparison, and the broad handoff gates remain pending.
+CPU and wakeup values, paired latency results, separately measured fallback cost,
+and local verification evidence are in the performance report. Native notch
+coverage passed; physical multi-display/hotplug and native 60 Hz coverage remain
+unverified for this change.
 
 ## Acceptance evidence
 
@@ -311,13 +314,12 @@ Expect any wakeup benefit to be clearer while hidden; do not assert that
 removing a 16 ms timer necessarily subtracts exactly 60 OS wakeups per second.
 No minimum percentage improvement is promised before the checkpoint.
 
-## Unresolved questions
+## Resolved decisions and remaining coverage
 
-- Is one later foreground turn sufficient for AppKit after each native Did event
-  on supported macOS versions? Resolve with the pump-disabled rapid-toggle
-  smoke; add a scoped settle deadline only if native evidence requires it.
-- Which physical display migration/notch cases are available during validation?
-  Report unavailable cases without counting VM coverage as physical evidence.
-- How much idle CPU/wakeup reduction remains after removing this timer, versus
-  GPUI display-link cost? Resolve through paired measurements; renderer/GPU and
-  memory optimization remain separate follow-up work.
+- One later foreground turn passed the native rapid-toggle smoke; no additional
+  settle delay was needed on the tested host.
+- Native built-in notch checks passed. Physical multi-display migration/hotplug
+  and a native 60 Hz run remain unverified for this change.
+- Paired measurements establish lower idle CPU and wakeups. Display-link work
+  remains visible, and renderer/GPU and memory optimization remain separate
+  follow-up work. No latency or memory improvement is claimed.

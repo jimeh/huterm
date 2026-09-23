@@ -1190,13 +1190,6 @@ mod tests {
             retry.deadline(&gate),
             Some(now + Duration::from_millis(16))
         );
-        // Repeated notifications do not alter the stored retry or permit it early.
-        for elapsed in 0..16 {
-            assert!(
-                retry.deadline(&gate).unwrap()
-                    > now + Duration::from_millis(elapsed)
-            );
-        }
         gate.native_event(false);
         assert_eq!(retry.deadline(&gate), None);
         let retry = RefitRetry::new(now, &gate);

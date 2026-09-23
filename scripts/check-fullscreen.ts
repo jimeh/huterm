@@ -412,6 +412,15 @@ done
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
     if (fallback) {
       if (original["w0.fullscreen_fallback"] !== "true" || original["w0.fullscreen_armed"] !== "true") throw new Error("forced fallback did not arm");
+      // Read-only ticks cannot reconcile fullscreen. Prove repeated timer work
+      // before a native toggle can supply a repairing bounds notification.
+      await waitFor(async () => {
+        const current = await state();
+        return Number(current.state_sequence) >= Number(original.state_sequence) + 8
+          && Number(current["w0.fullscreen_timers"]) >= Number(original["w0.fullscreen_timers"]) + 3
+          && Number(current["w0.fullscreen_passes"]) >= Number(original["w0.fullscreen_passes"]) + 3;
+      }, "fallback sampler repeats while idle");
+      console.log("FULLSCREEN_SMOKE fallback-periodic-timer");
       await accepted("native\tfullscreen");
       await stable("Native");
       await waitFor(async () => await Bun.file(join(directory, "native-did")).exists() && await readFile(join(directory, "native-did"), "utf8") === "Native", "external native DidEnter");
