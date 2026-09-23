@@ -544,7 +544,7 @@ smokes, which exercise close consent.
 ## Steps
 
 The original sequence follows. Steps 1 to 3 and the runtime prerequisite shipped
-in PR #147. Step 4 is implemented in the follow-up; steps 5 to 8 remain design
+in PR #147. Steps 4 to 6 are implemented; steps 7 and 8 remain design
 notes for a future measured need. Native 60 Hz pacing was verified in the
 2026-09-20 hardening follow-up. The subjective
 editor/DOOM feel comparison remains unverified. Convert one duty at a time
