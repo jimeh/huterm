@@ -1037,7 +1037,7 @@ hashes and three echo, flood, and scroll runs. All scroll budget checks passed,
 with maximum in-flight and queued requests both one. The completed idle and
 latency comparisons follow below.
 
-The preserved comparison executable at `1d589d1` supports the temporary old-pump
+The comparison executable built at `1d589d1` supported the temporary old-pump
 switch used for the three-arm measurement below. The final source removes both
 the legacy loop and its switch. Normal idle arms leave diagnostics disabled.
 
