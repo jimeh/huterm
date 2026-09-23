@@ -1379,6 +1379,8 @@ fn open_window_with_profile(
                 view.frame_clock.observe(cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.refresh_tab_visibility(window, cx);
+                    view.resume_close(window, cx);
+                    view.refresh_palette(cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -1425,13 +1427,6 @@ fn open_window_with_profile(
                         .update(cx, |_, window, cx| {
                             let _ = pump_view.update(cx, |view, cx| {
                                 view.refresh_fullscreen(window, cx);
-                                for tab in &view.tabs {
-                                    tab.view.update(cx, |terminal, cx| {
-                                        terminal.refresh_pending_work(cx);
-                                    });
-                                }
-                                view.resume_close(window, cx);
-                                view.refresh_palette(cx);
                             });
                         })
                         .is_err()
@@ -3914,9 +3909,11 @@ impl WorkspaceView {
                     }
                     None => {}
                 }
+                cx.notify();
             });
         })
         .detach();
+        cx.notify();
     }
 
     fn cancel_close(

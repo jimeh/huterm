@@ -184,6 +184,60 @@ async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
+    cx.update(|cx| {
+        workspace(cx, |view, _, cx| {
+            view.tabs[0].view.update(cx, |terminal, _| {
+                // Force the runtime-admission boundary busy once. The real
+                // pending worker must deliver this input without a redraw or
+                // another producer event to rescue it.
+                terminal.input_queue.enqueue(
+                    TerminalInput::Text("PENDING_FIRST\n".into()),
+                    false,
+                    |_| Err(huterm_core::RuntimeError::Busy),
+                )?;
+                terminal.pending_resize = Some((
+                    terminal.last_grid_size,
+                    terminal.last_cell_size.context("missing cell size")?,
+                ));
+                terminal.pending_presentation =
+                    Some(super::terminal_presentation(&terminal.theme));
+                ensure!(
+                    terminal.admit_input(
+                        TerminalInput::Text("PENDING_WORK\n".into()),
+                        false,
+                        false
+                    ) == (true, false),
+                    "queued input should wake work without requesting a redraw"
+                );
+                Ok::<_, anyhow::Error>(())
+            })
+        })?
+    })??;
+    wait(
+        cx,
+        "queued input and controls progress without frames",
+        |cx| {
+            workspace(cx, |view, _, cx| {
+                let terminal = view.tabs[0].view.read(cx);
+                let done = terminal.title == "PENDING_WORK"
+                    && !terminal.has_pending_work();
+                Ok((
+                    done,
+                    format!(
+                        "title={}, pending={}",
+                        terminal.title,
+                        terminal.has_pending_work()
+                    ),
+                ))
+            })?
+        },
+    )
+    .await?;
+    eprintln!("REFRESH_SMOKE pending_work_without_frames passed");
+    Ok(())
+}
+
 async fn check_paused_scroll(
     cx: &mut AsyncApp,
     sequence: u64,
@@ -425,6 +479,12 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
             "paused frames admitted a snapshot or duplicate callback: {observed:?}"
         );
     }
+    check_pending_work(cx).await?;
+    let observed = cx.update(state)??;
+    ensure!(
+        observed.snapshots == sequence && observed.callbacks == 1,
+        "pending work bypassed frame admission: {observed:?}"
+    );
     check_paused_scroll(cx, sequence).await?;
     check_paused_animation(cx).await?;
     cx.update(show)??;
@@ -437,6 +497,10 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
     eprintln!("REFRESH_SMOKE frame_stop_resume passed");
     eprintln!("REFRESH_SMOKE bounded_scroll_while_paused passed");
 
+    check_detachment(cx).await
+}
+
+async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     pause(cx).await?;
     cx.update(|cx| send(cx, "PENDING_DROP"))??;
@@ -451,18 +515,19 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let (id, weak, retained_client) = cx.update(|cx| {
+    let (id, weak, retained_client, pending_wake) = cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             let tab = &view.tabs[0];
             let id = tab.id;
             let weak = tab.view.downgrade();
             let client = tab.view.read(cx).client.clone();
+            let pending_wake = tab.view.read(cx).pending_work.clone();
             // Drop the production TabView, including its owned activity task. Keep
             // the core tab alive, so shutdown or a later event cannot rescue a leak.
             super::remove_tab(&mut view.tabs, &mut view.active, id, |tab| {
                 tab.id
             });
-            (id, weak, client)
+            (id, weak, client, pending_wake)
         })
     })??;
     wait(cx, "idle task canceled without a runtime wake", |cx| {
@@ -497,6 +562,11 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
         Ok((!alive, format!("view_alive={alive}")))
     })
     .await?;
+    ensure!(
+        pending_wake.is_closed(),
+        "detached pending worker retained its receiver"
+    );
+    eprintln!("REFRESH_SMOKE pending_work_cancellation passed");
     eprintln!("REFRESH_SMOKE stale_callback_after_detach passed");
     Ok(())
 }

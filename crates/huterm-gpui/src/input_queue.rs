@@ -22,6 +22,10 @@ pub(super) enum Admission {
 }
 
 impl InputQueue {
+    pub(super) fn is_empty(&self) -> bool {
+        self.inputs.is_empty()
+    }
+
     pub(super) fn close(&mut self) {
         *self = Self {
             closed: true,

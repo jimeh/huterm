@@ -2,7 +2,7 @@
 
 Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
 Step 4, including animation scheduling and scrollbar cleanup, shipped in
-PR #153 as `42117b6`. Steps 5 and 6 are the current implementation scope;
+PR #153 as `42117b6`. Steps 5 and 6 are implemented on the current branch;
 fullscreen notification migration and final pump removal remain deferred.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
@@ -13,7 +13,8 @@ See the [post-refresh measurements](../performance/gpui-terminal-renderer.md#pos
 for methods, latency distributions, tradeoffs, and remaining coverage limits.
 
 Steps 7 and 8 remain under the measurement gate. The retained pump no
-longer drains terminal events, but still visits tabs for pending-work checks.
+longer drains terminal events or visits tabs for pending-work checks. It now
+only reconciles fullscreen state.
 An empty-pump-body probe kept the timer and measured
 only modest CPU savings, with unchanged wakeups and no tab-count scaling.
 The display link accounts for most remaining visible wakeups; removing the
@@ -574,8 +575,8 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    timer. Notifications and render-time layout changes arm work; weak targets and
    release cleanup keep scheduling separate from view ownership. Each component
    reports pending frame work and deadlines independently of redraw changes.
-   The pump no longer advances these animations. It still samples pointer reveal
-   intent and handles retries, palette availability, close, and fullscreen work.
+   The pump no longer advances these animations. Steps 5 and 6 below remove
+   pointer reveal, retries, palette availability, and close work from it.
    Controlled-time tests cover holds, extension, fade completion, settled hover,
    and reveal's hold-to-fade boundary. The native refresh smoke covers animation
    cadence, idle completion, bell expiry while frames stop, and stale callbacks.
@@ -585,9 +586,21 @@ with the pump still running so changes remain bisectable. Remove the timer last.
    passed all budgets without reproducing a consistent branch-specific penalty.
    See the renderer performance report for the earlier slower pairs, repeated
    measurements, and attribution limits.
-5. **Pointer-driven reveal.**
-6. **Call-site triggers.** `resume_close`, `refresh_palette`, and
-   `retry_client_messages`.
+5. **Pointer-driven reveal.** Implemented. Capture listeners coalesce mouse move,
+   press, release, exit, and modifier changes into a deferred reconciliation after
+   gesture ownership settles. Activation, bounds, notifications, and rendering
+   cover layout changes. A 100 ms macOS fallback remains only for a revealed
+   overlay or the native fullscreen top edge outside the content view. It shares
+   the animation deadline timer and does not request idle redraws.
+6. **Call-site triggers.** Implemented. Workspace notifications reconcile
+   `resume_close` and `refresh_palette`; async completion paths notify explicitly.
+   Each terminal owns a cancellable task and bounded wake channel for queued
+   input, resize, presentation, and busy snapshot requests. Admission signals
+   work without requiring a redraw. Activity delivery also retries; a 16 ms
+   backstop runs only while work remains. The opt-in scroll benchmark uses this
+   task for its workload cadence. Production idle terminals arm no retry timer.
+   Native coverage queues input and controls while display frames are paused,
+   observes a shell acknowledgement, and checks cancellation after view release.
 7. **Fullscreen.** Drive `refresh_fullscreen` from the native observer callback
    and a deadline timer. This has the most platform invariants; read the
    fullscreen sections of AGENTS.md before touching it.
@@ -715,10 +728,10 @@ Measured and set aside, in case a later profile changes the ranking:
    isolating how much of that increase comes from the waiter in the first run.
    The follow-up traced 13.28 MiB for 50 added threads to the linked image's
    TLS blocks, dominated by Zig's signal-stack buffer.
-5. Step 4 now follows delivered frames for animations and uses deadlines for
-   static holds. Steps 5 to 8 remain deferred: the pump still samples pointer
-   reveal and handles retries, palette availability, close, and native fullscreen
-   coordination. Removing that timer remains a separate measured decision.
+5. Steps 4 to 6 follow delivered frames for animation, deadlines for holds,
+   pointer events for reveal, and targeted wakes for pending terminal work. The
+   pump only reconciles fullscreen state. Steps 7 and 8, including removal of
+   that timer, remain a separate measured decision.
 6. Automated native checks pass. Physical IMEs, subjective typing/scroll feel,
    and long-running interactive workloads still need human acceptance; the
    benchmark's paint marker does not measure physical presentation latency.

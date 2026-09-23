@@ -874,6 +874,13 @@ process and its native libraries, not child-shell memory. These observations do
 not establish power consumption or attribute memory to individual subsystems.
 
 Raw logs, JSON reports, preserved release binaries, and profiling artifacts are
-local under `target/bench/pending-work-2026-09-23/`. GPU presentation and allocation
-traces are collected separately because instrumentation changes the workload.
-Their capture and analysis status must be established before interpreting them.
+local under `target/bench/pending-work-2026-09-23/`. A separate Metal System Trace
+captured 1,377 target-process drawable presentation requests over 11.702 seconds,
+with median/p95 intervals of 8.341/9.540 ms. These requests confirm approximately
+120 Hz submission under instrumentation; they do not measure physical display
+latency or GPU utilization. The recorder exited 54 after terminating its launched
+process at the capture limit, but the saved trace exported successfully.
+
+The Allocations instrument failed to attach to the target process. Its trace is
+not valid allocation evidence. Resident-memory measurements above remain valid;
+allocation-rate attribution is still pending.
