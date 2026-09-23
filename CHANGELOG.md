@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/jimeh/huterm/compare/v0.12.2...v0.12.3) (2026-09-23)
+
+
+### Performance Improvements
+
+* target pointer reveal and pending terminal work ([#155](https://github.com/jimeh/huterm/issues/155)) ([84e6fca](https://github.com/jimeh/huterm/commit/84e6fca8f63df1da0e534855d6f419201e565364))
+
 ## [0.12.2](https://github.com/jimeh/huterm/compare/v0.12.1...v0.12.2) (2026-09-23)
 
 
