@@ -24,6 +24,12 @@ product behaviour are outside scope. Use native macOS and Docker Linux for
 validation. Use the Linux development VM if Docker cannot cover a required native
 scenario. Do not create or use a macOS development VM.
 
+The approved deployment minimum is macOS 14.0. Align build and package policy
+and use the native `NSScreen` display link without a pre-14 compatibility path.
+Include the first-party safe-area and notch selector cleanup, and track vendor
+candidates and checks that must remain in the
+[macOS 14 compatibility cleanup inventory](macos-14-compatibility-cleanup.md).
+
 ## Current behaviour
 
 `desktop/quake_windows.rs::start_pump` starts one global task while the
