@@ -779,6 +779,7 @@ case "$(uname -s)" in
       -p huterm-gpui \
       --example renderer_smoke \
       --example native_input_smoke \
+      --example refresh_smoke \
       --example clipboard_smoke \
       --example integration_smoke \
       --example native_quit_smoke \
@@ -823,7 +824,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-clipboard|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -841,6 +842,9 @@ case "$(uname -s)" in
     fi
     if run_smoke_step macos-input; then
       bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+    fi
+    if run_smoke_step macos-refresh; then
+      bun scripts/check-refresh-smoke.ts target/debug/examples/refresh_smoke
     fi
     if run_smoke_step macos-clipboard; then
       command -v tmux >/dev/null || { echo "Clipboard smoke requires tmux" >&2; exit 1; }

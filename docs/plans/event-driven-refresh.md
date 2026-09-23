@@ -687,7 +687,8 @@ Measured and set aside, in case a later profile changes the ranking:
    The focused native refresh smoke now covers occlusion and resume, coalesced
    callbacks across tab replacement, and idle activity-task cancellation while
    the core terminal remains alive. Run `mise run smoke:macos-refresh` in an
-   unlocked macOS GUI session.
+   unlocked macOS GUI session. The same test runs as the `macos-refresh` CI
+   smoke step; physical 60/120 Hz cadence budgets remain explicit native checks.
    The 2026-09-21 scroll follow-up adds one bounded viewport allowance per
    delivered frame, preserving output-only pacing and one in-flight request.
    Controlled Linux and idle 120 Hz macOS comparisons recovered baseline scroll

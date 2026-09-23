@@ -312,6 +312,11 @@ jobs:
         timeout-minutes: 6
         run: HUTERM_CI_SMOKE_STEP=macos-input mise run ci:smoke:step
 
+      - name: Smoke macOS refresh scheduling
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-refresh mise run ci:smoke:step
+
       - name: Smoke Linux clipboard
         if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
         timeout-minutes: 6

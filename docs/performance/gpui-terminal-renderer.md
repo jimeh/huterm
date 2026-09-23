@@ -819,3 +819,10 @@ tests. The post-fix native refresh smoke passed hold/fade, same-grid resize,
 paused-frame expiry, bounded scroll admission, and stale callback cleanup. It
 recorded 48 intermediate fade samples at a median 8.299 ms, with delivered
 callbacks at 8.328 ms. The built-in display remains at 120 Hz.
+
+The review follow-up also wires this native refresh smoke into the macOS CI
+job and the default VM smoke set. `mise run vm:macos:smoke -- macos-refresh`
+passed with the new task routing. The supervised `ci:smoke:step` entrypoint
+also passed in the VM with `HUTERM_CI_SMOKE_STEP=macos-refresh`, and
+`mise run ci:workflows` passed. Cadence budgets remain opt-in for explicitly
+selected physical display modes.
