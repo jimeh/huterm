@@ -2105,8 +2105,8 @@ impl Render for CommandPalette {
         let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
             && (geometries.vertical.is_some() || unmeasured);
         if !show_strip {
-            // The strip is not mounted, so no leave event will arrive.
-            if self.scrollbars.pointer_left(Instant::now()) {
+            // No strip remains to paint its leave animation.
+            if self.scrollbars.unmount(Axis::Vertical) {
                 cx.notify();
             }
         }

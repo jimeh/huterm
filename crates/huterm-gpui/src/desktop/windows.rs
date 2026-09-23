@@ -4934,8 +4934,8 @@ impl Render for WorkspaceView {
                 let show_strip =
                     self.tab_scrollbars.wants_strip(axis) && geometry.is_some();
                 if !show_strip {
-                    // No element means no leave event, so clear hover here.
-                    self.tab_scrollbars.pointer_left(Instant::now());
+                    // No strip remains to paint its leave animation.
+                    self.tab_scrollbars.unmount(axis);
                 }
                 if show_strip {
                     chrome = chrome.child(
