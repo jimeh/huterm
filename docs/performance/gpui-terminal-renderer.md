@@ -884,3 +884,74 @@ process at the capture limit, but the saved trace exported successfully.
 The Allocations instrument failed to attach to the target process. Its trace is
 not valid allocation evidence. Resident-memory measurements above remain valid;
 allocation-rate attribution is still pending.
+
+### Pointer and pending-work implementation (2026-09-23)
+
+Production revision: `425d51d`, compared with the preserved `42117b6` binaries
+above. The window pump now only reconciles fullscreen state. Pointer events and
+window changes update reveal intent; each terminal wakes its own pending-work
+task only when needed. The 16 ms retry interval is a busy-runtime backstop, not
+a rendering cadence. The opt-in scroll workload retains its timed drive loop.
+
+The serial 120 Hz release runs passed all output and scroll budgets:
+
+| Measurement | Baseline, three runs | Feature, three runs |
+| --- | --- | --- |
+| Echo applied median, microseconds | 107 / 167 / 134 | 131 / 137 / 140 |
+| Echo paint median, ms | 5.449 / 6.924 / 6.200 | 6.354 / 5.729 / 6.239 |
+| Flood snapshots/s | 120 / 120 / 120 | 120 / 120 / 120 |
+| Flood paint median, ms | 14.916 / 14.721 / 14.615 | 13.952 / 13.952 / 14.025 |
+| Scroll input-to-paint p95, ms | 8.741 / 6.524 / 3.846 | 4.218 / 6.835 / 8.278 |
+
+Scroll queues remained bounded at one in-flight and one queued request. The
+renderer scenarios remained similar: scroll preparation/paint encoding was
+13.0/541.4 microseconds, churn 194.1/585.2, and boxes 143.3/1014.1. The feature
+runs began with load averages around 11 after builds and VM checks had stopped,
+versus about 5 at baseline. These data support preserved pacing and latency
+budgets; they do not establish a visual-latency improvement.
+
+The first idle sequence stopped when the Mac locked before the ten-tab sample.
+Its one-tab samples are excluded from the comparison because the lock boundary
+was not recorded. The repeated comparison checks the lock state before and after
+each run and alternates baseline/feature order for one and fifty tabs.
+
+The repeated unlocked comparison used the same three five-second samples per
+state. One-tab runs used baseline then feature; fifty-tab runs reversed that
+order. Builds and VMs had stopped; normal desktop applications remained active.
+A process-scoped `caffeinate` assertion kept the display awake during this run.
+The initial load average was 14 after the VM, so absolute CPU values should not
+be compared with another machine or an otherwise idle host.
+
+| Tabs | State | Baseline CPU, % core | Feature CPU, % core | Baseline MiB | Feature MiB |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Visible | 1.323 | 0.976 | 102.12 | 102.55 |
+| 1 | Hidden | 0.592 | 0.594 | 101.69 | 102.19 |
+| 50 | Visible | 1.667 | 1.237 | 193.53 | 194.34 |
+| 50 | Hidden | 0.876 | 0.773 | 193.05 | 193.92 |
+
+Visible idle CPU fell 26.2% with one tab and 25.8% with fifty tabs in these pairs,
+about 0.35 and 0.43 percentage points of one core respectively. Hidden one-tab
+CPU was unchanged; hidden fifty-tab CPU fell 11.8%. Interrupt wakeups remained
+approximately 180/s visible and 60/s hidden in both builds. The fullscreen timer
+and GPUI display link remain, so this change reduces work per wake rather than
+eliminating those wakes. Resident memory was 0.43 to 0.87 MiB higher in these
+samples; the new task/channel contribution was not isolated. There is no measured
+memory saving.
+
+The ten-tab feature checkpoint was 1.412% visible / 0.690% hidden CPU,
+179.816 / 59.994 interrupt wakeups/s, and 120.67 / 120.25 MiB resident. It was
+not paired with a fresh ten-tab baseline and is included only as a scaling
+checkpoint. The earlier ten-tab baseline is recorded above.
+
+The final physical-display refresh smoke passed every marker and the explicit
+12,000-microsecond animation budget, with 50 intermediate fade samples and an
+8,328-microsecond median interval. No fixed 120 Hz scheduling interval was added.
+
+Verification includes the full `mise run verify` gate, Linux fullscreen, palette,
+and input smokes, and macOS refresh, desktop integration, fullscreen, palette,
+and Quit smokes. The new native pending-work regression queues input and
+controls while
+frames are paused, requires a shell title acknowledgement, preserves snapshot
+allowances, and verifies task cancellation after view release. Disabling the
+admission wake made it fail at the expected pending-work assertion; restoring
+the wake made it pass.
