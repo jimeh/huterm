@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/jimeh/huterm/compare/v0.12.1...v0.12.2) (2026-09-23)
+
+
+### Performance Improvements
+
+* drive desktop animations from frames and deadlines ([#153](https://github.com/jimeh/huterm/issues/153)) ([42117b6](https://github.com/jimeh/huterm/commit/42117b6318ff182df0f591045f5c6ed0b5959e30))
+
 ## [0.12.1](https://github.com/jimeh/huterm/compare/v0.12.0...v0.12.1) (2026-09-21)
 
 
