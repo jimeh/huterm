@@ -195,8 +195,20 @@ impl Model {
         }
         self.restore_focus = restore_focus;
     }
-    pub fn refit(&mut self, now: Instant) {
+    pub fn refit(&mut self, now: Instant, preserve_presentation: bool) {
         self.deadline = self.activation.refit(self.stage, self.deadline, now);
+        if preserve_presentation
+            && self.stage == Stage::Idle
+            && self.transition.visible()
+        {
+            // A settled window only needs new bounds. Releasing fullscreen
+            // here changes the Dock/menu work area and delays its content resize.
+            self.revision = self.revision.wrapping_add(1);
+            self.stage = Stage::SettleVisible;
+            self.next_reapply = now;
+            self.suppress_blur = now + Duration::from_millis(200);
+            return;
+        }
         self.prepare(self.transition.visible(), false, now);
     }
     pub fn animation_end(&self) -> Instant {
@@ -452,6 +464,52 @@ mod tests {
             busy: false,
         };
         (model, facts)
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn settled_refit_preserves_presentation_and_resizes_without_a_frame() {
+        for fullscreen in [false, true] {
+            let now = Instant::now();
+            let (mut model, mut facts) = visible(now);
+            model.profile.fullscreen = fullscreen;
+            facts.fullscreen = fullscreen;
+            facts.active = false;
+            model.target.width += 200.0;
+            model.refit(now, true);
+            let result = model.decide(facts, now, false).unwrap();
+            assert_eq!(result.actions, vec![Action::Frame(model.target)]);
+            facts.frame = model.target;
+            assert!(model.decide(facts, now, false).unwrap().settled);
+        }
+    }
+    #[test]
+    fn refit_without_native_permission_keeps_transition_preparation() {
+        let now = Instant::now();
+        let (mut model, facts) = visible(now);
+        model.refit(now, false);
+        assert_eq!(
+            model.decide(facts, now, false).unwrap().actions,
+            vec![Action::Fullscreen(false)]
+        );
+    }
+    #[test]
+    fn refit_during_activation_keeps_show_request_and_original_deadline() {
+        let now = Instant::now();
+        let (mut model, mut facts) = visible(now);
+        model.stage = Stage::Activate;
+        model.activation.request();
+        facts.active = false;
+        let deadline = model.deadline;
+        let refit_at = now + Duration::from_secs(1);
+        model.refit(refit_at, true);
+        assert_eq!(model.deadline, deadline);
+        assert_eq!(
+            model.decide(facts, refit_at, false).unwrap().actions,
+            vec![Action::Fullscreen(false)]
+        );
+        model.decide(facts, refit_at, false).unwrap();
+        let result = model.decide(facts, refit_at, true).unwrap();
+        assert!(result.actions.contains(&Action::Show));
     }
     #[test]
     fn reversal_requested_during_native_pause_preserves_progress() {

@@ -445,7 +445,7 @@ impl Window {
     }
     /// Whether `AppKit` has the window in a native fullscreen Space, where it
     /// lays the content out below the notch itself.
-    unsafe fn in_native_space(&self) -> bool {
+    pub fn in_native_space(&self) -> bool {
         // SAFETY: Read-only main-thread style getter on the retained window.
         unsafe {
             let style: usize = msg_send![self.0.native.0, styleMask];

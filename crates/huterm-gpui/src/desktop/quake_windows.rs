@@ -887,7 +887,13 @@ fn step(
                     if geometry_changed
                         && matches!(state.stage, Stage::Idle | Stage::Activate)
                     {
-                        state.model.refit(now);
+                        #[cfg(target_os = "macos")]
+                        let preserve_presentation = facts.native_idle
+                            && facts.fullscreen == state.profile.fullscreen
+                            && !state.native.in_native_space();
+                        #[cfg(not(target_os = "macos"))]
+                        let preserve_presentation = false;
+                        state.model.refit(now, preserve_presentation);
                     }
                 }
             }
