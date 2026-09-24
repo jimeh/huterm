@@ -342,6 +342,7 @@ extern "C" fn did_transition(object: &Object, _: Sel, _: *mut Object) {
 }
 extern "C" fn frame(object: &Object, _: Sel, link: *mut Object) {
     with_inbox(object, |inbox| {
+        inbox.signal.raw_frame();
         if inbox.clock_link.get() == link as usize {
             inbox.signal.frame(inbox.clock_epoch.get());
         }

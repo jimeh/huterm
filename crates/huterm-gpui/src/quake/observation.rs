@@ -17,6 +17,7 @@ struct State {
     diagnostics: bool,
     fact_wakes: AtomicU64,
     frame_wakes: AtomicU64,
+    raw_frames: AtomicU64,
 }
 impl Signal {
     pub fn new(sender: async_channel::Sender<()>) -> Self {
@@ -27,7 +28,17 @@ impl Signal {
             diagnostics: std::env::var_os("HUTERM_QUAKE_SMOKE").is_some(),
             fact_wakes: AtomicU64::new(0),
             frame_wakes: AtomicU64::new(0),
+            raw_frames: AtomicU64::new(0),
         }))
+    }
+    #[cfg(target_os = "macos")]
+    pub fn raw_frame(&self) {
+        if self.0.diagnostics {
+            self.0.raw_frames.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn raw_frames(&self) -> u64 {
+        self.0.raw_frames.load(Ordering::Relaxed)
     }
     pub fn counts(&self) -> (u64, u64) {
         (

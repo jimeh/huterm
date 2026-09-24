@@ -2,8 +2,17 @@
 use super::*;
 use crate::quake::observation::{FRAME, Signal};
 
+#[derive(Clone, Copy)]
+pub(super) enum WakeSource {
+    Intent,
+    View,
+    Native,
+    Continuation,
+    Effect,
+}
+
 pub(super) struct Work {
-    pub wake: crate::deferred_work::Wake,
+    wake: crate::deferred_work::Wake,
     pub signal: Signal,
     pub observer: native::Observer,
     receiver: Option<async_channel::Receiver<()>>,
@@ -16,6 +25,8 @@ pub(super) struct Work {
     timers: Rc<Cell<u64>>,
     window_frames: u64,
     diagnostics: bool,
+    passes: Cell<u64>,
+    wakes: [Cell<u64>; 5],
 }
 impl Drop for Work {
     fn drop(&mut self) {
@@ -53,7 +64,21 @@ impl Work {
             timers,
             window_frames: 0,
             diagnostics,
+            passes: Cell::new(0),
+            wakes: std::array::from_fn(|_| Cell::new(0)),
         })
+    }
+    pub fn signal(&self, source: WakeSource) {
+        if self.diagnostics {
+            let counter = &self.wakes[source as usize];
+            counter.set(counter.get() + 1);
+        }
+        self.wake.signal();
+    }
+    pub fn passed(&self) {
+        if self.diagnostics {
+            self.passes.set(self.passes.get() + 1);
+        }
     }
     fn clock_installed(&mut self, running: anyhow::Result<bool>) {
         self.admission.clock_running =
@@ -89,7 +114,7 @@ impl Work {
     }
     pub fn inspect(&self) -> String {
         format!(
-            "quake_timer={}\nquake_clock={}\nquake_frame_demand={}\nwork_area_fallback={}\nquake_timer_fires={}\nquake_window_frames={}\nquake_native_frames={}\nquake_fact_wakes={}",
+            "quake_timer={}\nquake_clock={}\nquake_frame_demand={}\nwork_area_fallback={}\nquake_timer_fires={}\nquake_window_frames={}\nquake_native_frames={}\nquake_fact_wakes={}\nquake_raw_native_frames={}\nquake_passes={}\nquake_intent_wakes={}\nquake_view_wakes={}\nquake_native_wakes={}\nquake_continuation_wakes={}\nquake_effect_wakes={}\nquake_pending={}",
             self.wake.armed(),
             self.admission.clock_running,
             self.admission.wants_frame,
@@ -97,7 +122,15 @@ impl Work {
             self.timers.get(),
             self.window_frames,
             self.signal.counts().1,
-            self.signal.counts().0
+            self.signal.counts().0,
+            self.signal.raw_frames(),
+            self.passes.get(),
+            self.wakes[0].get(),
+            self.wakes[1].get(),
+            self.wakes[2].get(),
+            self.wakes[3].get(),
+            self.wakes[4].get(),
+            self.wake.pending()
         )
     }
     pub fn display_due(&self, now: Instant) -> bool {
@@ -363,13 +396,13 @@ pub(in crate::desktop) fn start(
                 }
                 let _ = weak.update(cx, |view, _| {
                     if let Some(state) = &view.quake {
-                        state.work.wake.signal();
+                        state.work.signal(WakeSource::Effect);
                     }
                 });
             }
         }
     }));
-    state.work.wake.signal();
+    state.work.signal(WakeSource::Intent);
 }
 
 fn complete(

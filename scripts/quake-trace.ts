@@ -173,3 +173,25 @@ export async function readQuakeTrace(file: string): Promise<QuakeObservation[]> 
   if (finalNewline < 0) return [];
   return text.slice(0, finalNewline).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line) as QuakeObservation);
 }
+
+export type IdleWork = {
+  timers: number; frames: number; rawFrames: number; facts: number;
+  nativeWakes: number; passes: number; viewWakes: number; internalWakes: number;
+};
+
+/** Check work after an empty owner queue and settled policy were observed. */
+export function assertIdleWork(work: IdleWork, timerBudget: number): void {
+  for (const [name, value] of Object.entries(work)) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid idle counter ${name}: ${value}`);
+  }
+  if (work.timers > timerBudget || work.frames !== 0 || work.rawFrames > 1) {
+    throw new Error(`idle periodic work: ${JSON.stringify(work)}`);
+  }
+  const external = work.facts + work.nativeWakes + work.timers;
+  // The channel holds one wake. Allow a small fixed tail of already deferred
+  // view/effect notifications plus one queued native clock callback. View
+  // notifications are never credited as external evidence for further passes.
+  if (work.internalWakes > 4 || work.passes > external + 4 || work.viewWakes > external * 2 + 4) {
+    throw new Error(`idle reconciliation feedback: ${JSON.stringify(work)}`);
+  }
+}

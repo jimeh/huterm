@@ -183,6 +183,9 @@ impl Model {
     fn prepare(&mut self, visible: bool, restore_focus: bool, now: Instant) {
         self.revision = self.revision.wrapping_add(1);
         self.recovering = false;
+        if self.native_paused {
+            self.transition.pause(now);
+        }
         self.transition.retarget(visible, now, self.duration());
         self.stage = Stage::Prepare;
         self.animation_started = false;
@@ -449,6 +452,37 @@ mod tests {
             busy: false,
         };
         (model, facts)
+    }
+    #[test]
+    fn reversal_requested_during_native_pause_preserves_progress() {
+        let now = Instant::now();
+        let (mut model, mut facts) = visible(now);
+        model.request(false, false, now);
+        model.decide(facts, now, false).unwrap();
+        model.decide(facts, now, false).unwrap();
+        model.decide(facts, now, false).unwrap();
+        let sampled = now + Duration::from_millis(30);
+        let progress = model
+            .decide(facts, sampled, true)
+            .unwrap()
+            .sample
+            .unwrap()
+            .progress;
+        facts.native_idle = false;
+        model.decide(facts, sampled, false).unwrap();
+        let requested = sampled + Duration::from_secs(1);
+        model.request(true, false, requested);
+        assert_eq!(model.deadline, requested + Duration::from_secs(3));
+        facts.native_idle = true;
+        let resumed = requested + Duration::from_millis(100);
+        model.decide(facts, resumed, false).unwrap();
+        model.decide(facts, resumed, false).unwrap();
+        let result = model.decide(facts, resumed, true).unwrap();
+        assert!(
+            (result.sample.unwrap().progress - progress).abs() < f64::EPSILON,
+            "reversal sampled paused wall time"
+        );
+        assert_eq!(model.deadline, requested + Duration::from_secs(3));
     }
     #[test]
     fn quiet_settlement_requests_detach_continuation_without_native_effect() {

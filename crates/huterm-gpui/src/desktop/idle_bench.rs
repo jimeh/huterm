@@ -60,7 +60,7 @@ fn startup_progress(cx: &mut App) -> String {
         cx.global::<Desktop>().pending_spawns
     )];
     for handle in cx.windows() {
-        let state = handle.update(cx, |root, _, cx| {
+        let state = handle.update(cx, |root, window, cx| {
             let Ok(root) = root.downcast::<WorkspaceView>() else {
                 return "no workspace root".into();
             };
@@ -69,11 +69,12 @@ fn startup_progress(cx: &mut App) -> String {
                 || "none".into(),
                 |terminal| terminal_progress(terminal.read(cx)),
             );
+            let native = view.native_fullscreen.as_ref()
+                .map(|adapter| adapter.inspect().map(|text| text.replace('\n', " ")));
             format!(
-                "tabs={} busy={} status={:?} active=[{terminal}]",
-                view.tabs.len(),
-                view.busy,
-                view.status
+                "tabs={} busy={} status={:?} window_active={} frame_pending={} native={native:?} active=[{terminal}]",
+                view.tabs.len(), view.busy, view.status, window.is_window_active(),
+                view.frame_clock.pending_callbacks()
             )
         });
         states.push(
@@ -91,11 +92,14 @@ fn terminal_progress(terminal: &super::TerminalView) -> String {
             .collect::<String>()
     });
     format!(
-        "visible={} exited={} failed={} snapshot_sequence={} text={:?}",
+        "visible={} exited={} failed={} snapshot_sequence={} pacer={:?} scroll={:?} status={:?} text={:?}",
         terminal.visible,
         terminal.exited,
         terminal.failed,
         terminal.snapshot_sequence,
+        terminal.snapshot_pacer,
+        terminal.scroll,
+        terminal.status,
         text.map(|text| text.chars().take(100).collect::<String>())
     )
 }
@@ -144,6 +148,17 @@ fn advance(
                         .contains("HUTERM_IDLE_READY")
                 })
             });
+            if !ready && let Some(terminal) = view.active_view() {
+                // Fixture initialization must finish even when AppKit occludes
+                // this window and stops native frames. Grant one startup credit
+                // through normal admission; never change the refresh policy.
+                // This loop ends before READY and external idle measurement.
+                terminal.update(cx, |terminal, cx| {
+                    terminal.snapshot_pacer.frame();
+                    terminal.start_snapshot_if_needed(cx);
+                });
+            }
+            let view = root.read(cx);
             if let Some(state) = &view.quake {
                 let observation = quake_windows::inspect(state)?;
                 if !observation.lines().any(|line| line == "stage=Idle") {

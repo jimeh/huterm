@@ -2,7 +2,7 @@ import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { analyzeFade, analyzeReversal, analyzeSlide, focusDuringShowEligibility, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
+import { assertIdleWork, analyzeFade, analyzeReversal, analyzeSlide, focusDuringShowEligibility, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
 
 type Frame = [number, number, number, number];
 const targetFrame: Frame = [0, 0, 800, 400];
@@ -187,4 +187,14 @@ test("trace reader waits for an incomplete trailing record", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("idle work rejects self-wake feedback and raw stale clock leaks", () => {
+  const quiet = { timers: 0, frames: 0, rawFrames: 0, facts: 0, nativeWakes: 0, passes: 0, viewWakes: 0, internalWakes: 0 };
+  expect(() => assertIdleWork({ ...quiet, facts: 2, passes: 3, viewWakes: 2 }, 0)).not.toThrow();
+  expect(() => assertIdleWork({ ...quiet, timers: 1, passes: 1 }, 2)).not.toThrow();
+  expect(() => assertIdleWork({ ...quiet, passes: 100, viewWakes: 100 }, 0)).toThrow("feedback");
+  expect(() => assertIdleWork({ ...quiet, facts: 100, passes: 100, internalWakes: 100 }, 0)).toThrow("feedback");
+  expect(() => assertIdleWork({ ...quiet, rawFrames: 120 }, 0)).toThrow("periodic");
+  expect(() => assertIdleWork({ ...quiet, passes: Number.NaN }, 0)).toThrow("invalid");
 });

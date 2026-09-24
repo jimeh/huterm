@@ -1420,7 +1420,7 @@ fn open_window_with_profile(
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
                     if let Some(state) = &view.quake {
-                        state.wake();
+                        state.native_wake();
                     }
                     view.refresh_tab_visibility(window, cx);
                 })
@@ -1428,7 +1428,7 @@ fn open_window_with_profile(
                 cx.observe_window_bounds(window, |view, window, cx| {
                     view.fullscreen_work.wake.signal();
                     if let Some(state) = &view.quake {
-                        state.wake();
+                        state.native_wake();
                     }
                     view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);

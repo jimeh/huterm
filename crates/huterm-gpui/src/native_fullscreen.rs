@@ -299,6 +299,9 @@ impl Adapter {
         // SAFETY: Smoke getters use the same exact retained native window.
         unsafe {
             let window = self.0.window.0;
+            let visible: objc::runtime::BOOL = msg_send![window, isVisible];
+            let key: objc::runtime::BOOL = msg_send![window, isKeyWindow];
+            let occlusion: usize = msg_send![window, occlusionState];
             let style: usize = msg_send![window, styleMask];
             let frame: Bounds<f64> = msg_send![window, frame];
             let content: Bounds<f64> =
@@ -316,7 +319,7 @@ impl Adapter {
                 .as_ref()
                 .is_some_and(|saved| saved.complete);
             Ok(format!(
-                "refit_notifications={}\nrefit_intervals_us={}\nrefit_attempts={}\nrefit_retry={}\nstyle={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
+                "refit_notifications={}\nrefit_intervals_us={}\nrefit_attempts={}\nrefit_retry={}\nstyle={style}\nvisible={}\nkey={}\nocclusion={occlusion}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
                 self.0.inbox.probe_refit_notifications.get(),
                 self.0
                     .inbox
@@ -331,6 +334,8 @@ impl Adapter {
                     .join(","),
                 self.0.inbox.refit_attempts.get(),
                 self.deadline().is_some(),
+                visible == YES,
+                key == YES,
                 native_rect(frame),
                 native_rect(content),
                 native_rect(screen.frame),

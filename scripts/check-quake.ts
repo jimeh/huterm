@@ -5,6 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { parseState, type State } from "./check-fullscreen";
 import {
   analyzeFade,
+  assertIdleWork,
   analyzeReversal,
   analyzeSlide,
   focusDuringShowEligibility,
@@ -145,12 +146,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await waitFor(async () => {
       const value = await current();
       return value?.stage === "Idle" && value.quake_policy_deadline === "false" &&
-        value.quake_clock === "false" && value.quake_frame_demand === "false";
+        value.quake_clock === "false" && value.quake_frame_demand === "false" && value.quake_pending === "false";
     }, `${label} policy and animation settlement`);
     const before = (await current())!;
     const timerBudget = before.work_area_fallback === "true" ? 2 : 0;
     // Observe elapsed time beyond the former pump and the 1s work-area period.
-    // Legitimate native facts may still arrive; only periodic sources are bounded.
+    // Genuine native facts may arrive; bound periodic and internal feedback work.
     await Bun.sleep(1100);
     const after = (await current())!;
     const counter = (value: State, name: string) => {
@@ -164,12 +165,16 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       if (change < 0) throw new Error(`${label} counter reset: ${name}`);
       return change;
     };
-    const timers = delta("quake_timer_fires");
-    if (timers > timerBudget) throw new Error(`${label} idle timer fires ${timers}, budget ${timerBudget}`);
-    for (const counter of ["quake_window_frames", "quake_native_frames"]) {
-      if (delta(counter) !== 0) throw new Error(`${label} idle frames: ${counter} ${before[counter]} -> ${after[counter]}`);
-    }
-    console.log(`QUAKE_IDLE ${label} timer_fires=${timers} periodic_frames=0 fact_wakes=${delta("quake_fact_wakes")} observation_ms=1100`);
+    const work = {
+      timers: delta("quake_timer_fires"),
+      frames: delta("quake_window_frames") + delta("quake_native_frames"),
+      rawFrames: delta("quake_raw_native_frames"),
+      facts: delta("quake_fact_wakes"), nativeWakes: delta("quake_native_wakes"),
+      passes: delta("quake_passes"), viewWakes: delta("quake_view_wakes"),
+      internalWakes: delta("quake_intent_wakes") + delta("quake_continuation_wakes") + delta("quake_effect_wakes"),
+    };
+    assertIdleWork(work, timerBudget);
+    console.log(`QUAKE_IDLE ${label} ${JSON.stringify(work)} observation_ms=1100`);
   };
 
   const traceFile = join(directory, "trace.jsonl");

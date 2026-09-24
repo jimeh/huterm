@@ -55,6 +55,9 @@ impl Wake {
         }
         self.signal();
     }
+    pub fn pending(&self) -> bool {
+        !self.0.sender.is_empty()
+    }
     pub fn armed(&self) -> bool {
         self.0.deadline.get().is_some()
     }

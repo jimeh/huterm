@@ -201,8 +201,8 @@ mod policy;
 #[path = "quake_windows/work.rs"]
 mod work;
 use policy::{Activation, Stage};
-use work::Work;
 pub(super) use work::start;
+use work::{WakeSource, Work};
 pub(super) struct Presentation {
     pub name: String,
     reporter: Option<WeakEntity<WorkspaceView>>,
@@ -216,7 +216,10 @@ pub(super) struct Presentation {
 }
 impl Presentation {
     pub(super) fn wake(&self) {
-        self.work.wake.signal();
+        self.work.signal(WakeSource::View);
+    }
+    pub(super) fn native_wake(&self) {
+        self.work.signal(WakeSource::Native);
     }
     pub(super) fn frame_schedule(&self) -> AnimationSchedule {
         self.work.frame_schedule()
@@ -252,7 +255,7 @@ impl Presentation {
         self.work.failure.clear();
         self.generation.set(self.model.revision);
         self.work.invalidate();
-        self.work.wake.signal();
+        self.work.signal(WakeSource::Intent);
     }
 }
 impl std::ops::Deref for Presentation {
@@ -797,6 +800,9 @@ fn step(
     cx: &mut Context<'_, WorkspaceView>,
 ) -> Option<NativeEffect> {
     let now = Instant::now();
+    if let Some(state) = &view.quake {
+        state.work.passed();
+    }
     if view
         .quake
         .as_ref()
@@ -912,7 +918,7 @@ fn step(
     };
     state.work.failure.sampled(!decision.actions.is_empty());
     if decision.continuation {
-        state.work.wake.signal();
+        state.work.signal(WakeSource::Continuation);
     }
     if decision.settled {
         state.reporter = None;
