@@ -2,8 +2,8 @@
 
 Status: reviewed follow-up to merged PR #157 (`d96b832`). Codex and Claude
 Opus 5.5 at high effort agree on this plan. The implementation and focused
-macOS/Linux validation are complete; delivery checks and comparative measurements
-remain.
+macOS/Linux validation and paired measurements are complete in PR #159.
+See the [comparison and coverage limits](../performance/gpui-terminal-renderer.md#quake-event-scheduling-comparison-2026-09-24).
 
 ## Outcome and scope
 
@@ -32,12 +32,12 @@ Include the first-party safe-area and notch selector cleanup, and track vendor
 candidates and checks that must remain in the
 [macOS 14 compatibility cleanup inventory](macos-14-compatibility-cleanup.md).
 
-## Current behaviour
+## Behaviour before this change
 
-`desktop/quake_windows.rs::start_pump` starts one global task while the
-registry contains windows, including hidden windows. Every 16 ms, `tick` visits
-each window and calls `step`. Native effects run afterward, outside GPUI window
-borrows. `step` does more than animation:
+`desktop/quake_windows.rs::start_pump` started one global task while the
+registry contained windows, including hidden windows. Every 16 ms, `tick` visited
+each window and called `step`. Native effects ran afterward, outside GPUI window
+borrows. The old `step` handled more than animation:
 
 - Samples native fullscreen, activation, visibility, and frame state.
 - Distinguishes application/window blur from non-activating panels on macOS.
@@ -298,20 +298,17 @@ and fade-from-zero, including in the existing Linux compositor harness.
   echo/flood, and scroll comparisons show no material regression. Record memory
   and thread changes without claiming improvements unsupported by measurements.
 
-## Unresolved questions
+## Resolved platform choices and coverage limits
 
-- Which X11 events GPUI already exposes with sufficient ordering, and which
-  need a small backend patch or private subscription, is resolved in step 2
-  before pump removal. The same audit must prove macOS app/key-window and
-  work-area coverage.
-- Which target-display clock or refresh-derived active-animation fallback is
-  available on each backend? Step 2 must settle the mechanism; offscreen
-  windows are known not to guarantee ordinary window frames. Step 3 proves
-  handoff, intermediate samples, and cancellation without weakening existing
-  smokes.
-- Which physical 60 Hz, 120 Hz, and multi-display cases are available during
-  the fresh comparison? Record coverage limits rather than substitute VM
-  timing.
+X11 uses a private shared event subscription rather than a GPUI backend patch.
+macOS uses app/window/display notifications and an active `NSScreen` display
+link. Ordinary window frames and the bootstrap clock have explicit handoff;
+missing frames enable a refresh-derived timer only during active animation.
+
+The native checks cover the built-in 120 Hz display. Physical 60 Hz,
+multi-display migration, hotplug, external Dock changes, native Intel, and
+macOS 14 runtime checks remain unavailable for this change. Docker covers X11
+behaviour and compositor effects, not physical display timing. No VM was used.
 
 ## Implemented platform fallback boundaries
 
@@ -332,3 +329,22 @@ The existing native fullscreen adapter remains the transition mutation gate.
 The Quake observer requests reconciliation; its own lifecycle gate is used
 only if the ordinary adapter is unavailable. Native effects and clock
 installation run after GPUI borrows end.
+
+Persistent native sampling or effect errors use bounded recovery and a
+one-second retry backoff. They cannot create an immediate self-wake loop.
+Failed X11 observer registration uses the same explicit safety sampling path as
+connection failure. Tests cover policy deadlines, paused reversal, frame-source
+handoff, epoch rejection, and cancellation; platform registration failures are
+not injected end to end.
+
+Opt-in smoke diagnostics count all reconciliation passes, typed wake sources,
+and raw owned native clock callbacks. Idle assertions start at an empty owner
+queue and settled policy, allow bounded delayed notifications, and reject
+internal feedback loops or a leaked periodic clock. Uninstrumented performance
+runs exclude the smoke publisher and counters.
+
+The idle fixture grants bounded snapshot credit only during initialization,
+before its READY marker. This avoids a baseline-and-feature startup stall when
+AppKit reports a visible/key window as occluded and withholds frames. Both arms
+use the identical fixture. Production pacing is unchanged; these measurements
+do not validate cold-start frame delivery under native occlusion.

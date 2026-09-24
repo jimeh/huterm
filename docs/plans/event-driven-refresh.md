@@ -3,8 +3,9 @@
 Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
 Step 4, including animation scheduling and scrollbar cleanup, shipped in
 PR #153 as `42117b6`. Steps 5 and 6 shipped in PR #155. Steps 7 and 8 are
-implemented in PR #157, with fullscreen notification scheduling and removal of
-the per-window pump. Paired measurements and local validation are complete.
+shipped in PR #157, with fullscreen notification scheduling and removal of
+the per-window pump. PR #159 implements the separate
+[Quake scheduling follow-up](quake-event-scheduling.md) and macOS 14 cleanup.
 
 The 2026-09-19 comparison rebuilt the baseline at `94f8028` under the current
 single-display, scale-1 setup. At 120 Hz, default flood snapshots rose from 60
@@ -254,9 +255,10 @@ The pump is the task spawned in `open_window_with_profile` in
 | Palette availability | `refresh_palette` | Compares a state tuple each tick | Call from the mutations that change that state |
 | Palette scrollbar | `palette.advance` | Fade timing | Animation clock while visible |
 
-Quake windows already use a loop that stops when idle (`keep_running` in
-`crates/huterm-gpui/src/desktop/quake_windows.rs`). It is a working model for
-"timer only while something is in motion".
+The original Quake loop continued polling while registered windows existed,
+including hidden windows. PR #159 replaces that separate pump with owned
+event-driven reconciliation and active animation clocks; see the
+[Quake plan](quake-event-scheduling.md) for its explicit platform fallbacks.
 
 ## Design
 
@@ -544,7 +546,7 @@ smokes, which exercise close consent.
 
 The original sequence follows. Steps 1 to 3 and the runtime prerequisite shipped
 in PR #147. Steps 4 to 6 shipped in PRs #153 and #155; steps 7 and 8 are
-implemented in PR #157 after the three-arm comparison. Native 60 Hz pacing was
+shipped in PR #157 after the three-arm comparison. Native 60 Hz pacing was
 verified in the
 2026-09-20 hardening follow-up. The subjective
 editor/DOOM feel comparison remains unverified. Convert one duty at a time
