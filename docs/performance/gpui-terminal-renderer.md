@@ -1248,8 +1248,10 @@ significant latency improvement.
 `mise run verify` passed on the initial implementation. Subsequent lifecycle
 corrections passed 43 focused macOS and 42 focused Linux Quake tests, Clippy,
 and both complete native smoke matrices. The paused-reversal regression failed
-at its intended assertion before the fix. Final script checks passed 475 tests.
+at its intended assertion before the fix. Final script checks passed 477 tests.
 Idle smokes also reject self-wake loops and stale native display-link callbacks.
+They wait for actual timer disarm as well as expired policy deadlines before
+observing idle work; a hosted Linux failure exposed the distinction.
 A fresh universal package at `0ed2dd9` verified both executable slices and the
 bundle minimum as macOS 14.0; later changes do not alter packaging policy.
 

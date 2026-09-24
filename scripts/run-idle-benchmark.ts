@@ -56,6 +56,12 @@ export function armOrder<T>(arms: T[], round: number): T[] {
   return round % 2 === 0 ? [...arms] : [...arms].reverse();
 }
 
+export function validateRunMatrix(arms: Arm[], presentations: string[]): void {
+  if (!presentations.some(presentation => arms.some(arm => presentation !== "quake" || !arm.force_fallback))) {
+    throw new Error("run matrix has no eligible samples: forced fullscreen fallback requires ordinary presentation");
+  }
+}
+
 /** Always clean up, retaining the benchmark failure if cleanup also fails. */
 export async function runWithCleanup(run: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
   let failed = false;
@@ -113,6 +119,7 @@ async function main(): Promise<void> {
     await command(["bash", "scripts/build-exec.sh", "cargo", "build", "--release", "--locked", "-p", "huterm-gpui", "--example", "idle_bench"]);
     arms = [{ label: "current", executable: resolve(process.env.CARGO_TARGET_DIR ?? "target", "release/examples/idle_bench"), revision: run(["git", "rev-parse", "HEAD"]) }];
   }
+  validateRunMatrix(arms, presentations);
   const context = JSON.parse(run([sampler, "context"]));
   if (!context.unlocked) throw new Error("an unlocked console GUI session is required");
   const report = {

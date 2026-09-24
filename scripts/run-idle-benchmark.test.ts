@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { armOrder, readiness, runWithCleanup, validateArms } from "./run-idle-benchmark.ts";
+import { armOrder, readiness, runWithCleanup, validateArms, validateRunMatrix } from "./run-idle-benchmark.ts";
+
+test("empty fallback-only Quake matrices fail before sampling", () => {
+  const normal = { label: "normal", executable: "/tmp/fixture", revision: "abc" };
+  const fallback = { ...normal, label: "fallback", force_fallback: true };
+  expect(() => validateRunMatrix([fallback], ["quake"])).toThrow("no eligible samples");
+  expect(() => validateRunMatrix([fallback], ["ordinary", "quake"])).not.toThrow();
+  expect(() => validateRunMatrix([normal, fallback], ["quake"])).not.toThrow();
+});
 
 test("preserved binaries require explicit revision provenance", () => {
   expect(() => validateArms([{ label: "baseline", executable: "/tmp/baseline" }])).toThrow("revision");

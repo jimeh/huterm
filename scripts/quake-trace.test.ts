@@ -2,7 +2,7 @@ import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { assertIdleWork, analyzeFade, analyzeReversal, analyzeSlide, focusDuringShowEligibility, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
+import { idleWorkSettled, assertIdleWork, analyzeFade, analyzeReversal, analyzeSlide, focusDuringShowEligibility, isIntermediateObservation, observationsForLatestGeneration, readQuakeTrace, retryInconclusiveOnce, type QuakeObservation } from "./quake-trace";
 
 type Frame = [number, number, number, number];
 const targetFrame: Frame = [0, 0, 800, 400];
@@ -197,4 +197,14 @@ test("idle work rejects self-wake feedback and raw stale clock leaks", () => {
   expect(() => assertIdleWork({ ...quiet, facts: 100, passes: 100, internalWakes: 100 }, 0)).toThrow("feedback");
   expect(() => assertIdleWork({ ...quiet, rawFrames: 120 }, 0)).toThrow("periodic");
   expect(() => assertIdleWork({ ...quiet, passes: Number.NaN }, 0)).toThrow("invalid");
+});
+
+
+test("idle observation waits for an expired one-shot timer to drain", () => {
+  const settled = { stage: "Idle", quake_policy_deadline: "false", quake_clock: "false", quake_frame_demand: "false", quake_pending: "false", quake_timer: "false", work_area_fallback: "false" };
+  expect(idleWorkSettled(settled)).toBe(true);
+  // The time-based policy can expire before its already armed callback runs.
+  expect(idleWorkSettled({ ...settled, quake_timer: "true" })).toBe(false);
+  expect(idleWorkSettled({ ...settled, quake_pending: "true" })).toBe(false);
+  expect(idleWorkSettled({ ...settled, quake_timer: "true", work_area_fallback: "true" })).toBe(true);
 });

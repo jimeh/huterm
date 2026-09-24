@@ -179,6 +179,13 @@ export type IdleWork = {
   nativeWakes: number; passes: number; viewWakes: number; internalWakes: number;
 };
 
+export function idleWorkSettled(state: Record<string, string>): boolean {
+  return state.stage === "Idle" && state.quake_policy_deadline === "false" &&
+    state.quake_clock === "false" && state.quake_frame_demand === "false" &&
+    state.quake_pending === "false" &&
+    (state.quake_timer === "false" || state.work_area_fallback === "true");
+}
+
 /** Check work after an empty owner queue and settled policy were observed. */
 export function assertIdleWork(work: IdleWork, timerBudget: number): void {
   for (const [name, value] of Object.entries(work)) {

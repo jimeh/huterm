@@ -6,6 +6,7 @@ import { parseState, type State } from "./check-fullscreen";
 import {
   analyzeFade,
   assertIdleWork,
+  idleWorkSettled,
   analyzeReversal,
   analyzeSlide,
   focusDuringShowEligibility,
@@ -145,8 +146,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   const checkIdle = async (label: string) => {
     await waitFor(async () => {
       const value = await current();
-      return value?.stage === "Idle" && value.quake_policy_deadline === "false" &&
-        value.quake_clock === "false" && value.quake_frame_demand === "false" && value.quake_pending === "false";
+      return value !== undefined && idleWorkSettled(value);
     }, `${label} policy and animation settlement`);
     const before = (await current())!;
     const timerBudget = before.work_area_fallback === "true" ? 2 : 0;
