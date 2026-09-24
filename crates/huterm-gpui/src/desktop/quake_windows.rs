@@ -249,6 +249,7 @@ impl Presentation {
     }
     fn request(&mut self, visible: bool, restore_focus: bool) {
         self.model.request(visible, restore_focus, Instant::now());
+        self.work.failure.clear();
         self.generation.set(self.model.revision);
         self.work.invalidate();
         self.work.wake.signal();
@@ -796,6 +797,13 @@ fn step(
     cx: &mut Context<'_, WorkspaceView>,
 ) -> Option<NativeEffect> {
     let now = Instant::now();
+    if view
+        .quake
+        .as_ref()
+        .is_some_and(|state| state.work.failure.blocked(now))
+    {
+        return None;
+    }
     let native_idle = view.native_transition_idle();
     let state = view.quake.as_mut()?;
     if state.detach_requested && state.stage == Stage::Idle && !state.recovering
@@ -821,6 +829,7 @@ fn step(
         return None;
     }
     let platform = cx.global::<Desktop>().quake.platform.clone()?;
+    let epoch = state.work.signal.epoch();
     let flags = state.work.signal.take();
     let native = state.native.clone();
     let facts = (|| -> anyhow::Result<policy::Facts> {
@@ -884,6 +893,7 @@ fn step(
             }
         }
     }
+    let flags = state.work.signal.current_flags(flags, epoch);
     let frame = state.work.take_frame(now, flags);
     let revision = state.model.revision;
     let decision = state.model.decide(facts, now, frame);
@@ -900,6 +910,10 @@ fn step(
             ));
         }
     };
+    state.work.failure.sampled(!decision.actions.is_empty());
+    if decision.continuation {
+        state.work.wake.signal();
+    }
     if decision.settled {
         state.reporter = None;
     }
@@ -1165,7 +1179,7 @@ pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfocus_observations={}\nsampled_active={}\nsampled_blurred={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfocus_observations={}\nquake_policy_deadline={}\nsampled_active={}\nsampled_blurred={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
@@ -1173,6 +1187,7 @@ pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
         state.native.active()?,
         state.activation.seen,
         state.focus_observations,
+        state.model.next_deadline(Instant::now()).is_some(),
         state.sampled_focus.is_some_and(|(active, _)| active),
         state.sampled_focus.is_some_and(|(_, blurred)| blurred),
         state.native.fullscreen()?,

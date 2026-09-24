@@ -129,6 +129,7 @@ pub(in crate::desktop) struct Decision {
     pub actions: Vec<Action>,
     pub sample: Option<Sample>,
     pub settled: bool,
+    pub continuation: bool,
 }
 #[expect(
     clippy::struct_excessive_bools,
@@ -233,6 +234,9 @@ impl Model {
         now: Instant,
         frame: bool,
     ) -> Result<Decision, String> {
+        if self.native_paused && facts.native_idle {
+            self.transition.pause(now);
+        }
         self.native_paused = !facts.native_idle;
         self.observed_fullscreen = facts.fullscreen;
         self.activation.observe(
@@ -385,6 +389,9 @@ impl Model {
             }
             Stage::Windowed | Stage::SettleHidden | Stage::Idle => {}
         }
+        result.continuation = self.detach_requested
+            && self.stage == Stage::Idle
+            && !self.recovering;
         Ok(result)
     }
 }
@@ -442,6 +449,52 @@ mod tests {
             busy: false,
         };
         (model, facts)
+    }
+    #[test]
+    fn quiet_settlement_requests_detach_continuation_without_native_effect() {
+        let now = Instant::now();
+        let (mut model, facts) = visible(now);
+        model.regular = true;
+        model.detach_requested = true;
+        model.stage = Stage::SettleVisible;
+        let result = model.decide(facts, now, false).unwrap();
+        assert!(result.actions.is_empty());
+        assert_eq!(model.next_deadline(now), None);
+        assert!(
+            result.continuation,
+            "quiet settlement must schedule the detach pass"
+        );
+    }
+    #[test]
+    fn native_pause_resume_preserves_progress_and_failure_deadline() {
+        let now = Instant::now();
+        let (mut model, mut facts) = visible(now);
+        model.request(false, false, now);
+        model.decide(facts, now, false).unwrap();
+        model.decide(facts, now, false).unwrap();
+        model.decide(facts, now, false).unwrap();
+        let sampled = now + Duration::from_millis(30);
+        let progress = model
+            .decide(facts, sampled, true)
+            .unwrap()
+            .sample
+            .unwrap()
+            .progress;
+        let deadline = model.deadline;
+        facts.native_idle = false;
+        model.decide(facts, sampled, false).unwrap();
+        facts.native_idle = true;
+        let resumed = model
+            .decide(facts, sampled + Duration::from_secs(1), true)
+            .unwrap()
+            .sample
+            .unwrap()
+            .progress;
+        assert!(
+            (resumed - progress).abs() < f64::EPSILON,
+            "native pause advanced animation: {progress} -> {resumed}"
+        );
+        assert_eq!(model.deadline, deadline);
     }
     #[test]
     fn settled_visible_and_hidden_have_no_policy_deadline() {

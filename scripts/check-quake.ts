@@ -141,6 +141,37 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   };
   const state = async () => parseState(await readFile(join(directory, "state"), "utf8"));
   const current = async () => profile(await state(), "default");
+  const checkIdle = async (label: string) => {
+    await waitFor(async () => {
+      const value = await current();
+      return value?.stage === "Idle" && value.quake_policy_deadline === "false" &&
+        value.quake_clock === "false" && value.quake_frame_demand === "false";
+    }, `${label} policy and animation settlement`);
+    const before = (await current())!;
+    const timerBudget = before.work_area_fallback === "true" ? 2 : 0;
+    // Observe elapsed time beyond the former pump and the 1s work-area period.
+    // Legitimate native facts may still arrive; only periodic sources are bounded.
+    await Bun.sleep(1100);
+    const after = (await current())!;
+    const counter = (value: State, name: string) => {
+      const raw = value[name];
+      const count = Number(raw);
+      if (!raw || !Number.isSafeInteger(count) || count < 0) throw new Error(`${label} invalid ${name}: ${raw}`);
+      return count;
+    };
+    const delta = (name: string) => {
+      const change = counter(after, name) - counter(before, name);
+      if (change < 0) throw new Error(`${label} counter reset: ${name}`);
+      return change;
+    };
+    const timers = delta("quake_timer_fires");
+    if (timers > timerBudget) throw new Error(`${label} idle timer fires ${timers}, budget ${timerBudget}`);
+    for (const counter of ["quake_window_frames", "quake_native_frames"]) {
+      if (delta(counter) !== 0) throw new Error(`${label} idle frames: ${counter} ${before[counter]} -> ${after[counter]}`);
+    }
+    console.log(`QUAKE_IDLE ${label} timer_fires=${timers} periodic_frames=0 fact_wakes=${delta("quake_fact_wakes")} observation_ms=1100`);
+  };
+
   const traceFile = join(directory, "trace.jsonl");
   const traceCursor = async () => (await readQuakeTrace(traceFile)).length;
   const completedTrace = async (cursor: number, desired: boolean, name = "default") => {
@@ -189,6 +220,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await hotkey();
     await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && value.active === "true" && !!value.text?.includes("READY:"); }, "global summon from external app");
     await checkLayout(false);
+    await checkIdle("visible");
     const first = (await current())!;
     await checkStackingState(first, false);
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
@@ -243,12 +275,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       return value?.quake_timer === "false" && value.quake_clock === "false" &&
         value.quake_frame_demand === "false" && value.work_area_fallback === "false";
     }, "hidden quake releases timers and animation clocks");
-    const quiet = Number((await current())?.focus_observations);
-    // Elapsed time is the assertion boundary: exceed the former 16ms pump and
-    // the visible-only 1s work-area fallback, while the publisher only reads.
-    await Bun.sleep(1100);
-    if (Number((await current())?.focus_observations) !== quiet) throw new Error("hidden quake reconciled without an event during idle observation");
-    console.log("QUAKE_IDLE hidden timers=0 clocks=0 passes=0 observation_ms=1100");
+    await checkIdle("hidden");
 
     if ((await current())?.terminal_visible !== "false") throw new Error("hidden terminal remains active for snapshots");
     await hotkey();

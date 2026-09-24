@@ -27,11 +27,13 @@ pub(super) type SharedObserver = Rc<RefCell<Weak<Hub>>>;
 pub(crate) struct Observer(Rc<Subscription>);
 struct Subscription {
     window: Window,
-    hub: Rc<Hub>,
+    hub: Option<Rc<Hub>>,
 }
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.hub.send(Command::Remove(self.window.id));
+        if let Some(hub) = &self.hub {
+            hub.send(Command::Remove(self.window.id));
+        }
     }
 }
 pub(super) struct Hub {
@@ -82,11 +84,26 @@ impl Drop for Hub {
     }
 }
 impl Window {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "shared platform observation contract; X11 retains failed-state fallback"
+    )]
     pub fn observe(
         &self,
         signal: Signal,
         platform: &Platform,
     ) -> anyhow::Result<Observer> {
+        let hub = registration_or_fallback(self.register(signal, platform));
+        Ok(Observer(Rc::new(Subscription {
+            window: self.clone(),
+            hub,
+        })))
+    }
+    fn register(
+        &self,
+        signal: Signal,
+        platform: &Platform,
+    ) -> anyhow::Result<Rc<Hub>> {
         let existing = platform
             .observer
             .borrow()
@@ -107,11 +124,24 @@ impl Window {
                 anyhow::anyhow!("X11 observer stopped during registration")
             })?
             .map_err(anyhow::Error::msg)?;
-        Ok(Observer(Rc::new(Subscription {
-            window: self.clone(),
-            hub,
-        })))
+        Ok(hub)
     }
+}
+fn registration_or_fallback(
+    result: anyhow::Result<Rc<Hub>>,
+) -> Option<Rc<Hub>> {
+    match result {
+        Ok(hub) => Some(hub),
+        Err(error) => {
+            eprintln!(
+                "Quake X11 observer registration failed: {error:#}; using bounded native-state fallback"
+            );
+            None
+        }
+    }
+}
+fn observer_failed(hub: Option<&Hub>) -> bool {
+    hub.is_none_or(|hub| hub.failed.load(Ordering::Acquire))
 }
 #[expect(
     clippy::too_many_lines,
@@ -265,7 +295,7 @@ fn observe_events(
 }
 impl Observer {
     pub fn failed(&self) -> bool {
-        self.0.hub.failed.load(Ordering::Acquire)
+        observer_failed(self.0.hub.as_deref())
     }
     #[expect(
         clippy::unused_self,
@@ -325,5 +355,21 @@ impl Observer {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn registration_errors_retain_explicit_fallback_state() {
+        for message in [
+            "connect failed",
+            "RandR subscription failed",
+            "window mask rejected",
+        ] {
+            let hub = registration_or_fallback(Err(anyhow::anyhow!(message)));
+            assert!(observer_failed(hub.as_deref()));
+        }
     }
 }

@@ -21,6 +21,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
     super::run_with_startup(move |cx| {
         cx.spawn(async move |cx| {
             let deadline = Instant::now() + Duration::from_secs(90);
+            let mut last_progress = String::new();
             loop {
                 let result = cx.update(|cx| advance(cx, tabs, windows, quake, hidden));
                 match result.and_then(std::convert::identity) {
@@ -30,9 +31,15 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         println!("huterm-idle ready windows={windows} tabs_per_window={tabs} adapters={adapters}");
                         break;
                     }
-                    Ok(None) if Instant::now() < deadline => {}
+                    Ok(None) if Instant::now() < deadline => {
+                        let progress = cx.update(startup_progress).unwrap_or_else(|error| format!("progress error: {error}"));
+                        if progress != last_progress {
+                            eprintln!("huterm-idle startup: {progress}");
+                            last_progress = progress;
+                        }
+                    }
                     result => {
-                        eprintln!("huterm-idle startup failed: {result:?}");
+                        eprintln!("huterm-idle startup failed: {result:?}; last progress: {last_progress}");
                         let _ = cx.update(|cx| cx.quit());
                         break;
                     }
@@ -42,6 +49,55 @@ pub(crate) fn run() -> anyhow::Result<()> {
             }
         }).detach();
     })
+}
+
+fn visibility_command(hidden: bool) -> &'static str {
+    if hidden { "hide_quake" } else { "show_quake" }
+}
+fn startup_progress(cx: &mut App) -> String {
+    let mut states = vec![format!(
+        "pending_spawns={}",
+        cx.global::<Desktop>().pending_spawns
+    )];
+    for handle in cx.windows() {
+        let state = handle.update(cx, |root, _, cx| {
+            let Ok(root) = root.downcast::<WorkspaceView>() else {
+                return "no workspace root".into();
+            };
+            let view = root.read(cx);
+            let terminal = view.active_view().map_or_else(
+                || "none".into(),
+                |terminal| terminal_progress(terminal.read(cx)),
+            );
+            format!(
+                "tabs={} busy={} status={:?} active=[{terminal}]",
+                view.tabs.len(),
+                view.busy,
+                view.status
+            )
+        });
+        states.push(
+            state.unwrap_or_else(|error| format!("window error: {error}")),
+        );
+    }
+    states.join("; ")
+}
+
+fn terminal_progress(terminal: &super::TerminalView) -> String {
+    let text = terminal.snapshot.as_ref().map(|snapshot| {
+        snapshot
+            .cells()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+    });
+    format!(
+        "visible={} exited={} failed={} snapshot_sequence={} text={:?}",
+        terminal.visible,
+        terminal.exited,
+        terminal.failed,
+        terminal.snapshot_sequence,
+        text.map(|text| text.chars().take(100).collect::<String>())
+    )
 }
 
 fn advance(
@@ -114,7 +170,7 @@ fn advance(
             Ok::<_, anyhow::Error>((ready && !view.busy, view.tabs.len(), None))
         })??;
         if let Some(profile) = ready.2 {
-            invoke_profile(cx, "hide_quake", &profile)?;
+            invoke_profile(cx, visibility_command(hidden), &profile)?;
             return Ok(None);
         }
         if !ready.0 {
@@ -234,4 +290,14 @@ fn invoke_profile(
         None,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fixture_visibility_command_matches_requested_state() {
+        assert_eq!(visibility_command(false), "show_quake");
+        assert_eq!(visibility_command(true), "hide_quake");
+    }
 }
