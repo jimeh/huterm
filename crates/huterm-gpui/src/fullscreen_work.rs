@@ -1,23 +1,19 @@
-//! Coalesced fullscreen work, independent of display frames.
-use std::cell::{Cell, RefCell};
-use std::future::Future;
-use std::rc::Rc;
-use std::time::Instant;
-
+//! Fullscreen ownership and diagnostics around shared deferred work.
+pub(crate) use crate::deferred_work::run;
 use gpui::{App, Task};
+use std::{cell::Cell, rc::Rc, time::Instant};
 
-#[derive(Clone)]
-pub(crate) struct Wake(Rc<State>);
-struct State {
-    sender: async_channel::Sender<()>,
-    stopped: Cell<bool>,
-    deadline: Cell<Option<Instant>>,
-    timer: RefCell<Option<Task<()>>>,
-    diagnostics: bool,
+#[derive(Default)]
+struct Counters {
+    enabled: bool,
     passes: Cell<u64>,
-    timer_fires: Cell<u64>,
+    timers: Cell<u64>,
 }
-
+#[derive(Clone)]
+pub(crate) struct Wake {
+    inner: crate::deferred_work::Wake,
+    counters: Rc<Counters>,
+}
 pub(crate) struct Work {
     pub wake: Wake,
     pub receiver: Option<async_channel::Receiver<()>>,
@@ -25,22 +21,24 @@ pub(crate) struct Work {
     /// Construction outcome, never inferred from later adapter removal.
     pub fallback: bool,
 }
-
 impl Work {
     pub fn new(fallback: bool) -> Self {
-        let (sender, receiver) = async_channel::bounded(1);
+        let counters = Rc::new(Counters {
+            enabled: std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
+                || std::env::var_os("HUTERM_FULLSCREEN_STATS").is_some(),
+            ..Counters::default()
+        });
+        let observed = Rc::downgrade(&counters);
+        let (inner, receiver) =
+            crate::deferred_work::Wake::new(Some(Rc::new(move || {
+                if let Some(counters) = observed.upgrade()
+                    && counters.enabled
+                {
+                    counters.timers.set(counters.timers.get() + 1);
+                }
+            })));
         Self {
-            wake: Wake(Rc::new(State {
-                sender,
-                stopped: Cell::new(false),
-                deadline: Cell::new(None),
-                timer: RefCell::new(None),
-                diagnostics: std::env::var_os("HUTERM_FULLSCREEN_SMOKE")
-                    .is_some()
-                    || std::env::var_os("HUTERM_FULLSCREEN_STATS").is_some(),
-                passes: Cell::new(0),
-                timer_fires: Cell::new(0),
-            })),
+            wake: Wake { inner, counters },
             receiver: Some(receiver),
             task: None,
             fallback,
@@ -53,105 +51,33 @@ impl Drop for Work {
     }
 }
 impl Wake {
-    /// Sending only schedules the receiver; it never runs window code inline.
     pub fn signal(&self) {
-        if !self.0.stopped.get() {
-            let _ = self.0.sender.try_send(());
-        }
+        self.inner.signal();
     }
     pub fn stop(&self) {
-        self.0.stopped.set(true);
-        self.0.sender.close();
-        self.0.deadline.set(None);
-        self.0.timer.borrow_mut().take();
+        self.inner.stop();
+    }
+    pub fn arm(&self, deadline: Option<Instant>, cx: &App) {
+        self.inner.arm(deadline, cx);
     }
     pub fn passed(&self) {
-        if self.0.diagnostics {
-            self.0.passes.set(self.0.passes.get() + 1);
+        if self.counters.enabled {
+            self.counters.passes.set(self.counters.passes.get() + 1);
         }
     }
     pub fn counters(&self) -> (u64, u64, bool) {
         (
-            self.0.passes.get(),
-            self.0.timer_fires.get(),
-            self.0.deadline.get().is_some(),
+            self.counters.passes.get(),
+            self.counters.timers.get(),
+            self.inner.armed(),
         )
     }
-    pub fn arm(&self, deadline: Option<Instant>, cx: &App) {
-        if self.0.stopped.get() {
-            return;
-        }
-        // An earlier armed deadline may harmlessly re-evaluate a later target.
-        // Retaining it avoids timer churn under coalesced geometry events.
-        if keep_timer(self.0.deadline.get(), deadline) {
-            return;
-        }
-        self.0.timer.borrow_mut().take();
-        self.0.deadline.set(deadline);
-        if let Some(deadline) = deadline {
-            let weak = Rc::downgrade(&self.0);
-            let timer = cx
-                .background_executor()
-                .timer(deadline.saturating_duration_since(Instant::now()));
-            *self.0.timer.borrow_mut() =
-                Some(cx.foreground_executor().spawn(async move {
-                    timer.await;
-                    if let Some(state) = weak.upgrade() {
-                        state.deadline.set(None);
-                        if state.diagnostics {
-                            state.timer_fires.set(state.timer_fires.get() + 1);
-                        }
-                        Wake(state).signal();
-                    }
-                }));
-        }
-    }
 }
-
-fn keep_timer(armed: Option<Instant>, requested: Option<Instant>) -> bool {
-    match (armed, requested) {
-        (Some(armed), Some(requested)) => armed <= requested,
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-/// A pass consumes its wake before reconciliation, preserving concurrent signals.
-/// Every continuation crosses the same foreground executor boundary as native work.
-pub(crate) async fn run<F: Future<Output = ()>>(
-    wakes: async_channel::Receiver<()>,
-    mut reconcile: impl FnMut() -> Option<bool>,
-    mut later_turn: impl FnMut() -> F,
-) {
-    while wakes.recv().await.is_ok() {
-        let Some(continuation) = reconcile() else {
-            return;
-        };
-        if continuation || !wakes.is_empty() {
-            later_turn().await;
-        }
-        if continuation {
-            // The producer may already have filled the one-slot channel.
-            // Reconcile directly on this later turn without discarding that wake.
-            loop {
-                if wakes.is_closed() {
-                    return;
-                }
-                let Some(more) = reconcile() else {
-                    return;
-                };
-                if !more {
-                    break;
-                }
-                later_turn().await;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deferred_work::keep_timer;
+    use std::future::Future;
     use std::task::{Context, Poll, Waker};
     use std::time::Duration;
 
@@ -205,7 +131,7 @@ mod tests {
         wake.stop();
         assert!(task.as_mut().poll(&mut cx).is_ready());
         wake.signal();
-        assert!(wake.0.sender.is_closed());
+        assert!(wake.inner.sender().is_closed());
     }
 
     #[test]

@@ -69,7 +69,7 @@ resources = [{ src = "crates/huterm-gpui/themes", target = "themes" }, { src = "
 [package.metadata.packager.macos]
 entitlements = "assets/macos/Huterm.entitlements"
 infoPlistPath = "assets/macos/Info.plist"
-minimumSystemVersion = "10.15.7"
+minimumSystemVersion = "14.0"
 
 [[package.metadata.packager.binaries]]
 path = "huterm"

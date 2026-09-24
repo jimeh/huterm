@@ -1,8 +1,9 @@
 # macOS 14 compatibility cleanup
 
-Status: audited on 2026-09-23. The minimum-version change is approved for the
-[Quake scheduling work](quake-event-scheduling.md). Items below are tracked
-work, not a claim that the cleanup has been implemented.
+Status: first-party policy and cleanup implemented with the
+[Quake scheduling work](quake-event-scheduling.md) on 2026-09-24. Package fixtures,
+macOS compilation, and native fullscreen/Quake smokes pass. Universal package
+slice verification remains a delivery check. Vendored cleanup stays deferred.
 
 ## Minimum-version policy
 
@@ -23,15 +24,15 @@ active Quake animation and preserve GPUI's existing frame ownership.
 
 ## First-party cleanup in this PR
 
-After enforcing the new minimum, remove two availability branches in
+The new minimum removes two availability branches in
 [`native_fullscreen.rs`](../../crates/huterm-gpui/src/native_fullscreen.rs):
 
 - `screen_safe_area` checks `respondsToSelector: safeAreaInsets`. The getter is
   available since macOS 12, so a valid `NSScreen` on a supported system always
-  implements it. Remove the selector check and update its safety comment.
+  implements it. The selector check is removed and its safety comment updated.
 - `screen_notch_shelves` checks `respondsToSelector: auxiliaryTopLeftArea`.
-  Both auxiliary-area getters are available since macOS 12. Remove the selector
-  check and revise the comment describing an unavailable API.
+  Both auxiliary-area getters are available since macOS 12. The selector
+  check is removed and the availability comment revised.
 
 Keep their nil-screen handling and empty notch-area handling. Hidden/offscreen
 windows and display removal can leave a window without a screen; displays

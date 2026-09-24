@@ -9,6 +9,7 @@ pub(crate) mod native;
 #[cfg(target_os = "macos")]
 #[path = "quake/macos.rs"]
 pub(crate) mod native;
+pub(crate) mod observation;
 
 pub(crate) use huterm_config::quake::{Animation, Config, Position, Profile};
 
@@ -136,6 +137,14 @@ impl Transition {
         .clamp(0.0, 1.0);
         self.sampled = now;
         self.progress
+    }
+    pub fn end_at(&self, duration: Duration) -> Instant {
+        let remaining = if self.target {
+            1.0 - self.progress
+        } else {
+            self.progress
+        };
+        self.sampled + duration.mul_f64(remaining)
     }
     pub fn elapsed_since_sample(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.sampled)

@@ -731,7 +731,13 @@ Invalidate deferred non-native work in the notification callback itself, then
 signal the window-owned coalesced wake to reconcile mode on a later turn.
 Fullscreen scheduling uses events and one earliest-deadline timer; only macOS
 windows created without a native adapter retain fallback polling. Keep the
-separate global Quake pump independent. AppKit setters and presentation cleanup,
+Quake and ordinary fullscreen state owners separate, sharing only coalesced wake
+and earliest-deadline mechanics. Each Quake presentation owns its observers and
+pending work; animations use the shared workspace frame registration and an
+active-only target-display clock or refresh-derived fallback. Hidden healthy
+Quake owners have no periodic work; macOS visible non-fullscreen profiles retain
+a one-second work-area safety sample for external Dock changes. AppKit setters
+and presentation cleanup,
 including unexpected view release, run outside GPUI update borrows.
 Observe queued native notifications and the current fullscreen flag before
 accepting a toggle; dispatch effects only after that intent is accepted. Native

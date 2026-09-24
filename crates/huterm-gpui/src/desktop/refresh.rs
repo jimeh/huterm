@@ -73,13 +73,14 @@ pub(super) trait Animated: Sized + 'static {
     fn advance_animation(
         &mut self,
         now: Instant,
+        frame: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     );
 }
 
 type AnimationTick =
-    Rc<dyn Fn(Instant, &mut Window, &mut App) -> AnimationSchedule>;
+    Rc<dyn Fn(Instant, bool, &mut Window, &mut App) -> AnimationSchedule>;
 
 struct Animation {
     id: EntityId,
@@ -173,14 +174,15 @@ impl FrameClock {
         {
             entry.schedule = schedule;
         } else {
-            let tick =
-                Rc::new(move |now, window: &mut Window, cx: &mut App| {
+            let tick = Rc::new(
+                move |now, frame, window: &mut Window, cx: &mut App| {
                     view.update(cx, |view, cx| {
-                        view.advance_animation(now, window, cx);
+                        view.advance_animation(now, frame, window, cx);
                         view.animation_schedule(now)
                     })
                     .unwrap_or_default()
-                });
+                },
+            );
             animations.push(Animation { id, schedule, tick });
         }
         drop(animations);
@@ -277,7 +279,7 @@ impl FrameClock {
             .map(|entry| (entry.id, Rc::clone(&entry.tick)))
             .collect();
         for (id, tick) in due {
-            let schedule = tick(now, window, cx);
+            let schedule = tick(now, frame, window, cx);
             if let Some(entry) = self
                 .animations
                 .borrow_mut()

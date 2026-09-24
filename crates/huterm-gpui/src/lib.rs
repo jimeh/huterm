@@ -11,6 +11,8 @@ mod commands;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod deferred_work;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod file_drop;
@@ -208,7 +210,7 @@ mod package_tests {
         assert_eq!(packager["binaries"][0]["main"].as_bool(), Some(true));
         assert_eq!(
             packager["macos"]["minimumSystemVersion"].as_str(),
-            Some("10.15.7")
+            Some("14.0")
         );
         assert!(packager["macos"].get("frameworks").is_none());
         assert!(packager["resources"].as_array().is_some_and(|resources| {

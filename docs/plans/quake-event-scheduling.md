@@ -1,7 +1,9 @@
 # Quake event scheduling
 
 Status: reviewed follow-up to merged PR #157 (`d96b832`). Codex and Claude
-Opus 5.5 at high effort agree on this plan. Implementation has not started.
+Opus 5.5 at high effort agree on this plan. The implementation and focused
+macOS/Linux validation are complete; delivery checks and comparative measurements
+remain.
 
 ## Outcome and scope
 
@@ -310,3 +312,23 @@ and fade-from-zero, including in the existing Linux compositor harness.
 - Which physical 60 Hz, 120 Hz, and multi-display cases are available during
   the fresh comparison? Record coverage limits rather than substitute VM
   timing.
+
+## Implemented platform fallback boundaries
+
+The notification audit found no public AppKit notification dedicated to every
+external Dock `visibleFrame` change. The implementation retains a one-second
+work-area sample only for visible, non-fullscreen Quake profiles. Hidden owners
+have no work-area timer: summon samples current geometry before entry, while
+display/Space notifications and Huterm lease mutations still invalidate them.
+This is an explicit exception to zero periodic idle work for those visible
+profiles, and the comparative idle measurements must include it.
+
+X11 uses one private event connection and worker shared by live Quake owners.
+Its event batches are bounded and cancellation wakes its descriptor wait. A
+connection failure reports diagnostics and enables a one-second safety sample
+for affected owners, rather than leaving a dead observer silently idle.
+
+The existing native fullscreen adapter remains the transition mutation gate.
+The Quake observer requests reconciliation; its own lifecycle gate is used
+only if the ordinary adapter is unavailable. Native effects and clock
+installation run after GPUI borrows end.

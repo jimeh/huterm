@@ -4,6 +4,8 @@
     clippy::unnecessary_wraps,
     reason = "platform adapter methods share the fallible X11 contract"
 )]
+#[path = "macos_observer.rs"]
+mod observer;
 use super::{Display, Rect};
 use anyhow::{Context as _, ensure};
 use gpui::{Bounds, Window as GpuiWindow, point, size};
@@ -12,6 +14,7 @@ use objc::{
     runtime::{BOOL, Class, NO, Object, YES},
     sel, sel_impl,
 };
+pub(crate) use observer::{Observer, work_area_changed};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     ffi::{CStr, c_void},

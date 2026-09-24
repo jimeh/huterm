@@ -15,6 +15,8 @@ manual visual/input evidence remains before the milestone is complete.
 
 ## Installation
 
+macOS builds require macOS 14.0 or later.
+
 Releases provide a universal macOS app plus native Linux x86_64 and aarch64
 builds. Each Linux architecture has an AppImage for direct launch and a neutral
 binary tarball for manual installation. The tarball contains no AppImage runtime

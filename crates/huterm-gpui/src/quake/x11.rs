@@ -1,4 +1,7 @@
 //! X11 window effects use a private connection; no GPUI or PTY callbacks run here.
+#[path = "x11_observer.rs"]
+mod observer;
+pub(crate) use observer::Observer;
 use std::rc::Rc;
 
 use super::{Display, Rect};
@@ -22,6 +25,7 @@ use x11rb::{
 pub(crate) struct Platform {
     connection: Rc<RustConnection>,
     root: u32,
+    observer: observer::SharedObserver,
 }
 #[derive(Clone)]
 pub(crate) struct Window {
@@ -38,6 +42,7 @@ impl Platform {
         Ok(Self {
             connection: Rc::new(connection),
             root,
+            observer: Rc::default(),
         })
     }
     fn atom(&self, name: &[u8]) -> anyhow::Result<u32> {

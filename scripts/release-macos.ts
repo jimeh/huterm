@@ -24,7 +24,7 @@ const entitlementPath = join(repoRoot, "assets/macos/Huterm.entitlements");
 const sparklePublicKeyPath = join(repoRoot, "assets/macos/SparklePublicKey");
 
 export const sparkleFeedUrl = "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml";
-export const minimumMacosVersion = "10.15.7";
+export const minimumMacosVersion = "14.0";
 const sparkleFrameworkRelative = "Contents/Frameworks/Sparkle.framework";
 const sparkleVersionRelative = `${sparkleFrameworkRelative}/Versions/B`;
 
@@ -379,6 +379,24 @@ async function verifyUniversalBinary(binary: string): Promise<void> {
   await runCaptured("lipo", [binary, "-verify_arch", "x86_64"]);
 }
 
+export function validateMachOMinimum(output: string, architecture: string): void {
+  const versions = [...output.matchAll(/^\s*minos\s+(\S+)\s*$/gm)].map(match => match[1]!);
+  const platforms = [...output.matchAll(/^\s*platform\s+(\S+)\s*$/gm)].map(match => match[1]!);
+  const normalized = (version: string) => version.replace(/(?:\.0)+$/, "");
+  if (versions.length !== 1 || platforms.length !== 1 || platforms[0] !== "MACOS"
+    || normalized(versions[0]!) !== normalized(minimumMacosVersion)) {
+    throw new Error(`Huterm ${architecture} Mach-O minimum must be macOS ${minimumMacosVersion}; observed ${versions.join(",") || "missing"}`);
+  }
+}
+
+async function verifyHutermMinimum(bundlePath: string): Promise<void> {
+  const binary = join(bundlePath, "Contents/MacOS/huterm");
+  for (const architecture of ["arm64", "x86_64"]) {
+    const result = await runCaptured("vtool", ["-arch", architecture, "-show-build", binary]);
+    validateMachOMinimum(result.stdout, architecture);
+  }
+}
+
 async function verifySparkleFramework(bundlePath: string): Promise<void> {
   const framework = join(bundlePath, sparkleFrameworkRelative);
   await requireSymlink(join(framework, "Versions/Current"), "B");
@@ -425,6 +443,7 @@ async function verifyPackageConfiguration(bundlePath: string, expectedVersion?: 
   validateEntitlements(await readPlist(entitlementPath));
   const version = expectedVersion ?? String(info.CFBundleShortVersionString);
   validateUpdatePlist(info, version, await expectedSparklePublicKey());
+  await verifyHutermMinimum(bundlePath);
   await verifySparkleFramework(bundlePath);
   const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
   const dependencies = linkage.stdout.split(/\r?\n/).filter(line => /^\s+/.test(line)).join("\n");
@@ -443,6 +462,7 @@ async function verifyLocalPackageConfiguration(bundlePath: string, expectedVersi
   validateEntitlements(await readPlist(entitlementPath));
   const version = expectedVersion ?? String(info.CFBundleShortVersionString);
   validateLocalPackagePlist(info, version);
+  await verifyHutermMinimum(bundlePath);
   await assertAbsent(join(bundlePath, sparkleFrameworkRelative), "Sparkle framework");
   await assertAbsent(join(bundlePath, "Contents/Resources/Sparkle-LICENSE"), "Sparkle license");
   const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);

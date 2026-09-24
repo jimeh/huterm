@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import {
   assertPublicAssetMatches,
   parseDeveloperIdentity,
+  minimumMacosVersion,
   parseSimplePlist,
   privacyUsageDescriptions,
   releaseEntitlements,
@@ -14,6 +15,7 @@ import {
   updaterPlistValues,
   validateEntitlements,
   validateLocalPackagePlist,
+  validateMachOMinimum,
   validatePrivacyDescriptions,
   validateSignatureDetails,
   validateUpdatePlist,
@@ -67,7 +69,7 @@ test("package verification checks static linkage without rg and rejects failed i
       ...privacyUsageDescriptions,
       CFBundleShortVersionString: packageVersion,
       CFBundleVersion: packageVersion,
-      LSMinimumSystemVersion: "10.15.7",
+      LSMinimumSystemVersion: "14.0",
       SUFeedURL: "https://github.com/jimeh/huterm/releases/latest/download/appcast.xml",
       SUPublicEDKey: publicKey,
       SURequireSignedFeed: true,
@@ -79,6 +81,9 @@ test("package verification checks static linkage without rg and rejects failed i
     const otool = join(directory, "otool");
     await writeFile(otool, '#!/bin/bash\nprintf "%s" "$TEST_LINKAGE"\nexit "$TEST_OTOOL_EXIT"\n');
     await chmod(otool, 0o755);
+    const vtool = join(directory, "vtool");
+    await writeFile(vtool, "#!/bin/bash\nprintf 'platform MACOS\\nminos 14.0\\n'\n");
+    await chmod(vtool, 0o755);
     const lipo = join(directory, "lipo");
     await writeFile(lipo, "#!/bin/bash\nexit 0\n");
     await chmod(lipo, 0o755);
@@ -174,7 +179,7 @@ test("source bundle metadata and entitlements match the release contract", async
   const packagedInfo = {
     ...info,
     CFBundleShortVersionString: packageVersion,
-    LSMinimumSystemVersion: "10.15.7",
+    LSMinimumSystemVersion: "14.0",
   };
   expect(() => validateLocalPackagePlist(packagedInfo, packageVersion)).not.toThrow();
   expect(() => validateLocalPackagePlist({ ...packagedInfo, SUFeedURL: "https://example.invalid" }, packageVersion)).toThrow(
@@ -395,4 +400,20 @@ test("only publication references the updater key and receives attestation autho
     expect(workflow.slice(publishJob)).toContain(permission);
   }
   expect(workflow.slice(publishJob)).toContain("--predicate-type https://spdx.dev/Document/v2.3");
+});
+
+
+test("Huterm Mach-O deployment target agrees with the supported application floor", () => {
+  expect(() => validateMachOMinimum("platform MACOS\nminos 14.0\n", "arm64")).not.toThrow();
+  expect(() => validateMachOMinimum("platform MACOS\nminos 14.0.0\n", "x86_64")).not.toThrow();
+  for (const output of ["platform MACOS\nminos 11.0\n", "platform MACOS\nminos 15.0\n", "", "platform IOS\nminos 14.0\n", "platform MACOS\nminos 14.0\nminos 11.0\n"]) {
+    expect(() => validateMachOMinimum(output, "arm64")).toThrow("Mach-O minimum");
+  }
+});
+
+test("compiler and packager minimum versions match the runtime floor", async () => {
+  const compiler = await readFile(join(repoRoot, ".cargo/config.toml"), "utf8");
+  const manifest = await readFile(join(repoRoot, "Cargo.toml"), "utf8");
+  expect(compiler).toContain(`MACOSX_DEPLOYMENT_TARGET = { value = "${minimumMacosVersion}", force = true }`);
+  expect(manifest).toContain(`minimumSystemVersion = "${minimumMacosVersion}"`);
 });
