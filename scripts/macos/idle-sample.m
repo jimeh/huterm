@@ -25,21 +25,24 @@ static NSArray *windowVisibility(pid_t pid, NSArray<NSString *> *ids) {
     NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
     NSMutableArray *result = [NSMutableArray array];
     for (NSString *identifier in ids) {
-        BOOL visible = NO;
+        BOOL visible = NO, found = NO;
         for (NSDictionary *window in windows) {
             if ([window[(__bridge NSString *)kCGWindowOwnerPID] intValue] == pid
                 && [window[(__bridge NSString *)kCGWindowNumber] intValue] == identifier.intValue) {
+                found = YES;
                 visible = [window[(__bridge NSString *)kCGWindowIsOnscreen] boolValue];
                 break;
             }
         }
-        [result addObject:@{@"id":@(identifier.intValue), @"visible":@(visible)}];
+        [result addObject:@{@"id":@(identifier.intValue), @"found":@(found), @"visible":@(visible)}];
     }
     return result;
 }
 
 static BOOL expectedVisibility(NSArray *windows, BOOL hidden) {
-    for (NSDictionary *window in windows) if ([window[@"visible"] boolValue] == hidden) return NO;
+    for (NSDictionary *window in windows) {
+        if (![window[@"found"] boolValue] || [window[@"visible"] boolValue] == hidden) return NO;
+    }
     return YES;
 }
 

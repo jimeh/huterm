@@ -131,7 +131,8 @@ async function main(): Promise<void> {
   await runWithCleanup(async () => {
     for (let repeat = 0; repeat < repeats; repeat++) for (const windowCount of windows) for (const tabCount of tabs) for (const presentation of presentations) for (const visibility of ["visible", "hidden"]) {
       for (const arm of armOrder(arms, repeat + windows.indexOf(windowCount) + tabs.indexOf(tabCount))) {
-        if (presentation === "quake" && arm.force_fallback) throw new Error("forced fullscreen fallback is an ordinary-window control only");
+        // Forced fullscreen fallback is an ordinary-window control only.
+        if (presentation === "quake" && arm.force_fallback) continue;
         const directory = await mkdtemp(join(artifacts, "run-"));
         const shell = join(directory, "shell");
         await writeFile(shell, "#!/bin/sh\nprintf 'HUTERM_IDLE_READY\\n'\nwhile IFS= read -r line; do :; done\n");
