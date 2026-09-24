@@ -2513,6 +2513,7 @@ dependencies = [
  "huterm-protocol",
  "libghostty-vt",
  "libghostty-vt-sys",
+ "memchr",
  "nix 0.29.0",
  "portable-pty",
  "thiserror 2.0.20",

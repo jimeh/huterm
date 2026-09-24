@@ -13,6 +13,7 @@ libghostty-vt = { version = "=0.2.1", default-features = false }
 libghostty-vt-sys = { version = "=0.2.1" }
 async-channel.workspace = true
 huterm-protocol.workspace = true
+memchr.workspace = true
 portable-pty.workspace = true
 thiserror.workspace = true
 url = "=2.5.8"
