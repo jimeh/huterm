@@ -1,5 +1,7 @@
 # Development and validation
 
+macOS builds require macOS 14.0 or later.
+
 ## macOS prerequisites
 
 GPUI compiles Metal shaders as part of the macOS build. Install Xcode and make
@@ -351,6 +353,23 @@ height, sits at the bottom of that area, and the terminal starts directly under
 the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
 the same shelves from their own window. Without a notch, in windowed mode, or in
 native fullscreen the key is ignored.
+
+Quake presentation is driven by owned native observers and explicit deadlines.
+Animations share the workspace frame callback. On macOS 14+, an offscreen or
+unmapped animation uses a display link from its selected `NSScreen` until window
+frames arrive; stalled clocks use refresh-derived pacing only while animating.
+X11 uses one private cancellable event connection shared by Quake windows, with
+RandR timing for the active animation fallback. A missing refresh rate uses a
+reported 16 ms compatibility cadence.
+
+AppKit has no dedicated notification for every external Dock work-area change.
+Visible, non-fullscreen Quake profiles therefore resample the work area once a
+second. Hidden profiles release that timer and resample on summon; display,
+Space, and Huterm presentation-lease changes still wake them immediately.
+An X11 observer connection failure is reported and enables a one-second safety
+sample for its affected owners. Smoke inspection reports `work_area_fallback`,
+`quake_timer`, `quake_clock`, and `quake_frame_demand`; the state publisher never
+wakes production work.
 
 `[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
 `min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600

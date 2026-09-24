@@ -1405,8 +1405,12 @@ fn open_window_with_profile(
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
+                quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.refresh_tab_visibility(window, cx);
+                    if let Some(state) = &view.quake {
+                        state.wake();
+                    }
                     if view.layout_pending {
                         view.sync_tab_layout(window, cx);
                     }
@@ -1415,11 +1419,17 @@ fn open_window_with_profile(
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
+                    if let Some(state) = &view.quake {
+                        state.native_wake();
+                    }
                     view.refresh_tab_visibility(window, cx);
                 })
                 .detach();
                 cx.observe_window_bounds(window, |view, window, cx| {
                     view.fullscreen_work.wake.signal();
+                    if let Some(state) = &view.quake {
+                        state.native_wake();
+                    }
                     view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);
                     view.sync_tab_layout(window, cx);
@@ -1518,15 +1528,22 @@ impl refresh::Animated for WorkspaceView {
         {
             next = next.merge(AnimationSchedule::FRAME);
         }
+        if let Some(state) = &self.quake {
+            next = next.merge(state.frame_schedule());
+        }
         next
     }
 
     fn advance_animation(
         &mut self,
         now: Instant,
+        frame: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if frame && let Some(state) = &mut self.quake {
+            state.window_frame(now);
+        }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
         }

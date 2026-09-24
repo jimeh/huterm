@@ -40,7 +40,7 @@ export function updaterFixturePlist(): string {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.0.1</string>
   <key>CFBundleVersion</key><string>0.0.1</string>
-  <key>LSMinimumSystemVersion</key><string>10.15.7</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>SUFeedURL</key><string>https://updates.huterm.invalid/appcast.xml</string>
   <key>SUPublicEDKey</key><string>${fixturePublicKey}</string>
   <key>SURequireSignedFeed</key><true/>

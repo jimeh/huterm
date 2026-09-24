@@ -1137,3 +1137,127 @@ Physical notch checks passed on the built-in display. Multi-display migration,
 hotplug, and a native 60 Hz run remain untested for this change. Remaining polling
 includes the explicit no-adapter compatibility sampler, separate Quake pump,
 conditional macOS pointer probe, busy-runtime retries, and GPUI display-link work.
+
+## Quake event scheduling comparison (2026-09-24)
+
+PR #159 removes the separate global 16 ms Quake pump. The production baseline
+is `6200a9c`, before scheduler changes; the feature binary is `8e6ed85`. Both
+were rebuilt with the identical `idle_bench.rs` fixture from `8e6ed85`, using
+separate target directories. The baseline has no other source changes. Fixture
+hash, baseline patch, executable hashes, reports and per-process logs are retained
+under `target/bench/quake-checkpoint-2026-09-23/`.
+
+The fixture opens genuine Quake profiles with persistent shells and
+`hide_on_focus_loss=false`. It initializes each tab before measuring. During
+initialization only, it grants bounded snapshot credit through normal admission:
+AppKit sometimes reports a visible/key window as occluded and withholds frames,
+which stalled both baseline and feature startup. This credit ends before READY
+and does not change production pacing. The benchmark therefore does not validate
+production cold-start frame delivery under occlusion.
+
+Each sample measures five seconds after two seconds of settling. Two rounds
+alternate baseline/feature order across configurations and reverse it in the
+second round. The Mac15,8 M3 Max host ran macOS 27 with its built-in display at
+120 Hz, 2294 × 1490 logical points, scale 1. There were no concurrent builds or
+native smoke tests. Background host load remained variable: one-minute load
+ranged from 11.1–33.9 during ordinary controls and 26.1–46.6 during the stricter
+Quake run. CPU is a percentage of one logical core, not whole-machine use.
+
+The final comparison uses 32 ordinary-window samples from `paired-final.json`
+and 32 Quake samples from `paired-strict-quake.json`. All were valid and all
+processes exited through native Quit with code zero, without forced cleanup.
+The latter run uses sampler revision `bb036d2`, which requires every requested
+Quake window ID to exist and belong to the process before and after sampling.
+It replaces the initial Quake samples, whose hidden-window check could accept a
+missing ID. Smoke instrumentation is disabled in every performance arm.
+
+### Quake idle results
+
+Values are means of the two samples per arm and configuration.
+
+| Windows | Tabs/window | Visibility | CPU baseline / feature | Wakeups/s baseline / feature |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | visible | 2.171% / 1.206% | 179.3 / 122.8 |
+| 1 | 1 | hidden | 0.994% / 0.099% | 60.5 / 2.0 |
+| 1 | 50 | visible | 1.842% / 0.958% | 180.4 / 123.1 |
+| 1 | 50 | hidden | 1.040% / 0.087% | 60.1 / 2.3 |
+| 2 | 1 | visible | 2.580% / 1.734% | 300.0 / 244.3 |
+| 2 | 1 | hidden | 0.923% / 0.091% | 60.0 / 2.3 |
+| 2 | 50 | visible | 2.438% / 1.572% | 300.3 / 243.9 |
+| 2 | 50 | hidden | 1.239% / 0.098% | 59.8 / 2.1 |
+
+Hidden Quake CPU falls 90–92% and interrupt wakeups fall about 96%, from roughly
+60/s to 2.0–2.3/s. Visible CPU falls 33–48%; visible wakeups fall 19–32% but retain
+GPUI's display-link cost. The visible, non-fullscreen macOS work-area fallback
+still samples once per second per Quake window because public notifications do
+not cover every external Dock change. Healthy hidden owners have no periodic
+Quake work.
+
+Quake RSS spans about 110–433 MiB in baseline and 110–434 MiB in feature. Mean
+RSS differences per configuration are below 1.5 MiB, and mean post-sample thread
+counts differ by at most one. These measurements support no material memory or
+thread-count improvement. They also do not establish physical input latency.
+
+### Ordinary-window controls
+
+| Windows | Tabs/window | Visibility | CPU baseline / feature | Wakeups/s baseline / feature |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | visible | 0.852% / 0.859% | 121.4 / 121.5 |
+| 1 | 1 | hidden | 0.031% / 0.030% | 1.4 / 1.4 |
+| 1 | 50 | visible | 0.900% / 0.844% | 121.5 / 121.8 |
+| 1 | 50 | hidden | 0.035% / 0.065% | 1.6 / 1.7 |
+| 2 | 1 | visible | 1.199% / 1.298% | 241.8 / 242.5 |
+| 2 | 1 | hidden | 0.049% / 0.042% | 1.6 / 1.9 |
+| 2 | 50 | visible | 1.394% / 1.218% | 242.2 / 242.3 |
+| 2 | 50 | hidden | 0.055% / 0.075% | 2.1 / 2.0 |
+
+Ordinary wakeups remain approximately 121–122/s with one visible window and
+242/s with two. Hidden controls stay around 1.4–2.1/s. CPU varies in both
+directions, including a 0.10 percentage-point increase for two visible one-tab
+windows; it does not show a consistent regression. The unchanged ordinary
+terminal paths and overlapping individual samples support retaining the current
+pacing. The short runs and variable host load do not establish exact CPU parity.
+
+### Animation, latency and verification
+
+The final native 40-case Quake smoke includes intermediate slide/fade states,
+reversal, focus return, panel then app-switch behaviour, profile conversion,
+retained PTYs and cleanup. Its trace contains 8,984 consecutive within-transition
+Animate effect intervals below 100 ms, with a median of 8,333 µs; 8,756 are below
+12 ms. These are CPU-side native-effect timestamps, not physical presentation
+measurements. Docker X11 passed the same 40-case matrix, including mandatory
+intermediate geometry and compositor alpha checks.
+
+Two alternating baseline/feature rounds of ordinary echo, flood and scroll
+passed on feature ancestor `f83e1ce`. Later production changes are confined to
+Quake scheduling and opt-in diagnostics, so that evidence carries forward:
+
+| Metric | Baseline run summaries | Feature run summaries |
+| --- | --- | --- |
+| Echo output-to-applied snapshot, median | 185 / 134 µs | 202 / 131 µs |
+| Echo output-to-paint marker, median | 4,706 / 6,686 µs | 6,576 / 5,916 µs |
+| Flood snapshots/second | 115 / 120 | 120 / 120 |
+| Flood output-to-paint marker, median | 14,986 / 15,066 µs | 13,827 / 14,396 µs |
+| Scroll input-to-paint marker, p95 | 9,904 / 8,501 µs | 8,956 / 6,300 µs |
+
+All four scroll runs passed snapshot, paint, presentation, latency and queue
+budgets, with maximum in-flight and queued requests both one. These small
+comparisons show no material regression; they do not establish a statistically
+significant latency improvement.
+
+`mise run verify` passed on the initial implementation. Subsequent lifecycle
+corrections passed 43 focused macOS and 42 focused Linux Quake tests, Clippy,
+and both complete native smoke matrices. The paused-reversal regression failed
+at its intended assertion before the fix. Final script checks passed 477 tests.
+Idle smokes also reject self-wake loops and stale native display-link callbacks.
+They wait for actual timer disarm as well as expired policy deadlines before
+observing idle work; a hosted Linux failure exposed the distinction.
+A fresh universal package at `0ed2dd9` verified both executable slices and the
+bundle minimum as macOS 14.0; later changes do not alter packaging policy.
+
+Physical 60 Hz, multi-display migration, hotplug, external Dock changes, native
+Intel, and macOS 14 runtime coverage remain unavailable for this change. No VM
+was used. Real platform observer-registration failures were not injected end to
+end. Explicit failure backoff and X11 safety sampling remain; the native
+fullscreen compatibility sampler, conditional pointer probe, busy-runtime
+retries and GPUI display-link work are separate owners.

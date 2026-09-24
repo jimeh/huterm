@@ -1,4 +1,6 @@
 [env]
+# Match the macOS runtime API and packaged application minimum on both slices.
+MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = true }
 # All builds use the reviewed native source prepared by Mise.
 GHOSTTY_SOURCE_DIR = { value = ".native/ghostty/source", relative = true, force = true }
 # The source archive has no Git metadata. Do not discover Huterm's release tags.

@@ -15,7 +15,6 @@ pub(super) struct Registry {
     registrations: Option<hotkeys::Registrations>,
     windows: BTreeMap<String, AnyWindowHandle>,
     return_focus: Option<native::Focus>,
-    pump_running: bool,
     pub(super) failed_spawn: Option<(String, String)>,
     smoke_journal: Option<SmokeJournal>,
 }
@@ -27,7 +26,6 @@ impl Default for Registry {
             registrations: None,
             windows: BTreeMap::new(),
             return_focus: None,
-            pump_running: false,
             failed_spawn: None,
             smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
                 .map(|_| SmokeJournal::new()),
@@ -198,123 +196,38 @@ struct SmokeObservationDraft {
     opacity: f64,
     scheduler_gap: Duration,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage {
-    Prepare,
-    Activate,
-    Windowed,
-    Animate,
-    SettleVisible,
-    SettleHidden,
-    Idle,
-}
-
-#[derive(Default)]
-struct Activation {
-    seen: bool,
-    requested: bool,
-    next_retry: Option<Instant>,
-}
-const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-
-impl Activation {
-    fn request(&mut self) {
-        self.seen = false;
-        self.requested = true;
-        self.next_retry = None;
-    }
-
-    fn cancel(&mut self) {
-        self.requested = false;
-        self.next_retry = None;
-    }
-
-    /// Record an activation sample. `settled` means no native fullscreen
-    /// transition is unresolved and the observed fullscreen state matches the
-    /// target. Samples taken mid-transition are ignored: a window that is
-    /// still active while a Space exit begins must not cancel its Show, and
-    /// `AppKit` can revert an activation granted before the Space switch ends.
-    /// Once settled, a later app switch never re-arms retries.
-    fn observe(&mut self, active: bool, settled: bool) {
-        if !settled {
-            return;
-        }
-        if active {
-            self.seen = true;
-            self.cancel();
-        } else if self.seen {
-            self.cancel();
-        }
-    }
-
-    fn take_request(&mut self, now: Instant) -> bool {
-        if !std::mem::take(&mut self.requested) {
-            return false;
-        }
-        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
-        true
-    }
-
-    fn take_retry(&mut self, now: Instant, deadline: Instant) -> bool {
-        if self.seen || now >= deadline {
-            return false;
-        }
-        let Some(next_retry) = self.next_retry else {
-            return false;
-        };
-        if now < next_retry {
-            return false;
-        }
-        self.next_retry = Some(now + ACTIVATION_RETRY_INTERVAL);
-        true
-    }
-
-    fn refit(
-        &mut self,
-        stage: Stage,
-        deadline: Instant,
-        now: Instant,
-    ) -> Instant {
-        if stage == Stage::Idle {
-            self.cancel();
-            now + Duration::from_secs(3)
-        } else {
-            deadline
-        }
-    }
-}
-
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent focus, recovery, and presentation facts accompany the transition state"
-)]
+#[path = "quake_windows/policy.rs"]
+mod policy;
+#[path = "quake_windows/work.rs"]
+mod work;
+use policy::{Activation, Stage};
+pub(super) use work::start;
+use work::{WakeSource, Work};
 pub(super) struct Presentation {
     pub name: String,
     reporter: Option<WeakEntity<WorkspaceView>>,
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
-    profile: Profile,
-    display: Display,
-    regular: bool,
-    regular_bounds: Rect,
-    target: Rect,
-    transition: Transition,
-    stage: Stage,
-    deadline: Instant,
-    activation: Activation,
-    /// Pump iterations that have sampled focus; smokes use it as an ordering
-    /// boundary proving the hide rule ran after an observed key change.
+    model: policy::Model,
+    work: Work,
     focus_observations: u64,
-    suppress_blur: Instant,
-    last_display_check: Instant,
-    restore_focus: bool,
-    fade_supported: bool,
-    recovering: bool,
-    detach_requested: bool,
-    observed_fullscreen: bool,
+    sampled_focus: Option<(bool, bool)>,
     smoke_observations: bool,
 }
 impl Presentation {
+    pub(super) fn wake(&self) {
+        self.work.signal(WakeSource::View);
+    }
+    pub(super) fn native_wake(&self) {
+        self.work.signal(WakeSource::Native);
+    }
+    pub(super) fn frame_schedule(&self) -> AnimationSchedule {
+        self.work.frame_schedule()
+    }
+    pub(super) fn window_frame(&mut self, now: Instant) {
+        self.work.window_frame(now);
+    }
+
     pub fn chrome_hidden(&self) -> bool {
         !self.regular
     }
@@ -337,40 +250,23 @@ impl Presentation {
             eprintln!("Quake cleanup: {error}");
         }
     }
-    fn duration(&self) -> Duration {
-        if self.regular || self.profile.animation == quake::Animation::None {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(u64::from(self.profile.animation_ms))
-        }
-    }
     fn request(&mut self, visible: bool, restore_focus: bool) {
-        let now = Instant::now();
-        self.deadline = now + Duration::from_secs(3);
-        if visible {
-            self.activation.request();
-        } else {
-            self.activation.cancel();
-        }
-        self.prepare(visible, restore_focus, now);
+        self.model.request(visible, restore_focus, Instant::now());
+        self.work.failure.clear();
+        self.generation.set(self.model.revision);
+        self.work.invalidate();
+        self.work.signal(WakeSource::Intent);
     }
-
-    fn prepare(&mut self, visible: bool, restore_focus: bool, now: Instant) {
-        self.generation.set(self.generation.get() + 1);
-        self.recovering = false;
-        self.transition.retarget(visible, now, self.duration());
-        self.stage = Stage::Prepare;
-        if visible {
-            self.suppress_blur = now + Duration::from_millis(200);
-        }
-        self.restore_focus = restore_focus;
+}
+impl std::ops::Deref for Presentation {
+    type Target = policy::Model;
+    fn deref(&self) -> &Self::Target {
+        &self.model
     }
-
-    fn refit(&mut self) {
-        let now = Instant::now();
-        self.deadline = self.activation.refit(self.stage, self.deadline, now);
-        // Placement changes preserve pending activation decisions and their deadline.
-        self.prepare(self.transition.visible(), false, now);
+}
+impl std::ops::DerefMut for Presentation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.model
     }
 }
 
@@ -505,70 +401,6 @@ pub(super) fn install(cx: &mut App) {
     if let Err(error) = result {
         report(cx, &error, None);
     }
-}
-
-fn start_pump(cx: &mut App) {
-    if cx.global::<Desktop>().quake.pump_running {
-        return;
-    }
-    cx.global_mut::<Desktop>().quake.pump_running = true;
-    cx.spawn(async move |cx| {
-        loop {
-            let keep_running = cx.update(|cx| {
-                let registry = &mut cx.global_mut::<Desktop>().quake;
-                if registry.windows.is_empty() {
-                    registry.pump_running = false;
-                    false
-                } else {
-                    true
-                }
-            });
-            if !matches!(keep_running, Ok(true)) {
-                break;
-            }
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
-            let Ok(effects) = cx.update(tick) else {
-                break;
-            };
-            for (handle, effect) in effects {
-                let NativeEffectResult { outcome, reporter } = effect.run();
-                match outcome {
-                    Ok(outcome) => {
-                        let _ = cx.update(|cx| {
-                            if let Some(observation) = outcome.observation
-                                && let Some(journal) = cx
-                                    .global_mut::<Desktop>()
-                                    .quake
-                                    .smoke_journal
-                                    .as_mut()
-                            {
-                                journal.record(observation);
-                            }
-                            if let Some(warning) = outcome.warning {
-                                report(cx, &warning, reporter);
-                            }
-                        });
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        let recovery = cx
-                            .update(|cx| recover(cx, handle, &message))
-                            .ok()
-                            .flatten();
-                        if let Some(effect) = recovery
-                            && let Err(error) = effect.run().outcome
-                        {
-                            eprintln!("Quake recovery: {error}");
-                        }
-                        let _ = cx.update(|cx| report(cx, &message, reporter));
-                    }
-                }
-            }
-        }
-    })
-    .detach();
 }
 
 pub(super) fn replace_registrations(
@@ -794,37 +626,45 @@ pub(super) fn attach(
     let target = profile.geometry(&display);
     let mut transition = Transition::new(false, now);
     transition.retarget(true, now, Duration::ZERO);
+    let work =
+        Work::new(&native, &platform).map_err(|error| error.to_string())?;
     cx.global_mut::<Desktop>()
         .quake
         .windows
         .insert(name.clone(), window.window_handle());
-    start_pump(cx);
     Ok(Presentation {
         name,
         reporter,
         generation: Rc::new(Cell::new(0)),
         native,
-        profile,
-        display,
-        regular: false,
-        regular_bounds,
-        target,
-        transition,
-        stage: Stage::Prepare,
-        deadline: now + Duration::from_secs(3),
-        activation: {
-            let mut activation = Activation::default();
-            activation.request();
-            activation
+        model: policy::Model {
+            profile,
+            display,
+            regular: false,
+            regular_bounds,
+            target,
+            transition,
+            stage: Stage::Prepare,
+            deadline: now + Duration::from_secs(3),
+            activation: {
+                let mut activation = Activation::default();
+                activation.request();
+                activation
+            },
+            suppress_blur: now + Duration::from_millis(200),
+            restore_focus: false,
+            fade_supported,
+            recovering: false,
+            detach_requested: false,
+            observed_fullscreen: false,
+            revision: 0,
+            next_reapply: now,
+            animation_started: false,
+            native_paused: false,
         },
+        work,
         focus_observations: 0,
-        suppress_blur: now + Duration::from_millis(200),
-        last_display_check: now,
-        restore_focus: false,
-        fade_supported,
-        recovering: false,
-        detach_requested: false,
-        observed_fullscreen: false,
+        sampled_focus: None,
         smoke_observations: std::env::var_os("HUTERM_QUAKE_SMOKE").is_some(),
     })
 }
@@ -907,28 +747,6 @@ fn dispatch_hotkeys(cx: &mut App) {
         }
     }
 }
-fn tick(cx: &mut App) -> Vec<(AnyWindowHandle, NativeEffect)> {
-    let handles: Vec<_> = cx
-        .global::<Desktop>()
-        .quake
-        .windows
-        .values()
-        .copied()
-        .collect();
-    let mut effects = Vec::new();
-    for handle in handles {
-        let result = handle.update(cx, |root, window, cx| {
-            let Ok(view) = root.downcast::<WorkspaceView>() else {
-                return None;
-            };
-            view.update(cx, |view, cx| step(view, window, cx))
-        });
-        if let Ok(Some(effect)) = result {
-            effects.push((handle, effect));
-        }
-    }
-    effects
-}
 fn recover(
     cx: &mut App,
     handle: AnyWindowHandle,
@@ -940,7 +758,9 @@ fn recover(
             view.update(cx, |view, cx| {
                 view.status = Some(format!("Quake: {message}"));
                 let state = view.quake.as_mut()?;
-                state.generation.set(state.generation.get() + 1);
+                state.model.revision = state.model.revision.wrapping_add(1);
+                state.generation.set(state.model.revision);
+                state.work.invalidate();
                 let now = Instant::now();
                 state.transition = Transition::new(true, now);
                 // Recovery uses the same observed native exit gate as ordinary
@@ -980,6 +800,16 @@ fn step(
     cx: &mut Context<'_, WorkspaceView>,
 ) -> Option<NativeEffect> {
     let now = Instant::now();
+    if let Some(state) = &view.quake {
+        state.work.passed();
+    }
+    if view
+        .quake
+        .as_ref()
+        .is_some_and(|state| state.work.failure.blocked(now))
+    {
+        return None;
+    }
     let native_idle = view.native_transition_idle();
     let state = view.quake.as_mut()?;
     if state.detach_requested && state.stage == Stage::Idle && !state.recovering
@@ -1004,11 +834,25 @@ fn step(
         view.sync_quake_visibility(window, cx);
         return None;
     }
-    let native = state.native.clone();
     let platform = cx.global::<Desktop>().quake.platform.clone()?;
-    let fullscreen_before = state.observed_fullscreen;
-    state.observed_fullscreen = match native.fullscreen() {
-        Ok(value) => value,
+    let epoch = state.work.signal.epoch();
+    let flags = state.work.signal.take();
+    let native = state.native.clone();
+    let facts = (|| -> anyhow::Result<policy::Facts> {
+        let active = native.active()?;
+        Ok(policy::Facts {
+            active,
+            blurred: native.blurred(active)?,
+            visible: native.visible()?,
+            fullscreen: native.fullscreen()?,
+            native_idle,
+            frame: native.frame()?,
+            confirming: view.close.confirmation.is_some(),
+            busy: view.busy,
+        })
+    })();
+    let facts = match facts {
+        Ok(facts) => facts,
         Err(error) => {
             return Some(NativeEffect::for_state(
                 state,
@@ -1016,53 +860,16 @@ fn step(
             ));
         }
     };
-    if fullscreen_before != state.observed_fullscreen {
-        cx.notify();
-    }
-    let active = match native.active() {
-        Ok(value) => value,
-        Err(error) => {
-            return Some(NativeEffect::for_state(
-                state,
-                vec![NativeOp::Failure(error)],
-            ));
-        }
-    };
-    let settled = native_idle
-        && state.observed_fullscreen
-            == (state.profile.fullscreen && !state.regular);
-    state.activation.observe(active, settled);
     state.focus_observations = state.focus_observations.wrapping_add(1);
-    if view.close.confirmation.is_some() && !state.transition.visible() {
-        state.request(true, false);
-    }
-    // Key loss alone is not blur: a non-activating panel from another
-    // application borrows key status while Huterm stays active.
-    let blurred = match native.blurred(active) {
-        Ok(value) => value,
-        Err(error) => {
-            return Some(NativeEffect::for_state(
-                state,
-                vec![NativeOp::Failure(error)],
-            ));
-        }
-    };
-    if !state.regular
-        && state.profile.hide_on_focus_loss
-        && state.transition.visible()
-        && state.activation.seen
-        && blurred
-        && now >= state.suppress_blur
-        && view.close.confirmation.is_none()
-        && !view.busy
+    state.sampled_focus = Some((facts.active, facts.blurred));
+    if (state.work.display_due(now)
+        || flags & crate::quake::observation::DISPLAY != 0
+        || matches!(
+            state.stage,
+            Stage::Prepare | Stage::Windowed | Stage::SettleVisible
+        ))
+        && !state.regular
     {
-        state.request(false, false);
-    }
-    let refresh_display = now.duration_since(state.last_display_check)
-        >= Duration::from_secs(1)
-        || matches!(state.stage, Stage::Windowed | Stage::SettleVisible);
-    if refresh_display && !state.regular {
-        state.last_display_check = now;
         match platform.displays() {
             Ok(displays) => {
                 if let Some(display) = displays
@@ -1072,16 +879,21 @@ fn step(
                     .or_else(|| displays.first())
                     && *display != state.display
                 {
-                    state.display = display.clone();
                     let target = state.profile.geometry(display);
                     let geometry_changed = target != state.target;
+                    state.model.display = display.clone();
                     state.target = target;
-                    // Presentation leases can change the work area mid-transition.
-                    // Preserve active progress and its original failure deadline.
+                    state.work.invalidate();
                     if geometry_changed
                         && matches!(state.stage, Stage::Idle | Stage::Activate)
                     {
-                        state.refit();
+                        #[cfg(target_os = "macos")]
+                        let preserve_presentation = facts.native_idle
+                            && facts.fullscreen == state.profile.fullscreen
+                            && !state.native.in_native_space();
+                        #[cfg(not(target_os = "macos"))]
+                        let preserve_presentation = false;
+                        state.model.refit(now, preserve_presentation);
                     }
                 }
             }
@@ -1093,224 +905,88 @@ fn step(
             }
         }
     }
-    if state.stage != Stage::Idle && !native_idle && now < state.deadline {
-        state.transition.pause(now);
-        return None;
+    let flags = state.work.signal.current_flags(flags, epoch);
+    let frame = state.work.take_frame(now, flags);
+    let revision = state.model.revision;
+    let decision = state.model.decide(facts, now, frame);
+    if revision != state.model.revision {
+        state.work.invalidate();
     }
-    if state.stage != Stage::Idle && now >= state.deadline {
-        return Some(NativeEffect::for_state(
+    state.generation.set(state.model.revision);
+    let decision = match decision {
+        Ok(decision) => decision,
+        Err(error) => {
+            return Some(NativeEffect::for_state(
+                state,
+                vec![NativeOp::Failure(anyhow::anyhow!(error))],
+            ));
+        }
+    };
+    state.work.failure.sampled(!decision.actions.is_empty());
+    if decision.continuation {
+        state.work.signal(WakeSource::Continuation);
+    }
+    if decision.settled {
+        state.reporter = None;
+    }
+    let operations = decision
+        .actions
+        .into_iter()
+        .map(|action| match action {
+            policy::Action::Frame(frame) => NativeOp::Frame(frame),
+            policy::Action::Quake(enabled) => NativeOp::Quake(enabled),
+            policy::Action::Fullscreen(enabled) => {
+                NativeOp::Fullscreen(enabled)
+            }
+            policy::Action::Opacity(opacity) => NativeOp::Opacity(opacity),
+            policy::Action::Show => NativeOp::Show,
+            policy::Action::Hide(restore) => NativeOp::Hide(
+                restore
+                    .then(|| cx.global::<Desktop>().quake.return_focus.clone())
+                    .flatten()
+                    .map(|focus| (platform.clone(), focus)),
+            ),
+        })
+        .collect::<Vec<_>>();
+    let effect = if let Some(sample) = decision.sample {
+        state.work.sampled(now);
+        Some(NativeEffect::for_transition(
             state,
-            vec![NativeOp::Failure(anyhow::anyhow!(
-                "native quake transition {:?} timed out (frame {:?}, target {:?}, fullscreen {:?}, active {:?})",
-                state.stage,
-                state.native.frame(),
-                state.target,
-                state.native.fullscreen(),
-                state.native.active()
-            ))],
+            operations,
+            sample.progress,
+            state.stage,
+            sample.frame,
+            sample.opacity,
+            sample.gap,
+        ))
+    } else if operations.is_empty() {
+        None
+    } else {
+        Some(NativeEffect::for_state(state, operations))
+    };
+    if state.regular {
+        view.bounds = window.window_bounds();
+    } else if decision.settled && state.transition.visible() {
+        let factor = if cfg!(target_os = "linux") {
+            f64::from(window.scale_factor())
+        } else {
+            1.0
+        };
+        view.bounds = WindowBounds::Windowed(Bounds::new(
+            point(
+                px((state.target.x / factor) as f32),
+                px((state.target.y / factor) as f32),
+            ),
+            size(
+                px((state.target.width / factor) as f32),
+                px((state.target.height / factor) as f32),
+            ),
         ));
     }
-    let regular = state.regular;
-    let showing = state.transition.visible();
-    if native_idle
-        && state.stage == Stage::Idle
-        && state.regular
-        && !native.fullscreen().unwrap_or(true)
-        && native.visible().unwrap_or(false)
-    {
-        if let Ok(frame) = native.frame() {
-            state.regular_bounds = frame;
-        }
-        view.bounds = window.window_bounds();
-    }
-    let effect: Option<NativeEffect> = match state.stage {
-        Stage::Activate => {
-            state.stage = Stage::SettleVisible;
-            state
-                .activation
-                .take_request(now)
-                .then(|| NativeEffect::for_state(state, vec![NativeOp::Show]))
-        }
-        Stage::Prepare => {
-            state.stage = Stage::Windowed;
-            state.suppress_blur = now + Duration::from_millis(200);
-            state.transition.pause(now);
-            Some(NativeEffect::for_state(
-                state,
-                vec![NativeOp::Fullscreen(false)],
-            ))
-        }
-        Stage::Windowed => {
-            state.transition.pause(now);
-            match native.fullscreen() {
-                Ok(false) => {
-                    state.stage = Stage::Animate;
-                    if regular {
-                        let bounds = state.regular_bounds;
-                        Some(NativeEffect::for_state(
-                            state,
-                            vec![
-                                NativeOp::Quake(false),
-                                NativeOp::Frame(bounds),
-                            ],
-                        ))
-                    } else {
-                        Some(NativeEffect::for_state(
-                            state,
-                            vec![NativeOp::Quake(true)],
-                        ))
-                    }
-                }
-                Ok(true) => None,
-                Err(error) => Some(NativeEffect::for_state(
-                    state,
-                    vec![NativeOp::Failure(error)],
-                )),
-            }
-        }
-        Stage::Animate => {
-            let scheduler_gap = state.transition.elapsed_since_sample(now);
-            let progress = state.transition.sample(now, state.duration());
-            let finished = state.transition.finished();
-            let (fade, edge) = state.profile.effects();
-            let frame = quake::animation_frame(
-                state.target,
-                state.display.frame,
-                edge,
-                progress,
-            );
-            let opacity = if fade && state.fade_supported && !regular {
-                progress
-            } else {
-                1.0
-            };
-            let focus = state.activation.take_request(now);
-            let fullscreen = state.profile.fullscreen && !regular;
-            let return_focus =
-                if finished && !showing && state.restore_focus && active {
-                    cx.global::<Desktop>().quake.return_focus.clone()
-                } else {
-                    None
-                };
-            if finished {
-                state.stage = if showing {
-                    Stage::SettleVisible
-                } else {
-                    Stage::SettleHidden
-                };
-            }
-            let mut operations = Vec::new();
-            if !regular {
-                operations.push(NativeOp::Frame(frame));
-            }
-            operations.push(NativeOp::Opacity(opacity));
-            if showing && (focus || !native.visible().unwrap_or(false)) {
-                operations.push(NativeOp::Show);
-            }
-            if finished {
-                if showing {
-                    operations.push(NativeOp::Fullscreen(fullscreen));
-                    operations.push(NativeOp::Opacity(1.0));
-                } else {
-                    operations.push(NativeOp::Hide(
-                        return_focus.map(|focus| (platform, focus)),
-                    ));
-                    operations.push(NativeOp::Opacity(1.0));
-                }
-            }
-            Some(NativeEffect::for_transition(
-                state,
-                operations,
-                progress,
-                state.stage,
-                frame,
-                opacity,
-                scheduler_gap,
-            ))
-        }
-        Stage::SettleVisible => {
-            let expected = state.profile.fullscreen && !regular;
-            let settled = (|| -> anyhow::Result<bool> {
-                Ok(native.visible()?
-                    // Initial activation must succeed, but a later app switch
-                    // does not invalidate the requested visible geometry.
-                    && state.activation.seen
-                    && native.fullscreen()? == expected
-                    && (regular || near(native.frame()?, state.target)))
-            })();
-            match settled {
-                Ok(true) => {
-                    state.stage = Stage::Idle;
-                    state.recovering = false;
-                    state.reporter = None;
-                    if regular {
-                        view.bounds = window.window_bounds();
-                    } else {
-                        let factor = if cfg!(target_os = "linux") {
-                            f64::from(window.scale_factor())
-                        } else {
-                            1.0
-                        };
-                        view.bounds = WindowBounds::Windowed(Bounds::new(
-                            point(
-                                px((state.target.x / factor) as f32),
-                                px((state.target.y / factor) as f32),
-                            ),
-                            size(
-                                px((state.target.width / factor) as f32),
-                                px((state.target.height / factor) as f32),
-                            ),
-                        ));
-                    }
-                    None
-                }
-                Ok(false) => {
-                    // A window manager may apply initial placement when mapping,
-                    // after the frame set while the window was hidden. AppKit
-                    // can also move the frame when presentation options change.
-                    // Reassert the endpoint after those native changes; only
-                    // X11 delegates fullscreen geometry to the window manager.
-                    let reassert_frame = !regular
-                        && (!expected || cfg!(target_os = "macos"))
-                        && native.visible().unwrap_or(false);
-                    let retry_activation =
-                        state.activation.take_retry(now, state.deadline);
-                    let mut operations = Vec::new();
-                    if reassert_frame {
-                        operations.push(NativeOp::Frame(state.target));
-                    }
-                    if retry_activation {
-                        operations.push(NativeOp::Show);
-                    }
-                    if operations.is_empty() {
-                        None
-                    } else {
-                        Some(NativeEffect::for_state(state, operations))
-                    }
-                }
-                Err(error) => Some(NativeEffect::for_state(
-                    state,
-                    vec![NativeOp::Failure(error)],
-                )),
-            }
-        }
-        Stage::SettleHidden => match native.visible() {
-            Ok(false) => {
-                state.stage = Stage::Idle;
-                state.reporter = None;
-                None
-            }
-            Ok(true) => None,
-            Err(error) => Some(NativeEffect::for_state(
-                state,
-                vec![NativeOp::Failure(error)],
-            )),
-        },
-        Stage::Idle => None,
-    };
     view.sync_quake_visibility(window, cx);
     effect
 }
+
 fn near(left: Rect, right: Rect) -> bool {
     [
         left.x - right.x,
@@ -1398,9 +1074,14 @@ impl WorkspaceView {
     fn native_transition_idle(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            self.native_fullscreen
-                .as_ref()
-                .is_none_or(|adapter| adapter.check_native_transition().is_ok())
+            self.native_fullscreen.as_ref().map_or_else(
+                || {
+                    self.quake
+                        .as_ref()
+                        .is_none_or(|state| state.work.observer.native_idle())
+                },
+                |adapter| adapter.check_native_transition().is_ok(),
+            )
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1510,7 +1191,7 @@ pub(super) fn drain_smoke_observations(cx: &mut App) -> Vec<SmokeObservation> {
 pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     let frame = state.native.frame()?;
     Ok(format!(
-        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfocus_observations={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}",
+        "stage={:?}\nregular={}\ndesired={}\nvisible={}\nactive={}\nactivation_seen={}\nfocus_observations={}\nquake_policy_deadline={}\nsampled_active={}\nsampled_blurred={}\nfullscreen={}\nfullscreen_context={}\nframe={},{},{},{}\nwork_area={},{},{},{}\ndisplay={}\n{}\n{}",
         state.stage,
         state.regular,
         state.transition.visible(),
@@ -1518,6 +1199,9 @@ pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
         state.native.active()?,
         state.activation.seen,
         state.focus_observations,
+        state.model.next_deadline(Instant::now()).is_some(),
+        state.sampled_focus.is_some_and(|(active, _)| active),
+        state.sampled_focus.is_some_and(|(_, blurred)| blurred),
         state.native.fullscreen()?,
         state.fullscreen_context(),
         frame.x,
@@ -1529,7 +1213,8 @@ pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
         state.display.work.width,
         state.display.work.height,
         state.display.id,
-        state.native.inspect()?
+        state.native.inspect()?,
+        state.work.inspect()
     ))
 }
 
@@ -1547,10 +1232,8 @@ pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ACTIVATION_RETRY_INTERVAL, Activation, Profile, ProfileState, Stage,
-        build_profile_rows,
-    };
+    use super::policy::ACTIVATION_RETRY_INTERVAL;
+    use super::{Activation, Profile, ProfileState, Stage, build_profile_rows};
     use crate::quake::Position;
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};

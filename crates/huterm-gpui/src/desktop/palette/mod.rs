@@ -2006,6 +2006,7 @@ impl super::refresh::Animated for CommandPalette {
     fn advance_animation(
         &mut self,
         now: Instant,
+        _frame: bool,
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {

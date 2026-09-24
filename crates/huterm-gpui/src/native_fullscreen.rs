@@ -299,6 +299,9 @@ impl Adapter {
         // SAFETY: Smoke getters use the same exact retained native window.
         unsafe {
             let window = self.0.window.0;
+            let visible: objc::runtime::BOOL = msg_send![window, isVisible];
+            let key: objc::runtime::BOOL = msg_send![window, isKeyWindow];
+            let occlusion: usize = msg_send![window, occlusionState];
             let style: usize = msg_send![window, styleMask];
             let frame: Bounds<f64> = msg_send![window, frame];
             let content: Bounds<f64> =
@@ -316,7 +319,7 @@ impl Adapter {
                 .as_ref()
                 .is_some_and(|saved| saved.complete);
             Ok(format!(
-                "refit_notifications={}\nrefit_intervals_us={}\nrefit_attempts={}\nrefit_retry={}\nstyle={style}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
+                "refit_notifications={}\nrefit_intervals_us={}\nrefit_attempts={}\nrefit_retry={}\nstyle={style}\nvisible={}\nkey={}\nocclusion={occlusion}\nframe={}\ncontent={}\nscreen={}\nresponder={}\noptions={options}\nsimple={simple}\nshadow={}\nsafe_area={},{},{},{}",
                 self.0.inbox.probe_refit_notifications.get(),
                 self.0
                     .inbox
@@ -331,6 +334,8 @@ impl Adapter {
                     .join(","),
                 self.0.inbox.refit_attempts.get(),
                 self.deadline().is_some(),
+                visible == YES,
+                key == YES,
                 native_rect(frame),
                 native_rect(content),
                 native_rect(screen.frame),
@@ -949,6 +954,7 @@ impl Adapter {
                     .map_err(anyhow::Error::msg)
             })?;
             let _: () = msg_send![app, setPresentationOptions: next];
+            crate::quake::native::work_area_changed();
             // AppKit's shadow includes a thin outline even without a titlebar.
             let _: () = msg_send![window, setHasShadow: NO];
             let _: () =
@@ -1175,6 +1181,7 @@ fn release_lease(saved: &mut Saved) -> anyhow::Result<()> {
             })
             .map_err(anyhow::Error::msg)?;
         let _: () = msg_send![app, setPresentationOptions: next];
+        crate::quake::native::work_area_changed();
     }
     Ok(())
 }
@@ -1218,13 +1225,8 @@ pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
         return gpui::Edges::default();
     }
     // SAFETY: Callers supply NSScreen on the main thread. The selector was added
-    // in macOS 12; older systems have no display safe-area API.
+    // in macOS 12, before Huterm's macOS 14 minimum.
     unsafe {
-        let supported: objc::runtime::BOOL =
-            msg_send![screen, respondsToSelector: sel!(safeAreaInsets)];
-        if supported != YES {
-            return gpui::Edges::default();
-        }
         let insets: NativeInsets = msg_send![screen, safeAreaInsets];
         gpui::Edges {
             top: insets.top,
@@ -1237,7 +1239,7 @@ pub(crate) unsafe fn screen_safe_area(screen: *mut Object) -> gpui::Edges<f64> {
 
 /// The auxiliary areas beside a notch, converted from `AppKit` screen
 /// coordinates to top-left window coordinates for a window covering the
-/// screen. `None` when the screen has no notch or the API is unavailable.
+/// screen. `None` when there is no screen or the screen has no notch.
 pub(crate) unsafe fn screen_notch_shelves(
     screen: *mut Object,
 ) -> Option<crate::fullscreen::NotchShelves> {
@@ -1247,11 +1249,6 @@ pub(crate) unsafe fn screen_notch_shelves(
     // SAFETY: Callers supply NSScreen on the main thread. The auxiliary area
     // getters were added in macOS 12 and return NSZeroRect without a notch.
     unsafe {
-        let supported: objc::runtime::BOOL =
-            msg_send![screen, respondsToSelector: sel!(auxiliaryTopLeftArea)];
-        if supported != YES {
-            return None;
-        }
         let frame: Bounds<f64> = msg_send![screen, frame];
         let left: Bounds<f64> = msg_send![screen, auxiliaryTopLeftArea];
         let right: Bounds<f64> = msg_send![screen, auxiliaryTopRightArea];
@@ -1434,6 +1431,7 @@ impl QuakeLease {
                 })
                 .map_err(anyhow::Error::msg)?;
             let _: () = msg_send![app, setPresentationOptions: next];
+            crate::quake::native::work_area_changed();
         }
         if self.held() != previous {
             self.ownership_changes.set(self.ownership_changes.get() + 1);

@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { armOrder, readiness, runWithCleanup, validateArms } from "./run-idle-benchmark.ts";
+import { armOrder, readiness, runWithCleanup, validateArms, validateRunMatrix } from "./run-idle-benchmark.ts";
+
+test("empty fallback-only Quake matrices fail before sampling", () => {
+  const normal = { label: "normal", executable: "/tmp/fixture", revision: "abc" };
+  const fallback = { ...normal, label: "fallback", force_fallback: true };
+  expect(() => validateRunMatrix([fallback], ["quake"])).toThrow("no eligible samples");
+  expect(() => validateRunMatrix([fallback], ["ordinary", "quake"])).not.toThrow();
+  expect(() => validateRunMatrix([normal, fallback], ["quake"])).not.toThrow();
+});
 
 test("preserved binaries require explicit revision provenance", () => {
   expect(() => validateArms([{ label: "baseline", executable: "/tmp/baseline" }])).toThrow("revision");
@@ -53,4 +61,19 @@ test("benchmark errors survive successful or failed cleanup", async () => {
     throw new Error("cleanup exit 1");
   })).rejects.toBe(primaryError);
   expect(cleanups).toBe(2);
+});
+
+test("Quake readiness requires settled native state and distinct window identities", async () => {
+  const { quakeWindowIds, fixtureConfig } = await import("./run-idle-benchmark.ts");
+  const state = "huterm-idle profile=idle0 stage=Idle regular=false desired=false visible=false native_id=42\n";
+  expect(quakeWindowIds(state, 1, true)).toEqual([42]);
+  expect(() => quakeWindowIds(state, 1, false)).toThrow("visibility");
+  expect(() => quakeWindowIds(state.replace("stage=Idle", "stage=Animate"), 1, true)).toThrow("settle");
+  expect(() => quakeWindowIds(state + state, 2, true)).toThrow("duplicate");
+  expect(() => quakeWindowIds(state, 2, true)).toThrow("profile count");
+  expect(fixtureConfig("quake", 2).match(/hide_on_focus_loss = false/g)).toHaveLength(2);
+  expect(fixtureConfig("quake", 2)).toContain('position = "top"');
+  expect(fixtureConfig("quake", 2)).toContain('position = "bottom"');
+  expect(() => validateArms([{ label: "bad", executable: "/tmp/fixture", revision: "abc", env: { HUTERM_QUAKE_SMOKE: "/tmp/smoke" } }])).toThrow("periodic");
+  expect(fixtureConfig("ordinary", 2)).not.toContain("quake");
 });

@@ -5,6 +5,8 @@ import { basename, join, resolve } from "node:path";
 import { parseState, type State } from "./check-fullscreen";
 import {
   analyzeFade,
+  assertIdleWork,
+  idleWorkSettled,
   analyzeReversal,
   analyzeSlide,
   focusDuringShowEligibility,
@@ -141,6 +143,40 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   };
   const state = async () => parseState(await readFile(join(directory, "state"), "utf8"));
   const current = async () => profile(await state(), "default");
+  const checkIdle = async (label: string) => {
+    await waitFor(async () => {
+      const value = await current();
+      return value !== undefined && idleWorkSettled(value);
+    }, `${label} policy and animation settlement`);
+    const before = (await current())!;
+    const timerBudget = before.work_area_fallback === "true" ? 2 : 0;
+    // Observe elapsed time beyond the former pump and the 1s work-area period.
+    // Genuine native facts may arrive; bound periodic and internal feedback work.
+    await Bun.sleep(1100);
+    const after = (await current())!;
+    const counter = (value: State, name: string) => {
+      const raw = value[name];
+      const count = Number(raw);
+      if (!raw || !Number.isSafeInteger(count) || count < 0) throw new Error(`${label} invalid ${name}: ${raw}`);
+      return count;
+    };
+    const delta = (name: string) => {
+      const change = counter(after, name) - counter(before, name);
+      if (change < 0) throw new Error(`${label} counter reset: ${name}`);
+      return change;
+    };
+    const work = {
+      timers: delta("quake_timer_fires"),
+      frames: delta("quake_window_frames") + delta("quake_native_frames"),
+      rawFrames: delta("quake_raw_native_frames"),
+      facts: delta("quake_fact_wakes"), nativeWakes: delta("quake_native_wakes"),
+      passes: delta("quake_passes"), viewWakes: delta("quake_view_wakes"),
+      internalWakes: delta("quake_intent_wakes") + delta("quake_continuation_wakes") + delta("quake_effect_wakes"),
+    };
+    assertIdleWork(work, timerBudget);
+    console.log(`QUAKE_IDLE ${label} ${JSON.stringify(work)} observation_ms=1100`);
+  };
+
   const traceFile = join(directory, "trace.jsonl");
   const traceCursor = async () => (await readQuakeTrace(traceFile)).length;
   const completedTrace = async (cursor: number, desired: boolean, name = "default") => {
@@ -189,6 +225,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await hotkey();
     await waitFor(async () => { const value = await current(); return value?.stage === "Idle" && value.visible === "true" && value.active === "true" && !!value.text?.includes("READY:"); }, "global summon from external app");
     await checkLayout(false);
+    await checkIdle("visible");
     const first = (await current())!;
     await checkStackingState(first, false);
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
@@ -199,14 +236,29 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       // never report active again after the panel closes. The first-summon
       // ACK below then proves input still reaches the PTY without adding
       // rows that could scroll READY out of a small hosted-runner grid.
+      const observed = Number((await current())?.focus_observations);
       await native("panel");
-      let observed = 0;
-      await waitFor(async () => { const value = await current(); observed = Number(value?.focus_observations); return value?.active === "false" && Number.isFinite(observed); }, "non-activating panel takes key status");
-      // The state publisher samples focus independently of the quake pump.
-      // Two further pump observations prove the hide rule ran after key loss.
-      await waitFor(async () => Number((await current())?.focus_observations) >= observed + 2, "quake pump observes the panel holding key status");
+      await waitFor(async () => {
+        const value = await current();
+        return value?.active === "false" && value.sampled_active === "false" &&
+          value.sampled_blurred === "false" && Number(value.focus_observations) > observed;
+      }, "quake policy observes the non-activating panel holding key status");
       await native("panel_close");
       await waitFor(async () => { const value = await current(); return value?.active === "true" && value.visible === "true" && value.stage === "Idle"; }, "quake stays visible and regains key after the panel closes");
+    }
+    if (macos) {
+      const observed = Number((await current())?.focus_observations);
+      await native("panel");
+      await waitFor(async () => {
+        const value = await current();
+        return value?.sampled_active === "false" && value.sampled_blurred === "false" &&
+          Number(value.focus_observations) > observed;
+      }, "second panel key loss reaches quake policy");
+      await focusWitness();
+      await waitFor(async () => { const value = await current(); return value?.visible === "false" && value.stage === "Idle"; }, "app switch hides quake while panel already holds key status");
+      await native("panel_close");
+      await hotkey();
+      await waitFor(async () => { const value = await current(); return value?.visible === "true" && value.active === "true" && value.stage === "Idle"; }, "summon after panel then app switch");
     }
     // Key status moving to another Huterm window is still blur: the quake
     // must hide even though the application stays active. Re-summon from the
@@ -223,6 +275,13 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await hotkey();
     await waitFor(async () => { const value = await current(); return value?.visible === "false" && value.stage === "Idle"; }, "global hide");
     await waitFor(witnessActive, "external focus return");
+    await waitFor(async () => {
+      const value = await current();
+      return value?.quake_timer === "false" && value.quake_clock === "false" &&
+        value.quake_frame_demand === "false" && value.work_area_fallback === "false";
+    }, "hidden quake releases timers and animation clocks");
+    await checkIdle("hidden");
+
     if ((await current())?.terminal_visible !== "false") throw new Error("hidden terminal remains active for snapshots");
     await hotkey();
     await waitFor(async () => (await current())?.active === "true" && (await current())?.stage === "Idle", "second summon");

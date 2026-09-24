@@ -1912,6 +1912,7 @@ impl refresh::Animated for TerminalView {
     fn advance_animation(
         &mut self,
         now: Instant,
+        _frame: bool,
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
