@@ -34,6 +34,8 @@ const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct RuntimeClient {
     terminal_id: TerminalId,
     messages: crate::wake::SyncSender<RuntimeMessage>,
+    #[cfg(test)]
+    output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
@@ -459,10 +461,16 @@ impl TerminalRuntime {
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
+        let (output_sender, output_receiver) =
+            mpsc::sync_channel(MESSAGE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
         let wake = Arc::new(crate::wake::Wake::default());
         let message_sender =
             crate::wake::SyncSender::new(message_sender, Arc::clone(&wake));
+        let output_sender =
+            crate::wake::SyncSender::new(output_sender, Arc::clone(&wake));
+        #[cfg(test)]
+        let client_output = output_sender.clone();
         let control_sender = crate::wake::Sender::new(control_sender, wake);
         let (event_sender, event_receiver, activity) =
             EventPublisher::channel();
@@ -476,7 +484,6 @@ impl TerminalRuntime {
         );
         let runtime_host_effect_sink = host_effect_sink.clone();
 
-        let runtime_sender = message_sender.clone();
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
         let runtime_input_bytes = Arc::clone(&queued_input_bytes);
@@ -500,7 +507,8 @@ impl TerminalRuntime {
                         engine,
                         process,
                         message_receiver,
-                        runtime_sender,
+                        output_receiver,
+                        output_sender,
                         control_receiver,
                         runtime_controls,
                         event_sender,
@@ -529,6 +537,8 @@ impl TerminalRuntime {
         let client = RuntimeClient {
             terminal_id,
             messages: message_sender,
+            #[cfg(test)]
+            output: client_output,
             controls: control_sender,
             closing,
             queued_input_bytes,
@@ -616,9 +626,10 @@ pub enum RuntimeError {
     EventReceiverPoisoned,
 }
 
+/// Ordered client requests. Their queue is separate from PTY output so a
+/// flood cannot refuse input.
 #[derive(Debug)]
 enum RuntimeMessage {
-    PtyOutput(Vec<u8>),
     Input {
         input: TerminalInput,
         reserved_bytes: usize,
@@ -640,6 +651,12 @@ enum RuntimeControl {
     },
     #[cfg(test)]
     Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
+    /// Holds the runtime owner until the test releases it.
+    #[cfg(test)]
+    Pause {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    },
     PtyEof,
     Snapshot {
         scroll: Option<ScrollCommand>,
@@ -688,7 +705,8 @@ fn run_terminal(
     mut engine: TerminalEngine,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
-    message_sender: crate::wake::SyncSender<RuntimeMessage>,
+    output: Receiver<Vec<u8>>,
+    output_sender: crate::wake::SyncSender<Vec<u8>>,
     controls: Receiver<RuntimeControl>,
     control_sender: crate::wake::Sender<RuntimeControl>,
     events: EventPublisher,
@@ -743,7 +761,7 @@ fn run_terminal(
         terminal_id,
         reader,
         reader_waiter,
-        message_sender.clone(),
+        output_sender,
         control_sender.clone(),
         Arc::clone(&closing),
     ) {
@@ -788,13 +806,13 @@ fn run_terminal(
             );
             drop(master);
             drop(messages);
+            drop(output);
             reader_cancel.cancel();
             join_worker(reader_join);
             let _ = pty::reap_child(child);
             return Err(error);
         }
     };
-    drop(message_sender);
     let _ = startup.send(Ok(()));
     let _ = events.send(TerminalEvent::Ready(terminal_id));
     let mut invalidated_at = None;
@@ -813,6 +831,7 @@ fn run_terminal(
     #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
+    let mut output_turn = false;
     while !closing.load(Ordering::Acquire) {
         if let Err(error) = observe_child_exit(
             child.as_mut(),
@@ -970,6 +989,11 @@ fn run_terminal(
                         engine.cell_size(),
                     ));
                 }
+                #[cfg(test)]
+                RuntimeControl::Pause { entered, release } => {
+                    let _ = entered.send(());
+                    let _ = release.recv();
+                }
                 RuntimeControl::ForegroundJob(reply) => {
                     let busy = !child_exited && {
                         let shell = child
@@ -1012,7 +1036,7 @@ fn run_terminal(
                 continue;
             }
         }
-        let message = match messages.try_recv() {
+        let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
                 if controls_drained < MESSAGE_CAPACITY {
@@ -1023,7 +1047,7 @@ fn run_terminal(
             Err(TryRecvError::Disconnected) => break,
         };
         match message {
-            RuntimeMessage::PtyOutput(bytes) => {
+            NextMessage::Output(bytes) => {
                 let effects = match engine.process(&bytes) {
                     Ok(effects) => effects,
                     Err(error) => {
@@ -1066,10 +1090,10 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::Input {
+            NextMessage::Client(RuntimeMessage::Input {
                 input,
                 reserved_bytes,
-            } => {
+            }) => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
                 if child_exited {
                     continue;
@@ -1095,7 +1119,7 @@ fn run_terminal(
                     closing.store(true, Ordering::Release);
                 }
             }
-            RuntimeMessage::Resize { grid, cell } => {
+            NextMessage::Client(RuntimeMessage::Resize { grid, cell }) => {
                 if !child_exited
                     && master.resize(pty::pty_size(grid, cell)).is_err()
                 {
@@ -1140,7 +1164,7 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::Presentation(update) => {
+            NextMessage::Client(RuntimeMessage::Presentation(update)) => {
                 match update.apply(&mut engine) {
                     Ok(true) => publish_invalidation(
                         &events,
@@ -1179,6 +1203,7 @@ fn run_terminal(
     drop(writer_sender);
     drop(master);
     drop(messages);
+    drop(output);
     reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
@@ -1194,11 +1219,46 @@ fn run_terminal(
     }
 }
 
+enum NextMessage {
+    Client(RuntimeMessage),
+    Output(Vec<u8>),
+}
+
+/// Takes client requests ahead of PTY output, so input waits behind at most
+/// one output chunk. When both queues are waiting they alternate, so neither
+/// can starve the other.
+fn next_message(
+    messages: &Receiver<RuntimeMessage>,
+    output: &Receiver<Vec<u8>>,
+    output_turn: &mut bool,
+) -> Result<NextMessage, TryRecvError> {
+    let client = || messages.try_recv().map(NextMessage::Client);
+    let pty = || output.try_recv().map(NextMessage::Output);
+    let first = if *output_turn { pty() } else { client() };
+    let next = match first {
+        Ok(next) => Ok(next),
+        Err(first_error) => {
+            let second = if *output_turn { client() } else { pty() };
+            match second {
+                Ok(next) => Ok(next),
+                Err(TryRecvError::Disconnected)
+                    if first_error == TryRecvError::Disconnected =>
+                {
+                    Err(TryRecvError::Disconnected)
+                }
+                Err(_) => Err(TryRecvError::Empty),
+            }
+        }
+    };
+    *output_turn = matches!(next, Ok(NextMessage::Client(_)));
+    next
+}
+
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
     reader_waiter: pty::ReadinessWaiter,
-    messages: crate::wake::SyncSender<RuntimeMessage>,
+    output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
@@ -1211,8 +1271,7 @@ fn spawn_reader(
                 if let Some(bytes) = pending.take() {
                     // Teardown drops the receiver before joining this worker,
                     // so bounded backpressure also has an explicit cancellation path.
-                    if messages.send(RuntimeMessage::PtyOutput(bytes)).is_err()
-                    {
+                    if output.send(bytes).is_err() {
                         break;
                     }
                     continue;
@@ -1936,10 +1995,7 @@ mod tests {
                 "late revoked PTY write".into(),
             ))
             .unwrap();
-        client
-            .messages
-            .send(RuntimeMessage::PtyOutput(b"TAIL\x1b[6n".to_vec()))
-            .unwrap();
+        client.output.send(b"TAIL\x1b[6n".to_vec()).unwrap();
         let snapshot = wait_for_text(&client, "FINALTAIL");
         assert!(snapshot.history_size > 0);
         let history = client
@@ -2559,6 +2615,89 @@ mod tests {
         assert!(
             shutdown_started.elapsed() < Duration::from_secs(3),
             "priority close should bypass saturated data traffic"
+        );
+    }
+
+    #[test]
+    fn client_input_is_admitted_and_handled_ahead_of_queued_output() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(17),
+            &command(
+                "stty -echo; printf READY; IFS= read -r line; printf 'GOT:%s|' \"$line\" | tr '\\033' E",
+            ),
+        )
+        .expect("runtime should start");
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+
+        let (entered, paused) = mpsc::channel();
+        let (resume, release) = mpsc::channel();
+        client
+            .controls
+            .send(RuntimeControl::Pause { entered, release })
+            .unwrap();
+        paused
+            .recv_timeout(Duration::from_secs(2))
+            .expect("runtime should pause");
+        // A cursor-position query heads the backlog. Its reply reaches the
+        // child's line before the input only if queued output is parsed first.
+        let mut backlog = 0;
+        while client
+            .output
+            .try_send(
+                if backlog == 0 { &b"\x1b[6n"[..] } else { b"." }.to_vec(),
+            )
+            .is_ok()
+        {
+            backlog += 1;
+        }
+        assert!(backlog > 0, "the paused runtime should queue output");
+
+        let admitted = client.send_input(TerminalInput::Text("hello\n".into()));
+        resume.send(()).unwrap();
+        admitted.expect("a full output queue should not refuse client input");
+        wait_for_text(&client, "GOT:hello|");
+        runtime.shutdown().expect("runtime should stop cleanly");
+    }
+
+    #[test]
+    fn queued_client_messages_alternate_with_output_until_both_disconnect() {
+        let (messages, client) = mpsc::sync_channel(4);
+        let (output, pty) = mpsc::sync_channel(4);
+        for _ in 0..2 {
+            messages
+                .send(RuntimeMessage::Resize {
+                    grid: GridSize::clamped(1, 1),
+                    cell: CellSize {
+                        width: 1,
+                        height: 1,
+                    },
+                })
+                .unwrap();
+        }
+        for byte in *b"abc" {
+            output.send(vec![byte]).unwrap();
+        }
+        let mut output_turn = false;
+        let mut order = String::new();
+        while let Ok(next) = next_message(&client, &pty, &mut output_turn) {
+            order.push(match next {
+                NextMessage::Client(_) => 'C',
+                NextMessage::Output(bytes) => char::from(bytes[0]),
+            });
+        }
+        assert_eq!(order, "CaCbc");
+
+        drop(output);
+        assert_eq!(
+            next_message(&client, &pty, &mut output_turn).err(),
+            Some(TryRecvError::Empty),
+            "clients can still send after the reader stops"
+        );
+        drop(messages);
+        assert_eq!(
+            next_message(&client, &pty, &mut output_turn).err(),
+            Some(TryRecvError::Disconnected)
         );
     }
 

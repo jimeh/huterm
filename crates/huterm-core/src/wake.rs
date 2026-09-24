@@ -1,4 +1,5 @@
-//! Coalesced wakeups for the runtime's separately bounded data and control queues.
+//! Coalesced wakeups for the runtime's separately bounded client, output,
+//! and control queues.
 
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
