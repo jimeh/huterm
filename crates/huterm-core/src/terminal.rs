@@ -814,9 +814,6 @@ fn run_terminal(
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     while !closing.load(Ordering::Acquire) {
-        if !child_exited {
-            pty::record_foreground_group(master.as_ref(), &mut process_groups);
-        }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
             &lifecycle,
