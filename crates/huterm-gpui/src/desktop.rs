@@ -746,7 +746,11 @@ impl TerminalView {
                     self.scroll.invalidate();
                 }
                 Ok(Some(TerminalEvent::Ready(_))) => self.scroll.invalidate(),
-                Ok(Some(TerminalEvent::TitleChanged { title, .. })) => {
+                // Applications often resend an unchanged title; only a new
+                // title needs to re-render the tab and window.
+                Ok(Some(TerminalEvent::TitleChanged { title, .. }))
+                    if title != self.title =>
+                {
                     self.title = title;
                     changed = true;
                 }
