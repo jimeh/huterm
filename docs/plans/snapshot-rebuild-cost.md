@@ -31,10 +31,13 @@ This PR covers:
 
 Out of scope:
 
-- PTY reader batching and the writer's per-dequeue runtime wake.
+- PTY reader batching and the writer's per-dequeue runtime wake. Reader
+  batching was later measured and landed here; see
+  [Implementation outcome](#implementation-outcome).
 - Link-lookup scrollback walking.
 - The macOS 1 MiB process-argument buffer.
-- The `select(2)` descriptor limit.
+- The `select(2)` descriptor limit, now tracked in
+  [#165](https://github.com/jimeh/huterm/issues/165).
 
 Record these in #162 as follow-ups. Batched native cell reads through
 `ghostty_render_state_row_cells_get_multi` are conditional, as step 7 explains.
@@ -96,7 +99,7 @@ Ghostty build treats as color operations.
 
 - **OSC numbers.** Flag an OSC only when its leading number is one that
   Ghostty's `osc.zig` dispatches to its color parsers: 4, 5, 10 through 19,
-  21 (kitty color protocol), 104, and 110 through 119. Keep RIS (`ESC c`)
+  21 (kitty color protocol), 104, 105, and 110 through 119. Keep RIS (`ESC c`)
   flagged. Accumulate the number across chunk boundaries.
 - **C1 bytes.** Model Ghostty's C1 handling from `stream.zig` and
   `parse_table.zig`. In the ground state, Ghostty decodes bytes as UTF-8, so a
@@ -281,7 +284,9 @@ batching.
 
 - Prompt, title, OSC 8, box-drawing, and CJK fixtures without color changes
   extract only the rows their text touched, as the extracted-row count shows.
-  `Arc` reuse alone does not prove this.
+  `Arc` reuse alone does not prove this. The OSC 8 fixture does not meet this
+  criterion; see the open follow-ups under
+  [Implementation outcome](#implementation-outcome).
 - Color OSC and RIS fixtures still update default colors and override state,
   and theme reloads preserve explicit overrides.
 - Full-rebuild snapshot p50 improves measurably against the 188 to 206 µs
@@ -303,9 +308,11 @@ batching.
 
 The steps landed in order. These points differ from the plan above:
 
-- Step 2 also includes OSC 21, the kitty color protocol, which Ghostty
-  dispatches to its color parser, and treats `0x9c` inside an OSC as payload,
-  matching `parse_table.zig`.
+- Step 2's OSC list omitted 105, which `osc.zig` also dispatches to its color
+  parser to reset special colors; the hint flags it too. Following CSI
+  parameters one byte at a time slowed DOOM-fire style output, so the hint
+  skips CSI parameters, string payloads, and numbered OSC payloads until a byte
+  that can change its state.
 - Step 4 keeps `CellText::as_char`, which decodes stored bytes without
   validation. The first build validated inline bytes on every `as_str` call and
   raised renderer prepare by 31-41%. Single ASCII bytes now borrow from a static
@@ -320,8 +327,8 @@ The steps landed in order. These points differ from the plan above:
   suppression would hide it from late attachers.
 - Step 7 deferred batched native reads. Ghostty getters and binding wrappers
   are about 60% of full-rebuild snapshot time, but the remaining gain does not
-  yet justify a vendored binding patch. Caching resolved styles across cells
-  that share a `style_id` needs no patch and is a smaller follow-up.
+  yet justify a vendored binding patch. Later experiments with both batched
+  reads and style caching by `style_id` were slower and were discarded.
 
 Two further measured changes followed. The PTY reader batches output the PTY
 already holds and waits for readiness without a read that must block. The

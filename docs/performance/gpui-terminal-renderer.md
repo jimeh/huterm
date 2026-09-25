@@ -1349,10 +1349,11 @@ pre-`CellText` baseline; other scenarios stayed within noise.
 ### PTY read batching
 
 macOS PTY reads return at most 1,024 bytes: 6,655 of 6,700 reads of a 6.8 MB
-truecolor flood were exactly that size. A new `engine_benchmark_pty_throughput`
-release test times 150 DOOM-fire style frames (24.3 MB) through a real runtime.
-Batching reads the PTY already holds, up to 64 KiB, and skipping the read that
-must block before each readiness wait raised it from about 1,040 to 1,110 frames
+truecolor flood were exactly that size. The first version of a new
+`engine_benchmark_pty_throughput` release test timed 150 DOOM-fire style frames
+(24.3 MB) through a real runtime. The first batching version read what the PTY
+already held, up to 64 KiB, and skipped the read that must block before each
+readiness wait. It raised that test from about 1,040 to 1,110 frames
 per second on macOS and from about 1,005 to 1,080 in the Linux arm64 container.
 On macOS, batches still average about 1 KiB: the tty queue rarely holds more,
 so the saved syscall per cycle provides the gain there. A `sample` of the macOS
@@ -1362,8 +1363,10 @@ run showed the runtime thread about 25% idle and the reader mostly waiting in
 The first batching version also cut the output channel from 64 messages to 8,
 sized for 64 KiB batches. macOS batches stay near 1 KiB, so that shrank the
 buffer between the reader and the parser from about 64 KiB to 8 KiB, too little
-to cover a full snapshot build. The benchmark now requests a snapshot every
-8 ms, like a 120 Hz client, and reports frame rates for each 50-frame segment.
+to cover a full snapshot build. The benchmark now pushes 600 frames (about
+97 MB) in twelve 50-frame segments and reports each segment's frame rate. Like
+a 120 Hz client, it requests a snapshot about 8 ms after the previous one
+completes.
 Returning to 64 messages with 16 KiB batches raised the macOS segment mean from
 about 1,030 to 1,070-1,085 frames per second across interleaved pairs, with a
 similar spread. In the Linux container the segment mean fell from about 1,265
