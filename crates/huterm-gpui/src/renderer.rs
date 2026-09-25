@@ -255,6 +255,7 @@ impl TerminalRenderer {
             sources.iter().filter(|source| source.is_none()).count();
         let rows = usize::from(snapshot.size.rows);
         let in_place = self.rows.len() == rows
+            && snapshot.rows.len() == rows
             && sources
                 .iter()
                 .enumerate()
