@@ -27,9 +27,11 @@ use crate::pty::{self, PtyProcess};
 
 const MESSAGE_CAPACITY: usize = 64;
 /// Largest PTY output message: one read plus output the PTY already holds.
-const READ_BATCH_BYTES: usize = 64 * 1024;
-/// Queued output messages, bounding output read ahead of the parser to 512 KiB.
-const OUTPUT_CAPACITY: usize = 512 * 1024 / READ_BATCH_BYTES;
+const READ_BATCH_BYTES: usize = 16 * 1024;
+/// Queued output messages, bounding output read ahead of the parser to 1 MiB.
+/// The bound counts messages, and macOS PTY reads rarely batch past 1 KiB, so
+/// fewer slots would leave too little buffer to cover a snapshot build.
+const OUTPUT_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -2743,13 +2745,16 @@ mod tests {
     }
 
     /// Times a PTY flood of DOOM-fire style frames through the whole runtime:
-    /// reader, output channel, parser, and effects. The final title marks
-    /// completion, so no snapshot competes with the measured work.
+    /// reader, output channel, parser, and effects. A title after every
+    /// segment timestamps progress without snapshots, and the loop requests a
+    /// snapshot every 8 ms like a 120 Hz client, so output-queue depth shows
+    /// up as segment-rate spread as well as in the mean.
     #[test]
     #[ignore = "release benchmark; run through mise run bench:engine"]
     fn engine_benchmark_pty_throughput() {
         use std::fmt::Write as _;
-        const FRAMES: u32 = 150;
+        const SEGMENTS: u32 = 12;
+        const SEGMENT_FRAMES: u32 = 50;
         let mut frame = String::from("\x1b[H");
         for cell in 0..120 * 40 {
             let value = (cell * 13) % 256;
@@ -2763,13 +2768,18 @@ mod tests {
                 value / 5
             );
         }
+        let segment = frame.repeat(SEGMENT_FRAMES as usize);
+        let mut payload = String::new();
+        for index in 0..SEGMENTS {
+            payload.push_str(&segment);
+            let _ = write!(payload, "\x1b]2;SEGMENT-{index}\x07");
+        }
         let data = std::env::temp_dir()
             .join(format!("huterm-throughput-{}.bin", std::process::id()));
-        let mut payload = frame.repeat(FRAMES as usize);
-        payload.push_str("\x1b]2;THROUGHPUT-DONE\x07");
         std::fs::write(&data, &payload).unwrap();
-        let mut samples = Vec::new();
-        for _ in 0..5 {
+        let mut elapsed = Vec::new();
+        let mut segment_rates = Vec::new();
+        for _ in 0..3 {
             let mut command = command(&format!(
                 "stty -echo; printf READY; read go; cat '{}'; read done",
                 data.display()
@@ -2784,34 +2794,56 @@ mod tests {
                 .unwrap();
             let started = Instant::now();
             let deadline = started + Duration::from_secs(60);
+            let mut segment_started = started;
+            let mut snapshot_at = started;
+            let last = format!("SEGMENT-{}", SEGMENTS - 1);
             'done: loop {
                 while let Some(event) = client.try_recv_event().unwrap() {
-                    if matches!(
-                        event,
-                        TerminalEvent::TitleChanged { ref title, .. }
-                            if title == "THROUGHPUT-DONE"
-                    ) {
-                        break 'done;
+                    if let TerminalEvent::TitleChanged { title, .. } = event {
+                        let now = Instant::now();
+                        segment_rates.push(
+                            f64::from(SEGMENT_FRAMES)
+                                / (now - segment_started).as_secs_f64(),
+                        );
+                        segment_started = now;
+                        if title == last {
+                            break 'done;
+                        }
                     }
                 }
                 assert!(Instant::now() < deadline, "throughput run timed out");
+                if snapshot_at.elapsed() >= Duration::from_millis(8) {
+                    client.read_snapshot().unwrap();
+                    snapshot_at = Instant::now();
+                }
                 thread::sleep(Duration::from_millis(1));
             }
-            samples.push(started.elapsed());
+            elapsed.push(started.elapsed());
             runtime.shutdown().unwrap();
         }
         let _ = std::fs::remove_file(&data);
-        samples.sort_unstable();
-        let median = samples[samples.len() / 2];
+        elapsed.sort_unstable();
+        segment_rates.sort_by(f64::total_cmp);
+        let count = f64::from(u32::try_from(segment_rates.len()).unwrap());
+        let mean = segment_rates.iter().sum::<f64>() / count;
+        let deviation = (segment_rates
+            .iter()
+            .map(|rate| (rate - mean).powi(2))
+            .sum::<f64>()
+            / count)
+            .sqrt();
+        let median = elapsed[elapsed.len() / 2];
         println!(
-            "engine=ghostty fixture=pty-throughput bytes={} frames={FRAMES} elapsed_ms_p50={:.1} elapsed_ms_min={:.1} mb_per_second={:.1} frames_per_second={:.0}",
+            "engine=ghostty fixture=pty-throughput bytes={} frames={} elapsed_ms_p50={:.1} mb_per_second={:.1} segment_fps_mean={mean:.0} segment_fps_stddev={deviation:.0} segment_fps_p10={:.0} segment_fps_p90={:.0} segment_fps_min={:.0}",
             payload.len(),
+            SEGMENTS * SEGMENT_FRAMES,
             median.as_secs_f64() * 1e3,
-            samples[0].as_secs_f64() * 1e3,
             f64::from(u32::try_from(payload.len()).unwrap())
                 / median.as_secs_f64()
                 / 1e6,
-            f64::from(FRAMES) / median.as_secs_f64(),
+            segment_rates[segment_rates.len() / 10],
+            segment_rates[segment_rates.len() * 9 / 10],
+            segment_rates[0],
         );
     }
 

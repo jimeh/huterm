@@ -1358,3 +1358,13 @@ On macOS, batches still average about 1 KiB: the tty queue rarely holds more,
 so the saved syscall per cycle provides the gain there. A `sample` of the macOS
 run showed the runtime thread about 25% idle and the reader mostly waiting in
 `select`, so the kernel handoff, not Huterm's parser, limits that benchmark.
+
+The first batching version also cut the output channel from 64 messages to 8,
+sized for 64 KiB batches. macOS batches stay near 1 KiB, so that shrank the
+buffer between the reader and the parser from about 64 KiB to 8 KiB, too little
+to cover a full snapshot build. The benchmark now requests a snapshot every
+8 ms, like a 120 Hz client, and reports frame rates for each 50-frame segment.
+Returning to 64 messages with 16 KiB batches raised the macOS segment mean from
+about 1,030 to 1,070-1,085 frames per second across interleaved pairs, with a
+similar spread. In the Linux container the segment mean fell from about 1,265
+to 1,230, keeping most of the batching gain; queued output is bounded at 1 MiB.
