@@ -2888,6 +2888,10 @@ mod tests {
         }
         let _ = std::fs::remove_file(&data);
         elapsed.sort_unstable();
+        assert!(
+            !segment_rates.is_empty(),
+            "no run observed two segment markers, so no rate was measured"
+        );
         segment_rates.sort_by(f64::total_cmp);
         let count = f64::from(u32::try_from(segment_rates.len()).unwrap());
         let mean = segment_rates.iter().sum::<f64>() / count;
