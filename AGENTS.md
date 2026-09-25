@@ -475,8 +475,9 @@ Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
-assessed background process groups into teardown. For live-shell PTY matching,
-normalize macOS ps ttys000/s000 abbreviations before comparing tty names.
+assessed background process groups into teardown. Match a terminal's processes
+by TTY device number. On macOS, take TTY membership from the kernel's TTY
+filter, because other users' processes do not report their terminal.
 Root-shell exit completes the terminal, matching Ghostty, iTerm2, WezTerm, and
 Alacritty. Reap through portable-pty immediately, even when history is retained;
 do not require an empty OS session or warn about post-exit survivors. Clear

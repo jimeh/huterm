@@ -3,9 +3,6 @@ mod lifecycle;
 pub(crate) use lifecycle::JobLifecycle;
 
 use std::collections::BTreeSet;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub(crate) struct JobContext {
@@ -16,7 +13,8 @@ pub(crate) struct JobContext {
     pub exited: bool,
     #[cfg(test)]
     pub pty_eof: bool,
-    pub tty: Option<String>,
+    /// Device number of the terminal's PTY.
+    pub tty: Option<u64>,
 }
 
 /// Observable process evidence for a terminal close assessment.
@@ -81,93 +79,39 @@ struct Process {
     parent: u32,
     group: i32,
     zombie: bool,
-    tty: String,
+    /// Whether the terminal being assessed is this process's terminal.
+    on_tty: bool,
     command: String,
     started: String,
     identity: String,
 }
 
-// This runs on the assessment worker, never the terminal parser or UI thread.
-// Bound both command runtime and output. ps supports these columns on macOS/Linux.
-fn process_table() -> Option<Vec<Process>> {
-    let mut child = Command::new("/bin/ps")
-        .args(["-axo", "pid=,ppid=,pgid=,stat=,tty=,lstart=,comm="])
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let scanner_pid = child.id();
-    let stdout = child.stdout.take()?;
-    let Ok(reader) = std::thread::Builder::new()
-        .name("huterm-job-scan".into())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            stdout
-                .take(4 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            (bytes.len() <= 4 * 1024 * 1024).then_some(bytes)
+/// Converts one table into evidence for one terminal. Other users'
+/// processes on macOS have no start time, so their identity is weaker.
+fn evidence(
+    table: &huterm_procinfo::ProcessTable,
+    tty: Option<u64>,
+) -> Vec<Process> {
+    table
+        .processes
+        .iter()
+        .filter_map(|process| {
+            let started = process.started.map_or_else(
+                || "unknown".to_owned(),
+                |started| started.to_string(),
+            );
+            Some(Process {
+                pid: process.pid,
+                parent: process.parent,
+                group: i32::try_from(process.group).ok()?,
+                zombie: process.zombie,
+                on_tty: tty.is_some_and(|tty| table.on_tty(tty, process.pid)),
+                identity: format!("{started} {}", process.name),
+                command: process.name.clone(),
+                started,
+            })
         })
-    else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    let bytes = reader.join().ok()??;
-    if !success {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    // The owned ps observer has already been waited and is not a terminal job.
-    text.lines()
-        .map(parse_process)
-        .collect::<Option<Vec<_>>>()
-        .map(|table| {
-            table
-                .into_iter()
-                .filter(|process| process.pid != scanner_pid)
-                .collect()
-        })
-}
-
-fn parse_process(line: &str) -> Option<Process> {
-    let mut fields = line.split_whitespace();
-    let pid = fields.next()?.parse().ok()?;
-    let parent = fields.next()?.parse().ok()?;
-    let group = fields.next()?.parse().ok()?;
-    let zombie = fields.next()?.contains('Z');
-    let tty = fields.next()?.to_owned();
-    let start = fields.by_ref().take(5).collect::<Vec<_>>().join(" ");
-    let command = fields.collect::<Vec<_>>().join(" ");
-    if start.is_empty() || command.is_empty() {
-        return None;
-    }
-    Some(Process {
-        pid,
-        parent,
-        group,
-        zombie,
-        tty,
-        identity: format!("{start} {command}"),
-        started: start,
-        command,
-    })
+        .collect()
 }
 
 fn is_shell(command: &str) -> bool {
@@ -185,15 +129,28 @@ pub(crate) fn inspect_all(contexts: Vec<Option<JobContext>>) -> Vec<JobState> {
     if contexts.is_empty() {
         return Vec::new();
     }
+    // This runs on the assessment worker, never the terminal parser or UI
+    // thread. On Linux it scans /proc once for every terminal.
+    let ttys: Vec<u64> = contexts
+        .iter()
+        .flatten()
+        .filter_map(|context| context.tty)
+        .collect();
     let table = contexts
         .iter()
         .flatten()
         .any(|context| context.lifecycle.running())
-        .then(process_table)
+        .then(|| huterm_procinfo::process_table(&ttys))
         .flatten();
     contexts
         .into_iter()
-        .map(|context| inspect(context, table.as_deref()))
+        .map(|context| {
+            let evidence = table
+                .as_ref()
+                .zip(context.as_ref())
+                .map(|(table, context)| evidence(table, context.tty));
+            inspect(context, evidence.as_deref())
+        })
         .collect()
 }
 
@@ -211,16 +168,11 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
         let Some(table) = table else {
             return JobState::Unknown;
         };
-        classify(table, shell, foreground, context.tty.as_deref())
+        classify(table, shell, foreground)
     })
 }
 
-fn classify(
-    table: &[Process],
-    shell: u32,
-    foreground: i32,
-    tty: Option<&str>,
-) -> JobState {
+fn classify(table: &[Process], shell: u32, foreground: i32) -> JobState {
     if !table.iter().any(|p| p.pid == shell) {
         return JobState::Unknown;
     }
@@ -242,10 +194,7 @@ fn classify(
             !p.zombie
                 && (descendants.contains(&p.pid)
                     || p.group == foreground
-                    || tty.is_some_and(|tty| {
-                        tty.trim_start_matches("tty")
-                            == p.tty.trim_start_matches("tty")
-                    }))
+                    || p.on_tty)
         })
         .filter(|p| p.pid != shell || !is_shell(&p.command))
         .map(|p| JobProcess {
@@ -274,14 +223,14 @@ mod tests {
         pid: u32,
         parent: u32,
         group: i32,
-        tty: &str,
+        on_tty: bool,
         command: &str,
     ) -> Process {
         Process {
             pid,
             parent,
             group,
-            tty: tty.into(),
+            on_tty,
             zombie: false,
             command: command.into(),
             started: "start".into(),
@@ -289,28 +238,28 @@ mod tests {
         }
     }
     #[test]
-    fn live_shell_matches_macos_tty_abbreviation() {
+    fn orphans_on_the_terminal_are_jobs_but_other_terminals_are_not() {
+        // Both left the shell's tree and group; only one holds its terminal.
         let table = vec![
-            process(10, 1, 10, "s000", "sh"),
-            process(12, 1, 12, "s000", "sleep"),
+            process(10, 1, 10, true, "sh"),
+            process(12, 1, 12, true, "sleep"),
+            process(13, 1, 13, false, "sleep"),
         ];
-        let JobState::Running(jobs) = classify(&table, 10, 10, Some("ttys000"))
-        else {
+        let JobState::Running(jobs) = classify(&table, 10, 10) else {
             panic!("missing tty job");
         };
         assert_eq!(jobs.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![12]);
     }
     #[test]
     fn idle_foreground_background_and_unknown_evidence_are_distinct() {
-        let shell = process(10, 1, 10, "pts/0", "/bin/sh");
-        assert_eq!(classify(&[shell], 10, 10, Some("pts/0")), JobState::Idle);
+        let shell = process(10, 1, 10, true, "/bin/sh");
+        assert_eq!(classify(&[shell], 10, 10), JobState::Idle);
         let table = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(11, 10, 11, "pts/0", "vim"),
-            process(12, 10, 12, "pts/0", "sleep"),
+            process(10, 1, 10, true, "sh"),
+            process(11, 10, 11, true, "vim"),
+            process(12, 10, 12, true, "sleep"),
         ];
-        let JobState::Running(jobs) = classify(&table, 10, 11, Some("pts/0"))
-        else {
+        let JobState::Running(jobs) = classify(&table, 10, 11) else {
             panic!("missing jobs");
         };
         assert!(jobs[0].foreground);
@@ -330,39 +279,33 @@ mod tests {
             ),
             JobState::Unknown
         );
-        assert_eq!(classify(&[], 10, 0, Some("pts/0")), JobState::Unknown);
+        assert_eq!(classify(&[], 10, 0), JobState::Unknown);
     }
 
     #[test]
     fn consent_rejects_new_groups_reused_leaders_and_unknown_widening() {
         let original = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "make"),
-            process(21, 20, 20, "pts/0", "cc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "make"),
+            process(21, 20, 20, true, "cc"),
         ];
-        let consent = classify(&original, 10, 20, Some("pts/0"));
+        let consent = classify(&original, 10, 20);
         let churn = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "cargo"),
-            process(22, 20, 20, "pts/0", "rustc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "cargo"),
+            process(22, 20, 20, true, "rustc"),
         ];
-        let current = classify(&churn, 10, 20, Some("pts/0"));
+        let current = classify(&churn, 10, 20);
         assert!(
             covered_by(&current, &consent),
             "leader exec and child churn must preserve group consent"
         );
         let mut new_group = churn;
-        new_group.push(process(30, 10, 30, "pts/0", "vim"));
-        assert!(!covered_by(
-            &classify(&new_group, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        new_group.push(process(30, 10, 30, true, "vim"));
+        assert!(!covered_by(&classify(&new_group, 10, 20), &consent));
         new_group.pop();
         new_group[1].started = "later incarnation".into();
-        assert!(!covered_by(
-            &classify(&new_group, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        assert!(!covered_by(&classify(&new_group, 10, 20), &consent));
         assert!(!covered_by(&JobState::Unknown, &consent));
         assert!(!covered_by(&current, &JobState::Idle));
         assert!(covered_by(&JobState::Idle, &consent));
@@ -371,33 +314,27 @@ mod tests {
     #[test]
     fn leaderless_group_needs_an_original_surviving_member() {
         let original = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "make"),
-            process(21, 20, 20, "pts/0", "cc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "make"),
+            process(21, 20, 20, true, "cc"),
         ];
-        let consent = classify(&original, 10, 20, Some("pts/0"));
+        let consent = classify(&original, 10, 20);
         let mut current = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(21, 1, 20, "pts/0", "cc"),
-            process(22, 1, 20, "pts/0", "ld"),
+            process(10, 1, 10, true, "sh"),
+            process(21, 1, 20, true, "cc"),
+            process(22, 1, 20, true, "ld"),
         ];
-        assert!(covered_by(
-            &classify(&current, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        assert!(covered_by(&classify(&current, 10, 20), &consent));
         current.remove(1);
         assert!(
-            !covered_by(&classify(&current, 10, 20, Some("pts/0")), &consent),
+            !covered_by(&classify(&current, 10, 20), &consent),
             "group number alone cannot prove continuity"
         );
     }
 
     #[test]
     fn root_program_and_exec_replacement_are_jobs() {
-        let table = vec![process(10, 1, 10, "pts/0", "vim")];
-        assert!(matches!(
-            classify(&table, 10, 10, Some("pts/0")),
-            JobState::Running(_)
-        ));
+        let table = vec![process(10, 1, 10, true, "vim")];
+        assert!(matches!(classify(&table, 10, 10), JobState::Running(_)));
     }
 }

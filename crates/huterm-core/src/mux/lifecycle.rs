@@ -584,6 +584,53 @@ mod tests {
         }
     }
     #[test]
+    fn orphans_holding_the_terminal_need_consent_and_are_cleaned_up() {
+        // Job control puts the inner shell in its own group. It exits,
+        // leaving `sleep` outside the shell's tree and the foreground group;
+        // only its controlling terminal ties it to this tab.
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let opened = mux
+            .open_tab(
+                workspace,
+                &command("set -m; printf IDLE; read value; sh -c 'sleep 30 &'; printf BUSY; read value"),
+            )
+            .unwrap();
+        ready(&opened.client, "IDLE");
+        opened
+            .client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        ready(&opened.client, "BUSY");
+        let busy = mux
+            .prepare_close(CloseRequest::Application)
+            .unwrap()
+            .check_jobs();
+        let orphan = busy
+            .jobs()
+            .iter()
+            .find_map(|state| match state {
+                JobState::Running(jobs) => {
+                    jobs.iter().find(|job| job.identity.ends_with(" sleep"))
+                }
+                _ => None,
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("orphan missing: {:?}", busy.jobs()));
+        assert!(!orphan.foreground);
+        mux.commit_close(&busy, &busy.recheck(), true).unwrap();
+        assert_eq!(
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(i32::try_from(orphan.pid).unwrap()),
+                None
+            ),
+            Err(nix::errno::Errno::ESRCH),
+            "orphan {} survived close",
+            orphan.pid
+        );
+    }
+    #[test]
     fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();

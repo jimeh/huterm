@@ -1,4 +1,4 @@
-use crate::{Process, StartTime};
+use crate::{Process, ProcessTable, StartTime};
 
 pub(crate) fn process(pid: u32) -> Option<Process> {
     parse_stat(pid, &read_stat(pid)?)
@@ -20,14 +20,40 @@ pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
 
 /// Linux cannot filter processes by group, so this scans every `stat` file.
 pub(crate) fn group_members(group: u32) -> Option<Vec<u32>> {
+    Some(
+        all_processes()?
+            .into_iter()
+            .filter(|process| process.group == group)
+            .map(|process| process.pid)
+            .collect(),
+    )
+}
+
+/// One scan reads every process, including its terminal.
+pub(crate) fn process_table(ttys: &[u64]) -> Option<ProcessTable> {
+    let processes = all_processes()?;
+    let ttys = ttys
+        .iter()
+        .map(|device| {
+            let members = processes
+                .iter()
+                .filter(|process| process.tty == Some(*device))
+                .map(|process| process.pid)
+                .collect();
+            (*device, members)
+        })
+        .collect();
+    Some(ProcessTable { processes, ttys })
+}
+
+/// Reads every process. Processes that exit during the scan are skipped.
+fn all_processes() -> Option<Vec<Process>> {
     let entries = std::fs::read_dir("/proc").ok()?;
     Some(
         entries
             .flatten()
             .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
-            .filter_map(|pid| parse_stat(pid, &read_stat(pid)?))
-            .filter(|process| process.group == group)
-            .map(|process| process.pid)
+            .filter_map(process)
             .collect(),
     )
 }

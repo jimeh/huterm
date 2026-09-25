@@ -18,6 +18,9 @@ use macos as platform;
 
 pub use name::{display_name, is_shell};
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
 /// When a process started, comparable only between reads on the same boot.
 ///
 /// A process keeps its start time across `exec`, so a PID with a different
@@ -26,6 +29,12 @@ pub use name::{display_name, is_shell};
 pub struct StartTime {
     seconds: u64,
     fraction: u64,
+}
+
+impl std::fmt::Display for StartTime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{:06}", self.seconds, self.fraction)
+    }
 }
 
 /// Facts about one process at the time it was read.
@@ -89,6 +98,60 @@ pub fn group_members(group: u32) -> Option<Vec<u32>> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = group;
+        None
+    }
+}
+
+/// Every readable process, and which processes use each requested terminal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProcessTable {
+    /// Processes that existed while the table was read.
+    pub processes: Vec<Process>,
+    ttys: BTreeMap<u64, BTreeSet<u32>>,
+}
+
+impl ProcessTable {
+    /// Whether `pid` has the terminal `device` as its controlling terminal.
+    /// Only devices requested from [`process_table`] are known.
+    #[must_use]
+    pub fn on_tty(&self, device: u64, pid: u32) -> bool {
+        self.ttys
+            .get(&device)
+            .is_some_and(|members| members.contains(&pid))
+    }
+}
+
+/// Reads every process and the members of each terminal in `ttys`, or
+/// `None` when the process list cannot be read.
+///
+/// macOS asks the kernel for each terminal's members, because other users'
+/// processes do not report their terminal. Linux reads every process's
+/// terminal in the same scan.
+#[must_use]
+pub fn process_table(ttys: &[u64]) -> Option<ProcessTable> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        platform::process_table(ttys)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = ttys;
+        None
+    }
+}
+
+/// Reads the device number of a terminal such as `/dev/ttys003`, comparable
+/// with [`Process::tty`] and [`ProcessTable::on_tty`].
+#[must_use]
+pub fn tty_device(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|metadata| metadata.rdev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
         None
     }
 }
@@ -201,6 +264,37 @@ mod tests {
             process(pid).is_none_or(|facts| facts.zombie).then_some(())
         });
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn process_tables_include_every_process_and_known_terminals() {
+        let shell = ready_child(
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 30 & echo ready; wait"])
+                .process_group(0),
+        );
+        let pid = shell.0.id();
+        let own = process(std::process::id()).unwrap();
+        let ttys: Vec<u64> = own.tty.into_iter().collect();
+        let child = eventually(|| {
+            let table = process_table(&ttys)?;
+            assert!(table.processes.iter().any(|p| p.pid == 1));
+            if let Some(device) = own.tty {
+                assert!(table.on_tty(device, own.pid));
+            }
+            table
+                .processes
+                .into_iter()
+                .find(|p| p.parent == pid && p.name == "sleep")
+        });
+        assert_eq!(child.group, pid);
+        assert!(!process_table(&[]).unwrap().on_tty(0, child.pid));
+    }
+
+    #[test]
+    fn tty_devices_come_from_device_nodes() {
+        assert!(tty_device(Path::new("/dev/null")).is_some());
+        assert_eq!(tty_device(Path::new("/nonexistent/tty")), None);
     }
 
     #[test]

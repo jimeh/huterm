@@ -1,7 +1,7 @@
 # Foreground process detection
 
-Status: agreed in discussion on 2026-09-25. Implementation lands as two
-commits: foreground labels first, then close-confirmation evidence.
+Status: agreed in discussion on 2026-09-25 and implemented in two commits:
+foreground labels first, then close-confirmation evidence.
 
 ## Outcome and scope
 
@@ -55,7 +55,9 @@ crate, like the workspace, denies unsafe code.
 - `arguments(pid)` returns argv.
 - `group_members(group)` lists a group's PIDs.
 - `display_name(arguments)` applies the naming rule below.
-- The second commit adds a close-confirmation candidate snapshot.
+- `process_table(ttys)` returns every process and each terminal's members,
+  for close confirmation.
+- `tty_device(path)` reads a terminal's device number.
 
 `huterm-core` keeps behaviour: `tcgetpgrp` on its own PTY, probe scheduling,
 metadata publishing, `JobState` classification, consent, and shutdown groups.

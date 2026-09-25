@@ -11,10 +11,12 @@ use std::ffi::{c_char, c_int, c_void};
 use std::mem::{MaybeUninit, size_of};
 use std::sync::OnceLock;
 
-use crate::{Process, StartTime};
+use crate::{Process, ProcessTable, StartTime};
 
-/// `proc_listpids` filter from `<sys/proc_info.h>`; `libc` omits it.
+/// `proc_listpids` filters from `<sys/proc_info.h>`; `libc` omits them.
+const PROC_ALL_PIDS: u32 = 1;
 const PROC_PGRP_ONLY: u32 = 2;
+const PROC_TTY_ONLY: u32 = 3;
 /// `NODEV`: the process has no controlling terminal.
 const NO_DEVICE: u32 = u32::MAX;
 
@@ -87,6 +89,26 @@ pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
 
 pub(crate) fn group_members(group: u32) -> Option<Vec<u32>> {
     list_pids(PROC_PGRP_ONLY, group)
+}
+
+/// Reads every process, and asks the kernel for each terminal's members
+/// because other users' processes do not report their terminal.
+pub(crate) fn process_table(ttys: &[u64]) -> Option<ProcessTable> {
+    let processes = list_pids(PROC_ALL_PIDS, 0)?
+        .into_iter()
+        .filter_map(process)
+        .collect();
+    let ttys = ttys
+        .iter()
+        .map(|device| {
+            let filter = u32::try_from(*device).ok()?;
+            Some((
+                *device,
+                list_pids(PROC_TTY_ONLY, filter)?.into_iter().collect(),
+            ))
+        })
+        .collect::<Option<_>>()?;
+    Some(ProcessTable { processes, ttys })
 }
 
 /// Reads one `proc_pidinfo` flavour. Only instantiate with `libc`'s
@@ -230,7 +252,6 @@ mod tests {
 
     #[test]
     fn listing_every_pid_includes_this_process_and_launchd() {
-        const PROC_ALL_PIDS: u32 = 1;
         let pids = list_pids(PROC_ALL_PIDS, 0).unwrap();
         assert!(pids.contains(&std::process::id()));
         assert!(pids.contains(&1));

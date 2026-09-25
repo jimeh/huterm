@@ -964,10 +964,8 @@ fn run_terminal(
                         exited: child_exited,
                         #[cfg(test)]
                         pty_eof,
-                        tty: master.tty_name().map(|name| {
-                            name.to_string_lossy()
-                                .trim_start_matches("/dev/")
-                                .to_owned()
+                        tty: master.tty_name().and_then(|name| {
+                            huterm_procinfo::tty_device(&name)
                         }),
                     });
                 }
