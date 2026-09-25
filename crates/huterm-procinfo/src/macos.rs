@@ -1,6 +1,6 @@
 //! macOS process facts through `libproc` and `sysctl`.
 //!
-//! The unsafe code is confined to three helpers that pass correctly sized
+//! The unsafe code is confined to small helpers that pass correctly sized
 //! buffers to the kernel. Everything they return is parsed in safe code.
 #![expect(
     unsafe_code,
@@ -53,8 +53,43 @@ pub(crate) fn process(pid: u32) -> Option<Process> {
         group: info.pbsi_pgid,
         tty: None,
         zombie: info.pbsi_status == libc::SZOMB,
-        started: None,
+        started: start_time(id),
         name: c_string(&info.pbsi_comm),
+    })
+}
+
+/// `sizeof(struct kinfo_proc)` on 64-bit macOS; `libc` omits the struct.
+const KINFO_PROC_SIZE: usize = 648;
+
+/// Reads a start time through `sysctl(KERN_PROC_PID)`, which, unlike
+/// `proc_pidinfo`, answers for other users' processes. The struct begins with
+/// `kp_proc.p_un.__p_starttime`, a `timeval` of a 64-bit `tv_sec` and a
+/// 32-bit `tv_usec`, so only that prefix is parsed.
+fn start_time(pid: c_int) -> Option<StartTime> {
+    let mut buffer = [0_u8; KINFO_PROC_SIZE];
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut size = buffer.len();
+    // SAFETY: `buffer` has `size` writable bytes. `sysctl` writes at most
+    // `size` bytes and stores the number written back into `size`.
+    let result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buffer.as_mut_ptr().cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    // A missing process yields success with nothing written.
+    if result != 0 || size != KINFO_PROC_SIZE {
+        return None;
+    }
+    let (seconds, rest) = buffer.split_first_chunk::<8>()?;
+    let (fraction, _) = rest.split_first_chunk::<4>()?;
+    Some(StartTime {
+        seconds: u64::try_from(i64::from_ne_bytes(*seconds)).ok()?,
+        fraction: u64::try_from(i32::from_ne_bytes(*fraction)).ok()?,
     })
 }
 
@@ -148,15 +183,36 @@ fn pid_info<T: Copy>(pid: c_int, flavor: c_int) -> Option<T> {
 /// empty list and for an error, so `errno` is cleared first to tell them
 /// apart.
 fn list_pids(kind: u32, filter: u32) -> Option<Vec<u32>> {
-    let needed = list_pid_bytes(kind, filter, std::ptr::null_mut(), 0)?;
+    read_pid_list(|buffer| match buffer {
+        None => list_pid_bytes(kind, filter, std::ptr::null_mut(), 0),
+        Some(pids) => list_pid_bytes(
+            kind,
+            filter,
+            pids.as_mut_ptr().cast(),
+            c_int::try_from(size_of_val(pids)).ok()?,
+        ),
+    })
+}
+
+/// Sizes a buffer from `read(None)`, then reads into it. The kernel silently
+/// stops at a full buffer, which can drop processes that started after the
+/// size query, so a full read retries with twice the room.
+fn read_pid_list(
+    mut read: impl FnMut(Option<&mut [u32]>) -> Option<usize>,
+) -> Option<Vec<u32>> {
     // Leave room for processes that start between the two calls.
-    let mut pids = vec![0_u32; needed / size_of::<u32>() + 64];
-    let capacity = c_int::try_from(pids.len() * size_of::<u32>()).ok()?;
-    let written =
-        list_pid_bytes(kind, filter, pids.as_mut_ptr().cast(), capacity)?;
-    pids.truncate(written / size_of::<u32>());
-    pids.retain(|pid| *pid != 0);
-    Some(pids)
+    let mut slots = read(None)? / size_of::<u32>() + 64;
+    for _ in 0..4 {
+        let mut pids = vec![0_u32; slots];
+        let written = read(Some(&mut pids))? / size_of::<u32>();
+        if written < slots {
+            pids.truncate(written);
+            pids.retain(|pid| *pid != 0);
+            return Some(pids);
+        }
+        slots *= 2;
+    }
+    None
 }
 
 fn list_pid_bytes(
@@ -273,6 +329,40 @@ mod tests {
         let pids = list_pids(PROC_ALL_PIDS, 0).unwrap();
         assert!(pids.contains(&std::process::id()));
         assert!(pids.contains(&1));
+    }
+
+    #[test]
+    fn full_pid_buffers_are_read_again_with_more_room() {
+        // The kernel reports 1 PID, then 100 appear before the read.
+        let mut sizes = Vec::new();
+        let pids = read_pid_list(|buffer| match buffer {
+            None => Some(size_of::<u32>()),
+            Some(pids) => {
+                sizes.push(pids.len());
+                let count = pids.len().min(100);
+                for (index, pid) in pids[..count].iter_mut().enumerate() {
+                    *pid = u32::try_from(index + 1).unwrap();
+                }
+                Some(count * size_of::<u32>())
+            }
+        })
+        .unwrap();
+        assert_eq!(sizes, [65, 130], "the full first read is retried");
+        assert_eq!(pids.len(), 100);
+        let always_full = read_pid_list(|buffer| {
+            Some(buffer.map_or(0, |pids| size_of_val(pids)))
+        });
+        assert_eq!(always_full, None, "a list that keeps growing fails");
+    }
+
+    #[test]
+    fn start_times_are_read_for_other_users_processes() {
+        let own = process(std::process::id()).unwrap();
+        let id = c_int::try_from(std::process::id()).unwrap();
+        assert_eq!(start_time(id), own.started, "matches the BSD info");
+        // launchd belongs to root, which only the short info can read.
+        assert!(process(1).unwrap().started.is_some());
+        assert_eq!(start_time(c_int::MAX), None);
     }
 
     #[test]

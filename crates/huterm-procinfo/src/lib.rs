@@ -52,7 +52,7 @@ pub struct Process {
     /// Whether the process has exited and awaits reaping by its parent.
     pub zombie: bool,
     /// Start time, used to tell a reused PID from the original process.
-    /// `None` on macOS for processes owned by another user.
+    /// `None` only when the process has gone before its start time was read.
     pub started: Option<StartTime>,
     /// The kernel's short command name. It may be truncated and does not
     /// name scripts reliably; prefer [`display_name`] over [`arguments`].

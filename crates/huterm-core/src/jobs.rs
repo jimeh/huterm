@@ -86,8 +86,7 @@ struct Process {
     identity: String,
 }
 
-/// Converts one table into evidence for one terminal. Other users'
-/// processes on macOS have no start time, so their identity is weaker.
+/// Converts one table into evidence for one terminal.
 fn evidence(
     table: &huterm_procinfo::ProcessTable,
     tty: Option<u64>,
@@ -115,13 +114,12 @@ fn evidence(
 }
 
 fn is_shell(command: &str) -> bool {
-    matches!(
+    huterm_procinfo::is_shell(
         command
             .rsplit('/')
             .next()
             .unwrap_or(command)
             .trim_start_matches('-'),
-        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh"
     )
 }
 

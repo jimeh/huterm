@@ -19,12 +19,18 @@ const QUIET: Duration = Duration::from_millis(250);
 /// Catches `exec` and silent exits while a job holds the foreground.
 const JOB_POLL: Duration = Duration::from_secs(1);
 const MIN_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_DEADLINES: usize = 4;
+const MAX_TRIGGERS: usize = 4;
+/// How long a repeated title keeps its group attribution before the group is
+/// read again. A new job can repeat an exited job's title text.
+const TITLE_REREAD: Duration = Duration::from_millis(250);
 
 /// When to probe, as a pure function of observed events and instants.
 #[derive(Debug, Default)]
 pub(crate) struct ProbeSchedule {
-    deadlines: BTreeSet<Instant>,
+    triggers: BTreeSet<Instant>,
+    /// The job poll, kept apart from triggers so each probe replaces it
+    /// rather than starting another repeating poll.
+    poll: Option<Instant>,
     last_probe: Option<Instant>,
     last_output: Option<Instant>,
 }
@@ -56,7 +62,10 @@ impl ProbeSchedule {
 
     /// The earliest instant a probe may run, respecting the rate limit.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        let first = *self.deadlines.first()?;
+        let first = match (self.triggers.first().copied(), self.poll) {
+            (Some(trigger), Some(poll)) => trigger.min(poll),
+            (trigger, poll) => trigger.or(poll)?,
+        };
         Some(
             self.last_probe
                 .map_or(first, |last| first.max(last + MIN_INTERVAL)),
@@ -70,20 +79,19 @@ impl ProbeSchedule {
     /// Records a probe at `now`. A foreground job keeps a slow poll armed.
     pub(crate) fn probed(&mut self, now: Instant, job: bool) {
         self.last_probe = Some(now);
-        self.deadlines.retain(|deadline| *deadline > now);
-        if job {
-            self.arm(now + JOB_POLL);
-        }
+        self.triggers.retain(|trigger| *trigger > now);
+        self.poll = job.then_some(now + JOB_POLL);
     }
 
     pub(crate) fn stop(&mut self) {
-        self.deadlines.clear();
+        self.triggers.clear();
+        self.poll = None;
     }
 
     fn arm(&mut self, at: Instant) {
-        self.deadlines.insert(at);
-        while self.deadlines.len() > MAX_DEADLINES {
-            self.deadlines.pop_last();
+        self.triggers.insert(at);
+        while self.triggers.len() > MAX_TRIGGERS {
+            self.triggers.pop_last();
         }
     }
 }
@@ -102,11 +110,14 @@ pub(crate) struct Probe {
     pub(crate) job: bool,
 }
 
-/// Names the foreground process, reusing the last name until the selected
-/// process, its start time, or its kernel name changes.
+/// Names the foreground process. An idle root shell's name is reused until
+/// its process facts change; a job's argv is read on every probe.
 #[derive(Debug, Default)]
 pub(crate) struct ForegroundNames {
-    cached: Option<(huterm_procinfo::Process, Option<String>)>,
+    /// The last idle root shell and its name. Jobs are never cached: `exec`
+    /// of the same interpreter with another script keeps its PID, start
+    /// time, and kernel name.
+    idle: Option<(huterm_procinfo::Process, Option<String>)>,
 }
 
 impl ForegroundNames {
@@ -126,7 +137,7 @@ impl ForegroundNames {
             .and_then(|path| path.into_os_string().into_string().ok())
             .map(|path| TerminalDirectory::new(None, path, true));
         let Some(process) = selected else {
-            self.cached = None;
+            self.idle = None;
             return Probe {
                 group,
                 name: None,
@@ -134,8 +145,8 @@ impl ForegroundNames {
                 job: false,
             };
         };
-        let display = match &self.cached {
-            Some((cached, display)) if *cached == process => display.clone(),
+        let display = match &self.idle {
+            Some((idle, display)) if *idle == process => display.clone(),
             _ => huterm_procinfo::arguments(process.pid)
                 .as_deref()
                 .and_then(huterm_procinfo::display_name)
@@ -147,7 +158,7 @@ impl ForegroundNames {
         };
         let idle = Some(process.pid) == root
             && display.as_deref().is_none_or(huterm_procinfo::is_shell);
-        self.cached = Some((process, display.clone()));
+        self.idle = idle.then(|| (process, display.clone()));
         Probe {
             group,
             name: display.filter(|_| !idle),
@@ -168,6 +179,7 @@ pub(crate) struct Reports {
     process_directory: Option<TerminalDirectory>,
     directory: Option<(Option<i32>, TerminalDirectory)>,
     title: Option<(Option<i32>, String)>,
+    title_read: Option<Instant>,
 }
 
 impl Reports {
@@ -181,21 +193,37 @@ impl Reports {
         self.directory = directory.map(|directory| (foreground, directory));
     }
 
-    /// Records an OSC 0/2 title from `foreground`. An empty title clears it.
+    /// Records an OSC 0/2 title read with `foreground` at `now`. An empty
+    /// title clears it.
     pub(crate) fn report_title(
         &mut self,
         title: String,
         foreground: Option<i32>,
+        now: Instant,
     ) {
         self.foreground = foreground;
+        self.title_read = Some(now);
         self.title = (!title.is_empty()).then_some((foreground, title));
     }
 
-    /// Whether `title` would change the recorded title's text.
-    pub(crate) fn title_changes(&self, title: &str) -> bool {
+    /// Whether `title` differs from the recorded title's text.
+    pub(crate) fn title_text_changes(&self, title: &str) -> bool {
         self.title
             .as_ref()
             .map_or(!title.is_empty(), |(_, current)| current != title)
+    }
+
+    /// Whether reporting `title` needs a fresh foreground group. A program
+    /// re-sending its title needs at most one read per [`TITLE_REREAD`]; a
+    /// repeated title whose attribution no longer applies, such as a new job
+    /// repeating an exited job's title, is read again at once.
+    pub(crate) fn title_needs_group(&self, title: &str, now: Instant) -> bool {
+        self.title_text_changes(title)
+            || self.title.is_some()
+                && (self.title().is_none()
+                    || self.title_read.is_none_or(|read| {
+                        now.saturating_duration_since(read) >= TITLE_REREAD
+                    }))
     }
 
     pub(crate) fn probed(
@@ -322,8 +350,8 @@ mod tests {
         for milliseconds in 0..20 {
             schedule.title(at(start, milliseconds));
         }
-        assert!(schedule.deadlines.len() <= MAX_DEADLINES);
-        assert_eq!(schedule.deadlines.first(), Some(&at(start, 50)));
+        assert!(schedule.triggers.len() <= MAX_TRIGGERS);
+        assert_eq!(schedule.triggers.first(), Some(&at(start, 50)));
     }
 
     fn directory(path: &str, local: bool) -> TerminalDirectory {
@@ -382,25 +410,137 @@ mod tests {
 
     #[test]
     fn titles_apply_only_while_their_setter_holds_the_foreground() {
+        let start = Instant::now();
         let (shell, job) = (Some(10), Some(20));
         let mut reports = Reports::default();
         reports.probed(shell, None);
-        assert!(reports.title_changes("~/src"));
-        reports.report_title("~/src".into(), shell);
+        assert!(reports.title_needs_group("~/src", start));
+        reports.report_title("~/src".into(), shell, start);
         assert_eq!(reports.title().as_deref(), Some("~/src"));
-        assert!(
-            !reports.title_changes("~/src"),
-            "repeats need no group read"
-        );
         reports.probed(job, None);
         assert_eq!(reports.title(), None, "a job has not titled itself yet");
-        reports.report_title("notes.txt - VIM".into(), job);
+        reports.report_title("notes.txt - VIM".into(), job, start);
         assert_eq!(reports.title().as_deref(), Some("notes.txt - VIM"));
         reports.probed(shell, None);
         assert_eq!(reports.title(), None, "the job's title leaves with it");
-        reports.report_title(String::new(), shell);
+        reports.report_title(String::new(), shell, start);
         assert_eq!(reports.title(), None);
-        assert!(!reports.title_changes(""));
+        assert!(!reports.title_needs_group("", start));
+    }
+
+    #[test]
+    fn repeated_titles_are_reattributed_when_stale_or_inapplicable() {
+        let start = Instant::now();
+        let (first, second) = (Some(20), Some(30));
+        let mut reports = Reports::default();
+        reports.report_title("vim".into(), first, start);
+        assert!(!reports.title_text_changes("vim"));
+        assert!(
+            !reports.title_needs_group("vim", at(start, 100)),
+            "a program re-sending its title reads the group at most every 250 ms"
+        );
+        assert!(reports.title_needs_group("vim", at(start, 250)));
+        // A second vim starts after the first exits and repeats its title.
+        reports.probed(second, None);
+        assert!(
+            reports.title_needs_group("vim", at(start, 120)),
+            "the recorded attribution no longer applies"
+        );
+        reports.report_title("vim".into(), second, at(start, 120));
+        assert_eq!(reports.title().as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn a_running_job_keeps_one_poll_despite_other_triggers() {
+        let start = Instant::now();
+        let mut schedule = ProbeSchedule::default();
+        schedule.input(b"\r", start);
+        schedule.probed(at(start, 50), true);
+        assert_eq!(schedule.deadline(), Some(at(start, 500)));
+        schedule.probed(at(start, 500), true);
+        assert_eq!(schedule.deadline(), Some(at(start, 1_500)));
+        schedule.input(b"\r", at(start, 700));
+        schedule.probed(at(start, 750), true);
+        schedule.probed(at(start, 1_200), true);
+        assert_eq!(
+            (schedule.triggers.len(), schedule.deadline()),
+            (0, Some(at(start, 2_200))),
+            "each probe replaces the poll instead of adding another"
+        );
+    }
+
+    /// Kills a fixture's process group when the test ends, including on a
+    /// failed assertion. A leaked child keeps the runner's output pipes open.
+    #[cfg(unix)]
+    struct GroupGuard(std::process::Child);
+
+    #[cfg(unix)]
+    impl Drop for GroupGuard {
+        fn drop(&mut self) {
+            if let Ok(group) = i32::try_from(self.0.id()) {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(group),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_job_that_execs_the_same_interpreter_is_renamed() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-exec-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let second = directory.join("second-script");
+        std::fs::write(&second, "echo second\nwhile :; do sleep 1; done\n")
+            .unwrap();
+        let first = directory.join("first-script");
+        std::fs::write(
+            &first,
+            format!(
+                "#!/bin/sh\necho first\nread line\nexec /bin/sh '{}'\n",
+                second.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&first, PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let mut child = GroupGuard(
+            Command::new(&first)
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = BufReader::new(child.0.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let group = i32::try_from(child.0.id()).ok();
+        let mut names = ForegroundNames::default();
+        assert_eq!(
+            names.probe(group, None).name.as_deref(),
+            Some("first-script")
+        );
+        // Same PID, start time, and (on macOS) kernel name after the exec.
+        std::io::Write::write_all(child.0.stdin.as_mut().unwrap(), b"go\n")
+            .unwrap();
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line, "second\n");
+        assert_eq!(
+            names.probe(group, None).name.as_deref(),
+            Some("second-script")
+        );
+        drop(child);
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[cfg(unix)]
@@ -410,17 +550,19 @@ mod tests {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", "echo ready; exec sleep 30"])
-            .process_group(0)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = GroupGuard(
+            Command::new("/bin/sh")
+                .args(["-c", "echo ready; exec sleep 30"])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
+        BufReader::new(child.0.stdout.take().unwrap())
             .read_line(&mut line)
             .unwrap();
-        let pid = child.id();
+        let pid = child.0.id();
         let group = i32::try_from(pid).ok();
         let mut names = ForegroundNames::default();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -450,7 +592,5 @@ mod tests {
         let unknown = names.probe(None, Some(pid));
         assert_eq!((unknown.name, unknown.job), (None, false));
         assert!(unknown.directory.is_some(), "falls back to the root");
-        let _ = child.kill();
-        let _ = child.wait();
     }
 }

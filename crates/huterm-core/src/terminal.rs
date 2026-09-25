@@ -1046,7 +1046,11 @@ fn run_terminal(
                     {
                         continue;
                     }
-                    if matches!(effect, EngineEffect::Title(_)) {
+                    // Programs can re-send an unchanged title on every
+                    // chunk; only new text can mean a new program.
+                    if let EngineEffect::Title(title) = &effect
+                        && metadata.reports.title_text_changes(title)
+                    {
                         probes.title(now);
                     }
                     if handle_effect(
@@ -1215,6 +1219,13 @@ enum NextMessage {
 /// Takes client requests ahead of PTY output, so input waits behind at most
 /// one output chunk. When both queues are waiting they alternate, so neither
 /// can starve the other.
+///
+/// Input can overtake output that was read but not yet parsed, and is encoded
+/// against the modes parsed so far. Those modes are never older than what the
+/// client has displayed. Alacritty, kitty, and Ghostty also encode keys against
+/// parsed state while read output waits, and output still in the kernel buffer
+/// is overtaken by every terminal. Programs that must know a mode is active
+/// query it, for example with DECRQM.
 fn next_message(
     messages: &Receiver<RuntimeMessage>,
     output: &Receiver<Vec<u8>>,
@@ -1445,12 +1456,15 @@ fn handle_effect(
             queue_write(bytes, writer, pending_writes)
         }
         EngineEffect::Title(title) => {
-            // Titles can change on every output chunk; read the foreground
-            // group only when the text changes.
-            if metadata.reports.title_changes(&title) {
-                metadata
-                    .reports
-                    .report_title(title.clone(), master.process_group_leader());
+            // Titles can arrive on every output chunk; read the foreground
+            // group only when the text or its attribution may have changed.
+            let now = Instant::now();
+            if metadata.reports.title_needs_group(&title, now) {
+                metadata.reports.report_title(
+                    title.clone(),
+                    master.process_group_leader(),
+                    now,
+                );
                 let process =
                     metadata.current.foreground_process().map(str::to_owned);
                 metadata.publish(process, terminal_id, events);

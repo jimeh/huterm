@@ -8,7 +8,8 @@ const INTERPRETERS: &[&str] = &[
 ];
 
 const SHELLS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh",
+    "sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "nu",
+    "xonsh", "elvish", "pwsh",
 ];
 
 /// Names a process the way its user most likely invoked it.
@@ -121,8 +122,9 @@ mod tests {
 
     #[test]
     fn shells_are_recognised_by_display_name() {
-        assert!(is_shell("zsh"));
-        assert!(is_shell("sh"));
+        for shell in ["sh", "zsh", "mksh", "nu", "xonsh", "elvish", "pwsh"] {
+            assert!(is_shell(shell), "{shell}");
+        }
         assert!(!is_shell("deploy.sh"));
         assert!(!is_shell("vim"));
     }
