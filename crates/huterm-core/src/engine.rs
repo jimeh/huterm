@@ -562,6 +562,14 @@ mod benchmark {
             expected: "color",
             fill_scrollback: false,
         },
+        // A DOOM-fire style frame: truecolor foreground and background SGR
+        // for every cell, which dominates the bytes the parser sees.
+        Fixture {
+            name: "truecolor",
+            chunk: truecolor_chunk,
+            expected: "\u{2580}",
+            fill_scrollback: false,
+        },
         Fixture {
             name: "scroll",
             chunk: scroll_chunk,
@@ -575,6 +583,23 @@ mod benchmark {
             fill_scrollback: true,
         },
     ];
+
+    fn truecolor_chunk(iteration: usize) -> String {
+        let mut chunk = String::from("\x1b[H");
+        for cell in 0..120 * 40 {
+            let value = (cell * 13 + iteration * 7) % 256;
+            let _ = write!(
+                chunk,
+                "\x1b[38;2;{value};{};{};48;2;{};{};{}m\u{2580}",
+                value / 2,
+                value / 4,
+                255 - value,
+                value / 3,
+                value / 5
+            );
+        }
+        chunk
+    }
 
     /// Three distinct lines per chunk, so most rows shift rather than repeat.
     fn scroll_chunk(iteration: usize) -> String {

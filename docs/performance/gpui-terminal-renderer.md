@@ -1301,6 +1301,16 @@ budget, where history size stops growing. Row matching adds roughly 10-20 µs to
 full rebuilds on the runtime thread; before, the renderer compared the same
 rows on the UI thread and rebuilt every prepared row once scrollback was full.
 
+The first version of the narrowed hint followed CSI parameters one byte at a
+time, where the old hint had returned to its `memchr` scan after `ESC [`. On
+DOOM-fire style output, with truecolor foreground and background SGR for every
+cell, that cost about 400 µs per 120 by 40 frame against 40 µs before, and
+`doom-fire-rs` fell from about 1,600 to 1,100 producer frames per second. The
+hint now skips CSI parameters, string payloads, and numbered OSC payloads
+until a byte that can change its state. The `truecolor` fixture's parse p50
+fell from 1,070 µs to 705 µs; an isolated copy of the hint measured 88 µs per
+frame against the old hint's 40 µs.
+
 A `sample` profile of repeated `full` snapshots attributed about 60% of
 snapshot time to Ghostty getters and their binding wrappers (`row_cells_get`,
 `cell_get`, `style`, `content_tag`, `wide`, `codepoint`) and the rest to Rust

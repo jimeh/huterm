@@ -1007,13 +1007,29 @@ impl EscapeHint {
         let mut changed = false;
         let mut index = 0;
         while index < bytes.len() {
-            // Ghostty decodes ground bytes as UTF-8, so only ESC leaves it.
-            if *self == Self::Ground {
-                let Some(offset) = memchr::memchr(0x1b, &bytes[index..]) else {
-                    break;
-                };
-                index += offset;
-            }
+            // Skip bytes that cannot change the current state. Dense SGR
+            // output, such as truecolor per-cell colors, is mostly CSI
+            // parameters, and stepping each one dominated parse time.
+            let rest = &bytes[index..];
+            let next = match *self {
+                // Ghostty decodes ground bytes as UTF-8, so only ESC leaves it.
+                Self::Ground => memchr::memchr(0x1b, rest),
+                Self::Csi => {
+                    rest.iter().position(|byte| !matches!(byte, 0x20..=0x3f))
+                }
+                // Strings end only through anywhere transitions.
+                Self::Passthrough => rest.iter().position(|byte| {
+                    matches!(byte, 0x18 | 0x1a | 0x1b | 0x80..=0x9f)
+                }),
+                Self::Osc(number) if number.complete => rest
+                    .iter()
+                    .position(|byte| matches!(byte, 0x07 | 0x18 | 0x1a | 0x1b)),
+                _ => Some(0),
+            };
+            let Some(offset) = next else {
+                break;
+            };
+            index += offset;
             changed |= self.step(bytes[index]);
             index += 1;
         }
@@ -1905,10 +1921,13 @@ mod tests {
             b"\x1b[1\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
             // U+271D encodes a 0x9d continuation byte inside ordinary text.
             "cross \u{271d} then \x1b]2;title\x07 done".as_bytes(),
+            "\x1b[38;2;1;2;3;48;2;4;5;6m\u{2580}\x1b[0m".as_bytes(),
+            b"\x1bPq#0;2;0;0;0\xa0\x01\x9d11;#000\x07",
+            b"\x1b]52;c;aGVsbG8gd29ybGQ=\x01\xa0\x9d\x1b\\",
         ]
         .map(<[u8]>::to_vec)
         .into();
-        let alphabet = b"ab14;\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
+        let alphabet = b"ab14;m \x01\xa0\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
         let mut seed = 0x2545_f491_u32;
         fixtures.push(
             (0..512)
@@ -1928,6 +1947,11 @@ mod tests {
                 EscapeHint::Csi,
                 EscapeHint::Passthrough,
                 EscapeHint::Osc(OscNumber::default()),
+                EscapeHint::Osc(OscNumber {
+                    value: 11,
+                    digits: 2,
+                    complete: true,
+                }),
             ] {
                 for split in 0..=bytes.len() {
                     let (mut fast, mut expected) = (start, start);
