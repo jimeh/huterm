@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/jimeh/huterm/compare/v0.12.3...v0.13.0) (2026-09-25)
+
+
+### Features
+
+* add smart tab labels and replace ps with in-process process detection ([#160](https://github.com/jimeh/huterm/issues/160)) ([5be9643](https://github.com/jimeh/huterm/commit/5be964383b20ca1d33bcec97bc8aedf23a0dec36))
+
+
+### Performance Improvements
+
+* make Quake scheduling event-driven on macOS 14 and Linux ([#159](https://github.com/jimeh/huterm/issues/159)) ([66c003e](https://github.com/jimeh/huterm/commit/66c003ec9949ef9bfe22c284c8dc6897153f5e1b))
+* replace fullscreen polling with event-driven scheduling ([#157](https://github.com/jimeh/huterm/issues/157)) ([d96b832](https://github.com/jimeh/huterm/commit/d96b8323254050aceeb46f2e845367dc6385912c))
+
 ## [0.12.3](https://github.com/jimeh/huterm/compare/v0.12.2...v0.12.3) (2026-09-23)
 
 
