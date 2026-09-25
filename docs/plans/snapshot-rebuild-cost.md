@@ -196,9 +196,9 @@ every new line while following live output.
 - **Candidate order.** For each rebuilt row, try these retained rows in order,
   stopping at the first match:
   - The row at the same index.
-  - The row at the history-derived shift. That shift is the one `rows_to_rebuild`
-    in `crates/huterm-gpui/src/renderer.rs` computes from the bottom offsets and
-    history sizes.
+  - The row at the history-derived shift. That shift is the one the renderer
+    computes from the bottom offsets and history sizes, now in `row_sources` in
+    `crates/huterm-gpui/src/renderer.rs` (formerly `rows_to_rebuild`).
   - The row at the shift that last matched in this snapshot.
   - Otherwise, a scan of all retained rows, bounded by the viewport height.
 
@@ -225,7 +225,7 @@ Tests:
   such as `[blank, blank, A, B]` becoming `[blank, A, B, C]`, reuses the `Arc`s
   for `A` and `B`. So does a scroll whose first row changed.
 - A partial update that rewrites a row with identical content keeps its `Arc`.
-- Renderer `rows_to_rebuild` tests for identity alignment when `history_size`
+- Renderer `row_sources` tests for identity alignment when `history_size`
   does not change.
 - Existing snapshot, selection, and link tests still pass.
 - Run `bench:renderer-scenarios` against its saved baseline. The `scroll`
