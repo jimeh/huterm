@@ -1000,7 +1000,7 @@ impl OscNumber {
         (1..=Self::MAX_DIGITS).contains(&self.digits)
             && matches!(
                 self.value,
-                4 | 5 | 10..=19 | 21 | 104 | 110..=119
+                4 | 5 | 10..=19 | 21 | 104 | 105 | 110..=119
             )
     }
 }
@@ -2029,6 +2029,7 @@ mod tests {
             (b"\x1b]11;#000\x1b\\", true),
             (b"\x1b]21;foreground=#fff\x1b\\", true),
             (b"\x1b]104\x07", true),
+            (b"\x1b]105;0\x07", true),
             (b"\x1b]110\x18", true),
             (b"\x1b]119\x1a", true),
             (b"\x1bc", true),
