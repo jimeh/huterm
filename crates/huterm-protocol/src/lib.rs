@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod cell_text;
 mod command;
+pub use cell_text::CellText;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
     CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
@@ -547,7 +549,7 @@ pub struct CellStyle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
     /// Cell text, including combining characters.
-    pub text: String,
+    pub text: CellText,
     /// Semantic foreground color.
     pub foreground: CellColor,
     /// Semantic background color.

@@ -26,6 +26,12 @@ use crate::presentation::PresentationUpdate;
 use crate::pty::{self, PtyProcess};
 
 const MESSAGE_CAPACITY: usize = 64;
+/// Largest PTY output message: one read plus output the PTY already holds.
+const READ_BATCH_BYTES: usize = 16 * 1024;
+/// Queued output messages, bounding output read ahead of the parser to 1 MiB.
+/// The bound counts messages, and macOS PTY reads rarely batch past 1 KiB, so
+/// fewer slots would leave too little buffer to cover a snapshot build.
+const OUTPUT_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -452,7 +458,7 @@ impl TerminalRuntime {
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
         let (output_sender, output_receiver) =
-            mpsc::sync_channel(MESSAGE_CAPACITY);
+            mpsc::sync_channel(OUTPUT_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
         let wake = Arc::new(crate::wake::Wake::default());
         let message_sender =
@@ -1267,47 +1273,120 @@ fn spawn_reader(
     thread::Builder::new()
         .name(format!("huterm-reader-{}", terminal_id.get()))
         .spawn(move || {
-            let mut buffer = [0_u8; 8192];
-            let mut pending = None;
-            while !closing.load(Ordering::Acquire) {
-                if let Some(bytes) = pending.take() {
-                    // Teardown drops the receiver before joining this worker,
-                    // so bounded backpressure also has an explicit cancellation path.
-                    if output.send(bytes).is_err() {
-                        break;
-                    }
-                    continue;
-                }
-                match reader.read(&mut buffer) {
-                    Ok(0) => {
-                        let _ = controls.send(RuntimeControl::PtyEof);
-                        break;
-                    }
-                    Ok(count) => {
-                        pending = Some(buffer[..count].to_vec());
-                    }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock =>
-                    {
-                        if let Err(error) = reader_waiter.wait(None) {
-                            let _ = controls.send(
-                                RuntimeControl::WorkerFailed(format!(
-                                    "PTY readiness wait failed: {error}"
-                                )),
-                            );
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
-                            format!("PTY read failed: {error}"),
-                        ));
-                        break;
-                    }
-                }
-            }
+            forward_output(
+                &mut *reader,
+                || reader_waiter.wait(None),
+                &output,
+                &controls,
+                &closing,
+            );
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
+}
+
+/// Sends PTY output to the runtime in batches until end-of-file, a failure,
+/// teardown, or closing. `wait` blocks until the PTY is readable or its
+/// cancellation descriptor is signalled.
+fn forward_output(
+    reader: &mut dyn Read,
+    mut wait: impl FnMut() -> std::io::Result<()>,
+    output: &crate::wake::SyncSender<Vec<u8>>,
+    controls: &crate::wake::Sender<RuntimeControl>,
+    closing: &AtomicBool,
+) {
+    let mut buffer = [0_u8; 8192];
+    let mut pending = None;
+    let mut ended = None;
+    let mut drained = false;
+    while !closing.load(Ordering::Acquire) {
+        if let Some(bytes) = pending.take() {
+            // Teardown drops the receiver before joining this worker,
+            // so bounded backpressure also has an explicit cancellation path.
+            if output.send(bytes).is_err() {
+                break;
+            }
+            continue;
+        }
+        // End-of-file or a failure found while batching follows the
+        // output read before it.
+        if let Some(control) = ended.take() {
+            let _ = controls.send(control);
+            break;
+        }
+        // A read that would block needs no retry before the wait.
+        if std::mem::take(&mut drained)
+            && let Err(error) = wait()
+        {
+            let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+                "PTY readiness wait failed: {error}"
+            )));
+            break;
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                let _ = controls.send(RuntimeControl::PtyEof);
+                break;
+            }
+            Ok(count) => {
+                let mut batch = buffer[..count].to_vec();
+                // Only Unix PTYs are nonblocking. Elsewhere, a second read
+                // would hold this output until the PTY wrote again.
+                if cfg!(not(unix)) {
+                    pending = Some(batch);
+                    continue;
+                }
+                match read_ready(reader, &mut buffer, &mut batch) {
+                    ReadyEnd::Full => {}
+                    ReadyEnd::Drained => drained = true,
+                    ReadyEnd::Ended(control) => ended = Some(control),
+                }
+                pending = Some(batch);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                drained = true;
+            }
+            Err(error) => {
+                let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+                    "PTY read failed: {error}"
+                )));
+                break;
+            }
+        }
+    }
+}
+
+/// Why [`read_ready`] stopped adding to a batch.
+enum ReadyEnd {
+    Full,
+    Drained,
+    Ended(RuntimeControl),
+}
+
+/// Appends output the PTY already holds to `batch`, without waiting. When
+/// output arrives faster than single reads drain it, one message then carries
+/// several reads; each message costs a channel send, a runtime wake, and a
+/// parser call.
+fn read_ready(
+    reader: &mut dyn Read,
+    buffer: &mut [u8],
+    batch: &mut Vec<u8>,
+) -> ReadyEnd {
+    while batch.len() < READ_BATCH_BYTES {
+        let limit = buffer.len().min(READ_BATCH_BYTES - batch.len());
+        match reader.read(&mut buffer[..limit]) {
+            Ok(0) => return ReadyEnd::Ended(RuntimeControl::PtyEof),
+            Ok(count) => batch.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return ReadyEnd::Drained;
+            }
+            Err(error) => {
+                return ReadyEnd::Ended(RuntimeControl::WorkerFailed(format!(
+                    "PTY read failed: {error}"
+                )));
+            }
+        }
+    }
+    ReadyEnd::Full
 }
 
 fn observe_child_exit(
@@ -1626,8 +1705,10 @@ fn join_worker(worker: JoinHandle<()>) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::io;
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -2506,6 +2587,333 @@ mod tests {
         format!(
             "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""
         )
+    }
+
+    /// Returns scripted read results, then blocks.
+    struct ScriptedReader(VecDeque<io::Result<Vec<u8>>>);
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.0.pop_front() {
+                // Like a PTY, a short buffer takes part of the pending
+                // output and leaves the rest for the next read.
+                Some(Ok(mut bytes)) => {
+                    let count = bytes.len().min(buffer.len());
+                    buffer[..count].copy_from_slice(&bytes[..count]);
+                    let rest = bytes.split_off(count);
+                    if !rest.is_empty() {
+                        self.0.push_front(Ok(rest));
+                    }
+                    Ok(count)
+                }
+                Some(Err(error)) => Err(error),
+                None => Err(io::ErrorKind::WouldBlock.into()),
+            }
+        }
+    }
+
+    fn read_batch(
+        results: Vec<io::Result<Vec<u8>>>,
+    ) -> (Vec<u8>, ReadyEnd, usize) {
+        let mut reader = ScriptedReader(results.into());
+        let mut buffer = [0_u8; 8192];
+        let mut batch = b"first".to_vec();
+        let end = read_ready(&mut reader, &mut buffer, &mut batch);
+        let left = reader
+            .0
+            .iter()
+            .map(|result| result.as_ref().map_or(0, Vec::len))
+            .sum();
+        (batch, end, left)
+    }
+
+    #[test]
+    fn ready_reads_join_one_batch_until_the_pty_would_block() {
+        let (batch, end, left) =
+            read_batch(vec![Ok(b" second".to_vec()), Ok(b" third".to_vec())]);
+        assert_eq!(batch, b"first second third");
+        assert!(matches!(end, ReadyEnd::Drained));
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn ready_reads_stop_before_the_batch_limit_and_keep_later_output() {
+        let chunk = vec![b'x'; 8192];
+        let reads = READ_BATCH_BYTES / chunk.len() + 2;
+        let (batch, end, left) =
+            read_batch((0..reads).map(|_| Ok(chunk.clone())).collect());
+        assert!(matches!(end, ReadyEnd::Full));
+        assert_eq!(batch.len(), READ_BATCH_BYTES);
+        assert_eq!(batch.len() + left, 5 + reads * chunk.len());
+    }
+
+    #[test]
+    fn short_ready_reads_fill_the_batch_to_its_limit() {
+        // macOS PTY reads return at most 1 KiB.
+        let chunk = vec![b'x'; 1024];
+        let reads = READ_BATCH_BYTES / chunk.len() + 2;
+        let (batch, end, left) =
+            read_batch((0..reads).map(|_| Ok(chunk.clone())).collect());
+        assert!(matches!(end, ReadyEnd::Full));
+        assert_eq!(batch.len(), READ_BATCH_BYTES);
+        assert_eq!(batch.len() + left, 5 + reads * chunk.len());
+    }
+
+    #[test]
+    fn end_of_file_and_read_failures_follow_the_output_read_before_them() {
+        let (batch, end, _) =
+            read_batch(vec![Ok(b" tail".to_vec()), Ok(Vec::new())]);
+        assert_eq!(batch, b"first tail");
+        assert!(matches!(end, ReadyEnd::Ended(RuntimeControl::PtyEof)));
+
+        let (batch, end, _) = read_batch(vec![
+            Ok(b" tail".to_vec()),
+            Err(io::Error::other("gone")),
+        ]);
+        assert_eq!(batch, b"first tail");
+        assert!(matches!(
+            end,
+            ReadyEnd::Ended(RuntimeControl::WorkerFailed(message))
+                if message.contains("gone")
+        ));
+    }
+
+    /// Records each read's outcome and each readiness wait in order.
+    struct LoggedReader {
+        script: ScriptedReader,
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl Read for LoggedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let result = self.script.read(buffer);
+            self.log.borrow_mut().push(match &result {
+                Ok(0) => "eof",
+                Ok(_) => "read",
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    "would-block"
+                }
+                Err(_) => "error",
+            });
+            result
+        }
+    }
+
+    /// Runs the reader loop over `results` with a readiness wait that
+    /// returns `wait`, collecting forwarded output and controls. The script
+    /// blocks forever once exhausted, so the wait fails after a few calls:
+    /// a loop that stops handling end-of-file or errors then ends with a
+    /// budget failure instead of hanging the test run.
+    fn forward(
+        results: Vec<io::Result<Vec<u8>>>,
+        wait: fn() -> io::Result<()>,
+    ) -> (Vec<&'static str>, Vec<Vec<u8>>, Vec<RuntimeControl>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reader = LoggedReader {
+            script: ScriptedReader(results.into()),
+            log: Rc::clone(&log),
+        };
+        let wake = Arc::new(crate::wake::Wake::default());
+        let (output, outputs) = mpsc::sync_channel(OUTPUT_CAPACITY);
+        let (controls, received) = mpsc::channel();
+        let wait_log = Rc::clone(&log);
+        let mut waits = 0;
+        forward_output(
+            &mut reader,
+            || {
+                wait_log.borrow_mut().push("wait");
+                waits += 1;
+                if waits > 4 {
+                    return Err(io::Error::other("wait budget exhausted"));
+                }
+                wait()
+            },
+            &crate::wake::SyncSender::new(output, Arc::clone(&wake)),
+            &crate::wake::Sender::new(controls, wake),
+            &AtomicBool::new(false),
+        );
+        let log = log.borrow().clone();
+        let received: Vec<_> = received.try_iter().collect();
+        assert!(
+            !received.iter().any(|control| matches!(
+                control,
+                RuntimeControl::WorkerFailed(message)
+                    if message.contains("wait budget exhausted")
+            )),
+            "reader loop did not stop: {log:?}"
+        );
+        (log, outputs.try_iter().collect(), received)
+    }
+
+    #[test]
+    fn reader_waits_after_a_drained_batch_and_keeps_output_before_end_of_file()
+    {
+        let (log, outputs, controls) = forward(
+            vec![
+                Ok(b"a".to_vec()),
+                Ok(b"b".to_vec()),
+                Err(io::ErrorKind::WouldBlock.into()),
+                Ok(b"c".to_vec()),
+                Ok(Vec::new()),
+            ],
+            || Ok(()),
+        );
+        // No read is retried between a would-block result and the wait.
+        assert_eq!(log, ["read", "read", "would-block", "wait", "read", "eof"]);
+        assert_eq!(outputs, [b"ab".to_vec(), b"c".to_vec()]);
+        assert!(matches!(controls[..], [RuntimeControl::PtyEof]));
+    }
+
+    #[test]
+    fn reader_failures_keep_the_output_read_before_them() {
+        let (_, outputs, controls) = forward(
+            vec![Ok(b"a".to_vec()), Err(io::Error::other("gone"))],
+            || Ok(()),
+        );
+        assert_eq!(outputs, [b"a".to_vec()]);
+        assert!(matches!(
+            &controls[..],
+            [RuntimeControl::WorkerFailed(message)] if message.contains("gone")
+        ));
+
+        let (log, outputs, controls) = forward(
+            vec![Ok(b"a".to_vec()), Err(io::ErrorKind::WouldBlock.into())],
+            || Err(io::Error::other("closed")),
+        );
+        assert_eq!(log, ["read", "would-block", "wait"]);
+        assert_eq!(outputs, [b"a".to_vec()]);
+        assert!(matches!(
+            &controls[..],
+            [RuntimeControl::WorkerFailed(message)]
+                if message.contains("readiness wait failed")
+        ));
+    }
+
+    /// One 120 by 40 DOOM-fire style frame: truecolor foreground and
+    /// background SGR for every cell.
+    fn truecolor_frame() -> String {
+        use std::fmt::Write as _;
+        let mut frame = String::from("\x1b[H");
+        for cell in 0..120 * 40 {
+            let value = (cell * 13) % 256;
+            let _ = write!(
+                frame,
+                "\x1b[38;2;{value};{};{};48;2;{};{};{}m\u{2580}",
+                value / 2,
+                value / 4,
+                255 - value,
+                value / 3,
+                value / 5
+            );
+        }
+        frame
+    }
+
+    /// Times a PTY flood of DOOM-fire style frames through the whole runtime:
+    /// reader, output channel, parser, and effects. A title after every
+    /// segment timestamps progress without snapshots, and the loop requests a
+    /// snapshot about 8 ms after the previous one completes, roughly like a
+    /// 120 Hz client, so output-queue depth shows up as segment-rate spread as
+    /// well as in the mean. Segment rates start at the first marker, which
+    /// excludes shell and `cat` startup.
+    #[test]
+    #[ignore = "release benchmark; run through mise run bench:engine"]
+    fn engine_benchmark_pty_throughput() {
+        use std::fmt::Write as _;
+        const SEGMENTS: u32 = 12;
+        const SEGMENT_FRAMES: u32 = 50;
+        let segment = truecolor_frame().repeat(SEGMENT_FRAMES as usize);
+        let mut payload = String::new();
+        for index in 0..SEGMENTS {
+            payload.push_str(&segment);
+            let _ = write!(payload, "\x1b]2;SEGMENT-{index}\x07");
+        }
+        let data = std::env::temp_dir()
+            .join(format!("huterm-throughput-{}.bin", std::process::id()));
+        std::fs::write(&data, &payload).unwrap();
+        let mut elapsed = Vec::new();
+        let mut segment_rates = Vec::new();
+        for _ in 0..3 {
+            let mut command = command(&format!(
+                "stty -echo; printf READY; read go; cat '{}'; read done",
+                data.display()
+            ));
+            command.grid_size = GridSize::clamped(120, 40);
+            let runtime =
+                TerminalRuntime::spawn(TerminalId::new(90), &command).unwrap();
+            let client = runtime.client();
+            wait_for_text(&client, "READY");
+            client
+                .send_input(TerminalInput::Text("go\n".into()))
+                .unwrap();
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(60);
+            let mut previous: Option<(u32, Instant)> = None;
+            let mut snapshot_at = started;
+            'done: loop {
+                while let Some(event) = client.try_recv_event().unwrap() {
+                    let TerminalEvent::TitleChanged { title, .. } = event
+                    else {
+                        continue;
+                    };
+                    let Some(index) = title
+                        .strip_prefix("SEGMENT-")
+                        .and_then(|index| index.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    let now = Instant::now();
+                    // Pending titles coalesce, so a late poll can skip a
+                    // marker; count every segment the gap covers.
+                    if let Some((before, at)) = previous {
+                        segment_rates.push(
+                            f64::from((index - before) * SEGMENT_FRAMES)
+                                / (now - at).as_secs_f64(),
+                        );
+                    }
+                    previous = Some((index, now));
+                    if index == SEGMENTS - 1 {
+                        break 'done;
+                    }
+                }
+                assert!(Instant::now() < deadline, "throughput run timed out");
+                if snapshot_at.elapsed() >= Duration::from_millis(8) {
+                    client.read_snapshot().unwrap();
+                    snapshot_at = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            elapsed.push(started.elapsed());
+            runtime.shutdown().unwrap();
+        }
+        let _ = std::fs::remove_file(&data);
+        elapsed.sort_unstable();
+        assert!(
+            !segment_rates.is_empty(),
+            "no run observed two segment markers, so no rate was measured"
+        );
+        segment_rates.sort_by(f64::total_cmp);
+        let count = f64::from(u32::try_from(segment_rates.len()).unwrap());
+        let mean = segment_rates.iter().sum::<f64>() / count;
+        let deviation = (segment_rates
+            .iter()
+            .map(|rate| (rate - mean).powi(2))
+            .sum::<f64>()
+            / count)
+            .sqrt();
+        let median = elapsed[elapsed.len() / 2];
+        println!(
+            "engine=ghostty fixture=pty-throughput bytes={} frames={} elapsed_ms_p50={:.1} mb_per_second={:.1} segment_fps_mean={mean:.0} segment_fps_stddev={deviation:.0} segment_fps_p10={:.0} segment_fps_p90={:.0} segment_fps_min={:.0}",
+            payload.len(),
+            SEGMENTS * SEGMENT_FRAMES,
+            median.as_secs_f64() * 1e3,
+            f64::from(u32::try_from(payload.len()).unwrap())
+                / median.as_secs_f64()
+                / 1e6,
+            segment_rates[segment_rates.len() / 10],
+            segment_rates[segment_rates.len() * 9 / 10],
+            segment_rates[0],
+        );
     }
 
     fn command(script: &str) -> TerminalCommand {

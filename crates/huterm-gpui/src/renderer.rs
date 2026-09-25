@@ -3,6 +3,7 @@ mod builtin;
 pub(crate) mod smoke;
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -249,20 +250,25 @@ impl TerminalRenderer {
             return;
         }
 
-        self.align_rows(snapshot);
-        let rebuilds = rows_to_rebuild(self.snapshot.as_deref(), snapshot);
-        let rebuilt_rows = rebuilds.iter().filter(|rebuild| **rebuild).count();
+        let sources = row_sources(self.snapshot.as_deref(), snapshot);
+        let rebuilt_rows =
+            sources.iter().filter(|source| source.is_none()).count();
         let rows = usize::from(snapshot.size.rows);
-        if self.rows.len() != rows || snapshot.rows.len() != rows {
-            self.rows.clear();
-            self.rows.resize_with(rows, PreparedRow::default);
+        let in_place = self.rows.len() == rows
+            && snapshot.rows.len() == rows
+            && sources
+                .iter()
+                .enumerate()
+                .all(|(row, source)| source.is_none_or(|source| source == row));
+        if !in_place {
+            self.rows = realign(std::mem::take(&mut self.rows), &sources);
         }
 
         let mut cache_activity = CacheActivity::default();
         if rebuilt_rows > 0 {
             self.layouts.begin_generation();
             for (row, cells) in snapshot.rows.iter().take(rows).enumerate() {
-                if rebuilds[row] {
+                if sources[row].is_none() {
                     self.rows[row] = prepare_row(
                         &cells.cells,
                         &mut self.layouts,
@@ -372,42 +378,6 @@ impl TerminalRenderer {
         self.record_paint(started);
     }
 
-    fn align_rows(&mut self, current: &TerminalSnapshot) {
-        let Some(previous) = self.snapshot.as_deref() else {
-            return;
-        };
-        if previous.size != current.size
-            || self.rows.len() != usize::from(current.size.rows)
-        {
-            return;
-        }
-        let offset_delta = current.viewport.bottom_offset as i128
-            - previous.viewport.bottom_offset as i128;
-        let history_delta =
-            current.history_size as i128 - previous.history_size as i128;
-        let shift = offset_delta - history_delta;
-        let rows = i128::from(current.size.rows);
-        if shift == 0 || shift.unsigned_abs() >= rows.unsigned_abs() {
-            return;
-        }
-        let mut old: Vec<Option<PreparedRow>> = std::mem::take(&mut self.rows)
-            .into_iter()
-            .map(Some)
-            .collect();
-        self.rows = (0..usize::from(current.size.rows))
-            .map(|new_row| {
-                let old_row = new_row as i128 - shift;
-                if (0..rows).contains(&old_row) {
-                    old[usize::try_from(old_row).unwrap_or_default()]
-                        .take()
-                        .unwrap_or_default()
-                } else {
-                    PreparedRow::default()
-                }
-            })
-            .collect();
-    }
-
     fn record_prepare(
         &mut self,
         started: Option<Instant>,
@@ -442,7 +412,7 @@ impl TerminalRenderer {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PreparedRow {
     backgrounds: Vec<PreparedBackground>,
     glyphs: Vec<PreparedGlyph>,
@@ -450,23 +420,27 @@ struct PreparedRow {
     strikeouts: Vec<PreparedDecoration>,
 }
 
+#[derive(Clone)]
 struct PreparedBackground {
     start: u16,
     columns: u16,
     color: Hsla,
 }
 
+#[derive(Clone)]
 struct PreparedGlyph {
     column: u16,
     content: GlyphContent,
     color: Hsla,
 }
 
+#[derive(Clone)]
 enum GlyphContent {
     Font(Arc<LineLayout>),
     Builtin(Arc<builtin::Geometry>),
 }
 
+#[derive(Clone)]
 struct PreparedDecoration {
     start: u16,
     columns: u16,
@@ -496,10 +470,11 @@ fn prepare_row(
     };
 
     for (column, cell) in cells.iter().enumerate() {
+        let scalar = cell.text.as_char();
         if cell.style.wide_spacer
             || cell.style.hidden
             || cell.text.is_empty()
-            || cell.text == " "
+            || scalar == Some(' ')
         {
             continue;
         }
@@ -525,13 +500,17 @@ fn prepare_row(
             bold: cell.style.bold,
             italic: cell.style.italic,
         };
-        let (layout, hit) =
-            layouts.get_or_insert_with(&cell.text, variant, || {
-                let runs = [text_run(&cell.text, variant, font_family)];
-                window
-                    .text_system()
-                    .layout_line(&cell.text, font_size, &runs, None)
-            });
+        let key = scalar.map_or_else(
+            || GlyphText::Sequence(cell.text.as_str()),
+            GlyphText::Scalar,
+        );
+        let (layout, hit) = layouts.get_or_insert_with(key, variant, || {
+            let text = cell.text.as_str();
+            let runs = [text_run(text, variant, font_family)];
+            window
+                .text_system()
+                .layout_line(text, font_size, &runs, None)
+        });
         cache_activity.record(hit);
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
@@ -698,35 +677,96 @@ fn paint_row(
     }
 }
 
-fn rows_to_rebuild(
+/// The previous row whose prepared output each current row can reuse.
+///
+/// Runtimes keep an unchanged row's `Arc` at any index, including scrolls that
+/// the history size cannot report once scrollback is full, so identity is
+/// checked before the history-derived shift and its content comparison.
+fn row_sources(
     previous: Option<&TerminalSnapshot>,
     current: &TerminalSnapshot,
-) -> Vec<bool> {
+) -> Vec<Option<usize>> {
     let rows = usize::from(current.size.rows);
     let Some(previous) = previous.filter(|previous| {
         previous.size == current.size
             && previous.rows.len() == rows
             && current.rows.len() == rows
     }) else {
-        return vec![true; rows];
+        return vec![None; rows];
     };
     let shift = current.viewport.bottom_offset as i128
         - previous.viewport.bottom_offset as i128
         - (current.history_size as i128 - previous.history_size as i128);
+    // Sorted on the first row that neither candidate matches, so a full
+    // redraw costs O(rows log rows) rather than a scan per row.
+    let mut identities: Option<Vec<(*const _, usize)>> = None;
     current
         .rows
         .iter()
         .enumerate()
         .map(|(new_row, after)| {
-            let old_row = new_row as i128 - shift;
-            let Some(before) = usize::try_from(old_row)
+            let shifted = usize::try_from(new_row as i128 - shift)
                 .ok()
-                .and_then(|row| previous.rows.get(row))
-            else {
-                return true;
+                .filter(|row| *row < rows);
+            [Some(new_row), shifted]
+                .into_iter()
+                .flatten()
+                .find(|row| Arc::ptr_eq(&previous.rows[*row], after))
+                .or_else(|| {
+                    let identities = identities.get_or_insert_with(|| {
+                        let mut sorted: Vec<_> = previous
+                            .rows
+                            .iter()
+                            .map(Arc::as_ptr)
+                            .zip(0..)
+                            .collect();
+                        sorted.sort_unstable();
+                        sorted
+                    });
+                    let target = Arc::as_ptr(after);
+                    let first =
+                        identities.partition_point(|(row, _)| *row < target);
+                    identities
+                        .get(first)
+                        .filter(|(row, _)| *row == target)
+                        .map(|(_, row)| *row)
+                })
+                // Other runtimes may allocate rows with identical content.
+                .or_else(|| {
+                    shifted.filter(|row| *previous.rows[*row] == **after)
+                })
+        })
+        .collect()
+}
+
+/// Arranges `previous` by `sources`, moving each entry on its last use and
+/// cloning it when one retained row fills several positions.
+fn realign<T: Clone + Default>(
+    previous: Vec<T>,
+    sources: &[Option<usize>],
+) -> Vec<T> {
+    let mut uses = vec![0_usize; previous.len()];
+    for source in sources.iter().flatten() {
+        if let Some(count) = uses.get_mut(*source) {
+            *count += 1;
+        }
+    }
+    let mut previous: Vec<Option<T>> = previous.into_iter().map(Some).collect();
+    sources
+        .iter()
+        .map(|source| {
+            let Some(source) = *source else {
+                return T::default();
             };
-            // Full refreshes after scrolling may allocate rows with identical content.
-            !Arc::ptr_eq(before, after) && before != after
+            let Some(count) = uses.get_mut(source) else {
+                return T::default();
+            };
+            *count -= 1;
+            if *count == 0 {
+                previous[source].take().unwrap_or_default()
+            } else {
+                previous[source].clone().unwrap_or_default()
+            }
         })
         .collect()
 }
@@ -789,7 +829,7 @@ impl<T: Clone> GlyphLayoutCache<T> {
 
     fn get_or_insert_with(
         &mut self,
-        text: &str,
+        text: GlyphText<'_>,
         variant: FontVariant,
         create: impl FnOnce() -> T,
     ) -> (T, bool) {
@@ -809,11 +849,45 @@ impl<T: Clone> GlyphLayoutCache<T> {
     }
 }
 
+/// Multiplicative hash for `char` keys. Scalar layout lookups run for every
+/// non-ASCII cell a prepare rebuilds, and this is about four times faster than
+/// the default `SipHash`. Terminal output chooses the keys, but each cache
+/// generation holds at most `LAYOUT_GENERATION_CAPACITY` entries, which bounds
+/// what colliding keys can cost.
+#[derive(Default)]
+struct ScalarHasher(u64);
+
+impl Hasher for ScalarHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u32(u32::from(*byte));
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        // The rustc-hash (FxHasher) mixing step.
+        self.0 = (self.0.rotate_left(5) ^ u64::from(value))
+            .wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+/// Cell text as a layout cache key. Most cells hold one scalar, which the
+/// cache indexes without borrowing or hashing a string.
+#[derive(Clone, Copy)]
+enum GlyphText<'a> {
+    Scalar(char),
+    Sequence(&'a str),
+}
+
 struct VariantLayouts<T> {
     /// Indexed by code point: most cells are ASCII, and hashing each one
     /// dominated the lookup.
     ascii: [Option<T>; 128],
-    scalars: HashMap<char, T>,
+    scalars: HashMap<char, T, BuildHasherDefault<ScalarHasher>>,
     sequences: HashMap<String, T>,
 }
 
@@ -821,43 +895,38 @@ impl<T> Default for VariantLayouts<T> {
     fn default() -> Self {
         Self {
             ascii: std::array::from_fn(|_| None),
-            scalars: HashMap::new(),
+            scalars: HashMap::default(),
             sequences: HashMap::new(),
         }
     }
 }
 
 impl<T: Clone> VariantLayouts<T> {
-    fn get(&self, text: &str) -> Option<T> {
-        if let &[byte] = text.as_bytes() {
-            return self.ascii[usize::from(byte)].clone();
-        }
-        match single_scalar(text) {
-            Some(character) => self.scalars.get(&character).cloned(),
-            None => self.sequences.get(text).cloned(),
+    fn get(&self, text: GlyphText<'_>) -> Option<T> {
+        match text {
+            GlyphText::Scalar(character) if character.is_ascii() => {
+                self.ascii[character as usize].clone()
+            }
+            GlyphText::Scalar(character) => {
+                self.scalars.get(&character).cloned()
+            }
+            GlyphText::Sequence(text) => self.sequences.get(text).cloned(),
         }
     }
 
-    fn insert(&mut self, text: &str, value: T) {
-        if let &[byte] = text.as_bytes() {
-            self.ascii[usize::from(byte)] = Some(value);
-            return;
-        }
-        match single_scalar(text) {
-            Some(character) => {
+    fn insert(&mut self, text: GlyphText<'_>, value: T) {
+        match text {
+            GlyphText::Scalar(character) if character.is_ascii() => {
+                self.ascii[character as usize] = Some(value);
+            }
+            GlyphText::Scalar(character) => {
                 self.scalars.insert(character, value);
             }
-            None => {
+            GlyphText::Sequence(text) => {
                 self.sequences.insert(text.to_owned(), value);
             }
         }
     }
-}
-
-fn single_scalar(text: &str) -> Option<char> {
-    let mut characters = text.chars();
-    let character = characters.next()?;
-    characters.next().is_none().then_some(character)
 }
 
 fn text_run(text: &str, variant: FontVariant, font_family: &str) -> TextRun {
@@ -1505,16 +1574,18 @@ mod tests {
         let mut renderer =
             TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
         let variant = FontVariant::default();
-        renderer.layouts.get_or_insert_with("A", variant, || {
-            Arc::new(LineLayout::default())
-        });
+        renderer.layouts.get_or_insert_with(
+            GlyphText::Scalar('A'),
+            variant,
+            || Arc::new(LineLayout::default()),
+        );
         let mut theme = Theme::default();
         theme.background = theme.foreground;
         renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
         assert!(
             renderer
                 .layouts
-                .get_or_insert_with("A", variant, || panic!(
+                .get_or_insert_with(GlyphText::Scalar('A'), variant, || panic!(
                     "palette change must reuse glyph layout"
                 ))
                 .1
@@ -1523,9 +1594,9 @@ mod tests {
         assert!(
             !renderer
                 .layouts
-                .get_or_insert_with("A", variant, || Arc::new(
-                    LineLayout::default()
-                ))
+                .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                    Arc::new(LineLayout::default())
+                })
                 .1
         );
     }
@@ -1666,14 +1737,16 @@ mod tests {
         let mut calls = 0;
         let variant = FontVariant::default();
 
-        let first = cache.get_or_insert_with("A", variant, || {
-            calls += 1;
-            42
-        });
-        let second = cache.get_or_insert_with("A", variant, || {
-            calls += 1;
-            99
-        });
+        let first =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                calls += 1;
+                42
+            });
+        let second =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                calls += 1;
+                99
+            });
 
         assert_eq!(first, (42, false));
         assert_eq!(second, (42, true));
@@ -1684,12 +1757,13 @@ mod tests {
     fn cache_evicts_layouts_unused_for_two_generations() {
         let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         cache.begin_generation();
-        let _ = cache.get_or_insert_with("B", variant, || 2);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('B'), variant, || 2);
         cache.begin_generation();
 
-        let (value, hit) = cache.get_or_insert_with("A", variant, || 3);
+        let (value, hit) =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3);
 
         assert_eq!(value, 3);
         assert!(!hit);
@@ -1699,12 +1773,18 @@ mod tests {
     fn cache_promotes_layouts_from_previous_generation() {
         let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         cache.begin_generation();
-        assert_eq!(cache.get_or_insert_with("A", variant, || 2), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 2),
+            (1, true)
+        );
         cache.begin_generation();
 
-        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3),
+            (1, true)
+        );
     }
 
     #[test]
@@ -1740,6 +1820,14 @@ mod tests {
         assert_eq!(backgrounds[1].color, rgb_color(theme.indexed(4)));
     }
 
+    fn key(text: &str) -> GlyphText<'_> {
+        let mut characters = text.chars();
+        match (characters.next(), characters.next()) {
+            (Some(character), None) => GlyphText::Scalar(character),
+            _ => GlyphText::Sequence(text),
+        }
+    }
+
     #[test]
     fn cache_keys_ascii_scalars_and_sequences_separately() {
         let mut cache = GlyphLayoutCache::with_capacity(4);
@@ -1750,17 +1838,20 @@ mod tests {
         };
         for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
             assert_eq!(
-                cache.get_or_insert_with(text, variant, || value),
+                cache.get_or_insert_with(key(text), variant, || value),
                 (value, false)
             );
         }
-        assert_eq!(cache.get_or_insert_with("e", bold, || 9), (9, false));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('e'), bold, || 9),
+            (9, false)
+        );
         // Every storage path survives promotion out of the older generation.
         cache.begin_generation();
         assert_eq!(cache.current_len, 0);
         for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
             assert_eq!(
-                cache.get_or_insert_with(text, variant, || 7),
+                cache.get_or_insert_with(key(text), variant, || 7),
                 (value, true)
             );
         }
@@ -1770,21 +1861,28 @@ mod tests {
     fn cache_keeps_layouts_until_a_generation_fills() {
         let mut cache = GlyphLayoutCache::with_capacity(2);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         // Small updates must not evict text used by rows they left alone.
         for _ in 0..3 {
             cache.begin_generation();
-            let _ = cache.get_or_insert_with("B", variant, || 2);
+            let _ =
+                cache.get_or_insert_with(GlyphText::Scalar('B'), variant, || 2);
         }
-        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3),
+            (1, true)
+        );
 
         // Two full generations later an unused layout is gone.
         for text in ["C", "D", "E", "F"] {
             cache.begin_generation();
-            let _ = cache.get_or_insert_with(text, variant, || 4);
+            let _ = cache.get_or_insert_with(key(text), variant, || 4);
         }
         cache.begin_generation();
-        assert_eq!(cache.get_or_insert_with("A", variant, || 5), (5, false));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 5),
+            (5, false)
+        );
     }
 
     #[test]
@@ -1792,10 +1890,7 @@ mod tests {
         let previous = snapshot(2, 2, &["A", "B", "C", "D"]);
         let current = snapshot(2, 2, &["A", "B", "X", "D"]);
 
-        assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, true]
-        );
+        assert_eq!(row_sources(Some(&previous), &current), vec![Some(0), None]);
     }
 
     #[test]
@@ -1803,10 +1898,7 @@ mod tests {
         let previous = snapshot(2, 2, &["A", "B", "C", "D"]);
         let current = snapshot(3, 2, &["A", "B", "C", "D", "E", "F"]);
 
-        assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![true, true]
-        );
+        assert_eq!(row_sources(Some(&previous), &current), vec![None, None]);
     }
 
     #[test]
@@ -1820,8 +1912,8 @@ mod tests {
         });
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, false]
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(1)]
         );
     }
 
@@ -1834,8 +1926,8 @@ mod tests {
         current.viewport.bottom_offset = 1;
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![true, false, false]
+            row_sources(Some(&previous), &current),
+            vec![None, Some(0), Some(1)]
         );
     }
 
@@ -1850,9 +1942,46 @@ mod tests {
         current.generation += 1;
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, false, false]
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(1), Some(2)]
         );
+    }
+
+    #[test]
+    fn row_sources_follow_reused_arcs_when_history_cannot_report_a_shift() {
+        let previous = snapshot(1, 3, &[" ", "A", "B"]);
+        let mut current = snapshot(1, 3, &[" ", " ", "C"]);
+        // A full scrollback holds history constant while content moves up;
+        // the runtime reuses the blank row twice and `A`, `B` once each.
+        current.rows = vec![
+            Arc::clone(&previous.rows[0]),
+            Arc::clone(&previous.rows[2]),
+            Arc::clone(&current.rows[2]),
+        ];
+        assert_eq!(current.history_size, previous.history_size);
+        assert_eq!(
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(2), None]
+        );
+        current.rows[1] = Arc::clone(&previous.rows[0]);
+        assert_eq!(
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(0), None]
+        );
+    }
+
+    #[test]
+    fn realign_moves_last_uses_and_clones_shared_sources() {
+        let previous = vec!["blank".to_owned(), "A".to_owned(), "B".to_owned()];
+        assert_eq!(
+            realign(previous.clone(), &[Some(1), Some(2), None]),
+            ["A", "B", ""]
+        );
+        assert_eq!(
+            realign(previous.clone(), &[Some(0), Some(0), Some(2)]),
+            ["blank", "blank", "B"]
+        );
+        assert_eq!(realign(previous, &[None, Some(7)]), ["", ""]);
     }
 
     #[test]
@@ -2016,7 +2145,7 @@ mod tests {
                         cells: contents
                             .iter()
                             .map(|text| Cell {
-                                text: (*text).to_owned(),
+                                text: (*text).into(),
                                 foreground: CellColor::Rgb(Rgb {
                                     red: 255,
                                     green: 255,

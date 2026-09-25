@@ -6,10 +6,10 @@ use super::EngineEffect;
 use crate::host_effects::{HostEffectAdmission, HostEffectSink};
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, Cell, CellColor, CellSize, CellStyle, Cursor, CursorShape,
-    GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand, TerminalId,
-    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
-    Viewport, appearance_for_background,
+    BufferRange, Cell, CellColor, CellSize, CellStyle, CellText, Cursor,
+    CursorShape, GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalRow,
+    TerminalSnapshot, Viewport, appearance_for_background,
 };
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{
@@ -44,6 +44,13 @@ pub(crate) struct TerminalEngine {
     row_iterator: RowIterator<'static>,
     cell_iterator: CellIterator<'static>,
     retained_rows: Vec<Arc<TerminalRow>>,
+    /// Bottom offset and history size of the retained rows' viewport.
+    retained_viewport: (usize, usize),
+    /// Reused cells for the row being extracted, moved out only when no
+    /// retained row matches.
+    row_scratch: Vec<Cell>,
+    /// Rows extracted by the current snapshot, whose damage it clears.
+    extracted_rows: Vec<bool>,
     colors: Option<(Option<RgbColor>, Option<RgbColor>, [RgbColor; 256])>,
     effects: Rc<RefCell<Vec<EngineEffect>>>,
     host_effect_sink: Rc<OnceCell<HostEffectSink>>,
@@ -52,10 +59,30 @@ pub(crate) struct TerminalEngine {
     colors_dirty: bool,
     default_overrides: DefaultOverrides,
     escape_hint: EscapeHint,
+    /// Modes change only when `process` or `resize` advances the
+    /// generation, or when presentation is reapplied.
+    modes: SharedCell<Option<(u64, TerminalModes)>>,
+    /// Reused UTF-8 buffer for multi-codepoint grapheme clusters.
+    grapheme: String,
     mouse_probe: RefCell<(
         libghostty_vt::mouse::Encoder<'static>,
         libghostty_vt::mouse::Event<'static>,
     )>,
+    #[cfg(test)]
+    last_snapshot_stats: SnapshotStats,
+}
+
+/// Independent row counts for the most recent snapshot. Extraction and `Arc`
+/// allocation are separate so reuse cannot hide rows read from the engine.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SnapshotStats {
+    /// Rows whose cells were read from the engine.
+    pub(crate) extracted: usize,
+    /// Rows published through a newly allocated `Arc`.
+    pub(crate) allocated: usize,
+    /// Rows published through a retained `Arc`, at any index.
+    pub(crate) reused: usize,
 }
 
 impl TerminalEngine {
@@ -185,6 +212,9 @@ impl TerminalEngine {
             row_iterator: RowIterator::new()?,
             cell_iterator: CellIterator::new()?,
             retained_rows: Vec::new(),
+            retained_viewport: (0, 0),
+            row_scratch: Vec::new(),
+            extracted_rows: Vec::new(),
             colors: None,
             effects,
             host_effect_sink,
@@ -193,10 +223,14 @@ impl TerminalEngine {
             colors_dirty: false,
             default_overrides: DefaultOverrides::default(),
             escape_hint: EscapeHint::Ground,
+            modes: SharedCell::new(None),
+            grapheme: String::with_capacity(32),
             mouse_probe: RefCell::new((
                 libghostty_vt::mouse::Encoder::new()?,
                 libghostty_vt::mouse::Event::new()?,
             )),
+            #[cfg(test)]
+            last_snapshot_stats: SnapshotStats::default(),
         })
     }
 
@@ -222,6 +256,7 @@ impl TerminalEngine {
         apply_presentation(&mut self.terminal, &presentation)?;
         self.presentation = presentation;
         self.colors = None;
+        self.modes.set(None);
         Ok(())
     }
 
@@ -268,9 +303,14 @@ impl TerminalEngine {
     }
 
     pub(super) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
+        if let Some((generation, modes)) = self.modes.get()
+            && generation == self.generation
+        {
+            return Ok(modes);
+        }
         let mode = |mode| self.terminal.mode(mode);
         let (tracking, encoding) = self.mouse_modes()?;
-        Ok(TerminalModes {
+        let modes = TerminalModes {
             application_cursor: mode(Mode::DECCKM)?,
             alternate_screen: self.terminal.active_screen()?
                 == Screen::Alternate,
@@ -278,7 +318,9 @@ impl TerminalEngine {
             focus_reporting: mode(Mode::FOCUS_EVENT)?,
             mouse_tracking: tracking,
             mouse_encoding: encoding,
-        })
+        };
+        self.modes.set(Some((self.generation, modes)));
+        Ok(modes)
     }
 
     fn mouse_modes(
@@ -365,6 +407,7 @@ impl TerminalEngine {
         if !self.colors_dirty {
             return Ok(());
         }
+        let defaults = self.default_overrides;
         self.default_overrides.foreground = probe_default_override(
             &mut self.terminal,
             DefaultColor::Foreground,
@@ -386,12 +429,22 @@ impl TerminalEngine {
         // Always restore the palette, including a failed effective-color read.
         self.terminal.set_default_color_palette(Some(original))?;
         let probed = probed?;
+        let mut overrides_changed = false;
         for (index, overridden) in self.palette_overrides.iter_mut().enumerate()
         {
-            *overridden = probed.0[index] == before.0[index];
+            let probed = probed.0[index] == before.0[index];
+            overrides_changed |= *overridden != probed;
+            *overridden = probed;
         }
         self.colors_dirty = false;
-        self.colors = None;
+        // Override flags decide how cells resolve palette colors. Effective
+        // color changes are compared separately when the snapshot is built.
+        // The pinned Ghostty marks its palette dirty on the probe's own
+        // writes, which already forces a full redraw; this keeps the rebuild
+        // tied to real changes if that side effect goes away.
+        if overrides_changed || defaults != self.default_overrides {
+            self.colors = None;
+        }
         Ok(())
     }
 
@@ -410,6 +463,10 @@ impl TerminalEngine {
         Ok((bottom_offset, history_size))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "row extraction, reuse, and damage clearing share one render-state borrow"
+    )]
     pub(super) fn snapshot(
         &mut self,
     ) -> Result<TerminalSnapshot, RuntimeError> {
@@ -428,35 +485,76 @@ impl TerminalEngine {
             || self.retained_rows.first().is_some_and(|row| {
                 row.cells.len() != usize::from(self.size.columns)
             });
+        #[cfg(test)]
+        let mut row_stats = SnapshotStats::default();
+        let columns = usize::from(self.size.columns);
+        // Taken so rows can match retained content at any index. A failed
+        // snapshot leaves no retained rows, which forces the next to be full.
+        let previous = std::mem::take(&mut self.retained_rows);
+        let mut next = Vec::with_capacity(usize::from(self.size.rows));
+        let mut matcher = RowMatcher::new(
+            &previous,
+            viewport_shift(
+                self.retained_viewport,
+                (bottom_offset, history_size),
+            ),
+        );
+        self.extracted_rows.clear();
         let mut rows = self.row_iterator.update(&state)?;
-        let mut index = 0;
         while let Some(row) = rows.next() {
-            if full || row.dirty()? {
-                let mut cells = Vec::new();
-                cells
-                    .try_reserve_exact(usize::from(self.size.columns))
-                    .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-                let mut iter = self.cell_iterator.update(row)?;
-                while let Some(cell) = iter.next() {
-                    cells.push(snapshot_cell(
-                        cell,
-                        fg,
-                        bg,
-                        &palette,
-                        &self.palette_overrides,
-                        self.default_overrides,
-                    )?);
+            let clean = if full || row.dirty()? {
+                None
+            } else {
+                previous.get(next.len())
+            };
+            self.extracted_rows.push(clean.is_none());
+            if let Some(retained) = clean {
+                #[cfg(test)]
+                {
+                    row_stats.reused += 1;
                 }
-                let owned = Arc::new(TerminalRow { cells });
-                if index < self.retained_rows.len() {
-                    self.retained_rows[index] = owned;
-                } else {
-                    self.retained_rows.push(owned);
-                }
+                next.push(Arc::clone(retained));
+                continue;
             }
-            index += 1;
+            #[cfg(test)]
+            {
+                row_stats.extracted += 1;
+            }
+            self.row_scratch.clear();
+            self.row_scratch
+                .try_reserve_exact(columns)
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            let mut iter = self.cell_iterator.update(row)?;
+            while let Some(cell) = iter.next() {
+                self.row_scratch.push(snapshot_cell(
+                    cell,
+                    fg,
+                    bg,
+                    &palette,
+                    &self.palette_overrides,
+                    self.default_overrides,
+                    &mut self.grapheme,
+                )?);
+            }
+            if let Some(retained) = matcher.find(next.len(), &self.row_scratch)
+            {
+                #[cfg(test)]
+                {
+                    row_stats.reused += 1;
+                }
+                next.push(Arc::clone(retained));
+            } else {
+                #[cfg(test)]
+                {
+                    row_stats.allocated += 1;
+                }
+                next.push(Arc::new(TerminalRow {
+                    cells: std::mem::take(&mut self.row_scratch),
+                }));
+            }
         }
-        self.retained_rows.truncate(index);
+        drop(previous);
+        self.retained_rows = next;
         let visible = state.cursor_visible()?;
         let shape = if visible {
             match state.cursor_visual_style()? {
@@ -487,13 +585,28 @@ impl TerminalEngine {
                 None
             },
         };
-        let mut rows = self.row_iterator.update(&state)?;
-        while let Some(row) = rows.next() {
-            row.set_dirty(false)?;
+        if self.extracted_rows.contains(&true) {
+            let mut rows = self.row_iterator.update(&state)?;
+            let mut extracted = self.extracted_rows.iter();
+            while let Some(row) = rows.next() {
+                if extracted.next().copied().unwrap_or(true) {
+                    row.set_dirty(false)?;
+                }
+            }
         }
         state.set_dirty(Dirty::Clean)?;
         self.colors = Some(colors);
+        self.retained_viewport = (bottom_offset, history_size);
+        #[cfg(test)]
+        {
+            self.last_snapshot_stats = row_stats;
+        }
         Ok(snapshot)
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_snapshot_stats(&self) -> SnapshotStats {
+        self.last_snapshot_stats
     }
 
     pub(super) fn extract_text(
@@ -610,7 +723,7 @@ enum DefaultColor {
     Cursor,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DefaultOverrides {
     foreground: bool,
     background: bool,
@@ -664,6 +777,83 @@ fn probe_default_override(
     Ok(probed? == before)
 }
 
+/// Offset from a current viewport row to the retained row that held the same
+/// screen line: positive when output or scrolling moved content upward.
+fn viewport_shift(
+    (old_bottom, old_history): (usize, usize),
+    (bottom, history): (usize, usize),
+) -> isize {
+    let top = |bottom: usize, history: usize| {
+        i128::try_from(history).unwrap_or(i128::MAX)
+            - i128::try_from(bottom).unwrap_or(i128::MAX)
+    };
+    isize::try_from(top(bottom, history) - top(old_bottom, old_history))
+        .unwrap_or(isize::MAX)
+}
+
+/// Finds a retained row with identical cells so unchanged content keeps its
+/// `Arc`. Rows are immutable, so any equal row is valid, even at another
+/// index. The history-derived shift misses once scrollback reaches its byte
+/// budget, so a bounded scan recovers the offset without trusting one anchor.
+struct RowMatcher<'a> {
+    previous: &'a [Arc<TerminalRow>],
+    shift: isize,
+    last: Option<isize>,
+    scan_budget: usize,
+}
+
+impl<'a> RowMatcher<'a> {
+    fn new(previous: &'a [Arc<TerminalRow>], shift: isize) -> Self {
+        Self {
+            previous,
+            shift,
+            last: None,
+            // Enough for one failed scan, such as a changed first row, plus
+            // the scan that finds the shifted rows below it.
+            scan_budget: previous.len().saturating_mul(2),
+        }
+    }
+
+    fn find(
+        &mut self,
+        index: usize,
+        cells: &[Cell],
+    ) -> Option<&'a Arc<TerminalRow>> {
+        let offsets = [Some(0), Some(self.shift), self.last];
+        for (position, offset) in offsets.iter().enumerate() {
+            let Some(offset) = *offset else {
+                continue;
+            };
+            if offsets[..position].contains(&Some(offset)) {
+                continue;
+            }
+            if let Some(row) = index
+                .checked_add_signed(offset)
+                .and_then(|row| self.previous.get(row))
+                && row.cells == cells
+            {
+                self.last = Some(offset);
+                return Some(row);
+            }
+        }
+        let previous = self.previous;
+        for (row_index, row) in previous.iter().enumerate() {
+            if self.scan_budget == 0 {
+                return None;
+            }
+            self.scan_budget -= 1;
+            if row.cells == cells {
+                self.last = isize::try_from(row_index)
+                    .ok()
+                    .zip(isize::try_from(index).ok())
+                    .map(|(old, new)| old - new);
+                return Some(row);
+            }
+        }
+        None
+    }
+}
+
 fn snapshot_cell(
     cell: &libghostty_vt::render::CellIteration<'_, '_>,
     fg: Option<RgbColor>,
@@ -671,9 +861,11 @@ fn snapshot_cell(
     palette: &libghostty_vt::style::Palette,
     overrides: &[bool; 256],
     default_overrides: DefaultOverrides,
+    grapheme: &mut String,
 ) -> Result<Cell, RuntimeError> {
     let raw = cell.raw_cell()?;
     let style = cell.style()?;
+    let content = raw.content_tag()?;
     let resolve =
         |color, default, override_color: Option<RgbColor>| match color {
             StyleColor::None => override_color
@@ -692,7 +884,7 @@ fn snapshot_cell(
         CellColor::DefaultForeground,
         default_overrides.foreground.then_some(fg).flatten(),
     );
-    let background_style = match raw.content_tag()? {
+    let background_style = match content {
         CellContentTag::BgColorPalette => {
             StyleColor::Palette(raw.bg_color_palette()?)
         }
@@ -707,11 +899,27 @@ fn snapshot_cell(
     if style.inverse {
         std::mem::swap(&mut foreground, &mut background);
     }
-    let mut text = String::new();
-    cell.graphemes_utf8(&mut text)?;
-    if text.is_empty() {
-        text.push(' ');
-    }
+    let text = match content {
+        CellContentTag::Codepoint => match raw.codepoint()? {
+            0 => CellText::BLANK,
+            codepoint => CellText::from(
+                char::from_u32(codepoint)
+                    .unwrap_or(char::REPLACEMENT_CHARACTER),
+            ),
+        },
+        CellContentTag::CodepointGrapheme => {
+            grapheme.clear();
+            cell.graphemes_utf8(grapheme)?;
+            if grapheme.is_empty() {
+                CellText::BLANK
+            } else {
+                CellText::new(grapheme)
+            }
+        }
+        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {
+            CellText::BLANK
+        }
+    };
     let wide = raw.wide()?;
     Ok(Cell {
         text,
@@ -734,44 +942,140 @@ fn snapshot_cell(
 }
 
 // A conservative invalidation hint, not a second terminal parser. Native
-// Ghostty still interprets every color and reset. This tracks OSC boundaries
-// across PTY chunks so palette probing is absent from ordinary text/CSI updates.
+// Ghostty still interprets every color and reset. This mirrors the pinned
+// parser's state transitions (`stream.zig` and `parse_table.zig`) closely
+// enough to find color OSC dispatches and RIS across PTY chunks, so ordinary
+// text, CSI, and non-color OSC output never trigger palette probing. It may
+// flag extra sequences, but it must never miss a color operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EscapeHint {
     Ground,
     Escape,
-    Osc,
+    EscapeIntermediate,
+    Csi,
+    /// DCS, SOS, PM, and APC strings, which only anywhere transitions exit.
+    Passthrough,
+    Osc(OscNumber),
 }
+
+/// The leading decimal number of an OSC, accumulated across chunks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct OscNumber {
+    value: u16,
+    digits: u8,
+    complete: bool,
+}
+
+impl OscNumber {
+    /// Ghostty accepts at most four prefix digits (OSC 3008).
+    const MAX_DIGITS: u8 = 4;
+
+    fn push(self, byte: u8) -> Self {
+        if self.complete {
+            return self;
+        }
+        if !byte.is_ascii_digit() {
+            return Self {
+                complete: true,
+                ..self
+            };
+        }
+        if self.digits == Self::MAX_DIGITS {
+            // Too long for any OSC Ghostty dispatches.
+            return Self {
+                value: 0,
+                digits: Self::MAX_DIGITS + 1,
+                complete: true,
+            };
+        }
+        Self {
+            value: self.value * 10 + u16::from(byte - b'0'),
+            digits: self.digits + 1,
+            complete: false,
+        }
+    }
+
+    /// OSCs that `osc.zig` dispatches to its color and kitty color parsers.
+    fn is_color(self) -> bool {
+        (1..=Self::MAX_DIGITS).contains(&self.digits)
+            && matches!(
+                self.value,
+                4 | 5 | 10..=19 | 21 | 104 | 105 | 110..=119
+            )
+    }
+}
+
 impl EscapeHint {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         let mut changed = false;
         let mut index = 0;
         while index < bytes.len() {
-            // Only ESC and C1 OSC leave the ground state; skip text between them.
-            if *self == Self::Ground {
-                let Some(offset) = memchr::memchr2(0x1b, 0x9d, &bytes[index..])
-                else {
-                    break;
-                };
-                index += offset;
-            }
-            let byte = bytes[index];
-            index += 1;
-            *self = match (*self, byte) {
-                (Self::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
-                | (Self::Escape, b'c') => {
-                    changed = true;
-                    Self::Ground
+            // Skip bytes that cannot change the current state. Dense SGR
+            // output, such as truecolor per-cell colors, is mostly CSI
+            // parameters, and stepping each one dominated parse time.
+            let rest = &bytes[index..];
+            let next = match *self {
+                // Ghostty decodes ground bytes as UTF-8, so only ESC leaves it.
+                Self::Ground => memchr::memchr(0x1b, rest),
+                Self::Csi => {
+                    rest.iter().position(|byte| !matches!(byte, 0x20..=0x3f))
                 }
-                (Self::Osc, 0x1b) => {
-                    changed = true;
-                    Self::Escape
-                }
-                (Self::Osc, _) | (_, 0x9d) | (Self::Escape, b']') => Self::Osc,
-                (_, 0x1b) => Self::Escape,
-                _ => Self::Ground,
+                // Strings end only through anywhere transitions.
+                Self::Passthrough => rest.iter().position(|byte| {
+                    matches!(byte, 0x18 | 0x1a | 0x1b | 0x80..=0x9f)
+                }),
+                Self::Osc(number) if number.complete => rest
+                    .iter()
+                    .position(|byte| matches!(byte, 0x07 | 0x18 | 0x1a | 0x1b)),
+                _ => Some(0),
             };
+            let Some(offset) = next else {
+                break;
+            };
+            index += offset;
+            changed |= self.step(bytes[index]);
+            index += 1;
         }
+        changed
+    }
+
+    fn step(&mut self, byte: u8) -> bool {
+        let (next, changed) = match (*self, byte) {
+            // OSC exits dispatch the accumulated command. Other C0 bytes are
+            // ignored, and 0x20..=0xff, including C1 values, are payload.
+            (Self::Osc(number), 0x07 | 0x18 | 0x1a) => {
+                (Self::Ground, number.is_color())
+            }
+            (Self::Osc(number), 0x1b) => (Self::Escape, number.is_color()),
+            (Self::Osc(number), 0x20..=0xff) => {
+                (Self::Osc(number.push(byte)), false)
+            }
+            (_, 0x1b) => (Self::Escape, false),
+            (Self::Ground | Self::Osc(_), _) => (*self, false),
+            (Self::Escape, b'c') => (Self::Ground, true),
+            // C1 bytes are anywhere transitions in every other non-ground
+            // state; the ESC finals that open sequences must precede the
+            // generic ESC-final arm below.
+            (_, 0x90 | 0x98 | 0x9e | 0x9f)
+            | (Self::Escape, b'P' | b'X' | b'^' | b'_') => {
+                (Self::Passthrough, false)
+            }
+            (_, 0x9b) | (Self::Escape, b'[') => (Self::Csi, false),
+            (_, 0x9d) | (Self::Escape, b']') => {
+                (Self::Osc(OscNumber::default()), false)
+            }
+            (
+                _,
+                0x18 | 0x1a | 0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c,
+            )
+            | (Self::Escape | Self::EscapeIntermediate, 0x30..=0x7e)
+            | (Self::Csi, 0x40..=0x7e) => (Self::Ground, false),
+            (Self::Escape | Self::EscapeIntermediate, 0x20..=0x2f) => {
+                (Self::EscapeIntermediate, false)
+            }
+            _ => (*self, false),
+        };
+        *self = next;
         changed
     }
 }
@@ -1129,6 +1433,158 @@ mod tests {
         }
     }
 
+    fn row(text: &str) -> Arc<TerminalRow> {
+        Arc::new(TerminalRow {
+            cells: text
+                .chars()
+                .map(|character| Cell {
+                    text: character.into(),
+                    foreground: CellColor::DefaultForeground,
+                    background: CellColor::DefaultBackground,
+                    style: CellStyle::default(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Matches `current` rows against `previous`, returning retained indices.
+    fn matches(
+        previous: &[Arc<TerminalRow>],
+        shift: isize,
+        current: &[&str],
+    ) -> Vec<Option<usize>> {
+        let mut matcher = RowMatcher::new(previous, shift);
+        current
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                matcher.find(index, &row(text).cells).map(|found| {
+                    previous
+                        .iter()
+                        .position(|row| Arc::ptr_eq(row, found))
+                        .unwrap()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn row_matcher_recovers_shifts_the_history_size_cannot_report() {
+        let previous = ["    ", "    ", "A   ", "B   "].map(row);
+        // At the scrollback budget, history stays constant, so the derived
+        // shift is zero even though content moved up one row.
+        assert_eq!(
+            matches(&previous, 0, &["    ", "A   ", "B   ", "C   "]),
+            [Some(0), Some(2), Some(3), None]
+        );
+        let previous = ["A   ", "B   ", "C   ", "D   "].map(row);
+        assert_eq!(
+            matches(&previous, 0, &["Z   ", "C   ", "D   ", "E   "]),
+            [None, Some(2), Some(3), None]
+        );
+        // A correct derived shift matches without scanning.
+        assert_eq!(
+            matches(&previous, 2, &["C   ", "D   ", "E   ", "F   "]),
+            [Some(2), Some(3), None, None]
+        );
+    }
+
+    #[test]
+    fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget()
+    {
+        for budget in [None, Some(0)] {
+            let mut engine = TerminalEngine::new(
+                TerminalId::new(1),
+                GridSize::clamped(8, 4),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+                presentation(),
+            )
+            .unwrap();
+            if let Some(bytes) = budget {
+                engine
+                    .terminal
+                    .set_scrollback_max_bytes(Some(bytes))
+                    .unwrap();
+            }
+            engine.process(b"\r\n\r\nA\r\nB").unwrap();
+            let before = engine.snapshot().unwrap();
+            engine.process(b"\r\nC").unwrap();
+            let after = engine.snapshot().unwrap();
+            if budget.is_some() {
+                assert_eq!(after.history_size, before.history_size);
+            }
+            let text = |row: &TerminalRow| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+            };
+            assert_eq!(text(&after.rows[1]), "A       ", "{budget:?}");
+            assert!(Arc::ptr_eq(&after.rows[1], &before.rows[2]), "{budget:?}");
+            assert!(Arc::ptr_eq(&after.rows[2], &before.rows[3]), "{budget:?}");
+            assert!(
+                before.rows[..2]
+                    .iter()
+                    .any(|blank| Arc::ptr_eq(blank, &after.rows[0])),
+                "{budget:?}"
+            );
+            assert_eq!(text(&after.rows[3]), "C       ", "{budget:?}");
+            assert_eq!(engine.last_snapshot_stats().allocated, 1, "{budget:?}");
+        }
+    }
+
+    #[test]
+    fn rewriting_a_row_with_identical_content_keeps_its_arc() {
+        let mut engine = engine();
+        engine.process(b"same").unwrap();
+        let before = engine.snapshot().unwrap();
+        engine.process(b"\rsame").unwrap();
+        let after = engine.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&before.rows[0], &after.rows[0]));
+        let stats = engine.last_snapshot_stats();
+        assert_eq!((stats.extracted, stats.allocated), (1, 0));
+    }
+
+    #[test]
+    fn non_color_osc_and_utf8_output_keep_snapshots_partial() {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(20, 10),
+            CellSize {
+                width: 9,
+                height: 17,
+            },
+            presentation(),
+        )
+        .unwrap();
+        engine.process(b"first\r\nsecond\r\nthird").unwrap();
+        engine.snapshot().unwrap();
+        // OSC 8 is absent: Ghostty's own damage still rebuilds most rows.
+        for chunk in [
+            "\x1b]2;title\x07\x1b[2;1Hx".as_bytes(),
+            b"\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07",
+            "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".as_bytes(),
+        ] {
+            engine.process(chunk).unwrap();
+            engine.snapshot().unwrap();
+            let extracted = engine.last_snapshot_stats().extracted;
+            assert!(
+                extracted <= 2,
+                "{:?} extracted {extracted} of 10 rows",
+                String::from_utf8_lossy(chunk)
+            );
+        }
+        // Shows the fixture detects a full redraw. OSC 4 dirties Ghostty's
+        // palette on its own, so this does not test the hint; the full-probe
+        // differential test guards against missed color changes.
+        engine.process(b"\x1b]4;1;#123456\x07").unwrap();
+        engine.snapshot().unwrap();
+        assert_eq!(engine.last_snapshot_stats().extracted, 10);
+    }
+
     #[test]
     fn default_and_equal_osc_overrides_survive_theme_updates_and_resets() {
         let mut engine = engine();
@@ -1177,7 +1633,8 @@ mod tests {
         engine.update_presentation(changed.clone()).unwrap();
         let themed = engine.snapshot().unwrap();
         assert_eq!(themed.generation, generation);
-        assert!(!Arc::ptr_eq(&overridden.rows[0], &themed.rows[0]));
+        // Every row is read again; rows with unchanged cells may keep their Arc.
+        assert_eq!(engine.last_snapshot_stats().extracted, themed.rows.len());
         assert_eq!(
             themed.rows[0].cells[0].foreground,
             CellColor::Rgb(presentation().foreground)
@@ -1490,23 +1947,8 @@ mod tests {
     fn escape_hint_skipping_matches_bytewise_state_across_chunks() {
         fn bytewise(state: &mut EscapeHint, bytes: &[u8]) -> bool {
             let mut changed = false;
-            for byte in bytes {
-                *state = match (*state, byte) {
-                    (EscapeHint::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
-                    | (EscapeHint::Escape, b'c') => {
-                        changed = true;
-                        EscapeHint::Ground
-                    }
-                    (EscapeHint::Osc, 0x1b) => {
-                        changed = true;
-                        EscapeHint::Escape
-                    }
-                    (EscapeHint::Osc, _)
-                    | (_, 0x9d)
-                    | (EscapeHint::Escape, b']') => EscapeHint::Osc,
-                    (_, 0x1b) => EscapeHint::Escape,
-                    _ => EscapeHint::Ground,
-                };
+            for &byte in bytes {
+                changed |= state.step(byte);
             }
             changed
         }
@@ -1516,13 +1958,16 @@ mod tests {
             b"a\x1b[31mred\x1b[0m b",
             b"x\x1b]4;1;rgb:aa/bb/cc\x07y",
             b"x\x1b]10;?\x1b\\y\x1bcz",
-            b"\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
+            b"\x1b[1\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
             // U+271D encodes a 0x9d continuation byte inside ordinary text.
             "cross \u{271d} then \x1b]2;title\x07 done".as_bytes(),
+            "\x1b[38;2;1;2;3;48;2;4;5;6m\u{2580}\x1b[0m".as_bytes(),
+            b"\x1bPq#0;2;0;0;0\xa0\x01\x9d11;#000\x07",
+            b"\x1b]52;c;aGVsbG8gd29ybGQ=\x01\xa0\x9d\x1b\\",
         ]
         .map(<[u8]>::to_vec)
         .into();
-        let alphabet = b"ab\x1b\x9d]c\x07\x18\x1a\x9c\\";
+        let alphabet = b"ab14;m \x01\xa0\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
         let mut seed = 0x2545_f491_u32;
         fixtures.push(
             (0..512)
@@ -1536,9 +1981,18 @@ mod tests {
         );
 
         for bytes in &fixtures {
-            for start in
-                [EscapeHint::Ground, EscapeHint::Escape, EscapeHint::Osc]
-            {
+            for start in [
+                EscapeHint::Ground,
+                EscapeHint::Escape,
+                EscapeHint::Csi,
+                EscapeHint::Passthrough,
+                EscapeHint::Osc(OscNumber::default()),
+                EscapeHint::Osc(OscNumber {
+                    value: 11,
+                    digits: 2,
+                    complete: true,
+                }),
+            ] {
                 for split in 0..=bytes.len() {
                     let (mut fast, mut expected) = (start, start);
                     for chunk in [&bytes[..split], &bytes[split..]] {
@@ -1552,5 +2006,148 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn escape_hint_flags_only_color_operations_at_every_split() {
+        let cases: &[(&[u8], bool)] = &[
+            ("╝帝\x1b[31mtext\x1b[0m".as_bytes(), false),
+            (b"\x1b]2;title\x07", false),
+            (b"\x1b]7;file:///tmp\x1b\\", false),
+            (b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07", false),
+            (b"\x1b]133;A\x07", false),
+            (b"\x1b]52;c;aGk=\x07", false),
+            (b"\x1b]3008;x\x07", false),
+            (b"\x1b]10004;#fff\x07", false),
+            // Raw C1 bytes are UTF-8 data in the ground state.
+            (b"\x9d4;1;#fff\x07", false),
+            // Inside an OSC, C1 bytes are payload rather than new sequences.
+            (b"\x1b]2;a\x9d4;1;#fff\x07", false),
+            // An intermediate turns `]` into an ordinary escape final byte.
+            (b"\x1b(]4;1;#fff\x07", false),
+            (b"\x1b]4;1;#fff\x07", true),
+            (b"\x1b]11;#000\x1b\\", true),
+            (b"\x1b]21;foreground=#fff\x1b\\", true),
+            (b"\x1b]104\x07", true),
+            (b"\x1b]105;0\x07", true),
+            (b"\x1b]110\x18", true),
+            (b"\x1b]119\x1a", true),
+            (b"\x1bc", true),
+            // Ignored C0 bytes do not end the OSC number.
+            (b"\x1b]1\x010;#fff\x07", true),
+            // C1 OSC is recognized once another sequence has started.
+            (b"\x1b[1\x9d4;1;#fff\x07", true),
+            (b"\x1bPq\x9d11;#000\x07", true),
+        ];
+        for &(bytes, expected) in cases {
+            for split in 0..=bytes.len() {
+                let mut hint = EscapeHint::Ground;
+                let flagged = hint.observe(&bytes[..split])
+                    | hint.observe(&bytes[split..]);
+                assert_eq!(
+                    flagged,
+                    expected,
+                    "{:?} split at {split}",
+                    String::from_utf8_lossy(bytes)
+                );
+            }
+        }
+    }
+
+    type ObservedColors = (
+        Option<RgbColor>,
+        Option<RgbColor>,
+        Option<RgbColor>,
+        [RgbColor; 256],
+        [bool; 256],
+        DefaultOverrides,
+    );
+
+    /// Runs the full override probe regardless of the hint.
+    fn observed_colors(engine: &mut TerminalEngine) -> ObservedColors {
+        engine.colors_dirty = true;
+        engine.refresh_color_overrides().unwrap();
+        (
+            engine.terminal.fg_color().unwrap(),
+            engine.terminal.bg_color().unwrap(),
+            engine.terminal.cursor_color().unwrap(),
+            engine.terminal.color_palette().unwrap().0,
+            engine.palette_overrides,
+            engine.default_overrides,
+        )
+    }
+
+    #[test]
+    fn escape_hint_never_misses_a_color_change_seen_by_the_full_probe() {
+        let tokens: &[&[u8]] = &[
+            b"a",
+            "╝".as_bytes(),
+            "帝".as_bytes(),
+            b"\x1b",
+            b"[",
+            b"]",
+            b"(",
+            b"P",
+            b"\x9b",
+            b"\x9d",
+            b"\x9c",
+            b"\x90",
+            b"\x98",
+            b"\x01",
+            b"4",
+            b"1",
+            b"0",
+            b"2",
+            b";",
+            b"#123456",
+            b"rgb:12/34/56",
+            b"?",
+            b"m",
+            b"\\",
+            b"\x07",
+            b"\x18",
+            b"\x1a",
+            b"\x1b]4;3;#a0b0c0\x07",
+            b"\x1b]11;#102030\x1b\\",
+            b"\x1b]104;3\x07",
+            b"\x1b]21;foreground=#405060\x1b\\",
+            b"\x1b]2;title\x07",
+        ];
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as usize % bound
+        };
+        let mut changes = 0;
+        for sequence in 0..200 {
+            let mut engine = engine();
+            let mut stream = Vec::new();
+            for _ in 0..40 {
+                stream.extend_from_slice(tokens[next(tokens.len())]);
+            }
+            let mut before = observed_colors(&mut engine);
+            let mut offset = 0;
+            while offset < stream.len() {
+                let end = (offset + 1 + next(8)).min(stream.len());
+                engine.colors_dirty = false;
+                engine.process(&stream[offset..end]).unwrap();
+                let flagged = engine.colors_dirty;
+                let after = observed_colors(&mut engine);
+                if after != before {
+                    changes += 1;
+                    assert!(
+                        flagged,
+                        "sequence {sequence} missed a color change in {:?}",
+                        String::from_utf8_lossy(&stream[offset..end])
+                    );
+                }
+                before = after;
+                offset = end;
+            }
+        }
+        // Guard against a generator that never exercises color operations.
+        assert!(changes > 100, "only {changes} color changes observed");
     }
 }

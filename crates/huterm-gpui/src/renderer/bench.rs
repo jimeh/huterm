@@ -28,9 +28,9 @@ use gpui::{
     div, point, prelude::*, px, size,
 };
 use huterm_protocol::{
-    BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
-    GridSize, TerminalId, TerminalModes, TerminalRow, TerminalSnapshot,
-    Viewport,
+    BufferPoint, BufferRange, Cell, CellColor, CellStyle, CellText, Cursor,
+    CursorShape, GridSize, TerminalId, TerminalModes, TerminalRow,
+    TerminalSnapshot, Viewport,
 };
 
 use super::{GlyphContent, GridMetrics, PreparedRow, TerminalRenderer};
@@ -277,7 +277,7 @@ fn snapshot(
     })
 }
 
-fn plain(text: impl Into<String>) -> Cell {
+fn plain(text: impl Into<CellText>) -> Cell {
     Cell {
         text: text.into(),
         foreground: CellColor::DefaultForeground,

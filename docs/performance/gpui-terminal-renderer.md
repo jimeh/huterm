@@ -1261,3 +1261,148 @@ was used. Real platform observer-registration failures were not injected end to
 end. Explicit failure backoff and X11 safety sampling remain; the native
 fullscreen compatibility sampler, conditional pointer probe, busy-runtime
 retries and GPUI display-link work are separate owners.
+
+## Snapshot rebuild cost (2026-09-25)
+
+This section covers the work for [#162](https://github.com/jimeh/huterm/issues/162),
+planned in [snapshot rebuild cost](../plans/snapshot-rebuild-cost.md). The
+baseline is `5be9643`, with the extended fixtures from `8ceec74`; the feature
+build is `212dfdf`.
+
+### Snapshot rebuild engine results
+
+`mise run bench:engine` ran natively on a Mac15,8 M3 Max host with macOS 27, on
+a 120 by 40 grid for 200 iterations per fixture. The feature column is the
+median of three runs' p50 values. Row counts are totals over 200 snapshots.
+Extracted rows are read from Ghostty; allocated rows receive a new `Arc`.
+
+| Fixture | Snapshot p50 before | After | Rows extracted before | After | Row `Arc`s allocated after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ascii` | 181.5 µs | 134.9 µs | 8,000 | 8,000 | 39 |
+| `styled` | 183.2 µs | 118.1 µs | 8,000 | 8,000 | 7,800 |
+| `unicode` | 185.2 µs | 133.6 µs | 8,000 | 8,000 | 39 |
+| `sparse` | 5.5 µs | 4.0 µs | 201 | 201 | 200 |
+| `full` | 200.9 µs | 131.3 µs | 8,000 | 8,000 | 8,000 |
+| `prompt` | 176.4 µs | 7.4 µs | 8,000 | 401 | 1 |
+| `title` | 176.4 µs | 4.1 µs | 8,000 | 201 | 200 |
+| `osc8` | 177.5 µs | 129.6 µs | 8,000 | 7,923 | 200 |
+| `box-cjk` | 176.0 µs | 3.9 µs | 8,000 | 201 | 200 |
+| `color` | 177.5 µs | 128.5 µs | 8,000 | 8,000 | 1 |
+| `scroll` | 180.4 µs | 135.4 µs | 7,532 | 7,532 | 600 |
+| `scroll-capped` | 179.2 µs | 131.5 µs | 8,000 | 8,000 | 600 |
+
+Prompt, title, and box-drawing or CJK fixtures no longer probe palette
+overrides, so they extract only the rows they touch. The OSC 8 fixture still
+extracts almost every row: see [OSC 8 full redraws](#osc-8-full-redraws).
+Full rebuilds fell
+by about 30% from per-cell `CellText` storage. Scrolling fixtures now reuse the
+`Arc` for every unchanged shifted row, including at the 16 MiB scrollback
+budget, where history size stops growing. Row matching adds roughly 10-20 µs to
+full rebuilds on the runtime thread; before, the renderer compared the same
+rows on the UI thread and rebuilt every prepared row once scrollback was full.
+
+The first version of the narrowed hint followed CSI parameters one byte at a
+time, where the old hint had returned to its `memchr` scan after `ESC [`. On
+DOOM-fire style output, with truecolor foreground and background SGR for every
+cell, that cost about 400 µs per 120 by 40 frame against 40 µs before, and
+`doom-fire-rs` fell from about 1,600 to 1,100 producer frames per second. The
+hint now skips CSI parameters, string payloads, and numbered OSC payloads
+until a byte that can change its state. The `truecolor` fixture's parse p50
+fell from 1,070 µs to 705 µs; an isolated copy of the hint measured 88 µs per
+frame against the old hint's 40 µs.
+
+A `sample` profile of repeated `full` snapshots attributed about 60% of
+snapshot time to Ghostty getters and their binding wrappers (`row_cells_get`,
+`cell_get`, `style`, `content_tag`, `wide`, `codepoint`) and the rest to Rust
+cell construction. Batched reads through `row_cells_get_multi` would need a
+vendored binding patch and are deferred.
+
+### Snapshot rebuild renderer results
+
+`bench:renderer-scenarios` ran in the Linux arm64 Docker container under Xvfb
+and `twm`, five runs per scenario, against a baseline built from `d70366a`
+(before `CellText`). Scenarios ran one at a time with up to three attempts,
+because Xvfb intermittently delivered too few frames while the host was loaded.
+
+| Scenario | Prepare median | Change | Paint median | Change |
+| --- | ---: | ---: | ---: | ---: |
+| `ascii` | 194.3 µs | -0.8% | 432.8 µs | -1.6% |
+| `blocks` | 214.5 µs | -0.6% | 237.7 µs | -1.4% |
+| `boxes` | 177.5 µs | +2.3% | 996.3 µs | -3.7% |
+| `churn` | 243.7 µs | +11.5% | 557.1 µs | -3.1% |
+| `scroll` | 13.7 µs | -14.6% | 444.1 µs | -5.0% |
+| `selection` | 196.8 µs | +0.3% | 489.5 µs | -4.3% |
+
+The first `CellText` build raised full-rebuild prepare by 31-41%: `as_str`
+validated inline bytes on each of several reads per cell, about 2 ns against
+0.4 ns for a `String`. Borrowing single ASCII bytes from a static table and
+keying the renderer's layout cache by scalar removed that regression.
+
+`churn` prepare remained about 15% slower in two further alternating
+baseline/feature pairs (214/213 µs against 246/246 µs), with identical rebuilt
+rows and cache hits. Its cells are mostly non-ASCII scalars, and SipHash
+dominated their layout lookups: 41 µs against 9.8 µs per 8,000 cells for a
+multiplicative hasher in isolation. With that hasher, `2f4b9e9` measured
+`churn` prepare at 192.0 µs, 21% below `212dfdf` and about 12% below the
+pre-`CellText` baseline; other scenarios stayed within noise.
+
+### PTY read batching
+
+macOS PTY reads return at most 1,024 bytes: 6,655 of 6,700 reads of a 6.8 MB
+truecolor flood were exactly that size. The first version of a new
+`engine_benchmark_pty_throughput` release test timed 150 DOOM-fire style frames
+(24.3 MB) through a real runtime. The first batching version read what the PTY
+already held, up to 64 KiB, and skipped the read that must block before each
+readiness wait. It raised that test from about 1,040 to 1,110 frames
+per second on macOS and from about 1,005 to 1,080 in the Linux arm64 container.
+On macOS, batches still average about 1 KiB: the tty queue rarely holds more,
+so the saved syscall per cycle provides the gain there. A `sample` of the macOS
+run showed the runtime thread about 25% idle and the reader mostly waiting in
+`select`, so the kernel handoff, not Huterm's parser, limits that benchmark.
+
+The first batching version also cut the output channel from 64 messages to 8,
+sized for 64 KiB batches. macOS batches stay near 1 KiB, so that shrank the
+buffer between the reader and the parser from about 64 KiB to 8 KiB, too little
+to cover a full snapshot build. The benchmark now pushes 600 frames (about
+97 MB) in twelve 50-frame segments and reports each segment's frame rate. Like
+a 120 Hz client, it requests a snapshot about 8 ms after the previous one
+completes.
+Returning to 64 messages with 16 KiB batches raised the macOS segment mean from
+about 1,030 to 1,070-1,085 frames per second across interleaved pairs, with a
+similar spread. In the Linux container the segment mean fell from about 1,265
+to 1,230, keeping most of the batching gain; queued output is bounded at 1 MiB.
+
+### OSC 8 full redraws
+
+Rewriting linked text over cells that already hold a hyperlink makes Ghostty's
+render state report `Dirty::Full`. On a 120 by 40 grid, snapshots extracted 2,
+1, and then 40 rows for every further write, with implicit or explicit
+(`id=`) hyperlink IDs alike; an OSC 8 start and end without text, or plain
+text, extracted 1 row. OSC 8 sets no terminal or screen dirty flag, so the
+suspected trigger is a page copy on each linked rewrite, which moves the
+viewport pin to a new page node. Capacity growth alone would not explain a
+full redraw on every write, because Ghostty doubles the capacity it grows; a
+same-size rehash of the hyperlink set, or string duplication on each
+insertion, could. Parsing such a chunk took 17-20 µs for about 45 bytes,
+consistent with a page copy, but neither the copy nor its trigger was observed
+directly. Output that scrolls, such as `ls --hyperlink`,
+redraws fully anyway; the cost matters for applications that rewrite links in
+place, and a fix belongs in Ghostty rather than Huterm.
+
+### Rejected snapshot experiments
+
+Two further snapshot optimizations were measured against `1adbff2` and
+discarded:
+
+- Reusing resolved colors across cells that share a `style_id` saved nothing
+  measurable on styled runs and slowed the `truecolor` fixture from about 193
+  to 211 µs. Reading the style ID is itself a native call, so every cell with a
+  distinct style paid for it without a cache hit.
+- Reading cell fields through `row_cells_get_multi` and `cell_get_multi`, via a
+  small vendored binding patch, cut native calls per cell from five or six to
+  two but slowed snapshots by 3-10%. Ghostty's multi-getters loop over the
+  generic single getter, so they add key and value arrays without removing any
+  native work.
+
+The remaining full-rebuild cost is mostly per-field native getters. A bulk row
+export from Ghostty would be needed to reduce it further.
