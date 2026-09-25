@@ -3,6 +3,7 @@ mod builtin;
 pub(crate) mod smoke;
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -831,6 +832,32 @@ impl<T: Clone> GlyphLayoutCache<T> {
     }
 }
 
+/// Multiplicative hash for `char` keys. Scalar layout lookups run for every
+/// non-ASCII cell a prepare rebuilds, and this is about four times faster than
+/// the default `SipHash`. Terminal output chooses the keys, but each cache
+/// generation holds at most `LAYOUT_GENERATION_CAPACITY` entries, which bounds
+/// what colliding keys can cost.
+#[derive(Default)]
+struct ScalarHasher(u64);
+
+impl Hasher for ScalarHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u32(u32::from(*byte));
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        // The rustc-hash (FxHasher) mixing step.
+        self.0 = (self.0.rotate_left(5) ^ u64::from(value))
+            .wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
 /// Cell text as a layout cache key. Most cells hold one scalar, which the
 /// cache indexes without borrowing or hashing a string.
 #[derive(Clone, Copy)]
@@ -843,7 +870,7 @@ struct VariantLayouts<T> {
     /// Indexed by code point: most cells are ASCII, and hashing each one
     /// dominated the lookup.
     ascii: [Option<T>; 128],
-    scalars: HashMap<char, T>,
+    scalars: HashMap<char, T, BuildHasherDefault<ScalarHasher>>,
     sequences: HashMap<String, T>,
 }
 
@@ -851,7 +878,7 @@ impl<T> Default for VariantLayouts<T> {
     fn default() -> Self {
         Self {
             ascii: std::array::from_fn(|_| None),
-            scalars: HashMap::new(),
+            scalars: HashMap::default(),
             sequences: HashMap::new(),
         }
     }
