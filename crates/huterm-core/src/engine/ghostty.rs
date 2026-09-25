@@ -6,10 +6,10 @@ use super::EngineEffect;
 use crate::host_effects::{HostEffectAdmission, HostEffectSink};
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, Cell, CellColor, CellSize, CellStyle, Cursor, CursorShape,
-    GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand, TerminalId,
-    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
-    Viewport, appearance_for_background,
+    BufferRange, Cell, CellColor, CellSize, CellStyle, CellText, Cursor,
+    CursorShape, GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalRow,
+    TerminalSnapshot, Viewport, appearance_for_background,
 };
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{
@@ -55,6 +55,8 @@ pub(crate) struct TerminalEngine {
     /// Modes change only when `process` or `resize` advances the
     /// generation, or when presentation is reapplied.
     modes: SharedCell<Option<(u64, TerminalModes)>>,
+    /// Reused UTF-8 buffer for multi-codepoint grapheme clusters.
+    grapheme: String,
     mouse_probe: RefCell<(
         libghostty_vt::mouse::Encoder<'static>,
         libghostty_vt::mouse::Event<'static>,
@@ -212,6 +214,7 @@ impl TerminalEngine {
             default_overrides: DefaultOverrides::default(),
             escape_hint: EscapeHint::Ground,
             modes: SharedCell::new(None),
+            grapheme: String::with_capacity(32),
             mouse_probe: RefCell::new((
                 libghostty_vt::mouse::Encoder::new()?,
                 libghostty_vt::mouse::Event::new()?,
@@ -489,6 +492,7 @@ impl TerminalEngine {
                         &palette,
                         &self.palette_overrides,
                         self.default_overrides,
+                        &mut self.grapheme,
                     )?);
                 }
                 let owned = Arc::new(TerminalRow { cells });
@@ -729,9 +733,11 @@ fn snapshot_cell(
     palette: &libghostty_vt::style::Palette,
     overrides: &[bool; 256],
     default_overrides: DefaultOverrides,
+    grapheme: &mut String,
 ) -> Result<Cell, RuntimeError> {
     let raw = cell.raw_cell()?;
     let style = cell.style()?;
+    let content = raw.content_tag()?;
     let resolve =
         |color, default, override_color: Option<RgbColor>| match color {
             StyleColor::None => override_color
@@ -750,7 +756,7 @@ fn snapshot_cell(
         CellColor::DefaultForeground,
         default_overrides.foreground.then_some(fg).flatten(),
     );
-    let background_style = match raw.content_tag()? {
+    let background_style = match content {
         CellContentTag::BgColorPalette => {
             StyleColor::Palette(raw.bg_color_palette()?)
         }
@@ -765,11 +771,27 @@ fn snapshot_cell(
     if style.inverse {
         std::mem::swap(&mut foreground, &mut background);
     }
-    let mut text = String::new();
-    cell.graphemes_utf8(&mut text)?;
-    if text.is_empty() {
-        text.push(' ');
-    }
+    let text = match content {
+        CellContentTag::Codepoint => match raw.codepoint()? {
+            0 => CellText::BLANK,
+            codepoint => CellText::from(
+                char::from_u32(codepoint)
+                    .unwrap_or(char::REPLACEMENT_CHARACTER),
+            ),
+        },
+        CellContentTag::CodepointGrapheme => {
+            grapheme.clear();
+            cell.graphemes_utf8(grapheme)?;
+            if grapheme.is_empty() {
+                CellText::BLANK
+            } else {
+                CellText::new(grapheme)
+            }
+        }
+        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {
+            CellText::BLANK
+        }
+    };
     let wide = raw.wide()?;
     Ok(Cell {
         text,

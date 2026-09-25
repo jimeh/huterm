@@ -335,7 +335,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
             let mut cells: Vec<_> = line
                 .chars()
                 .map(|ch| Cell {
-                    text: ch.to_string(),
+                    text: ch.into(),
                     foreground: CellColor::Rgb(Theme::default().foreground),
                     background: CellColor::Rgb(Theme::default().background),
                     style: CellStyle::default(),
@@ -443,7 +443,7 @@ fn populate_wide(cells: &mut [Cell]) {
         (9, '\u{e0b4}'),
         (31, '\u{e0b0}'),
     ] {
-        cells[column].text = ch.to_string();
+        cells[column].text = ch.into();
         cells[column].style.wide = true;
         if column < 31 {
             cells[column + 1].text = "█".into();

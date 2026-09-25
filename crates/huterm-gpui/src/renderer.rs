@@ -2016,7 +2016,7 @@ mod tests {
                         cells: contents
                             .iter()
                             .map(|text| Cell {
-                                text: (*text).to_owned(),
+                                text: (*text).into(),
                                 foreground: CellColor::Rgb(Rgb {
                                     red: 255,
                                     green: 255,
