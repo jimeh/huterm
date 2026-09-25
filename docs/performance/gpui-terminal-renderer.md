@@ -1338,11 +1338,23 @@ validated inline bytes on each of several reads per cell, about 2 ns against
 0.4 ns for a `String`. Borrowing single ASCII bytes from a static table and
 keying the renderer's layout cache by scalar removed that regression.
 
-`churn` prepare remains about 15% slower in two further alternating
+`churn` prepare remained about 15% slower in two further alternating
 baseline/feature pairs (214/213 µs against 246/246 µs), with identical rebuilt
-rows and cache hits. Isolated release micro-benchmarks of the renderer's per-cell
-text path were faster than the old path on both macOS (102 against 116 µs per
-8,000 cells) and Linux (67 against 91 µs), and `row_sources` costs about 1 µs.
-The remaining difference is unexplained. Most of the per-cell time in those
-micro-benchmarks is SipHash lookups in the non-ASCII scalar layout map, a
-follow-up for [#164](https://github.com/jimeh/huterm/issues/164).
+rows and cache hits. Its cells are mostly non-ASCII scalars, and SipHash
+dominated their layout lookups: 41 µs against 9.8 µs per 8,000 cells for a
+multiplicative hasher in isolation. With that hasher, `2f4b9e9` measured
+`churn` prepare at 192.0 µs, 21% below `212dfdf` and about 12% below the
+pre-`CellText` baseline; other scenarios stayed within noise.
+
+### PTY read batching
+
+macOS PTY reads return at most 1,024 bytes: 6,655 of 6,700 reads of a 6.8 MB
+truecolor flood were exactly that size. A new `engine_benchmark_pty_throughput`
+release test times 150 DOOM-fire style frames (24.3 MB) through a real runtime.
+Batching reads the PTY already holds, up to 64 KiB, and skipping the read that
+must block before each readiness wait raised it from about 1,040 to 1,110 frames
+per second on macOS and from about 1,005 to 1,080 in the Linux arm64 container.
+On macOS, batches still average about 1 KiB: the tty queue rarely holds more,
+so the saved syscall per cycle provides the gain there. A `sample` of the macOS
+run showed the runtime thread about 25% idle and the reader mostly waiting in
+`select`, so the kernel handoff, not Huterm's parser, limits that benchmark.

@@ -323,11 +323,14 @@ The steps landed in order. These points differ from the plan above:
   yet justify a vendored binding patch. Caching resolved styles across cells
   that share a `style_id` needs no patch and is a smaller follow-up.
 
+Two further measured changes followed. The PTY reader batches output the PTY
+already holds and waits for readiness without a read that must block. The
+renderer hashes non-ASCII glyph scalars with a multiplicative hasher, which
+also removed the `churn` scenario's prepare regression.
+
 Open follow-ups:
 
 - The OSC 8 fixture still extracts almost every row through Ghostty's own
   damage; the cause is not established.
-- The `churn` renderer scenario's prepare is about 15% slower than the baseline
-  despite identical work counts and faster isolated per-cell paths.
 - Three foreground-job tests in `huterm-core` fail intermittently under full
   parallel load on the base commit as well as this branch.
