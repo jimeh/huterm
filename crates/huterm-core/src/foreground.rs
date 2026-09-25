@@ -157,45 +157,72 @@ impl ForegroundNames {
     }
 }
 
-/// Chooses the published directory. An OSC 7 report applies while the
-/// process group that held the foreground when it arrived still holds it;
-/// otherwise the probed process directory applies. A shell's report thus
-/// wins at its prompt, a running job shows its own directory, and a remote
-/// shell's reports under `ssh` stop applying once `ssh` exits.
+/// Reports scoped to the process group that held the foreground when they
+/// arrived. Each applies only while that group keeps the foreground, so a
+/// shell's reports apply at its prompt, a running job's apply while it runs,
+/// and a remote shell's reports under `ssh` stop applying once `ssh` exits.
+/// Without a current OSC 7 report, the probed process directory applies.
 #[derive(Debug, Default)]
-pub(crate) struct Directories {
-    reported: Option<(Option<i32>, TerminalDirectory)>,
-    process: Option<TerminalDirectory>,
+pub(crate) struct Reports {
     foreground: Option<i32>,
+    process_directory: Option<TerminalDirectory>,
+    directory: Option<(Option<i32>, TerminalDirectory)>,
+    title: Option<(Option<i32>, String)>,
 }
 
-impl Directories {
+impl Reports {
     /// Records an OSC 7 report, or its clearing, from `foreground`.
-    pub(crate) fn report(
+    pub(crate) fn report_directory(
         &mut self,
         directory: Option<TerminalDirectory>,
         foreground: Option<i32>,
     ) {
         self.foreground = foreground;
-        self.reported = directory.map(|directory| (foreground, directory));
+        self.directory = directory.map(|directory| (foreground, directory));
+    }
+
+    /// Records an OSC 0/2 title from `foreground`. An empty title clears it.
+    pub(crate) fn report_title(
+        &mut self,
+        title: String,
+        foreground: Option<i32>,
+    ) {
+        self.foreground = foreground;
+        self.title = (!title.is_empty()).then_some((foreground, title));
+    }
+
+    /// Whether `title` would change the recorded title's text.
+    pub(crate) fn title_changes(&self, title: &str) -> bool {
+        self.title
+            .as_ref()
+            .map_or(!title.is_empty(), |(_, current)| current != title)
     }
 
     pub(crate) fn probed(
         &mut self,
         foreground: Option<i32>,
-        process: Option<TerminalDirectory>,
+        process_directory: Option<TerminalDirectory>,
     ) {
         self.foreground = foreground;
-        self.process = process;
+        self.process_directory = process_directory;
     }
 
-    pub(crate) fn effective(&self) -> Option<TerminalDirectory> {
-        match &self.reported {
-            Some((reporter, directory)) if *reporter == self.foreground => {
-                Some(directory.clone())
-            }
-            _ => self.process.clone(),
-        }
+    pub(crate) fn directory(&self) -> Option<TerminalDirectory> {
+        self.current(self.directory.as_ref())
+            .or_else(|| self.process_directory.clone())
+    }
+
+    pub(crate) fn title(&self) -> Option<String> {
+        self.current(self.title.as_ref())
+    }
+
+    fn current<T: Clone>(
+        &self,
+        report: Option<&(Option<i32>, T)>,
+    ) -> Option<T> {
+        report
+            .filter(|(reporter, _)| *reporter == self.foreground)
+            .map(|(_, value)| value.clone())
     }
 }
 
@@ -306,24 +333,25 @@ mod tests {
     #[test]
     fn reports_apply_while_their_reporter_holds_the_foreground() {
         let (shell, job) = (Some(10), Some(20));
-        let mut directories = Directories::default();
+        let mut directories = Reports::default();
         directories.probed(shell, Some(directory("/home/me", true)));
-        assert_eq!(directories.effective(), Some(directory("/home/me", true)));
-        directories.report(Some(directory("/home/me/src", true)), shell);
+        assert_eq!(directories.directory(), Some(directory("/home/me", true)));
+        directories
+            .report_directory(Some(directory("/home/me/src", true)), shell);
         assert_eq!(
-            directories.effective(),
+            directories.directory(),
             Some(directory("/home/me/src", true)),
             "the shell's report wins at its prompt"
         );
         directories.probed(job, Some(directory("/tmp", true)));
         assert_eq!(
-            directories.effective(),
+            directories.directory(),
             Some(directory("/tmp", true)),
             "a running job shows its own directory"
         );
         directories.probed(shell, Some(directory("/home/me", true)));
         assert_eq!(
-            directories.effective(),
+            directories.directory(),
             Some(directory("/home/me/src", true))
         );
     }
@@ -331,23 +359,48 @@ mod tests {
     #[test]
     fn a_jobs_report_expires_with_the_job_and_clearing_falls_back() {
         let (shell, ssh) = (Some(10), Some(30));
-        let mut directories = Directories::default();
+        let mut directories = Reports::default();
         directories.probed(ssh, Some(directory("/home/me", true)));
-        directories.report(Some(directory("/srv/remote", false)), ssh);
+        directories
+            .report_directory(Some(directory("/srv/remote", false)), ssh);
         assert_eq!(
-            directories.effective(),
+            directories.directory(),
             Some(directory("/srv/remote", false))
         );
         directories.probed(shell, Some(directory("/home/me", true)));
         assert_eq!(
-            directories.effective(),
+            directories.directory(),
             Some(directory("/home/me", true)),
             "a remote report stops applying after ssh exits"
         );
-        directories.report(Some(directory("/home/me/src", true)), shell);
-        directories.report(None, shell);
-        assert_eq!(directories.effective(), Some(directory("/home/me", true)));
-        assert_eq!(Directories::default().effective(), None);
+        directories
+            .report_directory(Some(directory("/home/me/src", true)), shell);
+        directories.report_directory(None, shell);
+        assert_eq!(directories.directory(), Some(directory("/home/me", true)));
+        assert_eq!(Reports::default().directory(), None);
+    }
+
+    #[test]
+    fn titles_apply_only_while_their_setter_holds_the_foreground() {
+        let (shell, job) = (Some(10), Some(20));
+        let mut reports = Reports::default();
+        reports.probed(shell, None);
+        assert!(reports.title_changes("~/src"));
+        reports.report_title("~/src".into(), shell);
+        assert_eq!(reports.title().as_deref(), Some("~/src"));
+        assert!(
+            !reports.title_changes("~/src"),
+            "repeats need no group read"
+        );
+        reports.probed(job, None);
+        assert_eq!(reports.title(), None, "a job has not titled itself yet");
+        reports.report_title("notes.txt - VIM".into(), job);
+        assert_eq!(reports.title().as_deref(), Some("notes.txt - VIM"));
+        reports.probed(shell, None);
+        assert_eq!(reports.title(), None, "the job's title leaves with it");
+        reports.report_title(String::new(), shell);
+        assert_eq!(reports.title(), None);
+        assert!(!reports.title_changes(""));
     }
 
     #[cfg(unix)]

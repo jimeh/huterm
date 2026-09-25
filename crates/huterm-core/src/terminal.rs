@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::events::{EventPublisher, EventReceiver};
-use crate::foreground::{Directories, ForegroundNames, ProbeSchedule};
+use crate::foreground::{ForegroundNames, ProbeSchedule, Reports};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -846,7 +846,7 @@ fn run_terminal(
                 let probe =
                     foreground.probe(master.process_group_leader(), root);
                 probes.probed(now, probe.job);
-                metadata.directories.probed(probe.group, probe.directory);
+                metadata.reports.probed(probe.group, probe.directory);
                 metadata.publish(probe.name, terminal_id, &events);
             }
         }
@@ -1445,6 +1445,16 @@ fn handle_effect(
             queue_write(bytes, writer, pending_writes)
         }
         EngineEffect::Title(title) => {
+            // Titles can change on every output chunk; read the foreground
+            // group only when the text changes.
+            if metadata.reports.title_changes(&title) {
+                metadata
+                    .reports
+                    .report_title(title.clone(), master.process_group_leader());
+                let process =
+                    metadata.current.foreground_process().map(str::to_owned);
+                metadata.publish(process, terminal_id, events);
+            }
             let _ =
                 events.send(TerminalEvent::TitleChanged { terminal_id, title });
             WriterQueueState::Drained
@@ -1452,8 +1462,8 @@ fn handle_effect(
         EngineEffect::Directory(directory) => {
             // The report belongs to whichever group holds the foreground now.
             metadata
-                .directories
-                .report(directory, master.process_group_leader());
+                .reports
+                .report_directory(directory, master.process_group_leader());
             let process =
                 metadata.current.foreground_process().map(str::to_owned);
             metadata.publish(process, terminal_id, events);
@@ -1466,12 +1476,12 @@ fn handle_effect(
     }
 }
 
-/// Metadata last published to clients, and the directory sources behind it.
+/// Metadata last published to clients, and the reports behind it.
 #[derive(Debug, Default)]
 struct PublishedMetadata {
     current: TerminalMetadata,
     revision: u64,
-    directories: Directories,
+    reports: Reports,
 }
 
 impl PublishedMetadata {
@@ -1484,7 +1494,8 @@ impl PublishedMetadata {
         events: &EventPublisher,
     ) {
         let replacement =
-            TerminalMetadata::new(self.directories.effective(), process);
+            TerminalMetadata::new(self.reports.directory(), process)
+                .with_foreground_title(self.reports.title());
         if self.current == replacement {
             return;
         }
@@ -1867,6 +1878,44 @@ mod tests {
             &mut current,
             same_path(&std::env::current_dir().unwrap()),
         );
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn job_titles_apply_only_while_the_job_holds_the_foreground() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(100),
+            &command(
+                "set -m; printf '\\033]2;shell title\\007READY'; read line; (printf '\\033]2;job title\\007'; exec head -n 1 >/dev/null); printf DONE; read line",
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut title: Option<String> = None;
+        let mut wait_for = |expected: Option<&str>| loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    title = metadata.foreground_title().map(str::to_owned);
+                }
+            }
+            if title.as_deref() == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "title was {title:?}");
+            thread::sleep(Duration::from_millis(10));
+        };
+        wait_for(Some("shell title"));
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for(Some("job title"));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        // The job's title leaves with it, even though the terminal title
+        // still reads "job title".
+        wait_for(None);
         runtime.shutdown().unwrap();
     }
 

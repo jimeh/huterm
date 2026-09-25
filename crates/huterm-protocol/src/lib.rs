@@ -730,6 +730,7 @@ impl TerminalDirectory {
 pub struct TerminalMetadata {
     directory: Option<TerminalDirectory>,
     foreground_process: Option<String>,
+    foreground_title: Option<String>,
 }
 
 impl TerminalMetadata {
@@ -742,7 +743,15 @@ impl TerminalMetadata {
         Self {
             directory,
             foreground_process,
+            foreground_title: None,
         }
+    }
+
+    /// Adds the title set by the process group that holds the foreground.
+    #[must_use]
+    pub fn with_foreground_title(mut self, title: Option<String>) -> Self {
+        self.foreground_title = title;
+        self
     }
 
     /// Returns the latest accepted directory report.
@@ -755,6 +764,14 @@ impl TerminalMetadata {
     #[must_use]
     pub fn foreground_process(&self) -> Option<&str> {
         self.foreground_process.as_deref()
+    }
+
+    /// Returns the title set by the process group that holds the foreground,
+    /// if it set one. Unlike the terminal title, a job's title stops applying
+    /// once the job leaves the foreground.
+    #[must_use]
+    pub fn foreground_title(&self) -> Option<&str> {
+        self.foreground_title.as_deref()
     }
 }
 
