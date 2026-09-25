@@ -26,6 +26,10 @@ use crate::presentation::PresentationUpdate;
 use crate::pty::{self, PtyProcess};
 
 const MESSAGE_CAPACITY: usize = 64;
+/// Largest PTY output message: one read plus output the PTY already holds.
+const READ_BATCH_BYTES: usize = 64 * 1024;
+/// Queued output messages, bounding output read ahead of the parser to 512 KiB.
+const OUTPUT_CAPACITY: usize = 512 * 1024 / READ_BATCH_BYTES;
 const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -452,7 +456,7 @@ impl TerminalRuntime {
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
         let (output_sender, output_receiver) =
-            mpsc::sync_channel(MESSAGE_CAPACITY);
+            mpsc::sync_channel(OUTPUT_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
         let wake = Arc::new(crate::wake::Wake::default());
         let message_sender =
@@ -1269,6 +1273,8 @@ fn spawn_reader(
         .spawn(move || {
             let mut buffer = [0_u8; 8192];
             let mut pending = None;
+            let mut ended = None;
+            let mut drained = false;
             while !closing.load(Ordering::Acquire) {
                 if let Some(bytes) = pending.take() {
                     // Teardown drops the receiver before joining this worker,
@@ -1278,25 +1284,40 @@ fn spawn_reader(
                     }
                     continue;
                 }
+                // End-of-file or a failure found while batching follows the
+                // output read before it.
+                if let Some(control) = ended.take() {
+                    let _ = controls.send(control);
+                    break;
+                }
+                // A read that would block needs no retry before the wait.
+                if std::mem::take(&mut drained)
+                    && let Err(error) = reader_waiter.wait(None)
+                {
+                    let _ = controls.send(RuntimeControl::WorkerFailed(
+                        format!("PTY readiness wait failed: {error}"),
+                    ));
+                    break;
+                }
                 match reader.read(&mut buffer) {
                     Ok(0) => {
                         let _ = controls.send(RuntimeControl::PtyEof);
                         break;
                     }
                     Ok(count) => {
-                        pending = Some(buffer[..count].to_vec());
+                        let mut batch = buffer[..count].to_vec();
+                        match read_ready(&mut *reader, &mut buffer, &mut batch)
+                        {
+                            ReadyEnd::Full => {}
+                            ReadyEnd::Drained => drained = true,
+                            ReadyEnd::Ended(control) => ended = Some(control),
+                        }
+                        pending = Some(batch);
                     }
                     Err(error)
                         if error.kind() == std::io::ErrorKind::WouldBlock =>
                     {
-                        if let Err(error) = reader_waiter.wait(None) {
-                            let _ = controls.send(
-                                RuntimeControl::WorkerFailed(format!(
-                                    "PTY readiness wait failed: {error}"
-                                )),
-                            );
-                            break;
-                        }
+                        drained = true;
                     }
                     Err(error) => {
                         let _ = controls.send(RuntimeControl::WorkerFailed(
@@ -1308,6 +1329,39 @@ fn spawn_reader(
             }
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
+}
+
+/// Why [`read_ready`] stopped adding to a batch.
+enum ReadyEnd {
+    Full,
+    Drained,
+    Ended(RuntimeControl),
+}
+
+/// Appends output the PTY already holds to `batch`, without waiting. When
+/// output arrives faster than single reads drain it, one message then carries
+/// several reads; each message costs a channel send, a runtime wake, and a
+/// parser call.
+fn read_ready(
+    reader: &mut dyn Read,
+    buffer: &mut [u8],
+    batch: &mut Vec<u8>,
+) -> ReadyEnd {
+    while batch.len() + buffer.len() <= READ_BATCH_BYTES {
+        match reader.read(buffer) {
+            Ok(0) => return ReadyEnd::Ended(RuntimeControl::PtyEof),
+            Ok(count) => batch.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return ReadyEnd::Drained;
+            }
+            Err(error) => {
+                return ReadyEnd::Ended(RuntimeControl::WorkerFailed(format!(
+                    "PTY read failed: {error}"
+                )));
+            }
+        }
+    }
+    ReadyEnd::Full
 }
 
 fn observe_child_exit(
@@ -2506,6 +2560,144 @@ mod tests {
         format!(
             "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""
         )
+    }
+
+    /// Returns scripted read results, then blocks.
+    struct ScriptedReader(VecDeque<io::Result<Vec<u8>>>);
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.0.pop_front() {
+                Some(Ok(bytes)) => {
+                    buffer[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(bytes.len())
+                }
+                Some(Err(error)) => Err(error),
+                None => Err(io::ErrorKind::WouldBlock.into()),
+            }
+        }
+    }
+
+    fn read_batch(
+        results: Vec<io::Result<Vec<u8>>>,
+    ) -> (Vec<u8>, ReadyEnd, usize) {
+        let mut reader = ScriptedReader(results.into());
+        let mut buffer = [0_u8; 8192];
+        let mut batch = b"first".to_vec();
+        let end = read_ready(&mut reader, &mut buffer, &mut batch);
+        (batch, end, reader.0.len())
+    }
+
+    #[test]
+    fn ready_reads_join_one_batch_until_the_pty_would_block() {
+        let (batch, end, left) =
+            read_batch(vec![Ok(b" second".to_vec()), Ok(b" third".to_vec())]);
+        assert_eq!(batch, b"first second third");
+        assert!(matches!(end, ReadyEnd::Drained));
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn ready_reads_stop_before_the_batch_limit_and_keep_later_output() {
+        let chunk = vec![b'x'; 8192];
+        let reads = READ_BATCH_BYTES / chunk.len() + 2;
+        let (batch, end, left) =
+            read_batch((0..reads).map(|_| Ok(chunk.clone())).collect());
+        assert!(matches!(end, ReadyEnd::Full));
+        assert!(batch.len() <= READ_BATCH_BYTES);
+        assert_eq!(batch.len() + left * chunk.len(), 5 + reads * chunk.len());
+    }
+
+    #[test]
+    fn end_of_file_and_read_failures_follow_the_output_read_before_them() {
+        let (batch, end, _) =
+            read_batch(vec![Ok(b" tail".to_vec()), Ok(Vec::new())]);
+        assert_eq!(batch, b"first tail");
+        assert!(matches!(end, ReadyEnd::Ended(RuntimeControl::PtyEof)));
+
+        let (batch, end, _) = read_batch(vec![
+            Ok(b" tail".to_vec()),
+            Err(io::Error::other("gone")),
+        ]);
+        assert_eq!(batch, b"first tail");
+        assert!(matches!(
+            end,
+            ReadyEnd::Ended(RuntimeControl::WorkerFailed(message))
+                if message.contains("gone")
+        ));
+    }
+
+    /// Times a PTY flood of DOOM-fire style frames through the whole runtime:
+    /// reader, output channel, parser, and effects. The final title marks
+    /// completion, so no snapshot competes with the measured work.
+    #[test]
+    #[ignore = "release benchmark; run through mise run bench:engine"]
+    fn engine_benchmark_pty_throughput() {
+        use std::fmt::Write as _;
+        const FRAMES: u32 = 150;
+        let mut frame = String::from("\x1b[H");
+        for cell in 0..120 * 40 {
+            let value = (cell * 13) % 256;
+            let _ = write!(
+                frame,
+                "\x1b[38;2;{value};{};{};48;2;{};{};{}m\u{2580}",
+                value / 2,
+                value / 4,
+                255 - value,
+                value / 3,
+                value / 5
+            );
+        }
+        let data = std::env::temp_dir()
+            .join(format!("huterm-throughput-{}.bin", std::process::id()));
+        let mut payload = frame.repeat(FRAMES as usize);
+        payload.push_str("\x1b]2;THROUGHPUT-DONE\x07");
+        std::fs::write(&data, &payload).unwrap();
+        let mut samples = Vec::new();
+        for _ in 0..5 {
+            let mut command = command(&format!(
+                "stty -echo; printf READY; read go; cat '{}'; read done",
+                data.display()
+            ));
+            command.grid_size = GridSize::clamped(120, 40);
+            let runtime =
+                TerminalRuntime::spawn(TerminalId::new(90), &command).unwrap();
+            let client = runtime.client();
+            wait_for_text(&client, "READY");
+            client
+                .send_input(TerminalInput::Text("go\n".into()))
+                .unwrap();
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(60);
+            'done: loop {
+                while let Some(event) = client.try_recv_event().unwrap() {
+                    if matches!(
+                        event,
+                        TerminalEvent::TitleChanged { ref title, .. }
+                            if title == "THROUGHPUT-DONE"
+                    ) {
+                        break 'done;
+                    }
+                }
+                assert!(Instant::now() < deadline, "throughput run timed out");
+                thread::sleep(Duration::from_millis(1));
+            }
+            samples.push(started.elapsed());
+            runtime.shutdown().unwrap();
+        }
+        let _ = std::fs::remove_file(&data);
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
+        println!(
+            "engine=ghostty fixture=pty-throughput bytes={} frames={FRAMES} elapsed_ms_p50={:.1} elapsed_ms_min={:.1} mb_per_second={:.1} frames_per_second={:.0}",
+            payload.len(),
+            median.as_secs_f64() * 1e3,
+            samples[0].as_secs_f64() * 1e3,
+            f64::from(u32::try_from(payload.len()).unwrap())
+                / median.as_secs_f64()
+                / 1e6,
+            f64::from(FRAMES) / median.as_secs_f64(),
+        );
     }
 
     fn command(script: &str) -> TerminalCommand {
