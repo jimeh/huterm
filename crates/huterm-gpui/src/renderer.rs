@@ -696,6 +696,9 @@ fn row_sources(
     let shift = current.viewport.bottom_offset as i128
         - previous.viewport.bottom_offset as i128
         - (current.history_size as i128 - previous.history_size as i128);
+    // Sorted on the first row that neither candidate matches, so a full
+    // redraw costs O(rows log rows) rather than a scan per row.
+    let mut identities: Option<Vec<(*const _, usize)>> = None;
     current
         .rows
         .iter()
@@ -709,10 +712,23 @@ fn row_sources(
                 .flatten()
                 .find(|row| Arc::ptr_eq(&previous.rows[*row], after))
                 .or_else(|| {
-                    previous
-                        .rows
-                        .iter()
-                        .position(|before| Arc::ptr_eq(before, after))
+                    let identities = identities.get_or_insert_with(|| {
+                        let mut sorted: Vec<_> = previous
+                            .rows
+                            .iter()
+                            .map(Arc::as_ptr)
+                            .zip(0..)
+                            .collect();
+                        sorted.sort_unstable();
+                        sorted
+                    });
+                    let target = Arc::as_ptr(after);
+                    let first =
+                        identities.partition_point(|(row, _)| *row < target);
+                    identities
+                        .get(first)
+                        .filter(|(row, _)| *row == target)
+                        .map(|(_, row)| *row)
                 })
                 // Other runtimes may allocate rows with identical content.
                 .or_else(|| {
