@@ -1,7 +1,9 @@
 # Snapshot rebuild cost
 
-Status: planned for [#162](https://github.com/jimeh/huterm/issues/162). This is
-the first of three performance PRs. Input scheduling ([#163](https://github.com/jimeh/huterm/issues/163))
+Status: implemented for [#162](https://github.com/jimeh/huterm/issues/162); see
+[Implementation outcome](#implementation-outcome) and the
+[measurements](../performance/gpui-terminal-renderer.md#snapshot-rebuild-cost-2026-09-25).
+This is the first of three performance PRs. Input scheduling ([#163](https://github.com/jimeh/huterm/issues/163))
 and GPUI paint and chrome work ([#164](https://github.com/jimeh/huterm/issues/164))
 follow separately.
 
@@ -297,8 +299,35 @@ batching.
   `docs/performance/gpui-terminal-renderer.md`.
 - Mark this plan as implemented, with a link to the PR.
 
-## Unresolved questions
+## Implementation outcome
 
-- Does any client depend on repeated identical `TitleChanged` events? Step 6
-  answers this before it lands.
-- Batched native reads depend on step 7's measurement.
+The steps landed in order. These points differ from the plan above:
+
+- Step 2 also includes OSC 21, the kitty color protocol, which Ghostty
+  dispatches to its color parser, and treats `0x9c` inside an OSC as payload,
+  matching `parse_table.zig`.
+- Step 4 keeps `CellText::as_char`, which decodes stored bytes without
+  validation. The first build validated inline bytes on every `as_str` call and
+  raised renderer prepare by 31-41%. Single ASCII bytes now borrow from a static
+  table, and the renderer keys glyph layouts and built-in glyphs by scalar.
+  `CellText` equality compares canonical stored bytes.
+- Step 5 allows two viewport heights of scanned row comparisons per snapshot,
+  so a changed first row cannot exhaust the scan before the shifted rows below
+  it match. A theme-update test now asserts full re-extraction instead of new
+  row `Arc`s, because identical rows may keep theirs.
+- Step 6 suppresses unchanged titles in `TerminalView`, not in the runtime.
+  `Mux::attach` clients learn a title only from later reports, so runtime
+  suppression would hide it from late attachers.
+- Step 7 deferred batched native reads. Ghostty getters and binding wrappers
+  are about 60% of full-rebuild snapshot time, but the remaining gain does not
+  yet justify a vendored binding patch. Caching resolved styles across cells
+  that share a `style_id` needs no patch and is a smaller follow-up.
+
+Open follow-ups:
+
+- The OSC 8 fixture still extracts almost every row through Ghostty's own
+  damage; the cause is not established.
+- The `churn` renderer scenario's prepare is about 15% slower than the baseline
+  despite identical work counts and faster isolated per-cell paths.
+- Three foreground-job tests in `huterm-core` fail intermittently under full
+  parallel load on the base commit as well as this branch.

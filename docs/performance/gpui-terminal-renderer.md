@@ -1261,3 +1261,78 @@ was used. Real platform observer-registration failures were not injected end to
 end. Explicit failure backoff and X11 safety sampling remain; the native
 fullscreen compatibility sampler, conditional pointer probe, busy-runtime
 retries and GPUI display-link work are separate owners.
+
+## Snapshot rebuild cost (2026-09-25)
+
+This section covers the work for [#162](https://github.com/jimeh/huterm/issues/162),
+planned in [snapshot rebuild cost](../plans/snapshot-rebuild-cost.md). The
+baseline is `5be9643`, with the extended fixtures from `8ceec74`; the feature
+build is `212dfdf`.
+
+### Snapshot rebuild engine results
+
+`mise run bench:engine` ran natively on a Mac15,8 M3 Max host with macOS 27, on
+a 120 by 40 grid for 200 iterations per fixture. The feature column is the
+median of three runs' p50 values. Row counts are totals over 200 snapshots.
+Extracted rows are read from Ghostty; allocated rows receive a new `Arc`.
+
+| Fixture | Snapshot p50 before | After | Rows extracted before | After | Row `Arc`s allocated after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ascii` | 181.5 µs | 134.9 µs | 8,000 | 8,000 | 39 |
+| `styled` | 183.2 µs | 118.1 µs | 8,000 | 8,000 | 7,800 |
+| `unicode` | 185.2 µs | 133.6 µs | 8,000 | 8,000 | 39 |
+| `sparse` | 5.5 µs | 4.0 µs | 201 | 201 | 200 |
+| `full` | 200.9 µs | 131.3 µs | 8,000 | 8,000 | 8,000 |
+| `prompt` | 176.4 µs | 7.4 µs | 8,000 | 401 | 1 |
+| `title` | 176.4 µs | 4.1 µs | 8,000 | 201 | 200 |
+| `osc8` | 177.5 µs | 129.6 µs | 8,000 | 7,923 | 200 |
+| `box-cjk` | 176.0 µs | 3.9 µs | 8,000 | 201 | 200 |
+| `color` | 177.5 µs | 128.5 µs | 8,000 | 8,000 | 1 |
+| `scroll` | 180.4 µs | 135.4 µs | 7,532 | 7,532 | 600 |
+| `scroll-capped` | 179.2 µs | 131.5 µs | 8,000 | 8,000 | 600 |
+
+Prompt, title, and box-drawing or CJK fixtures no longer probe palette
+overrides, so they extract only the rows they touch. The OSC 8 fixture still
+extracts almost every row; the override hint does not flag it, so the damage
+comes from Ghostty itself, and the cause is not established. Full rebuilds fell
+by about 30% from per-cell `CellText` storage. Scrolling fixtures now reuse the
+`Arc` for every unchanged shifted row, including at the 16 MiB scrollback
+budget, where history size stops growing. Row matching adds roughly 10-20 µs to
+full rebuilds on the runtime thread; before, the renderer compared the same
+rows on the UI thread and rebuilt every prepared row once scrollback was full.
+
+A `sample` profile of repeated `full` snapshots attributed about 60% of
+snapshot time to Ghostty getters and their binding wrappers (`row_cells_get`,
+`cell_get`, `style`, `content_tag`, `wide`, `codepoint`) and the rest to Rust
+cell construction. Batched reads through `row_cells_get_multi` would need a
+vendored binding patch and are deferred.
+
+### Snapshot rebuild renderer results
+
+`bench:renderer-scenarios` ran in the Linux arm64 Docker container under Xvfb
+and `twm`, five runs per scenario, against a baseline built from `d70366a`
+(before `CellText`). Scenarios ran one at a time with up to three attempts,
+because Xvfb intermittently delivered too few frames while the host was loaded.
+
+| Scenario | Prepare median | Change | Paint median | Change |
+| --- | ---: | ---: | ---: | ---: |
+| `ascii` | 194.3 µs | -0.8% | 432.8 µs | -1.6% |
+| `blocks` | 214.5 µs | -0.6% | 237.7 µs | -1.4% |
+| `boxes` | 177.5 µs | +2.3% | 996.3 µs | -3.7% |
+| `churn` | 243.7 µs | +11.5% | 557.1 µs | -3.1% |
+| `scroll` | 13.7 µs | -14.6% | 444.1 µs | -5.0% |
+| `selection` | 196.8 µs | +0.3% | 489.5 µs | -4.3% |
+
+The first `CellText` build raised full-rebuild prepare by 31-41%: `as_str`
+validated inline bytes on each of several reads per cell, about 2 ns against
+0.4 ns for a `String`. Borrowing single ASCII bytes from a static table and
+keying the renderer's layout cache by scalar removed that regression.
+
+`churn` prepare remains about 15% slower in two further alternating
+baseline/feature pairs (214/213 µs against 246/246 µs), with identical rebuilt
+rows and cache hits. Isolated release micro-benchmarks of the renderer's per-cell
+text path were faster than the old path on both macOS (102 against 116 µs per
+8,000 cells) and Linux (67 against 91 µs), and `row_sources` costs about 1 µs.
+The remaining difference is unexplained. Most of the per-cell time in those
+micro-benchmarks is SipHash lookups in the non-ASCII scalar layout map, a
+follow-up for [#164](https://github.com/jimeh/huterm/issues/164).
