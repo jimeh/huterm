@@ -56,6 +56,21 @@ pub(crate) struct TerminalEngine {
         libghostty_vt::mouse::Encoder<'static>,
         libghostty_vt::mouse::Event<'static>,
     )>,
+    #[cfg(test)]
+    last_snapshot_stats: SnapshotStats,
+}
+
+/// Independent row counts for the most recent snapshot. Extraction and `Arc`
+/// allocation are separate so reuse cannot hide rows read from the engine.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SnapshotStats {
+    /// Rows whose cells were read from the engine.
+    pub(crate) extracted: usize,
+    /// Rows published through a newly allocated `Arc`.
+    pub(crate) allocated: usize,
+    /// Rows published through a retained `Arc`, at any index.
+    pub(crate) reused: usize,
 }
 
 impl TerminalEngine {
@@ -197,6 +212,8 @@ impl TerminalEngine {
                 libghostty_vt::mouse::Encoder::new()?,
                 libghostty_vt::mouse::Event::new()?,
             )),
+            #[cfg(test)]
+            last_snapshot_stats: SnapshotStats::default(),
         })
     }
 
@@ -428,10 +445,17 @@ impl TerminalEngine {
             || self.retained_rows.first().is_some_and(|row| {
                 row.cells.len() != usize::from(self.size.columns)
             });
+        #[cfg(test)]
+        let mut row_stats = SnapshotStats::default();
         let mut rows = self.row_iterator.update(&state)?;
         let mut index = 0;
         while let Some(row) = rows.next() {
             if full || row.dirty()? {
+                #[cfg(test)]
+                {
+                    row_stats.extracted += 1;
+                    row_stats.allocated += 1;
+                }
                 let mut cells = Vec::new();
                 cells
                     .try_reserve_exact(usize::from(self.size.columns))
@@ -452,6 +476,11 @@ impl TerminalEngine {
                     self.retained_rows[index] = owned;
                 } else {
                     self.retained_rows.push(owned);
+                }
+            } else {
+                #[cfg(test)]
+                {
+                    row_stats.reused += 1;
                 }
             }
             index += 1;
@@ -493,7 +522,16 @@ impl TerminalEngine {
         }
         state.set_dirty(Dirty::Clean)?;
         self.colors = Some(colors);
+        #[cfg(test)]
+        {
+            self.last_snapshot_stats = row_stats;
+        }
         Ok(snapshot)
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_snapshot_stats(&self) -> SnapshotStats {
+        self.last_snapshot_stats
     }
 
     pub(super) fn extract_text(
