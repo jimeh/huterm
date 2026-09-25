@@ -1577,6 +1577,9 @@ mod tests {
                 String::from_utf8_lossy(chunk)
             );
         }
+        // Shows the fixture detects a full redraw. OSC 4 dirties Ghostty's
+        // palette on its own, so this does not test the hint; the full-probe
+        // differential test guards against missed color changes.
         engine.process(b"\x1b]4;1;#123456\x07").unwrap();
         engine.snapshot().unwrap();
         assert_eq!(engine.last_snapshot_stats().extracted, 10);

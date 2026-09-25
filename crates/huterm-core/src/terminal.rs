@@ -2669,7 +2669,10 @@ mod tests {
     }
 
     /// Runs the reader loop over `results` with a readiness wait that
-    /// returns `wait`, collecting forwarded output and controls.
+    /// returns `wait`, collecting forwarded output and controls. The script
+    /// blocks forever once exhausted, so the wait fails after a few calls:
+    /// a loop that stops handling end-of-file or errors then ends with a
+    /// budget failure instead of hanging the test run.
     fn forward(
         results: Vec<io::Result<Vec<u8>>>,
         wait: fn() -> io::Result<()>,
@@ -2683,10 +2686,15 @@ mod tests {
         let (output, outputs) = mpsc::sync_channel(OUTPUT_CAPACITY);
         let (controls, received) = mpsc::channel();
         let wait_log = Rc::clone(&log);
+        let mut waits = 0;
         forward_output(
             &mut reader,
             || {
                 wait_log.borrow_mut().push("wait");
+                waits += 1;
+                if waits > 4 {
+                    return Err(io::Error::other("wait budget exhausted"));
+                }
                 wait()
             },
             &crate::wake::SyncSender::new(output, Arc::clone(&wake)),
@@ -2694,15 +2702,21 @@ mod tests {
             &AtomicBool::new(false),
         );
         let log = log.borrow().clone();
-        (
-            log,
-            outputs.try_iter().collect(),
-            received.try_iter().collect(),
-        )
+        let received: Vec<_> = received.try_iter().collect();
+        assert!(
+            !received.iter().any(|control| matches!(
+                control,
+                RuntimeControl::WorkerFailed(message)
+                    if message.contains("wait budget exhausted")
+            )),
+            "reader loop did not stop: {log:?}"
+        );
+        (log, outputs.try_iter().collect(), received)
     }
 
     #[test]
-    fn reader_waits_after_a_drained_batch_and_reports_end_of_file_last() {
+    fn reader_waits_after_a_drained_batch_and_keeps_output_before_end_of_file()
+    {
         let (log, outputs, controls) = forward(
             vec![
                 Ok(b"a".to_vec()),
@@ -2720,7 +2734,7 @@ mod tests {
     }
 
     #[test]
-    fn reader_failures_are_reported_after_the_output_read_before_them() {
+    fn reader_failures_keep_the_output_read_before_them() {
         let (_, outputs, controls) = forward(
             vec![Ok(b"a".to_vec()), Err(io::Error::other("gone"))],
             || Ok(()),
@@ -2744,17 +2758,10 @@ mod tests {
         ));
     }
 
-    /// Times a PTY flood of DOOM-fire style frames through the whole runtime:
-    /// reader, output channel, parser, and effects. A title after every
-    /// segment timestamps progress without snapshots, and the loop requests a
-    /// snapshot every 8 ms like a 120 Hz client, so output-queue depth shows
-    /// up as segment-rate spread as well as in the mean.
-    #[test]
-    #[ignore = "release benchmark; run through mise run bench:engine"]
-    fn engine_benchmark_pty_throughput() {
+    /// One 120 by 40 DOOM-fire style frame: truecolor foreground and
+    /// background SGR for every cell.
+    fn truecolor_frame() -> String {
         use std::fmt::Write as _;
-        const SEGMENTS: u32 = 12;
-        const SEGMENT_FRAMES: u32 = 50;
         let mut frame = String::from("\x1b[H");
         for cell in 0..120 * 40 {
             let value = (cell * 13) % 256;
@@ -2768,7 +2775,23 @@ mod tests {
                 value / 5
             );
         }
-        let segment = frame.repeat(SEGMENT_FRAMES as usize);
+        frame
+    }
+
+    /// Times a PTY flood of DOOM-fire style frames through the whole runtime:
+    /// reader, output channel, parser, and effects. A title after every
+    /// segment timestamps progress without snapshots, and the loop requests a
+    /// snapshot about 8 ms after the previous one completes, roughly like a
+    /// 120 Hz client, so output-queue depth shows up as segment-rate spread as
+    /// well as in the mean. Segment rates start at the first marker, which
+    /// excludes shell and `cat` startup.
+    #[test]
+    #[ignore = "release benchmark; run through mise run bench:engine"]
+    fn engine_benchmark_pty_throughput() {
+        use std::fmt::Write as _;
+        const SEGMENTS: u32 = 12;
+        const SEGMENT_FRAMES: u32 = 50;
+        let segment = truecolor_frame().repeat(SEGMENT_FRAMES as usize);
         let mut payload = String::new();
         for index in 0..SEGMENTS {
             payload.push_str(&segment);
@@ -2794,21 +2817,32 @@ mod tests {
                 .unwrap();
             let started = Instant::now();
             let deadline = started + Duration::from_secs(60);
-            let mut segment_started = started;
+            let mut previous: Option<(u32, Instant)> = None;
             let mut snapshot_at = started;
-            let last = format!("SEGMENT-{}", SEGMENTS - 1);
             'done: loop {
                 while let Some(event) = client.try_recv_event().unwrap() {
-                    if let TerminalEvent::TitleChanged { title, .. } = event {
-                        let now = Instant::now();
+                    let TerminalEvent::TitleChanged { title, .. } = event
+                    else {
+                        continue;
+                    };
+                    let Some(index) = title
+                        .strip_prefix("SEGMENT-")
+                        .and_then(|index| index.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    let now = Instant::now();
+                    // Pending titles coalesce, so a late poll can skip a
+                    // marker; count every segment the gap covers.
+                    if let Some((before, at)) = previous {
                         segment_rates.push(
-                            f64::from(SEGMENT_FRAMES)
-                                / (now - segment_started).as_secs_f64(),
+                            f64::from((index - before) * SEGMENT_FRAMES)
+                                / (now - at).as_secs_f64(),
                         );
-                        segment_started = now;
-                        if title == last {
-                            break 'done;
-                        }
+                    }
+                    previous = Some((index, now));
+                    if index == SEGMENTS - 1 {
+                        break 'done;
                     }
                 }
                 assert!(Instant::now() < deadline, "throughput run timed out");

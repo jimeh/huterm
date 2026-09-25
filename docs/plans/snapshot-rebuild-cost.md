@@ -331,7 +331,7 @@ also removed the `churn` scenario's prepare regression.
 Open follow-ups:
 
 - The OSC 8 fixture still extracts almost every row: Ghostty reports a full
-  redraw when linked text is rewritten, most likely because its page is
-  reallocated as the hyperlink set grows. A fix belongs in Ghostty.
+  redraw when linked text is rewritten. A page copy on each rewrite is
+  suspected, with its trigger unconfirmed. A fix belongs in Ghostty.
 - Three foreground-job tests in `huterm-core` fail intermittently under full
   parallel load on the base commit as well as this branch.

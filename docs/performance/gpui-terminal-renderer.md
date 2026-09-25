@@ -1376,11 +1376,13 @@ render state report `Dirty::Full`. On a 120 by 40 grid, snapshots extracted 2,
 1, and then 40 rows for every further write, with implicit or explicit
 (`id=`) hyperlink IDs alike; an OSC 8 start and end without text, or plain
 text, extracted 1 row. OSC 8 sets no terminal or screen dirty flag, so the
-likely trigger is the viewport pin moving to a new page node when the page's
-hyperlink set grows or rehashes: each insertion copies URI and ID strings into
-page memory, and released entries linger. Parsing such a chunk took 17-20 µs
-for about 45 bytes, consistent with a page copy. The page reallocation itself
-was not observed directly. Output that scrolls, such as `ls --hyperlink`,
+suspected trigger is a page copy on each linked rewrite, which moves the
+viewport pin to a new page node. Capacity growth alone would not explain a
+full redraw on every write, because Ghostty doubles the capacity it grows; a
+same-size rehash of the hyperlink set, or string duplication on each
+insertion, could. Parsing such a chunk took 17-20 µs for about 45 bytes,
+consistent with a page copy, but neither the copy nor its trigger was observed
+directly. Output that scrolls, such as `ls --hyperlink`,
 redraws fully anyway; the cost matters for applications that rewrite links in
 place, and a fix belongs in Ghostty rather than Huterm.
 
