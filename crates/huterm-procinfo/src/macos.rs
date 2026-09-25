@@ -61,10 +61,14 @@ pub(crate) fn process(pid: u32) -> Option<Process> {
 /// `sizeof(struct kinfo_proc)` on 64-bit macOS; `libc` omits the struct.
 const KINFO_PROC_SIZE: usize = 648;
 
+/// Offset of `kp_proc.p_pid` in `struct kinfo_proc`.
+const KINFO_PROC_PID_OFFSET: usize = 40;
+
 /// Reads a start time through `sysctl(KERN_PROC_PID)`, which, unlike
 /// `proc_pidinfo`, answers for other users' processes. The struct begins with
 /// `kp_proc.p_un.__p_starttime`, a `timeval` of a 64-bit `tv_sec` and a
-/// 32-bit `tv_usec`, so only that prefix is parsed.
+/// 32-bit `tv_usec`. `p_pid` is checked too, because the PID may have been
+/// reused since the caller's short-info read.
 fn start_time(pid: c_int) -> Option<StartTime> {
     let mut buffer = [0_u8; KINFO_PROC_SIZE];
     let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
@@ -83,6 +87,14 @@ fn start_time(pid: c_int) -> Option<StartTime> {
     };
     // A missing process yields success with nothing written.
     if result != 0 || size != KINFO_PROC_SIZE {
+        return None;
+    }
+    let reported = buffer
+        .get(KINFO_PROC_PID_OFFSET..)?
+        .first_chunk::<4>()
+        .copied()
+        .map(c_int::from_ne_bytes)?;
+    if reported != pid {
         return None;
     }
     let (seconds, rest) = buffer.split_first_chunk::<8>()?;
@@ -349,10 +361,16 @@ mod tests {
         .unwrap();
         assert_eq!(sizes, [65, 130], "the full first read is retried");
         assert_eq!(pids.len(), 100);
+        let mut reads = 0;
         let always_full = read_pid_list(|buffer| {
+            reads += usize::from(buffer.is_some());
             Some(buffer.map_or(0, |pids| size_of_val(pids)))
         });
-        assert_eq!(always_full, None, "a list that keeps growing fails");
+        assert_eq!(
+            (always_full, reads),
+            (None, 4),
+            "a list that keeps growing fails after four reads"
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::events::{EventPublisher, EventReceiver};
-use crate::foreground::{ForegroundNames, ProbeSchedule, Reports};
+use crate::foreground::{ProbeSchedule, Reports};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -821,7 +821,6 @@ fn run_terminal(
     let mut pending_writes = VecDeque::new();
     let mut output_turn = false;
     let mut probes = ProbeSchedule::default();
-    let mut foreground = ForegroundNames::default();
     let root = child.process_id();
     while !closing.load(Ordering::Acquire) {
         if let Err(error) = observe_child_exit(
@@ -843,8 +842,10 @@ fn run_terminal(
         } else {
             let now = Instant::now();
             if probes.due(now) {
-                let probe =
-                    foreground.probe(master.process_group_leader(), root);
+                let probe = crate::foreground::probe(
+                    master.process_group_leader(),
+                    root,
+                );
                 probes.probed(now, probe.job);
                 metadata.reports.probed(probe.group, probe.directory);
                 metadata.publish(probe.name, terminal_id, &events);
@@ -1098,7 +1099,9 @@ fn run_terminal(
                     }
                 };
                 let bytes = encode_input(&input, modes, engine.size());
-                probes.input(&bytes, Instant::now());
+                if probes.input(&bytes, Instant::now()) {
+                    metadata.reports.job_control_input();
+                }
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
                         == WriterQueueState::Disconnected

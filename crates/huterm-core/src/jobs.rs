@@ -86,10 +86,13 @@ struct Process {
     identity: String,
 }
 
-/// Converts one table into evidence for one terminal.
+/// Converts one table into evidence for one terminal. The root is named from
+/// its argv when readable: a script shell such as xonsh reports its
+/// interpreter as the kernel name.
 fn evidence(
     table: &huterm_procinfo::ProcessTable,
     tty: Option<u64>,
+    shell: Option<u32>,
 ) -> Vec<Process> {
     table
         .processes
@@ -106,7 +109,12 @@ fn evidence(
                 zombie: process.zombie,
                 on_tty: tty.is_some_and(|tty| table.on_tty(tty, process.pid)),
                 identity: format!("{started} {}", process.name),
-                command: process.name.clone(),
+                command: Some(process.pid)
+                    .filter(|pid| Some(*pid) == shell)
+                    .and_then(huterm_procinfo::arguments)
+                    .as_deref()
+                    .and_then(huterm_procinfo::display_name)
+                    .unwrap_or_else(|| process.name.clone()),
                 started,
             })
         })
@@ -143,10 +151,13 @@ pub(crate) fn inspect_all(contexts: Vec<Option<JobContext>>) -> Vec<JobState> {
     contexts
         .into_iter()
         .map(|context| {
-            let evidence = table
-                .as_ref()
-                .zip(context.as_ref())
-                .map(|(table, context)| evidence(table, context.tty));
+            let evidence =
+                table
+                    .as_ref()
+                    .zip(context.as_ref())
+                    .map(|(table, context)| {
+                        evidence(table, context.tty, context.shell)
+                    });
             inspect(context, evidence.as_deref())
         })
         .collect()
@@ -328,6 +339,47 @@ mod tests {
             !covered_by(&classify(&current, 10, 20), &consent),
             "group number alone cannot prove continuity"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_script_shell_root_is_named_from_its_arguments() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        // Like xonsh, the kernel names this shell after its interpreter. It
+        // runs through the interpreter rather than a shebang so a concurrent
+        // fork cannot make exec of the fresh file fail with ETXTBSY.
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-script-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let shell = directory.join("xonsh");
+        std::fs::write(&shell, "$| = 1; print \"ready\\n\"; sleep 30;\n")
+            .unwrap();
+        let mut child = Command::new("perl")
+            .arg(&shell)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let pid = child.id();
+        let table = huterm_procinfo::process_table(&[]).unwrap();
+        let root = |shell| {
+            evidence(&table, None, shell)
+                .into_iter()
+                .find(|process| process.pid == pid)
+                .unwrap()
+                .command
+        };
+        let (named, kernel) = (root(Some(pid)), root(None));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(directory);
+        assert_eq!(named, "xonsh");
+        assert!(!is_shell(&kernel), "the kernel names the interpreter");
     }
 
     #[test]

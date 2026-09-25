@@ -49,8 +49,9 @@ Keep view destruction and detachment separate from explicit close.
   directory or OSC 0/2 title report applies only while the foreground group that
   was active when it arrived keeps the foreground; otherwise publish the probed
   foreground directory, falling back to the root's. Read the group for a title
-  only when its text changes, its recorded report no longer applies, or a
-  repeated title's attribution is 250 ms old.
+  only when its text changes, its recorded report no longer applies, job-control
+  input arrived since the last probe, or a repeated title's attribution is
+  250 ms old.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
 - After a nonblocking PTY read returns `WouldBlock`, wait for readability

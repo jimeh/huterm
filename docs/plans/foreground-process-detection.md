@@ -66,7 +66,7 @@ metadata publishing, `JobState` classification, consent, and shutdown groups.
 
 | Need | macOS | Linux (standard library only) |
 | --- | --- | --- |
-| Process facts | `proc_pidinfo` BSD info, or short BSD info for other users | `/proc/<pid>/stat` |
+| Process facts | `proc_pidinfo` BSD info, or short BSD info plus the `KERN_PROC_PID` start time for other users | `/proc/<pid>/stat` |
 | argv | `sysctl(KERN_PROCARGS2)` | `/proc/<pid>/cmdline` |
 | Group members | `proc_listpids` group filter | Scan `/proc/*/stat` |
 | Close candidates | Every PID, plus the TTY filter | Scan `/proc/*/stat` |
@@ -78,7 +78,8 @@ confirmation. Short BSD info reads every process but has no TTY or start time,
 and argv of other users' processes is unavailable, so their names fall back to
 the kernel's 16-byte command name. `sysctl(KERN_PROC_PID)` answers for every
 user. `libc` does not define its `kinfo_proc`, so the backend checks the
-648-byte size and parses only the leading start-time `timeval`.
+648-byte size, parses only the leading start-time `timeval`, and checks
+`p_pid` in case the PID was reused between the two reads.
 `proc_listpids` returns 0 for both an empty list and an error; the `libproc`
 crate misread empty lists as failures because it never clears `errno`. The
 backend clears `errno` before each call.
@@ -114,10 +115,9 @@ The runtime owner thread probes its own terminal:
 1. Read the foreground group with `tcgetpgrp`.
 2. Read the facts of the process whose PID equals the group. If it is missing
    or a zombie, use the lowest live PID among the group's members.
-3. Reuse the previous name of an idle root shell whose process facts are
-   unchanged. Otherwise read argv and apply the naming rule. A job's argv is
-   read on every probe, because `exec` of the same interpreter with another
-   script keeps the PID, start time, and kernel name.
+3. Read argv and apply the naming rule. Names are not cached: `exec` of the
+   same interpreter with another script keeps the PID, start time, and kernel
+   name, including an idle root shell that execs a script.
 4. The terminal is idle when the selected process is the root process and its
    name is a shell; publish no name. Otherwise publish the name.
 
@@ -188,11 +188,12 @@ Build the same `Process` evidence from `huterm-procinfo` and keep `classify`,
   shell's next report. Reading the group per output chunk would put
   `tcgetpgrp` back on the output path. Directory inheritance accepts only local
   directories, so a stale remote report affects only the label.
-- A root shell without job control, such as `sh -c 'cd src && vim'`, runs its
-  commands in its own group. The probe selects the group leader, so the
-  terminal reads as idle and the label shows the directory. The `ps` sampler
-  also chose the leader and showed the shell's name. Naming such children would
-  need a group-member scan on every probe, a full `/proc` scan on Linux.
+- A root shell without job control that forks its last command, such as
+  macOS `sh -c 'cd src && vim'`, runs its commands in its own group. The probe
+  selects the group leader, so the terminal reads as idle and the label shows
+  the directory. The `ps` sampler also chose the leader and showed the shell's
+  name. Naming such children would need a group-member scan on every probe, a
+  full `/proc` scan on Linux.
 
 ## Testing
 

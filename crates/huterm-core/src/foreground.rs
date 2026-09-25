@@ -37,13 +37,16 @@ pub(crate) struct ProbeSchedule {
 
 impl ProbeSchedule {
     /// Enter, interrupts, end-of-file, and suspends can change the job.
-    pub(crate) fn input(&mut self, bytes: &[u8], now: Instant) {
-        if bytes.iter().any(|byte| {
+    /// Returns whether `bytes` contained one of them.
+    pub(crate) fn input(&mut self, bytes: &[u8], now: Instant) -> bool {
+        let changes_job = bytes.iter().any(|byte| {
             matches!(byte, b'\r' | b'\n' | 0x03 | 0x04 | 0x1a | 0x1c)
-        }) {
+        });
+        if changes_job {
             self.arm(now + SETTLE);
             self.arm(now + FOLLOW_UP);
         }
+        changes_job
     }
 
     pub(crate) fn output(&mut self, now: Instant) {
@@ -110,61 +113,41 @@ pub(crate) struct Probe {
     pub(crate) job: bool,
 }
 
-/// Names the foreground process. An idle root shell's name is reused until
-/// its process facts change; a job's argv is read on every probe.
-#[derive(Debug, Default)]
-pub(crate) struct ForegroundNames {
-    /// The last idle root shell and its name. Jobs are never cached: `exec`
-    /// of the same interpreter with another script keeps its PID, start
-    /// time, and kernel name.
-    idle: Option<(huterm_procinfo::Process, Option<String>)>,
-}
-
-impl ForegroundNames {
-    pub(crate) fn probe(
-        &mut self,
-        group: Option<i32>,
-        root: Option<u32>,
-    ) -> Probe {
-        let selected = group
-            .and_then(|group| u32::try_from(group).ok())
-            .filter(|group| *group > 0)
-            .and_then(selected_process);
-        let directory = selected
-            .as_ref()
-            .and_then(|process| huterm_procinfo::cwd(process.pid))
-            .or_else(|| root.and_then(huterm_procinfo::cwd))
-            .and_then(|path| path.into_os_string().into_string().ok())
-            .map(|path| TerminalDirectory::new(None, path, true));
-        let Some(process) = selected else {
-            self.idle = None;
-            return Probe {
-                group,
-                name: None,
-                directory,
-                job: false,
-            };
-        };
-        let display = match &self.idle {
-            Some((idle, display)) if *idle == process => display.clone(),
-            _ => huterm_procinfo::arguments(process.pid)
-                .as_deref()
-                .and_then(huterm_procinfo::display_name)
-                .or_else(|| {
-                    huterm_procinfo::display_name(std::slice::from_ref(
-                        &process.name,
-                    ))
-                }),
-        };
-        let idle = Some(process.pid) == root
-            && display.as_deref().is_none_or(huterm_procinfo::is_shell);
-        self.idle = idle.then(|| (process, display.clone()));
-        Probe {
+/// Probes the foreground process. Its argv is read on every probe: `exec`
+/// of the same interpreter with another script keeps the PID, start time,
+/// and kernel name.
+pub(crate) fn probe(group: Option<i32>, root: Option<u32>) -> Probe {
+    let selected = group
+        .and_then(|group| u32::try_from(group).ok())
+        .filter(|group| *group > 0)
+        .and_then(selected_process);
+    let directory = selected
+        .as_ref()
+        .and_then(|process| huterm_procinfo::cwd(process.pid))
+        .or_else(|| root.and_then(huterm_procinfo::cwd))
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .map(|path| TerminalDirectory::new(None, path, true));
+    let Some(process) = selected else {
+        return Probe {
             group,
-            name: display.filter(|_| !idle),
+            name: None,
             directory,
-            job: !idle,
-        }
+            job: false,
+        };
+    };
+    let display = huterm_procinfo::arguments(process.pid)
+        .as_deref()
+        .and_then(huterm_procinfo::display_name)
+        .or_else(|| {
+            huterm_procinfo::display_name(std::slice::from_ref(&process.name))
+        });
+    let idle = Some(process.pid) == root
+        && display.as_deref().is_none_or(huterm_procinfo::is_shell);
+    Probe {
+        group,
+        name: display.filter(|_| !idle),
+        directory,
+        job: !idle,
     }
 }
 
@@ -180,6 +163,9 @@ pub(crate) struct Reports {
     directory: Option<(Option<i32>, TerminalDirectory)>,
     title: Option<(Option<i32>, String)>,
     title_read: Option<Instant>,
+    /// Job-control input arrived since the last probe, so a new job may hold
+    /// the foreground before a probe observes it.
+    unprobed_input: bool,
 }
 
 impl Reports {
@@ -214,16 +200,23 @@ impl Reports {
     }
 
     /// Whether reporting `title` needs a fresh foreground group. A program
-    /// re-sending its title needs at most one read per [`TITLE_REREAD`]; a
-    /// repeated title whose attribution no longer applies, such as a new job
-    /// repeating an exited job's title, is read again at once.
+    /// re-sending its title needs at most one read per [`TITLE_REREAD`]. A
+    /// repeated title is read again at once when its attribution no longer
+    /// applies, or after job-control input that may have started a new job
+    /// the probe has not observed yet.
     pub(crate) fn title_needs_group(&self, title: &str, now: Instant) -> bool {
         self.title_text_changes(title)
             || self.title.is_some()
-                && (self.title().is_none()
+                && (self.unprobed_input
+                    || self.title().is_none()
                     || self.title_read.is_none_or(|read| {
                         now.saturating_duration_since(read) >= TITLE_REREAD
                     }))
+    }
+
+    /// Records job-control input, which can hand the foreground to a new job.
+    pub(crate) fn job_control_input(&mut self) {
+        self.unprobed_input = true;
     }
 
     pub(crate) fn probed(
@@ -233,6 +226,7 @@ impl Reports {
     ) {
         self.foreground = foreground;
         self.process_directory = process_directory;
+        self.unprobed_input = false;
     }
 
     pub(crate) fn directory(&self) -> Option<TerminalDirectory> {
@@ -451,6 +445,25 @@ mod tests {
     }
 
     #[test]
+    fn repeated_titles_after_job_control_input_read_the_group() {
+        let start = Instant::now();
+        let (shell, job) = (Some(20), Some(30));
+        let mut reports = Reports::default();
+        reports.probed(shell, None);
+        reports.report_title("vim".into(), shell, start);
+        // Enter starts a job that repeats the title before any probe.
+        reports.job_control_input();
+        assert!(reports.title_needs_group("vim", at(start, 10)));
+        reports.report_title("vim".into(), job, at(start, 10));
+        reports.probed(job, None);
+        assert_eq!(reports.title().as_deref(), Some("vim"));
+        assert!(
+            !reports.title_needs_group("vim", at(start, 60)),
+            "the probe settles the attribution"
+        );
+    }
+
+    #[test]
     fn a_running_job_keeps_one_poll_despite_other_triggers() {
         let start = Instant::now();
         let mut schedule = ProbeSchedule::default();
@@ -489,31 +502,24 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_job_that_execs_the_same_interpreter_is_renamed() {
+    fn an_idle_root_shell_that_execs_a_script_is_renamed() {
         use std::io::{BufRead, BufReader};
-        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
         let directory = std::env::temp_dir()
             .join(format!("huterm-exec-rename-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let second = directory.join("second-script");
-        std::fs::write(&second, "echo second\nwhile :; do sleep 1; done\n")
-            .unwrap();
-        let first = directory.join("first-script");
-        std::fs::write(
-            &first,
-            format!(
-                "#!/bin/sh\necho first\nread line\nexec /bin/sh '{}'\n",
-                second.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&first, PermissionsExt::from_mode(0o755))
+        let script = directory.join("second-script");
+        std::fs::write(&script, "echo second\nwhile :; do sleep 1; done\n")
             .unwrap();
         let mut child = GroupGuard(
-            Command::new(&first)
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!(
+                    "echo first; read line; exec /bin/sh '{}'",
+                    script.display()
+                ))
                 .process_group(0)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -523,21 +529,20 @@ mod tests {
         let mut output = BufReader::new(child.0.stdout.take().unwrap());
         let mut line = String::new();
         output.read_line(&mut line).unwrap();
-        let group = i32::try_from(child.0.id()).ok();
-        let mut names = ForegroundNames::default();
-        assert_eq!(
-            names.probe(group, None).name.as_deref(),
-            Some("first-script")
-        );
+        let root = child.0.id();
+        let group = i32::try_from(root).ok();
+        let idle = probe(group, Some(root));
+        assert_eq!((idle.name, idle.job), (None, false));
         // Same PID, start time, and (on macOS) kernel name after the exec.
         std::io::Write::write_all(child.0.stdin.as_mut().unwrap(), b"go\n")
             .unwrap();
         line.clear();
         output.read_line(&mut line).unwrap();
         assert_eq!(line, "second\n");
+        let job = probe(group, Some(root));
         assert_eq!(
-            names.probe(group, None).name.as_deref(),
-            Some("second-script")
+            (job.name.as_deref(), job.job),
+            (Some("second-script"), true)
         );
         drop(child);
         let _ = std::fs::remove_dir_all(directory);
@@ -564,10 +569,9 @@ mod tests {
             .unwrap();
         let pid = child.0.id();
         let group = i32::try_from(pid).ok();
-        let mut names = ForegroundNames::default();
         let deadline = Instant::now() + Duration::from_secs(5);
         let job = loop {
-            let probe = names.probe(group, None);
+            let probe = probe(group, None);
             if probe.name.as_deref() == Some("sleep")
                 || Instant::now() > deadline
             {
@@ -588,8 +592,8 @@ mod tests {
             expected
         );
         // The same process as root reads as a non-shell program, not idle.
-        assert!(names.probe(group, Some(pid)).job);
-        let unknown = names.probe(None, Some(pid));
+        assert!(probe(group, Some(pid)).job);
+        let unknown = probe(None, Some(pid));
         assert_eq!((unknown.name, unknown.job), (None, false));
         assert!(unknown.directory.is_some(), "falls back to the root");
     }

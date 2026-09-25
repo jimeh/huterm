@@ -52,7 +52,8 @@ pub struct Process {
     /// Whether the process has exited and awaits reaping by its parent.
     pub zombie: bool,
     /// Start time, used to tell a reused PID from the original process.
-    /// `None` only when the process has gone before its start time was read.
+    /// `None` when it cannot be read, for example because the process exited
+    /// or its PID was reused between reads.
     pub started: Option<StartTime>,
     /// The kernel's short command name. It may be truncated and does not
     /// name scripts reliably; prefer [`display_name`] over [`arguments`].
@@ -191,15 +192,46 @@ mod tests {
         }
     }
 
+    /// Kills a fixture's whole process group, then reaps its leader, so a
+    /// background member cannot outlive a failed test.
+    struct ReapedGroup(Reaped);
+
+    impl Drop for ReapedGroup {
+        fn drop(&mut self) {
+            let _ = Command::new("kill")
+                .args(["-s", "KILL", "--", &format!("-{}", self.0.0.id())])
+                .status();
+        }
+    }
+
     /// Spawns a child that reports readiness on stdout after it has exec'd.
     fn ready_child(command: &mut Command) -> Reaped {
-        let mut child = Reaped(command.stdout(Stdio::piped()).spawn().unwrap());
+        let mut child = Reaped(spawn(command.stdout(Stdio::piped())));
         let mut line = String::new();
         BufReader::new(child.0.stdout.take().unwrap())
             .read_line(&mut line)
             .unwrap();
         assert_eq!(line, "ready\n");
         child
+    }
+
+    /// Spawns `command`, retrying while Linux reports a just-written script
+    /// as busy: a child that another test thread forked meanwhile holds its
+    /// write descriptor until that child execs.
+    fn spawn(command: &mut Command) -> Child {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match command.spawn() {
+                Err(error)
+                    if error.kind()
+                        == std::io::ErrorKind::ExecutableFileBusy
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => return result.unwrap(),
+            }
+        }
     }
 
     fn sleeper() -> Command {
@@ -301,12 +333,12 @@ mod tests {
 
     #[test]
     fn process_tables_include_every_process_and_known_terminals() {
-        let shell = ready_child(
+        let shell = ReapedGroup(ready_child(
             Command::new("/bin/sh")
                 .args(["-c", "sleep 30 & echo ready; wait"])
                 .process_group(0),
-        );
-        let pid = shell.0.id();
+        ));
+        let pid = shell.0.0.id();
         let own = process(std::process::id()).unwrap();
         let ttys: Vec<u64> = own.tty.into_iter().collect();
         let child = eventually(|| {
