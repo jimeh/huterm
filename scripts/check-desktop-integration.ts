@@ -325,12 +325,10 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
         current.label === `${current.process} · inherited-directory`,
       "local directory and process tab label",
     );
-    if (!macos) {
-      assert(
-        localMetadata.process === "hutermfgprobe",
-        `Linux foreground process label was ${localMetadata.process}`,
-      );
-    }
+    assert(
+      localMetadata.process === "hutermfgprobe",
+      `foreground process label was ${localMetadata.process}`,
+    );
     const bellFlashes = Number((await state()).bell_flashes);
     await output("\x07BELL");
     const flashObserved = await waitForState(

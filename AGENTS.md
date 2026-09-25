@@ -34,6 +34,17 @@ Keep view destruction and detachment separate from explicit close.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
+- `huterm-procinfo` reports operating-system process facts: Linux through
+  `/proc` with the standard library, macOS through `proc_pidinfo`,
+  `proc_listpids`, and `sysctl`. Keep its unsafe calls in `macos.rs`. Other
+  users' processes, such as `sudo` jobs, expose only short BSD info there,
+  without a TTY or start time. `proc_listpids` returns 0 for both an empty
+  list and an error, so clear `errno` before each call. The crate depends on
+  no Huterm crate (`mise run architecture` checks this). Runtimes probe their
+  foreground only after Enter or job-control input, output after silence, or a
+  title change, plus a one-second poll while a job holds the foreground. Idle
+  shells arm no deadline, and the output path never calls `tcgetpgrp`. Never
+  probe at spawn: a child that has not exec'd yet reads as Huterm.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
 - After a nonblocking PTY read returns `WouldBlock`, wait for readability

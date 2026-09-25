@@ -48,7 +48,7 @@ use huterm_protocol::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
@@ -150,7 +150,6 @@ struct DesktopRuntime {
     mux: Mutex<Mux>,
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
-    process_metadata_epoch: AtomicU64,
     restore: Mutex<Option<RestoreSnapshot>>,
 }
 
@@ -489,61 +488,11 @@ struct Desktop {
     quitting: bool,
     pending_spawns: usize,
     quit_pending: bool,
-    process_sampler: ProcessMetadataSampler,
     external_drag_window: Option<gpui::WindowId>,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
-
-#[derive(Default)]
-struct ProcessMetadataSampler {
-    in_flight: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProcessMetadataTick {
-    Stop,
-    Idle,
-    Sample,
-}
-
-impl ProcessMetadataSampler {
-    fn begin_tick(
-        &mut self,
-        label: huterm_config::TabLabel,
-        terminating: bool,
-    ) -> ProcessMetadataTick {
-        if terminating {
-            ProcessMetadataTick::Stop
-        } else if !process_metadata_requested(label) || self.in_flight {
-            ProcessMetadataTick::Idle
-        } else {
-            self.in_flight = true;
-            ProcessMetadataTick::Sample
-        }
-    }
-
-    fn finish_tick(&mut self) {
-        self.in_flight = false;
-    }
-}
-
-fn process_metadata_requested(label: huterm_config::TabLabel) -> bool {
-    matches!(
-        label,
-        huterm_config::TabLabel::Process
-            | huterm_config::TabLabel::ProcessAndDirectory
-    )
-}
-
-fn process_metadata_batch_is_current(
-    runtime: &DesktopRuntime,
-    epoch: u64,
-) -> bool {
-    runtime.process_metadata_epoch.load(Ordering::Acquire) == epoch
-        && !runtime.terminating.load(Ordering::Acquire)
-}
 
 impl Desktop {
     fn stop_window_drag(window: &mut Window, cx: &mut App) {
@@ -937,12 +886,10 @@ pub(super) fn run_with_startup(
             quitting: false,
             pending_spawns: 0,
             quit_pending: false,
-            process_sampler: ProcessMetadataSampler::default(),
             external_drag_window: None,
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
-        start_process_metadata_sampler(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
@@ -983,66 +930,6 @@ pub(super) fn run_with_startup(
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
-}
-
-fn start_process_metadata_sampler(cx: &mut App) {
-    cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let Ok(Some(decision)) = cx.update(|cx| {
-                let desktop = cx.global_mut::<Desktop>();
-                let terminating =
-                    desktop.runtime.terminating.load(Ordering::Acquire);
-                match desktop
-                    .process_sampler
-                    .begin_tick(desktop.config.tabs.label, terminating)
-                {
-                    ProcessMetadataTick::Stop => None,
-                    ProcessMetadataTick::Idle => Some(None),
-                    ProcessMetadataTick::Sample => Some(Some((
-                        Arc::clone(&desktop.runtime),
-                        desktop
-                            .runtime
-                            .process_metadata_epoch
-                            .load(Ordering::Acquire),
-                    ))),
-                }
-            }) else {
-                break;
-            };
-            let Some((runtime, epoch)) = decision else {
-                continue;
-            };
-            cx.background_executor()
-                .spawn(async move {
-                    let clients = {
-                        let mux = runtime
-                            .mux
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        mux.runtime_clients()
-                    };
-                    if clients.is_empty() {
-                        return;
-                    }
-                    let batch =
-                        huterm_core::sample_foreground_processes(&clients);
-                    if process_metadata_batch_is_current(&runtime, epoch) {
-                        batch.publish();
-                    }
-                })
-                .await;
-            if cx
-                .update(|cx| {
-                    cx.global_mut::<Desktop>().process_sampler.finish_tick();
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    })
-    .detach();
 }
 
 fn observe_keystroke(
@@ -4199,10 +4086,6 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 apply_update_config(cx, &config);
                 let desktop = cx.global_mut::<Desktop>();
                 desktop.config = config.clone();
-                desktop
-                    .runtime
-                    .process_metadata_epoch
-                    .fetch_add(1, Ordering::AcqRel);
                 keymap_status = reload_diagnostic(cx, &config, &compiled);
                 quake_windows::reconcile(cx);
                 let keymap = bind_keymap(cx, compiled);
@@ -6714,78 +6597,6 @@ mod tests {
             resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &both),
             "cargo · project"
         );
-    }
-
-    #[test]
-    fn process_metadata_scheduler_idles_and_coalesces_interest_changes() {
-        use huterm_config::TabLabel;
-
-        fn observe(
-            tick: ProcessMetadataTick,
-            scans: &mut usize,
-        ) -> ProcessMetadataTick {
-            if tick == ProcessMetadataTick::Sample {
-                *scans += 1;
-            }
-            tick
-        }
-
-        let mut sampler = ProcessMetadataSampler::default();
-        let mut scans = 0;
-
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Title, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 0);
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Directory, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 0);
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, false), &mut scans),
-            ProcessMetadataTick::Sample
-        );
-        assert_eq!(
-            observe(
-                sampler.begin_tick(TabLabel::ProcessAndDirectory, false),
-                &mut scans
-            ),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 1, "an in-flight scan must coalesce later ticks");
-        sampler.finish_tick();
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Title, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 1, "losing interest must not start a scan");
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, false), &mut scans),
-            ProcessMetadataTick::Sample
-        );
-        assert_eq!(scans, 2);
-        sampler.finish_tick();
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, true), &mut scans),
-            ProcessMetadataTick::Stop
-        );
-        assert_eq!(scans, 2);
-
-        let runtime = DesktopRuntime::default();
-        let epoch = runtime.process_metadata_epoch.load(Ordering::Acquire);
-        assert!(process_metadata_batch_is_current(&runtime, epoch));
-        runtime
-            .process_metadata_epoch
-            .fetch_add(1, Ordering::AcqRel);
-        assert!(
-            !process_metadata_batch_is_current(&runtime, epoch),
-            "a pre-reload batch must not publish"
-        );
-        let current = runtime.process_metadata_epoch.load(Ordering::Acquire);
-        runtime.terminating.store(true, Ordering::Release);
-        assert!(!process_metadata_batch_is_current(&runtime, current));
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod commands;
 pub use commands::execute;
 mod engine;
 mod events;
+mod foreground;
 mod host_effects;
 mod input;
 mod jobs;
@@ -15,9 +16,7 @@ pub use host_effects::{
     DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
     HostEffectRecipientOptions, PendingHostEffect,
 };
-pub use jobs::{
-    ForegroundProcessBatch, JobProcess, JobState, sample_foreground_processes,
-};
+pub use jobs::{JobProcess, JobState};
 mod mux;
 mod presentation;
 mod pty;

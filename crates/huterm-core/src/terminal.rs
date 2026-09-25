@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::events::{EventPublisher, EventReceiver};
+use crate::foreground::{ForegroundNames, ProbeSchedule};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -273,17 +274,6 @@ impl RuntimeClient {
         let (reply, receiver) = mpsc::channel();
         self.controls.send(RuntimeControl::JobContext(reply)).ok()?;
         Some(receiver)
-    }
-
-    pub(crate) fn update_foreground_process(
-        &self,
-        sampled_group: crate::jobs::SampledForegroundGroup,
-        name: Option<String>,
-    ) {
-        let _ = self.controls.send(RuntimeControl::ForegroundProcess {
-            sampled_group,
-            name,
-        });
     }
 
     #[cfg(test)]
@@ -645,12 +635,11 @@ enum RuntimeMessage {
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
     JobContext(Sender<crate::jobs::JobContext>),
-    ForegroundProcess {
-        sampled_group: crate::jobs::SampledForegroundGroup,
-        name: Option<String>,
-    },
     #[cfg(test)]
     Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
+    /// Reports whether a foreground probe is armed.
+    #[cfg(test)]
+    ProbeArmed(Sender<bool>),
     /// Holds the runtime owner until the test releases it.
     #[cfg(test)]
     Pause {
@@ -832,6 +821,9 @@ fn run_terminal(
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
     let mut output_turn = false;
+    let mut probes = ProbeSchedule::default();
+    let mut foreground = ForegroundNames::default();
+    let root = child.process_id();
     while !closing.load(Ordering::Acquire) {
         if let Err(error) = observe_child_exit(
             child.as_mut(),
@@ -844,6 +836,29 @@ fn run_terminal(
         ) {
             report_failure(&events, terminal_id, error);
             closing.store(true, Ordering::Release);
+        }
+        // Root exit clears the name; the exited terminal is never probed.
+        let name = if child_exited {
+            probes.stop();
+            metadata.foreground_process().is_some().then_some(None)
+        } else {
+            let now = Instant::now();
+            probes.due(now).then(|| {
+                let probe =
+                    foreground.probe(master.process_group_leader(), root);
+                probes.probed(now, probe.job);
+                probe.name
+            })
+        };
+        if let Some(name) = name {
+            publish_metadata(
+                terminal_id,
+                metadata.directory().cloned(),
+                name,
+                &mut metadata,
+                &mut metadata_revision,
+                &events,
+            );
         }
         let mut controls_drained = 0;
         while controls_drained < MESSAGE_CAPACITY {
@@ -956,31 +971,6 @@ fn run_terminal(
                         }),
                     });
                 }
-                RuntimeControl::ForegroundProcess {
-                    sampled_group,
-                    name,
-                } => {
-                    let current_group = (!child_exited)
-                        .then(|| master.process_group_leader())
-                        .flatten();
-                    if matches!(
-                        sampled_group,
-                        crate::jobs::SampledForegroundGroup::Unavailable
-                    ) || matches!(
-                        sampled_group,
-                        crate::jobs::SampledForegroundGroup::Observed(sampled)
-                            if sampled == current_group
-                    ) {
-                        publish_metadata(
-                            terminal_id,
-                            metadata.directory().cloned(),
-                            name,
-                            &mut metadata,
-                            &mut metadata_revision,
-                            &events,
-                        );
-                    }
-                }
                 #[cfg(test)]
                 RuntimeControl::Presentation(reply) => {
                     let _ = reply.send((
@@ -988,6 +978,10 @@ fn run_terminal(
                         engine.size(),
                         engine.cell_size(),
                     ));
+                }
+                #[cfg(test)]
+                RuntimeControl::ProbeArmed(reply) => {
+                    let _ = reply.send(probes.deadline().is_some());
                 }
                 #[cfg(test)]
                 RuntimeControl::Pause { entered, release } => {
@@ -1022,7 +1016,7 @@ fn run_terminal(
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
                 if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait();
+                    wake.wait_until(probes.deadline());
                 }
                 continue;
             }
@@ -1040,7 +1034,7 @@ fn run_terminal(
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
                 if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait();
+                    wake.wait_until(probes.deadline());
                 }
                 continue;
             }
@@ -1048,6 +1042,8 @@ fn run_terminal(
         };
         match message {
             NextMessage::Output(bytes) => {
+                let now = Instant::now();
+                probes.output(now);
                 let effects = match engine.process(&bytes) {
                     Ok(effects) => effects,
                     Err(error) => {
@@ -1061,6 +1057,9 @@ fn run_terminal(
                         && matches!(effect, EngineEffect::PtyWrite(_))
                     {
                         continue;
+                    }
+                    if matches!(effect, EngineEffect::Title(_)) {
+                        probes.title(now);
                     }
                     if handle_effect(
                         effect,
@@ -1107,6 +1106,7 @@ fn run_terminal(
                     }
                 };
                 let bytes = encode_input(&input, modes, engine.size());
+                probes.input(&bytes, Instant::now());
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
                         == WriterQueueState::Disconnected
@@ -1736,35 +1736,85 @@ mod tests {
         runtime.shutdown().unwrap();
     }
 
+    /// Waits until the published name matches. `current` carries the last
+    /// published name between calls, so waiting for `None` needs a clear.
+    fn wait_for_foreground(
+        client: &RuntimeClient,
+        current: &mut Option<String>,
+        expected: Option<&str>,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    *current = metadata.foreground_process().map(str::to_owned);
+                }
+            }
+            if current.as_deref() == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "foreground process was {current:?}, expected {expected:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
-    fn stale_foreground_samples_are_rejected_before_the_next_ordered_update() {
+    fn foreground_jobs_are_named_while_running_and_cleared_on_return() {
+        // Job control gives the quiet `head` its own foreground group. It
+        // exits normally after one line; dash ends a script on SIGINT.
         let runtime = TerminalRuntime::spawn(
-            TerminalId::new(94),
-            &command("printf READY; read line"),
+            TerminalId::new(96),
+            &command(
+                "set -m; printf READY; read line; head -n 1 >/dev/null; printf DONE; read line",
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_foreground(&client, &mut current, Some("head"));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        wait_for_foreground(&client, &mut current, None);
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn a_root_shell_replaced_by_exec_is_named_after_silent_input() {
+        // Without echo, only the input trigger can notice the exec.
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(97),
+            &command("stty -echo; printf READY; read line; exec sleep 30"),
         )
         .unwrap();
         let client = runtime.client();
         wait_for_text(&client, "READY");
-        client.update_foreground_process(
-            crate::jobs::SampledForegroundGroup::Observed(Some(-1)),
-            Some("stale".into()),
-        );
-        client.update_foreground_process(
-            crate::jobs::SampledForegroundGroup::Unavailable,
-            Some("current".into()),
-        );
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let event = loop {
-            if let Some(TerminalEvent::MetadataChanged { metadata, .. }) =
-                client.try_recv_event().unwrap()
-            {
-                break metadata;
+        // Let the probe armed by READY's output run, so only input remains.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (reply, armed) = mpsc::channel();
+            client
+                .controls
+                .send(RuntimeControl::ProbeArmed(reply))
+                .unwrap();
+            if !armed.recv_timeout(Duration::from_secs(2)).unwrap() {
+                break;
             }
-            assert!(Instant::now() < deadline, "metadata update timed out");
-            thread::yield_now();
-        };
-        assert_eq!(event.foreground_process(), Some("current"));
-        assert!(client.try_recv_event().unwrap().is_none());
+            assert!(Instant::now() < deadline, "probe stayed armed");
+            thread::sleep(Duration::from_millis(10));
+        }
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_foreground(&client, &mut None, Some("sleep"));
         runtime.shutdown().unwrap();
     }
 

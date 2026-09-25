@@ -301,10 +301,10 @@ test("release-please can update explicit package versions and centralized exact 
   expect(rootVersion).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   expect(rootManifest).toContain('[package]\nname = "huterm"');
   expect(rootManifest).not.toMatch(/^version\.workspace = true$/m);
-  for (const dependency of ["huterm-config", "huterm-core", "huterm-gpui", "huterm-protocol"]) {
+  for (const dependency of ["huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol"]) {
     expect(rootManifest).toContain(`${dependency} = { path = "crates/${dependency}", version = "=${rootVersion}" } # x-release-please-version`);
   }
-  for (const manifestPath of ["crates/huterm-config/Cargo.toml", "crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-protocol/Cargo.toml"]) {
+  for (const manifestPath of ["crates/huterm-config/Cargo.toml", "crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-procinfo/Cargo.toml", "crates/huterm-protocol/Cargo.toml"]) {
     const manifest = await readFile(resolve(repoRoot, manifestPath), "utf8");
     expect(manifest).toContain(`version = "${rootVersion}"`);
     expect(manifest).not.toMatch(/^version\.workspace = true$/m);
