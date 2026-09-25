@@ -63,7 +63,7 @@ fn coverage_is_exactly_the_supported_standalone_groups() {
         .chain([0x25ff])
     {
         let ch = char::from_u32(cp).unwrap();
-        assert_eq!(character(&ch.to_string()), Some(ch));
+        assert_eq!(character(&CellText::from(ch)), Some(ch));
         let g = Geometry::new(ch, metrics(9.0, 17.0, 1.0), 1);
         assert!(
             !g.rectangles.is_empty()
@@ -88,7 +88,7 @@ fn coverage_is_exactly_the_supported_standalone_groups() {
         "▐\u{fe0f}",
         "▐▕",
     ] {
-        assert_eq!(character(text), None, "{text:?}");
+        assert_eq!(character(&CellText::from(text)), None, "{text:?}");
     }
 }
 

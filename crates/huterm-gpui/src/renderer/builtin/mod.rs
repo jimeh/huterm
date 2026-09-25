@@ -14,15 +14,14 @@ use gpui::{
     Bounds, Hsla, PathBuilder, Pixels, Point, Size, Window, fill, point, px,
     size,
 };
+use huterm_protocol::CellText;
 
 use super::GridMetrics;
 
 /// Only replace standalone supported scalars. Grapheme sequences must retain
 /// their font shaping, including combining marks and variation selectors.
-pub(super) fn character(text: &str) -> Option<char> {
-    let mut chars = text.chars();
-    let ch = chars.next()?;
-    (chars.next().is_none() && slot(ch).is_some()).then_some(ch)
+pub(super) fn character(text: &CellText) -> Option<char> {
+    text.as_char().filter(|ch| slot(*ch).is_some())
 }
 
 const SLOTS: usize = 186;

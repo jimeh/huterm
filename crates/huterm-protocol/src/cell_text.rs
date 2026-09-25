@@ -6,6 +6,13 @@ use std::ops::Deref;
 /// this keeps [`CellText`] no larger than `String`.
 const INLINE_CAPACITY: usize = 22;
 
+/// Every ASCII character in order. Single-byte cells borrow from it, because
+/// clients read cell text several times per frame and decoding stored bytes
+/// costs several times more than a slice.
+const ASCII: &str = "\0\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\
+\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f \
+!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f";
+
 /// Text of one terminal cell, including combining characters.
 ///
 /// Single scalars and short grapheme clusters are stored inline. Only clusters
@@ -55,12 +62,51 @@ impl CellText {
         match &self.0 {
             // Construction only stores complete UTF-8 strings, so the
             // fallback is unreachable.
+            Repr::Inline { len: 1, bytes } if bytes[0].is_ascii() => {
+                let index = usize::from(bytes[0]);
+                ASCII.get(index..=index).unwrap_or_default()
+            }
             Repr::Inline { len, bytes } => {
                 std::str::from_utf8(&bytes[..usize::from(*len)])
                     .unwrap_or_default()
             }
             Repr::Heap(text) => text,
         }
+    }
+
+    /// Reports whether the cell has no text.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self.0, Repr::Inline { len: 0, .. })
+    }
+
+    /// Returns the text's only scalar value, if it has exactly one.
+    ///
+    /// Decodes stored bytes directly; clients that key glyphs by scalar avoid
+    /// the cost of borrowing validated text.
+    #[must_use]
+    pub fn as_char(&self) -> Option<char> {
+        let Repr::Inline { len, bytes } = &self.0 else {
+            // Heap text exceeds any single scalar's four bytes.
+            return None;
+        };
+        let continuation = |index: usize| u32::from(bytes[index] & 0x3f);
+        let first = u32::from(bytes[0]);
+        let scalar = match (len, bytes[0]) {
+            (1, 0x00..=0x7f) => first,
+            (2, 0xc0..=0xdf) => (first & 0x1f) << 6 | continuation(1),
+            (3, 0xe0..=0xef) => {
+                (first & 0x0f) << 12 | continuation(1) << 6 | continuation(2)
+            }
+            (4, 0xf0..=0xf7) => {
+                (first & 0x07) << 18
+                    | continuation(1) << 12
+                    | continuation(2) << 6
+                    | continuation(3)
+            }
+            _ => return None,
+        };
+        char::from_u32(scalar)
     }
 }
 
@@ -142,6 +188,27 @@ mod tests {
 
     fn is_inline(text: &CellText) -> bool {
         matches!(text.0, Repr::Inline { .. })
+    }
+
+    #[test]
+    fn ascii_table_maps_every_byte_to_itself() {
+        assert_eq!(ASCII.len(), 128);
+        for byte in 0..=127_u8 {
+            let text = char::from(byte).to_string();
+            assert_eq!(CellText::from(text.as_str()).as_str(), text);
+        }
+    }
+
+    #[test]
+    fn as_char_reports_only_single_scalars() {
+        for character in ['a', ' ', 'é', '界', '▀', '\u{e0b0}', '🙂'] {
+            assert_eq!(CellText::from(character).as_char(), Some(character));
+        }
+        for text in ["", "ab", "e\u{301}", "▐\u{fe0f}", "👩\u{200d}💻"] {
+            assert_eq!(CellText::from(text).as_char(), None, "{text:?}");
+        }
+        assert!(CellText::from("").is_empty());
+        assert!(!CellText::BLANK.is_empty());
     }
 
     #[test]

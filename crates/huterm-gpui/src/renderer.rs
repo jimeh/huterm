@@ -468,10 +468,11 @@ fn prepare_row(
     };
 
     for (column, cell) in cells.iter().enumerate() {
+        let scalar = cell.text.as_char();
         if cell.style.wide_spacer
             || cell.style.hidden
             || cell.text.is_empty()
-            || cell.text == " "
+            || scalar == Some(' ')
         {
             continue;
         }
@@ -497,13 +498,17 @@ fn prepare_row(
             bold: cell.style.bold,
             italic: cell.style.italic,
         };
-        let (layout, hit) =
-            layouts.get_or_insert_with(&cell.text, variant, || {
-                let runs = [text_run(&cell.text, variant, font_family)];
-                window
-                    .text_system()
-                    .layout_line(&cell.text, font_size, &runs, None)
-            });
+        let key = scalar.map_or_else(
+            || GlyphText::Sequence(cell.text.as_str()),
+            GlyphText::Scalar,
+        );
+        let (layout, hit) = layouts.get_or_insert_with(key, variant, || {
+            let text = cell.text.as_str();
+            let runs = [text_run(text, variant, font_family)];
+            window
+                .text_system()
+                .layout_line(text, font_size, &runs, None)
+        });
         cache_activity.record(hit);
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
@@ -806,7 +811,7 @@ impl<T: Clone> GlyphLayoutCache<T> {
 
     fn get_or_insert_with(
         &mut self,
-        text: &str,
+        text: GlyphText<'_>,
         variant: FontVariant,
         create: impl FnOnce() -> T,
     ) -> (T, bool) {
@@ -824,6 +829,14 @@ impl<T: Clone> GlyphLayoutCache<T> {
         self.current_len += 1;
         (value, false)
     }
+}
+
+/// Cell text as a layout cache key. Most cells hold one scalar, which the
+/// cache indexes without borrowing or hashing a string.
+#[derive(Clone, Copy)]
+enum GlyphText<'a> {
+    Scalar(char),
+    Sequence(&'a str),
 }
 
 struct VariantLayouts<T> {
@@ -845,36 +858,31 @@ impl<T> Default for VariantLayouts<T> {
 }
 
 impl<T: Clone> VariantLayouts<T> {
-    fn get(&self, text: &str) -> Option<T> {
-        if let &[byte] = text.as_bytes() {
-            return self.ascii[usize::from(byte)].clone();
-        }
-        match single_scalar(text) {
-            Some(character) => self.scalars.get(&character).cloned(),
-            None => self.sequences.get(text).cloned(),
+    fn get(&self, text: GlyphText<'_>) -> Option<T> {
+        match text {
+            GlyphText::Scalar(character) if character.is_ascii() => {
+                self.ascii[character as usize].clone()
+            }
+            GlyphText::Scalar(character) => {
+                self.scalars.get(&character).cloned()
+            }
+            GlyphText::Sequence(text) => self.sequences.get(text).cloned(),
         }
     }
 
-    fn insert(&mut self, text: &str, value: T) {
-        if let &[byte] = text.as_bytes() {
-            self.ascii[usize::from(byte)] = Some(value);
-            return;
-        }
-        match single_scalar(text) {
-            Some(character) => {
+    fn insert(&mut self, text: GlyphText<'_>, value: T) {
+        match text {
+            GlyphText::Scalar(character) if character.is_ascii() => {
+                self.ascii[character as usize] = Some(value);
+            }
+            GlyphText::Scalar(character) => {
                 self.scalars.insert(character, value);
             }
-            None => {
+            GlyphText::Sequence(text) => {
                 self.sequences.insert(text.to_owned(), value);
             }
         }
     }
-}
-
-fn single_scalar(text: &str) -> Option<char> {
-    let mut characters = text.chars();
-    let character = characters.next()?;
-    characters.next().is_none().then_some(character)
 }
 
 fn text_run(text: &str, variant: FontVariant, font_family: &str) -> TextRun {
@@ -1522,16 +1530,18 @@ mod tests {
         let mut renderer =
             TerminalRenderer::new("Menlo".into(), Theme::default(), metrics);
         let variant = FontVariant::default();
-        renderer.layouts.get_or_insert_with("A", variant, || {
-            Arc::new(LineLayout::default())
-        });
+        renderer.layouts.get_or_insert_with(
+            GlyphText::Scalar('A'),
+            variant,
+            || Arc::new(LineLayout::default()),
+        );
         let mut theme = Theme::default();
         theme.background = theme.foreground;
         renderer.reconfigure("Menlo".into(), theme.clone(), metrics);
         assert!(
             renderer
                 .layouts
-                .get_or_insert_with("A", variant, || panic!(
+                .get_or_insert_with(GlyphText::Scalar('A'), variant, || panic!(
                     "palette change must reuse glyph layout"
                 ))
                 .1
@@ -1540,9 +1550,9 @@ mod tests {
         assert!(
             !renderer
                 .layouts
-                .get_or_insert_with("A", variant, || Arc::new(
-                    LineLayout::default()
-                ))
+                .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                    Arc::new(LineLayout::default())
+                })
                 .1
         );
     }
@@ -1683,14 +1693,16 @@ mod tests {
         let mut calls = 0;
         let variant = FontVariant::default();
 
-        let first = cache.get_or_insert_with("A", variant, || {
-            calls += 1;
-            42
-        });
-        let second = cache.get_or_insert_with("A", variant, || {
-            calls += 1;
-            99
-        });
+        let first =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                calls += 1;
+                42
+            });
+        let second =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                calls += 1;
+                99
+            });
 
         assert_eq!(first, (42, false));
         assert_eq!(second, (42, true));
@@ -1701,12 +1713,13 @@ mod tests {
     fn cache_evicts_layouts_unused_for_two_generations() {
         let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         cache.begin_generation();
-        let _ = cache.get_or_insert_with("B", variant, || 2);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('B'), variant, || 2);
         cache.begin_generation();
 
-        let (value, hit) = cache.get_or_insert_with("A", variant, || 3);
+        let (value, hit) =
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3);
 
         assert_eq!(value, 3);
         assert!(!hit);
@@ -1716,12 +1729,18 @@ mod tests {
     fn cache_promotes_layouts_from_previous_generation() {
         let mut cache = GlyphLayoutCache::with_capacity(1);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         cache.begin_generation();
-        assert_eq!(cache.get_or_insert_with("A", variant, || 2), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 2),
+            (1, true)
+        );
         cache.begin_generation();
 
-        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3),
+            (1, true)
+        );
     }
 
     #[test]
@@ -1757,6 +1776,14 @@ mod tests {
         assert_eq!(backgrounds[1].color, rgb_color(theme.indexed(4)));
     }
 
+    fn key(text: &str) -> GlyphText<'_> {
+        let mut characters = text.chars();
+        match (characters.next(), characters.next()) {
+            (Some(character), None) => GlyphText::Scalar(character),
+            _ => GlyphText::Sequence(text),
+        }
+    }
+
     #[test]
     fn cache_keys_ascii_scalars_and_sequences_separately() {
         let mut cache = GlyphLayoutCache::with_capacity(4);
@@ -1767,17 +1794,20 @@ mod tests {
         };
         for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
             assert_eq!(
-                cache.get_or_insert_with(text, variant, || value),
+                cache.get_or_insert_with(key(text), variant, || value),
                 (value, false)
             );
         }
-        assert_eq!(cache.get_or_insert_with("e", bold, || 9), (9, false));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('e'), bold, || 9),
+            (9, false)
+        );
         // Every storage path survives promotion out of the older generation.
         cache.begin_generation();
         assert_eq!(cache.current_len, 0);
         for (value, text) in ["e", "é", "e\u{301}"].into_iter().enumerate() {
             assert_eq!(
-                cache.get_or_insert_with(text, variant, || 7),
+                cache.get_or_insert_with(key(text), variant, || 7),
                 (value, true)
             );
         }
@@ -1787,21 +1817,28 @@ mod tests {
     fn cache_keeps_layouts_until_a_generation_fills() {
         let mut cache = GlyphLayoutCache::with_capacity(2);
         let variant = FontVariant::default();
-        let _ = cache.get_or_insert_with("A", variant, || 1);
+        let _ = cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 1);
         // Small updates must not evict text used by rows they left alone.
         for _ in 0..3 {
             cache.begin_generation();
-            let _ = cache.get_or_insert_with("B", variant, || 2);
+            let _ =
+                cache.get_or_insert_with(GlyphText::Scalar('B'), variant, || 2);
         }
-        assert_eq!(cache.get_or_insert_with("A", variant, || 3), (1, true));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 3),
+            (1, true)
+        );
 
         // Two full generations later an unused layout is gone.
         for text in ["C", "D", "E", "F"] {
             cache.begin_generation();
-            let _ = cache.get_or_insert_with(text, variant, || 4);
+            let _ = cache.get_or_insert_with(key(text), variant, || 4);
         }
         cache.begin_generation();
-        assert_eq!(cache.get_or_insert_with("A", variant, || 5), (5, false));
+        assert_eq!(
+            cache.get_or_insert_with(GlyphText::Scalar('A'), variant, || 5),
+            (5, false)
+        );
     }
 
     #[test]
