@@ -39,19 +39,20 @@ Keep view destruction and detachment separate from explicit close.
   `proc_listpids`, and `sysctl`. Keep its unsafe calls in `macos.rs`. Other
   users' processes, such as `sudo` jobs, expose only short BSD info there,
   without a TTY or start time; read their start time from the leading `timeval`
-  of `sysctl(KERN_PROC_PID)`. `proc_listpids` returns 0 for both an empty list
-  and an error, so clear `errno` before each call. The crate depends on no
-  Huterm crate (`mise run architecture` checks this). Runtimes probe their
-  foreground only after Enter or job-control input, output after silence, or a
-  title change, plus a one-second poll while a job holds the foreground. Idle
-  shells arm no deadline, and the output path never calls `tcgetpgrp`. Never
-  probe at spawn: a child that has not exec'd yet reads as Huterm. An OSC 7
-  directory or OSC 0/2 title report applies only while the foreground group that
-  was active when it arrived keeps the foreground; otherwise publish the probed
-  foreground directory, falling back to the root's. Read the group for a title
-  only when its text changes, its recorded report no longer applies, job-control
-  input arrived since the last probe, or a repeated title's attribution is
-  250 ms old.
+  of `sysctl(KERN_PROC_PID)`, both before and after the short-info read, so a
+  reused PID cannot mix two processes' facts. `proc_listpids` returns 0 for both
+  an empty list and an error, so clear `errno` before each call. The crate
+  depends on no Huterm crate (`mise run architecture` checks this). Runtimes
+  probe their foreground only after Enter or job-control input, output after
+  silence, or a title change, plus a one-second poll while a job holds the
+  foreground. Idle shells arm no deadline, and the output path never calls
+  `tcgetpgrp`. Never probe at spawn: a child that has not exec'd yet reads as
+  Huterm. An OSC 7 directory or OSC 0/2 title report applies only while the
+  foreground group that was active when it arrived keeps the foreground;
+  otherwise publish the probed foreground directory, falling back to the root's.
+  Read the group for a title only when its text changes, its recorded report no
+  longer applies, job-control input arrived since the last probe, or a repeated
+  title's attribution is 250 ms old.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
 - After a nonblocking PTY read returns `WouldBlock`, wait for readability

@@ -44,16 +44,19 @@ pub(crate) fn process(pid: u32) -> Option<Process> {
         });
     }
     // Other users' processes, such as `sudo`, only expose the short info,
-    // which has no terminal or start time.
+    // which has no terminal or start time. The start time is read before and
+    // after it: a PID reused between the reads changes the start time.
+    let before = start_time(id);
     let info =
         pid_info::<libc::proc_bsdshortinfo>(id, libc::PROC_PIDT_SHORTBSDINFO)?;
+    let started = before.filter(|started| start_time(id) == Some(*started));
     (info.pbsi_pid == pid).then(|| Process {
         pid,
         parent: info.pbsi_ppid,
         group: info.pbsi_pgid,
         tty: None,
         zombie: info.pbsi_status == libc::SZOMB,
-        started: start_time(id),
+        started,
         name: c_string(&info.pbsi_comm),
     })
 }
@@ -67,8 +70,8 @@ const KINFO_PROC_PID_OFFSET: usize = 40;
 /// Reads a start time through `sysctl(KERN_PROC_PID)`, which, unlike
 /// `proc_pidinfo`, answers for other users' processes. The struct begins with
 /// `kp_proc.p_un.__p_starttime`, a `timeval` of a 64-bit `tv_sec` and a
-/// 32-bit `tv_usec`. `p_pid` is checked too, because the PID may have been
-/// reused since the caller's short-info read.
+/// 32-bit `tv_usec`. `kp_proc.p_pid` is checked as a sanity check of that
+/// layout; it cannot detect PID reuse, because the lookup is by PID.
 fn start_time(pid: c_int) -> Option<StartTime> {
     let mut buffer = [0_u8; KINFO_PROC_SIZE];
     let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];

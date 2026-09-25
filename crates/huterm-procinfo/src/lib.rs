@@ -53,7 +53,7 @@ pub struct Process {
     pub zombie: bool,
     /// Start time, used to tell a reused PID from the original process.
     /// `None` when it cannot be read, for example because the process exited
-    /// or its PID was reused between reads.
+    /// or, on macOS, its PID changed hands while its facts were read.
     pub started: Option<StartTime>,
     /// The kernel's short command name. It may be truncated and does not
     /// name scripts reliably; prefer [`display_name`] over [`arguments`].
@@ -182,25 +182,22 @@ mod tests {
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
-    /// Kills and reaps its child even when an assertion fails.
+    /// Kills and reaps its child even when an assertion fails. A child that
+    /// leads its own process group is killed with the whole group, so a
+    /// background member cannot outlive a failed test.
     struct Reaped(Child);
 
     impl Drop for Reaped {
         fn drop(&mut self) {
+            let pid = self.0.id();
+            // The unreaped child keeps its PID, so its group cannot be reused.
+            if process(pid).is_some_and(|process| process.group == pid) {
+                let _ = Command::new("kill")
+                    .args(["-s", "KILL", "--", &format!("-{pid}")])
+                    .status();
+            }
             let _ = self.0.kill();
             let _ = self.0.wait();
-        }
-    }
-
-    /// Kills a fixture's whole process group, then reaps its leader, so a
-    /// background member cannot outlive a failed test.
-    struct ReapedGroup(Reaped);
-
-    impl Drop for ReapedGroup {
-        fn drop(&mut self) {
-            let _ = Command::new("kill")
-                .args(["-s", "KILL", "--", &format!("-{}", self.0.0.id())])
-                .status();
         }
     }
 
@@ -333,12 +330,12 @@ mod tests {
 
     #[test]
     fn process_tables_include_every_process_and_known_terminals() {
-        let shell = ReapedGroup(ready_child(
+        let shell = ready_child(
             Command::new("/bin/sh")
                 .args(["-c", "sleep 30 & echo ready; wait"])
                 .process_group(0),
-        ));
-        let pid = shell.0.0.id();
+        );
+        let pid = shell.0.id();
         let own = process(std::process::id()).unwrap();
         let ttys: Vec<u64> = own.tty.into_iter().collect();
         let child = eventually(|| {

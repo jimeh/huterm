@@ -78,8 +78,10 @@ confirmation. Short BSD info reads every process but has no TTY or start time,
 and argv of other users' processes is unavailable, so their names fall back to
 the kernel's 16-byte command name. `sysctl(KERN_PROC_PID)` answers for every
 user. `libc` does not define its `kinfo_proc`, so the backend checks the
-648-byte size, parses only the leading start-time `timeval`, and checks
-`p_pid` in case the PID was reused between the two reads.
+648-byte size and `p_pid` as layout checks and parses only the leading
+start-time `timeval`. It reads the start time before and after the short info
+and keeps it only when both match, so a PID reused between the reads cannot
+lend another process's start time.
 `proc_listpids` returns 0 for both an empty list and an error; the `libproc`
 crate misread empty lists as failures because it never clears `errno`. The
 backend clears `errno` before each call.
@@ -175,6 +177,9 @@ Build the same `Process` evidence from `huterm-procinfo` and keep `classify`,
   kernel's TTY filter, because other users' short info has no TTY.
 - Linux candidates: one `/proc/*/stat` scan, which includes each TTY.
 - Compare TTYs by device number from the PTY path instead of normalized names.
+- Name the root shell from its argv when readable, as the probe does. A script
+  shell such as xonsh reports its interpreter as the kernel name. Identities
+  keep the kernel name.
 - Start times gain precision: microseconds on macOS, clock ticks on Linux,
   instead of `lstart` seconds. Identities change format, which is safe because
   consent and later checks use the same source within one run.

@@ -359,6 +359,7 @@ mod tests {
         let mut child = Command::new("perl")
             .arg(&shell)
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut line = String::new();
@@ -366,20 +367,23 @@ mod tests {
             .read_line(&mut line)
             .unwrap();
         let pid = child.id();
-        let table = huterm_procinfo::process_table(&[]).unwrap();
+        // Nothing may panic before the child is killed.
+        let table = huterm_procinfo::process_table(&[]);
         let root = |shell| {
-            evidence(&table, None, shell)
+            evidence(table.as_ref()?, None, shell)
                 .into_iter()
                 .find(|process| process.pid == pid)
-                .unwrap()
-                .command
+                .map(|process| process.command)
         };
         let (named, kernel) = (root(Some(pid)), root(None));
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(directory);
-        assert_eq!(named, "xonsh");
-        assert!(!is_shell(&kernel), "the kernel names the interpreter");
+        assert_eq!(named.as_deref(), Some("xonsh"));
+        assert!(
+            !is_shell(&kernel.unwrap()),
+            "the kernel names the interpreter"
+        );
     }
 
     #[test]
