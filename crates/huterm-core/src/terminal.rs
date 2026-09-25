@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::events::{EventPublisher, EventReceiver};
-use crate::foreground::{ForegroundNames, ProbeSchedule};
+use crate::foreground::{Directories, ForegroundNames, ProbeSchedule};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -815,8 +815,7 @@ fn run_terminal(
 
     let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
-    let mut metadata = TerminalMetadata::default();
-    let mut metadata_revision = 0_u64;
+    let mut metadata = PublishedMetadata::default();
     #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
@@ -838,27 +837,18 @@ fn run_terminal(
             closing.store(true, Ordering::Release);
         }
         // Root exit clears the name; the exited terminal is never probed.
-        let name = if child_exited {
+        if child_exited {
             probes.stop();
-            metadata.foreground_process().is_some().then_some(None)
+            metadata.publish(None, terminal_id, &events);
         } else {
             let now = Instant::now();
-            probes.due(now).then(|| {
+            if probes.due(now) {
                 let probe =
                     foreground.probe(master.process_group_leader(), root);
                 probes.probed(now, probe.job);
-                probe.name
-            })
-        };
-        if let Some(name) = name {
-            publish_metadata(
-                terminal_id,
-                metadata.directory().cloned(),
-                name,
-                &mut metadata,
-                &mut metadata_revision,
-                &events,
-            );
+                metadata.directories.probed(probe.group, probe.directory);
+                metadata.publish(probe.name, terminal_id, &events);
+            }
         }
         let mut controls_drained = 0;
         while controls_drained < MESSAGE_CAPACITY {
@@ -1066,7 +1056,7 @@ fn run_terminal(
                         &mut pending_writes,
                         &events,
                         &mut metadata,
-                        &mut metadata_revision,
+                        master.as_ref(),
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1142,7 +1132,7 @@ fn run_terminal(
                         &mut pending_writes,
                         &events,
                         &mut metadata,
-                        &mut metadata_revision,
+                        master.as_ref(),
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1447,8 +1437,8 @@ fn handle_effect(
     writer: &async_channel::Sender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
     events: &EventPublisher,
-    metadata: &mut TerminalMetadata,
-    metadata_revision: &mut u64,
+    metadata: &mut PublishedMetadata,
+    master: &dyn portable_pty::MasterPty,
 ) -> WriterQueueState {
     match effect {
         EngineEffect::PtyWrite(bytes) => {
@@ -1460,14 +1450,13 @@ fn handle_effect(
             WriterQueueState::Drained
         }
         EngineEffect::Directory(directory) => {
-            publish_metadata(
-                terminal_id,
-                directory,
-                metadata.foreground_process().map(str::to_owned),
-                metadata,
-                metadata_revision,
-                events,
-            );
+            // The report belongs to whichever group holds the foreground now.
+            metadata
+                .directories
+                .report(directory, master.process_group_leader());
+            let process =
+                metadata.current.foreground_process().map(str::to_owned);
+            metadata.publish(process, terminal_id, events);
             WriterQueueState::Drained
         }
         EngineEffect::Bell => {
@@ -1477,25 +1466,36 @@ fn handle_effect(
     }
 }
 
-fn publish_metadata(
-    terminal_id: TerminalId,
-    directory: Option<huterm_protocol::TerminalDirectory>,
-    foreground_process: Option<String>,
-    current: &mut TerminalMetadata,
-    revision: &mut u64,
-    events: &EventPublisher,
-) {
-    let replacement = TerminalMetadata::new(directory, foreground_process);
-    if *current == replacement {
-        return;
+/// Metadata last published to clients, and the directory sources behind it.
+#[derive(Debug, Default)]
+struct PublishedMetadata {
+    current: TerminalMetadata,
+    revision: u64,
+    directories: Directories,
+}
+
+impl PublishedMetadata {
+    /// Publishes the effective directory and `process` unless both are
+    /// unchanged.
+    fn publish(
+        &mut self,
+        process: Option<String>,
+        terminal_id: TerminalId,
+        events: &EventPublisher,
+    ) {
+        let replacement =
+            TerminalMetadata::new(self.directories.effective(), process);
+        if self.current == replacement {
+            return;
+        }
+        self.current = replacement;
+        self.revision = self.revision.saturating_add(1);
+        let _ = events.send(TerminalEvent::MetadataChanged {
+            terminal_id,
+            revision: self.revision,
+            metadata: self.current.clone(),
+        });
     }
-    *current = replacement;
-    *revision = revision.saturating_add(1);
-    let _ = events.send(TerminalEvent::MetadataChanged {
-        terminal_id,
-        revision: *revision,
-        metadata: current.clone(),
-    });
 }
 
 fn queue_write(
@@ -1757,6 +1757,117 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Waits until the published directory matches. `current` carries the
+    /// last published directory between calls.
+    fn wait_for_directory(
+        client: &RuntimeClient,
+        current: &mut Option<huterm_protocol::TerminalDirectory>,
+        expected: impl Fn(&huterm_protocol::TerminalDirectory) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    *current = metadata.directory().cloned();
+                }
+            }
+            if current.as_ref().is_some_and(&expected) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "directory was {current:?}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn same_path(
+        expected: &std::path::Path,
+    ) -> impl Fn(&huterm_protocol::TerminalDirectory) -> bool {
+        let expected = expected.canonicalize().unwrap();
+        move |directory| {
+            directory.is_local()
+                && std::path::Path::new(directory.path())
+                    .canonicalize()
+                    .is_ok_and(|path| path == expected)
+        }
+    }
+
+    #[test]
+    fn process_directories_follow_cd_and_running_jobs_without_osc7() {
+        let job_directory = std::env::temp_dir()
+            .join(format!("huterm-job-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&job_directory).unwrap();
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(98),
+            &command(&format!(
+                "set -m; printf READY; read line; cd /; printf MOVED; read line; (cd '{}' && exec head -n 1 >/dev/null); printf DONE; read line",
+                job_directory.display()
+            )),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(std::path::Path::new("/")),
+        );
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(&client, &mut current, same_path(&job_directory));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(std::path::Path::new("/")),
+        );
+        runtime.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(job_directory);
+    }
+
+    #[test]
+    fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(99),
+            &command(
+                "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; (printf '\\033]7;file://remote.example/srv\\007'; exec head -n 1 >/dev/null); printf DONE; read line",
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        // The shell's report wins over its actual directory at the prompt.
+        wait_for_directory(&client, &mut current, |directory| {
+            directory.path() == "/reported"
+        });
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(&client, &mut current, |directory| {
+            directory.path() == "/srv" && !directory.is_local()
+        });
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        // The job's report expired with it; the shell's process directory
+        // applies until the shell reports again.
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(&std::env::current_dir().unwrap()),
+        );
+        runtime.shutdown().unwrap();
     }
 
     #[test]

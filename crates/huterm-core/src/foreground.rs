@@ -1,4 +1,5 @@
-//! Foreground process names, probed on the terminal's own runtime thread.
+//! Foreground process names and directories, probed on the terminal's own
+//! runtime thread.
 //!
 //! Probes run only after events that can change the foreground process, plus
 //! a slow poll while a job holds the foreground. An idle shell arms no
@@ -6,6 +7,8 @@
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
+
+use huterm_protocol::TerminalDirectory;
 
 /// Delay after a trigger, so the shell can fork, exec, and hand over the PTY.
 const SETTLE: Duration = Duration::from_millis(50);
@@ -88,8 +91,13 @@ impl ProbeSchedule {
 /// Result of one probe.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Probe {
+    /// The foreground process group the probe observed.
+    pub(crate) group: Option<i32>,
     /// The name to publish, or `None` while the root shell is idle.
     pub(crate) name: Option<String>,
+    /// The foreground process's working directory, or the root's when that
+    /// cannot be read, such as for another user's `sudo` job.
+    pub(crate) directory: Option<TerminalDirectory>,
     /// Whether a job holds the foreground and needs the slow poll.
     pub(crate) job: bool,
 }
@@ -107,14 +115,22 @@ impl ForegroundNames {
         group: Option<i32>,
         root: Option<u32>,
     ) -> Probe {
-        let Some(process) = group
+        let selected = group
             .and_then(|group| u32::try_from(group).ok())
             .filter(|group| *group > 0)
-            .and_then(selected_process)
-        else {
+            .and_then(selected_process);
+        let directory = selected
+            .as_ref()
+            .and_then(|process| huterm_procinfo::cwd(process.pid))
+            .or_else(|| root.and_then(huterm_procinfo::cwd))
+            .and_then(|path| path.into_os_string().into_string().ok())
+            .map(|path| TerminalDirectory::new(None, path, true));
+        let Some(process) = selected else {
             self.cached = None;
             return Probe {
+                group,
                 name: None,
+                directory,
                 job: false,
             };
         };
@@ -133,8 +149,52 @@ impl ForegroundNames {
             && display.as_deref().is_none_or(huterm_procinfo::is_shell);
         self.cached = Some((process, display.clone()));
         Probe {
+            group,
             name: display.filter(|_| !idle),
+            directory,
             job: !idle,
+        }
+    }
+}
+
+/// Chooses the published directory. An OSC 7 report applies while the
+/// process group that held the foreground when it arrived still holds it;
+/// otherwise the probed process directory applies. A shell's report thus
+/// wins at its prompt, a running job shows its own directory, and a remote
+/// shell's reports under `ssh` stop applying once `ssh` exits.
+#[derive(Debug, Default)]
+pub(crate) struct Directories {
+    reported: Option<(Option<i32>, TerminalDirectory)>,
+    process: Option<TerminalDirectory>,
+    foreground: Option<i32>,
+}
+
+impl Directories {
+    /// Records an OSC 7 report, or its clearing, from `foreground`.
+    pub(crate) fn report(
+        &mut self,
+        directory: Option<TerminalDirectory>,
+        foreground: Option<i32>,
+    ) {
+        self.foreground = foreground;
+        self.reported = directory.map(|directory| (foreground, directory));
+    }
+
+    pub(crate) fn probed(
+        &mut self,
+        foreground: Option<i32>,
+        process: Option<TerminalDirectory>,
+    ) {
+        self.foreground = foreground;
+        self.process = process;
+    }
+
+    pub(crate) fn effective(&self) -> Option<TerminalDirectory> {
+        match &self.reported {
+            Some((reporter, directory)) if *reporter == self.foreground => {
+                Some(directory.clone())
+            }
+            _ => self.process.clone(),
         }
     }
 }
@@ -239,6 +299,57 @@ mod tests {
         assert_eq!(schedule.deadlines.first(), Some(&at(start, 50)));
     }
 
+    fn directory(path: &str, local: bool) -> TerminalDirectory {
+        TerminalDirectory::new(None, path.into(), local)
+    }
+
+    #[test]
+    fn reports_apply_while_their_reporter_holds_the_foreground() {
+        let (shell, job) = (Some(10), Some(20));
+        let mut directories = Directories::default();
+        directories.probed(shell, Some(directory("/home/me", true)));
+        assert_eq!(directories.effective(), Some(directory("/home/me", true)));
+        directories.report(Some(directory("/home/me/src", true)), shell);
+        assert_eq!(
+            directories.effective(),
+            Some(directory("/home/me/src", true)),
+            "the shell's report wins at its prompt"
+        );
+        directories.probed(job, Some(directory("/tmp", true)));
+        assert_eq!(
+            directories.effective(),
+            Some(directory("/tmp", true)),
+            "a running job shows its own directory"
+        );
+        directories.probed(shell, Some(directory("/home/me", true)));
+        assert_eq!(
+            directories.effective(),
+            Some(directory("/home/me/src", true))
+        );
+    }
+
+    #[test]
+    fn a_jobs_report_expires_with_the_job_and_clearing_falls_back() {
+        let (shell, ssh) = (Some(10), Some(30));
+        let mut directories = Directories::default();
+        directories.probed(ssh, Some(directory("/home/me", true)));
+        directories.report(Some(directory("/srv/remote", false)), ssh);
+        assert_eq!(
+            directories.effective(),
+            Some(directory("/srv/remote", false))
+        );
+        directories.probed(shell, Some(directory("/home/me", true)));
+        assert_eq!(
+            directories.effective(),
+            Some(directory("/home/me", true)),
+            "a remote report stops applying after ssh exits"
+        );
+        directories.report(Some(directory("/home/me/src", true)), shell);
+        directories.report(None, shell);
+        assert_eq!(directories.effective(), Some(directory("/home/me", true)));
+        assert_eq!(Directories::default().effective(), None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn names_a_foreground_job_and_treats_the_root_shell_as_idle() {
@@ -269,22 +380,23 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
+        assert_eq!(job.name.as_deref(), Some("sleep"));
+        assert!(job.job);
+        assert_eq!(job.group, group);
+        let expected = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let directory = job.directory.unwrap();
+        assert!(directory.is_local());
         assert_eq!(
-            job,
-            Probe {
-                name: Some("sleep".into()),
-                job: true
-            }
+            std::path::Path::new(directory.path())
+                .canonicalize()
+                .unwrap(),
+            expected
         );
         // The same process as root reads as a non-shell program, not idle.
         assert!(names.probe(group, Some(pid)).job);
-        assert_eq!(
-            names.probe(None, Some(pid)),
-            Probe {
-                name: None,
-                job: false
-            }
-        );
+        let unknown = names.probe(None, Some(pid));
+        assert_eq!((unknown.name, unknown.job), (None, false));
+        assert!(unknown.directory.is_some(), "falls back to the root");
         let _ = child.kill();
         let _ = child.wait();
     }

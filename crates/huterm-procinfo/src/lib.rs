@@ -19,7 +19,7 @@ use macos as platform;
 pub use name::{display_name, is_shell};
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// When a process started, comparable only between reads on the same boot.
 ///
@@ -79,6 +79,22 @@ pub fn arguments(pid: u32) -> Option<Vec<String>> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         platform::arguments(pid).filter(|arguments| !arguments.is_empty())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Reads a process's working directory. The kernel only reveals it for the
+/// caller's own processes unless it runs as root, so other users' processes,
+/// such as `sudo` jobs, read as `None`.
+#[must_use]
+pub fn cwd(pid: u32) -> Option<PathBuf> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        platform::cwd(pid)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -264,6 +280,23 @@ mod tests {
             process(pid).is_none_or(|facts| facts.zombie).then_some(())
         });
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn reads_the_working_directory_of_a_child() {
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-procinfo-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let child = ready_child(sleeper().current_dir(&directory));
+        // macOS resolves the temporary directory through /private.
+        let expected = directory.canonicalize().unwrap();
+        assert_eq!(
+            cwd(child.0.id()).unwrap().canonicalize().unwrap(),
+            expected
+        );
+        drop(child);
+        let _ = std::fs::remove_dir_all(directory);
+        assert_eq!(cwd(u32::try_from(i32::MAX).unwrap()), None);
     }
 
     #[test]

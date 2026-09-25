@@ -4,6 +4,10 @@ pub(crate) fn process(pid: u32) -> Option<Process> {
     parse_stat(pid, &read_stat(pid)?)
 }
 
+pub(crate) fn cwd(pid: u32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
 pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
     let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let bytes = bytes.strip_suffix(b"\0").unwrap_or(&bytes);

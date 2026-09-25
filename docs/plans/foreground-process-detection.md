@@ -145,6 +145,23 @@ output path never calls `tcgetpgrp`.
 The scheduler is a pure state machine that takes explicit instants. The runtime
 loop waits until the earliest deadline instead of waiting indefinitely.
 
+## Working directory (follow-up)
+
+Each probe also reads the working directory of the selected foreground
+process, falling back to the root's when another user owns that process. The
+directory is re-read on every probe because `cd` does not change the
+foreground process; the prompt redraw after `cd` triggers a probe. Process
+directories are local, so `new_tab_directory = "inherit"` works without shell
+integration.
+
+An OSC 7 report records the foreground group at arrival and applies only
+while that group keeps the foreground; otherwise the process directory
+applies. A shell's report wins at its prompt, a running job shows its own
+directory, a nested shell without OSC 7 follows its own `cd`, and a remote
+shell's reports under `ssh` expire when `ssh` exits. An empty report clears
+the reported value and falls back to the process directory. WezTerm lets any
+OSC 7 win once reported; kitty uses it only at an OSC 133 prompt.
+
 ## Close confirmation (second commit)
 
 Build the same `Process` evidence from `huterm-procinfo` and keep `classify`,

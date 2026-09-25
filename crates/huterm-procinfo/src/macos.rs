@@ -87,6 +87,23 @@ pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
     parse_arguments(&buffer)
 }
 
+pub(crate) fn cwd(pid: u32) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let info = pid_info::<libc::proc_vnodepathinfo>(
+        c_int::try_from(pid).ok()?,
+        libc::PROC_PIDVNODEPATHINFO,
+    )?;
+    let bytes: Vec<u8> = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|character| character.to_ne_bytes()[0])
+        .take_while(|byte| *byte != 0)
+        .collect();
+    (!bytes.is_empty()).then(|| std::ffi::OsString::from_vec(bytes).into())
+}
+
 pub(crate) fn group_members(group: u32) -> Option<Vec<u32>> {
     list_pids(PROC_PGRP_ONLY, group)
 }
@@ -112,7 +129,8 @@ pub(crate) fn process_table(ttys: &[u64]) -> Option<ProcessTable> {
 }
 
 /// Reads one `proc_pidinfo` flavour. Only instantiate with `libc`'s
-/// `proc_info` structs, which contain integers and byte arrays only.
+/// `proc_info` structs, which contain integers and byte arrays only, so any
+/// bit pattern is a valid value.
 fn pid_info<T: Copy>(pid: c_int, flavor: c_int) -> Option<T> {
     let size = c_int::try_from(size_of::<T>()).ok()?;
     let mut info = MaybeUninit::<T>::zeroed();
