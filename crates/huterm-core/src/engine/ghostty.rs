@@ -439,6 +439,9 @@ impl TerminalEngine {
         self.colors_dirty = false;
         // Override flags decide how cells resolve palette colors. Effective
         // color changes are compared separately when the snapshot is built.
+        // The pinned Ghostty marks its palette dirty on the probe's own
+        // writes, which already forces a full redraw; this keeps the rebuild
+        // tied to real changes if that side effect goes away.
         if overrides_changed || defaults != self.default_overrides {
             self.colors = None;
         }
@@ -1543,6 +1546,40 @@ mod tests {
         assert!(Arc::ptr_eq(&before.rows[0], &after.rows[0]));
         let stats = engine.last_snapshot_stats();
         assert_eq!((stats.extracted, stats.allocated), (1, 0));
+    }
+
+    #[test]
+    fn non_color_osc_and_utf8_output_keep_snapshots_partial() {
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(20, 10),
+            CellSize {
+                width: 9,
+                height: 17,
+            },
+            presentation(),
+        )
+        .unwrap();
+        engine.process(b"first\r\nsecond\r\nthird").unwrap();
+        engine.snapshot().unwrap();
+        // OSC 8 is absent: Ghostty's own damage still rebuilds most rows.
+        for chunk in [
+            "\x1b]2;title\x07\x1b[2;1Hx".as_bytes(),
+            b"\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07",
+            "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".as_bytes(),
+        ] {
+            engine.process(chunk).unwrap();
+            engine.snapshot().unwrap();
+            let extracted = engine.last_snapshot_stats().extracted;
+            assert!(
+                extracted <= 2,
+                "{:?} extracted {extracted} of 10 rows",
+                String::from_utf8_lossy(chunk)
+            );
+        }
+        engine.process(b"\x1b]4;1;#123456\x07").unwrap();
+        engine.snapshot().unwrap();
+        assert_eq!(engine.last_snapshot_stats().extracted, 10);
     }
 
     #[test]

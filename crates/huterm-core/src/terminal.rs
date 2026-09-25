@@ -1271,64 +1271,80 @@ fn spawn_reader(
     thread::Builder::new()
         .name(format!("huterm-reader-{}", terminal_id.get()))
         .spawn(move || {
-            let mut buffer = [0_u8; 8192];
-            let mut pending = None;
-            let mut ended = None;
-            let mut drained = false;
-            while !closing.load(Ordering::Acquire) {
-                if let Some(bytes) = pending.take() {
-                    // Teardown drops the receiver before joining this worker,
-                    // so bounded backpressure also has an explicit cancellation path.
-                    if output.send(bytes).is_err() {
-                        break;
-                    }
-                    continue;
-                }
-                // End-of-file or a failure found while batching follows the
-                // output read before it.
-                if let Some(control) = ended.take() {
-                    let _ = controls.send(control);
-                    break;
-                }
-                // A read that would block needs no retry before the wait.
-                if std::mem::take(&mut drained)
-                    && let Err(error) = reader_waiter.wait(None)
-                {
-                    let _ = controls.send(RuntimeControl::WorkerFailed(
-                        format!("PTY readiness wait failed: {error}"),
-                    ));
-                    break;
-                }
-                match reader.read(&mut buffer) {
-                    Ok(0) => {
-                        let _ = controls.send(RuntimeControl::PtyEof);
-                        break;
-                    }
-                    Ok(count) => {
-                        let mut batch = buffer[..count].to_vec();
-                        match read_ready(&mut *reader, &mut buffer, &mut batch)
-                        {
-                            ReadyEnd::Full => {}
-                            ReadyEnd::Drained => drained = true,
-                            ReadyEnd::Ended(control) => ended = Some(control),
-                        }
-                        pending = Some(batch);
-                    }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock =>
-                    {
-                        drained = true;
-                    }
-                    Err(error) => {
-                        let _ = controls.send(RuntimeControl::WorkerFailed(
-                            format!("PTY read failed: {error}"),
-                        ));
-                        break;
-                    }
-                }
-            }
+            forward_output(
+                &mut *reader,
+                || reader_waiter.wait(None),
+                &output,
+                &controls,
+                &closing,
+            );
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
+}
+
+/// Sends PTY output to the runtime in batches until end-of-file, a failure,
+/// teardown, or closing. `wait` blocks until the PTY is readable or its
+/// cancellation descriptor is signalled.
+fn forward_output(
+    reader: &mut dyn Read,
+    mut wait: impl FnMut() -> std::io::Result<()>,
+    output: &crate::wake::SyncSender<Vec<u8>>,
+    controls: &crate::wake::Sender<RuntimeControl>,
+    closing: &AtomicBool,
+) {
+    let mut buffer = [0_u8; 8192];
+    let mut pending = None;
+    let mut ended = None;
+    let mut drained = false;
+    while !closing.load(Ordering::Acquire) {
+        if let Some(bytes) = pending.take() {
+            // Teardown drops the receiver before joining this worker,
+            // so bounded backpressure also has an explicit cancellation path.
+            if output.send(bytes).is_err() {
+                break;
+            }
+            continue;
+        }
+        // End-of-file or a failure found while batching follows the
+        // output read before it.
+        if let Some(control) = ended.take() {
+            let _ = controls.send(control);
+            break;
+        }
+        // A read that would block needs no retry before the wait.
+        if std::mem::take(&mut drained)
+            && let Err(error) = wait()
+        {
+            let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+                "PTY readiness wait failed: {error}"
+            )));
+            break;
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                let _ = controls.send(RuntimeControl::PtyEof);
+                break;
+            }
+            Ok(count) => {
+                let mut batch = buffer[..count].to_vec();
+                match read_ready(reader, &mut buffer, &mut batch) {
+                    ReadyEnd::Full => {}
+                    ReadyEnd::Drained => drained = true,
+                    ReadyEnd::Ended(control) => ended = Some(control),
+                }
+                pending = Some(batch);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                drained = true;
+            }
+            Err(error) => {
+                let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+                    "PTY read failed: {error}"
+                )));
+                break;
+            }
+        }
+    }
 }
 
 /// Why [`read_ready`] stopped adding to a batch.
@@ -1680,8 +1696,10 @@ fn join_worker(worker: JoinHandle<()>) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::io;
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -2624,6 +2642,103 @@ mod tests {
             end,
             ReadyEnd::Ended(RuntimeControl::WorkerFailed(message))
                 if message.contains("gone")
+        ));
+    }
+
+    /// Records each read's outcome and each readiness wait in order.
+    struct LoggedReader {
+        script: ScriptedReader,
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl Read for LoggedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let result = self.script.read(buffer);
+            self.log.borrow_mut().push(match &result {
+                Ok(0) => "eof",
+                Ok(_) => "read",
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    "would-block"
+                }
+                Err(_) => "error",
+            });
+            result
+        }
+    }
+
+    /// Runs the reader loop over `results` with a readiness wait that
+    /// returns `wait`, collecting forwarded output and controls.
+    fn forward(
+        results: Vec<io::Result<Vec<u8>>>,
+        wait: fn() -> io::Result<()>,
+    ) -> (Vec<&'static str>, Vec<Vec<u8>>, Vec<RuntimeControl>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut reader = LoggedReader {
+            script: ScriptedReader(results.into()),
+            log: Rc::clone(&log),
+        };
+        let wake = Arc::new(crate::wake::Wake::default());
+        let (output, outputs) = mpsc::sync_channel(OUTPUT_CAPACITY);
+        let (controls, received) = mpsc::channel();
+        let wait_log = Rc::clone(&log);
+        forward_output(
+            &mut reader,
+            || {
+                wait_log.borrow_mut().push("wait");
+                wait()
+            },
+            &crate::wake::SyncSender::new(output, Arc::clone(&wake)),
+            &crate::wake::Sender::new(controls, wake),
+            &AtomicBool::new(false),
+        );
+        let log = log.borrow().clone();
+        (
+            log,
+            outputs.try_iter().collect(),
+            received.try_iter().collect(),
+        )
+    }
+
+    #[test]
+    fn reader_waits_after_a_drained_batch_and_reports_end_of_file_last() {
+        let (log, outputs, controls) = forward(
+            vec![
+                Ok(b"a".to_vec()),
+                Ok(b"b".to_vec()),
+                Err(io::ErrorKind::WouldBlock.into()),
+                Ok(b"c".to_vec()),
+                Ok(Vec::new()),
+            ],
+            || Ok(()),
+        );
+        // No read is retried between a would-block result and the wait.
+        assert_eq!(log, ["read", "read", "would-block", "wait", "read", "eof"]);
+        assert_eq!(outputs, [b"ab".to_vec(), b"c".to_vec()]);
+        assert!(matches!(controls[..], [RuntimeControl::PtyEof]));
+    }
+
+    #[test]
+    fn reader_failures_are_reported_after_the_output_read_before_them() {
+        let (_, outputs, controls) = forward(
+            vec![Ok(b"a".to_vec()), Err(io::Error::other("gone"))],
+            || Ok(()),
+        );
+        assert_eq!(outputs, [b"a".to_vec()]);
+        assert!(matches!(
+            &controls[..],
+            [RuntimeControl::WorkerFailed(message)] if message.contains("gone")
+        ));
+
+        let (log, outputs, controls) = forward(
+            vec![Ok(b"a".to_vec()), Err(io::ErrorKind::WouldBlock.into())],
+            || Err(io::Error::other("closed")),
+        );
+        assert_eq!(log, ["read", "would-block", "wait"]);
+        assert_eq!(outputs, [b"a".to_vec()]);
+        assert!(matches!(
+            &controls[..],
+            [RuntimeControl::WorkerFailed(message)]
+                if message.contains("readiness wait failed")
         ));
     }
 
