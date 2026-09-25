@@ -270,7 +270,8 @@ exits. Huterm checks after input, after output that follows a pause, after a
 title change, and once a second while a program runs; idle shells cost
 nothing.
 
-`label = "directory"` shows the final path component, `label = "process"`
+`label = "directory"` shows the final path component, or `~` for your local
+home directory, `label = "process"`
 names the foreground program, or the script it runs, and
 `label = "process_and_directory"` combines both when available. Each mode
 falls back to the current terminal title and launched program. A custom tab

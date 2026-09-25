@@ -1474,7 +1474,7 @@ impl TabView {
         let label = if self.record.custom_name().is_some() {
             fallback.to_owned()
         } else {
-            resolve_tab_label(mode, fallback, &terminal.metadata)
+            resolve_tab_label(mode, fallback, &terminal.metadata, home_paths())
         };
         (
             label,
@@ -1485,17 +1485,42 @@ impl TabView {
     }
 }
 
+/// `$HOME` as written and resolved, read once. Shells report the logical
+/// path, while process directories are resolved.
+fn home_paths() -> &'static [String] {
+    static HOME: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        let resolved = home.canonicalize().ok();
+        [Some(home), resolved]
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.into_os_string().into_string().ok())
+            .map(|path| path.trim_end_matches('/').to_owned())
+            .filter(|path| !path.is_empty())
+            .collect()
+    })
+}
+
 fn resolve_tab_label(
     mode: huterm_config::TabLabel,
     title: &str,
     metadata: &huterm_protocol::TerminalMetadata,
+    home: &[String],
 ) -> String {
     let process = metadata
         .foreground_process()
         .filter(|value| !value.is_empty());
     let directory = metadata.directory().and_then(|directory| {
         let path = directory.path();
-        if path == "/" {
+        // Only a local directory can be this machine's home.
+        if directory.is_local()
+            && home.iter().any(|home| path.trim_end_matches('/') == home)
+        {
+            Some("~")
+        } else if path == "/" {
             Some("/")
         } else {
             path.trim_end_matches('/')
@@ -6546,25 +6571,30 @@ mod tests {
 
         let empty = TerminalMetadata::default();
         assert_eq!(
-            resolve_tab_label(TabLabel::Title, "shell", &empty),
+            resolve_tab_label(TabLabel::Title, "shell", &empty, &[]),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &empty),
+            resolve_tab_label(TabLabel::Process, "shell", &empty, &[]),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &empty),
+            resolve_tab_label(TabLabel::Directory, "shell", &empty, &[]),
             "shell"
         );
 
         let process = TerminalMetadata::new(None, Some("vim".into()));
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &process),
+            resolve_tab_label(TabLabel::Process, "shell", &process, &[]),
             "vim"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &process),
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                "shell",
+                &process,
+                &[]
+            ),
             "vim"
         );
 
@@ -6573,14 +6603,15 @@ mod tests {
             None,
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &directory),
+            resolve_tab_label(TabLabel::Directory, "shell", &directory, &[]),
             "世界"
         );
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
                 "shell",
-                &directory
+                &directory,
+                &[]
             ),
             "世界"
         );
@@ -6594,8 +6625,66 @@ mod tests {
             Some("cargo".into()),
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &both),
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                "shell",
+                &both,
+                &[]
+            ),
             "cargo · project"
+        );
+    }
+
+    #[test]
+    fn tab_labels_show_the_local_home_directory_as_a_tilde() {
+        use huterm_config::TabLabel;
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+        let home = ["/Users/me".to_owned()];
+        let at_home = |path: &str, local: bool| {
+            TerminalMetadata::new(
+                Some(TerminalDirectory::new(None, path.into(), local)),
+                Some("vim".into()),
+            )
+        };
+        for path in ["/Users/me", "/Users/me/"] {
+            assert_eq!(
+                resolve_tab_label(
+                    TabLabel::Directory,
+                    "shell",
+                    &at_home(path, true),
+                    &home
+                ),
+                "~"
+            );
+        }
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                "shell",
+                &at_home("/Users/me", true),
+                &home
+            ),
+            "vim · ~"
+        );
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::Directory,
+                "shell",
+                &at_home("/Users/me/src", true),
+                &home
+            ),
+            "src"
+        );
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::Directory,
+                "shell",
+                &at_home("/Users/me", false),
+                &home
+            ),
+            "me",
+            "a remote home is not this machine's"
         );
     }
 
