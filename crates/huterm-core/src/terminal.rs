@@ -1371,8 +1371,9 @@ fn read_ready(
     buffer: &mut [u8],
     batch: &mut Vec<u8>,
 ) -> ReadyEnd {
-    while batch.len() + buffer.len() <= READ_BATCH_BYTES {
-        match reader.read(buffer) {
+    while batch.len() < READ_BATCH_BYTES {
+        let limit = buffer.len().min(READ_BATCH_BYTES - batch.len());
+        match reader.read(&mut buffer[..limit]) {
             Ok(0) => return ReadyEnd::Ended(RuntimeControl::PtyEof),
             Ok(count) => batch.extend_from_slice(&buffer[..count]),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -2594,9 +2595,16 @@ mod tests {
     impl Read for ScriptedReader {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             match self.0.pop_front() {
-                Some(Ok(bytes)) => {
-                    buffer[..bytes.len()].copy_from_slice(&bytes);
-                    Ok(bytes.len())
+                // Like a PTY, a short buffer takes part of the pending
+                // output and leaves the rest for the next read.
+                Some(Ok(mut bytes)) => {
+                    let count = bytes.len().min(buffer.len());
+                    buffer[..count].copy_from_slice(&bytes[..count]);
+                    let rest = bytes.split_off(count);
+                    if !rest.is_empty() {
+                        self.0.push_front(Ok(rest));
+                    }
+                    Ok(count)
                 }
                 Some(Err(error)) => Err(error),
                 None => Err(io::ErrorKind::WouldBlock.into()),
@@ -2611,7 +2619,12 @@ mod tests {
         let mut buffer = [0_u8; 8192];
         let mut batch = b"first".to_vec();
         let end = read_ready(&mut reader, &mut buffer, &mut batch);
-        (batch, end, reader.0.len())
+        let left = reader
+            .0
+            .iter()
+            .map(|result| result.as_ref().map_or(0, Vec::len))
+            .sum();
+        (batch, end, left)
     }
 
     #[test]
@@ -2630,8 +2643,20 @@ mod tests {
         let (batch, end, left) =
             read_batch((0..reads).map(|_| Ok(chunk.clone())).collect());
         assert!(matches!(end, ReadyEnd::Full));
-        assert!(batch.len() <= READ_BATCH_BYTES);
-        assert_eq!(batch.len() + left * chunk.len(), 5 + reads * chunk.len());
+        assert_eq!(batch.len(), READ_BATCH_BYTES);
+        assert_eq!(batch.len() + left, 5 + reads * chunk.len());
+    }
+
+    #[test]
+    fn short_ready_reads_fill_the_batch_to_its_limit() {
+        // macOS PTY reads return at most 1 KiB.
+        let chunk = vec![b'x'; 1024];
+        let reads = READ_BATCH_BYTES / chunk.len() + 2;
+        let (batch, end, left) =
+            read_batch((0..reads).map(|_| Ok(chunk.clone())).collect());
+        assert!(matches!(end, ReadyEnd::Full));
+        assert_eq!(batch.len(), READ_BATCH_BYTES);
+        assert_eq!(batch.len() + left, 5 + reads * chunk.len());
     }
 
     #[test]
