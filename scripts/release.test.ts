@@ -25,7 +25,7 @@ test("release inputs and workspace packages bind to one exact version", () => {
   expect(validateReleaseInputs(inputs.sha, inputs.tag, inputs.version)).toEqual(inputs);
   expect(() => validateReleaseInputs(inputs.sha, "v0.5.0", inputs.version)).toThrow("does not match");
   expect(() => validateReleaseInputs(inputs.sha, "v0.4.0-beta.1", "0.4.0-beta.1")).toThrow("invalid release version");
-  const packages = ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-protocol"].map(name => ({ name, version: inputs.version }));
+  const packages = ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol"].map(name => ({ name, version: inputs.version }));
   expect(() => validateWorkspaceVersions({ packages }, inputs.version)).not.toThrow();
   expect(() => validateWorkspaceVersions({ packages: packages.slice(1) }, inputs.version)).toThrow("huterm");
   expect(() => validateWorkspaceVersions({ packages: packages.map(item => item.name === "huterm-core" ? { ...item, version: "0.5.0" } : item) }, inputs.version)).toThrow("huterm-core version");

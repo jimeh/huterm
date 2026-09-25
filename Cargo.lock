@@ -2510,9 +2510,11 @@ version = "0.12.3"
 dependencies = [
  "async-channel 2.5.0",
  "filedescriptor",
+ "huterm-procinfo",
  "huterm-protocol",
  "libghostty-vt",
  "libghostty-vt-sys",
+ "memchr",
  "nix 0.29.0",
  "portable-pty",
  "thiserror 2.0.20",
@@ -2538,6 +2540,13 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "unicode-segmentation",
  "x11rb 0.14.0",
+]
+
+[[package]]
+name = "huterm-procinfo"
+version = "0.12.3"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

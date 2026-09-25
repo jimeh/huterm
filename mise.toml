@@ -102,7 +102,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol boundary"
+description = "Check dependency-neutral protocol and process-info boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -113,6 +113,11 @@ fi
 config_dependencies="$(cargo tree --locked -p huterm-config --features schema --prefix none --edges normal,build)"
 if echo "$config_dependencies" | rg '^(gpui|huterm-core|alacritty_terminal|libghostty-vt|portable-pty)( |-)'; then
   echo "huterm-config must remain independent of desktop and terminal engines" >&2
+  exit 1
+fi
+procinfo_dependencies="$(cargo tree --locked -p huterm-procinfo --target all --prefix none --edges normal,build | tail -n +2)"
+if echo "$procinfo_dependencies" | rg '^huterm-'; then
+  echo "huterm-procinfo must not depend on other Huterm crates" >&2
   exit 1
 fi
 '''

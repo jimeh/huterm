@@ -152,7 +152,7 @@ fn read_state(cx: &mut gpui::App) -> String {
                 .iter()
                 .filter(|tab| tab.view.read(cx).bell.unseen)
                 .count();
-            let label = workspace.tabs.iter().find(|tab| Some(tab.id) == workspace.active).map_or_else(String::new, |tab| tab.label(workspace.config.tabs.label, cx).0);
+            let label = workspace.tabs.iter().find(|tab| Some(tab.id) == workspace.active).map_or_else(String::new, |tab| tab.label(workspace.config.tabs, cx).0);
             let Some(terminal) = workspace.active_view() else { return; };
             terminal.update(cx, |view, _| {
                 view.open_link = record_open;

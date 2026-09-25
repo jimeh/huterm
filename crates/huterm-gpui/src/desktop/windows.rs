@@ -48,7 +48,7 @@ use huterm_protocol::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
@@ -150,7 +150,6 @@ struct DesktopRuntime {
     mux: Mutex<Mux>,
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
-    process_metadata_epoch: AtomicU64,
     restore: Mutex<Option<RestoreSnapshot>>,
 }
 
@@ -489,61 +488,11 @@ struct Desktop {
     quitting: bool,
     pending_spawns: usize,
     quit_pending: bool,
-    process_sampler: ProcessMetadataSampler,
     external_drag_window: Option<gpui::WindowId>,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
-
-#[derive(Default)]
-struct ProcessMetadataSampler {
-    in_flight: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProcessMetadataTick {
-    Stop,
-    Idle,
-    Sample,
-}
-
-impl ProcessMetadataSampler {
-    fn begin_tick(
-        &mut self,
-        label: huterm_config::TabLabel,
-        terminating: bool,
-    ) -> ProcessMetadataTick {
-        if terminating {
-            ProcessMetadataTick::Stop
-        } else if !process_metadata_requested(label) || self.in_flight {
-            ProcessMetadataTick::Idle
-        } else {
-            self.in_flight = true;
-            ProcessMetadataTick::Sample
-        }
-    }
-
-    fn finish_tick(&mut self) {
-        self.in_flight = false;
-    }
-}
-
-fn process_metadata_requested(label: huterm_config::TabLabel) -> bool {
-    matches!(
-        label,
-        huterm_config::TabLabel::Process
-            | huterm_config::TabLabel::ProcessAndDirectory
-    )
-}
-
-fn process_metadata_batch_is_current(
-    runtime: &DesktopRuntime,
-    epoch: u64,
-) -> bool {
-    runtime.process_metadata_epoch.load(Ordering::Acquire) == epoch
-        && !runtime.terminating.load(Ordering::Acquire)
-}
 
 impl Desktop {
     fn stop_window_drag(window: &mut Window, cx: &mut App) {
@@ -937,12 +886,10 @@ pub(super) fn run_with_startup(
             quitting: false,
             pending_spawns: 0,
             quit_pending: false,
-            process_sampler: ProcessMetadataSampler::default(),
             external_drag_window: None,
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
-        start_process_metadata_sampler(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
@@ -983,66 +930,6 @@ pub(super) fn run_with_startup(
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
-}
-
-fn start_process_metadata_sampler(cx: &mut App) {
-    cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let Ok(Some(decision)) = cx.update(|cx| {
-                let desktop = cx.global_mut::<Desktop>();
-                let terminating =
-                    desktop.runtime.terminating.load(Ordering::Acquire);
-                match desktop
-                    .process_sampler
-                    .begin_tick(desktop.config.tabs.label, terminating)
-                {
-                    ProcessMetadataTick::Stop => None,
-                    ProcessMetadataTick::Idle => Some(None),
-                    ProcessMetadataTick::Sample => Some(Some((
-                        Arc::clone(&desktop.runtime),
-                        desktop
-                            .runtime
-                            .process_metadata_epoch
-                            .load(Ordering::Acquire),
-                    ))),
-                }
-            }) else {
-                break;
-            };
-            let Some((runtime, epoch)) = decision else {
-                continue;
-            };
-            cx.background_executor()
-                .spawn(async move {
-                    let clients = {
-                        let mux = runtime
-                            .mux
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        mux.runtime_clients()
-                    };
-                    if clients.is_empty() {
-                        return;
-                    }
-                    let batch =
-                        huterm_core::sample_foreground_processes(&clients);
-                    if process_metadata_batch_is_current(&runtime, epoch) {
-                        batch.publish();
-                    }
-                })
-                .await;
-            if cx
-                .update(|cx| {
-                    cx.global_mut::<Desktop>().process_sampler.finish_tick();
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    })
-    .detach();
 }
 
 fn observe_keystroke(
@@ -1566,9 +1453,9 @@ struct TabView {
 }
 
 impl TabView {
-    fn title(&self, cx: &App) -> String {
-        let (title, exited, _, _) =
-            self.label(huterm_config::TabLabel::Title, cx);
+    /// The tab's label with status text, for previews and dialogs.
+    fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
+        let (title, exited, _, _) = self.label(tabs, cx);
         if exited {
             format!("{title} · exited")
         } else {
@@ -1579,7 +1466,7 @@ impl TabView {
     /// Returns the display name without status text, and whether it exited.
     fn label(
         &self,
-        mode: huterm_config::TabLabel,
+        tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> (String, bool, bool, bool) {
         let terminal = self.view.read(cx);
@@ -1587,7 +1474,13 @@ impl TabView {
         let label = if self.record.custom_name().is_some() {
             fallback.to_owned()
         } else {
-            resolve_tab_label(mode, fallback, &terminal.metadata)
+            resolve_tab_label(
+                tabs.label,
+                tabs.directory,
+                fallback,
+                &terminal.metadata,
+                home_paths(),
+            )
         };
         (
             label,
@@ -1598,40 +1491,118 @@ impl TabView {
     }
 }
 
+/// `$HOME` as written and resolved, read once. Shells report the logical
+/// path, while process directories are resolved.
+fn home_paths() -> &'static [String] {
+    static HOME: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        let resolved = home.canonicalize().ok();
+        [Some(home), resolved]
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.into_os_string().into_string().ok())
+            .map(|path| path.trim_end_matches('/').to_owned())
+            .filter(|path| !path.is_empty())
+            .collect()
+    })
+}
+
 fn resolve_tab_label(
     mode: huterm_config::TabLabel,
+    style: huterm_config::TabDirectory,
     title: &str,
     metadata: &huterm_protocol::TerminalMetadata,
+    home: &[String],
 ) -> String {
     let process = metadata
         .foreground_process()
         .filter(|value| !value.is_empty());
-    let directory = metadata.directory().and_then(|directory| {
-        let path = directory.path();
-        if path == "/" {
-            Some("/")
-        } else {
-            path.trim_end_matches('/')
-                .rsplit('/')
-                .find(|part| !part.is_empty())
-        }
-    });
+    let directory = metadata
+        .directory()
+        .and_then(|directory| directory_label(directory, style, home));
     match mode {
+        // A process name is published only while a program holds the
+        // foreground; at an idle shell the directory says more.
+        huterm_config::TabLabel::Smart => match process {
+            Some(process) => {
+                metadata.foreground_title().unwrap_or(process).to_owned()
+            }
+            None => directory.unwrap_or_else(|| title.to_owned()),
+        },
         huterm_config::TabLabel::Title => title.to_owned(),
         huterm_config::TabLabel::Process => process.unwrap_or(title).to_owned(),
         huterm_config::TabLabel::Directory => {
-            directory.unwrap_or(title).to_owned()
+            directory.unwrap_or_else(|| title.to_owned())
         }
         huterm_config::TabLabel::ProcessAndDirectory => {
             match (process, directory) {
                 (Some(process), Some(directory)) => {
                     format!("{process} · {directory}")
                 }
-                (Some(value), None) | (None, Some(value)) => value.to_owned(),
+                (Some(process), None) => process.to_owned(),
+                (None, Some(directory)) => directory,
                 (None, None) => title.to_owned(),
             }
         }
     }
+}
+
+/// Formats a directory for a tab label. Only a local directory can be under
+/// this machine's home, so remote paths stay absolute.
+fn directory_label(
+    directory: &huterm_protocol::TerminalDirectory,
+    style: huterm_config::TabDirectory,
+    home: &[String],
+) -> Option<String> {
+    let path = directory.path().trim_end_matches('/');
+    if path.is_empty() {
+        return directory.path().starts_with('/').then(|| "/".to_owned());
+    }
+    let under_home = directory
+        .is_local()
+        .then(|| {
+            home.iter().find_map(|home| {
+                if path == home {
+                    Some(String::new())
+                } else {
+                    path.strip_prefix(home.as_str())?
+                        .strip_prefix('/')
+                        .map(str::to_owned)
+                }
+            })
+        })
+        .flatten();
+    let display = match under_home {
+        Some(rest) if rest.is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{rest}"),
+        None => path.to_owned(),
+    };
+    match style {
+        huterm_config::TabDirectory::Name => display
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .map(str::to_owned),
+        huterm_config::TabDirectory::Path => Some(display),
+        huterm_config::TabDirectory::Short => Some(shorten_path(&display)),
+    }
+}
+
+/// Shortens every component but the last to its first character, keeping
+/// a hidden directory's dot: `~/.config/huterm` becomes `~/.c/huterm`.
+fn shorten_path(path: &str) -> String {
+    let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
+    let last = parts.len().saturating_sub(1);
+    for part in &mut parts[..last] {
+        if part == "~" {
+            continue;
+        }
+        let keep = if part.starts_with('.') { 2 } else { 1 };
+        *part = part.chars().take(keep).collect();
+    }
+    parts.join("/")
 }
 
 #[derive(Default)]
@@ -2923,7 +2894,7 @@ impl WorkspaceView {
         let live_titles = self
             .tabs
             .iter()
-            .map(|tab| (tab.id, tab.title(cx)))
+            .map(|tab| (tab.id, tab.title(self.config.tabs, cx)))
             .collect();
         let task = cx
             .background_executor()
@@ -4199,10 +4170,6 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 apply_update_config(cx, &config);
                 let desktop = cx.global_mut::<Desktop>();
                 desktop.config = config.clone();
-                desktop
-                    .runtime
-                    .process_metadata_epoch
-                    .fetch_add(1, Ordering::AcqRel);
                 keymap_status = reload_diagnostic(cx, &config, &compiled);
                 quake_windows::reconcile(cx);
                 let keymap = bind_keymap(cx, compiled);
@@ -4944,7 +4911,7 @@ impl Render for WorkspaceView {
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
                 let (title, exited, failed, bell) =
-                    tab.label(self.config.tabs.label, cx);
+                    tab.label(self.config.tabs, cx);
                 let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
@@ -5288,7 +5255,7 @@ impl Render for WorkspaceView {
                 .tabs
                 .iter()
                 .find(|tab| tab.id == drag.source.tab)
-                .map(|tab| tab.title(cx))
+                .map(|tab| tab.title(self.config.tabs, cx))
                 .unwrap_or_default();
             root = root.child(
                 div()
@@ -5342,7 +5309,7 @@ impl Render for WorkspaceView {
                     .tabs
                     .iter()
                     .find(|tab| tab.id == id)
-                    .map(|tab| tab.title(cx))
+                    .map(|tab| tab.title(self.config.tabs, cx))
                     .unwrap_or_default(),
                 _ => String::new(),
             };
@@ -6658,30 +6625,60 @@ mod tests {
 
     #[test]
     fn tab_labels_degrade_across_all_metadata_modes() {
-        use huterm_config::TabLabel;
+        use huterm_config::{TabDirectory, TabLabel};
         use huterm_protocol::{TerminalDirectory, TerminalMetadata};
 
         let empty = TerminalMetadata::default();
         assert_eq!(
-            resolve_tab_label(TabLabel::Title, "shell", &empty),
+            resolve_tab_label(
+                TabLabel::Title,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &empty),
+            resolve_tab_label(
+                TabLabel::Process,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &empty),
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
 
         let process = TerminalMetadata::new(None, Some("vim".into()));
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &process),
+            resolve_tab_label(
+                TabLabel::Process,
+                TabDirectory::Name,
+                "shell",
+                &process,
+                &[]
+            ),
             "vim"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &process),
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
+                "shell",
+                &process,
+                &[]
+            ),
             "vim"
         );
 
@@ -6690,14 +6687,22 @@ mod tests {
             None,
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &directory),
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &directory,
+                &[]
+            ),
             "世界"
         );
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
                 "shell",
-                &directory
+                &directory,
+                &[]
             ),
             "世界"
         );
@@ -6711,81 +6716,173 @@ mod tests {
             Some("cargo".into()),
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::ProcessAndDirectory, "shell", &both),
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
+                "shell",
+                &both,
+                &[]
+            ),
             "cargo · project"
         );
     }
 
     #[test]
-    fn process_metadata_scheduler_idles_and_coalesces_interest_changes() {
-        use huterm_config::TabLabel;
+    fn smart_labels_follow_running_programs_and_idle_directories() {
+        use huterm_config::{TabDirectory, TabLabel};
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
 
-        fn observe(
-            tick: ProcessMetadataTick,
-            scans: &mut usize,
-        ) -> ProcessMetadataTick {
-            if tick == ProcessMetadataTick::Sample {
-                *scans += 1;
-            }
-            tick
-        }
+        let home = ["/Users/me".to_owned()];
+        let project = Some(TerminalDirectory::new(
+            None,
+            "/Users/me/Projects/huterm".into(),
+            true,
+        ));
+        let smart = |metadata: &TerminalMetadata, style| {
+            resolve_tab_label(TabLabel::Smart, style, "shell", metadata, &home)
+        };
+        let idle = TerminalMetadata::new(project.clone(), None)
+            .with_foreground_title(Some("me@host: ~/Projects/huterm".into()));
+        assert_eq!(smart(&idle, TabDirectory::Name), "huterm");
+        assert_eq!(smart(&idle, TabDirectory::Path), "~/Projects/huterm");
+        let running =
+            TerminalMetadata::new(project.clone(), Some("vim".into()));
+        assert_eq!(smart(&running, TabDirectory::Name), "vim");
+        let titled =
+            running.with_foreground_title(Some("notes.txt - VIM".into()));
+        assert_eq!(smart(&titled, TabDirectory::Name), "notes.txt - VIM");
+        assert_eq!(
+            smart(&TerminalMetadata::default(), TabDirectory::Name),
+            "shell"
+        );
+    }
 
-        let mut sampler = ProcessMetadataSampler::default();
-        let mut scans = 0;
+    #[test]
+    fn directory_styles_format_home_relative_and_remote_paths() {
+        use huterm_config::TabDirectory::{Name, Path, Short};
+        use huterm_protocol::TerminalDirectory;
 
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Title, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 0);
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Directory, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 0);
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, false), &mut scans),
-            ProcessMetadataTick::Sample
-        );
-        assert_eq!(
-            observe(
-                sampler.begin_tick(TabLabel::ProcessAndDirectory, false),
-                &mut scans
+        let home = ["/Users/me".to_owned()];
+        for (path, local, name, full, short) in [
+            ("/Users/me", true, "~", "~", "~"),
+            ("/Users/me/", true, "~", "~", "~"),
+            (
+                "/Users/me/Projects",
+                true,
+                "Projects",
+                "~/Projects",
+                "~/Projects",
             ),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 1, "an in-flight scan must coalesce later ticks");
-        sampler.finish_tick();
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Title, false), &mut scans),
-            ProcessMetadataTick::Idle
-        );
-        assert_eq!(scans, 1, "losing interest must not start a scan");
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, false), &mut scans),
-            ProcessMetadataTick::Sample
-        );
-        assert_eq!(scans, 2);
-        sampler.finish_tick();
-        assert_eq!(
-            observe(sampler.begin_tick(TabLabel::Process, true), &mut scans),
-            ProcessMetadataTick::Stop
-        );
-        assert_eq!(scans, 2);
+            (
+                "/Users/me/Projects/huterm",
+                true,
+                "huterm",
+                "~/Projects/huterm",
+                "~/P/huterm",
+            ),
+            (
+                "/Users/me/.t3/worktrees/huterm/t3code",
+                true,
+                "t3code",
+                "~/.t3/worktrees/huterm/t3code",
+                "~/.t/w/h/t3code",
+            ),
+            (
+                "/Users/me/Ünïcode/app",
+                true,
+                "app",
+                "~/Ünïcode/app",
+                "~/Ü/app",
+            ),
+            (
+                "/Users/meadow",
+                true,
+                "meadow",
+                "/Users/meadow",
+                "/U/meadow",
+            ),
+            (
+                "/usr/local/share/man",
+                true,
+                "man",
+                "/usr/local/share/man",
+                "/u/l/s/man",
+            ),
+            ("/", true, "/", "/", "/"),
+            (
+                "/Users/me/src/app",
+                false,
+                "app",
+                "/Users/me/src/app",
+                "/U/m/s/app",
+            ),
+        ] {
+            let directory = TerminalDirectory::new(None, path.into(), local);
+            let label =
+                |style| directory_label(&directory, style, &home).unwrap();
+            assert_eq!(
+                [label(Name), label(Path), label(Short)],
+                [name, full, short],
+                "{path} local={local}"
+            );
+        }
+    }
 
-        let runtime = DesktopRuntime::default();
-        let epoch = runtime.process_metadata_epoch.load(Ordering::Acquire);
-        assert!(process_metadata_batch_is_current(&runtime, epoch));
-        runtime
-            .process_metadata_epoch
-            .fetch_add(1, Ordering::AcqRel);
-        assert!(
-            !process_metadata_batch_is_current(&runtime, epoch),
-            "a pre-reload batch must not publish"
+    #[test]
+    fn tab_labels_show_the_local_home_directory_as_a_tilde() {
+        use huterm_config::{TabDirectory, TabLabel};
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+        let home = ["/Users/me".to_owned()];
+        let at_home = |path: &str, local: bool| {
+            TerminalMetadata::new(
+                Some(TerminalDirectory::new(None, path.into(), local)),
+                Some("vim".into()),
+            )
+        };
+        for path in ["/Users/me", "/Users/me/"] {
+            assert_eq!(
+                resolve_tab_label(
+                    TabLabel::Directory,
+                    TabDirectory::Name,
+                    "shell",
+                    &at_home(path, true),
+                    &home
+                ),
+                "~"
+            );
+        }
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
+                "shell",
+                &at_home("/Users/me", true),
+                &home
+            ),
+            "vim · ~"
         );
-        let current = runtime.process_metadata_epoch.load(Ordering::Acquire);
-        runtime.terminating.store(true, Ordering::Release);
-        assert!(!process_metadata_batch_is_current(&runtime, current));
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &at_home("/Users/me/src", true),
+                &home
+            ),
+            "src"
+        );
+        assert_eq!(
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &at_home("/Users/me", false),
+                &home
+            ),
+            "me",
+            "a remote home is not this machine's"
+        );
     }
 
     #[test]

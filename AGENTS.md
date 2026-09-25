@@ -34,6 +34,25 @@ Keep view destruction and detachment separate from explicit close.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
+- `huterm-procinfo` reports operating-system process facts: Linux through
+  `/proc` with the standard library, macOS through `proc_pidinfo`,
+  `proc_listpids`, and `sysctl`. Keep its unsafe calls in `macos.rs`. Other
+  users' processes, such as `sudo` jobs, expose only short BSD info there,
+  without a TTY or start time; read their start time from the leading `timeval`
+  of `sysctl(KERN_PROC_PID)`, both before and after the short-info read, so a
+  reused PID cannot mix two processes' facts. `proc_listpids` returns 0 for both
+  an empty list and an error, so clear `errno` before each call. The crate
+  depends on no Huterm crate (`mise run architecture` checks this). Runtimes
+  probe their foreground only after Enter or job-control input, output after
+  silence, or a title change, plus a one-second poll while a job, or an empty
+  group left by an exited job, holds the foreground. Idle shells arm no
+  deadline, and the output path never calls `tcgetpgrp`. Never probe at spawn: a
+  child that has not exec'd yet reads as Huterm. An OSC 7 directory or OSC 0/2
+  title report applies only while the foreground group that was active when it
+  arrived keeps the foreground; otherwise publish the probed foreground
+  directory, falling back to the root's. Read the group for a title only when
+  its text changes, its recorded report no longer applies, job-control input
+  arrived since the last probe, or a repeated title's attribution is 250 ms old.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
 - After a nonblocking PTY read returns `WouldBlock`, wait for readability
@@ -41,11 +60,14 @@ Keep view destruction and detachment separate from explicit close.
   its macOS implementation avoids the platform's unreliable PTY `poll(2)` by
   using `select(2)`.
 - Runtime data and priority controls share a coalesced wake; keep control drains
-  bounded so output cannot starve. Writer dequeue signals capacity. Unix PTY
-  readiness waits include cancellation descriptors; signal them and drop the
-  data receiver before joining workers. The child waiter owns the physical
-  child without holding a shared lock across `wait`; bounded teardown uses its
-  cached-status proxy. Never join it before signalling and closing PTY handles.
+  bounded so output cannot starve. Client input, resize, and presentation
+  messages have their own bounded queue, taken ahead of PTY output and
+  alternating with it when both wait, so an output flood cannot refuse input.
+  Writer dequeue signals capacity. Unix PTY readiness waits include
+  cancellation descriptors; signal them and drop the data receiver before
+  joining workers. The child waiter owns the physical child without holding a
+  shared lock across `wait`; bounded teardown uses its cached-status proxy.
+  Never join it before signalling and closing PTY handles.
 
 ## Commands
 
@@ -461,8 +483,9 @@ Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
-assessed background process groups into teardown. For live-shell PTY matching,
-normalize macOS ps ttys000/s000 abbreviations before comparing tty names.
+assessed background process groups into teardown. Match a terminal's processes
+by TTY device number. On macOS, take TTY membership from the kernel's TTY
+filter, because other users' processes do not report their terminal.
 Root-shell exit completes the terminal, matching Ghostty, iTerm2, WezTerm, and
 Alacritty. Reap through portable-pty immediately, even when history is retained;
 do not require an empty OS session or warn about post-exit survivors. Clear

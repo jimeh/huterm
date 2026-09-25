@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
 use crate::events::{EventPublisher, EventReceiver};
+use crate::foreground::{ProbeSchedule, Reports};
 use crate::host_effects::HostEffectSink;
 use crate::input::encode_input;
 use crate::presentation::PresentationUpdate;
@@ -34,6 +35,8 @@ const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct RuntimeClient {
     terminal_id: TerminalId,
     messages: crate::wake::SyncSender<RuntimeMessage>,
+    #[cfg(test)]
+    output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
@@ -273,17 +276,6 @@ impl RuntimeClient {
         Some(receiver)
     }
 
-    pub(crate) fn update_foreground_process(
-        &self,
-        sampled_group: crate::jobs::SampledForegroundGroup,
-        name: Option<String>,
-    ) {
-        let _ = self.controls.send(RuntimeControl::ForegroundProcess {
-            sampled_group,
-            name,
-        });
-    }
-
     #[cfg(test)]
     pub(crate) fn presentation(
         &self,
@@ -459,10 +451,16 @@ impl TerminalRuntime {
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
+        let (output_sender, output_receiver) =
+            mpsc::sync_channel(MESSAGE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
         let wake = Arc::new(crate::wake::Wake::default());
         let message_sender =
             crate::wake::SyncSender::new(message_sender, Arc::clone(&wake));
+        let output_sender =
+            crate::wake::SyncSender::new(output_sender, Arc::clone(&wake));
+        #[cfg(test)]
+        let client_output = output_sender.clone();
         let control_sender = crate::wake::Sender::new(control_sender, wake);
         let (event_sender, event_receiver, activity) =
             EventPublisher::channel();
@@ -476,7 +474,6 @@ impl TerminalRuntime {
         );
         let runtime_host_effect_sink = host_effect_sink.clone();
 
-        let runtime_sender = message_sender.clone();
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
         let runtime_input_bytes = Arc::clone(&queued_input_bytes);
@@ -500,7 +497,8 @@ impl TerminalRuntime {
                         engine,
                         process,
                         message_receiver,
-                        runtime_sender,
+                        output_receiver,
+                        output_sender,
                         control_receiver,
                         runtime_controls,
                         event_sender,
@@ -529,6 +527,8 @@ impl TerminalRuntime {
         let client = RuntimeClient {
             terminal_id,
             messages: message_sender,
+            #[cfg(test)]
+            output: client_output,
             controls: control_sender,
             closing,
             queued_input_bytes,
@@ -616,9 +616,10 @@ pub enum RuntimeError {
     EventReceiverPoisoned,
 }
 
+/// Ordered client requests. Their queue is separate from PTY output so a
+/// flood cannot refuse input.
 #[derive(Debug)]
 enum RuntimeMessage {
-    PtyOutput(Vec<u8>),
     Input {
         input: TerminalInput,
         reserved_bytes: usize,
@@ -634,12 +635,17 @@ enum RuntimeMessage {
 enum RuntimeControl {
     ForegroundJob(async_channel::Sender<bool>),
     JobContext(Sender<crate::jobs::JobContext>),
-    ForegroundProcess {
-        sampled_group: crate::jobs::SampledForegroundGroup,
-        name: Option<String>,
-    },
     #[cfg(test)]
     Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
+    /// Reports whether a foreground probe is armed.
+    #[cfg(test)]
+    ProbeArmed(Sender<bool>),
+    /// Holds the runtime owner until the test releases it.
+    #[cfg(test)]
+    Pause {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    },
     PtyEof,
     Snapshot {
         scroll: Option<ScrollCommand>,
@@ -688,7 +694,8 @@ fn run_terminal(
     mut engine: TerminalEngine,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
-    message_sender: crate::wake::SyncSender<RuntimeMessage>,
+    output: Receiver<Vec<u8>>,
+    output_sender: crate::wake::SyncSender<Vec<u8>>,
     controls: Receiver<RuntimeControl>,
     control_sender: crate::wake::Sender<RuntimeControl>,
     events: EventPublisher,
@@ -743,7 +750,7 @@ fn run_terminal(
         terminal_id,
         reader,
         reader_waiter,
-        message_sender.clone(),
+        output_sender,
         control_sender.clone(),
         Arc::clone(&closing),
     ) {
@@ -788,13 +795,13 @@ fn run_terminal(
             );
             drop(master);
             drop(messages);
+            drop(output);
             reader_cancel.cancel();
             join_worker(reader_join);
             let _ = pty::reap_child(child);
             return Err(error);
         }
     };
-    drop(message_sender);
     let _ = startup.send(Ok(()));
     let _ = events.send(TerminalEvent::Ready(terminal_id));
     let mut invalidated_at = None;
@@ -808,15 +815,14 @@ fn run_terminal(
 
     let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
-    let mut metadata = TerminalMetadata::default();
-    let mut metadata_revision = 0_u64;
+    let mut metadata = PublishedMetadata::default();
     #[cfg(test)]
     let mut pty_eof = false;
     let mut pending_writes = VecDeque::new();
+    let mut output_turn = false;
+    let mut probes = ProbeSchedule::default();
+    let root = child.process_id();
     while !closing.load(Ordering::Acquire) {
-        if !child_exited {
-            pty::record_foreground_group(master.as_ref(), &mut process_groups);
-        }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
             &lifecycle,
@@ -828,6 +834,22 @@ fn run_terminal(
         ) {
             report_failure(&events, terminal_id, error);
             closing.store(true, Ordering::Release);
+        }
+        // Root exit clears the name; the exited terminal is never probed.
+        if child_exited {
+            probes.stop();
+            metadata.publish(None, terminal_id, &events);
+        } else {
+            let now = Instant::now();
+            if probes.due(now) {
+                let probe = crate::foreground::probe(
+                    master.process_group_leader(),
+                    root,
+                );
+                probes.probed(now, probe.job);
+                metadata.reports.probed(probe.group, probe.directory);
+                metadata.publish(probe.name, terminal_id, &events);
+            }
         }
         let mut controls_drained = 0;
         while controls_drained < MESSAGE_CAPACITY {
@@ -933,37 +955,10 @@ fn run_terminal(
                         exited: child_exited,
                         #[cfg(test)]
                         pty_eof,
-                        tty: master.tty_name().map(|name| {
-                            name.to_string_lossy()
-                                .trim_start_matches("/dev/")
-                                .to_owned()
+                        tty: master.tty_name().and_then(|name| {
+                            huterm_procinfo::tty_device(&name)
                         }),
                     });
-                }
-                RuntimeControl::ForegroundProcess {
-                    sampled_group,
-                    name,
-                } => {
-                    let current_group = (!child_exited)
-                        .then(|| master.process_group_leader())
-                        .flatten();
-                    if matches!(
-                        sampled_group,
-                        crate::jobs::SampledForegroundGroup::Unavailable
-                    ) || matches!(
-                        sampled_group,
-                        crate::jobs::SampledForegroundGroup::Observed(sampled)
-                            if sampled == current_group
-                    ) {
-                        publish_metadata(
-                            terminal_id,
-                            metadata.directory().cloned(),
-                            name,
-                            &mut metadata,
-                            &mut metadata_revision,
-                            &events,
-                        );
-                    }
                 }
                 #[cfg(test)]
                 RuntimeControl::Presentation(reply) => {
@@ -972,6 +967,15 @@ fn run_terminal(
                         engine.size(),
                         engine.cell_size(),
                     ));
+                }
+                #[cfg(test)]
+                RuntimeControl::ProbeArmed(reply) => {
+                    let _ = reply.send(probes.deadline().is_some());
+                }
+                #[cfg(test)]
+                RuntimeControl::Pause { entered, release } => {
+                    let _ = entered.send(());
+                    let _ = release.recv();
                 }
                 RuntimeControl::ForegroundJob(reply) => {
                     let busy = !child_exited && {
@@ -1001,7 +1005,7 @@ fn run_terminal(
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
                 if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait();
+                    wake.wait_until(probes.deadline());
                 }
                 continue;
             }
@@ -1015,18 +1019,20 @@ fn run_terminal(
                 continue;
             }
         }
-        let message = match messages.try_recv() {
+        let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
                 if controls_drained < MESSAGE_CAPACITY {
-                    wake.wait();
+                    wake.wait_until(probes.deadline());
                 }
                 continue;
             }
             Err(TryRecvError::Disconnected) => break,
         };
         match message {
-            RuntimeMessage::PtyOutput(bytes) => {
+            NextMessage::Output(bytes) => {
+                let now = Instant::now();
+                probes.output(now);
                 let effects = match engine.process(&bytes) {
                     Ok(effects) => effects,
                     Err(error) => {
@@ -1041,6 +1047,13 @@ fn run_terminal(
                     {
                         continue;
                     }
+                    // Programs can re-send an unchanged title on every
+                    // chunk; only new text can mean a new program.
+                    if let EngineEffect::Title(title) = &effect
+                        && metadata.reports.title_text_changes(title)
+                    {
+                        probes.title(now);
+                    }
                     if handle_effect(
                         effect,
                         terminal_id,
@@ -1048,7 +1061,7 @@ fn run_terminal(
                         &mut pending_writes,
                         &events,
                         &mut metadata,
-                        &mut metadata_revision,
+                        master.as_ref(),
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1069,10 +1082,10 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::Input {
+            NextMessage::Client(RuntimeMessage::Input {
                 input,
                 reserved_bytes,
-            } => {
+            }) => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
                 if child_exited {
                     continue;
@@ -1086,6 +1099,9 @@ fn run_terminal(
                     }
                 };
                 let bytes = encode_input(&input, modes, engine.size());
+                if probes.input(&bytes, Instant::now()) {
+                    metadata.reports.job_control_input();
+                }
                 if !bytes.is_empty()
                     && queue_write(bytes, &writer_sender, &mut pending_writes)
                         == WriterQueueState::Disconnected
@@ -1098,7 +1114,7 @@ fn run_terminal(
                     closing.store(true, Ordering::Release);
                 }
             }
-            RuntimeMessage::Resize { grid, cell } => {
+            NextMessage::Client(RuntimeMessage::Resize { grid, cell }) => {
                 if !child_exited
                     && master.resize(pty::pty_size(grid, cell)).is_err()
                 {
@@ -1123,7 +1139,7 @@ fn run_terminal(
                         &mut pending_writes,
                         &events,
                         &mut metadata,
-                        &mut metadata_revision,
+                        master.as_ref(),
                     ) == WriterQueueState::Disconnected
                     {
                         report_failure(
@@ -1143,7 +1159,7 @@ fn run_terminal(
                     engine.generation(),
                 );
             }
-            RuntimeMessage::Presentation(update) => {
+            NextMessage::Client(RuntimeMessage::Presentation(update)) => {
                 match update.apply(&mut engine) {
                     Ok(true) => publish_invalidation(
                         &events,
@@ -1182,6 +1198,7 @@ fn run_terminal(
     drop(writer_sender);
     drop(master);
     drop(messages);
+    drop(output);
     reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
@@ -1197,11 +1214,53 @@ fn run_terminal(
     }
 }
 
+enum NextMessage {
+    Client(RuntimeMessage),
+    Output(Vec<u8>),
+}
+
+/// Takes client requests ahead of PTY output, so input waits behind at most
+/// one output chunk. When both queues are waiting they alternate, so neither
+/// can starve the other.
+///
+/// Input can overtake output that was read but not yet parsed, and is encoded
+/// against the modes parsed so far. Those modes are never older than what the
+/// client has displayed. Alacritty, kitty, and Ghostty also encode keys against
+/// parsed state while read output waits, and output still in the kernel buffer
+/// is overtaken by every terminal. Programs that must know a mode is active
+/// query it, for example with DECRQM.
+fn next_message(
+    messages: &Receiver<RuntimeMessage>,
+    output: &Receiver<Vec<u8>>,
+    output_turn: &mut bool,
+) -> Result<NextMessage, TryRecvError> {
+    let client = || messages.try_recv().map(NextMessage::Client);
+    let pty = || output.try_recv().map(NextMessage::Output);
+    let first = if *output_turn { pty() } else { client() };
+    let next = match first {
+        Ok(next) => Ok(next),
+        Err(first_error) => {
+            let second = if *output_turn { client() } else { pty() };
+            match second {
+                Ok(next) => Ok(next),
+                Err(TryRecvError::Disconnected)
+                    if first_error == TryRecvError::Disconnected =>
+                {
+                    Err(TryRecvError::Disconnected)
+                }
+                Err(_) => Err(TryRecvError::Empty),
+            }
+        }
+    };
+    *output_turn = matches!(next, Ok(NextMessage::Client(_)));
+    next
+}
+
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
     reader_waiter: pty::ReadinessWaiter,
-    messages: crate::wake::SyncSender<RuntimeMessage>,
+    output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
@@ -1214,8 +1273,7 @@ fn spawn_reader(
                 if let Some(bytes) = pending.take() {
                     // Teardown drops the receiver before joining this worker,
                     // so bounded backpressure also has an explicit cancellation path.
-                    if messages.send(RuntimeMessage::PtyOutput(bytes)).is_err()
-                    {
+                    if output.send(bytes).is_err() {
                         break;
                     }
                     continue;
@@ -1393,27 +1451,39 @@ fn handle_effect(
     writer: &async_channel::Sender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
     events: &EventPublisher,
-    metadata: &mut TerminalMetadata,
-    metadata_revision: &mut u64,
+    metadata: &mut PublishedMetadata,
+    master: &dyn portable_pty::MasterPty,
 ) -> WriterQueueState {
     match effect {
         EngineEffect::PtyWrite(bytes) => {
             queue_write(bytes, writer, pending_writes)
         }
         EngineEffect::Title(title) => {
+            // Titles can arrive on every output chunk; read the foreground
+            // group only when the text or its attribution may have changed.
+            let now = Instant::now();
+            if metadata.reports.title_needs_group(&title, now) {
+                metadata.reports.report_title(
+                    title.clone(),
+                    master.process_group_leader(),
+                    now,
+                );
+                let process =
+                    metadata.current.foreground_process().map(str::to_owned);
+                metadata.publish(process, terminal_id, events);
+            }
             let _ =
                 events.send(TerminalEvent::TitleChanged { terminal_id, title });
             WriterQueueState::Drained
         }
         EngineEffect::Directory(directory) => {
-            publish_metadata(
-                terminal_id,
-                directory,
-                metadata.foreground_process().map(str::to_owned),
-                metadata,
-                metadata_revision,
-                events,
-            );
+            // The report belongs to whichever group holds the foreground now.
+            metadata
+                .reports
+                .report_directory(directory, master.process_group_leader());
+            let process =
+                metadata.current.foreground_process().map(str::to_owned);
+            metadata.publish(process, terminal_id, events);
             WriterQueueState::Drained
         }
         EngineEffect::Bell => {
@@ -1423,25 +1493,37 @@ fn handle_effect(
     }
 }
 
-fn publish_metadata(
-    terminal_id: TerminalId,
-    directory: Option<huterm_protocol::TerminalDirectory>,
-    foreground_process: Option<String>,
-    current: &mut TerminalMetadata,
-    revision: &mut u64,
-    events: &EventPublisher,
-) {
-    let replacement = TerminalMetadata::new(directory, foreground_process);
-    if *current == replacement {
-        return;
+/// Metadata last published to clients, and the reports behind it.
+#[derive(Debug, Default)]
+struct PublishedMetadata {
+    current: TerminalMetadata,
+    revision: u64,
+    reports: Reports,
+}
+
+impl PublishedMetadata {
+    /// Publishes the effective directory and `process` unless both are
+    /// unchanged.
+    fn publish(
+        &mut self,
+        process: Option<String>,
+        terminal_id: TerminalId,
+        events: &EventPublisher,
+    ) {
+        let replacement =
+            TerminalMetadata::new(self.reports.directory(), process)
+                .with_foreground_title(self.reports.title());
+        if self.current == replacement {
+            return;
+        }
+        self.current = replacement;
+        self.revision = self.revision.saturating_add(1);
+        let _ = events.send(TerminalEvent::MetadataChanged {
+            terminal_id,
+            revision: self.revision,
+            metadata: self.current.clone(),
+        });
     }
-    *current = replacement;
-    *revision = revision.saturating_add(1);
-    let _ = events.send(TerminalEvent::MetadataChanged {
-        terminal_id,
-        revision: *revision,
-        metadata: current.clone(),
-    });
 }
 
 fn queue_write(
@@ -1680,35 +1762,240 @@ mod tests {
         runtime.shutdown().unwrap();
     }
 
+    /// Waits until the published name matches. `current` carries the last
+    /// published name between calls, so waiting for `None` needs a clear.
+    fn wait_for_foreground(
+        client: &RuntimeClient,
+        current: &mut Option<String>,
+        expected: Option<&str>,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    *current = metadata.foreground_process().map(str::to_owned);
+                }
+            }
+            if current.as_deref() == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "foreground process was {current:?}, expected {expected:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Waits until the published directory matches. `current` carries the
+    /// last published directory between calls.
+    fn wait_for_directory(
+        client: &RuntimeClient,
+        current: &mut Option<huterm_protocol::TerminalDirectory>,
+        expected: impl Fn(&huterm_protocol::TerminalDirectory) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    *current = metadata.directory().cloned();
+                }
+            }
+            if current.as_ref().is_some_and(&expected) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "directory was {current:?}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn same_path(
+        expected: &std::path::Path,
+    ) -> impl Fn(&huterm_protocol::TerminalDirectory) -> bool {
+        let expected = expected.canonicalize().unwrap();
+        move |directory| {
+            directory.is_local()
+                && std::path::Path::new(directory.path())
+                    .canonicalize()
+                    .is_ok_and(|path| path == expected)
+        }
+    }
+
     #[test]
-    fn stale_foreground_samples_are_rejected_before_the_next_ordered_update() {
+    fn process_directories_follow_cd_and_running_jobs_without_osc7() {
+        let job_directory = std::env::temp_dir()
+            .join(format!("huterm-job-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&job_directory).unwrap();
         let runtime = TerminalRuntime::spawn(
-            TerminalId::new(94),
-            &command("printf READY; read line"),
+            TerminalId::new(98),
+            &command(&format!(
+                "set -m; printf READY; read line; cd /; printf MOVED; read line; (cd '{}' && exec head -n 1 >/dev/null); printf DONE; read line",
+                job_directory.display()
+            )),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(std::path::Path::new("/")),
+        );
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(&client, &mut current, same_path(&job_directory));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(std::path::Path::new("/")),
+        );
+        runtime.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(job_directory);
+    }
+
+    #[test]
+    fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(99),
+            &command(
+                &format!(
+                    "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line",
+                    foreground_reporter("printf '\\033]7;file://remote.example/srv\\007'")
+                ),
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        // The shell's report wins over its actual directory at the prompt.
+        wait_for_directory(&client, &mut current, |directory| {
+            directory.path() == "/reported"
+        });
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_directory(&client, &mut current, |directory| {
+            directory.path() == "/srv" && !directory.is_local()
+        });
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        // The job's report expired with it; the shell's process directory
+        // applies until the shell reports again.
+        wait_for_directory(
+            &client,
+            &mut current,
+            same_path(&std::env::current_dir().unwrap()),
+        );
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn job_titles_apply_only_while_the_job_holds_the_foreground() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(100),
+            &command(
+                &format!(
+                    "set -m; printf '\\033]2;shell title\\007READY'; read line; {}; printf DONE; read line",
+                    foreground_reporter("printf '\\033]2;job title\\007'")
+                ),
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut title: Option<String> = None;
+        let mut wait_for = |expected: Option<&str>| loop {
+            while let Some(event) = client.try_recv_event().unwrap() {
+                if let TerminalEvent::MetadataChanged { metadata, .. } = event {
+                    title = metadata.foreground_title().map(str::to_owned);
+                }
+            }
+            if title.as_deref() == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "title was {title:?}");
+            thread::sleep(Duration::from_millis(10));
+        };
+        wait_for(Some("shell title"));
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for(Some("job title"));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        // The job's title leaves with it, even though the terminal title
+        // still reads "job title".
+        wait_for(None);
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn foreground_jobs_are_named_while_running_and_cleared_on_return() {
+        // Job control gives the quiet `head` its own foreground group. It
+        // exits normally after one line; dash ends a script on SIGINT.
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(96),
+            &command(
+                "set -m; printf READY; read line; head -n 1 >/dev/null; printf DONE; read line",
+            ),
+        )
+        .unwrap();
+        let client = runtime.client();
+        let mut current = None;
+        wait_for_text(&client, "READY");
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_foreground(&client, &mut current, Some("head"));
+        client
+            .send_input(TerminalInput::Text("stop\n".into()))
+            .unwrap();
+        wait_for_text(&client, "DONE");
+        wait_for_foreground(&client, &mut current, None);
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn a_root_shell_replaced_by_exec_is_named_after_silent_input() {
+        // Without echo, only the input trigger can notice the exec.
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(97),
+            &command("stty -echo; printf READY; read line; exec sleep 30"),
         )
         .unwrap();
         let client = runtime.client();
         wait_for_text(&client, "READY");
-        client.update_foreground_process(
-            crate::jobs::SampledForegroundGroup::Observed(Some(-1)),
-            Some("stale".into()),
-        );
-        client.update_foreground_process(
-            crate::jobs::SampledForegroundGroup::Unavailable,
-            Some("current".into()),
-        );
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let event = loop {
-            if let Some(TerminalEvent::MetadataChanged { metadata, .. }) =
-                client.try_recv_event().unwrap()
-            {
-                break metadata;
+        // Let the probe armed by READY's output run, so only input remains.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (reply, armed) = mpsc::channel();
+            client
+                .controls
+                .send(RuntimeControl::ProbeArmed(reply))
+                .unwrap();
+            if !armed.recv_timeout(Duration::from_secs(2)).unwrap() {
+                break;
             }
-            assert!(Instant::now() < deadline, "metadata update timed out");
-            thread::yield_now();
-        };
-        assert_eq!(event.foreground_process(), Some("current"));
-        assert!(client.try_recv_event().unwrap().is_none());
+            assert!(Instant::now() < deadline, "probe stayed armed");
+            thread::sleep(Duration::from_millis(10));
+        }
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_for_foreground(&client, &mut None, Some("sleep"));
         runtime.shutdown().unwrap();
     }
 
@@ -1939,10 +2226,7 @@ mod tests {
                 "late revoked PTY write".into(),
             ))
             .unwrap();
-        client
-            .messages
-            .send(RuntimeMessage::PtyOutput(b"TAIL\x1b[6n".to_vec()))
-            .unwrap();
+        client.output.send(b"TAIL\x1b[6n".to_vec()).unwrap();
         let snapshot = wait_for_text(&client, "FINALTAIL");
         assert!(snapshot.history_size > 0);
         let history = client
@@ -2210,6 +2494,18 @@ mod tests {
             "exited child must not need confirmation"
         );
         runtime.shutdown().unwrap();
+    }
+
+    /// A job that runs `report` once it holds the foreground, then waits for
+    /// one line. The shell may hand over the terminal after the job starts:
+    /// macOS `/bin/sh` (bash 3.2) does, so a report sent sooner is credited to
+    /// the shell's group. Under heavy load that shell can also leave the job
+    /// in the shell's group while the terminal names the job's PID as its
+    /// foreground group; the job then never reports and the test times out.
+    fn foreground_reporter(report: &str) -> String {
+        format!(
+            "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""
+        )
     }
 
     fn command(script: &str) -> TerminalCommand {
@@ -2562,6 +2858,89 @@ mod tests {
         assert!(
             shutdown_started.elapsed() < Duration::from_secs(3),
             "priority close should bypass saturated data traffic"
+        );
+    }
+
+    #[test]
+    fn client_input_is_admitted_and_handled_ahead_of_queued_output() {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(17),
+            &command(
+                "stty -echo; printf READY; IFS= read -r line; printf 'GOT:%s|' \"$line\" | tr '\\033' E",
+            ),
+        )
+        .expect("runtime should start");
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+
+        let (entered, paused) = mpsc::channel();
+        let (resume, release) = mpsc::channel();
+        client
+            .controls
+            .send(RuntimeControl::Pause { entered, release })
+            .unwrap();
+        paused
+            .recv_timeout(Duration::from_secs(2))
+            .expect("runtime should pause");
+        // A cursor-position query heads the backlog. Its reply reaches the
+        // child's line before the input only if queued output is parsed first.
+        let mut backlog = 0;
+        while client
+            .output
+            .try_send(
+                if backlog == 0 { &b"\x1b[6n"[..] } else { b"." }.to_vec(),
+            )
+            .is_ok()
+        {
+            backlog += 1;
+        }
+        assert!(backlog > 0, "the paused runtime should queue output");
+
+        let admitted = client.send_input(TerminalInput::Text("hello\n".into()));
+        resume.send(()).unwrap();
+        admitted.expect("a full output queue should not refuse client input");
+        wait_for_text(&client, "GOT:hello|");
+        runtime.shutdown().expect("runtime should stop cleanly");
+    }
+
+    #[test]
+    fn queued_client_messages_alternate_with_output_until_both_disconnect() {
+        let (messages, client) = mpsc::sync_channel(4);
+        let (output, pty) = mpsc::sync_channel(4);
+        for _ in 0..2 {
+            messages
+                .send(RuntimeMessage::Resize {
+                    grid: GridSize::clamped(1, 1),
+                    cell: CellSize {
+                        width: 1,
+                        height: 1,
+                    },
+                })
+                .unwrap();
+        }
+        for byte in *b"abc" {
+            output.send(vec![byte]).unwrap();
+        }
+        let mut output_turn = false;
+        let mut order = String::new();
+        while let Ok(next) = next_message(&client, &pty, &mut output_turn) {
+            order.push(match next {
+                NextMessage::Client(_) => 'C',
+                NextMessage::Output(bytes) => char::from(bytes[0]),
+            });
+        }
+        assert_eq!(order, "CaCbc");
+
+        drop(output);
+        assert_eq!(
+            next_message(&client, &pty, &mut output_turn).err(),
+            Some(TryRecvError::Empty),
+            "clients can still send after the reader stops"
+        );
+        drop(messages);
+        assert_eq!(
+            next_message(&client, &pty, &mut output_turn).err(),
+            Some(TryRecvError::Disconnected)
         );
     }
 

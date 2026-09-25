@@ -1,4 +1,5 @@
-//! Coalesced wakeups for the runtime's separately bounded data and control queues.
+//! Coalesced wakeups for the runtime's separately bounded client, output,
+//! and control queues.
 
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
@@ -15,6 +16,26 @@ impl Wake {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.ready.notify_one();
+    }
+
+    /// Waits for a notification, or until `deadline` when one is given.
+    pub(crate) fn wait_until(&self, deadline: Option<std::time::Instant>) {
+        let Some(deadline) = deadline else {
+            self.wait();
+            return;
+        };
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let timeout =
+            deadline.saturating_duration_since(std::time::Instant::now());
+        let mut pending = self
+            .ready
+            .wait_timeout_while(pending, timeout, |pending| !*pending)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
+        *pending = false;
     }
 
     pub(crate) fn wait(&self) {

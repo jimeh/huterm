@@ -229,7 +229,8 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 
 [tabs]
-label = "title" # title, process, directory, or process_and_directory
+label = "smart" # smart, title, process, directory, or process_and_directory
+directory = "name" # name, path, or short
 position = "top" # top, bottom, left, or right
 always_show = false
 auto_hide_in_fullscreen = false
@@ -261,18 +262,34 @@ color the tab bar through their tab chrome keys. `width = "fit"` (the default)
 sizes top and bottom tabs to their titles between `min_width` and `max_width`
 logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
 
-Huterm accepts bounded OSC 7 directory reports and uses them as current runtime
-metadata. `label = "directory"` shows the final path component,
-`label = "process"` uses a best-effort local foreground-process name, and
+Huterm tracks each terminal's foreground program and working directory. The
+directory comes from the foreground program, or from the shell when another
+user owns that program. A bounded OSC 7 report overrides it while the program
+that sent the report still holds the foreground: a shell's report applies at
+its prompt, and a remote shell's report under `ssh` stops applying when `ssh`
+exits. Huterm checks after input, after output that follows a pause, after a
+title change, and once a second while a program runs; idle shells cost
+nothing.
+
+`label = "smart"` (the default) shows a running program's own title, or its
+name when it has not set one, and the directory at an idle shell. A program's
+title stops applying when the program exits. `label = "title"` shows the title
+set by the shell or program, `label = "process"` names the foreground program,
+or the script it runs, `label = "directory"` shows the directory, and
 `label = "process_and_directory"` combines both when available. Each mode
 falls back to the current terminal title and launched program. A custom tab
-name always wins. Process sampling is disabled unless a process label mode is
-active.
+name always wins, and the palette, drag previews, and close prompts use the
+same label as the tab bar.
 
-New tabs inherit a reported directory by default when OSC 7 identifies it as
-local and it is still an accessible directory. Remote, malformed, deleted, or
-inaccessible paths use the normal platform launch directory instead. Visual
-bells briefly flash the active terminal and mark an inactive tab until viewed:
+`directory = "name"` (the default) shows the last path component, `"path"`
+the full path, and `"short"` the path with parent components shortened to one
+character, as in `~/P/huterm`. The local home directory always reads as `~`,
+and paths under it start with `~/`; remote paths stay absolute.
+
+New tabs inherit the current directory by default when it is local and still
+an accessible directory. Remote, malformed, deleted, or inaccessible paths use
+the normal platform launch directory instead. Visual bells briefly flash the
+active terminal and mark an inactive tab until viewed:
 
 ```toml
 [terminal]

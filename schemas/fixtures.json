@@ -600,8 +600,26 @@
     "theme": false
   },
   {
+    "name": "tab label smart",
+    "toml": "[tabs]\nlabel = \"smart\"",
+    "valid": true,
+    "theme": false
+  },
+  {
     "name": "tab label unknown",
     "toml": "[tabs]\nlabel = \"command\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "tab directory short",
+    "toml": "[tabs]\ndirectory = \"short\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "tab directory unknown",
+    "toml": "[tabs]\ndirectory = \"full\"",
     "valid": false,
     "theme": false
   },

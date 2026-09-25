@@ -60,7 +60,7 @@ export function validateDraftRelease(value: unknown, inputs: ReleaseInputs, expe
 export function validateWorkspaceVersions(value: unknown, expectedVersion: string): void {
   const metadata = objectValue(value, "Cargo metadata");
   if (!Array.isArray(metadata.packages)) throw new Error("Cargo metadata is missing packages");
-  for (const name of ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-protocol"]) {
+  for (const name of ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol"]) {
     const matching = metadata.packages.filter(item => objectValue(item, "Cargo package").name === name);
     if (matching.length !== 1) throw new Error(`expected one Cargo package named ${name}, found ${matching.length}`);
     if (objectValue(matching[0], name).version !== expectedVersion) throw new Error(`${name} version does not match ${expectedVersion}`);

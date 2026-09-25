@@ -390,6 +390,37 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    /// Waits until the root shell holds the terminal's foreground again.
+    /// Some shells, such as macOS `/bin/sh`, can print after a job ends
+    /// before they reclaim the terminal.
+    fn shell_foreground(client: &RuntimeClient) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let waker = std::task::Waker::noop();
+        let mut context = std::task::Context::from_waker(waker);
+        loop {
+            let mut query = std::pin::pin!(client.has_foreground_job());
+            let busy = loop {
+                if let std::task::Poll::Ready(busy) =
+                    std::future::Future::poll(query.as_mut(), &mut context)
+                {
+                    break busy.unwrap();
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "foreground query timed out"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            if !busy {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell never reclaimed the terminal"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     #[test]
     fn attachment_detach_and_retarget_preserve_sessions_and_validate_atomically()
      {
@@ -582,6 +613,54 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn orphans_holding_the_terminal_need_consent_and_are_cleaned_up() {
+        // Job control puts the inner shell in its own group. It exits,
+        // leaving `sleep` outside the shell's tree and the foreground group;
+        // only its controlling terminal ties it to this tab.
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let opened = mux
+            .open_tab(
+                workspace,
+                &command("set -m; printf IDLE; read value; sh -c 'sleep 30 &'; printf BUSY; read value"),
+            )
+            .unwrap();
+        ready(&opened.client, "IDLE");
+        opened
+            .client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        ready(&opened.client, "BUSY");
+        shell_foreground(&opened.client);
+        let busy = mux
+            .prepare_close(CloseRequest::Application)
+            .unwrap()
+            .check_jobs();
+        let orphan = busy
+            .jobs()
+            .iter()
+            .find_map(|state| match state {
+                JobState::Running(jobs) => {
+                    jobs.iter().find(|job| job.identity.ends_with(" sleep"))
+                }
+                _ => None,
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("orphan missing: {:?}", busy.jobs()));
+        assert!(!orphan.foreground);
+        mux.commit_close(&busy, &busy.recheck(), true).unwrap();
+        assert_eq!(
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(i32::try_from(orphan.pid).unwrap()),
+                None
+            ),
+            Err(nix::errno::Errno::ESRCH),
+            "orphan {} survived close",
+            orphan.pid
+        );
     }
     #[test]
     fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {

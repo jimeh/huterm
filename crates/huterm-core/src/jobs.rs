@@ -3,14 +3,6 @@ mod lifecycle;
 pub(crate) use lifecycle::JobLifecycle;
 
 use std::collections::BTreeSet;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
-
-use crate::RuntimeClient;
-
-const PROCESS_NAME_BYTE_LIMIT: usize = 256;
 
 #[derive(Clone, Debug)]
 pub(crate) struct JobContext {
@@ -21,7 +13,8 @@ pub(crate) struct JobContext {
     pub exited: bool,
     #[cfg(test)]
     pub pty_eof: bool,
-    pub tty: Option<String>,
+    /// Device number of the terminal's PTY.
+    pub tty: Option<u64>,
 }
 
 /// Observable process evidence for a terminal close assessment.
@@ -86,103 +79,72 @@ struct Process {
     parent: u32,
     group: i32,
     zombie: bool,
-    tty: String,
+    /// Whether the terminal being assessed is this process's terminal.
+    on_tty: bool,
     command: String,
     started: String,
     identity: String,
 }
 
-// This runs on the assessment worker, never the terminal parser or UI thread.
-// Bound both command runtime and output. ps supports these columns on macOS/Linux.
-fn process_table() -> Option<Vec<Process>> {
-    let mut child = Command::new("/bin/ps")
-        .args(["-axo", "pid=,ppid=,pgid=,stat=,tty=,lstart=,comm="])
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let scanner_pid = child.id();
-    let stdout = child.stdout.take()?;
-    let Ok(reader) = std::thread::Builder::new()
-        .name("huterm-job-scan".into())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            stdout
-                .take(4 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            (bytes.len() <= 4 * 1024 * 1024).then_some(bytes)
+/// Converts one table into evidence for one terminal.
+fn evidence(
+    table: &huterm_procinfo::ProcessTable,
+    tty: Option<u64>,
+    shell: Option<u32>,
+) -> Vec<Process> {
+    table
+        .processes
+        .iter()
+        .filter_map(|process| {
+            let started = process.started.map_or_else(
+                || "unknown".to_owned(),
+                |started| started.to_string(),
+            );
+            Some(Process {
+                pid: process.pid,
+                parent: process.parent,
+                group: i32::try_from(process.group).ok()?,
+                zombie: process.zombie,
+                on_tty: tty.is_some_and(|tty| table.on_tty(tty, process.pid)),
+                identity: format!("{started} {}", process.name),
+                command: if Some(process.pid) == shell
+                    && !is_shell(&process.name)
+                {
+                    root_command(
+                        &process.name,
+                        huterm_procinfo::arguments(process.pid).as_deref(),
+                    )
+                } else {
+                    process.name.clone()
+                },
+                started,
+            })
         })
-    else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    let bytes = reader.join().ok()??;
-    if !success {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    // The owned ps observer has already been waited and is not a terminal job.
-    text.lines()
-        .map(parse_process)
-        .collect::<Option<Vec<_>>>()
-        .map(|table| {
-            table
-                .into_iter()
-                .filter(|process| process.pid != scanner_pid)
-                .collect()
-        })
+        .collect()
 }
 
-fn parse_process(line: &str) -> Option<Process> {
-    let mut fields = line.split_whitespace();
-    let pid = fields.next()?.parse().ok()?;
-    let parent = fields.next()?.parse().ok()?;
-    let group = fields.next()?.parse().ok()?;
-    let zombie = fields.next()?.contains('Z');
-    let tty = fields.next()?.to_owned();
-    let start = fields.by_ref().take(5).collect::<Vec<_>>().join(" ");
-    let command = fields.collect::<Vec<_>>().join(" ");
-    if start.is_empty() || command.is_empty() {
-        return None;
+/// Names a root whose kernel name is not a shell. A shell running a script as
+/// the root stays a shell: Linux names a directly executed `#!/bin/sh` script
+/// after the script, but argv[0] still names its interpreter. A script shell
+/// such as xonsh runs under its interpreter and is named by its script.
+fn root_command(kernel: &str, arguments: Option<&[String]>) -> String {
+    let Some(arguments) = arguments else {
+        return kernel.to_owned();
+    };
+    match arguments.first() {
+        Some(program) if is_shell(program) => program.clone(),
+        _ => huterm_procinfo::display_name(arguments)
+            .unwrap_or_else(|| kernel.to_owned()),
     }
-    Some(Process {
-        pid,
-        parent,
-        group,
-        zombie,
-        tty,
-        identity: format!("{start} {command}"),
-        started: start,
-        command,
-    })
 }
 
 fn is_shell(command: &str) -> bool {
-    matches!(
+    huterm_procinfo::is_shell(
         command
             .rsplit('/')
             .next()
             .unwrap_or(command)
             .trim_start_matches('-'),
-        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh"
     )
 }
 
@@ -190,146 +152,32 @@ pub(crate) fn inspect_all(contexts: Vec<Option<JobContext>>) -> Vec<JobState> {
     if contexts.is_empty() {
         return Vec::new();
     }
+    // This runs on the assessment worker, never the terminal parser or UI
+    // thread. On Linux it scans /proc once for every terminal.
+    let ttys: Vec<u64> = contexts
+        .iter()
+        .flatten()
+        .filter_map(|context| context.tty)
+        .collect();
     let table = contexts
         .iter()
         .flatten()
         .any(|context| context.lifecycle.running())
-        .then(process_table)
+        .then(|| huterm_procinfo::process_table(&ttys))
         .flatten();
     contexts
         .into_iter()
-        .map(|context| inspect(context, table.as_deref()))
-        .collect()
-}
-
-/// A sampled foreground-process batch awaiting host authorization to publish.
-#[must_use = "a sampled batch must be published or deliberately discarded"]
-#[derive(Debug)]
-pub struct ForegroundProcessBatch {
-    updates: Vec<(RuntimeClient, SampledForegroundGroup, Option<String>)>,
-}
-
-impl ForegroundProcessBatch {
-    /// Publishes the sampled values through each runtime's ordered control queue.
-    pub fn publish(self) {
-        for (client, sampled_group, name) in self.updates {
-            client.update_foreground_process(sampled_group, name);
-        }
-    }
-}
-
-/// Samples foreground-process display names for a batch of terminal runtimes.
-///
-/// Every runtime context is requested before waiting. The batch then uses one
-/// process-table read. The host may discard the returned batch when the
-/// configuration generation changes before sampling completes.
-pub fn sample_foreground_processes(
-    clients: &[RuntimeClient],
-) -> ForegroundProcessBatch {
-    if clients.is_empty() {
-        return ForegroundProcessBatch {
-            updates: Vec::new(),
-        };
-    }
-    let requests: Vec<Option<Receiver<JobContext>>> = clients
-        .iter()
-        .map(RuntimeClient::request_job_context)
-        .collect();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let contexts: Vec<Option<JobContext>> = requests
-        .into_iter()
-        .map(|request| {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            request?.recv_timeout(remaining).ok()
-        })
-        .collect();
-    let samples = foreground_samples(&contexts, process_table);
-    ForegroundProcessBatch {
-        updates: clients
-            .iter()
-            .cloned()
-            .zip(samples)
-            .map(|(client, (sampled_group, name))| {
-                (client, sampled_group, name)
-            })
-            .collect(),
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SampledForegroundGroup {
-    Unavailable,
-    Observed(Option<i32>),
-}
-
-fn foreground_samples(
-    contexts: &[Option<JobContext>],
-    read_table: impl FnOnce() -> Option<Vec<Process>>,
-) -> Vec<(SampledForegroundGroup, Option<String>)> {
-    let table = contexts
-        .iter()
-        .flatten()
-        .any(|context| context.lifecycle.running())
-        .then(read_table)
-        .flatten();
-    contexts
-        .iter()
         .map(|context| {
-            (
-                context
+            let evidence =
+                table
                     .as_ref()
-                    .map_or(SampledForegroundGroup::Unavailable, |value| {
-                        SampledForegroundGroup::Observed(value.foreground)
-                    }),
-                foreground_process(context.as_ref(), table.as_deref()),
-            )
+                    .zip(context.as_ref())
+                    .map(|(table, context)| {
+                        evidence(table, context.tty, context.shell)
+                    });
+            inspect(context, evidence.as_deref())
         })
         .collect()
-}
-
-fn foreground_process(
-    context: Option<&JobContext>,
-    table: Option<&[Process]>,
-) -> Option<String> {
-    let context = context?;
-    if !context.lifecycle.running() {
-        return None;
-    }
-    let shell = context.shell?;
-    let foreground = context.foreground?;
-    let table = table?;
-    let mut candidates: Vec<_> = table
-        .iter()
-        .filter(|process| !process.zombie && process.group == foreground)
-        .collect();
-    candidates.sort_by_key(|process| {
-        (
-            i32::try_from(process.pid).ok() != Some(foreground),
-            process.pid,
-        )
-    });
-    let selected = candidates.first()?;
-    if candidates.len() == 1
-        && selected.pid == shell
-        && is_shell(&selected.command)
-    {
-        return None;
-    }
-    let name = selected
-        .command
-        .rsplit('/')
-        .next()
-        .unwrap_or(&selected.command)
-        .trim_start_matches('-');
-    if name.is_empty() {
-        return None;
-    }
-    let end = name
-        .char_indices()
-        .map(|(index, character)| index + character.len_utf8())
-        .take_while(|end| *end <= PROCESS_NAME_BYTE_LIMIT)
-        .last()?;
-    Some(name[..end].to_owned())
 }
 
 fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
@@ -346,16 +194,11 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
         let Some(table) = table else {
             return JobState::Unknown;
         };
-        classify(table, shell, foreground, context.tty.as_deref())
+        classify(table, shell, foreground)
     })
 }
 
-fn classify(
-    table: &[Process],
-    shell: u32,
-    foreground: i32,
-    tty: Option<&str>,
-) -> JobState {
+fn classify(table: &[Process], shell: u32, foreground: i32) -> JobState {
     if !table.iter().any(|p| p.pid == shell) {
         return JobState::Unknown;
     }
@@ -377,10 +220,7 @@ fn classify(
             !p.zombie
                 && (descendants.contains(&p.pid)
                     || p.group == foreground
-                    || tty.is_some_and(|tty| {
-                        tty.trim_start_matches("tty")
-                            == p.tty.trim_start_matches("tty")
-                    }))
+                    || p.on_tty)
         })
         .filter(|p| p.pid != shell || !is_shell(&p.command))
         .map(|p| JobProcess {
@@ -409,14 +249,14 @@ mod tests {
         pid: u32,
         parent: u32,
         group: i32,
-        tty: &str,
+        on_tty: bool,
         command: &str,
     ) -> Process {
         Process {
             pid,
             parent,
             group,
-            tty: tty.into(),
+            on_tty,
             zombie: false,
             command: command.into(),
             started: "start".into(),
@@ -424,28 +264,28 @@ mod tests {
         }
     }
     #[test]
-    fn live_shell_matches_macos_tty_abbreviation() {
+    fn orphans_on_the_terminal_are_jobs_but_other_terminals_are_not() {
+        // Both left the shell's tree and group; only one holds its terminal.
         let table = vec![
-            process(10, 1, 10, "s000", "sh"),
-            process(12, 1, 12, "s000", "sleep"),
+            process(10, 1, 10, true, "sh"),
+            process(12, 1, 12, true, "sleep"),
+            process(13, 1, 13, false, "sleep"),
         ];
-        let JobState::Running(jobs) = classify(&table, 10, 10, Some("ttys000"))
-        else {
+        let JobState::Running(jobs) = classify(&table, 10, 10) else {
             panic!("missing tty job");
         };
         assert_eq!(jobs.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![12]);
     }
     #[test]
     fn idle_foreground_background_and_unknown_evidence_are_distinct() {
-        let shell = process(10, 1, 10, "pts/0", "/bin/sh");
-        assert_eq!(classify(&[shell], 10, 10, Some("pts/0")), JobState::Idle);
+        let shell = process(10, 1, 10, true, "/bin/sh");
+        assert_eq!(classify(&[shell], 10, 10), JobState::Idle);
         let table = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(11, 10, 11, "pts/0", "vim"),
-            process(12, 10, 12, "pts/0", "sleep"),
+            process(10, 1, 10, true, "sh"),
+            process(11, 10, 11, true, "vim"),
+            process(12, 10, 12, true, "sleep"),
         ];
-        let JobState::Running(jobs) = classify(&table, 10, 11, Some("pts/0"))
-        else {
+        let JobState::Running(jobs) = classify(&table, 10, 11) else {
             panic!("missing jobs");
         };
         assert!(jobs[0].foreground);
@@ -465,130 +305,33 @@ mod tests {
             ),
             JobState::Unknown
         );
-        assert_eq!(classify(&[], 10, 0, Some("pts/0")), JobState::Unknown);
+        assert_eq!(classify(&[], 10, 0), JobState::Unknown);
     }
 
-    #[test]
-    fn foreground_labels_prefer_live_leader_then_lowest_pid() {
-        let lifecycle = std::sync::Arc::new(JobLifecycle::default());
-        let context = JobContext {
-            lifecycle,
-            shell: Some(10),
-            foreground: Some(20),
-            exited: false,
-            pty_eof: false,
-            tty: Some("pts/0".into()),
-        };
-        let table = vec![
-            process(10, 1, 10, "pts/0", "-zsh"),
-            process(20, 10, 20, "pts/0", "/usr/bin/vim"),
-            process(21, 20, 20, "pts/0", "helper"),
-        ];
-        assert_eq!(
-            foreground_process(Some(&context), Some(&table)).as_deref(),
-            Some("vim")
-        );
-        let without_leader = &table[..1]
-            .iter()
-            .chain(&table[2..])
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(
-            foreground_process(Some(&context), Some(without_leader)).as_deref(),
-            Some("helper")
-        );
-    }
-
-    #[test]
-    fn foreground_labels_hide_idle_shells_zombies_and_missing_evidence() {
-        let context = JobContext {
-            lifecycle: std::sync::Arc::new(JobLifecycle::default()),
-            shell: Some(10),
-            foreground: Some(10),
-            exited: false,
-            pty_eof: false,
-            tty: Some("pts/0".into()),
-        };
-        let shell = process(10, 1, 10, "pts/0", "/bin/-zsh");
-        assert_eq!(foreground_process(Some(&context), Some(&[shell])), None);
-        let mut zombie = process(11, 10, 10, "pts/0", "sleep");
-        zombie.zombie = true;
-        assert_eq!(foreground_process(Some(&context), Some(&[zombie])), None);
-        assert_eq!(foreground_process(Some(&context), None), None);
-    }
-
-    #[test]
-    fn foreground_batch_reads_one_table_for_multiple_live_contexts_and_none_for_retired()
-     {
-        let context = || JobContext {
-            lifecycle: std::sync::Arc::new(JobLifecycle::default()),
-            shell: Some(10),
-            foreground: Some(11),
-            exited: false,
-            pty_eof: false,
-            tty: Some("pts/0".into()),
-        };
-        let mut scans = 0;
-        let samples =
-            foreground_samples(&[Some(context()), Some(context())], || {
-                scans += 1;
-                Some(vec![process(11, 10, 11, "pts/0", "cargo")])
-            });
-        assert_eq!(scans, 1);
-        assert_eq!(
-            samples,
-            [
-                (
-                    SampledForegroundGroup::Observed(Some(11)),
-                    Some("cargo".into())
-                ),
-                (
-                    SampledForegroundGroup::Observed(Some(11)),
-                    Some("cargo".into())
-                )
-            ]
-        );
-
-        let retired = context();
-        retired.lifecycle.retire();
-        let samples = foreground_samples(&[Some(retired)], || {
-            panic!("retired contexts must not scan")
-        });
-        assert_eq!(
-            samples,
-            [(SampledForegroundGroup::Observed(Some(11)), None)]
-        );
-    }
     #[test]
     fn consent_rejects_new_groups_reused_leaders_and_unknown_widening() {
         let original = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "make"),
-            process(21, 20, 20, "pts/0", "cc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "make"),
+            process(21, 20, 20, true, "cc"),
         ];
-        let consent = classify(&original, 10, 20, Some("pts/0"));
+        let consent = classify(&original, 10, 20);
         let churn = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "cargo"),
-            process(22, 20, 20, "pts/0", "rustc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "cargo"),
+            process(22, 20, 20, true, "rustc"),
         ];
-        let current = classify(&churn, 10, 20, Some("pts/0"));
+        let current = classify(&churn, 10, 20);
         assert!(
             covered_by(&current, &consent),
             "leader exec and child churn must preserve group consent"
         );
         let mut new_group = churn;
-        new_group.push(process(30, 10, 30, "pts/0", "vim"));
-        assert!(!covered_by(
-            &classify(&new_group, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        new_group.push(process(30, 10, 30, true, "vim"));
+        assert!(!covered_by(&classify(&new_group, 10, 20), &consent));
         new_group.pop();
         new_group[1].started = "later incarnation".into();
-        assert!(!covered_by(
-            &classify(&new_group, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        assert!(!covered_by(&classify(&new_group, 10, 20), &consent));
         assert!(!covered_by(&JobState::Unknown, &consent));
         assert!(!covered_by(&current, &JobState::Idle));
         assert!(covered_by(&JobState::Idle, &consent));
@@ -597,33 +340,107 @@ mod tests {
     #[test]
     fn leaderless_group_needs_an_original_surviving_member() {
         let original = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(20, 10, 20, "pts/0", "make"),
-            process(21, 20, 20, "pts/0", "cc"),
+            process(10, 1, 10, true, "sh"),
+            process(20, 10, 20, true, "make"),
+            process(21, 20, 20, true, "cc"),
         ];
-        let consent = classify(&original, 10, 20, Some("pts/0"));
+        let consent = classify(&original, 10, 20);
         let mut current = vec![
-            process(10, 1, 10, "pts/0", "sh"),
-            process(21, 1, 20, "pts/0", "cc"),
-            process(22, 1, 20, "pts/0", "ld"),
+            process(10, 1, 10, true, "sh"),
+            process(21, 1, 20, true, "cc"),
+            process(22, 1, 20, true, "ld"),
         ];
-        assert!(covered_by(
-            &classify(&current, 10, 20, Some("pts/0")),
-            &consent
-        ));
+        assert!(covered_by(&classify(&current, 10, 20), &consent));
         current.remove(1);
         assert!(
-            !covered_by(&classify(&current, 10, 20, Some("pts/0")), &consent),
+            !covered_by(&classify(&current, 10, 20), &consent),
             "group number alone cannot prove continuity"
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn script_shell_roots_are_named_from_their_arguments() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        /// Kills and reaps the fixture even when a step panics.
+        struct Killed(std::process::Child);
+        impl Drop for Killed {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        // Scripts run through their interpreter rather than a shebang, so a
+        // concurrent fork cannot make exec of a fresh file fail with ETXTBSY.
+        let spawn = |interpreter: &str, script: &std::path::Path| {
+            let mut child = Killed(
+                Command::new(interpreter)
+                    .arg(script)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let mut line = String::new();
+            BufReader::new(child.0.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            child
+        };
+        let directory = std::env::temp_dir()
+            .join(format!("huterm-script-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        // Like xonsh, the kernel names this shell after its interpreter.
+        let xonsh = directory.join("xonsh");
+        std::fs::write(&xonsh, "$| = 1; print \"ready\\n\"; sleep 30;\n")
+            .unwrap();
+        // Like a `#!/bin/sh` script used as the login shell.
+        let wrapper = directory.join("login-wrapper");
+        std::fs::write(&wrapper, "echo ready; read line\n").unwrap();
+        let children = [spawn("perl", &xonsh), spawn("/bin/sh", &wrapper)];
+        let table = huterm_procinfo::process_table(&[]).unwrap();
+        let root = |child: &Killed, shell| {
+            let pid = child.0.id();
+            evidence(&table, None, shell)
+                .into_iter()
+                .find(|process| process.pid == pid)
+                .map(|process| process.command)
+                .unwrap()
+        };
+        let pid = |child: &Killed| Some(child.0.id());
+        let [perl, sh] = &children;
+        assert_eq!(root(perl, pid(perl)), "xonsh");
+        assert!(!is_shell(&root(perl, None)), "the kernel names perl");
+        assert!(
+            is_shell(&root(sh, pid(sh))),
+            "a shell running a script as the root stays a shell"
+        );
+        drop(children);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn roots_are_shells_when_their_interpreter_or_script_is_a_shell() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        // Linux names a directly executed shebang script after the script.
+        let login = arguments(&["/bin/sh", "/home/user/login-wrapper"]);
+        assert!(is_shell(&root_command("login-wrapper", Some(&login))));
+        let xonsh = arguments(&["python3", "/usr/local/bin/xonsh"]);
+        assert_eq!(root_command("python3", Some(&xonsh)), "xonsh");
+        let script = arguments(&["python3", "/opt/tools/deploy"]);
+        assert!(!is_shell(&root_command("python3", Some(&script))));
+        assert_eq!(root_command("perl", None), "perl");
+    }
+
     #[test]
     fn root_program_and_exec_replacement_are_jobs() {
-        let table = vec![process(10, 1, 10, "pts/0", "vim")];
-        assert!(matches!(
-            classify(&table, 10, 10, Some("pts/0")),
-            JobState::Running(_)
-        ));
+        let table = vec![process(10, 1, 10, true, "vim")];
+        assert!(matches!(classify(&table, 10, 10), JobState::Running(_)));
     }
 }

@@ -736,7 +736,7 @@ fn snapshot_cell(
 // A conservative invalidation hint, not a second terminal parser. Native
 // Ghostty still interprets every color and reset. This tracks OSC boundaries
 // across PTY chunks so palette probing is absent from ordinary text/CSI updates.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EscapeHint {
     Ground,
     Escape,
@@ -745,8 +745,19 @@ enum EscapeHint {
 impl EscapeHint {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         let mut changed = false;
-        for byte in bytes {
-            *self = match (&*self, byte) {
+        let mut index = 0;
+        while index < bytes.len() {
+            // Only ESC and C1 OSC leave the ground state; skip text between them.
+            if *self == Self::Ground {
+                let Some(offset) = memchr::memchr2(0x1b, 0x9d, &bytes[index..])
+                else {
+                    break;
+                };
+                index += offset;
+            }
+            let byte = bytes[index];
+            index += 1;
+            *self = match (*self, byte) {
                 (Self::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
                 | (Self::Escape, b'c') => {
                     changed = true;
@@ -1473,5 +1484,73 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, EngineEffect::Directory(_)))
         );
+    }
+
+    #[test]
+    fn escape_hint_skipping_matches_bytewise_state_across_chunks() {
+        fn bytewise(state: &mut EscapeHint, bytes: &[u8]) -> bool {
+            let mut changed = false;
+            for byte in bytes {
+                *state = match (*state, byte) {
+                    (EscapeHint::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
+                    | (EscapeHint::Escape, b'c') => {
+                        changed = true;
+                        EscapeHint::Ground
+                    }
+                    (EscapeHint::Osc, 0x1b) => {
+                        changed = true;
+                        EscapeHint::Escape
+                    }
+                    (EscapeHint::Osc, _)
+                    | (_, 0x9d)
+                    | (EscapeHint::Escape, b']') => EscapeHint::Osc,
+                    (_, 0x1b) => EscapeHint::Escape,
+                    _ => EscapeHint::Ground,
+                };
+            }
+            changed
+        }
+
+        let mut fixtures: Vec<Vec<u8>> = [
+            &b"plain text without escapes"[..],
+            b"a\x1b[31mred\x1b[0m b",
+            b"x\x1b]4;1;rgb:aa/bb/cc\x07y",
+            b"x\x1b]10;?\x1b\\y\x1bcz",
+            b"\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
+            // U+271D encodes a 0x9d continuation byte inside ordinary text.
+            "cross \u{271d} then \x1b]2;title\x07 done".as_bytes(),
+        ]
+        .map(<[u8]>::to_vec)
+        .into();
+        let alphabet = b"ab\x1b\x9d]c\x07\x18\x1a\x9c\\";
+        let mut seed = 0x2545_f491_u32;
+        fixtures.push(
+            (0..512)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    alphabet[seed as usize % alphabet.len()]
+                })
+                .collect(),
+        );
+
+        for bytes in &fixtures {
+            for start in
+                [EscapeHint::Ground, EscapeHint::Escape, EscapeHint::Osc]
+            {
+                for split in 0..=bytes.len() {
+                    let (mut fast, mut expected) = (start, start);
+                    for chunk in [&bytes[..split], &bytes[split..]] {
+                        assert_eq!(
+                            fast.observe(chunk),
+                            bytewise(&mut expected, chunk),
+                            "{bytes:?} from {start:?} split at {split}"
+                        );
+                        assert_eq!(fast, expected);
+                    }
+                }
+            }
+        }
     }
 }

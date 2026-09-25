@@ -395,8 +395,8 @@ cancels. During a drag, hovering an overflow edge scrolls continuously without
 changing the active terminal. Reordering preserves terminal processes, focus,
 selection, and scroll position. Cross-window moves and tear-out remain deferred.
 Reload applies placement, font, padding, and theme changes across all windows.
-Shell titles label tabs, with the launched program as fallback. Directory and
-process labels and directory inheritance are not implemented yet.
+Shell titles label tabs by default, with the launched program as fallback. The
+README describes directory and process labels and directory inheritance.
 
 ## Validation ladder
 
