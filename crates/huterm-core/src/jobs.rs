@@ -86,9 +86,10 @@ struct Process {
     identity: String,
 }
 
-/// Converts one table into evidence for one terminal. The root is named from
-/// its argv when readable: a script shell such as xonsh reports its
-/// interpreter as the kernel name.
+/// Converts one table into evidence for one terminal. A root whose kernel
+/// name is not a shell is named from its argv when readable: a script shell
+/// such as xonsh reports its interpreter as the kernel name. A shell running
+/// a script as the root, such as a `#!/bin/sh` login shell, stays a shell.
 fn evidence(
     table: &huterm_procinfo::ProcessTable,
     tty: Option<u64>,
@@ -110,7 +111,9 @@ fn evidence(
                 on_tty: tty.is_some_and(|tty| table.on_tty(tty, process.pid)),
                 identity: format!("{started} {}", process.name),
                 command: Some(process.pid)
-                    .filter(|pid| Some(*pid) == shell)
+                    .filter(|pid| {
+                        Some(*pid) == shell && !is_shell(&process.name)
+                    })
                     .and_then(huterm_procinfo::arguments)
                     .as_deref()
                     .and_then(huterm_procinfo::display_name)
@@ -343,47 +346,67 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_script_shell_root_is_named_from_its_arguments() {
+    fn script_shell_roots_are_named_from_their_arguments() {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
 
-        // Like xonsh, the kernel names this shell after its interpreter. It
-        // runs through the interpreter rather than a shebang so a concurrent
-        // fork cannot make exec of the fresh file fail with ETXTBSY.
+        /// Kills and reaps the fixture even when a step panics.
+        struct Killed(std::process::Child);
+        impl Drop for Killed {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        // Scripts run through their interpreter rather than a shebang, so a
+        // concurrent fork cannot make exec of a fresh file fail with ETXTBSY.
+        let spawn = |interpreter: &str, script: &std::path::Path| {
+            let mut child = Killed(
+                Command::new(interpreter)
+                    .arg(script)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let mut line = String::new();
+            BufReader::new(child.0.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            child
+        };
         let directory = std::env::temp_dir()
             .join(format!("huterm-script-shell-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let shell = directory.join("xonsh");
-        std::fs::write(&shell, "$| = 1; print \"ready\\n\"; sleep 30;\n")
+        // Like xonsh, the kernel names this shell after its interpreter.
+        let xonsh = directory.join("xonsh");
+        std::fs::write(&xonsh, "$| = 1; print \"ready\\n\"; sleep 30;\n")
             .unwrap();
-        let mut child = Command::new("perl")
-            .arg(&shell)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let pid = child.id();
-        // Nothing may panic before the child is killed.
-        let table = huterm_procinfo::process_table(&[]);
-        let root = |shell| {
-            evidence(table.as_ref()?, None, shell)
+        // Like a `#!/bin/sh` script used as the login shell.
+        let wrapper = directory.join("login-wrapper");
+        std::fs::write(&wrapper, "echo ready; read line\n").unwrap();
+        let children = [spawn("perl", &xonsh), spawn("/bin/sh", &wrapper)];
+        let table = huterm_procinfo::process_table(&[]).unwrap();
+        let root = |child: &Killed, shell| {
+            let pid = child.0.id();
+            evidence(&table, None, shell)
                 .into_iter()
                 .find(|process| process.pid == pid)
                 .map(|process| process.command)
+                .unwrap()
         };
-        let (named, kernel) = (root(Some(pid)), root(None));
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = std::fs::remove_dir_all(directory);
-        assert_eq!(named.as_deref(), Some("xonsh"));
+        let pid = |child: &Killed| Some(child.0.id());
+        let [perl, sh] = &children;
+        assert_eq!(root(perl, pid(perl)), "xonsh");
+        assert!(!is_shell(&root(perl, None)), "the kernel names perl");
         assert!(
-            !is_shell(&kernel.unwrap()),
-            "the kernel names the interpreter"
+            is_shell(&root(sh, pid(sh))),
+            "a shell running a script as the root stays a shell"
         );
+        drop(children);
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

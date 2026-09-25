@@ -177,9 +177,10 @@ Build the same `Process` evidence from `huterm-procinfo` and keep `classify`,
   kernel's TTY filter, because other users' short info has no TTY.
 - Linux candidates: one `/proc/*/stat` scan, which includes each TTY.
 - Compare TTYs by device number from the PTY path instead of normalized names.
-- Name the root shell from its argv when readable, as the probe does. A script
-  shell such as xonsh reports its interpreter as the kernel name. Identities
-  keep the kernel name.
+- Name a root whose kernel name is not a shell from its argv when readable. A
+  script shell such as xonsh reports its interpreter as the kernel name. A
+  shell interpreter running a script as the root, such as a `#!/bin/sh` login
+  shell, stays a shell, as before. Identities keep the kernel name.
 - Start times gain precision: microseconds on macOS, clock ticks on Linux,
   instead of `lstart` seconds. Identities change format, which is safe because
   consent and later checks use the same source within one run.

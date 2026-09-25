@@ -1867,7 +1867,10 @@ mod tests {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(99),
             &command(
-                "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; (printf '\\033]7;file://remote.example/srv\\007'; exec head -n 1 >/dev/null); printf DONE; read line",
+                &format!(
+                    "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line",
+                    foreground_reporter("printf '\\033]7;file://remote.example/srv\\007'")
+                ),
             ),
         )
         .unwrap();
@@ -1903,7 +1906,10 @@ mod tests {
         let runtime = TerminalRuntime::spawn(
             TerminalId::new(100),
             &command(
-                "set -m; printf '\\033]2;shell title\\007READY'; read line; (printf '\\033]2;job title\\007'; exec head -n 1 >/dev/null); printf DONE; read line",
+                &format!(
+                    "set -m; printf '\\033]2;shell title\\007READY'; read line; {}; printf DONE; read line",
+                    foreground_reporter("printf '\\033]2;job title\\007'")
+                ),
             ),
         )
         .unwrap();
@@ -2488,6 +2494,18 @@ mod tests {
             "exited child must not need confirmation"
         );
         runtime.shutdown().unwrap();
+    }
+
+    /// A job that runs `report` once it holds the foreground, then waits for
+    /// one line. The shell may hand over the terminal after the job starts:
+    /// macOS `/bin/sh` (bash 3.2) does, so a report sent sooner is credited to
+    /// the shell's group. Under heavy load that shell can also leave the job
+    /// in its own group while the terminal names the job's PID; the job then
+    /// never reports and the test times out.
+    fn foreground_reporter(report: &str) -> String {
+        format!(
+            "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""
+        )
     }
 
     fn command(script: &str) -> TerminalCommand {
