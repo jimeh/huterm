@@ -249,20 +249,24 @@ impl TerminalRenderer {
             return;
         }
 
-        self.align_rows(snapshot);
-        let rebuilds = rows_to_rebuild(self.snapshot.as_deref(), snapshot);
-        let rebuilt_rows = rebuilds.iter().filter(|rebuild| **rebuild).count();
+        let sources = row_sources(self.snapshot.as_deref(), snapshot);
+        let rebuilt_rows =
+            sources.iter().filter(|source| source.is_none()).count();
         let rows = usize::from(snapshot.size.rows);
-        if self.rows.len() != rows || snapshot.rows.len() != rows {
-            self.rows.clear();
-            self.rows.resize_with(rows, PreparedRow::default);
+        let in_place = self.rows.len() == rows
+            && sources
+                .iter()
+                .enumerate()
+                .all(|(row, source)| source.is_none_or(|source| source == row));
+        if !in_place {
+            self.rows = realign(std::mem::take(&mut self.rows), &sources);
         }
 
         let mut cache_activity = CacheActivity::default();
         if rebuilt_rows > 0 {
             self.layouts.begin_generation();
             for (row, cells) in snapshot.rows.iter().take(rows).enumerate() {
-                if rebuilds[row] {
+                if sources[row].is_none() {
                     self.rows[row] = prepare_row(
                         &cells.cells,
                         &mut self.layouts,
@@ -372,42 +376,6 @@ impl TerminalRenderer {
         self.record_paint(started);
     }
 
-    fn align_rows(&mut self, current: &TerminalSnapshot) {
-        let Some(previous) = self.snapshot.as_deref() else {
-            return;
-        };
-        if previous.size != current.size
-            || self.rows.len() != usize::from(current.size.rows)
-        {
-            return;
-        }
-        let offset_delta = current.viewport.bottom_offset as i128
-            - previous.viewport.bottom_offset as i128;
-        let history_delta =
-            current.history_size as i128 - previous.history_size as i128;
-        let shift = offset_delta - history_delta;
-        let rows = i128::from(current.size.rows);
-        if shift == 0 || shift.unsigned_abs() >= rows.unsigned_abs() {
-            return;
-        }
-        let mut old: Vec<Option<PreparedRow>> = std::mem::take(&mut self.rows)
-            .into_iter()
-            .map(Some)
-            .collect();
-        self.rows = (0..usize::from(current.size.rows))
-            .map(|new_row| {
-                let old_row = new_row as i128 - shift;
-                if (0..rows).contains(&old_row) {
-                    old[usize::try_from(old_row).unwrap_or_default()]
-                        .take()
-                        .unwrap_or_default()
-                } else {
-                    PreparedRow::default()
-                }
-            })
-            .collect();
-    }
-
     fn record_prepare(
         &mut self,
         started: Option<Instant>,
@@ -442,7 +410,7 @@ impl TerminalRenderer {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PreparedRow {
     backgrounds: Vec<PreparedBackground>,
     glyphs: Vec<PreparedGlyph>,
@@ -450,23 +418,27 @@ struct PreparedRow {
     strikeouts: Vec<PreparedDecoration>,
 }
 
+#[derive(Clone)]
 struct PreparedBackground {
     start: u16,
     columns: u16,
     color: Hsla,
 }
 
+#[derive(Clone)]
 struct PreparedGlyph {
     column: u16,
     content: GlyphContent,
     color: Hsla,
 }
 
+#[derive(Clone)]
 enum GlyphContent {
     Font(Arc<LineLayout>),
     Builtin(Arc<builtin::Geometry>),
 }
 
+#[derive(Clone)]
 struct PreparedDecoration {
     start: u16,
     columns: u16,
@@ -698,17 +670,22 @@ fn paint_row(
     }
 }
 
-fn rows_to_rebuild(
+/// The previous row whose prepared output each current row can reuse.
+///
+/// Runtimes keep an unchanged row's `Arc` at any index, including scrolls that
+/// the history size cannot report once scrollback is full, so identity is
+/// checked before the history-derived shift and its content comparison.
+fn row_sources(
     previous: Option<&TerminalSnapshot>,
     current: &TerminalSnapshot,
-) -> Vec<bool> {
+) -> Vec<Option<usize>> {
     let rows = usize::from(current.size.rows);
     let Some(previous) = previous.filter(|previous| {
         previous.size == current.size
             && previous.rows.len() == rows
             && current.rows.len() == rows
     }) else {
-        return vec![true; rows];
+        return vec![None; rows];
     };
     let shift = current.viewport.bottom_offset as i128
         - previous.viewport.bottom_offset as i128
@@ -718,15 +695,55 @@ fn rows_to_rebuild(
         .iter()
         .enumerate()
         .map(|(new_row, after)| {
-            let old_row = new_row as i128 - shift;
-            let Some(before) = usize::try_from(old_row)
+            let shifted = usize::try_from(new_row as i128 - shift)
                 .ok()
-                .and_then(|row| previous.rows.get(row))
-            else {
-                return true;
+                .filter(|row| *row < rows);
+            [Some(new_row), shifted]
+                .into_iter()
+                .flatten()
+                .find(|row| Arc::ptr_eq(&previous.rows[*row], after))
+                .or_else(|| {
+                    previous
+                        .rows
+                        .iter()
+                        .position(|before| Arc::ptr_eq(before, after))
+                })
+                // Other runtimes may allocate rows with identical content.
+                .or_else(|| {
+                    shifted.filter(|row| *previous.rows[*row] == **after)
+                })
+        })
+        .collect()
+}
+
+/// Arranges `previous` by `sources`, moving each entry on its last use and
+/// cloning it when one retained row fills several positions.
+fn realign<T: Clone + Default>(
+    previous: Vec<T>,
+    sources: &[Option<usize>],
+) -> Vec<T> {
+    let mut uses = vec![0_usize; previous.len()];
+    for source in sources.iter().flatten() {
+        if let Some(count) = uses.get_mut(*source) {
+            *count += 1;
+        }
+    }
+    let mut previous: Vec<Option<T>> = previous.into_iter().map(Some).collect();
+    sources
+        .iter()
+        .map(|source| {
+            let Some(source) = *source else {
+                return T::default();
             };
-            // Full refreshes after scrolling may allocate rows with identical content.
-            !Arc::ptr_eq(before, after) && before != after
+            let Some(count) = uses.get_mut(source) else {
+                return T::default();
+            };
+            *count -= 1;
+            if *count == 0 {
+                previous[source].take().unwrap_or_default()
+            } else {
+                previous[source].clone().unwrap_or_default()
+            }
         })
         .collect()
 }
@@ -1792,10 +1809,7 @@ mod tests {
         let previous = snapshot(2, 2, &["A", "B", "C", "D"]);
         let current = snapshot(2, 2, &["A", "B", "X", "D"]);
 
-        assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, true]
-        );
+        assert_eq!(row_sources(Some(&previous), &current), vec![Some(0), None]);
     }
 
     #[test]
@@ -1803,10 +1817,7 @@ mod tests {
         let previous = snapshot(2, 2, &["A", "B", "C", "D"]);
         let current = snapshot(3, 2, &["A", "B", "C", "D", "E", "F"]);
 
-        assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![true, true]
-        );
+        assert_eq!(row_sources(Some(&previous), &current), vec![None, None]);
     }
 
     #[test]
@@ -1820,8 +1831,8 @@ mod tests {
         });
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, false]
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(1)]
         );
     }
 
@@ -1834,8 +1845,8 @@ mod tests {
         current.viewport.bottom_offset = 1;
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![true, false, false]
+            row_sources(Some(&previous), &current),
+            vec![None, Some(0), Some(1)]
         );
     }
 
@@ -1850,9 +1861,46 @@ mod tests {
         current.generation += 1;
 
         assert_eq!(
-            rows_to_rebuild(Some(&previous), &current),
-            vec![false, false, false]
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(1), Some(2)]
         );
+    }
+
+    #[test]
+    fn row_sources_follow_reused_arcs_when_history_cannot_report_a_shift() {
+        let previous = snapshot(1, 3, &[" ", "A", "B"]);
+        let mut current = snapshot(1, 3, &[" ", " ", "C"]);
+        // A full scrollback holds history constant while content moves up;
+        // the runtime reuses the blank row twice and `A`, `B` once each.
+        current.rows = vec![
+            Arc::clone(&previous.rows[0]),
+            Arc::clone(&previous.rows[2]),
+            Arc::clone(&current.rows[2]),
+        ];
+        assert_eq!(current.history_size, previous.history_size);
+        assert_eq!(
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(2), None]
+        );
+        current.rows[1] = Arc::clone(&previous.rows[0]);
+        assert_eq!(
+            row_sources(Some(&previous), &current),
+            vec![Some(0), Some(0), None]
+        );
+    }
+
+    #[test]
+    fn realign_moves_last_uses_and_clones_shared_sources() {
+        let previous = vec!["blank".to_owned(), "A".to_owned(), "B".to_owned()];
+        assert_eq!(
+            realign(previous.clone(), &[Some(1), Some(2), None]),
+            ["A", "B", ""]
+        );
+        assert_eq!(
+            realign(previous.clone(), &[Some(0), Some(0), Some(2)]),
+            ["blank", "blank", "B"]
+        );
+        assert_eq!(realign(previous, &[None, Some(7)]), ["", ""]);
     }
 
     #[test]

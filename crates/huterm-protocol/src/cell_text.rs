@@ -10,11 +10,12 @@ const INLINE_CAPACITY: usize = 22;
 ///
 /// Single scalars and short grapheme clusters are stored inline. Only clusters
 /// longer than the inline capacity allocate. Text that fits inline is always
-/// stored inline, so equality and hashing never depend on construction.
-#[derive(Clone)]
+/// stored inline with zeroed padding, so equal text has one representation and
+/// equality compares stored bytes without decoding them.
+#[derive(Clone, Eq, PartialEq)]
 pub struct CellText(Repr);
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 enum Repr {
     /// UTF-8 bytes; unused trailing bytes are zero.
     Inline {
@@ -97,14 +98,6 @@ impl From<String> for CellText {
         Self::new(&text)
     }
 }
-
-impl PartialEq for CellText {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl Eq for CellText {}
 
 impl PartialEq<str> for CellText {
     fn eq(&self, other: &str) -> bool {

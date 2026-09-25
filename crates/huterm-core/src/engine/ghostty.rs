@@ -44,6 +44,13 @@ pub(crate) struct TerminalEngine {
     row_iterator: RowIterator<'static>,
     cell_iterator: CellIterator<'static>,
     retained_rows: Vec<Arc<TerminalRow>>,
+    /// Bottom offset and history size of the retained rows' viewport.
+    retained_viewport: (usize, usize),
+    /// Reused cells for the row being extracted, moved out only when no
+    /// retained row matches.
+    row_scratch: Vec<Cell>,
+    /// Rows extracted by the current snapshot, whose damage it clears.
+    extracted_rows: Vec<bool>,
     colors: Option<(Option<RgbColor>, Option<RgbColor>, [RgbColor; 256])>,
     effects: Rc<RefCell<Vec<EngineEffect>>>,
     host_effect_sink: Rc<OnceCell<HostEffectSink>>,
@@ -205,6 +212,9 @@ impl TerminalEngine {
             row_iterator: RowIterator::new()?,
             cell_iterator: CellIterator::new()?,
             retained_rows: Vec::new(),
+            retained_viewport: (0, 0),
+            row_scratch: Vec::new(),
+            extracted_rows: Vec::new(),
             colors: None,
             effects,
             host_effect_sink,
@@ -450,6 +460,10 @@ impl TerminalEngine {
         Ok((bottom_offset, history_size))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "row extraction, reuse, and damage clearing share one render-state borrow"
+    )]
     pub(super) fn snapshot(
         &mut self,
     ) -> Result<TerminalSnapshot, RuntimeError> {
@@ -470,46 +484,74 @@ impl TerminalEngine {
             });
         #[cfg(test)]
         let mut row_stats = SnapshotStats::default();
+        let columns = usize::from(self.size.columns);
+        // Taken so rows can match retained content at any index. A failed
+        // snapshot leaves no retained rows, which forces the next to be full.
+        let previous = std::mem::take(&mut self.retained_rows);
+        let mut next = Vec::with_capacity(usize::from(self.size.rows));
+        let mut matcher = RowMatcher::new(
+            &previous,
+            viewport_shift(
+                self.retained_viewport,
+                (bottom_offset, history_size),
+            ),
+        );
+        self.extracted_rows.clear();
         let mut rows = self.row_iterator.update(&state)?;
-        let mut index = 0;
         while let Some(row) = rows.next() {
-            if full || row.dirty()? {
-                #[cfg(test)]
-                {
-                    row_stats.extracted += 1;
-                    row_stats.allocated += 1;
-                }
-                let mut cells = Vec::new();
-                cells
-                    .try_reserve_exact(usize::from(self.size.columns))
-                    .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-                let mut iter = self.cell_iterator.update(row)?;
-                while let Some(cell) = iter.next() {
-                    cells.push(snapshot_cell(
-                        cell,
-                        fg,
-                        bg,
-                        &palette,
-                        &self.palette_overrides,
-                        self.default_overrides,
-                        &mut self.grapheme,
-                    )?);
-                }
-                let owned = Arc::new(TerminalRow { cells });
-                if index < self.retained_rows.len() {
-                    self.retained_rows[index] = owned;
-                } else {
-                    self.retained_rows.push(owned);
-                }
+            let clean = if full || row.dirty()? {
+                None
             } else {
+                previous.get(next.len())
+            };
+            self.extracted_rows.push(clean.is_none());
+            if let Some(retained) = clean {
                 #[cfg(test)]
                 {
                     row_stats.reused += 1;
                 }
+                next.push(Arc::clone(retained));
+                continue;
             }
-            index += 1;
+            #[cfg(test)]
+            {
+                row_stats.extracted += 1;
+            }
+            self.row_scratch.clear();
+            self.row_scratch
+                .try_reserve_exact(columns)
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            let mut iter = self.cell_iterator.update(row)?;
+            while let Some(cell) = iter.next() {
+                self.row_scratch.push(snapshot_cell(
+                    cell,
+                    fg,
+                    bg,
+                    &palette,
+                    &self.palette_overrides,
+                    self.default_overrides,
+                    &mut self.grapheme,
+                )?);
+            }
+            if let Some(retained) = matcher.find(next.len(), &self.row_scratch)
+            {
+                #[cfg(test)]
+                {
+                    row_stats.reused += 1;
+                }
+                next.push(Arc::clone(retained));
+            } else {
+                #[cfg(test)]
+                {
+                    row_stats.allocated += 1;
+                }
+                next.push(Arc::new(TerminalRow {
+                    cells: std::mem::take(&mut self.row_scratch),
+                }));
+            }
         }
-        self.retained_rows.truncate(index);
+        drop(previous);
+        self.retained_rows = next;
         let visible = state.cursor_visible()?;
         let shape = if visible {
             match state.cursor_visual_style()? {
@@ -540,12 +582,18 @@ impl TerminalEngine {
                 None
             },
         };
-        let mut rows = self.row_iterator.update(&state)?;
-        while let Some(row) = rows.next() {
-            row.set_dirty(false)?;
+        if self.extracted_rows.contains(&true) {
+            let mut rows = self.row_iterator.update(&state)?;
+            let mut extracted = self.extracted_rows.iter();
+            while let Some(row) = rows.next() {
+                if extracted.next().copied().unwrap_or(true) {
+                    row.set_dirty(false)?;
+                }
+            }
         }
         state.set_dirty(Dirty::Clean)?;
         self.colors = Some(colors);
+        self.retained_viewport = (bottom_offset, history_size);
         #[cfg(test)]
         {
             self.last_snapshot_stats = row_stats;
@@ -724,6 +772,83 @@ fn probe_default_override(
         }
     }
     Ok(probed? == before)
+}
+
+/// Offset from a current viewport row to the retained row that held the same
+/// screen line: positive when output or scrolling moved content upward.
+fn viewport_shift(
+    (old_bottom, old_history): (usize, usize),
+    (bottom, history): (usize, usize),
+) -> isize {
+    let top = |bottom: usize, history: usize| {
+        i128::try_from(history).unwrap_or(i128::MAX)
+            - i128::try_from(bottom).unwrap_or(i128::MAX)
+    };
+    isize::try_from(top(bottom, history) - top(old_bottom, old_history))
+        .unwrap_or(isize::MAX)
+}
+
+/// Finds a retained row with identical cells so unchanged content keeps its
+/// `Arc`. Rows are immutable, so any equal row is valid, even at another
+/// index. The history-derived shift misses once scrollback reaches its byte
+/// budget, so a bounded scan recovers the offset without trusting one anchor.
+struct RowMatcher<'a> {
+    previous: &'a [Arc<TerminalRow>],
+    shift: isize,
+    last: Option<isize>,
+    scan_budget: usize,
+}
+
+impl<'a> RowMatcher<'a> {
+    fn new(previous: &'a [Arc<TerminalRow>], shift: isize) -> Self {
+        Self {
+            previous,
+            shift,
+            last: None,
+            // Enough for one failed scan, such as a changed first row, plus
+            // the scan that finds the shifted rows below it.
+            scan_budget: previous.len().saturating_mul(2),
+        }
+    }
+
+    fn find(
+        &mut self,
+        index: usize,
+        cells: &[Cell],
+    ) -> Option<&'a Arc<TerminalRow>> {
+        let offsets = [Some(0), Some(self.shift), self.last];
+        for (position, offset) in offsets.iter().enumerate() {
+            let Some(offset) = *offset else {
+                continue;
+            };
+            if offsets[..position].contains(&Some(offset)) {
+                continue;
+            }
+            if let Some(row) = index
+                .checked_add_signed(offset)
+                .and_then(|row| self.previous.get(row))
+                && row.cells == cells
+            {
+                self.last = Some(offset);
+                return Some(row);
+            }
+        }
+        let previous = self.previous;
+        for (row_index, row) in previous.iter().enumerate() {
+            if self.scan_budget == 0 {
+                return None;
+            }
+            self.scan_budget -= 1;
+            if row.cells == cells {
+                self.last = isize::try_from(row_index)
+                    .ok()
+                    .zip(isize::try_from(index).ok())
+                    .map(|(old, new)| old - new);
+                return Some(row);
+            }
+        }
+        None
+    }
 }
 
 fn snapshot_cell(
@@ -1289,6 +1414,121 @@ mod tests {
         }
     }
 
+    fn row(text: &str) -> Arc<TerminalRow> {
+        Arc::new(TerminalRow {
+            cells: text
+                .chars()
+                .map(|character| Cell {
+                    text: character.into(),
+                    foreground: CellColor::DefaultForeground,
+                    background: CellColor::DefaultBackground,
+                    style: CellStyle::default(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Matches `current` rows against `previous`, returning retained indices.
+    fn matches(
+        previous: &[Arc<TerminalRow>],
+        shift: isize,
+        current: &[&str],
+    ) -> Vec<Option<usize>> {
+        let mut matcher = RowMatcher::new(previous, shift);
+        current
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                matcher.find(index, &row(text).cells).map(|found| {
+                    previous
+                        .iter()
+                        .position(|row| Arc::ptr_eq(row, found))
+                        .unwrap()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn row_matcher_recovers_shifts_the_history_size_cannot_report() {
+        let previous = ["    ", "    ", "A   ", "B   "].map(row);
+        // At the scrollback budget, history stays constant, so the derived
+        // shift is zero even though content moved up one row.
+        assert_eq!(
+            matches(&previous, 0, &["    ", "A   ", "B   ", "C   "]),
+            [Some(0), Some(2), Some(3), None]
+        );
+        let previous = ["A   ", "B   ", "C   ", "D   "].map(row);
+        assert_eq!(
+            matches(&previous, 0, &["Z   ", "C   ", "D   ", "E   "]),
+            [None, Some(2), Some(3), None]
+        );
+        // A correct derived shift matches without scanning.
+        assert_eq!(
+            matches(&previous, 2, &["C   ", "D   ", "E   ", "F   "]),
+            [Some(2), Some(3), None, None]
+        );
+    }
+
+    #[test]
+    fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget()
+    {
+        for budget in [None, Some(0)] {
+            let mut engine = TerminalEngine::new(
+                TerminalId::new(1),
+                GridSize::clamped(8, 4),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+                presentation(),
+            )
+            .unwrap();
+            if let Some(bytes) = budget {
+                engine
+                    .terminal
+                    .set_scrollback_max_bytes(Some(bytes))
+                    .unwrap();
+            }
+            engine.process(b"\r\n\r\nA\r\nB").unwrap();
+            let before = engine.snapshot().unwrap();
+            engine.process(b"\r\nC").unwrap();
+            let after = engine.snapshot().unwrap();
+            if budget.is_some() {
+                assert_eq!(after.history_size, before.history_size);
+            }
+            let text = |row: &TerminalRow| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+            };
+            assert_eq!(text(&after.rows[1]), "A       ", "{budget:?}");
+            assert!(Arc::ptr_eq(&after.rows[1], &before.rows[2]), "{budget:?}");
+            assert!(Arc::ptr_eq(&after.rows[2], &before.rows[3]), "{budget:?}");
+            assert!(
+                before.rows[..2]
+                    .iter()
+                    .any(|blank| Arc::ptr_eq(blank, &after.rows[0])),
+                "{budget:?}"
+            );
+            assert_eq!(text(&after.rows[3]), "C       ", "{budget:?}");
+            assert_eq!(engine.last_snapshot_stats().allocated, 1, "{budget:?}");
+        }
+    }
+
+    #[test]
+    fn rewriting_a_row_with_identical_content_keeps_its_arc() {
+        let mut engine = engine();
+        engine.process(b"same").unwrap();
+        let before = engine.snapshot().unwrap();
+        engine.process(b"\rsame").unwrap();
+        let after = engine.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&before.rows[0], &after.rows[0]));
+        let stats = engine.last_snapshot_stats();
+        assert_eq!((stats.extracted, stats.allocated), (1, 0));
+    }
+
     #[test]
     fn default_and_equal_osc_overrides_survive_theme_updates_and_resets() {
         let mut engine = engine();
@@ -1337,7 +1577,8 @@ mod tests {
         engine.update_presentation(changed.clone()).unwrap();
         let themed = engine.snapshot().unwrap();
         assert_eq!(themed.generation, generation);
-        assert!(!Arc::ptr_eq(&overridden.rows[0], &themed.rows[0]));
+        // Every row is read again; rows with unchanged cells may keep their Arc.
+        assert_eq!(engine.last_snapshot_stats().extracted, themed.rows.len());
         assert_eq!(
             themed.rows[0].cells[0].foreground,
             CellColor::Rgb(presentation().foreground)
