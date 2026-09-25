@@ -2500,8 +2500,8 @@ mod tests {
     /// one line. The shell may hand over the terminal after the job starts:
     /// macOS `/bin/sh` (bash 3.2) does, so a report sent sooner is credited to
     /// the shell's group. Under heavy load that shell can also leave the job
-    /// in its own group while the terminal names the job's PID; the job then
-    /// never reports and the test times out.
+    /// in the shell's group while the terminal names the job's PID as its
+    /// foreground group; the job then never reports and the test times out.
     fn foreground_reporter(report: &str) -> String {
         format!(
             "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""

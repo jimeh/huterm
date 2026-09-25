@@ -138,7 +138,7 @@ plumbing, and foreground names stay available to future clients.
 | Encoded input containing CR, LF, ETX, EOT, SUB, or FS | +50 ms and +500 ms | A command starting, quiet or not; interrupts and suspends |
 | First output after 250 ms of silence | +50 ms | A job ending and the prompt redrawing |
 | Title change | +50 ms | Shells titling the running command |
-| Previous probe found a non-idle foreground | +1 s | A process replacing itself with `exec`, and silent exits |
+| Previous probe found a non-idle foreground, or an empty foreground group | +1 s | A process replacing itself with `exec`, silent exits, and a shell reclaiming the terminal late |
 
 There is no probe at spawn: the child may not have exec'd yet and would read
 as Huterm itself. The first output, such as a shell prompt, triggers the first
@@ -180,7 +180,10 @@ Build the same `Process` evidence from `huterm-procinfo` and keep `classify`,
 - Name a root whose kernel name is not a shell from its argv when readable. A
   script shell such as xonsh reports its interpreter as the kernel name. A
   shell interpreter running a script as the root, such as a `#!/bin/sh` login
-  shell, stays a shell, as before. Identities keep the kernel name.
+  shell, stays a shell: macOS reports the interpreter as its kernel name, and
+  on Linux, where the kernel names a directly executed script, argv[0] names
+  the interpreter. Identities keep the kernel name. Labels still name such a
+  root after its script, so its tab shows the script name.
 - Start times gain precision: microseconds on macOS, clock ticks on Linux,
   instead of `lstart` seconds. Identities change format, which is safe because
   consent and later checks use the same source within one run.

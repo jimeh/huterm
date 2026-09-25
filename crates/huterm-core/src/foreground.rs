@@ -109,7 +109,9 @@ pub(crate) struct Probe {
     /// The foreground process's working directory, or the root's when that
     /// cannot be read, such as for another user's `sudo` job.
     pub(crate) directory: Option<TerminalDirectory>,
-    /// Whether a job holds the foreground and needs the slow poll.
+    /// Whether a job holds the foreground and needs the slow poll. A group
+    /// with no live member counts: the shell may not have reclaimed the
+    /// terminal from an exited job yet.
     pub(crate) job: bool,
 }
 
@@ -128,11 +130,13 @@ pub(crate) fn probe(group: Option<i32>, root: Option<u32>) -> Probe {
         .and_then(|path| path.into_os_string().into_string().ok())
         .map(|path| TerminalDirectory::new(None, path, true));
     let Some(process) = selected else {
+        let root_group = root.and_then(|root| i32::try_from(root).ok());
         return Probe {
             group,
             name: None,
             directory,
-            job: false,
+            job: group
+                .is_some_and(|group| group > 0 && Some(group) != root_group),
         };
     };
     let display = huterm_procinfo::arguments(process.pid)
@@ -595,6 +599,10 @@ mod tests {
         assert!(probe(group, Some(pid)).job);
         let unknown = probe(None, Some(pid));
         assert_eq!((unknown.name, unknown.job), (None, false));
+        // An exited job's empty group can hold the terminal until the shell
+        // reclaims it; keep polling until then.
+        let empty = probe(Some(i32::MAX), Some(pid));
+        assert_eq!((empty.name, empty.job), (None, true));
         assert!(unknown.directory.is_some(), "falls back to the root");
     }
 }

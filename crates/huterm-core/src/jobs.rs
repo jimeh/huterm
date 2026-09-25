@@ -86,10 +86,7 @@ struct Process {
     identity: String,
 }
 
-/// Converts one table into evidence for one terminal. A root whose kernel
-/// name is not a shell is named from its argv when readable: a script shell
-/// such as xonsh reports its interpreter as the kernel name. A shell running
-/// a script as the root, such as a `#!/bin/sh` login shell, stays a shell.
+/// Converts one table into evidence for one terminal.
 fn evidence(
     table: &huterm_procinfo::ProcessTable,
     tty: Option<u64>,
@@ -110,18 +107,35 @@ fn evidence(
                 zombie: process.zombie,
                 on_tty: tty.is_some_and(|tty| table.on_tty(tty, process.pid)),
                 identity: format!("{started} {}", process.name),
-                command: Some(process.pid)
-                    .filter(|pid| {
-                        Some(*pid) == shell && !is_shell(&process.name)
-                    })
-                    .and_then(huterm_procinfo::arguments)
-                    .as_deref()
-                    .and_then(huterm_procinfo::display_name)
-                    .unwrap_or_else(|| process.name.clone()),
+                command: if Some(process.pid) == shell
+                    && !is_shell(&process.name)
+                {
+                    root_command(
+                        &process.name,
+                        huterm_procinfo::arguments(process.pid).as_deref(),
+                    )
+                } else {
+                    process.name.clone()
+                },
                 started,
             })
         })
         .collect()
+}
+
+/// Names a root whose kernel name is not a shell. A shell running a script as
+/// the root stays a shell: Linux names a directly executed `#!/bin/sh` script
+/// after the script, but argv[0] still names its interpreter. A script shell
+/// such as xonsh runs under its interpreter and is named by its script.
+fn root_command(kernel: &str, arguments: Option<&[String]>) -> String {
+    let Some(arguments) = arguments else {
+        return kernel.to_owned();
+    };
+    match arguments.first() {
+        Some(program) if is_shell(program) => program.clone(),
+        _ => huterm_procinfo::display_name(arguments)
+            .unwrap_or_else(|| kernel.to_owned()),
+    }
 }
 
 fn is_shell(command: &str) -> bool {
@@ -407,6 +421,21 @@ mod tests {
         );
         drop(children);
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn roots_are_shells_when_their_interpreter_or_script_is_a_shell() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        // Linux names a directly executed shebang script after the script.
+        let login = arguments(&["/bin/sh", "/home/user/login-wrapper"]);
+        assert!(is_shell(&root_command("login-wrapper", Some(&login))));
+        let xonsh = arguments(&["python3", "/usr/local/bin/xonsh"]);
+        assert_eq!(root_command("python3", Some(&xonsh)), "xonsh");
+        let script = arguments(&["python3", "/opt/tools/deploy"]);
+        assert!(!is_shell(&root_command("python3", Some(&script))));
+        assert_eq!(root_command("perl", None), "perl");
     }
 
     #[test]
