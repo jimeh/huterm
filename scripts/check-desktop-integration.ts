@@ -287,14 +287,29 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     );
   }
   async function opened(count: number) {
-    await waitFor(
-      async () =>
-        (await readFile(join(directory, "opened"), "utf8").catch(() => ""))
+    let urls: string[] = [];
+    try {
+      await waitFor(async () => {
+        urls = (
+          await readFile(join(directory, "opened"), "utf8").catch(() => "")
+        )
           .trim()
           .split("\n")
-          .filter(Boolean).length === count,
-      `${count} opened URLs`,
-    );
+          .filter(Boolean);
+        return urls.length === count;
+      }, `${count} opened URLs`);
+    } catch (cause) {
+      throw new Error(
+        `${count} opened URLs; last observed ${JSON.stringify(urls)}`,
+        { cause },
+      );
+    }
+  }
+  // Native input and PTY output reach Huterm through separate channels. Wait
+  // until the link owns the press before output or tab changes can race it.
+  async function pressLink(column: number, row: number, label: string) {
+    await mouse(1, column, row);
+    await waitForState((current) => current.owned === "true", label);
   }
   try {
     await waitFor(
@@ -475,7 +490,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await raw("plain-link-click-is-not-PTY-input");
     await modifiers(command);
     await hover(url);
-    await mouse(1, 2, 0);
+    await pressLink(2, 0, "link press owned before unrelated output");
     for (let i = 0; i < 3; i++) {
       await display(`\x1b[10;1Hunrelated ${i}`);
       await hover(url);
@@ -524,12 +539,9 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await waitForState(
       (current) => current.owned === "false", "previous link press released",
     );
-    await mouse(1, 2, 0);
     // The new tab changes hit-test geometry. Consume the native press first so
     // a delayed X11 event cannot land on the newly visible tab bar.
-    await waitForState(
-      (current) => current.owned === "true", "link press owned before tab switch",
-    );
+    await pressLink(2, 0, "link press owned before tab switch");
     await commandFile("new_tab");
     await waitFor(async () => {
       const current = await state();
@@ -585,7 +597,8 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     );
     await modifiers(command);
     await hover("https://first.test/");
-    await mouse(1, 2, 0);
+    // A press handled after the replacement would own the new link and open it.
+    await pressLink(2, 0, "first OSC 8 link press owned before replacement");
     await display("\x1b[H\x1b]8;;https://other.test/\x1b\\label\x1b]8;;\x1b\\");
     await mouse(2, 2, 0);
     await raw("OSC8-replacement-cancels-click");
