@@ -1293,8 +1293,8 @@ Extracted rows are read from Ghostty; allocated rows receive a new `Arc`.
 
 Prompt, title, and box-drawing or CJK fixtures no longer probe palette
 overrides, so they extract only the rows they touch. The OSC 8 fixture still
-extracts almost every row; the override hint does not flag it, so the damage
-comes from Ghostty itself, and the cause is not established. Full rebuilds fell
+extracts almost every row: see [OSC 8 full redraws](#osc-8-full-redraws).
+Full rebuilds fell
 by about 30% from per-cell `CellText` storage. Scrolling fixtures now reuse the
 `Arc` for every unchanged shifted row, including at the 16 MiB scrollback
 budget, where history size stops growing. Row matching adds roughly 10-20 µs to
@@ -1368,3 +1368,36 @@ Returning to 64 messages with 16 KiB batches raised the macOS segment mean from
 about 1,030 to 1,070-1,085 frames per second across interleaved pairs, with a
 similar spread. In the Linux container the segment mean fell from about 1,265
 to 1,230, keeping most of the batching gain; queued output is bounded at 1 MiB.
+
+### OSC 8 full redraws
+
+Rewriting linked text over cells that already hold a hyperlink makes Ghostty's
+render state report `Dirty::Full`. On a 120 by 40 grid, snapshots extracted 2,
+1, and then 40 rows for every further write, with implicit or explicit
+(`id=`) hyperlink IDs alike; an OSC 8 start and end without text, or plain
+text, extracted 1 row. OSC 8 sets no terminal or screen dirty flag, so the
+likely trigger is the viewport pin moving to a new page node when the page's
+hyperlink set grows or rehashes: each insertion copies URI and ID strings into
+page memory, and released entries linger. Parsing such a chunk took 17-20 µs
+for about 45 bytes, consistent with a page copy. The page reallocation itself
+was not observed directly. Output that scrolls, such as `ls --hyperlink`,
+redraws fully anyway; the cost matters for applications that rewrite links in
+place, and a fix belongs in Ghostty rather than Huterm.
+
+### Rejected snapshot experiments
+
+Two further snapshot optimizations were measured against `1adbff2` and
+discarded:
+
+- Reusing resolved colors across cells that share a `style_id` saved nothing
+  measurable on styled runs and slowed the `truecolor` fixture from about 193
+  to 211 µs. Reading the style ID is itself a native call, so every cell with a
+  distinct style paid for it without a cache hit.
+- Reading cell fields through `row_cells_get_multi` and `cell_get_multi`, via a
+  small vendored binding patch, cut native calls per cell from five or six to
+  two but slowed snapshots by 3-10%. Ghostty's multi-getters loop over the
+  generic single getter, so they add key and value arrays without removing any
+  native work.
+
+The remaining full-rebuild cost is mostly per-field native getters. A bulk row
+export from Ghostty would be needed to reduce it further.

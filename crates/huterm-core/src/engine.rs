@@ -541,6 +541,19 @@ mod benchmark {
             expected: "entry-",
             fill_scrollback: false,
         },
+        // Explicit IDs rule out implicit-ID growth as the cause: once cells
+        // are re-linked, Ghostty reports a full redraw for both fixtures.
+        Fixture {
+            name: "osc8-id",
+            chunk: |iteration| {
+                format!(
+                    "\x1b[20;1H\x1b]8;id=link-{0};file:///tmp/{0}\x07entry-{0}\x1b]8;;\x07",
+                    iteration % 2
+                )
+            },
+            expected: "entry-",
+            fill_scrollback: false,
+        },
         // `╝` and `帝` both encode a 0x9d continuation byte.
         Fixture {
             name: "box-cjk",
