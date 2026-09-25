@@ -55,8 +55,13 @@ padding_y = 4.0
 padding_balance = false
 
 [tabs]
-# Automatic label: title, process, directory, or process_and_directory.
-label = "title"
+# Automatic label: smart, title, process, directory, or process_and_directory.
+# Smart shows a running program's own title or name, and the directory at an
+# idle shell.
+label = "smart"
+# How labels show directories: name (huterm), path (~/Projects/huterm), or
+# short (~/P/huterm).
+directory = "name"
 # Tab placement: top, bottom, left, or right.
 position = "top"
 always_show = false
@@ -431,7 +436,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 172);
+        assert_eq!(fixtures.len(), 175);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -498,7 +503,9 @@ mod tests {
                 .replace("notch = \"left\"", "notch = \"right\"")
                 .replace("width = \"fit\"", "width = \"fill\"")
                 .replace("min_width = 96.0", "min_width = 120.0")
-                .replace("max_width = 240.0", "max_width = 360.0"),
+                .replace("max_width = 240.0", "max_width = 360.0")
+                .replace("label = \"smart\"", "label = \"title\"")
+                .replace("directory = \"name\"", "directory = \"path\""),
         )
         .unwrap();
         assert_eq!(
@@ -515,6 +522,7 @@ mod tests {
                 min_width: 120.0,
                 max_width: 360.0,
                 label: huterm_config::TabLabel::Title,
+                directory: huterm_config::TabDirectory::Path,
             }
         );
     }

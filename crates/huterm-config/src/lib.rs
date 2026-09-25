@@ -230,6 +230,8 @@ pub struct TabsConfig {
     pub min_width: f32,
     pub max_width: f32,
     pub label: TabLabel,
+    /// How labels show a directory.
+    pub directory: TabDirectory,
 }
 
 /// Optional overrides for the platform updater.
@@ -273,23 +275,51 @@ impl Default for TabsConfig {
             width: TabWidth::Fit,
             min_width: 96.0,
             max_width: 240.0,
-            label: TabLabel::Title,
+            label: TabLabel::Smart,
+            directory: TabDirectory::Name,
         }
     }
 }
 
-/// Metadata used to resolve automatic tab labels.
+/// Metadata used to resolve automatic tab labels. A custom tab name always
+/// wins; each mode falls back to the terminal title, then the launched
+/// program.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TabLabel {
+    /// A running program's own title, else its name; at an idle shell, the
+    /// directory.
     #[default]
+    Smart,
+    /// The title set by the shell or program.
     Title,
+    /// The foreground program's name.
     Process,
+    /// The current directory.
     Directory,
+    /// The foreground program's name and the current directory.
     ProcessAndDirectory,
+}
+
+/// How tab labels show a directory. The local home directory is always `~`.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum TabDirectory {
+    /// The last path component, such as `huterm`.
+    #[default]
+    Name,
+    /// The full path, relative to home when under it, such as
+    /// `~/Projects/huterm`.
+    Path,
+    /// The path with parent components shortened to their first character,
+    /// such as `~/P/huterm`.
+    Short,
 }
 
 /// Where the command palette sits within its window.
@@ -1142,7 +1172,7 @@ mod tabs_tests {
     #[test]
     fn tab_settings_accept_every_override() {
         let configured: RawConfig = toml::from_str(
-            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nnotch = 'right'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480\nlabel = 'process_and_directory'",
+            "[tabs]\nposition = 'right'\nalways_show = true\nauto_hide_in_fullscreen = true\nstyle = 'pill'\npill_accent = true\nclose_button = 'always'\nnotch = 'right'\nwidth = 'fit'\nmin_width = 72\nmax_width = 480\nlabel = 'process_and_directory'\ndirectory = 'short'",
         )
         .expect("tab settings");
         configured.validate_values().expect("valid tab settings");
@@ -1160,6 +1190,7 @@ mod tabs_tests {
                 min_width: 72.0,
                 max_width: 480.0,
                 label: TabLabel::ProcessAndDirectory,
+                directory: TabDirectory::Short,
             }
         );
     }
@@ -1168,7 +1199,8 @@ mod tabs_tests {
     fn metadata_and_bell_settings_use_safe_defaults_and_accept_rollback_values()
     {
         let defaults: RawConfig = toml::from_str("").expect("default config");
-        assert_eq!(defaults.tabs.label, TabLabel::Title);
+        assert_eq!(defaults.tabs.label, TabLabel::Smart);
+        assert_eq!(defaults.tabs.directory, TabDirectory::Name);
         assert_eq!(
             defaults.terminal.new_tab_directory,
             NewTabDirectory::Inherit

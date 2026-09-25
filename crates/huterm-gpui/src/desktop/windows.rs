@@ -1453,9 +1453,9 @@ struct TabView {
 }
 
 impl TabView {
-    fn title(&self, cx: &App) -> String {
-        let (title, exited, _, _) =
-            self.label(huterm_config::TabLabel::Title, cx);
+    /// The tab's label with status text, for previews and dialogs.
+    fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
+        let (title, exited, _, _) = self.label(tabs, cx);
         if exited {
             format!("{title} · exited")
         } else {
@@ -1466,7 +1466,7 @@ impl TabView {
     /// Returns the display name without status text, and whether it exited.
     fn label(
         &self,
-        mode: huterm_config::TabLabel,
+        tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> (String, bool, bool, bool) {
         let terminal = self.view.read(cx);
@@ -1474,7 +1474,13 @@ impl TabView {
         let label = if self.record.custom_name().is_some() {
             fallback.to_owned()
         } else {
-            resolve_tab_label(mode, fallback, &terminal.metadata, home_paths())
+            resolve_tab_label(
+                tabs.label,
+                tabs.directory,
+                fallback,
+                &terminal.metadata,
+                home_paths(),
+            )
         };
         (
             label,
@@ -1506,6 +1512,7 @@ fn home_paths() -> &'static [String] {
 
 fn resolve_tab_label(
     mode: huterm_config::TabLabel,
+    style: huterm_config::TabDirectory,
     title: &str,
     metadata: &huterm_protocol::TerminalMetadata,
     home: &[String],
@@ -1513,37 +1520,89 @@ fn resolve_tab_label(
     let process = metadata
         .foreground_process()
         .filter(|value| !value.is_empty());
-    let directory = metadata.directory().and_then(|directory| {
-        let path = directory.path();
-        // Only a local directory can be this machine's home.
-        if directory.is_local()
-            && home.iter().any(|home| path.trim_end_matches('/') == home)
-        {
-            Some("~")
-        } else if path == "/" {
-            Some("/")
-        } else {
-            path.trim_end_matches('/')
-                .rsplit('/')
-                .find(|part| !part.is_empty())
-        }
-    });
+    let directory = metadata
+        .directory()
+        .and_then(|directory| directory_label(directory, style, home));
     match mode {
+        // A process name is published only while a program holds the
+        // foreground; at an idle shell the directory says more.
+        huterm_config::TabLabel::Smart => match process {
+            Some(process) => {
+                metadata.foreground_title().unwrap_or(process).to_owned()
+            }
+            None => directory.unwrap_or_else(|| title.to_owned()),
+        },
         huterm_config::TabLabel::Title => title.to_owned(),
         huterm_config::TabLabel::Process => process.unwrap_or(title).to_owned(),
         huterm_config::TabLabel::Directory => {
-            directory.unwrap_or(title).to_owned()
+            directory.unwrap_or_else(|| title.to_owned())
         }
         huterm_config::TabLabel::ProcessAndDirectory => {
             match (process, directory) {
                 (Some(process), Some(directory)) => {
                     format!("{process} · {directory}")
                 }
-                (Some(value), None) | (None, Some(value)) => value.to_owned(),
+                (Some(process), None) => process.to_owned(),
+                (None, Some(directory)) => directory,
                 (None, None) => title.to_owned(),
             }
         }
     }
+}
+
+/// Formats a directory for a tab label. Only a local directory can be under
+/// this machine's home, so remote paths stay absolute.
+fn directory_label(
+    directory: &huterm_protocol::TerminalDirectory,
+    style: huterm_config::TabDirectory,
+    home: &[String],
+) -> Option<String> {
+    let path = directory.path().trim_end_matches('/');
+    if path.is_empty() {
+        return directory.path().starts_with('/').then(|| "/".to_owned());
+    }
+    let under_home = directory
+        .is_local()
+        .then(|| {
+            home.iter().find_map(|home| {
+                if path == home {
+                    Some(String::new())
+                } else {
+                    path.strip_prefix(home.as_str())?
+                        .strip_prefix('/')
+                        .map(str::to_owned)
+                }
+            })
+        })
+        .flatten();
+    let display = match under_home {
+        Some(rest) if rest.is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{rest}"),
+        None => path.to_owned(),
+    };
+    match style {
+        huterm_config::TabDirectory::Name => display
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .map(str::to_owned),
+        huterm_config::TabDirectory::Path => Some(display),
+        huterm_config::TabDirectory::Short => Some(shorten_path(&display)),
+    }
+}
+
+/// Shortens every component but the last to its first character, keeping
+/// a hidden directory's dot: `~/.config/huterm` becomes `~/.c/huterm`.
+fn shorten_path(path: &str) -> String {
+    let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
+    let last = parts.len().saturating_sub(1);
+    for part in &mut parts[..last] {
+        if part == "~" {
+            continue;
+        }
+        let keep = if part.starts_with('.') { 2 } else { 1 };
+        *part = part.chars().take(keep).collect();
+    }
+    parts.join("/")
 }
 
 #[derive(Default)]
@@ -2835,7 +2894,7 @@ impl WorkspaceView {
         let live_titles = self
             .tabs
             .iter()
-            .map(|tab| (tab.id, tab.title(cx)))
+            .map(|tab| (tab.id, tab.title(self.config.tabs, cx)))
             .collect();
         let task = cx
             .background_executor()
@@ -4852,7 +4911,7 @@ impl Render for WorkspaceView {
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
                 let (title, exited, failed, bell) =
-                    tab.label(self.config.tabs.label, cx);
+                    tab.label(self.config.tabs, cx);
                 let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
@@ -5196,7 +5255,7 @@ impl Render for WorkspaceView {
                 .tabs
                 .iter()
                 .find(|tab| tab.id == drag.source.tab)
-                .map(|tab| tab.title(cx))
+                .map(|tab| tab.title(self.config.tabs, cx))
                 .unwrap_or_default();
             root = root.child(
                 div()
@@ -5250,7 +5309,7 @@ impl Render for WorkspaceView {
                     .tabs
                     .iter()
                     .find(|tab| tab.id == id)
-                    .map(|tab| tab.title(cx))
+                    .map(|tab| tab.title(self.config.tabs, cx))
                     .unwrap_or_default(),
                 _ => String::new(),
             };
@@ -6566,31 +6625,56 @@ mod tests {
 
     #[test]
     fn tab_labels_degrade_across_all_metadata_modes() {
-        use huterm_config::TabLabel;
+        use huterm_config::{TabDirectory, TabLabel};
         use huterm_protocol::{TerminalDirectory, TerminalMetadata};
 
         let empty = TerminalMetadata::default();
         assert_eq!(
-            resolve_tab_label(TabLabel::Title, "shell", &empty, &[]),
+            resolve_tab_label(
+                TabLabel::Title,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &empty, &[]),
+            resolve_tab_label(
+                TabLabel::Process,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &empty, &[]),
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &empty,
+                &[]
+            ),
             "shell"
         );
 
         let process = TerminalMetadata::new(None, Some("vim".into()));
         assert_eq!(
-            resolve_tab_label(TabLabel::Process, "shell", &process, &[]),
+            resolve_tab_label(
+                TabLabel::Process,
+                TabDirectory::Name,
+                "shell",
+                &process,
+                &[]
+            ),
             "vim"
         );
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
                 "shell",
                 &process,
                 &[]
@@ -6603,12 +6687,19 @@ mod tests {
             None,
         );
         assert_eq!(
-            resolve_tab_label(TabLabel::Directory, "shell", &directory, &[]),
+            resolve_tab_label(
+                TabLabel::Directory,
+                TabDirectory::Name,
+                "shell",
+                &directory,
+                &[]
+            ),
             "世界"
         );
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
                 "shell",
                 &directory,
                 &[]
@@ -6627,6 +6718,7 @@ mod tests {
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
                 "shell",
                 &both,
                 &[]
@@ -6636,8 +6728,109 @@ mod tests {
     }
 
     #[test]
+    fn smart_labels_follow_running_programs_and_idle_directories() {
+        use huterm_config::{TabDirectory, TabLabel};
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+
+        let home = ["/Users/me".to_owned()];
+        let project = Some(TerminalDirectory::new(
+            None,
+            "/Users/me/Projects/huterm".into(),
+            true,
+        ));
+        let smart = |metadata: &TerminalMetadata, style| {
+            resolve_tab_label(TabLabel::Smart, style, "shell", metadata, &home)
+        };
+        let idle = TerminalMetadata::new(project.clone(), None)
+            .with_foreground_title(Some("me@host: ~/Projects/huterm".into()));
+        assert_eq!(smart(&idle, TabDirectory::Name), "huterm");
+        assert_eq!(smart(&idle, TabDirectory::Path), "~/Projects/huterm");
+        let running =
+            TerminalMetadata::new(project.clone(), Some("vim".into()));
+        assert_eq!(smart(&running, TabDirectory::Name), "vim");
+        let titled =
+            running.with_foreground_title(Some("notes.txt - VIM".into()));
+        assert_eq!(smart(&titled, TabDirectory::Name), "notes.txt - VIM");
+        assert_eq!(
+            smart(&TerminalMetadata::default(), TabDirectory::Name),
+            "shell"
+        );
+    }
+
+    #[test]
+    fn directory_styles_format_home_relative_and_remote_paths() {
+        use huterm_config::TabDirectory::{Name, Path, Short};
+        use huterm_protocol::TerminalDirectory;
+
+        let home = ["/Users/me".to_owned()];
+        for (path, local, name, full, short) in [
+            ("/Users/me", true, "~", "~", "~"),
+            ("/Users/me/", true, "~", "~", "~"),
+            (
+                "/Users/me/Projects",
+                true,
+                "Projects",
+                "~/Projects",
+                "~/Projects",
+            ),
+            (
+                "/Users/me/Projects/huterm",
+                true,
+                "huterm",
+                "~/Projects/huterm",
+                "~/P/huterm",
+            ),
+            (
+                "/Users/me/.t3/worktrees/huterm/t3code",
+                true,
+                "t3code",
+                "~/.t3/worktrees/huterm/t3code",
+                "~/.t/w/h/t3code",
+            ),
+            (
+                "/Users/me/Ünïcode/app",
+                true,
+                "app",
+                "~/Ünïcode/app",
+                "~/Ü/app",
+            ),
+            (
+                "/Users/meadow",
+                true,
+                "meadow",
+                "/Users/meadow",
+                "/U/meadow",
+            ),
+            (
+                "/usr/local/share/man",
+                true,
+                "man",
+                "/usr/local/share/man",
+                "/u/l/s/man",
+            ),
+            ("/", true, "/", "/", "/"),
+            (
+                "/Users/me/src/app",
+                false,
+                "app",
+                "/Users/me/src/app",
+                "/U/m/s/app",
+            ),
+        ] {
+            let directory = TerminalDirectory::new(None, path.into(), local);
+            let label =
+                |style| directory_label(&directory, style, &home).unwrap();
+            assert_eq!(
+                [label(Name), label(Path), label(Short)],
+                [name, full, short],
+                "{path} local={local}"
+            );
+        }
+    }
+
+    #[test]
     fn tab_labels_show_the_local_home_directory_as_a_tilde() {
-        use huterm_config::TabLabel;
+        use huterm_config::{TabDirectory, TabLabel};
         use huterm_protocol::{TerminalDirectory, TerminalMetadata};
 
         let home = ["/Users/me".to_owned()];
@@ -6651,6 +6844,7 @@ mod tests {
             assert_eq!(
                 resolve_tab_label(
                     TabLabel::Directory,
+                    TabDirectory::Name,
                     "shell",
                     &at_home(path, true),
                     &home
@@ -6661,6 +6855,7 @@ mod tests {
         assert_eq!(
             resolve_tab_label(
                 TabLabel::ProcessAndDirectory,
+                TabDirectory::Name,
                 "shell",
                 &at_home("/Users/me", true),
                 &home
@@ -6670,6 +6865,7 @@ mod tests {
         assert_eq!(
             resolve_tab_label(
                 TabLabel::Directory,
+                TabDirectory::Name,
                 "shell",
                 &at_home("/Users/me/src", true),
                 &home
@@ -6679,6 +6875,7 @@ mod tests {
         assert_eq!(
             resolve_tab_label(
                 TabLabel::Directory,
+                TabDirectory::Name,
                 "shell",
                 &at_home("/Users/me", false),
                 &home

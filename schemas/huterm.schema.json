@@ -3592,15 +3592,55 @@
         }
       ]
     },
+    "TabDirectory": {
+      "description": "How tab labels show a directory. The local home directory is always `~`.",
+      "oneOf": [
+        {
+          "const": "name",
+          "description": "The last path component, such as `huterm`.",
+          "type": "string"
+        },
+        {
+          "const": "path",
+          "description": "The full path, relative to home when under it, such as\n`~/Projects/huterm`.",
+          "type": "string"
+        },
+        {
+          "const": "short",
+          "description": "The path with parent components shortened to their first character,\nsuch as `~/P/huterm`.",
+          "type": "string"
+        }
+      ]
+    },
     "TabLabel": {
-      "description": "Metadata used to resolve automatic tab labels.",
-      "enum": [
-        "title",
-        "process",
-        "directory",
-        "process_and_directory"
-      ],
-      "type": "string"
+      "description": "Metadata used to resolve automatic tab labels. A custom tab name always\nwins; each mode falls back to the terminal title, then the launched\nprogram.",
+      "oneOf": [
+        {
+          "const": "smart",
+          "description": "A running program's own title, else its name; at an idle shell, the\ndirectory.",
+          "type": "string"
+        },
+        {
+          "const": "title",
+          "description": "The title set by the shell or program.",
+          "type": "string"
+        },
+        {
+          "const": "process",
+          "description": "The foreground program's name.",
+          "type": "string"
+        },
+        {
+          "const": "directory",
+          "description": "The current directory.",
+          "type": "string"
+        },
+        {
+          "const": "process_and_directory",
+          "description": "The foreground program's name and the current directory.",
+          "type": "string"
+        }
+      ]
     },
     "TabNotch": {
       "description": "Where a top tab bar goes on a notched display in non-native fullscreen:\nbelow the notch across the window, or beside the camera housing on one\nside, giving that height back to the terminal.",
@@ -3654,13 +3694,22 @@
           "default": "active",
           "description": "When a tab shows its close button; hovering a tab always shows it."
         },
+        "directory": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TabDirectory"
+            }
+          ],
+          "default": "name",
+          "description": "How labels show a directory."
+        },
         "label": {
           "allOf": [
             {
               "$ref": "#/definitions/TabLabel"
             }
           ],
-          "default": "title"
+          "default": "smart"
         },
         "max_width": {
           "default": 240.0,

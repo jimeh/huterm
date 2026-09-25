@@ -229,7 +229,8 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 
 [tabs]
-label = "title" # title, process, directory, or process_and_directory
+label = "smart" # smart, title, process, directory, or process_and_directory
+directory = "name" # name, path, or short
 position = "top" # top, bottom, left, or right
 always_show = false
 auto_hide_in_fullscreen = false
@@ -270,12 +271,20 @@ exits. Huterm checks after input, after output that follows a pause, after a
 title change, and once a second while a program runs; idle shells cost
 nothing.
 
-`label = "directory"` shows the final path component, or `~` for your local
-home directory, `label = "process"`
-names the foreground program, or the script it runs, and
+`label = "smart"` (the default) shows a running program's own title, or its
+name when it has not set one, and the directory at an idle shell. A program's
+title stops applying when the program exits. `label = "title"` shows the title
+set by the shell or program, `label = "process"` names the foreground program,
+or the script it runs, `label = "directory"` shows the directory, and
 `label = "process_and_directory"` combines both when available. Each mode
 falls back to the current terminal title and launched program. A custom tab
-name always wins.
+name always wins, and the palette, drag previews, and close prompts use the
+same label as the tab bar.
+
+`directory = "name"` (the default) shows the last path component, `"path"`
+the full path, and `"short"` the path with parent components shortened to one
+character, as in `~/P/huterm`. The local home directory always reads as `~`,
+and paths under it start with `~/`; remote paths stay absolute.
 
 New tabs inherit the current directory by default when it is local and still
 an accessible directory. Remote, malformed, deleted, or inaccessible paths use

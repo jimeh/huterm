@@ -290,8 +290,7 @@ impl WorkspaceView {
         let font = window.text_style().font();
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
-            let (title, exited, failed, bell) =
-                tab.label(self.config.tabs.label, cx);
+            let (title, exited, failed, bell) = tab.label(self.config.tabs, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
