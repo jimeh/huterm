@@ -1329,6 +1329,12 @@ fn forward_output(
             }
             Ok(count) => {
                 let mut batch = buffer[..count].to_vec();
+                // Only Unix PTYs are nonblocking. Elsewhere, a second read
+                // would hold this output until the PTY wrote again.
+                if cfg!(not(unix)) {
+                    pending = Some(batch);
+                    continue;
+                }
                 match read_ready(reader, &mut buffer, &mut batch) {
                     ReadyEnd::Full => {}
                     ReadyEnd::Drained => drained = true,
