@@ -544,8 +544,13 @@ budget and reports actual retained rows.
 Ghostty color-only OSC updates can leave render rows clean. Compare effective
 colors and retain explicit palette override information before consuming damage.
 Its API lacks the override mask; the adapter probes changed defaults after
-OSC/RIS invalidation hints, then restores defaults before rendering. Keep this
-hint state across input chunks, including snapshots between fragments.
+color OSC (4, 5, 10-19, 21, 104, 110-119) or RIS hints, then restores defaults
+before rendering. The probe's palette writes force a full redraw, so other OSCs
+must not trigger it. The hint mirrors the pinned parser's transitions: Ghostty
+decodes ground bytes as UTF-8, so raw C1 bytes there are text, and OSC payload
+bytes never start new sequences. It may over-flag but must never miss a color
+operation; the full-probe differential test enforces that. Keep this hint state
+across input chunks, including snapshots between fragments.
 Construct non-Send native handles on their owner thread before spawning the PTY;
 only publish startup after workers are ready. Scroll-and-snapshot share one
 ordered control operation. Ordinary snapshots must not reset the viewport.

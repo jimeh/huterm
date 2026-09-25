@@ -382,6 +382,7 @@ impl TerminalEngine {
         if !self.colors_dirty {
             return Ok(());
         }
+        let defaults = self.default_overrides;
         self.default_overrides.foreground = probe_default_override(
             &mut self.terminal,
             DefaultColor::Foreground,
@@ -403,12 +404,19 @@ impl TerminalEngine {
         // Always restore the palette, including a failed effective-color read.
         self.terminal.set_default_color_palette(Some(original))?;
         let probed = probed?;
+        let mut overrides_changed = false;
         for (index, overridden) in self.palette_overrides.iter_mut().enumerate()
         {
-            *overridden = probed.0[index] == before.0[index];
+            let probed = probed.0[index] == before.0[index];
+            overrides_changed |= *overridden != probed;
+            *overridden = probed;
         }
         self.colors_dirty = false;
-        self.colors = None;
+        // Override flags decide how cells resolve palette colors. Effective
+        // color changes are compared separately when the snapshot is built.
+        if overrides_changed || defaults != self.default_overrides {
+            self.colors = None;
+        }
         Ok(())
     }
 
@@ -648,7 +656,7 @@ enum DefaultColor {
     Cursor,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DefaultOverrides {
     foreground: bool,
     background: bool,
@@ -772,44 +780,124 @@ fn snapshot_cell(
 }
 
 // A conservative invalidation hint, not a second terminal parser. Native
-// Ghostty still interprets every color and reset. This tracks OSC boundaries
-// across PTY chunks so palette probing is absent from ordinary text/CSI updates.
+// Ghostty still interprets every color and reset. This mirrors the pinned
+// parser's state transitions (`stream.zig` and `parse_table.zig`) closely
+// enough to find color OSC dispatches and RIS across PTY chunks, so ordinary
+// text, CSI, and non-color OSC output never trigger palette probing. It may
+// flag extra sequences, but it must never miss a color operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EscapeHint {
     Ground,
     Escape,
-    Osc,
+    EscapeIntermediate,
+    Csi,
+    /// DCS, SOS, PM, and APC strings, which only anywhere transitions exit.
+    Passthrough,
+    Osc(OscNumber),
 }
+
+/// The leading decimal number of an OSC, accumulated across chunks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct OscNumber {
+    value: u16,
+    digits: u8,
+    complete: bool,
+}
+
+impl OscNumber {
+    /// Ghostty accepts at most four prefix digits (OSC 3008).
+    const MAX_DIGITS: u8 = 4;
+
+    fn push(self, byte: u8) -> Self {
+        if self.complete {
+            return self;
+        }
+        if !byte.is_ascii_digit() {
+            return Self {
+                complete: true,
+                ..self
+            };
+        }
+        if self.digits == Self::MAX_DIGITS {
+            // Too long for any OSC Ghostty dispatches.
+            return Self {
+                value: 0,
+                digits: Self::MAX_DIGITS + 1,
+                complete: true,
+            };
+        }
+        Self {
+            value: self.value * 10 + u16::from(byte - b'0'),
+            digits: self.digits + 1,
+            complete: false,
+        }
+    }
+
+    /// OSCs that `osc.zig` dispatches to its color and kitty color parsers.
+    fn is_color(self) -> bool {
+        (1..=Self::MAX_DIGITS).contains(&self.digits)
+            && matches!(
+                self.value,
+                4 | 5 | 10..=19 | 21 | 104 | 110..=119
+            )
+    }
+}
+
 impl EscapeHint {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         let mut changed = false;
         let mut index = 0;
         while index < bytes.len() {
-            // Only ESC and C1 OSC leave the ground state; skip text between them.
+            // Ghostty decodes ground bytes as UTF-8, so only ESC leaves it.
             if *self == Self::Ground {
-                let Some(offset) = memchr::memchr2(0x1b, 0x9d, &bytes[index..])
-                else {
+                let Some(offset) = memchr::memchr(0x1b, &bytes[index..]) else {
                     break;
                 };
                 index += offset;
             }
-            let byte = bytes[index];
+            changed |= self.step(bytes[index]);
             index += 1;
-            *self = match (*self, byte) {
-                (Self::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
-                | (Self::Escape, b'c') => {
-                    changed = true;
-                    Self::Ground
-                }
-                (Self::Osc, 0x1b) => {
-                    changed = true;
-                    Self::Escape
-                }
-                (Self::Osc, _) | (_, 0x9d) | (Self::Escape, b']') => Self::Osc,
-                (_, 0x1b) => Self::Escape,
-                _ => Self::Ground,
-            };
         }
+        changed
+    }
+
+    fn step(&mut self, byte: u8) -> bool {
+        let (next, changed) = match (*self, byte) {
+            // OSC exits dispatch the accumulated command. Other C0 bytes are
+            // ignored, and 0x20..=0xff, including C1 values, are payload.
+            (Self::Osc(number), 0x07 | 0x18 | 0x1a) => {
+                (Self::Ground, number.is_color())
+            }
+            (Self::Osc(number), 0x1b) => (Self::Escape, number.is_color()),
+            (Self::Osc(number), 0x20..=0xff) => {
+                (Self::Osc(number.push(byte)), false)
+            }
+            (_, 0x1b) => (Self::Escape, false),
+            (Self::Ground | Self::Osc(_), _) => (*self, false),
+            (Self::Escape, b'c') => (Self::Ground, true),
+            // C1 bytes are anywhere transitions in every other non-ground
+            // state; the ESC finals that open sequences must precede the
+            // generic ESC-final arm below.
+            (_, 0x90 | 0x98 | 0x9e | 0x9f)
+            | (Self::Escape, b'P' | b'X' | b'^' | b'_') => {
+                (Self::Passthrough, false)
+            }
+            (_, 0x9b) | (Self::Escape, b'[') => (Self::Csi, false),
+            (_, 0x9d) | (Self::Escape, b']') => {
+                (Self::Osc(OscNumber::default()), false)
+            }
+            (
+                _,
+                0x18 | 0x1a | 0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c,
+            )
+            | (Self::Escape | Self::EscapeIntermediate, 0x30..=0x7e)
+            | (Self::Csi, 0x40..=0x7e) => (Self::Ground, false),
+            (Self::Escape | Self::EscapeIntermediate, 0x20..=0x2f) => {
+                (Self::EscapeIntermediate, false)
+            }
+            _ => (*self, false),
+        };
+        *self = next;
         changed
     }
 }
@@ -1528,23 +1616,8 @@ mod tests {
     fn escape_hint_skipping_matches_bytewise_state_across_chunks() {
         fn bytewise(state: &mut EscapeHint, bytes: &[u8]) -> bool {
             let mut changed = false;
-            for byte in bytes {
-                *state = match (*state, byte) {
-                    (EscapeHint::Osc, 0x07 | 0x18 | 0x1a | 0x9c)
-                    | (EscapeHint::Escape, b'c') => {
-                        changed = true;
-                        EscapeHint::Ground
-                    }
-                    (EscapeHint::Osc, 0x1b) => {
-                        changed = true;
-                        EscapeHint::Escape
-                    }
-                    (EscapeHint::Osc, _)
-                    | (_, 0x9d)
-                    | (EscapeHint::Escape, b']') => EscapeHint::Osc,
-                    (_, 0x1b) => EscapeHint::Escape,
-                    _ => EscapeHint::Ground,
-                };
+            for &byte in bytes {
+                changed |= state.step(byte);
             }
             changed
         }
@@ -1554,13 +1627,13 @@ mod tests {
             b"a\x1b[31mred\x1b[0m b",
             b"x\x1b]4;1;rgb:aa/bb/cc\x07y",
             b"x\x1b]10;?\x1b\\y\x1bcz",
-            b"\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
+            b"\x1b[1\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
             // U+271D encodes a 0x9d continuation byte inside ordinary text.
             "cross \u{271d} then \x1b]2;title\x07 done".as_bytes(),
         ]
         .map(<[u8]>::to_vec)
         .into();
-        let alphabet = b"ab\x1b\x9d]c\x07\x18\x1a\x9c\\";
+        let alphabet = b"ab14;\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
         let mut seed = 0x2545_f491_u32;
         fixtures.push(
             (0..512)
@@ -1574,9 +1647,13 @@ mod tests {
         );
 
         for bytes in &fixtures {
-            for start in
-                [EscapeHint::Ground, EscapeHint::Escape, EscapeHint::Osc]
-            {
+            for start in [
+                EscapeHint::Ground,
+                EscapeHint::Escape,
+                EscapeHint::Csi,
+                EscapeHint::Passthrough,
+                EscapeHint::Osc(OscNumber::default()),
+            ] {
                 for split in 0..=bytes.len() {
                     let (mut fast, mut expected) = (start, start);
                     for chunk in [&bytes[..split], &bytes[split..]] {
@@ -1590,5 +1667,147 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn escape_hint_flags_only_color_operations_at_every_split() {
+        let cases: &[(&[u8], bool)] = &[
+            ("╝帝\x1b[31mtext\x1b[0m".as_bytes(), false),
+            (b"\x1b]2;title\x07", false),
+            (b"\x1b]7;file:///tmp\x1b\\", false),
+            (b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07", false),
+            (b"\x1b]133;A\x07", false),
+            (b"\x1b]52;c;aGk=\x07", false),
+            (b"\x1b]3008;x\x07", false),
+            (b"\x1b]10004;#fff\x07", false),
+            // Raw C1 bytes are UTF-8 data in the ground state.
+            (b"\x9d4;1;#fff\x07", false),
+            // Inside an OSC, C1 bytes are payload rather than new sequences.
+            (b"\x1b]2;a\x9d4;1;#fff\x07", false),
+            // An intermediate turns `]` into an ordinary escape final byte.
+            (b"\x1b(]4;1;#fff\x07", false),
+            (b"\x1b]4;1;#fff\x07", true),
+            (b"\x1b]11;#000\x1b\\", true),
+            (b"\x1b]21;foreground=#fff\x1b\\", true),
+            (b"\x1b]104\x07", true),
+            (b"\x1b]110\x18", true),
+            (b"\x1b]119\x1a", true),
+            (b"\x1bc", true),
+            // Ignored C0 bytes do not end the OSC number.
+            (b"\x1b]1\x010;#fff\x07", true),
+            // C1 OSC is recognized once another sequence has started.
+            (b"\x1b[1\x9d4;1;#fff\x07", true),
+            (b"\x1bPq\x9d11;#000\x07", true),
+        ];
+        for &(bytes, expected) in cases {
+            for split in 0..=bytes.len() {
+                let mut hint = EscapeHint::Ground;
+                let flagged = hint.observe(&bytes[..split])
+                    | hint.observe(&bytes[split..]);
+                assert_eq!(
+                    flagged,
+                    expected,
+                    "{:?} split at {split}",
+                    String::from_utf8_lossy(bytes)
+                );
+            }
+        }
+    }
+
+    type ObservedColors = (
+        Option<RgbColor>,
+        Option<RgbColor>,
+        Option<RgbColor>,
+        [RgbColor; 256],
+        [bool; 256],
+        DefaultOverrides,
+    );
+
+    /// Runs the full override probe regardless of the hint.
+    fn observed_colors(engine: &mut TerminalEngine) -> ObservedColors {
+        engine.colors_dirty = true;
+        engine.refresh_color_overrides().unwrap();
+        (
+            engine.terminal.fg_color().unwrap(),
+            engine.terminal.bg_color().unwrap(),
+            engine.terminal.cursor_color().unwrap(),
+            engine.terminal.color_palette().unwrap().0,
+            engine.palette_overrides,
+            engine.default_overrides,
+        )
+    }
+
+    #[test]
+    fn escape_hint_never_misses_a_color_change_seen_by_the_full_probe() {
+        let tokens: &[&[u8]] = &[
+            b"a",
+            "╝".as_bytes(),
+            "帝".as_bytes(),
+            b"\x1b",
+            b"[",
+            b"]",
+            b"(",
+            b"P",
+            b"\x9b",
+            b"\x9d",
+            b"\x9c",
+            b"\x90",
+            b"\x98",
+            b"\x01",
+            b"4",
+            b"1",
+            b"0",
+            b"2",
+            b";",
+            b"#123456",
+            b"rgb:12/34/56",
+            b"?",
+            b"m",
+            b"\\",
+            b"\x07",
+            b"\x18",
+            b"\x1a",
+            b"\x1b]4;3;#a0b0c0\x07",
+            b"\x1b]11;#102030\x1b\\",
+            b"\x1b]104;3\x07",
+            b"\x1b]21;foreground=#405060\x1b\\",
+            b"\x1b]2;title\x07",
+        ];
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as usize % bound
+        };
+        let mut changes = 0;
+        for sequence in 0..200 {
+            let mut engine = engine();
+            let mut stream = Vec::new();
+            for _ in 0..40 {
+                stream.extend_from_slice(tokens[next(tokens.len())]);
+            }
+            let mut before = observed_colors(&mut engine);
+            let mut offset = 0;
+            while offset < stream.len() {
+                let end = (offset + 1 + next(8)).min(stream.len());
+                engine.colors_dirty = false;
+                engine.process(&stream[offset..end]).unwrap();
+                let flagged = engine.colors_dirty;
+                let after = observed_colors(&mut engine);
+                if after != before {
+                    changes += 1;
+                    assert!(
+                        flagged,
+                        "sequence {sequence} missed a color change in {:?}",
+                        String::from_utf8_lossy(&stream[offset..end])
+                    );
+                }
+                before = after;
+                offset = end;
+            }
+        }
+        // Guard against a generator that never exercises color operations.
+        assert!(changes > 100, "only {changes} color changes observed");
     }
 }
