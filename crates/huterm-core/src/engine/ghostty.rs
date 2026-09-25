@@ -52,6 +52,9 @@ pub(crate) struct TerminalEngine {
     colors_dirty: bool,
     default_overrides: DefaultOverrides,
     escape_hint: EscapeHint,
+    /// Modes change only when `process` or `resize` advances the
+    /// generation, or when presentation is reapplied.
+    modes: SharedCell<Option<(u64, TerminalModes)>>,
     mouse_probe: RefCell<(
         libghostty_vt::mouse::Encoder<'static>,
         libghostty_vt::mouse::Event<'static>,
@@ -208,6 +211,7 @@ impl TerminalEngine {
             colors_dirty: false,
             default_overrides: DefaultOverrides::default(),
             escape_hint: EscapeHint::Ground,
+            modes: SharedCell::new(None),
             mouse_probe: RefCell::new((
                 libghostty_vt::mouse::Encoder::new()?,
                 libghostty_vt::mouse::Event::new()?,
@@ -239,6 +243,7 @@ impl TerminalEngine {
         apply_presentation(&mut self.terminal, &presentation)?;
         self.presentation = presentation;
         self.colors = None;
+        self.modes.set(None);
         Ok(())
     }
 
@@ -285,9 +290,14 @@ impl TerminalEngine {
     }
 
     pub(super) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
+        if let Some((generation, modes)) = self.modes.get()
+            && generation == self.generation
+        {
+            return Ok(modes);
+        }
         let mode = |mode| self.terminal.mode(mode);
         let (tracking, encoding) = self.mouse_modes()?;
-        Ok(TerminalModes {
+        let modes = TerminalModes {
             application_cursor: mode(Mode::DECCKM)?,
             alternate_screen: self.terminal.active_screen()?
                 == Screen::Alternate,
@@ -295,7 +305,9 @@ impl TerminalEngine {
             focus_reporting: mode(Mode::FOCUS_EVENT)?,
             mouse_tracking: tracking,
             mouse_encoding: encoding,
-        })
+        };
+        self.modes.set(Some((self.generation, modes)));
+        Ok(modes)
     }
 
     fn mouse_modes(

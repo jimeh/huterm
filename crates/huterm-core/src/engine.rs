@@ -1057,6 +1057,32 @@ mod contract_tests {
     }
 
     #[test]
+    fn cached_modes_follow_each_processed_mode_change() {
+        with_engine(|engine| {
+            assert_eq!(engine.modes().unwrap(), TerminalModes::default());
+            for (sequence, application_cursor, alternate_screen, paste) in [
+                ("\x1b[?1h", true, false, false),
+                ("\x1b[?1049h", true, true, false),
+                ("\x1b[?2004h", true, true, true),
+                ("\x1b[?1l\x1b[?1049l\x1b[?2004l", false, false, false),
+            ] {
+                engine.process(sequence.as_bytes()).unwrap();
+                let modes = engine.modes().unwrap();
+                assert_eq!(
+                    (
+                        modes.application_cursor,
+                        modes.alternate_screen,
+                        modes.bracketed_paste,
+                    ),
+                    (application_cursor, alternate_screen, paste),
+                    "{sequence:?}"
+                );
+                assert_eq!(engine.modes().unwrap(), modes, "{sequence:?}");
+            }
+        });
+    }
+
+    #[test]
     fn ghostty_answers_primary_device_attributes_conservatively() {
         with_engine(|engine| {
             let expected = b"\x1b[?62;22c".as_slice();
