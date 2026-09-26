@@ -91,6 +91,7 @@ fn resolve_plain(
     let columns = snapshot.size.columns;
     let mut window = Window {
         cells: 0,
+        bytes: 0,
         first_line: row,
         last_line: row,
     };
@@ -100,7 +101,6 @@ fn resolve_plain(
     while let Some((line, cell_column)) = position {
         let start = after.len();
         buffer.push_cell(line, cell_column, &mut after)?;
-        window.admit(line, after.len())?;
         after_cells.push((line, cell_column, start, after.len()));
         let cell = &after[start..];
         if (line, cell_column) == (row, column)
@@ -109,9 +109,11 @@ fn resolve_plain(
             // The pointer is on a delimiter, which no link includes.
             return Ok(LinkLookup::NoMatch);
         }
+        // A delimiter bounds the token without counting against its limits.
         if cell.contains(is_delimiter) {
             break;
         }
+        window.admit(line, cell.len())?;
         position = next_cell(buffer, total, columns, line, cell_column)?;
     }
     // Cells before the target, in reverse reading order.
@@ -121,11 +123,11 @@ fn resolve_plain(
     while let Some((line, cell_column)) = position {
         let start = before.len();
         buffer.push_cell(line, cell_column, &mut before)?;
-        window.admit(line, before.len() + after.len())?;
         before_cells.push((line, cell_column, start, before.len()));
         if before[start..].contains(is_delimiter) {
             break;
         }
+        window.admit(line, before.len() - start)?;
         position = previous_cell(buffer, columns, line, cell_column)?;
     }
     // Backward cells are in reverse order, so a cell at [start, end) in
@@ -172,9 +174,10 @@ fn resolve_plain(
     ))
 }
 
-/// Bounds the rows, cells, and bytes a plain-text scan reads.
+/// Bounds the rows, cells, and bytes of the token a plain-text scan reads.
 struct Window {
     cells: usize,
+    bytes: usize,
     first_line: usize,
     last_line: usize,
 }
@@ -182,11 +185,12 @@ struct Window {
 impl Window {
     fn admit(&mut self, line: usize, bytes: usize) -> Result<(), LinkLookup> {
         self.cells += 1;
+        self.bytes += bytes;
         self.first_line = self.first_line.min(line);
         self.last_line = self.last_line.max(line);
         if self.cells > MAX_LINK_CELLS
             || self.last_line - self.first_line >= MAX_LINK_ROWS
-            || bytes > MAX_LINK_BYTES
+            || self.bytes > MAX_LINK_BYTES
         {
             return Err(LinkLookup::ScanLimit);
         }

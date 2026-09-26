@@ -1376,6 +1376,28 @@ mod link_contract_tests {
     }
 
     #[test]
+    fn link_lookup_admits_a_token_at_the_row_limit_between_delimiters() {
+        with_engine(|engine| {
+            // A URL filling exactly 128 rows, with a delimiter on the rows
+            // just before and after it.
+            let url = format!("https://a.test/{}", "p".repeat(128 * 8 - 15));
+            engine
+                .process(format!("xxxxxxx {url} y").as_bytes())
+                .unwrap();
+            assert_eq!(matched(engine, 1, 0).destination, url);
+        });
+    }
+
+    #[test]
+    fn link_lookup_reads_wide_characters_inside_a_url() {
+        with_engine(|engine| {
+            engine.process("https://x/界z".as_bytes()).unwrap();
+            assert_eq!(matched(engine, 1, 4).destination, "https://x/界z");
+            assert_eq!(matched(engine, 1, 3).destination, "https://x/界z");
+        });
+    }
+
+    #[test]
     fn link_lookup_observes_offscreen_target_mutation_resize_and_alternate_screen()
      {
         with_engine(|engine| {
@@ -1516,6 +1538,27 @@ mod link_benchmark {
                 destination: Some("https://example.test/path".to_owned()),
                 scroll: ScrollCommand::Live,
                 point: MousePosition { row: 39, column: 3 },
+                history: &[0, FULL_HISTORY_LINES],
+            },
+            Fixture {
+                name: "top-row-url",
+                // Checking the unwrapped row above the viewport reads history.
+                output: bottom(format!(
+                    "https://example.test/path{}",
+                    "\r\nline".repeat(39)
+                )),
+                destination: Some("https://example.test/path".to_owned()),
+                scroll: ScrollCommand::Live,
+                point: MousePosition { row: 0, column: 3 },
+                history: &[0, FULL_HISTORY_LINES],
+            },
+            Fixture {
+                name: "scan-limit-above-viewport",
+                // 200 rows without a delimiter, 160 of them above the viewport.
+                output: bottom("x".repeat(200 * 120)),
+                destination: None,
+                scroll: ScrollCommand::Live,
+                point: MousePosition { row: 0, column: 3 },
                 history: &[0, FULL_HISTORY_LINES],
             },
             Fixture {

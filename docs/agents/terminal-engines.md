@@ -99,12 +99,17 @@ coherent without forcing unrelated rows to rebuild.
 
 Ghostty resolves a `Point::Screen` grid reference by walking page nodes from
 the top of history, but a `Point::Viewport` reference from the viewport's own
-position. Link lookup therefore reads rows at or below the live viewport top
-through viewport points and keeps screen points for rows above it. Plain-text
-lookup reads only the token under the pointer, up to the nearest delimiters, and
-applies the scan limits to that token. Only a token that extends above the
-viewport costs more as history grows: without a native API to step a reference
-between rows, each of its cells there still costs one walk.
+position. Link lookup therefore reads rows at or below the current viewport
+top, scrolled or not, through viewport points and keeps screen points for rows
+above it. Plain-text lookup reads only the token under the pointer, up to the
+nearest delimiters, and applies the scan limits to that token; the bounding
+delimiters do not count. Reads above the viewport still cost one walk each as
+history grows, because there is no native API to step a reference between rows.
+They occur for every cell of a token that extends above the viewport, and once
+when a token reaches the viewport's top-left cell and the row above must be
+checked for a soft wrap. That check reads the row above's own wrap flag: the
+next row's continuation flag can disagree with it after line insertion or
+deletion.
 
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,

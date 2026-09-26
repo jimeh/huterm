@@ -1101,7 +1101,8 @@ impl TerminalEngine {
 /// Link scan access to one unchanged terminal.
 pub(super) struct LinkReader<'a> {
     terminal: &'a Terminal<'static, 'static>,
-    /// Screen row at the top of the live viewport.
+    /// Screen row at the top of the current viewport, which may be scrolled
+    /// back.
     viewport_top: usize,
     graphemes: [char; 256],
 }
