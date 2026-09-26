@@ -232,7 +232,7 @@ menu_button = true # the window menu button in the title bar or tab bar
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
 directory = "name" # name, path, or short
-position = "top" # top, bottom, left, or right
+position = "top" # top, bottom, left, right, or titlebar
 always_show = false
 auto_hide_in_fullscreen = false
 style = "pill" # pill or strip
@@ -281,6 +281,18 @@ identifier, platform (OS version, architecture, and the display backend on
 Linux), terminal engine, and build profile plus the short source revision
 when the build embedded one. Copy Details copies those lines as text; Enter
 or Escape closes it, and terminal input is blocked while it is showing.
+
+`position = "titlebar"` merges the tabs into the window's title bar. On macOS
+the 32-point title strip becomes the tab row: it starts after the traffic
+lights, holds the tabs and `+`, keeps its trailing space draggable with the
+usual double-click action, and ends with the `⋯` button. The terminal gains
+the height a top bar would take. A single tab with `always_show = false` shows
+the strip with the active tab's title, as the other positions do. Wherever no
+title bar exists the tabs take a top bar instead: fullscreen on either
+platform, Quake windows, and, for now, every Linux window, where the window
+manager draws the title bar. A later release draws the Linux title bar itself
+when the compositor allows client-side decorations; until then `titlebar`
+behaves as `top` on Linux.
 
 `style` selects Pill (the default) or Strip tabs for every placement. Left and
 right Strip tabs put the accent line on the window edge; left and right Pill

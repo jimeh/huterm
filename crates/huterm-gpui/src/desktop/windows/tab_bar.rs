@@ -239,7 +239,12 @@ impl WorkspaceView {
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
-        let position = tabs.position;
+        // The merged title-bar row draws its tabs as a top bar.
+        let position = if tabs.position == TabPosition::Titlebar {
+            TabPosition::Top
+        } else {
+            tabs.position
+        };
         let id = item.id;
         let shell = div()
             .id(("tab", id.get()))
@@ -1183,12 +1188,15 @@ mod tests {
             TabPosition::Bottom,
             TabPosition::Left,
             TabPosition::Right,
+            TabPosition::Titlebar,
         ] {
             let layout = ChromeLayout::new(viewport, px(28.0), position);
             let border = layout.tab_border(position);
             let terminal = layout.terminal;
             let touches = match position {
-                TabPosition::Top => border.bottom() == terminal.origin.y,
+                TabPosition::Top | TabPosition::Titlebar => {
+                    border.bottom() == terminal.origin.y
+                }
                 TabPosition::Bottom => border.origin.y == terminal.bottom(),
                 TabPosition::Left => border.right() == terminal.origin.x,
                 TabPosition::Right => border.origin.x == terminal.right(),

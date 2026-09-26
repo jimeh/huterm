@@ -64,7 +64,9 @@ label = "smart"
 # How labels show directories: name (huterm), path (~/Projects/huterm), or
 # short (~/P/huterm).
 directory = "name"
-# Tab placement: top, bottom, left, or right.
+# Tab placement: top, bottom, left, right, or titlebar. Titlebar merges the
+# tabs into the macOS title bar; without one (fullscreen, Quake windows, or
+# Linux, where the window manager draws it) it acts as top.
 position = "top"
 always_show = false
 auto_hide_in_fullscreen = false
@@ -438,7 +440,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 191);
+        assert_eq!(fixtures.len(), 192);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -843,6 +845,7 @@ mod tests {
             ("bottom", TabPosition::Bottom),
             ("left", TabPosition::Left),
             ("right", TabPosition::Right),
+            ("titlebar", TabPosition::Titlebar),
         ] {
             let config = parse(&DEFAULT_CONFIG.replace(
                 "position = \"top\"",

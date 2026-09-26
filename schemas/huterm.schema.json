@@ -4708,13 +4708,22 @@
       "type": "string"
     },
     "TabPosition": {
-      "enum": [
-        "top",
-        "bottom",
-        "left",
-        "right"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "titlebar",
+          "description": "Tabs share the window's title-bar row. Where no title bar exists\n(fullscreen, Quake windows, or a window manager drawing the title\nbar) the tabs take a top bar instead.",
+          "type": "string"
+        }
+      ]
     },
     "TabStyle": {
       "enum": [

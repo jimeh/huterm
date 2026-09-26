@@ -612,6 +612,12 @@
     "theme": false
   },
   {
+    "name": "tab position titlebar",
+    "toml": "[tabs]\nposition = \"titlebar\"",
+    "valid": true,
+    "theme": false
+  },
+  {
     "name": "tab label process and directory",
     "toml": "[tabs]\nlabel = \"process_and_directory\"",
     "valid": true,

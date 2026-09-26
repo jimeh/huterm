@@ -27,6 +27,10 @@ pub(super) enum MenuButtonPlacement {
 /// The plan's placement rules. `title_strip` is a drawn title bar the
 /// button can join (macOS windowed); `bar_shown` is whether the tab bar is
 /// currently visible, so an auto-hidden bar hides the button with it.
+/// `position` is the window's resolved position: `Titlebar` only arrives
+/// with a title strip, whose row the shown tab bar then draws, so the
+/// button moves to that bar's end and returns to the strip when the bar
+/// hides.
 pub(super) fn menu_button_placement(
     enabled: bool,
     title_strip: bool,
@@ -35,6 +39,8 @@ pub(super) fn menu_button_placement(
 ) -> MenuButtonPlacement {
     if !enabled {
         MenuButtonPlacement::Hidden
+    } else if position == TabPosition::Titlebar && bar_shown {
+        MenuButtonPlacement::BarEnd
     } else if title_strip {
         MenuButtonPlacement::TitleStrip
     } else if !bar_shown {
@@ -347,6 +353,15 @@ mod tests {
                         menu_button_placement(
                             false,
                             title_strip,
+                            TabPosition::Titlebar,
+                            bar_shown
+                        ),
+                        Hidden
+                    );
+                    assert_eq!(
+                        menu_button_placement(
+                            false,
+                            title_strip,
                             position,
                             bar_shown
                         ),
@@ -355,6 +370,16 @@ mod tests {
                 }
             }
         }
+        // The merged title-bar row holds the button at its bar end; the
+        // strip takes it back while that bar is hidden.
+        assert_eq!(
+            menu_button_placement(true, true, TabPosition::Titlebar, true),
+            BarEnd
+        );
+        assert_eq!(
+            menu_button_placement(true, true, TabPosition::Titlebar, false),
+            TitleStrip
+        );
         assert!(WindowConfig::default().menu_button);
     }
 

@@ -608,3 +608,34 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
 | Yellow dot on busy tabs | Title bar; commit 11 |
 | Tabs in the macOS and Linux title bars, window controls, drag space | Title bar; commits 12 and 13 |
 | Unchanged palette opened from the menu | Outcome and scope; commit 8 |
+
+## Implementation outcome
+
+- Steps 11 (the `titlebar` variant) and 12 (build): `tabs.position =
+  "titlebar"` exists with one resolution function,
+  `resolve_tab_position` in `crates/huterm-gpui/src/desktop/windows/tab_position.rs`,
+  that returns `top` in fullscreen, in Quake windows, and on Linux until
+  client-side decorations land (`TabHost::client_decorations` is the input
+  that slice sets). `ChromeLayout`, presentation, reveal, the notch shelf,
+  `TabStrip`, the `⋯` placement, and each terminal's layout read the resolved
+  position. On macOS the merged row is the 32-point strip: tabs after the
+  traffic lights, `+`, draggable trailing space whose double-click calls
+  `titlebar_double_click`, and `⋯` at the right; the terminal gains the bar's
+  height. Windows created with `titlebar` set
+  `TitlebarOptions::traffic_light_position` to 7 by 10 points so the
+  12-point buttons centre in the 32-point row; GPUI's default centres them in
+  AppKit's 28-point title bar, two points higher.
+- The step 12 spike has not run: this slice was built on Linux, where the
+  macOS path does not compile, and no vendor patch was attempted. The
+  following must be checked on a Mac with `position = "titlebar"` before the
+  feature is called done: a tab press-and-drag reorders the tab without moving
+  the window; a tab click activates it and its close button closes it;
+  right-click opens the tab menu; a double-click on the empty trailing space
+  performs the system title-bar action exactly once (a second toggle means
+  AppKit also handled it and the `on_click` handler must go); a drag on that
+  space moves the window; the traffic lights sit centred in the row and clear
+  of the first tab; a single tab with `always_show = false` shows the centred
+  title; entering and leaving fullscreen, including the notch shelf, keeps
+  PTY dimensions equal to the published grid. If AppKit takes the tab drag,
+  try the tracked vendor patch before changing the design.
+- Step 13 (Linux title bar) is not started.

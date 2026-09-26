@@ -354,6 +354,9 @@ struct TerminalView {
     font_family: String,
     font_size: Pixels,
     window_config: WindowConfig,
+    /// The tab configuration with its position resolved for the window;
+    /// the workspace keeps it current, so `titlebar` never reaches layout
+    /// without a title bar.
     tabs_config: TabsConfig,
     sidebar_width: Pixels,
     tab_presentation: windows::tab_visibility::Presentation,

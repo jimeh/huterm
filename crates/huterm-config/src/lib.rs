@@ -389,6 +389,10 @@ pub enum TabPosition {
     Bottom,
     Left,
     Right,
+    /// Tabs share the window's title-bar row. Where no title bar exists
+    /// (fullscreen, Quake windows, or a window manager drawing the title
+    /// bar) the tabs take a top bar instead.
+    Titlebar,
 }
 
 #[derive(
