@@ -1080,7 +1080,66 @@ impl EscapeHint {
     }
 }
 
-impl super::links::LinkBuffer for TerminalEngine {
+impl TerminalEngine {
+    pub(super) fn link_reader(&self) -> Result<LinkReader<'_>, RuntimeError> {
+        let (bottom_offset, _) = self.viewport_state()?;
+        let viewport_top = self
+            .terminal
+            .total_rows()?
+            .checked_sub(usize::from(self.size.rows) + bottom_offset)
+            .ok_or_else(|| {
+                RuntimeError::Engine("viewport exceeds screen rows".to_owned())
+            })?;
+        Ok(LinkReader {
+            terminal: &self.terminal,
+            viewport_top,
+            graphemes: ['\0'; 256],
+        })
+    }
+}
+
+/// Link scan access to one unchanged terminal.
+pub(super) struct LinkReader<'a> {
+    terminal: &'a Terminal<'static, 'static>,
+    /// Screen row at the top of the live viewport.
+    viewport_top: usize,
+    graphemes: [char; 256],
+}
+
+impl<'a> LinkReader<'a> {
+    fn grid_ref(
+        &self,
+        row: usize,
+        column: u16,
+    ) -> Result<libghostty_vt::screen::GridRef<'a>, huterm_protocol::LinkLookup>
+    {
+        let coordinate = |y: usize| {
+            u32::try_from(y)
+                .map(|y| PointCoordinate { x: column, y })
+                .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+        };
+        // Ghostty resolves screen points by walking every page from the top
+        // of history, but viewport points from the viewport's own position.
+        // Rows at or below the viewport top therefore cost the same however
+        // long the history is.
+        let point = match row.checked_sub(self.viewport_top) {
+            Some(y) => Point::Viewport(coordinate(y)?),
+            None => Point::Screen(coordinate(row)?),
+        };
+        self.terminal.grid_ref(point).map_err(link_error)
+    }
+}
+
+fn link_error(error: libghostty_vt::Error) -> huterm_protocol::LinkLookup {
+    match error {
+        libghostty_vt::Error::OutOfSpace { .. } => {
+            huterm_protocol::LinkLookup::ScanLimit
+        }
+        _ => huterm_protocol::LinkLookup::Unavailable,
+    }
+}
+
+impl super::links::LinkBuffer for LinkReader<'_> {
     fn total_rows(&self) -> Result<usize, huterm_protocol::LinkLookup> {
         self.terminal
             .total_rows()
@@ -1088,47 +1147,36 @@ impl super::links::LinkBuffer for TerminalEngine {
     }
 
     fn wrapped(&self, row: usize) -> Result<bool, huterm_protocol::LinkLookup> {
-        let row = u32::try_from(row)
-            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)?;
-        self.terminal
-            .grid_ref(Point::Screen(PointCoordinate { x: 0, y: row }))
-            .and_then(|reference| reference.row())
+        self.grid_ref(row, 0)?
+            .row()
             .and_then(libghostty_vt::screen::Row::is_wrapped)
             .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
     }
 
-    fn cell(
-        &self,
+    fn push_cell(
+        &mut self,
         row: usize,
         column: u16,
-    ) -> Result<super::links::TextCell, huterm_protocol::LinkLookup> {
-        use super::links::TextCell;
-        use huterm_protocol::LinkLookup;
-        let error = |error| match error {
-            libghostty_vt::Error::OutOfSpace { .. } => LinkLookup::ScanLimit,
-            _ => LinkLookup::Unavailable,
-        };
-        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
-        let reference = self
-            .terminal
-            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
-            .map_err(error)?;
-        let cell = reference.cell().map_err(error)?;
-        let mut text = String::new();
-        if !matches!(
-            cell.wide().map_err(error)?,
-            libghostty_vt::screen::CellWide::SpacerTail
-                | libghostty_vt::screen::CellWide::SpacerHead
+        text: &mut String,
+    ) -> Result<(), huterm_protocol::LinkLookup> {
+        let reference = self.grid_ref(row, column)?;
+        let count = reference
+            .graphemes(&mut self.graphemes)
+            .map_err(link_error)?;
+        if count > 0 {
+            text.extend(&self.graphemes[..count]);
+        // Ghostty writes wide spacers with no text, so only textless cells
+        // need their width read.
+        } else if !matches!(
+            reference
+                .cell()
+                .and_then(libghostty_vt::screen::Cell::wide)
+                .map_err(link_error)?,
+            CellWide::SpacerTail | CellWide::SpacerHead
         ) {
-            let mut graphemes = ['\0'; 256];
-            let count = reference.graphemes(&mut graphemes).map_err(error)?;
-            if count == 0 {
-                text.push(' ');
-            } else {
-                text.extend(&graphemes[..count]);
-            }
+            text.push(' ');
         }
-        Ok(TextCell { text })
+        Ok(())
     }
 
     fn hyperlink(
@@ -1136,30 +1184,30 @@ impl super::links::LinkBuffer for TerminalEngine {
         row: usize,
         column: u16,
     ) -> Result<Option<String>, huterm_protocol::LinkLookup> {
-        use huterm_protocol::LinkLookup;
-        let error = |error| match error {
-            libghostty_vt::Error::OutOfSpace { .. } => LinkLookup::ScanLimit,
-            _ => LinkLookup::Unavailable,
-        };
-        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
-        let reference = self
-            .terminal
-            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
-            .map_err(error)?;
+        let reference = self.grid_ref(row, column)?;
         if !reference
             .cell()
-            .map_err(error)?
-            .has_hyperlink()
-            .map_err(error)?
+            .and_then(libghostty_vt::screen::Cell::has_hyperlink)
+            .map_err(link_error)?
         {
             return Ok(None);
         }
-        let mut bytes = vec![0; super::links::MAX_LINK_BYTES];
-        let count = reference.hyperlink_uri(&mut bytes).map_err(error)?;
+        // Ask for the destination's length before allocating for it. Only an
+        // empty or unresolvable destination fits the empty buffer.
+        let length = match reference.hyperlink_uri(&mut []) {
+            Ok(_) => return Ok(Some(String::new())),
+            Err(libghostty_vt::Error::OutOfSpace { required }) => required,
+            Err(error) => return Err(link_error(error)),
+        };
+        if length > super::links::MAX_LINK_BYTES {
+            return Err(huterm_protocol::LinkLookup::ScanLimit);
+        }
+        let mut bytes = vec![0; length];
+        let count = reference.hyperlink_uri(&mut bytes).map_err(link_error)?;
         bytes.truncate(count);
         String::from_utf8(bytes)
             .map(Some)
-            .map_err(|_| LinkLookup::Unavailable)
+            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
     }
 
     fn same_hyperlink(
@@ -1170,11 +1218,7 @@ impl super::links::LinkBuffer for TerminalEngine {
         scratch: &mut [u8],
     ) -> Result<bool, huterm_protocol::LinkLookup> {
         use huterm_protocol::LinkLookup;
-        let row = u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?;
-        let reference = self
-            .terminal
-            .grid_ref(Point::Screen(PointCoordinate { x: column, y: row }))
-            .map_err(|_| LinkLookup::Unavailable)?;
+        let reference = self.grid_ref(row, column)?;
         match reference.hyperlink_uri(scratch) {
             Ok(count) => Ok(scratch[..count] == *destination.as_bytes()),
             Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(false),

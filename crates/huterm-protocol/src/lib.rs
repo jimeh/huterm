@@ -884,7 +884,7 @@ pub struct LinkCell {
     /// Cell position in the paired snapshot's viewport.
     pub position: MousePosition,
     /// Visible text, including combining characters and empty wide spacers.
-    pub text: String,
+    pub text: CellText,
 }
 
 /// Complete destination and visible identity resolved from canonical state.
