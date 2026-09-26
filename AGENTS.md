@@ -1175,3 +1175,33 @@ GPUI's launch callback, which cannot unwind and aborts with a crash dialog.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.
+
+Overlays share the palette's grammar: every keyboard action is a catalog
+command bound under a key context. The close dialog and the About panel use
+`confirming`, menus `menu`, and focused toasts `notices`; each binding is
+conditional, so it reserves no terminal key. A repeated close shortcut while
+`confirming` must not confirm. Menus and dialogs return focus to the terminal
+when they close; the `⋯` button never keeps it, or terminal bindings stop
+matching until the user clicks back in.
+Palette ranking ties fall back to catalog order. A new command whose title
+shares a prefix with an existing one, such as Copy Tab Directory beside Copy,
+must come after it in the catalog, or the palette smoke's `copy` query selects
+the new command.
+Notices replace both status strings. Configuration and keymap diagnostics are
+persistent notices keyed by source, and every reload replaces that source, so
+a still-failing file raises them again after dismissal. Command and terminal
+failures expire on the window's single earliest-deadline timer; persistent
+notices schedule nothing. Terminal failures reach the window through the tab's
+activity drain, including hidden tabs. Root-shell exit is not a failure: only a
+tab kept by `close_on_exit = false` announces it. Smoke state serializes the
+stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
+`tabs.position = "titlebar"` resolves through
+`tab_position::resolve_tab_position`: `top` in fullscreen, Quake windows, and
+Linux windows without granted client-side decorations. Only drawing code
+matches `Titlebar`. GPUI 0.2.2's `WindowControlArea` hit testing exists only on
+Windows; macOS title-bar dragging is AppKit's own, and X11 moves need
+`start_window_move`. X11 client-side decorations need a compositor that owns
+`_NET_WM_CM_S0` before Huterm starts, and GPUI silently falls back to server
+decorations otherwise, so read `window.window_decorations()` instead of
+trusting the request; decoration changes arrive through the window appearance
+callback.
