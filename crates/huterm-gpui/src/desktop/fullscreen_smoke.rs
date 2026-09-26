@@ -176,6 +176,7 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
                     let target = view
                         .close
                         .confirmation
+                        .clone()
                         .context("no close confirmation")?;
                     if name == "confirm_close" {
                         view.finish_close(target, window, cx);

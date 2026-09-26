@@ -24,9 +24,14 @@ pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
+use super::close_dialog::{
+    CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
+    ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
+};
+use super::overlay::{OverlayColors, Swatch};
 use super::palette::{
-    CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteColors,
-    PaletteEvent, PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
+    CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
+    PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
 };
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
@@ -43,8 +48,8 @@ use huterm_core::{
     HostEffectRecipientOptions, MuxError, OpenedTab,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
-    catalog, validate, validate_supplied,
+    AttachmentId, CommandArgument, CommandScope, SessionId, TerminalId,
+    WorkspaceId, catalog, validate, validate_supplied,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -1731,13 +1736,39 @@ struct TabReorder {
     strip: TabStrip,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum CloseTarget {
     Tab(TabId),
+    /// Several tabs of this window, distinct and in window order. Always
+    /// two or more: [`tabs_target`] normalizes shorter lists.
+    Tabs(Vec<TabId>),
     Window,
     Application,
 }
 
+impl CloseTarget {
+    fn tabs(&self) -> Option<Vec<TabId>> {
+        match self {
+            Self::Tab(id) => Some(vec![*id]),
+            Self::Tabs(ids) => Some(ids.clone()),
+            Self::Window | Self::Application => None,
+        }
+    }
+}
+
+/// The tab target for `tabs`: none when empty, a single tab for one, and a
+/// set otherwise.
+fn tabs_target(tabs: Vec<TabId>) -> Option<CloseTarget> {
+    match tabs.as_slice() {
+        [] => None,
+        [tab] => Some(CloseTarget::Tab(*tab)),
+        _ => Some(CloseTarget::Tabs(tabs)),
+    }
+}
+
+/// Window or application scope wins over tabs. A tab set unions with any
+/// other tab target; a single tab replaces a single tab, so repeated closes
+/// of one tab coalesce and [`CloseState::checked`] can requeue a second.
 fn merge_close(
     pending: Option<CloseTarget>,
     requested: CloseTarget,
@@ -1749,8 +1780,32 @@ fn merge_close(
         (Some(CloseTarget::Window), _) | (_, CloseTarget::Window) => {
             CloseTarget::Window
         }
-        (_, requested) => requested,
+        (Some(CloseTarget::Tab(_)), requested @ CloseTarget::Tab(_))
+        | (None, requested) => requested,
+        (Some(pending), requested) => {
+            let mut union = pending.tabs().unwrap_or_default();
+            for tab in requested.tabs().unwrap_or_default() {
+                if !union.contains(&tab) {
+                    union.push(tab);
+                }
+            }
+            tabs_target(union).unwrap_or(requested)
+        }
     }
+}
+
+/// Tabs in `order` other than `tab`.
+fn other_tabs(order: &[TabId], tab: TabId) -> Vec<TabId> {
+    order.iter().copied().filter(|id| *id != tab).collect()
+}
+
+/// Tabs in `order` after `tab`; empty when `tab` is last or absent.
+fn tabs_after(order: &[TabId], tab: TabId) -> Vec<TabId> {
+    order
+        .iter()
+        .position(|id| *id == tab)
+        .map(|index| order[index + 1..].to_vec())
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -1759,6 +1814,9 @@ struct CloseState {
     pending: Option<CloseTarget>,
     confirmation: Option<CloseTarget>,
     assessment: Option<CloseAssessment>,
+    /// The confirmation button holding keyboard focus; reset to the primary
+    /// button whenever a confirmation opens.
+    dialog_focus: DialogFocus,
     generation: u64,
 }
 
@@ -1787,28 +1845,31 @@ impl CloseState {
         self.generation += 1;
         self.assessment = None;
         let target = merge_close(self.confirmation.take(), target);
-        self.current = Some(target);
+        self.current = Some(target.clone());
         target
     }
     fn queue(&mut self, target: CloseTarget) {
-        self.pending =
-            Some(merge_close(self.pending, merge_close(self.current, target)));
+        self.pending = Some(merge_close(
+            self.pending.take(),
+            merge_close(self.current.clone(), target),
+        ));
     }
     fn checked(&mut self, foreground: bool) -> Option<CloseDecision> {
         let target = self.current.take()?;
         let pending = self.pending.take();
-        let effective = merge_close(pending, target);
+        let effective = merge_close(pending.clone(), target.clone());
         if effective != target {
             return Some(CloseDecision::Check(effective));
         }
         // A second, different tab close follows the first; wider requests
         // subsume narrower requests and repeated closes of one tab coalesce.
-        if matches!((target, pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
+        if matches!((&target, &pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
         {
             self.pending = pending;
         }
         if foreground {
-            self.confirmation = Some(target);
+            self.confirmation = Some(target.clone());
+            self.dialog_focus = DialogFocus::Primary;
             Some(CloseDecision::Confirm(target))
         } else {
             Some(CloseDecision::Close(target))
@@ -1826,14 +1887,31 @@ impl CloseState {
         }
         target
     }
+    /// Refuses tab closes while a confirmation is showing, so a repeated
+    /// close shortcut can neither confirm nor replace the dialog.
+    fn check_tab_close_available(&self) -> Result<(), CommandError> {
+        if self.confirmation.is_some() {
+            Err(CommandError::Unavailable(
+                "close confirmation pending".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    /// Takes the queued request, dropping tabs that no longer exist.
     fn take_pending(
         &mut self,
-        contains: impl FnOnce(TabId) -> bool,
+        contains: impl Fn(TabId) -> bool,
     ) -> Option<CloseTarget> {
-        self.pending.take().filter(|target| match target {
-            CloseTarget::Tab(id) => contains(*id),
-            _ => true,
-        })
+        match self.pending.take()? {
+            CloseTarget::Tab(id) => {
+                contains(id).then_some(CloseTarget::Tab(id))
+            }
+            CloseTarget::Tabs(ids) => tabs_target(
+                ids.into_iter().filter(|id| contains(*id)).collect(),
+            ),
+            target => Some(target),
+        }
     }
 }
 
@@ -3142,15 +3220,8 @@ impl WorkspaceView {
         order
     }
 
-    fn palette_colors(&self) -> PaletteColors {
-        let theme = &self.config.theme;
-        PaletteColors {
-            foreground: color(theme.foreground),
-            background: color(theme.background),
-            selection: color(theme.selection),
-            accent: color(theme.ansi[4]),
-            scrollbar: super::scrollbar_colors(theme),
-        }
+    fn palette_colors(&self) -> OverlayColors {
+        OverlayColors::from_theme(&self.config.theme)
     }
 
     fn command_availability(
@@ -3165,7 +3236,24 @@ impl WorkspaceView {
             CommandScope::Application => app_command_availability(cx, command),
             CommandScope::Window => match command {
                 ids::NEW_TAB => self.check_new_tab_available(cx),
-                ids::CLOSE_TAB => self.active_tab_id().map(|_| ()),
+                ids::CLOSE_TAB => {
+                    self.close.check_tab_close_available()?;
+                    self.active_tab_id().map(|_| ())
+                }
+                ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
+                    self.close.check_tab_close_available()?;
+                    let tab = target.tab.map_or_else(
+                        || self.active_tab_id(),
+                        |tab| self.existing_tab(tab),
+                    )?;
+                    self.tab_set_target(command, tab).map(|_| ())
+                }
+                ids::DIALOG_CONFIRM
+                | ids::DIALOG_CANCEL
+                | ids::DIALOG_FOCUS_NEXT
+                | ids::DIALOG_FOCUS_PREVIOUS => {
+                    self.confirming_target().map(|_| ())
+                }
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available()
                 }
@@ -3288,6 +3376,98 @@ impl WorkspaceView {
         })
     }
 
+    fn existing_tab(&self, tab: TabId) -> Result<TabId, CommandError> {
+        if self.tabs.iter().any(|record| record.id == tab) {
+            Ok(tab)
+        } else {
+            Err(CommandError::StaleTarget)
+        }
+    }
+
+    /// The tab a tab-targeted command names, or the active tab.
+    fn target_tab(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Result<TabId, CommandError> {
+        match invocation.tab("tab") {
+            Some(tab) => self.existing_tab(tab),
+            None => self.active_tab_id(),
+        }
+    }
+
+    /// The tabs `close_other_tabs` or `close_tabs_after` closes relative to
+    /// `tab`, refused when there are none.
+    fn tab_set_target(
+        &self,
+        command: huterm_protocol::CommandId,
+        tab: TabId,
+    ) -> Result<CloseTarget, CommandError> {
+        let order: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        let (tabs, reason) = match command {
+            ids::CLOSE_OTHER_TABS => {
+                (other_tabs(&order, tab), "window has one tab")
+            }
+            ids::CLOSE_TABS_AFTER => {
+                (tabs_after(&order, tab), "no tabs after this one")
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
+        };
+        tabs_target(tabs)
+            .ok_or_else(|| CommandError::Unavailable(reason.to_owned()))
+    }
+
+    /// Closes the named or active tab, or the tabs around it, unless a
+    /// confirmation is already showing.
+    fn run_tab_close(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.close.check_tab_close_available()?;
+        let tab = self.target_tab(invocation)?;
+        let target = if invocation.id == ids::CLOSE_TAB {
+            CloseTarget::Tab(tab)
+        } else {
+            self.tab_set_target(invocation.id, tab)?
+        };
+        self.request_close(target, window, cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
+    /// Runs a `dialog_*` command against the showing confirmation. Confirm
+    /// presses the focused button, so Enter on Cancel cancels.
+    fn run_dialog_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let target = self.confirming_target()?;
+        match (command, self.close.dialog_focus) {
+            (ids::DIALOG_CONFIRM, DialogFocus::Primary) => {
+                self.finish_close(target, window, cx);
+            }
+            (ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL, _) => {
+                self.cancel_close(window, cx);
+            }
+            (ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS, focus) => {
+                self.close.dialog_focus = focus.toggled();
+                cx.notify();
+            }
+            (other, _) => return Err(CommandError::UnknownCommand(other)),
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn confirming_target(&self) -> Result<CloseTarget, CommandError> {
+        self.close.confirmation.clone().ok_or_else(|| {
+            CommandError::Unavailable(
+                "no close confirmation is showing".to_owned(),
+            )
+        })
+    }
+
     fn check_navigation_available(&self) -> Result<(), CommandError> {
         self.check_available(true)?;
         self.active_tab_id().map(|_| ())
@@ -3388,10 +3568,14 @@ impl WorkspaceView {
         }
         match invocation.id {
             ids::NEW_TAB => self.new_tab(window, cx),
-            ids::CLOSE_TAB => {
-                let id = self.active_tab_id()?;
-                self.request_close(CloseTarget::Tab(id), window, cx);
-                Ok(CommandOutcome::Accepted)
+            ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
+                self.run_tab_close(invocation, window, cx)
+            }
+            ids::DIALOG_CONFIRM
+            | ids::DIALOG_CANCEL
+            | ids::DIALOG_FOCUS_NEXT
+            | ids::DIALOG_FOCUS_PREVIOUS => {
+                self.run_dialog_command(invocation.id, window, cx)
             }
             ids::CLOSE_WINDOW => {
                 self.request_close(CloseTarget::Window, window, cx);
@@ -3438,19 +3622,7 @@ impl WorkspaceView {
                 Ok(CommandOutcome::Completed)
             }
             ids::ABOUT => {
-                let detail =
-                    format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
-                let answer = window.prompt(
-                    PromptLevel::Info,
-                    "Huterm",
-                    Some(&detail),
-                    &["OK"],
-                    cx,
-                );
-                cx.spawn(async move |_, _| {
-                    let _ = answer.await;
-                })
-                .detach();
+                show_about(window, cx);
                 Ok(CommandOutcome::Completed)
             }
             ids::OPEN_SETTINGS => {
@@ -3475,6 +3647,125 @@ impl WorkspaceView {
             other => Err(CommandError::UnknownCommand(other)),
         }
     }
+}
+
+impl WorkspaceView {
+    /// The busy terminals of a pending confirmation, mapped to tab titles.
+    /// Quit covers other windows' tabs too; those are read through their
+    /// view entities.
+    fn close_dialog_input(
+        &self,
+        target: &CloseTarget,
+        cx: &Context<'_, Self>,
+    ) -> CloseDialogInput {
+        let mut titles = self.tab_titles(self.config.tabs, cx);
+        if matches!(target, CloseTarget::Application) {
+            for view in cx
+                .global::<Desktop>()
+                .windows
+                .iter()
+                .filter_map(WeakEntity::upgrade)
+                .filter(|view| view.entity_id() != cx.entity_id())
+            {
+                let view = view.read(cx);
+                titles.extend(view.tab_titles(view.config.tabs, cx));
+            }
+        }
+        let jobs = self
+            .close
+            .assessment
+            .iter()
+            .flat_map(CloseAssessment::terminal_jobs);
+        close_dialog_input(target, jobs, &titles)
+    }
+
+    fn tab_titles(&self, tabs: TabsConfig, cx: &App) -> Vec<TabTitle> {
+        self.tabs
+            .iter()
+            .map(|tab| TabTitle {
+                tab: tab.id,
+                terminal: tab.record.terminal_id,
+                title: tab.title(tabs, cx),
+            })
+            .collect()
+    }
+}
+
+/// A tab's display title with the identities the close evidence uses.
+#[derive(Clone, Debug)]
+struct TabTitle {
+    tab: TabId,
+    terminal: TerminalId,
+    title: String,
+}
+
+/// Maps assessed job evidence onto the dialog's busy groups. `titles` lists
+/// the tabs the dialog may cover, in window order; idle terminals are
+/// omitted, and headings are set when the dialog covers more than one tab.
+fn close_dialog_input<'a>(
+    target: &CloseTarget,
+    jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
+    titles: &[TabTitle],
+) -> CloseDialogInput {
+    let dialog_target = match target {
+        CloseTarget::Tab(id) => CloseDialogTarget::Tab {
+            title: titles
+                .iter()
+                .find(|entry| entry.tab == *id)
+                .map(|entry| entry.title.clone())
+                .unwrap_or_default(),
+        },
+        CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
+        CloseTarget::Window => CloseDialogTarget::Window,
+        CloseTarget::Application => CloseDialogTarget::Application,
+    };
+    let headings = !matches!(dialog_target, CloseDialogTarget::Tab { .. });
+    let groups = jobs
+        .into_iter()
+        .filter_map(|(terminal, state)| {
+            let state = match state {
+                huterm_core::JobState::Idle => return None,
+                huterm_core::JobState::Unknown => ProcessGroupState::Unknown,
+                huterm_core::JobState::Running(processes) => {
+                    ProcessGroupState::Known(
+                        processes
+                            .iter()
+                            .map(|process| ProcessRow {
+                                command: process.command.clone(),
+                                pid: process.pid,
+                                foreground: process.foreground,
+                                command_line: process.command_line.clone(),
+                            })
+                            .collect(),
+                    )
+                }
+            };
+            let tab_title = headings.then(|| {
+                titles
+                    .iter()
+                    .find(|entry| entry.terminal == terminal)
+                    .map_or_else(
+                        || "Detached terminal".to_owned(),
+                        |entry| entry.title.clone(),
+                    )
+            });
+            Some(ProcessGroup { tab_title, state })
+        })
+        .collect();
+    CloseDialogInput {
+        target: dialog_target,
+        groups,
+    }
+}
+
+fn show_about(window: &mut Window, cx: &mut Context<'_, WorkspaceView>) {
+    let detail = format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
+    let answer =
+        window.prompt(PromptLevel::Info, "Huterm", Some(&detail), &["OK"], cx);
+    cx.spawn(async move |_, _| {
+        let _ = answer.await;
+    })
+    .detach();
 }
 
 fn usable_launch_directory(directory: &Path) -> bool {
@@ -3940,11 +4231,9 @@ impl WorkspaceView {
     ) {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
-        if let CloseTarget::Tab(id) = target
-            && !self.tabs.iter().any(|tab| tab.id == id)
-        {
+        let Some(target) = self.current_close_target(target) else {
             return;
-        }
+        };
         if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
         }
@@ -3953,7 +4242,7 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
-        let request = match target {
+        let request = match &target {
             CloseTarget::Application => CloseRequest::Application,
             CloseTarget::Window => {
                 let Some(attachment) = self.attachment else {
@@ -3966,7 +4255,19 @@ impl WorkspaceView {
                 let Some(workspace) = self.workspace else {
                     return;
                 };
-                CloseRequest::Tab { workspace, tab }
+                CloseRequest::Tab {
+                    workspace,
+                    tab: *tab,
+                }
+            }
+            CloseTarget::Tabs(tabs) => {
+                let Some(workspace) = self.workspace else {
+                    return;
+                };
+                CloseRequest::Tabs {
+                    workspace,
+                    tabs: tabs.clone(),
+                }
             }
         };
         let generation = self.close.generation;
@@ -4014,6 +4315,26 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Restricts tab targets to current tabs, in window order; `None` when
+    /// nothing remains to close.
+    fn current_close_target(&self, target: CloseTarget) -> Option<CloseTarget> {
+        match target {
+            CloseTarget::Tab(id) => self
+                .tabs
+                .iter()
+                .any(|tab| tab.id == id)
+                .then_some(CloseTarget::Tab(id)),
+            CloseTarget::Tabs(ids) => tabs_target(
+                self.tabs
+                    .iter()
+                    .map(|tab| tab.id)
+                    .filter(|id| ids.contains(id))
+                    .collect(),
+            ),
+            target => Some(target),
+        }
+    }
+
     fn cancel_close(
         &mut self,
         window: &mut Window,
@@ -4055,13 +4376,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let confirmed = self.close.confirmation == Some(target);
+        let confirmed = self.close.confirmation.as_ref() == Some(&target);
         let Some(assessment) = self.close.assessment.take() else {
             self.request_close(target, window, cx);
             return;
         };
         self.close.confirmation = None;
-        self.close.current = Some(target);
+        self.close.current = Some(target.clone());
         self.busy = true;
         let generation = self.close.generation;
         if self.quake.is_none() {
@@ -4115,32 +4436,43 @@ impl WorkspaceView {
                         view.remove_window(window, cx, quit_after);
                     }
                     CloseTarget::Tab(id) => {
-                        remove_tab(
-                            &mut view.tabs,
-                            &mut view.active,
-                            id,
-                            |tab| tab.id,
-                        );
-                        prune_tab_history(&mut view.history, id);
-                        // Fit widths are index-based; refresh them before
-                        // the reveal below reads them.
-                        view.measure_tab_widths(window, cx);
-                        if let Some(active) = view.active {
-                            view.select(active, window, cx);
-                            view.reveal_tab_activity(window, cx);
-                        }
-                        if view.resume_close(window, cx) {
-                            return;
-                        }
-                        if view.tabs.is_empty() {
-                            view.request_close(CloseTarget::Window, window, cx);
-                        }
-                        cx.notify();
+                        view.remove_closed_tabs(&[id], window, cx);
+                    }
+                    CloseTarget::Tabs(ids) => {
+                        view.remove_closed_tabs(&ids, window, cx);
                     }
                 }
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Drops the records of committed tab closes, then resumes queued
+    /// closes or closes the emptied window.
+    fn remove_closed_tabs(
+        &mut self,
+        ids: &[TabId],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        for &id in ids {
+            remove_tab(&mut self.tabs, &mut self.active, id, |tab| tab.id);
+            prune_tab_history(&mut self.history, id);
+        }
+        // Fit widths are index-based; refresh them before the reveal below
+        // reads them.
+        self.measure_tab_widths(window, cx);
+        if let Some(active) = self.active {
+            self.select(active, window, cx);
+            self.reveal_tab_activity(window, cx);
+        }
+        if self.resume_close(window, cx) {
+            return;
+        }
+        if self.tabs.is_empty() {
+            self.request_close(CloseTarget::Window, window, cx);
+        }
         cx.notify();
     }
 }
@@ -4646,13 +4978,6 @@ impl Render for WorkspaceView {
                         view.cancel_reorder(window, cx);
                         // GPUI skips raw keystroke observers after propagation
                         // stops, so this Escape cannot also reach the terminal.
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if view.close.confirmation.is_some()
-                        && event.keystroke.key == "escape"
-                    {
-                        view.cancel_close(window, cx);
                         cx.stop_propagation();
                     }
                 },
@@ -5306,111 +5631,21 @@ impl Render for WorkspaceView {
                     .child(status.clone()),
             );
         }
-        if let Some(target) = self.close.confirmation {
-            let unknown =
-                self.close.assessment.as_ref().is_some_and(|assessment| {
-                    assessment.jobs().contains(&huterm_core::JobState::Unknown)
-                });
-            let tab_title = match target {
-                CloseTarget::Tab(id) => self
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == id)
-                    .map(|tab| tab.title(self.config.tabs, cx))
-                    .unwrap_or_default(),
-                _ => String::new(),
-            };
-            let message = match (target, unknown) {
-                (CloseTarget::Application, true) => {
-                    "Some process state is unavailable. Quit Huterm and terminate all sessions?".to_owned()
-                }
-                (CloseTarget::Application, false) => {
-                    "Quit Huterm and terminate running jobs in all sessions?".to_owned()
-                }
-                (CloseTarget::Window, true) => {
-                    "Some process state is unavailable. Close this final view and terminate its session?".to_owned()
-                }
-                (CloseTarget::Window, false) => {
-                    "Close this final view and terminate running jobs in its session?".to_owned()
-                }
-                (CloseTarget::Tab(_), true) => {
-                    format!("Process state is unavailable. Close tab \"{tab_title}\" and terminate its terminal?")
-                }
-                (CloseTarget::Tab(_), false) => {
-                    format!("Close tab \"{tab_title}\" and terminate its running jobs?")
-                }
-            };
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(background.opacity(0.9))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .w((window.viewport_size().width - px(32.0))
-                                .clamp(px(0.0), px(460.0)))
-                            .flex_none()
-                            .p_4()
-                            .bg(background)
-                            .border_1()
-                            .border_color(foreground.opacity(0.3))
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(div().w_full().flex_none().child(message))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_end()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .id("cancel-close")
-                                            .px_3()
-                                            .py_1()
-                                            .on_click(cx.listener(
-                                                |view, _, window, cx| {
-                                                    view.cancel_close(
-                                                        window, cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child("Cancel"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("confirm-close")
-                                            .px_3()
-                                            .py_1()
-                                            .bg(foreground.opacity(0.15))
-                                            .on_click(cx.listener(
-                                                move |view, _, window, cx| {
-                                                    view.finish_close(
-                                                        target, window, cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child(
-                                                if target
-                                                    == CloseTarget::Application
-                                                {
-                                                    "Quit"
-                                                } else {
-                                                    "Close"
-                                                },
-                                            ),
-                                    ),
-                            ),
-                    ),
-            );
+        if let Some(target) = self.close.confirmation.clone() {
+            let model =
+                build_close_dialog(&self.close_dialog_input(&target, cx));
+            root = root.child(render_close_dialog(
+                &model,
+                self.close.dialog_focus,
+                window.viewport_size(),
+                Swatch::from_theme(&self.config.theme),
+                cx.listener(|view, _, window, cx| {
+                    view.cancel_close(window, cx);
+                }),
+                cx.listener(move |view, _, window, cx| {
+                    view.finish_close(target.clone(), window, cx);
+                }),
+            ));
         }
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
@@ -5610,8 +5845,11 @@ mod tests {
         close.cancel();
         let target = close.next_request(&mut queue, false, |_| true).unwrap();
         assert_eq!(target, CloseTarget::Tab(first));
-        close.begin_check(target);
-        assert_eq!(close.checked(true), Some(CloseDecision::Confirm(target)));
+        close.begin_check(target.clone());
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(target.clone()))
+        );
         assert_eq!(close.next_request(&mut queue, false, |_| true), None);
         assert_eq!(close.cancel(), Some(target));
         queue.observe(first, true, true, true);
@@ -6399,11 +6637,11 @@ mod tests {
             (CloseTarget::Window, CloseTarget::Tab(TabId::new(1))),
         ] {
             let mut close = CloseState::default();
-            close.begin_check(current);
+            close.begin_check(current.clone());
             close.queue(later);
             assert_eq!(
                 close.checked(true),
-                Some(CloseDecision::Confirm(current))
+                Some(CloseDecision::Confirm(current.clone()))
             );
             assert_eq!(
                 close.cancel(),
@@ -6494,13 +6732,13 @@ mod tests {
     #[test]
     fn queued_close_preserves_the_widest_requested_scope() {
         let tab = CloseTarget::Tab(TabId::new(1));
-        assert_eq!(merge_close(None, tab), tab);
+        assert_eq!(merge_close(None, tab.clone()), tab);
         assert_eq!(
-            merge_close(Some(tab), CloseTarget::Window),
+            merge_close(Some(tab.clone()), CloseTarget::Window),
             CloseTarget::Window
         );
         assert_eq!(
-            merge_close(Some(CloseTarget::Window), tab),
+            merge_close(Some(CloseTarget::Window), tab.clone()),
             CloseTarget::Window
         );
         assert_eq!(
@@ -6510,6 +6748,224 @@ mod tests {
         assert_eq!(
             merge_close(Some(tab), CloseTarget::Application),
             CloseTarget::Application
+        );
+    }
+
+    #[test]
+    fn tab_sets_union_with_tab_targets_and_lose_to_wider_scopes() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let set = CloseTarget::Tabs(vec![first, second]);
+        // A single tab still replaces a single tab.
+        assert_eq!(
+            merge_close(
+                Some(CloseTarget::Tab(first)),
+                CloseTarget::Tab(second)
+            ),
+            CloseTarget::Tab(second)
+        );
+        // Unions keep first-occurrence order; `request_close` restores
+        // window order before assessing.
+        assert_eq!(
+            merge_close(Some(CloseTarget::Tab(third)), set.clone()),
+            CloseTarget::Tabs(vec![third, first, second])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Tab(third)),
+            CloseTarget::Tabs(vec![first, second, third])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Tab(second)),
+            set
+        );
+        assert_eq!(
+            merge_close(
+                Some(set.clone()),
+                CloseTarget::Tabs(vec![second, third])
+            ),
+            CloseTarget::Tabs(vec![first, second, third])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Window),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            merge_close(Some(CloseTarget::Application), set.clone()),
+            CloseTarget::Application
+        );
+        // A queued set drops removed tabs and collapses to a single tab.
+        let mut close = CloseState::default();
+        close.queue(set);
+        assert_eq!(
+            close.take_pending(|id| id == second),
+            Some(CloseTarget::Tab(second))
+        );
+        close.queue(CloseTarget::Tabs(vec![first, second]));
+        assert_eq!(close.take_pending(|_| false), None);
+    }
+
+    #[test]
+    fn tab_closes_are_refused_while_a_confirmation_is_pending() {
+        let mut close = CloseState::default();
+        assert_eq!(close.check_tab_close_available(), Ok(()));
+        close.begin_check(CloseTarget::Tab(TabId::new(1)));
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Tab(TabId::new(1))))
+        );
+        assert_eq!(close.dialog_focus, DialogFocus::Primary);
+        assert_eq!(
+            close.check_tab_close_available(),
+            Err(CommandError::Unavailable(
+                "close confirmation pending".to_owned()
+            ))
+        );
+        close.cancel();
+        assert_eq!(close.check_tab_close_available(), Ok(()));
+    }
+
+    #[test]
+    fn a_set_check_widens_to_a_tab_queued_during_the_assessment() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Tabs(vec![first, second]));
+        close.queue(CloseTarget::Tab(third));
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Check(CloseTarget::Tabs(vec![
+                first, second, third
+            ])))
+        );
+        assert!(close.pending.is_none());
+    }
+
+    #[test]
+    fn tab_set_resolution_follows_window_order() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let order = [first, second, third];
+        assert_eq!(other_tabs(&order, first), vec![second, third]);
+        assert_eq!(other_tabs(&order, second), vec![first, third]);
+        assert_eq!(other_tabs(&order, third), vec![first, second]);
+        assert_eq!(other_tabs(&[first], first), Vec::<TabId>::new());
+        assert_eq!(tabs_after(&order, first), vec![second, third]);
+        assert_eq!(tabs_after(&order, second), vec![third]);
+        assert_eq!(tabs_after(&order, third), Vec::<TabId>::new());
+        assert_eq!(tabs_after(&order, TabId::new(9)), Vec::<TabId>::new());
+        assert_eq!(tabs_target(Vec::new()), None);
+        assert_eq!(tabs_target(vec![third]), Some(CloseTarget::Tab(third)));
+        assert_eq!(
+            tabs_target(vec![second, third]),
+            Some(CloseTarget::Tabs(vec![second, third]))
+        );
+    }
+
+    #[test]
+    fn close_dialog_input_maps_busy_terminals_to_tabs() {
+        use huterm_core::{JobProcess, JobState};
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let titles = vec![
+            TabTitle {
+                tab: first,
+                terminal: TerminalId::new(10),
+                title: "build".to_owned(),
+            },
+            TabTitle {
+                tab: second,
+                terminal: TerminalId::new(20),
+                title: "shell".to_owned(),
+            },
+            TabTitle {
+                tab: third,
+                terminal: TerminalId::new(30),
+                title: "editor".to_owned(),
+            },
+        ];
+        let cargo = JobProcess {
+            pid: 41,
+            group: 41,
+            group_started: None,
+            foreground: true,
+            identity: "cargo".to_owned(),
+            command: "cargo".to_owned(),
+            command_line: Some("cargo build".to_owned()),
+        };
+        let jobs = [
+            (TerminalId::new(10), JobState::Running(vec![cargo.clone()])),
+            (TerminalId::new(20), JobState::Idle),
+            (TerminalId::new(30), JobState::Unknown),
+        ];
+        let jobs = || jobs.iter().map(|(terminal, state)| (*terminal, state));
+        let row = ProcessRow {
+            command: "cargo".to_owned(),
+            pid: 41,
+            foreground: true,
+            command_line: Some("cargo build".to_owned()),
+        };
+
+        let single =
+            close_dialog_input(&CloseTarget::Tab(first), jobs(), &titles);
+        assert_eq!(
+            single.target,
+            CloseDialogTarget::Tab {
+                title: "build".to_owned()
+            }
+        );
+        assert_eq!(
+            single.groups,
+            vec![
+                ProcessGroup {
+                    tab_title: None,
+                    state: ProcessGroupState::Known(vec![row.clone()]),
+                },
+                ProcessGroup {
+                    tab_title: None,
+                    state: ProcessGroupState::Unknown,
+                },
+            ],
+            "idle tabs are omitted and single-tab dialogs have no headings"
+        );
+
+        let several = close_dialog_input(
+            &CloseTarget::Tabs(vec![first, second, third]),
+            jobs(),
+            &titles,
+        );
+        assert_eq!(several.target, CloseDialogTarget::Tabs { count: 3 });
+        assert_eq!(
+            several.groups,
+            vec![
+                ProcessGroup {
+                    tab_title: Some("build".to_owned()),
+                    state: ProcessGroupState::Known(vec![row.clone()]),
+                },
+                ProcessGroup {
+                    tab_title: Some("editor".to_owned()),
+                    state: ProcessGroupState::Unknown,
+                },
+            ]
+        );
+
+        let window = close_dialog_input(&CloseTarget::Window, jobs(), &titles);
+        assert_eq!(window.target, CloseDialogTarget::Window);
+        assert_eq!(window.groups, several.groups);
+
+        let unviewed =
+            [(TerminalId::new(99), JobState::Running(vec![cargo.clone()]))];
+        let quit = close_dialog_input(
+            &CloseTarget::Application,
+            unviewed.iter().map(|(terminal, state)| (*terminal, state)),
+            &titles,
+        );
+        assert_eq!(quit.target, CloseDialogTarget::Application);
+        assert_eq!(
+            quit.groups,
+            vec![ProcessGroup {
+                tab_title: Some("Detached terminal".to_owned()),
+                state: ProcessGroupState::Known(vec![row]),
+            }]
         );
     }
 

@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
-    FontWeight, HighlightStyle, Hsla, KeyBindingContextPredicate, KeyContext,
+    FontWeight, HighlightStyle, KeyBindingContextPredicate, KeyContext,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
     ScrollHandle, ScrollWheelEvent, Subscription, WeakEntity, Window, canvas,
     div, hsla, point, prelude::*, px,
@@ -37,9 +37,9 @@ use super::TerminalView;
 use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
 use crate::keymap::InstalledKeymap;
 use crate::ui::scrollbar::{
-    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
-    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
-    ThumbSize, TrackMargins, TrackPress,
+    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarGeometries,
+    ScrollbarGeometry, ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins,
+    TrackPress,
 };
 use crate::ui::text_field::{Changed, TextField};
 
@@ -105,33 +105,6 @@ const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     hold: INDICATOR_HOLD,
 };
 
-/// Theme colours the palette derives its presentation from.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PaletteColors {
-    pub(super) foreground: Hsla,
-    pub(super) background: Hsla,
-    pub(super) selection: Hsla,
-    pub(super) accent: Hsla,
-    pub(super) scrollbar: ScrollbarColors,
-}
-
-impl PaletteColors {
-    /// The palette draws no severity colours, so `danger` and `warning`
-    /// reuse the accent until the window constructs [`OverlayColors`]
-    /// directly.
-    fn overlay(self) -> OverlayColors {
-        OverlayColors {
-            foreground: self.foreground,
-            background: self.background,
-            selection: self.selection,
-            accent: self.accent,
-            danger: self.accent,
-            warning: self.accent,
-            scrollbar: self.scrollbar,
-        }
-    }
-}
-
 /// One configured quake profile for the profile picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct QuakeProfileRow {
@@ -176,7 +149,7 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) target: PaletteTarget,
     pub(super) keymap: InstalledKeymap,
     pub(super) availability: HashMap<CommandId, String>,
-    pub(super) colors: PaletteColors,
+    pub(super) colors: OverlayColors,
     pub(super) placement: PalettePlacement,
     pub(super) history: OwnedHistory,
     pub(super) profiles: Vec<QuakeProfileRow>,
@@ -456,7 +429,7 @@ pub(super) struct CommandPalette {
     tab_order: Vec<TabId>,
     availability: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
-    colors: PaletteColors,
+    colors: OverlayColors,
     placement: PalettePlacement,
     diagnostic: Option<String>,
     pending: Option<Pending>,
@@ -596,7 +569,7 @@ impl CommandPalette {
     /// palette.
     pub(super) fn set_presentation(
         &mut self,
-        colors: PaletteColors,
+        colors: OverlayColors,
         placement: PalettePlacement,
         profiles: Vec<QuakeProfileRow>,
         cx: &mut Context<'_, Self>,
@@ -2000,7 +1973,7 @@ impl Render for CommandPalette {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let swatch = Swatch::new(self.colors.overlay());
+        let swatch = Swatch::new(self.colors);
         let palette = cx.entity();
         let viewport = f32::from(window.viewport_size().height);
         let available = viewport - PANEL_TOP_INSET * 2.0 - PANEL_CHROME_HEIGHT;

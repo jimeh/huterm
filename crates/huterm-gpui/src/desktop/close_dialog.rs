@@ -6,8 +6,6 @@
 //! under its `confirming` context, and maps core's close assessment onto
 //! [`CloseDialogInput`].
 
-#![expect(dead_code, reason = "the window replaces its inline dialog later")]
-
 use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
 
 use super::overlay::{
@@ -260,11 +258,23 @@ pub(crate) fn build_close_dialog(input: &CloseDialogInput) -> CloseDialogModel {
 
 // ---- presentation ---------------------------------------------------------
 
-/// Which footer button holds keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which footer button holds keyboard focus. The primary button has it when
+/// a confirmation opens, so Enter confirms and Escape cancels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum DialogFocus {
     Cancel,
+    #[default]
     Primary,
+}
+
+impl DialogFocus {
+    /// The other button: with two buttons, next and previous both wrap to it.
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Cancel => Self::Primary,
+            Self::Primary => Self::Cancel,
+        }
+    }
 }
 
 const PANEL_WIDTH: f32 = 540.0;

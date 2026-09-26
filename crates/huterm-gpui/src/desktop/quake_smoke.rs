@@ -193,8 +193,11 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 let view =
                     root.downcast::<WorkspaceView>().ok().context("root")?;
                 view.update(cx, |view, cx| {
-                    let target =
-                        view.close.confirmation.context("no confirmation")?;
+                    let target = view
+                        .close
+                        .confirmation
+                        .clone()
+                        .context("no confirmation")?;
                     if name == "confirm_close" {
                         view.finish_close(target, window, cx);
                     } else {

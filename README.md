@@ -810,6 +810,19 @@ Default bindings differ per platform:
 | `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
 | `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
+#### Dialog
+
+These bind only while a close confirmation is showing (`confirming`), so
+they take nothing from terminal input. The primary button has focus when the
+dialog opens; a repeated close shortcut never confirms.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `dialog_confirm` | `enter` | `enter` |
+| `dialog_cancel` | `escape` | `escape` |
+| `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
+| `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
+
 Commands without a default binding are available through menus or config.
 
 On macOS, build a universal application bundle with:
