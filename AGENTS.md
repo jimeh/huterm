@@ -71,8 +71,11 @@ Keep view destruction and detachment separate from explicit close.
   Ghostty, it raises the soft `RLIMIT_NOFILE` and records the original, which
   `pty::spawn` passes to the vendored portable-pty `nofile_limit` setter so
   children start with the limit Huterm inherited. Without the raise, a
-  launchd soft limit of 256 fails the 29th terminal. The limit tests live in
-  `crates/huterm-core/tests/descriptor_limits.rs`, their own process.
+  launchd soft limit of 256 fails the 29th terminal. Tests that lower the
+  limit, exhaust the descriptor table, or call `raise_open_file_limit()` live
+  in `crates/huterm-core/tests/descriptor_limits.rs`, their own process. Core
+  unit tests may only raise the soft limit and must release filler
+  descriptors when they finish.
 - Runtime data and priority controls share a coalesced wake; keep control drains
   bounded so output cannot starve. Client input, resize, and presentation
   messages have their own bounded queue, taken ahead of PTY output and

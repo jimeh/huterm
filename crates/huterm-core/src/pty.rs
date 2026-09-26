@@ -770,6 +770,9 @@ mod tests {
         }
     }
 
+    /// Only ever raises the soft limit, so parallel unit tests keep every
+    /// descriptor they could open before. Tests that lower the limit or
+    /// exhaust the table run in `tests/descriptor_limits.rs` instead.
     #[cfg(unix)]
     fn raise_descriptor_limit() {
         use nix::sys::resource::{Resource, getrlimit, setrlimit};
