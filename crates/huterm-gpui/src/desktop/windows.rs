@@ -843,6 +843,8 @@ pub(super) fn run() -> anyhow::Result<()> {
 pub(super) fn run_with_startup(
     startup: impl FnOnce(&mut App) + 'static,
 ) -> anyhow::Result<()> {
+    // Production and every terminal-hosting smoke start here.
+    huterm_core::raise_open_file_limit();
     let loaded = config::load();
     if loaded.fatal {
         anyhow::bail!(

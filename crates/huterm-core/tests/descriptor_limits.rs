@@ -6,6 +6,7 @@
 //! restores any temporary limit and filler descriptors before releasing it.
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use std::sync::{Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use huterm_core::{RuntimeClient, TerminalRuntime};
+use huterm_core::{RuntimeClient, RuntimeError, TerminalRuntime};
 use huterm_protocol::{
     CellSize, GridSize, TerminalCommand, TerminalId, TerminalInput,
     TerminalPresentation,
@@ -26,6 +27,9 @@ const TERMINAL_COUNT: u64 = 200;
 /// `select(2)` cannot wait on descriptors numbered at or above this.
 const FD_SETSIZE: i32 = 1024;
 const DEADLINE: Duration = Duration::from_secs(10);
+/// Free descriptors offered to the last exhaustion attempt; a terminal needs
+/// fewer than this.
+const MAX_HEADROOM: rlim_t = 64;
 
 static SETUP: Once = Once::new();
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -131,14 +135,14 @@ fn fill_through(number: i32) -> Vec<File> {
     }
 }
 
-fn highest_open_descriptor() -> i32 {
+/// Lists open descriptors, including the one used to read the listing.
+fn open_descriptors() -> BTreeSet<i32> {
     std::fs::read_dir("/dev/fd")
         .unwrap()
         .filter_map(|entry| {
             entry.ok()?.file_name().into_string().ok()?.parse().ok()
         })
-        .max()
-        .unwrap()
+        .collect()
 }
 
 const ECHO_SCRIPT: &str = "printf READY; \
@@ -152,9 +156,17 @@ const ECHO_SCRIPT: &str = "printf READY; \
 fn terminal_above_descriptor_1024_round_trips_and_closes() {
     let _serial = serialized();
     let fillers = fill_through(FD_SETSIZE);
+    let before = open_descriptors();
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(1), &command(ECHO_SCRIPT))
             .unwrap();
+    let added: Vec<_> =
+        open_descriptors().difference(&before).copied().collect();
+    assert!(!added.is_empty(), "spawn opened no descriptors");
+    assert!(
+        added.iter().all(|fd| *fd > FD_SETSIZE),
+        "terminal descriptors not above {FD_SETSIZE}: {added:?}"
+    );
     let client = runtime.client();
     wait_for_text(&client, "READY");
     round_trip(&client, "ping");
@@ -215,19 +227,43 @@ fn descriptor_exhaustion_fails_terminal_creation() {
     let restore = SoftLimitRestore::capture();
     // Fill every gap first, so only the descriptors above the highest one in
     // use remain.
-    let fillers = fill_through(highest_open_descriptor());
+    let fillers = fill_through(*open_descriptors().last().unwrap());
     let highest =
         rlim_t::try_from(fillers.last().unwrap().as_raw_fd()).unwrap();
-    setrlimit(Resource::RLIMIT_NOFILE, highest + 4, restore.0.1).unwrap();
-    let result =
-        TerminalRuntime::spawn(TerminalId::new(3), &command("read -r _"));
-    drop(restore);
-    drop(fillers);
-    match result {
-        Err(error) => assert!(!error.to_string().is_empty()),
-        Ok(runtime) => {
-            shutdown_within(runtime, Duration::from_secs(5));
-            panic!("terminal started with only three free descriptors");
+    // Offer one more free descriptor per attempt until a terminal starts.
+    // Every earlier attempt must fail at creation without leaking.
+    let mut started = None;
+    for headroom in 3..=MAX_HEADROOM {
+        setrlimit(Resource::RLIMIT_NOFILE, highest + 1 + headroom, restore.0.1)
+            .unwrap();
+        let before = open_descriptors();
+        match TerminalRuntime::spawn(TerminalId::new(3), &command(ECHO_SCRIPT))
+        {
+            Err(RuntimeError::Pty(_) | RuntimeError::Spawn(_)) => assert_eq!(
+                open_descriptors(),
+                before,
+                "failed start with {headroom} free descriptors leaked"
+            ),
+            Err(error) => panic!(
+                "unexpected error with {headroom} free descriptors: {error:?}"
+            ),
+            Ok(runtime) => {
+                started = Some((headroom, runtime));
+                break;
+            }
         }
     }
+    let (headroom, runtime) = started.unwrap_or_else(|| {
+        panic!("no terminal started with {MAX_HEADROOM} free descriptors")
+    });
+    assert!(
+        headroom > 3,
+        "a terminal started with three free descriptors"
+    );
+    let client = runtime.client();
+    wait_for_text(&client, "READY");
+    round_trip(&client, "edge");
+    shutdown_within(runtime, Duration::from_secs(5));
+    drop(restore);
+    drop(fillers);
 }

@@ -220,8 +220,9 @@ Land each step as its own commit, with its tests.
   It implements Ghostty's `fixMaxFiles` with `nix::sys::resource`, including the
   2^20 search bound, and records the original limit in a `OnceLock`. A failed
   query records nothing.
-- Call it first in `src/main.rs`. The smoke and benchmark examples don't need
-  it.
+- Call it first in the shared GPUI desktop bootstrap, `run_with_startup`,
+  which production and the terminal-hosting smokes use. The native quit smoke,
+  which spawns its terminal outside that bootstrap, calls it itself.
 - In `pty::spawn`, pass the recorded original to the new `CommandBuilder`
   setter when one exists. Without a raise there is nothing to restore, so
   children simply inherit.
@@ -288,10 +289,12 @@ Confirm from the runner output that each new integration test ran by name.
 - The cancellation-during-wait test usually cancels before the worker enters
   `poll` on macOS, so it rarely detects a wrong timeout conversion. The read
   and write tests detect it reliably.
-- The exhaustion test fills every free descriptor below the highest one in use
-  before lowering the soft limit, so gaps cannot satisfy the spawn.
-- The `huterm` binary depends on `huterm-core` directly to call the raise before
-  `huterm_gpui::run()`.
+- The exhaustion test fills every free descriptor below the highest one in use,
+  then offers 3 free descriptors and one more per attempt. Each failure must be
+  a `Pty` or `Spawn` error that leaks nothing, and the first terminal that
+  starts must round-trip input. On macOS and Linux, 3 to 8 fail and 9 start.
+- When the system rejects a finite hard limit as the soft limit, the raise
+  binary-searches below it instead of keeping the original soft limit.
 - On the macOS 27 host, `setrlimit` accepted soft limits up to 1048575 despite
   `kern.maxfilesperproc` 245760, so the search stops just below 2^20.
 

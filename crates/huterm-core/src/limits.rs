@@ -37,10 +37,11 @@ pub(crate) fn original_open_file_limit() -> Option<(rlim_t, rlim_t)> {
     ORIGINAL.get().copied().flatten()
 }
 
-/// Sets the soft limit to a finite hard limit, or binary-searches the highest
-/// accepted soft limit below [`SEARCH_CEILING`] when the hard limit is
-/// unlimited. `set` applies a soft and hard limit and reports success.
-/// Returns the queried original, unchanged.
+/// Sets the soft limit to a finite hard limit. When the hard limit is
+/// unlimited, or the system rejects it as a soft limit, binary-searches the
+/// highest accepted soft limit below it or [`SEARCH_CEILING`]. `set` applies
+/// a soft and hard limit and reports success. Returns the queried original,
+/// unchanged.
 #[cfg(unix)]
 fn raise_with(
     original: Option<(rlim_t, rlim_t)>,
@@ -51,24 +52,21 @@ fn raise_with(
         return original;
     }
     let (mut low, mut high) = if hard == RLIM_INFINITY {
-        if soft >= SEARCH_CEILING {
-            return original;
-        }
         (soft, SEARCH_CEILING)
+    } else if set(hard, hard) {
+        return original;
     } else {
-        (hard, hard)
+        (soft, hard)
     };
-    loop {
+    while low + 1 < high {
         let candidate = low + (high - low) / 2;
         if set(candidate, hard) {
             low = candidate;
         } else {
             high = candidate;
         }
-        if low + 1 >= high {
-            return original;
-        }
     }
+    original
 }
 
 #[cfg(all(test, unix))]
@@ -118,6 +116,17 @@ mod tests {
         assert_eq!(original, Some((256, 10_240)));
         assert_eq!(limit.calls, [(10_240, 10_240)]);
         assert_eq!(limit.soft, 10_240);
+    }
+
+    #[test]
+    fn rejected_finite_hard_limit_falls_back_to_searching_below_it() {
+        let mut limit = FakeLimit::new(256, 5_000);
+        let original =
+            raise_with(Some((256, 10_240)), |soft, hard| limit.set(soft, hard));
+        assert_eq!(original, Some((256, 10_240)));
+        assert_eq!(limit.calls[0], (10_240, 10_240));
+        assert_eq!(limit.soft, 5_000);
+        assert!(limit.calls.iter().all(|(_, hard)| *hard == 10_240));
     }
 
     #[test]

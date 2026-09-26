@@ -64,9 +64,11 @@ Keep view destruction and detachment separate from explicit close.
   saw correct PTY master readability, write backpressure, drain, hangup, and
   socket-pair cancellation, and Ghostty's read thread polls its PTY the same
   way.
-- Every binary that hosts terminals, including the planned local server, calls
-  `huterm_core::raise_open_file_limit()` first at startup. Following Ghostty,
-  it raises the soft `RLIMIT_NOFILE` and records the original, which
+- The GPUI desktop bootstrap (`run_with_startup`) calls
+  `huterm_core::raise_open_file_limit()` before creating its application. Any
+  other binary that hosts terminals, such as the planned local server or a
+  smoke outside that bootstrap, must call it first at startup. Following
+  Ghostty, it raises the soft `RLIMIT_NOFILE` and records the original, which
   `pty::spawn` passes to the vendored portable-pty `nofile_limit` setter so
   children start with the limit Huterm inherited. Without the raise, a
   launchd soft limit of 256 fails the 29th terminal. The limit tests live in
