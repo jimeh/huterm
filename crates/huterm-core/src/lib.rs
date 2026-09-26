@@ -12,11 +12,13 @@ mod foreground;
 mod host_effects;
 mod input;
 mod jobs;
+mod limits;
 pub use host_effects::{
     DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
     HostEffectRecipientOptions, PendingHostEffect,
 };
 pub use jobs::{JobProcess, JobState};
+pub use limits::raise_open_file_limit;
 mod mux;
 mod presentation;
 mod pty;

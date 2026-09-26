@@ -2490,6 +2490,7 @@ name = "huterm"
 version = "0.13.0"
 dependencies = [
  "anyhow",
+ "huterm-core",
  "huterm-gpui",
 ]
 

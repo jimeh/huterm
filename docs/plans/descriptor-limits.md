@@ -1,6 +1,6 @@
 # Descriptor limits
 
-Status: planned for [#165](https://github.com/jimeh/huterm/issues/165).
+Status: implemented for [#165](https://github.com/jimeh/huterm/issues/165).
 
 ## Outcome and scope
 
@@ -273,6 +273,27 @@ The tests:
   `Huterm.app` from Finder once.
 
 Confirm from the runner output that each new integration test ran by name.
+
+## Implementation notes
+
+- `ReadinessWaiter::wait` reports `EINTR` as `Ready`, and a wait whose
+  cancellation descriptor fired as `Cancelled` even if the PTY is also ready.
+  Timeouts round up to whole milliseconds so short waits cannot spin.
+- Step 1 added nix's `poll`, `resource`, and `term` features together, because
+  its unit tests already raise the soft limit.
+- Linux moves PTY input into the line discipline on a kernel worker, so a full
+  master can regain room after `WouldBlock`. The unit tests refill until a
+  50 ms write wait times out. This is a wall-clock exception: no event
+  reports that the worker has finished.
+- The cancellation-during-wait test usually cancels before the worker enters
+  `poll` on macOS, so it rarely detects a wrong timeout conversion. The read
+  and write tests detect it reliably.
+- The exhaustion test fills every free descriptor below the highest one in use
+  before lowering the soft limit, so gaps cannot satisfy the spawn.
+- The `huterm` binary depends on `huterm-core` directly to call the raise before
+  `huterm_gpui::run()`.
+- On the macOS 27 host, `setrlimit` accepted soft limits up to 1048575 despite
+  `kern.maxfilesperproc` 245760, so the search stops just below 2^20.
 
 ## Open questions
 

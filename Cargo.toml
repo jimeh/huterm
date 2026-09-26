@@ -54,6 +54,7 @@ macos-updater = ["huterm-gpui/macos-updater"]
 
 [dependencies]
 anyhow.workspace = true
+huterm-core.workspace = true
 huterm-gpui.workspace = true
 
 [package.metadata.packager]

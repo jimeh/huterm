@@ -273,6 +273,9 @@ pub(crate) fn spawn(
     for (key, value) in &command.environment {
         builder.env(key, value);
     }
+    // Children start with the limit Huterm had before raising its own.
+    #[cfg(unix)]
+    builder.nofile_limit(crate::limits::original_open_file_limit());
 
     let child = pair
         .slave
