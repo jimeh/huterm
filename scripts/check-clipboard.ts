@@ -431,6 +431,15 @@ async function checkDirect(
         const replies = await readFile(join(terminal.directory, "replies")).catch(() => Buffer.alloc(0));
         return replies.subarray(replySize).includes(Buffer.from([0x03]));
       }, "completed reload keymap barrier");
+      // A retried chord can still be queued when the first ETX arrives. X
+      // delivers key events in order, so a typed marker drains them before
+      // later checks count reply bytes.
+      const drained = (await readFile(join(terminal.directory, "replies"))).length;
+      run(["xdotool", "type", "--clearmodifiers", "--", "reloaddrained"]);
+      await waitFor(async () => {
+        const replies = await readFile(join(terminal.directory, "replies"));
+        return replies.subarray(drained).includes(Buffer.from("reloaddrained"));
+      }, "reload keymap chord drain");
       const denied = Buffer.from(`${engine}-must-be-denied`);
       await emitProcessed(terminal, osc52(denied));
       await stableClipboard(clipboard, palette, `${engine} permission-deny-reload`);
