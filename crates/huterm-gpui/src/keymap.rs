@@ -625,6 +625,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
         )
     }));
     entries.extend(dialog_defaults());
+    entries.extend(notice_defaults());
     entries.extend(palette_defaults(platform));
     entries
 }
@@ -639,6 +640,18 @@ fn dialog_defaults() -> Vec<BindingEntry> {
         default("right", ids::DIALOG_FOCUS_NEXT, "Next Button"),
         default("shift-tab", ids::DIALOG_FOCUS_PREVIOUS, "Previous Button"),
         default("left", ids::DIALOG_FOCUS_PREVIOUS, "Previous Button"),
+    ]
+}
+
+/// Toast bindings, identical on both platforms. Their commands carry the
+/// `notices` context, so they match only while a toast has focus.
+fn notice_defaults() -> Vec<BindingEntry> {
+    vec![
+        default("down", ids::NOTICE_NEXT, "Next Notice"),
+        default("up", ids::NOTICE_PREVIOUS, "Previous Notice"),
+        default("enter", ids::NOTICE_RUN_ACTION, "Run Action"),
+        default("escape", ids::NOTICE_DISMISS, "Dismiss"),
+        default("delete", ids::NOTICE_DISMISS, "Dismiss"),
     ]
 }
 
@@ -1385,6 +1398,71 @@ mod tests {
             }
             assert_eq!(matched("enter", &palette), vec![ids::PALETTE_CONFIRM]);
             assert_eq!(matched("escape", &palette), vec![ids::PALETTE_BACK]);
+        }
+    }
+
+    #[test]
+    fn notice_defaults_match_only_while_a_toast_has_focus() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let compiled = compile(platform, &[]).unwrap();
+            for key in ["down", "up", "enter", "escape", "delete"] {
+                assert!(
+                    !compiled.reserved.is_reserved(&keystroke(key)),
+                    "{platform:?}: {key} reserved from terminal input"
+                );
+            }
+            let keymap = Keymap::new(compiled.bindings);
+            let notices = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("notices").unwrap(),
+            ];
+            let terminal = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Terminal").unwrap(),
+            ];
+            let confirming =
+                [KeyContext::parse("Workspace confirming").unwrap()];
+            let palette = [
+                KeyContext::parse("Workspace palette").unwrap(),
+                KeyContext::parse("Palette").unwrap(),
+            ];
+            let matched = |key: &str, contexts: &[KeyContext]| {
+                let (bindings, pending) =
+                    keymap.bindings_for_input(&[keystroke(key)], contexts);
+                assert!(!pending, "{platform:?}: {key} left a pending chord");
+                bindings.iter().map(command_of).collect::<Vec<_>>()
+            };
+            for (key, command) in [
+                ("down", ids::NOTICE_NEXT),
+                ("up", ids::NOTICE_PREVIOUS),
+                ("enter", ids::NOTICE_RUN_ACTION),
+                ("escape", ids::NOTICE_DISMISS),
+                ("delete", ids::NOTICE_DISMISS),
+            ] {
+                assert_eq!(
+                    matched(key, &notices),
+                    vec![command],
+                    "{platform:?}: {key} with a focused toast"
+                );
+                for (name, contexts) in [
+                    ("terminal", &terminal[..]),
+                    ("dialog", &confirming[..]),
+                    ("palette", &palette[..]),
+                ] {
+                    assert!(
+                        !matched(key, contexts).contains(&command),
+                        "{platform:?}: {key} dispatched a notice command in the {name}"
+                    );
+                }
+            }
+            assert_eq!(
+                matched("enter", &confirming),
+                vec![ids::DIALOG_CONFIRM]
+            );
+            assert_eq!(
+                matched("down", &palette),
+                vec![ids::PALETTE_SELECT_NEXT]
+            );
         }
     }
 

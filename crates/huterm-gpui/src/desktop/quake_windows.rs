@@ -756,7 +756,7 @@ fn recover(
         .update(cx, |root, window, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
             view.update(cx, |view, cx| {
-                view.status = Some(format!("Quake: {message}"));
+                view.report_failure("Quake", format!("Quake: {message}"), cx);
                 let state = view.quake.as_mut()?;
                 state.model.revision = state.model.revision.wrapping_add(1);
                 state.generation.set(state.model.revision);

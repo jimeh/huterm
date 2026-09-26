@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 export type State = Record<string, string>;
+/** One window notice from the smoke state: `notice<i>=<severity>|<source>|<message>`. */
+export type Notice = { severity: string; source: string; message: string };
 export function parseState(text: string): State {
   return Object.fromEntries(text.trim().split("\n").map(line => {
     const split = line.indexOf("=");
@@ -58,9 +60,26 @@ export function windowedBoundsOnDisplay(state: State): boolean {
     && x >= 0 && y >= 0 && x + width <= displayWidth && y + height <= displayHeight;
 }
 
+/** The notices of `prefix` (`w0.` by default), newest first. */
+export function notices(state: State, prefix = "w0."): Notice[] {
+  const count = Number(state[`${prefix}notices`] ?? "0");
+  return Array.from({ length: count }, (_, index) => {
+    const line = state[`${prefix}notice${index}`];
+    if (line === undefined) throw new Error(`missing ${prefix}notice${index}`);
+    const [severity, source, ...message] = line.split("|");
+    return { severity: severity ?? "", source: source ?? "", message: message.join("|") };
+  });
+}
+
+/** Whether the newest notice is an error command notice with exactly `message`. */
+export function newestFailureIs(state: State, message: string, prefix = "w0."): boolean {
+  const newest = notices(state, prefix)[0];
+  return newest?.severity === "error" && newest.source === "command" && newest.message === message;
+}
+
 export function assertTimeout(state: State, diagnostics: string): void {
   if (state["w0.pending"] !== "false" || state["w0.mode"] !== "Windowed") throw new Error("ignored request remains pending");
-  if (state["w0.status"] !== "Fullscreen transition timed out") throw new Error("missing window timeout status");
+  if (!newestFailureIs(state, "Fullscreen transition timed out")) throw new Error("missing window timeout notice");
   if (diagnostics.split("Fullscreen transition timed out").length - 1 !== 1) throw new Error("expected exactly one timeout diagnostic");
 }
 
@@ -489,7 +508,7 @@ done
       await stable("Windowed");
       console.log("FULLSCREEN_SMOKE property-only unchanged-bounds both-event-orders unrelated-property-idle");
       run(["xdotool", "key", "F11"]);
-      await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "ignored EWMH timeout");
+      await waitFor(async () => newestFailureIs(await state(), "Fullscreen transition timed out"), "ignored EWMH timeout");
       await waitFor(async () => stderr.includes("Fullscreen transition timed out"), "fullscreen timeout diagnostic");
       assertTimeout(await state(), stderr);
       console.log("FULLSCREEN_SMOKE no-ewmh one-status-error pending-cleared");
@@ -514,7 +533,7 @@ done
         await accepted("0 reload_config");
         await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
         await accepted("probe-native-pending");
-        await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "missing native completion timeout");
+        await waitFor(async () => newestFailureIs(await state(), "Fullscreen transition timed out"), "missing native completion timeout");
         assertTimeout(await state(), stderr);
         for (const action of ["toggle_native_fullscreen", "toggle_fullscreen"]) {
           await accepted(`0 ${action}`);
@@ -522,13 +541,13 @@ done
           const rejected = await state();
           if (rejected["w0.pending"] !== "false") throw new Error(`${action} dispatched during an unresolved native transition`);
           assertRestored(original, rejected, true);
-          if (rejected["w0.status"] !== "Fullscreen failed: native fullscreen transition has not completed") throw new Error(`${action} did not report unresolved native transition`);
+          if (!newestFailureIs(rejected, "Fullscreen failed: native fullscreen transition has not completed")) throw new Error(`${action} did not report unresolved native transition`);
         }
         await accepted("0 toggle_non_native_fullscreen");
         await waitFor(async () => {
           const rejected = await state();
           return Number(rejected.command_sequence) >= sequence && rejected["w0.pending"] === "false"
-            && rejected["w0.status"] === "Fullscreen failed: native fullscreen transition has not completed";
+            && newestFailureIs(rejected, "Fullscreen failed: native fullscreen transition has not completed");
         }, "unresolved native transition rejection");
         assertRestored(original, await state(), true);
         await pty("timeout");

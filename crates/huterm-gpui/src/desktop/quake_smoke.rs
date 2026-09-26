@@ -278,12 +278,19 @@ fn setup_dead_reporter(
 
 fn read_state(cx: &mut App) -> String {
     let mut output = format!(
-        "windows={}\nreloading={}\nkeepalive={}\nconfig_error={}\n",
+        "windows={}\nreloading={}\nkeepalive={}\n",
         cx.windows().len(),
         cx.global::<Desktop>().reloading,
         quake_windows::keep_alive(cx),
-        cx.global::<Desktop>().config_error.as_deref().unwrap_or("")
     );
+    // Desktop-wide notices new windows raise: configuration diagnostics,
+    // then failures latched while no window could show them, as
+    // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
+    let desktop = cx.global::<Desktop>();
+    let global: Vec<_> =
+        desktop.diagnostics.iter().chain(&desktop.latched).collect();
+    output
+        .push_str(&super::notices::smoke_lines("desktop.", global.into_iter()));
     match quake_windows::inspect_return_focus(cx) {
         Ok(focus) => writeln!(output, "{focus}").unwrap(),
         Err(error) => writeln!(
@@ -298,7 +305,9 @@ fn read_state(cx: &mut App) -> String {
             let Ok(root)=root.downcast::<WorkspaceView>() else {return;};
             let view=root.read(cx);
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
-            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}\nw{index}.status={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden(),view.status.as_deref().unwrap_or("")).unwrap();
+            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden()).unwrap();
+            // Window notices, newest first, in the same form as `desktop.`.
+            output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.ordinary_fullscreen={:?}\nw{index}.ordinary_pending={}", view.fullscreen.observed, view.fullscreen.is_pending()).unwrap();
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &view.native_fullscreen {

@@ -243,10 +243,13 @@ fn read_state(cx: &mut App) -> String {
                 let size = display.bounds().size;
                 writeln!(output, "w{index}.display={},{}", f32::from(size.width), f32::from(size.height)).unwrap();
             }
-            writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.status={}\nw{index}.confirming={}",
+            writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.confirming={}",
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
-                view.tabs.len(), view.status.as_deref().unwrap_or(""), view.close.confirmation.is_some()).unwrap();
+                view.tabs.len(), view.close.confirmation.is_some()).unwrap();
+            // Window notices, newest first: `w<i>.notices=<n>` then
+            // `w<i>.notice<j>=<severity>|<source>|<message>`.
+            output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}", view.presentation(), view.reveal.progress).unwrap();
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();

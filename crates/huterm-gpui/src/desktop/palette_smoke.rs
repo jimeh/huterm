@@ -158,10 +158,10 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 cx.notify();
                 Ok("idle".to_owned())
             }
-            "clear-status" => {
-                view.status = None;
+            "dismiss-notices" => {
+                view.notices.dismiss_all();
                 cx.notify();
-                Ok("status cleared".to_owned())
+                Ok("notices dismissed".to_owned())
             }
             "focus-terminal" => {
                 view.active_view()
@@ -255,13 +255,35 @@ fn core_state(
     Ok(output)
 }
 
+/// Space-separated notice fields for the single-line palette state.
+fn smoke_notices<'a>(
+    prefix: &str,
+    notices: impl Iterator<Item = &'a super::notices::NoticeContent>,
+) -> String {
+    let lines: Vec<String> = notices
+        .map(super::notices::NoticeContent::smoke_line)
+        .collect();
+    let mut output = format!("{prefix}notices={}", lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        write!(output, " {prefix}notice{index}={line:?}").unwrap();
+    }
+    output
+}
+
 fn read_state(cx: &mut App) -> String {
+    // Desktop notices new windows raise (diagnostics, then latched
+    // failures) as `desktop.notices=<n>` and Debug-quoted
+    // `desktop.notice<i>="<severity>|<source>|<message>"`; windows list
+    // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
     let mut output = format!(
-        "windows={} config.warning={:?} config.error={:?}\n",
+        "windows={} config.warning={:?} {}\n",
         cx.windows().len(),
         desktop.config.warning,
-        desktop.config_error
+        smoke_notices(
+            "desktop.",
+            desktop.diagnostics.iter().chain(&desktop.latched)
+        )
     );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
@@ -308,12 +330,12 @@ fn read_state(cx: &mut App) -> String {
                 .map_or_else(|| "none".to_owned(), |index| index.to_string());
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.status={:?} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} {} w{index}.text={:?}",
                 palette.is_some(),
                 window.is_window_active(),
                 view.tabs.len(),
                 view.busy,
-                view.status,
+                smoke_notices(&format!("w{index}."), view.notices.contents()),
                 terminal_text
             )
             .unwrap();

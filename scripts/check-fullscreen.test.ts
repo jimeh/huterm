@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid, windowedBoundsOnDisplay } from "./check-fullscreen";
+import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, newestFailureIs, notices, parseState, ptyMatchesGrid, windowedBoundsOnDisplay } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -9,12 +9,27 @@ describe("fullscreen evidence checker", () => {
       expect(() => assertRestored(before, { ...before, [`w0.${field}`]: "wrong" }, false)).toThrow();
     }
   });
-  test("ignored EWMH requests need one status error and a cleared pending request", () => {
-    const state = { "w0.mode": "Windowed", "w0.pending": "false", "w0.status": "Fullscreen transition timed out" };
+  test("ignored EWMH requests need one error notice and a cleared pending request", () => {
+    const state = { "w0.mode": "Windowed", "w0.pending": "false", "w0.notices": "1", "w0.notice0": "error|command|Fullscreen transition timed out" };
     expect(() => assertTimeout(state, "Fullscreen transition timed out\n")).not.toThrow();
     expect(() => assertTimeout(state, "")).toThrow();
     expect(() => assertTimeout(state, "Fullscreen transition timed out\nFullscreen transition timed out\n")).toThrow();
     expect(() => assertTimeout({ ...state, "w0.pending": "true" }, "Fullscreen transition timed out")).toThrow();
+    expect(() => assertTimeout({ ...state, "w0.notices": "0" }, "Fullscreen transition timed out\n")).toThrow("timeout notice");
+    expect(() => assertTimeout({ ...state, "w0.notice0": "warning|command|Fullscreen transition timed out" }, "Fullscreen transition timed out\n")).toThrow("timeout notice");
+    const older = { ...state, "w0.notices": "2", "w0.notice0": "error|command|Fullscreen failed: later", "w0.notice1": state["w0.notice0"] };
+    expect(() => assertTimeout(older, "Fullscreen transition timed out\n")).toThrow("timeout notice");
+  });
+  test("notices parse newest first and keep pipes inside messages", () => {
+    const state = parseState("w0.notices=2\nw0.notice0=error|terminal:zsh|a|b\nw0.notice1=warning|config|old");
+    expect(notices(state)).toEqual([
+      { severity: "error", source: "terminal:zsh", message: "a|b" },
+      { severity: "warning", source: "config", message: "old" },
+    ]);
+    expect(notices({ "w1.notices": "0" }, "w1.")).toEqual([]);
+    expect(() => notices({ "w0.notices": "1" })).toThrow("missing w0.notice0");
+    expect(newestFailureIs(state, "a|b")).toBe(false);
+    expect(newestFailureIs({ "w0.notices": "1", "w0.notice0": "error|command|x" }, "x")).toBe(true);
   });
   test("native restoration includes exact style, responder and app options", () => {
     const before = { "w0.mode": "Windowed", "w0.pending": "false", "w0.style": "123", "w0.shadow": "true", "w0.insets": "0,0,0,0", "w0.content": "10,10,800,600", "w0.responder": "456", "w0.options": "0", "w0.restore": "10,10,800,600", "w0.grid": "100,32", "w0.terminal": "0,32,800,568" };

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -52,6 +53,7 @@ use crate::ui::scrollbar::{
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
+use notices::Severity;
 use overlay::{Swatch, key_cap, mono_font_family, raised_panel};
 
 const INITIAL_COLUMNS: u16 = 100;
@@ -312,6 +314,8 @@ struct TerminalView {
     bell_flash_count: u64,
     visual_bell: bool,
     exited: bool,
+    /// The root process's exit status, once it has exited with one.
+    exit_code: Option<u32>,
     failed: bool,
     visible: bool,
     input_queue: InputQueue,
@@ -358,7 +362,12 @@ struct TerminalView {
     /// Shelf beside a display notch that holds the top tab bar, if any.
     notch_shelf: Option<Bounds<Pixels>>,
     theme: Theme,
-    status: Option<String>,
+    /// Failures waiting for the window's notice stack, oldest first. The
+    /// tab's activity drain collects them with [`TerminalView::refresh`].
+    failures: Vec<TerminalFailure>,
+    /// Wakes the tab's activity drain when a failure is queued outside it.
+    failure_wake: async_channel::Sender<()>,
+    failure_wakes: async_channel::Receiver<()>,
     selection: Option<Selection>,
     selected_text: Option<String>,
     selecting: bool,
@@ -379,7 +388,23 @@ struct TerminalView {
 struct RefreshResult {
     changed: bool,
     exited: bool,
+    /// The exit status when `exited` is set and the OS reported one.
+    exit_code: Option<u32>,
     more: bool,
+    /// Failures queued since the last drain, oldest first.
+    failures: Vec<TerminalFailure>,
+}
+
+/// Failures the terminal queues at most: later ones are dropped so a stuck
+/// runtime cannot grow the queue without bound.
+const FAILURE_CAPACITY: usize = 8;
+
+/// A terminal failure on its way to the window's notices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TerminalFailure {
+    pub(super) severity: Severity,
+    pub(super) title: &'static str,
+    pub(super) message: String,
 }
 
 struct TerminalViewAuthority {
@@ -411,12 +436,13 @@ impl TerminalView {
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
         let initial_presentation = terminal_presentation(&theme);
-        let (pending_presentation, presentation_status) =
+        let (pending_presentation, presentation_failure) =
             match presentation.update(initial_presentation.clone()) {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
                 Err(error) => (None, Some(error.to_string())),
             };
+        let (failure_wake, failure_wakes) = async_channel::bounded(1);
         let focus_subscription =
             cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
                 view.host_effects.note_focus();
@@ -486,7 +512,7 @@ impl TerminalView {
                 }
             }
         });
-        let view = TerminalView {
+        let mut view = TerminalView {
             client,
             presentation,
             pending_presentation,
@@ -546,7 +572,9 @@ impl TerminalView {
             fullscreen_insets: gpui::Edges::default(),
             notch_shelf: None,
             theme,
-            status: presentation_status,
+            failures: Vec::new(),
+            failure_wake,
+            failure_wakes,
             title: String::new(),
             metadata: TerminalMetadata::default(),
             metadata_revision: 0,
@@ -554,6 +582,7 @@ impl TerminalView {
             bell_flash_count: 0,
             visual_bell: config.terminal.bell.visual,
             exited: false,
+            exit_code: None,
             failed: false,
             visible: false,
             selection: None,
@@ -572,6 +601,9 @@ impl TerminalView {
             refresh_mode: config.terminal.refresh,
             frame_clock,
         };
+        if let Some(message) = presentation_failure {
+            view.report_failure(Severity::Error, "Terminal error", message);
+        }
         view.wake_pending_work();
         key_bench::start(window.window_handle(), cx);
         view
@@ -614,7 +646,11 @@ impl TerminalView {
             Ok(request) => request,
             Err(error) => {
                 self.scroll.fail();
-                self.set_status(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
                 return;
             }
         };
@@ -679,7 +715,14 @@ impl TerminalView {
                     }
                     Err(error) => {
                         view.scroll.fail();
-                        view.set_status(error.to_string())
+                        // The window's notice stack draws the failure; the
+                        // terminal itself has nothing new to render.
+                        view.report_failure(
+                            Severity::Error,
+                            "Terminal error",
+                            error.to_string(),
+                        );
+                        false
                     }
                 };
                 view.start_snapshot_if_needed(cx);
@@ -805,20 +848,18 @@ impl TerminalView {
                     );
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
-                    self.exited = true;
-                    self.clear_composition(cx);
-                    self.input_queue.close();
-                    self.mouse = MouseState::default();
-                    changed |= self.set_status(status.code.map_or_else(
-                        || "Process exited".into(),
-                        |code| format!("Process exited with status {code}"),
-                    ));
-                    self.scroll.invalidate();
+                    self.observe_exit(status.code, cx);
+                    changed = true;
                 }
                 Ok(Some(TerminalEvent::Failed { message, .. })) => {
                     self.failed = true;
-                    changed |= self.set_status(message);
+                    self.report_failure(
+                        Severity::Error,
+                        "Terminal failed",
+                        message,
+                    );
                     self.scroll.invalidate();
+                    changed = true;
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
@@ -831,8 +872,76 @@ impl TerminalView {
         RefreshResult {
             changed,
             exited: !previously_exited && self.exited,
+            exit_code: self.exit_code,
             more: host_count == 8 || event_count == 64,
+            failures: std::mem::take(&mut self.failures),
         }
+    }
+
+    /// Root-shell exit: input closes and mouse ownership resets. Exit is
+    /// not a failure; the window announces it only for a tab it keeps.
+    fn observe_exit(&mut self, code: Option<u32>, cx: &mut Context<'_, Self>) {
+        self.exited = true;
+        self.exit_code = code;
+        self.clear_composition(cx);
+        self.input_queue.close();
+        self.mouse = MouseState::default();
+        self.scroll.invalidate();
+    }
+
+    /// Queues a failure for the window's notices and wakes the tab's
+    /// activity drain. Returns whether it was queued: repeats of a waiting
+    /// message and failures beyond [`FAILURE_CAPACITY`] are dropped.
+    fn report_failure(
+        &mut self,
+        severity: Severity,
+        title: &'static str,
+        message: String,
+    ) -> bool {
+        if self.failures.len() >= FAILURE_CAPACITY
+            || self
+                .failures
+                .iter()
+                .any(|failure| failure.message == message)
+        {
+            return false;
+        }
+        self.failures.push(TerminalFailure {
+            severity,
+            title,
+            message,
+        });
+        let _ = self.failure_wake.try_send(());
+        true
+    }
+
+    /// Completes on runtime activity or a queued failure. `Err` means the
+    /// runtime stopped; the failure channel outlives the view's drain, so it
+    /// never closes first.
+    pub(super) async fn wait_for_activity(
+        client: &RuntimeClient,
+        failure_wakes: &async_channel::Receiver<()>,
+    ) -> Result<(), RuntimeError> {
+        let mut activity = std::pin::pin!(client.wait_for_activity());
+        let mut failure = std::pin::pin!(failure_wakes.recv());
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(result) = activity.as_mut().poll(context) {
+                return Poll::Ready(result);
+            }
+            match failure.as_mut().poll(context) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+                Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::Stopped)),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await
+    }
+
+    /// Whether the scroll pill is drawn, so the window can raise its
+    /// notices above it.
+    pub(super) fn scroll_pill_visible(&self) -> bool {
+        self.scroll.displayed() > 0
+            && self.scrollbars.opacity(Axis::Vertical) > 0.0
     }
 
     fn has_pending_work(&self) -> bool {
@@ -893,7 +1002,11 @@ impl TerminalView {
             Err(RuntimeError::Busy) => self.pending_presentation = Some(state),
             Err(error) => {
                 self.pending_presentation = None;
-                self.status = Some(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
             }
         }
         self.wake_pending_work();
@@ -988,9 +1101,11 @@ impl TerminalView {
         #[cfg(target_os = "macos")]
         if let Err(error) = self.option_composition.refresh_source() {
             self.clear_option_composition();
-            if self.set_status(format!("Option text input failed: {error}")) {
-                cx.notify();
-            }
+            self.report_failure(
+                Severity::Error,
+                "Option input",
+                format!("Option text input failed: {error}"),
+            );
         }
         #[cfg(target_os = "macos")]
         if self.option_composition.is_pending()
@@ -1023,11 +1138,11 @@ impl TerminalView {
                     Ok(None) => None,
                     Err(error) => {
                         self.clear_option_composition();
-                        if self.set_status(format!(
-                            "Option text input failed: {error}"
-                        )) {
-                            cx.notify();
-                        }
+                        self.report_failure(
+                            Severity::Error,
+                            "Option input",
+                            format!("Option text input failed: {error}"),
+                        );
                         return true;
                     }
                 }
@@ -1138,10 +1253,12 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         cx.stop_propagation();
-        if let Err(error) = self.run_command(&action.0, window, cx)
-            && self.set_status(error.to_string())
-        {
-            cx.notify();
+        if let Err(error) = self.run_command(&action.0, window, cx) {
+            self.report_failure(
+                Severity::Error,
+                "Command failed",
+                error.to_string(),
+            );
         }
     }
 
@@ -1323,7 +1440,11 @@ impl TerminalView {
                 }
             }
             Err(error) => {
-                self.set_status(error.to_owned());
+                self.report_failure(
+                    Severity::Error,
+                    "File drop",
+                    error.to_owned(),
+                );
             }
         }
         cx.notify();
@@ -1637,7 +1758,11 @@ impl TerminalView {
             match self.client.request_selection(selection.generation, range) {
                 Ok(request) => request,
                 Err(error) => {
-                    self.set_status(error.to_string());
+                    self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                     return;
                 }
             };
@@ -1656,7 +1781,11 @@ impl TerminalView {
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}
                     Err(error) => {
-                        view.set_status(error.to_string());
+                        view.report_failure(
+                            Severity::Error,
+                            "Terminal error",
+                            error.to_string(),
+                        );
                     }
                 }
                 cx.notify();
@@ -1831,7 +1960,11 @@ impl TerminalView {
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
             Err(error) => {
                 self.pending_resize = None;
-                self.status = Some(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
             }
         }
         self.wake_pending_work();
@@ -1864,10 +1997,10 @@ impl TerminalView {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
-            Ok(Admission::Full) => (false, self.set_status(format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
+            Ok(Admission::Full) => (false, self.report_failure(Severity::Warning, "Input rejected", format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
             Err(error) => {
                 self.mouse = MouseState::default();
-                (false, self.set_status(error.to_string()))
+                (false, self.report_failure(Severity::Error, "Terminal error", error.to_string()))
             }
         };
         self.wake_pending_work();
@@ -1908,7 +2041,11 @@ impl TerminalView {
             .retry(|input| self.client.offer_input(input))
         {
             self.mouse = MouseState::default();
-            return self.set_status(error.to_string());
+            return self.report_failure(
+                Severity::Error,
+                "Terminal error",
+                error.to_string(),
+            );
         }
         if let Some((grid, cell)) = self.pending_resize {
             match self.client.resize(grid, cell) {
@@ -1916,7 +2053,11 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_resize = None;
-                    return self.set_status(error.to_string());
+                    return self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1926,7 +2067,11 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_presentation = None;
-                    return self.set_status(error.to_string());
+                    return self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1962,15 +2107,6 @@ impl TerminalView {
         if self.scroll_to_bottom_key != key {
             self.scroll_to_bottom_key = key;
             cx.notify();
-        }
-    }
-
-    fn set_status(&mut self, status: String) -> bool {
-        if self.status.as_ref() == Some(&status) {
-            false
-        } else {
-            self.status = Some(status);
-            true
         }
     }
 }
@@ -2298,7 +2434,6 @@ impl Render for TerminalView {
             window.request_animation_frame();
         }
         let snapshot = self.snapshot.clone();
-        let status = self.status.clone();
         let bell_flash = self.bell.flashing(Instant::now());
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
@@ -2534,20 +2669,7 @@ impl Render for TerminalView {
         if self.resize_visibility.opacity > 0.0 {
             root = root.child(self.render_size_panel());
         }
-        root.when_some(status, |view, status| {
-            view.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .px_2()
-                    .py_1()
-                    .bg(color(self.theme.background))
-                    .text_color(color(self.theme.foreground))
-                    .child(status),
-            )
-        })
+        root
     }
 }
 

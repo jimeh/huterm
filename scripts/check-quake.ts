@@ -44,6 +44,11 @@ function profile(state: State, name: string): State | undefined {
   const prefix = entry[0].slice(0, -"profile".length);
   return Object.fromEntries(Object.entries(state).filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key.slice(prefix.length), value]));
 }
+/** Notice lines (`<severity>|<source>|<message>`) under `prefix`, such as `desktop.` or a profile's stripped keys. */
+function noticeLines(value: State, prefix = ""): string[] {
+  return Object.entries(value).filter(([key]) => key.startsWith(prefix) && /^notice\d+$/.test(key.slice(prefix.length))).map(([, line]) => line);
+}
+const hasFailure = (value: State, message: string, prefix = "") => noticeLines(value, prefix).some(line => line.startsWith("error|command|") && line.includes(message));
 function frame(value: State): [number, number, number, number] {
   const coordinates = value.frame?.split(",").map(Number);
   if (coordinates?.length !== 4 || coordinates.some(number => !Number.isFinite(number))) throw new Error(`invalid native frame: ${value.frame}`);
@@ -477,8 +482,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             throw new Error(`failed focus return undid successful hide: ${JSON.stringify(hidden)}`);
           }
           const warned = await state();
-          if (!profile(warned, "ordinary")?.status?.includes("focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
-          if (warned.config_error?.includes("focus restoration failed")) throw new Error("originated focus warning leaked into the global fallback");
+          if (!hasFailure(profile(warned, "ordinary") ?? {}, "focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
+          if (hasFailure(warned, "focus restoration failed", "desktop.")) throw new Error("originated focus warning leaked into the global fallback");
           console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning reporter=ordinary`);
           const reportResult = await command("app report_dead");
           if (!reportResult.startsWith("fallback=")) throw new Error(`dead reporter did not identify its fallback window: ${reportResult}`);
@@ -487,10 +492,11 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             const value = await state();
             const fallbackWindow = Object.entries(value).find(([key, id]) => key.endsWith(".window_id") && id === fallbackId)?.[0];
             if (!fallbackWindow) return false;
-            const fallbackStatus = fallbackWindow.replace(/window_id$/, "status");
-            return value.config_error?.includes("Quake: smoke dead reporter") === true
-              && value[fallbackStatus]?.includes("Quake: smoke dead reporter") === true
-              && Object.entries(value).every(([key, status]) => key === fallbackStatus || !key.endsWith(".status") || !status.includes("Quake: smoke dead reporter"));
+            const fallbackPrefix = fallbackWindow.slice(0, -"window_id".length);
+            const otherWindows = Object.keys(value).filter(key => key.endsWith(".window_id") && key !== fallbackWindow).map(key => key.slice(0, -"window_id".length));
+            return hasFailure(value, "Quake: smoke dead reporter", "desktop.")
+              && hasFailure(value, "Quake: smoke dead reporter", fallbackPrefix)
+              && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes("Quake: smoke dead reporter")));
           }, "dead reporter global and active-window fallback");
           console.log(`QUAKE_REPORTER ${engine} live=window dead=global-and-active-window fallback=${fallbackId}`);
         } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
@@ -641,7 +647,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           const beforeWidth = frame(beforeState)[2];
           await writeFile(config, configText('width = 0.4', `[[global_keybinding]]\nkey = "${grabChord}"\ncommand = "toggle_quake"`));
           await command("app reload_config");
-          await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"OS grab conflict rejection");
+          await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => /\.notice\d+$/.test(key) && value.startsWith("error|config|Config reload failed")),"OS grab conflict rejection");
           await command("app show_quake");await settled(true);
           const after = (await current())!;
           if (frame(after)[2] !== beforeWidth) throw new Error(`failed grab reload published new profile width: before=${before} after=${after.frame}`);
@@ -668,7 +674,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       if (await grab.exited !== 0) throw new Error(`external grab process failed: ${grabDiagnostics}`);
       await writeFile(config,"[quake.profiles.default]\nwidth = 0");
       await command("app reload_config");
-      await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => key.endsWith(".status") && value.includes("Config reload failed")),"invalid profile reload rejection");
+      await waitFor(async () => (await state()).reloading === "false" && Object.entries(await state()).some(([key,value]) => /\.notice\d+$/.test(key) && value.startsWith("error|config|Config reload failed")),"invalid profile reload rejection");
       await hotkey();await settled(false);await hotkey();await settled(true);
       await reload('hide_on_focus_loss = false\nanimation = "fade_slide_top"\nanimation_ms = 1000');
       await command("app show_quake");await settled(true);
@@ -791,7 +797,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       const absentShell = shell + ".absent";
       await import("node:fs/promises").then(fs => fs.rename(shell,absentShell));
       await hotkey();
-      await waitFor(async () => (await state()).windows === "0" && !!(await state()).config_error,"failed shell spawn clears association");
+      await waitFor(async () => (await state()).windows === "0" && hasFailure(await state(), "Cannot open tab:", "desktop."),"failed shell spawn clears association");
       await import("node:fs/promises").then(fs => fs.rename(absentShell,shell));
       await focusWitness();await hotkey();await settled(true);
       await waitFor(async () => !!(await current())?.text?.includes("READY:"),"summon retries after failed spawn");
@@ -908,7 +914,7 @@ export async function checkOrdinaryExit(executable: string, conflictChord?: stri
   const state = async () => parseState(await Bun.file(join(directory,"state")).text());
   try {
     await waitFor(async () => await Bun.file(join(directory,"state")).exists() && !!profile(await state(),"ordinary")?.text?.includes("ORDINARY_READY"),"ordinary window without registrations");
-    if (conflict && !(await state()).config_error?.includes("cannot register")) throw new Error("startup grab conflict did not report its failure");
+    if (conflict && !hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict did not report its failure");
     if ((await state()).keepalive !== String(unregister)) throw new Error("ordinary startup registration ownership disagrees with configuration");
     await publishCommand(join(directory,"command-0"),"ordinary close_window");
     await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true" || (unregister && (await state()).windows === "0"),"ordinary final-window assessment");

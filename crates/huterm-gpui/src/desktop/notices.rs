@@ -8,19 +8,20 @@
 //! catalog commands, hover pause, and action invocations through
 //! [`ToastHandlers`].
 
-#![expect(dead_code, reason = "the window replaces its status strings later")]
-
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClickEvent, Div, FocusHandle, Pixels, SharedString, Window, div,
-    prelude::*, px, relative, svg,
+    App, ClickEvent, Div, FocusHandle, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, SharedString, Window, div, prelude::*, px, relative,
+    svg,
 };
 use huterm_protocol::{CommandInvocation, TabId};
 
 use super::overlay::{Swatch, mono_font_family, raised_panel, severity_mark};
 use crate::assets::Icon;
+use crate::ui::animation::AnimationSchedule;
 
 /// How long a transient notice stays before expiring.
 pub(crate) const NOTICE_LIFETIME: Duration = Duration::from_secs(6);
@@ -35,6 +36,15 @@ pub(crate) enum Severity {
 }
 
 impl Severity {
+    /// The lowercase name used by smoke state dumps.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+
     fn glyph(self) -> &'static str {
         match self {
             Self::Error | Self::Warning => "!",
@@ -102,6 +112,100 @@ pub(crate) struct NoticeContent {
     pub(crate) location: Option<String>,
     pub(crate) actions: Vec<NoticeAction>,
     pub(crate) lifetime: Lifetime,
+}
+
+impl NoticeContent {
+    /// An expiring error from a window command; the common failure shape.
+    pub(crate) fn command_failure(
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity: Severity::Error,
+            source: NoticeSource::Command,
+            title: title.into(),
+            message: message.into(),
+            location: None,
+            actions: Vec::new(),
+            lifetime: Lifetime::Expiring,
+        }
+    }
+
+    /// A persistent configuration diagnostic from `source`, which must be
+    /// [`NoticeSource::Config`] or [`NoticeSource::Keymap`] so a reload can
+    /// replace it.
+    pub(crate) fn diagnostic(
+        severity: Severity,
+        source: NoticeSource,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity,
+            source,
+            title: title.into(),
+            message: message.into(),
+            location: None,
+            actions: Vec::new(),
+            lifetime: Lifetime::Persistent,
+        }
+    }
+
+    pub(crate) fn severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    pub(crate) fn location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
+    }
+
+    pub(crate) fn action(
+        mut self,
+        label: impl Into<String>,
+        command: CommandInvocation,
+    ) -> Self {
+        self.actions.push(NoticeAction {
+            label: label.into(),
+            command,
+        });
+        self
+    }
+
+    /// One smoke state line: `severity|source|message`, newlines replaced by
+    /// spaces. Terminal sources read `terminal:<tab title>`; consumers split
+    /// on the first two `|` so the message may contain more.
+    pub(crate) fn smoke_line(&self) -> String {
+        let source = match &self.source {
+            NoticeSource::Config => "config".to_owned(),
+            NoticeSource::Keymap => "keymap".to_owned(),
+            NoticeSource::Command => "command".to_owned(),
+            NoticeSource::Terminal { title, .. } => {
+                format!("terminal:{}", title.replace(['|', '\n'], " "))
+            }
+        };
+        format!(
+            "{}|{source}|{}",
+            self.severity.name(),
+            self.message.replace('\n', " ")
+        )
+    }
+}
+
+/// Smoke state lines for `notices`, newest first: `{prefix}notices=<n>` and
+/// one `{prefix}notice<i>=` line per notice in [`NoticeContent::smoke_line`]
+/// form.
+pub(crate) fn smoke_lines<'a>(
+    prefix: &str,
+    notices: impl ExactSizeIterator<Item = &'a NoticeContent>,
+) -> String {
+    let mut output = format!("{prefix}notices={}\n", notices.len());
+    for (index, notice) in notices.enumerate() {
+        writeln!(output, "{prefix}notice{index}={}", notice.smoke_line())
+            .expect("string formatting");
+    }
+    output
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -179,10 +283,58 @@ impl NoticeStack {
         removed || added
     }
 
+    /// Replaces the Config and Keymap notices with `diagnostics`, keeping
+    /// their precedence order in front, so every reload re-raises what
+    /// still fails and clears what was fixed. Returns whether anything
+    /// changed.
+    pub(crate) fn replace_diagnostics(
+        &mut self,
+        diagnostics: &[NoticeContent],
+        now: Instant,
+    ) -> bool {
+        let before = self.notices.len();
+        self.notices.retain(|notice| {
+            !matches!(
+                notice.content.source,
+                NoticeSource::Config | NoticeSource::Keymap
+            )
+        });
+        let removed = self.notices.len() != before;
+        for content in diagnostics.iter().rev() {
+            debug_assert!(matches!(
+                content.source,
+                NoticeSource::Config | NoticeSource::Keymap
+            ));
+            self.push(content.clone(), now);
+        }
+        removed || !diagnostics.is_empty()
+    }
+
     pub(crate) fn dismiss(&mut self, id: NoticeId) -> bool {
         let before = self.notices.len();
         self.notices.retain(|notice| notice.id != id);
         self.notices.len() != before
+    }
+
+    /// Dismisses every notice whose content matches `matches`.
+    pub(crate) fn dismiss_where(
+        &mut self,
+        matches: impl Fn(&NoticeContent) -> bool,
+    ) -> bool {
+        let before = self.notices.len();
+        self.notices.retain(|notice| !matches(&notice.content));
+        self.notices.len() != before
+    }
+
+    /// Dismisses the focused toast `id` and returns the toast that should
+    /// take keyboard focus: the one that moves into its slot, the nearest
+    /// remaining toast otherwise, or `None` when the stack is empty.
+    pub(crate) fn dismiss_focused(&mut self, id: NoticeId) -> Option<NoticeId> {
+        let slot = self.visible().iter().position(|notice| notice.id == id);
+        self.dismiss(id);
+        let visible = self.visible();
+        let index = slot.unwrap_or(0).min(visible.len().checked_sub(1)?);
+        visible.get(index).map(|notice| notice.id)
     }
 
     pub(crate) fn dismiss_all(&mut self) -> bool {
@@ -210,10 +362,6 @@ impl NoticeStack {
                 *deadline += now.saturating_duration_since(paused_from);
             }
         }
-    }
-
-    pub(crate) fn is_paused(&self) -> bool {
-        self.paused_since.is_some()
     }
 
     /// Removes notices whose deadline has passed. Returns whether any did.
@@ -246,16 +394,27 @@ impl NoticeStack {
         self.get(id)?.remaining(now)
     }
 
+    /// The window's wake for expiry: no deadline while paused or while
+    /// every notice is persistent, the earliest expiry otherwise. Never a
+    /// frame: the progress line advances only when something else repaints.
+    pub(crate) fn schedule(&self) -> AnimationSchedule {
+        self.next_deadline()
+            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at)
+    }
+
     pub(crate) fn get(&self, id: NoticeId) -> Option<&Notice> {
         self.notices.iter().find(|notice| notice.id == id)
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.notices.len()
-    }
-
     pub(crate) fn is_empty(&self) -> bool {
         self.notices.is_empty()
+    }
+
+    /// Every notice's content, newest first.
+    pub(crate) fn contents(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &NoticeContent> {
+        self.notices.iter().map(|notice| &notice.content)
     }
 
     /// The toasts shown, newest first.
@@ -298,9 +457,11 @@ pub(crate) type DismissHandler = Rc<dyn Fn(NoticeId, &mut Window, &mut App)>;
 /// Reports an action link click or `notice_run_action`.
 pub(crate) type ActionHandler =
     Rc<dyn Fn(NoticeId, CommandInvocation, &mut Window, &mut App)>;
-/// Reports the pointer entering (`true`) or leaving (`false`) any toast, for
-/// pause and resume.
-pub(crate) type HoverHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// Reports the pointer entering (`true`) or leaving (`false`) a toast, for
+/// pause and resume. A toast dismissed under the pointer never reports
+/// leaving, so owners key hover state by notice and drop gone ids.
+pub(crate) type HoverHandler =
+    Rc<dyn Fn(NoticeId, bool, &mut Window, &mut App)>;
 
 /// Callbacks the toast stack reports through.
 #[derive(Clone)]
@@ -436,6 +597,14 @@ fn render_toast(
     }
     let dismiss = Rc::clone(&handlers.dismiss);
     let hover = Rc::clone(&handlers.hover);
+    // Presses stay on the toast: a click must not start a terminal selection
+    // or application mouse input beneath it.
+    let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+        cx.stop_propagation();
+    };
+    let release = |_: &MouseUpEvent, _: &mut Window, cx: &mut App| {
+        cx.stop_propagation();
+    };
     let mut toast = raised_panel(swatch, 9.0)
         .id(("toast", id.0))
         .w_full()
@@ -448,8 +617,14 @@ fn render_toast(
         .pr(px(8.0))
         .py(px(10.0))
         .shadow(shadow)
+        .on_mouse_down(MouseButton::Left, stop)
+        .on_mouse_down(MouseButton::Right, stop)
+        .on_mouse_down(MouseButton::Middle, stop)
+        .on_mouse_up(MouseButton::Left, release)
+        .on_mouse_up(MouseButton::Right, release)
+        .on_mouse_up(MouseButton::Middle, release)
         .on_hover(move |hovering: &bool, window, cx| {
-            hover(*hovering, window, cx);
+            hover(id, *hovering, window, cx);
         })
         .child(
             div()
@@ -632,7 +807,6 @@ mod tests {
         );
         let hover = start + Duration::from_secs(4);
         stack.pause(hover);
-        assert!(stack.is_paused());
         assert_eq!(stack.next_deadline(), None, "no timer while paused");
         let long_after = start + Duration::from_secs(60);
         assert!(!stack.expire(long_after));
@@ -658,6 +832,93 @@ mod tests {
             stack.get(newer).unwrap().deadline,
             Some(mid + NOTICE_LIFETIME + Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn the_window_schedule_wakes_only_for_the_earliest_unpaused_expiry() {
+        let start = Instant::now();
+        let mut stack = NoticeStack::default();
+        assert_eq!(stack.schedule(), AnimationSchedule::IDLE);
+        stack.push(
+            content(NoticeSource::Config, "config", Lifetime::Persistent),
+            start,
+        );
+        stack.push(
+            content(NoticeSource::Keymap, "keymap", Lifetime::Persistent),
+            start,
+        );
+        assert_eq!(
+            stack.schedule(),
+            AnimationSchedule::IDLE,
+            "persistent notices need no wakeups"
+        );
+        let later = start + Duration::from_secs(3);
+        stack.push(content(terminal(1), "late", Lifetime::Expiring), later);
+        stack.push(
+            content(NoticeSource::Command, "early", Lifetime::Expiring),
+            start,
+        );
+        let schedule = stack.schedule();
+        assert!(!schedule.frame, "no per-frame work for the progress line");
+        assert_eq!(schedule.deadline, Some(start + NOTICE_LIFETIME));
+        stack.pause(start + Duration::from_secs(1));
+        assert_eq!(stack.schedule(), AnimationSchedule::IDLE, "paused");
+        stack.resume(start + Duration::from_secs(2));
+        assert_eq!(
+            stack.schedule().deadline,
+            Some(start + NOTICE_LIFETIME + Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn dismissing_the_focused_toast_focuses_the_one_that_takes_its_slot() {
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        let ids: Vec<NoticeId> = (0..5)
+            .map(|index| {
+                stack.push(
+                    content(
+                        terminal(index),
+                        &format!("n{index}"),
+                        Lifetime::Persistent,
+                    ),
+                    now,
+                )
+            })
+            .collect();
+        // Visible, newest first: n4, n3, n2; n1 and n0 overflow.
+        assert_eq!(
+            stack.dismiss_focused(ids[3]),
+            Some(ids[2]),
+            "the older toast moves into the middle slot"
+        );
+        assert_eq!(
+            stack
+                .visible()
+                .iter()
+                .map(|notice| notice.id)
+                .collect::<Vec<_>>(),
+            [ids[4], ids[2], ids[1]],
+            "an overflow toast becomes visible"
+        );
+        assert_eq!(
+            stack.dismiss_focused(ids[1]),
+            Some(ids[0]),
+            "the promoted toast takes the last slot"
+        );
+        assert_eq!(
+            stack.dismiss_focused(ids[0]),
+            Some(ids[2]),
+            "last slot: nearest remaining"
+        );
+        assert_eq!(stack.dismiss_focused(ids[4]), Some(ids[2]));
+        assert_eq!(
+            stack.dismiss_focused(ids[2]),
+            None,
+            "focus returns to the terminal"
+        );
+        assert!(stack.is_empty());
+        assert_eq!(stack.dismiss_focused(ids[2]), None, "already gone");
     }
 
     #[test]

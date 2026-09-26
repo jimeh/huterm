@@ -72,8 +72,8 @@ fn startup_progress(cx: &mut App) -> String {
             let native = view.native_fullscreen.as_ref()
                 .map(|adapter| adapter.inspect().map(|text| text.replace('\n', " ")));
             format!(
-                "tabs={} busy={} status={:?} window_active={} frame_pending={} native={native:?} active=[{terminal}]",
-                view.tabs.len(), view.busy, view.status, window.is_window_active(),
+                "tabs={} busy={} notices={} window_active={} frame_pending={} native={native:?} active=[{terminal}]",
+                view.tabs.len(), view.busy, view.notices.contents().len(), window.is_window_active(),
                 view.frame_clock.pending_callbacks()
             )
         });
@@ -92,14 +92,13 @@ fn terminal_progress(terminal: &super::TerminalView) -> String {
             .collect::<String>()
     });
     format!(
-        "visible={} exited={} failed={} snapshot_sequence={} pacer={:?} scroll={:?} status={:?} text={:?}",
+        "visible={} exited={} failed={} snapshot_sequence={} pacer={:?} scroll={:?} text={:?}",
         terminal.visible,
         terminal.exited,
         terminal.failed,
         terminal.snapshot_sequence,
         terminal.snapshot_pacer,
         terminal.scroll,
-        terminal.status,
         text.map(|text| text.chars().take(100).collect::<String>())
     )
 }
@@ -138,7 +137,14 @@ fn advance(
                 "unexpected native fullscreen adapter or fallback state"
             );
             adapters += usize::from(view.native_fullscreen.is_some());
-            ensure!(view.status.is_none(), "startup status: {:?}", view.status);
+            ensure!(
+                view.notices.is_empty(),
+                "startup notices: {:?}",
+                view.notices
+                    .contents()
+                    .map(super::notices::NoticeContent::smoke_line)
+                    .collect::<Vec<_>>()
+            );
             let ready = view.active_view().is_some_and(|terminal| {
                 terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
                     snapshot

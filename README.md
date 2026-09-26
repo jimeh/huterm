@@ -667,6 +667,7 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `exited` | That terminal's root shell has exited. |
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation is open. |
+| `notices` | A notice toast has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
@@ -713,8 +714,8 @@ Commands, their scope, and arguments:
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
 | `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
 | `open_menu` | Window | |
-| `focus_notices` | Window | |
-| `dismiss_all_notices` | Window | |
+| `focus_notices` | Window | Focus the newest notice toast; unavailable without notices. |
+| `dismiss_all_notices` | Window | Dismiss every notice; unavailable without notices. |
 | `dialog_confirm` | Window | Bound only while `confirming`. |
 | `dialog_cancel` | Window | Bound only while `confirming`. |
 | `dialog_focus_next` | Window | Bound only while `confirming`. |
@@ -822,6 +823,22 @@ dialog opens; a repeated close shortcut never confirms.
 | `dialog_cancel` | `escape` | `escape` |
 | `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
 | `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
+
+#### Notices
+
+Errors and warnings appear as toasts in the bottom-right corner of the
+terminal. Configuration and keybinding diagnostics stay until a reload fixes
+them; command and terminal failures expire after six seconds unless hovered or
+focused. These bind only while a toast has focus (`notices`), which
+`focus_notices` gives the newest toast, so they take nothing from terminal
+input. Dismissing the last focused toast returns focus to the terminal.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `notice_next` | `down` | `down` |
+| `notice_previous` | `up` | `up` |
+| `notice_run_action` | `enter` | `enter` |
+| `notice_dismiss` | `escape`, `delete` | `escape`, `delete` |
 
 Commands without a default binding are available through menus or config.
 

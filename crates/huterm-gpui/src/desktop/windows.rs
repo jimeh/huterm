@@ -28,6 +28,10 @@ use super::close_dialog::{
     CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
+use super::notices::{
+    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
+    ToastHandlers, render_notice_stack,
+};
 use super::overlay::{OverlayColors, Swatch};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
@@ -51,7 +55,7 @@ use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, TerminalId,
     WorkspaceId, catalog, validate, validate_supplied,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -485,7 +489,12 @@ struct Desktop {
     runtime: Arc<DesktopRuntime>,
     config: Config,
     config_path: PathBuf,
-    config_error: Option<String>,
+    /// Persistent Config and Keymap notices for the active configuration.
+    /// New windows raise them; every reload replaces them.
+    diagnostics: Vec<NoticeContent>,
+    /// Failures reported while no window could show them, such as a startup
+    /// hotkey conflict. New windows raise them until a reload clears them.
+    latched: Vec<NoticeContent>,
     windows: Vec<WeakEntity<WorkspaceView>>,
     keymap: InstalledKeymap,
     frequency: CommandFrequency,
@@ -570,19 +579,28 @@ impl Desktop {
     }
 }
 
-/// Shows `message` in the active window's status line, if there is one.
-fn show_active_window_status(cx: &mut App, message: String) {
+/// Raises `message` as a command failure in the active window, if there is
+/// one.
+fn show_active_window_failure(cx: &mut App, message: String) {
     let Some(window) = cx.active_window() else {
         return;
     };
     let _ = window.update(cx, |root, _, cx| {
         if let Ok(view) = root.downcast::<WorkspaceView>() {
             view.update(cx, |view, cx| {
-                view.status = Some(message);
-                cx.notify();
+                view.report_failure("Command failed", message, cx);
             });
         }
     });
+}
+
+/// Records a failure for windows that do not exist yet. Repeats of a waiting
+/// message collapse.
+fn latch_failure(cx: &mut App, message: &str) {
+    let latched = &mut cx.global_mut::<Desktop>().latched;
+    if !latched.iter().any(|content| content.message == message) {
+        latched.push(NoticeContent::command_failure("Command failed", message));
+    }
 }
 
 fn report_deferred_failure(
@@ -600,7 +618,7 @@ fn report_deferred_failure_with_global_latch(
 ) {
     let latch_if_dead = reporter.is_some();
     if reporter.is_none() {
-        cx.global_mut::<Desktop>().config_error = Some(message.clone());
+        latch_failure(cx, &message);
     }
     report_deferred_failure_inner(cx, reporter, message, latch_if_dead);
 }
@@ -616,15 +634,14 @@ fn report_deferred_failure_inner(
         if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade())
         {
             reporter.update(cx, |view, cx| {
-                view.status = Some(message);
-                cx.notify();
+                view.report_failure("Command failed", message, cx);
             });
             return;
         }
         if latch_if_dead {
-            cx.global_mut::<Desktop>().config_error = Some(message.clone());
+            latch_failure(cx, &message);
         }
-        show_active_window_status(cx, message);
+        show_active_window_failure(cx, message);
     });
 }
 
@@ -778,67 +795,135 @@ fn quake_profile_rows(
         .collect()
 }
 
-fn set_dispatch_error<T>(
-    palette: &mut Option<T>,
-    status: &mut Option<String>,
-    error: &CommandError,
-) {
-    *palette = None;
-    *status = Some(error.to_string());
-}
-
-/// Binds the startup keymap and returns its reserved keys with all diagnostics
-/// in precedence order: config error, keymap error, conflicts, then warning.
+/// Binds the startup keymap and returns its reserved keys with the
+/// persistent diagnostics in precedence order: config error, keymap error,
+/// conflicts, then warning.
 ///
 /// A broken binding never blocks startup: defaults apply and the diagnostic
 /// shows like any other non-fatal configuration error.
 pub(super) fn install_startup_keymap(
     cx: &mut App,
     loaded: &config::LoadedConfig,
-) -> (InstalledKeymap, Option<String>) {
+) -> (InstalledKeymap, Vec<NoticeContent>) {
     let (compiled, keymap_error) = compile_keymap(&loaded.config);
-    let conflicts =
-        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
+    let diagnostics = config_diagnostics(
+        &loaded.path,
+        loaded.error.as_deref(),
+        keymap_error.as_deref(),
+        &compiled.conflicts,
+        loaded.warning.as_deref(),
+    );
     let keymap = bind_keymap(cx, compiled);
-    let diagnostic = combine_config_diagnostics([
-        loaded.error.clone(),
-        keymap_error.map(|error| format!("{}: {error}", loaded.path.display())),
-        conflicts,
-        loaded.warning.clone(),
-    ]);
-    (keymap, diagnostic)
+    (keymap, diagnostics)
 }
 
-fn combine_config_diagnostics(
-    diagnostics: [Option<String>; 4],
-) -> Option<String> {
+/// A notice action that runs `id` without arguments.
+fn bare(id: huterm_protocol::CommandId) -> CommandInvocation {
+    CommandInvocation::new(id, Vec::new())
+}
+
+/// The persistent notices for a loaded configuration, one per diagnostic,
+/// in precedence order. Each offers Open Settings; the config error also
+/// offers Reload.
+fn config_diagnostics(
+    path: &Path,
+    error: Option<&str>,
+    keymap_error: Option<&str>,
+    conflicts: &[String],
+    warning: Option<&str>,
+) -> Vec<NoticeContent> {
+    let location = path.display().to_string();
+    let open_settings = || bare(ids::OPEN_SETTINGS);
+    let mut diagnostics = Vec::new();
+    if let Some(error) = error {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Error,
+                NoticeSource::Config,
+                "Configuration error",
+                error,
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings())
+            .action("Reload", bare(ids::RELOAD_CONFIG)),
+        );
+    }
+    if let Some(error) = keymap_error {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Error,
+                NoticeSource::Keymap,
+                "Keybinding error",
+                error,
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings()),
+        );
+    }
+    if !conflicts.is_empty() {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Warning,
+                NoticeSource::Keymap,
+                "Keybinding conflicts",
+                conflicts.join("; "),
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings()),
+        );
+    }
+    if let Some(warning) = warning {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Warning,
+                NoticeSource::Config,
+                "Configuration warning",
+                warning,
+            )
+            .location(location)
+            .action("Open Settings", open_settings()),
+        );
+    }
     diagnostics
-        .into_iter()
-        .flatten()
-        .reduce(|mut combined, diagnostic| {
-            combined.push_str("; ");
-            combined.push_str(&diagnostic);
-            combined
-        })
 }
 
-fn reload_diagnostic(
-    cx: &mut App,
+/// The persistent notices after a successful reload: binding conflicts and
+/// the config warning. A reload that failed never reaches this.
+fn reload_diagnostics(
+    path: &Path,
     config: &Config,
     compiled: &CompiledKeymap,
-) -> Option<String> {
-    cx.global_mut::<Desktop>()
-        .config_error
-        .clone_from(&config.warning);
+) -> Vec<NoticeContent> {
     if let Some(warning) = &config.warning {
         eprintln!("Huterm configuration warning: {warning}");
     }
-    combine_config_diagnostics([
+    config_diagnostics(
+        path,
         None,
         None,
-        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; ")),
-        config.warning.clone(),
-    ])
+        &compiled.conflicts,
+        config.warning.as_deref(),
+    )
+}
+
+/// The configuration notices after a failed reload: the failure, then the
+/// active configuration's own diagnostics, which still apply.
+fn failed_reload_diagnostics(
+    error: &str,
+    retained: &[NoticeContent],
+) -> Vec<NoticeContent> {
+    let mut diagnostics = vec![
+        NoticeContent::diagnostic(
+            Severity::Error,
+            NoticeSource::Config,
+            "Configuration reload failed",
+            format!("Config reload failed: {error}"),
+        )
+        .action("Open Settings", bare(ids::OPEN_SETTINGS))
+        .action("Reload", bare(ids::RELOAD_CONFIG)),
+    ];
+    diagnostics.extend(retained.iter().cloned());
+    diagnostics
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
@@ -878,7 +963,7 @@ pub(super) fn run_with_startup(
         cx.activate(true);
     });
     application.run(move |cx| {
-        let (keymap, config_error) = install_startup_keymap(cx, &loaded);
+        let (keymap, diagnostics) = install_startup_keymap(cx, &loaded);
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         let updater =
             native_updater::Updater::initialize(loaded.config.updates);
@@ -886,7 +971,8 @@ pub(super) fn run_with_startup(
             quake: quake_windows::Registry::default(),
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
-            config_error,
+            diagnostics,
+            latched: Vec::new(),
             config_path: loaded.path,
             windows: Vec::new(),
             keymap,
@@ -920,8 +1006,8 @@ pub(super) fn run_with_startup(
                     format!("Command `{}` failed: {error}", action.0.id);
                 eprintln!("Huterm {message}");
                 // Global action callbacks run while the dispatching window
-                // is borrowed, so update its status after it is returned.
-                cx.defer(move |cx| show_active_window_status(cx, message));
+                // is borrowed, so raise the notice after it is returned.
+                cx.defer(move |cx| show_active_window_failure(cx, message));
             }
         });
         cx.on_window_closed(|cx| {
@@ -1294,7 +1380,10 @@ fn open_window_with_profile(
                 busy: false,
                 close: CloseState::default(),
                 exited_tabs: ExitQueue::default(),
-                status: cx.global::<Desktop>().config_error.clone(),
+                notices: NoticeStack::default(),
+                notice_focus: cx.focus_handle(),
+                focused_notice: None,
+                hovered_notices: HashSet::new(),
                 palette: None,
                 palette_generation: 0,
                 palette_refresh_state: None,
@@ -1304,6 +1393,13 @@ fn open_window_with_profile(
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
+                view.raise_desktop_notices(cx);
+                let notice_focus = view.notice_focus.clone();
+                cx.on_focus_out(&notice_focus, window, |view, _, _, cx| {
+                    view.focused_notice = None;
+                    view.sync_notice_pause(cx);
+                })
+                .detach();
                 quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.refresh_tab_visibility(window, cx);
@@ -1349,7 +1445,11 @@ fn open_window_with_profile(
                     && (!profile_requested || view.quake.is_some())
                     && let Err(error) = view.new_tab(window, cx)
                 {
-                    view.status = Some(error.to_string());
+                    view.report_failure(
+                        "Cannot open tab",
+                        error.to_string(),
+                        cx,
+                    );
                 }
             });
             if profile_requested && view.read(cx).quake.is_none() {
@@ -1430,7 +1530,7 @@ impl refresh::Animated for WorkspaceView {
         if let Some(state) = &self.quake {
             next = next.merge(state.frame_schedule());
         }
-        next
+        next.merge(self.notices.schedule())
     }
 
     fn advance_animation(
@@ -1443,6 +1543,9 @@ impl refresh::Animated for WorkspaceView {
         if frame && let Some(state) = &mut self.quake {
             state.window_frame(now);
         }
+        if self.notices.expire(now) {
+            self.reconcile_notices(window, cx);
+        }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
         }
@@ -1454,6 +1557,284 @@ impl refresh::Animated for WorkspaceView {
             cx.notify();
         }
         self.update_pointer_probe(now, window);
+    }
+}
+
+impl WorkspaceView {
+    /// Raises an expiring command failure notice.
+    fn report_failure(
+        &mut self,
+        title: &str,
+        message: impl Into<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.notify(NoticeContent::command_failure(title, message), cx);
+    }
+
+    /// Raises `content` and repaints.
+    fn notify(&mut self, content: NoticeContent, cx: &mut Context<'_, Self>) {
+        self.notices.push(content, Instant::now());
+        cx.notify();
+    }
+
+    /// Raises the desktop's configuration diagnostics and any failures
+    /// latched while no window could show them.
+    fn raise_desktop_notices(&mut self, cx: &mut Context<'_, Self>) {
+        let desktop = cx.global::<Desktop>();
+        let diagnostics = desktop.diagnostics.clone();
+        let latched = desktop.latched.clone();
+        let now = Instant::now();
+        self.notices.replace_diagnostics(&diagnostics, now);
+        for content in latched {
+            self.notices.push(content, now);
+        }
+        cx.notify();
+    }
+
+    /// Replaces the configuration notices after a reload attempt.
+    fn replace_diagnostics(
+        &mut self,
+        diagnostics: &[NoticeContent],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.notices
+            .replace_diagnostics(diagnostics, Instant::now());
+        self.reconcile_notices(window, cx);
+    }
+
+    /// Drops focus and hover state for notices that no longer exist, returns
+    /// focus to the terminal when the focused toast went away, and repaints.
+    fn reconcile_notices(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(id) = self.focused_notice
+            && self.notices.get(id).is_none()
+        {
+            self.focused_notice = None;
+            self.restore_tab_focus(window, cx);
+        }
+        self.sync_notice_pause(cx);
+        cx.notify();
+    }
+
+    /// Pauses expiry while a live toast is hovered or focused.
+    /// `focused_notice` mirrors the focus handle: the focus-out
+    /// subscription clears it, so no window read is needed here.
+    fn sync_notice_pause(&mut self, cx: &mut Context<'_, Self>) {
+        self.hovered_notices
+            .retain(|id| self.notices.get(*id).is_some());
+        let now = Instant::now();
+        if self.focused_notice.is_some() || !self.hovered_notices.is_empty() {
+            self.notices.pause(now);
+        } else {
+            self.notices.resume(now);
+        }
+        cx.notify();
+    }
+
+    fn focus_notice(
+        &mut self,
+        id: NoticeId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.focused_notice = Some(id);
+        self.notice_focus.focus(window);
+        self.sync_notice_pause(cx);
+    }
+
+    /// The focused toast, for the `notice_*` commands.
+    fn focused_notice(&self) -> Result<NoticeId, CommandError> {
+        self.focused_notice
+            .filter(|id| self.notices.get(*id).is_some())
+            .ok_or_else(|| {
+                CommandError::Unavailable("no notice is focused".to_owned())
+            })
+    }
+
+    fn notice_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+    ) -> Result<(), CommandError> {
+        match command {
+            ids::FOCUS_NOTICES | ids::DISMISS_ALL_NOTICES => {
+                if self.notices.is_empty() {
+                    Err(CommandError::Unavailable("no notices".to_owned()))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => self.focused_notice().map(|_| ()),
+        }
+    }
+
+    fn run_notice_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        match command {
+            ids::FOCUS_NOTICES => {
+                let newest = self.notices.newest().ok_or_else(|| {
+                    CommandError::Unavailable("no notices".to_owned())
+                })?;
+                self.focus_notice(newest, window, cx);
+            }
+            ids::DISMISS_ALL_NOTICES => {
+                if !self.notices.dismiss_all() {
+                    return Err(CommandError::Unavailable(
+                        "no notices".to_owned(),
+                    ));
+                }
+                self.reconcile_notices(window, cx);
+            }
+            ids::NOTICE_NEXT | ids::NOTICE_PREVIOUS => {
+                let id = self.focused_notice()?;
+                let forward = command == ids::NOTICE_NEXT;
+                if let Some(neighbour) = self.notices.neighbour(id, forward) {
+                    self.focus_notice(neighbour, window, cx);
+                }
+            }
+            ids::NOTICE_RUN_ACTION => {
+                let id = self.focused_notice()?;
+                self.run_notice_action(id, None, window, cx)?;
+            }
+            ids::NOTICE_DISMISS => {
+                let id = self.focused_notice()?;
+                self.dismiss_notice(id, window, cx);
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Dismisses `id`, moving keyboard focus to the toast that takes its
+    /// slot or back to the terminal when none remain.
+    fn dismiss_notice(
+        &mut self,
+        id: NoticeId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let focused = self.focused_notice == Some(id);
+        let next = self.notices.dismiss_focused(id);
+        match (focused, next) {
+            (true, Some(next)) => self.focus_notice(next, window, cx),
+            (true, None) => {
+                self.focused_notice = None;
+                self.restore_tab_focus(window, cx);
+            }
+            (false, _) => {}
+        }
+        self.reconcile_notices(window, cx);
+    }
+
+    /// Runs `command` from notice `id`, or its first action when `None`.
+    /// An expiring notice is dismissed first; a persistent one stays until
+    /// its source replaces it.
+    fn run_notice_action(
+        &mut self,
+        id: NoticeId,
+        command: Option<CommandInvocation>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let notice = self.notices.get(id).ok_or(CommandError::StaleTarget)?;
+        let command = match command {
+            Some(command) => command,
+            None => notice
+                .content
+                .actions
+                .first()
+                .map(|action| action.command.clone())
+                .ok_or_else(|| {
+                    CommandError::Unavailable("notice has no action".to_owned())
+                })?,
+        };
+        if notice.content.lifetime == Lifetime::Expiring {
+            self.dismiss_notice(id, window, cx);
+        } else if self.focused_notice == Some(id) {
+            self.focused_notice = None;
+            self.restore_tab_focus(window, cx);
+            self.sync_notice_pause(cx);
+        }
+        self.invoke_interactive(&command, window, cx)
+    }
+
+    /// Whether the active terminal draws its scroll pill, which the toast
+    /// column must clear.
+    fn scroll_pill_visible(&self, cx: &App) -> bool {
+        self.active_view()
+            .is_some_and(|view| view.read(cx).scroll_pill_visible())
+    }
+
+    fn render_notices(
+        &self,
+        terminal: Bounds<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::Div> {
+        if self.notices.is_empty() {
+            return None;
+        }
+        let bottom = if self.scroll_pill_visible(cx) {
+            px(52.0)
+        } else {
+            px(12.0)
+        };
+        let dismiss = cx.entity().downgrade();
+        let run_action = cx.entity().downgrade();
+        let hover = cx.entity().downgrade();
+        let handlers = ToastHandlers {
+            dismiss: Rc::new(move |id, window, cx| {
+                let _ = dismiss.update(cx, |view, cx| {
+                    view.dismiss_notice(id, window, cx);
+                });
+            }),
+            run_action: Rc::new(move |id, command, window, cx| {
+                let _ = run_action.update(cx, |view, cx| {
+                    if let Err(error) =
+                        view.run_notice_action(id, Some(command), window, cx)
+                    {
+                        view.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
+                });
+            }),
+            hover: Rc::new(move |id, hovering, _, cx| {
+                let _ = hover.update(cx, |view, cx| {
+                    if hovering {
+                        view.hovered_notices.insert(id);
+                    } else {
+                        view.hovered_notices.remove(&id);
+                    }
+                    view.sync_notice_pause(cx);
+                });
+            }),
+        };
+        Some(
+            div()
+                .absolute()
+                .left(terminal.origin.x)
+                .top(terminal.origin.y)
+                .w(terminal.size.width)
+                .h(terminal.size.height)
+                .child(render_notice_stack(
+                    &self.notices,
+                    Instant::now(),
+                    self.focused_notice,
+                    &self.notice_focus,
+                    bottom,
+                    Swatch::from_theme(&self.config.theme),
+                    &handlers,
+                )),
+        )
     }
 }
 
@@ -1663,7 +2044,13 @@ struct WorkspaceView {
     busy: bool,
     close: CloseState,
     exited_tabs: ExitQueue,
-    status: Option<String>,
+    notices: NoticeStack,
+    /// Focus for the toast column; `notices` bindings match while it holds
+    /// focus.
+    notice_focus: FocusHandle,
+    focused_notice: Option<NoticeId>,
+    /// Toasts under the pointer; ids of dismissed toasts are ignored.
+    hovered_notices: HashSet<NoticeId>,
     palette: Option<Entity<CommandPalette>>,
     palette_generation: u64,
     palette_refresh_state: Option<PaletteRefreshState>,
@@ -2550,15 +2937,22 @@ impl WorkspaceView {
                         if !apply_tab_order(&mut view.tabs, &order, |tab| {
                             tab.id
                         }) {
-                            view.status = Some(
-                                "Tab order changed before reorder completed"
-                                    .into(),
+                            view.notify(
+                                NoticeContent::command_failure(
+                                    "Reorder tab",
+                                    "Tab order changed before reorder completed",
+                                )
+                                .severity(Severity::Warning),
+                                cx,
                             );
                         }
                     }
                     Err(error) => {
-                        view.status =
-                            Some(format!("Cannot reorder tab: {error}"));
+                        view.report_failure(
+                            "Reorder tab",
+                            format!("Cannot reorder tab: {error}"),
+                            cx,
+                        );
                     }
                 }
                 view.restore_tab_focus(window, cx);
@@ -2587,6 +2981,31 @@ impl WorkspaceView {
         let result = tab
             .view
             .update(cx, |terminal, cx| terminal.refresh(window, cx));
+        if !result.failures.is_empty() {
+            // A tab is one keyed source: its latest failures replace the
+            // earlier ones, so a flooding tab cannot fill the stack.
+            let title = tab.label(self.config.tabs, cx).0;
+            let source = NoticeSource::Terminal {
+                tab: tab_id,
+                title: title.clone(),
+            };
+            let replacements = result
+                .failures
+                .into_iter()
+                .map(|failure| terminal_notice(tab_id, &title, failure))
+                .collect();
+            self.notices
+                .replace_source(&source, replacements, Instant::now());
+            cx.notify();
+        }
+        if result.exited && !self.config.terminal.close_on_exit {
+            let title = tab.label(self.config.tabs, cx).0;
+            self.notices.push(
+                exit_notice(tab_id, &title, result.exit_code),
+                Instant::now(),
+            );
+            cx.notify();
+        }
         if result.exited {
             self.exited_tabs.observe(
                 tab_id,
@@ -2696,6 +3115,8 @@ impl WorkspaceView {
                                 )
                             });
                             let tab_id = opened.tab.id;
+                            let failure_wakes =
+                                terminal.read(cx).failure_wakes.clone();
                             let activity_probe =
                                 refresh_smoke::ActivityProbe::new(tab_id, cx);
                             let activity_task =
@@ -2704,8 +3125,11 @@ impl WorkspaceView {
                                         if let Some(probe) = &activity_probe {
                                             probe.waiting(true);
                                         }
-                                        let stopped = activity_client
-                                            .wait_for_activity()
+                                        let stopped =
+                                            TerminalView::wait_for_activity(
+                                                &activity_client,
+                                                &failure_wakes,
+                                            )
                                             .await
                                             .is_err();
                                         if let Some(probe) = &activity_probe {
@@ -2748,6 +3172,8 @@ impl WorkspaceView {
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
                             if let Some(state) = &view.quake {
+                                // This profile's earlier failed spawn no
+                                // longer applies; drop its latched notice.
                                 let desktop = cx.global_mut::<Desktop>();
                                 if desktop
                                     .quake
@@ -2758,37 +3184,41 @@ impl WorkspaceView {
                                     })
                                     && let Some((_, message)) =
                                         desktop.quake.failed_spawn.take()
-                                    && desktop.config_error.as_deref()
-                                        == Some(message.as_str())
                                 {
-                                    desktop.config_error = None;
+                                    desktop.latched.retain(|content| {
+                                        content.message != message
+                                    });
+                                    view.notices.dismiss_where(|content| {
+                                        content.message == message
+                                    });
                                 }
                             }
-                            view.status =
-                                cx.global::<Desktop>().config_error.clone();
                         }
                         Err(error) => {
-                            view.status =
-                                Some(format!("Cannot open tab: {error}"));
+                            let message = format!("Cannot open tab: {error}");
+                            view.notify(
+                                NoticeContent::command_failure(
+                                    "Cannot open tab",
+                                    message.clone(),
+                                )
+                                .action("Try Again", bare(ids::NEW_TAB)),
+                                cx,
+                            );
                             if let Some(reporter) = view.startup_reporter.take()
                             {
                                 report_deferred_failure(
                                     cx,
                                     Some(reporter),
-                                    view.status.clone().unwrap_or_default(),
+                                    message.clone(),
                                 );
                             }
                             if view.quake.is_some() && view.tabs.is_empty() {
-                                cx.global_mut::<Desktop>()
-                                    .config_error
-                                    .clone_from(&view.status);
+                                latch_failure(cx, &message);
                                 if let Some(state) = &view.quake {
                                     cx.global_mut::<Desktop>()
                                         .quake
-                                        .failed_spawn = Some((
-                                        state.name.clone(),
-                                        view.status.clone().unwrap_or_default(),
-                                    ));
+                                        .failed_spawn =
+                                        Some((state.name.clone(), message));
                                 }
                                 eprintln!("Cannot start quake shell: {error}");
                                 view.remove_window(window, cx, false);
@@ -3085,11 +3515,14 @@ impl WorkspaceView {
                             .frequency
                             .record(invocation.id);
                     }
-                    Err(error) => set_dispatch_error(
-                        &mut self.palette,
-                        &mut self.status,
-                        &error,
-                    ),
+                    Err(error) => {
+                        self.palette = None;
+                        self.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             }
@@ -3254,6 +3687,12 @@ impl WorkspaceView {
                 | ids::DIALOG_FOCUS_PREVIOUS => {
                     self.confirming_target().map(|_| ())
                 }
+                ids::FOCUS_NOTICES
+                | ids::DISMISS_ALL_NOTICES
+                | ids::NOTICE_NEXT
+                | ids::NOTICE_PREVIOUS
+                | ids::NOTICE_RUN_ACTION
+                | ids::NOTICE_DISMISS => self.notice_availability(command),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available()
                 }
@@ -3577,6 +4016,14 @@ impl WorkspaceView {
             | ids::DIALOG_FOCUS_PREVIOUS => {
                 self.run_dialog_command(invocation.id, window, cx)
             }
+            ids::FOCUS_NOTICES
+            | ids::DISMISS_ALL_NOTICES
+            | ids::NOTICE_NEXT
+            | ids::NOTICE_PREVIOUS
+            | ids::NOTICE_RUN_ACTION
+            | ids::NOTICE_DISMISS => {
+                self.run_notice_command(invocation.id, window, cx)
+            }
             ids::CLOSE_WINDOW => {
                 self.request_close(CloseTarget::Window, window, cx);
                 Ok(CommandOutcome::Accepted)
@@ -3787,21 +4234,69 @@ fn inherited_directory(
         .map(|directory| PathBuf::from(directory.path()))
 }
 
+/// An expiring notice for a terminal failure, keyed by its tab and naming
+/// the tab in its location line.
+fn terminal_notice(
+    tab: TabId,
+    title: &str,
+    failure: TerminalFailure,
+) -> NoticeContent {
+    NoticeContent {
+        severity: failure.severity,
+        source: NoticeSource::Terminal {
+            tab,
+            title: title.to_owned(),
+        },
+        title: failure.title.to_owned(),
+        message: failure.message,
+        location: Some(title.to_owned()),
+        actions: Vec::new(),
+        lifetime: Lifetime::Expiring,
+    }
+}
+
+/// Announces a kept tab's root exit. Exit is not a failure, so it is
+/// informational and expires like other terminal notices.
+fn exit_notice(tab: TabId, title: &str, code: Option<u32>) -> NoticeContent {
+    NoticeContent {
+        severity: Severity::Info,
+        source: NoticeSource::Terminal {
+            tab,
+            title: title.to_owned(),
+        },
+        title: "Process exited".to_owned(),
+        message: code.map_or_else(
+            || "Process exited".into(),
+            |code| format!("Process exited with status {code}"),
+        ),
+        location: Some(title.to_owned()),
+        actions: Vec::new(),
+        lifetime: Lifetime::Expiring,
+    }
+}
+
 /// Executes a filled runtime command on the structural worker and reports a
-/// later failure through the window status.
+/// later failure as a notice offering to run the same invocation again.
 fn run_on_runtime(
     invocation: CommandInvocation,
     cx: &mut Context<'_, WorkspaceView>,
 ) -> CommandOutcome {
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    let retry = invocation.clone();
     let task = cx
         .background_executor()
         .spawn(async move { runtime.execute(&invocation) });
     cx.spawn(async move |view, cx| {
         if let Err(error) = task.await {
             let _ = view.update(cx, |view, cx| {
-                view.status = Some(format!("Command failed: {error}"));
-                cx.notify();
+                view.notify(
+                    NoticeContent::command_failure(
+                        "Command failed",
+                        format!("Command failed: {error}"),
+                    )
+                    .action("Try Again", retry),
+                    cx,
+                );
             });
         }
     })
@@ -3893,9 +4388,7 @@ impl WorkspaceView {
                     }
                     Event::NativeExitFailed(error) => {
                         self.fullscreen.recover();
-                        self.status =
-                            Some(format!("Fullscreen failed: {error}"));
-                        cx.notify();
+                        self.fullscreen_failed(&error, cx);
                     }
                     Event::State(recovery, chrome) => {
                         self.fullscreen.non_native_state(recovery, chrome);
@@ -3905,9 +4398,7 @@ impl WorkspaceView {
                     }
                     Event::Failed(generation, error) => {
                         if self.fullscreen.fail(generation) {
-                            self.status =
-                                Some(format!("Fullscreen failed: {error}"));
-                            cx.notify();
+                            self.fullscreen_failed(&error, cx);
                         }
                     }
                     Event::Recover => self.fullscreen.recover(),
@@ -3921,9 +4412,12 @@ impl WorkspaceView {
         if let Some(generation) = self.fullscreen.expired(now) {
             #[cfg(not(target_os = "macos"))]
             let _ = generation;
-            self.status = Some("Fullscreen transition timed out".to_owned());
+            self.report_failure(
+                "Fullscreen",
+                "Fullscreen transition timed out",
+                cx,
+            );
             eprintln!("Fullscreen transition timed out");
-            cx.notify();
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &self.native_fullscreen {
                 adapter.cancel(generation);
@@ -3970,6 +4464,19 @@ impl WorkspaceView {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn fullscreen_failed(
+        &mut self,
+        error: &dyn std::fmt::Display,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.report_failure(
+            "Fullscreen",
+            format!("Fullscreen failed: {error}"),
+            cx,
+        );
+    }
+
     fn advance_fullscreen(
         &mut self,
         window: &mut Window,
@@ -3990,9 +4497,7 @@ impl WorkspaceView {
                         && let Err(error) = adapter.check_native_transition()
                     {
                         self.fullscreen.fail(operation.generation);
-                        self.status =
-                            Some(format!("Fullscreen failed: {error}"));
-                        cx.notify();
+                        self.fullscreen_failed(&error, cx);
                         self.fullscreen_work.wake.signal();
                         return false;
                     }
@@ -4012,9 +4517,10 @@ impl WorkspaceView {
                         .detach();
                     } else {
                         self.fullscreen.fail(operation.generation);
-                        self.status = Some(
-                            "Fullscreen native adapter is unavailable"
-                                .to_owned(),
+                        self.report_failure(
+                            "Fullscreen",
+                            "Fullscreen native adapter is unavailable",
+                            cx,
                         );
                     }
                 }
@@ -4286,8 +4792,11 @@ impl WorkspaceView {
                 let assessment = match result {
                     Ok(assessment) => assessment,
                     Err(error) => {
-                        view.status =
-                            Some(format!("Cannot assess close: {error}"));
+                        view.report_failure(
+                            "Close",
+                            format!("Cannot assess close: {error}"),
+                            cx,
+                        );
                         view.cancel_close(window, cx);
                         return;
                     }
@@ -4420,11 +4929,9 @@ impl WorkspaceView {
                     return;
                 }
                 if let Err(error) = result {
-                    view.status = Some(format!("Close failed: {error}"));
-                    eprintln!(
-                        "{}",
-                        view.status.as_deref().unwrap_or("Close failed")
-                    );
+                    let message = format!("Close failed: {error}");
+                    eprintln!("{message}");
+                    view.report_failure("Close", message, cx);
                 }
                 match target {
                     CloseTarget::Application => approved_quit(cx),
@@ -4485,9 +4992,10 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     }
     cx.global_mut::<Desktop>().reloading = true;
     let path = cx.global::<Desktop>().config_path.clone();
+    let reload_path = path.clone();
     let task = cx
         .background_executor()
-        .spawn(async move { config::reload(&path) });
+        .spawn(async move { config::reload(&reload_path) });
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {
@@ -4503,13 +5011,14 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 quake_windows::replace_registrations(cx, &config, &compiled)?;
                 Ok((config, family, metrics, compiled))
             });
-            let mut keymap_status = None;
             let result = result.map(|(config, family, metrics, compiled)| {
                 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
                 apply_update_config(cx, &config);
                 let desktop = cx.global_mut::<Desktop>();
                 desktop.config = config.clone();
-                keymap_status = reload_diagnostic(cx, &config, &compiled);
+                desktop.diagnostics =
+                    reload_diagnostics(&path, &config, &compiled);
+                desktop.latched.clear();
                 quake_windows::reconcile(cx);
                 let keymap = bind_keymap(cx, compiled);
                 cx.global_mut::<Desktop>().keymap = keymap;
@@ -4517,63 +5026,80 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 (config, family, metrics)
             });
             report_config_reload_error(&result);
-            let windows = cx.global::<Desktop>().windows.clone();
-            for window in windows {
-                let _ = window.update(cx, |view, cx| {
-                    if let Some(tab) = view.active_view() {
-                        tab.update(cx, |tab, _| tab.clear_option_composition());
-                    }
-                    match &result {
-                        Ok((config, family, metrics)) => {
-                            view.resizing_sidebar = false;
-                            view.scroll_target = None;
-                            view.config = config.clone();
-                            view.layout_pending = true;
-                            view.title_widths.clear();
-                            view.fullscreen_work.wake.signal();
-                            view.fullscreen.set_default(
-                                config.window.macos_fullscreen_mode,
+            let diagnostics = match &result {
+                Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
+                Err(error) => failed_reload_diagnostics(
+                    error,
+                    &cx.global::<Desktop>().diagnostics,
+                ),
+            };
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |root, window, cx| {
+                    if let Ok(view) = root.downcast::<WorkspaceView>() {
+                        view.update(cx, |view, cx| {
+                            view.apply_reload(
+                                result.as_ref().ok(),
+                                &diagnostics,
+                                window,
+                                cx,
                             );
-                            view.family.clone_from(family);
-                            view.metrics = *metrics;
-                            view.status = None;
-                            for tab in &view.tabs {
-                                tab.view.update(cx, |view, cx| {
-                                    let metrics = metrics
-                                        .at_scale(view.metrics.scale_factor);
-                                    view.renderer.borrow_mut().reconfigure(
-                                        family.clone(),
-                                        config.theme.clone(),
-                                        metrics,
-                                    );
-                                    view.font_family.clone_from(family);
-                                    view.font_size = metrics.font_size;
-                                    view.metrics = metrics;
-                                    view.window_config = config.window;
-                                    view.tabs_config = config.tabs;
-                                    view.reload_terminal_config(
-                                        config.terminal,
-                                        cx,
-                                    );
-                                    view.publish_presentation(&config.theme);
-                                    view.theme = config.theme.clone();
-                                    cx.notify();
-                                });
-                            }
-                            view.status.clone_from(&keymap_status);
-                        }
-                        Err(error) => {
-                            view.status =
-                                Some(format!("Config reload failed: {error}"));
-                        }
+                        });
                     }
-                    view.reload_palette(cx);
                 });
             }
         });
     })
     .detach();
     Ok(CommandOutcome::Accepted)
+}
+
+impl WorkspaceView {
+    /// Applies a reload's outcome: a new configuration when it loaded, and
+    /// the replacement configuration notices either way.
+    fn apply_reload(
+        &mut self,
+        loaded: Option<&(Config, String, GridMetrics)>,
+        diagnostics: &[NoticeContent],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(tab) = self.active_view() {
+            tab.update(cx, |tab, _| tab.clear_option_composition());
+        }
+        if let Some((config, family, metrics)) = loaded {
+            self.resizing_sidebar = false;
+            self.scroll_target = None;
+            self.config = config.clone();
+            self.layout_pending = true;
+            self.title_widths.clear();
+            self.fullscreen_work.wake.signal();
+            self.fullscreen
+                .set_default(config.window.macos_fullscreen_mode);
+            self.family.clone_from(family);
+            self.metrics = *metrics;
+            for tab in &self.tabs {
+                tab.view.update(cx, |view, cx| {
+                    let metrics = metrics.at_scale(view.metrics.scale_factor);
+                    view.renderer.borrow_mut().reconfigure(
+                        family.clone(),
+                        config.theme.clone(),
+                        metrics,
+                    );
+                    view.font_family.clone_from(family);
+                    view.font_size = metrics.font_size;
+                    view.metrics = metrics;
+                    view.window_config = config.window;
+                    view.tabs_config = config.tabs;
+                    view.reload_terminal_config(config.terminal, cx);
+                    view.publish_presentation(&config.theme);
+                    view.theme = config.theme.clone();
+                    cx.notify();
+                });
+            }
+        }
+        self.replace_diagnostics(diagnostics, window, cx);
+        self.reload_palette(cx);
+    }
 }
 
 fn report_config_reload_error<T>(result: &Result<T, String>) {
@@ -4987,8 +5513,11 @@ impl Render for WorkspaceView {
                     if let Err(error) =
                         view.invoke_interactive(&action.0, window, cx)
                     {
-                        view.status = Some(error.to_string());
-                        cx.notify();
+                        view.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
                     }
                 },
             ))
@@ -5390,8 +5919,11 @@ impl Render for WorkspaceView {
                     .justify_center()
                     .on_click(cx.listener(|view, _, window, cx| {
                         if let Err(error) = view.new_tab(window, cx) {
-                            view.status = Some(error.to_string());
-                            cx.notify();
+                            view.report_failure(
+                                "Cannot open tab",
+                                error.to_string(),
+                                cx,
+                            );
                         }
                     }))
                     .child(
@@ -5618,18 +6150,8 @@ impl Render for WorkspaceView {
                     .bg(colors.accent),
             );
         }
-        if let Some(status) = &self.status {
-            root = root.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .px_2()
-                    .py_1()
-                    .bg(background)
-                    .child(status.clone()),
-            );
+        if let Some(notices) = self.render_notices(layout.terminal, cx) {
+            root = root.child(notices);
         }
         if let Some(target) = self.close.confirmation.clone() {
             let model =
@@ -5724,33 +6246,172 @@ mod tests {
         );
     }
 
-    #[test]
-    fn synchronous_dispatch_failure_lands_in_status_not_palette() {
-        let mut status = None;
-        let mut palette = Some(());
-        set_dispatch_error(
-            &mut palette,
-            &mut status,
-            &CommandError::StaleTarget,
-        );
-        assert!(palette.is_none());
-        assert_eq!(status.as_deref(), Some("command target no longer exists"));
+    fn messages(stack: &NoticeStack) -> Vec<String> {
+        stack
+            .contents()
+            .map(|content| content.message.clone())
+            .collect()
     }
 
     #[test]
-    fn startup_diagnostics_keep_errors_conflicts_and_legacy_warning() {
-        assert_eq!(
-            combine_config_diagnostics([
-                Some("config error".to_owned()),
-                Some("keymap error".to_owned()),
-                Some("binding conflict".to_owned()),
-                Some(config::LEGACY_ALACRITTY_WARNING.to_owned()),
-            ])
-            .as_deref(),
-            Some(
-                "config error; keymap error; binding conflict; terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration."
-            )
+    fn startup_diagnostics_become_separate_notices_that_reloads_replace() {
+        let path = Path::new("/home/me/.config/huterm/huterm.toml");
+        let diagnostics = config_diagnostics(
+            path,
+            Some("config error"),
+            Some("keymap error"),
+            &["binding conflict".to_owned()],
+            Some(config::LEGACY_ALACRITTY_WARNING),
         );
+        let sources: Vec<_> = diagnostics
+            .iter()
+            .map(|content| (content.severity, content.source.clone()))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                (Severity::Error, NoticeSource::Config),
+                (Severity::Error, NoticeSource::Keymap),
+                (Severity::Warning, NoticeSource::Keymap),
+                (Severity::Warning, NoticeSource::Config),
+            ]
+        );
+        assert!(diagnostics.iter().all(|content| content.lifetime
+            == Lifetime::Persistent
+            && content.location.as_deref() == Some(path.to_str().unwrap())));
+        let actions = |index: usize| {
+            diagnostics[index]
+                .actions
+                .iter()
+                .map(|action| (action.label.as_str(), action.command.id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actions(0),
+            [
+                ("Open Settings", ids::OPEN_SETTINGS),
+                ("Reload", ids::RELOAD_CONFIG)
+            ]
+        );
+        assert_eq!(actions(3), [("Open Settings", ids::OPEN_SETTINGS)]);
+
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.push(
+            NoticeContent::command_failure("Close", "Close failed: busy"),
+            now,
+        );
+        assert!(stack.replace_diagnostics(&diagnostics, now));
+        assert_eq!(
+            messages(&stack),
+            [
+                "config error",
+                "keymap error",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING,
+                "Close failed: busy",
+            ]
+        );
+        // Dismissing a diagnostic hides it until the next reload.
+        let newest = stack.newest().unwrap();
+        assert!(stack.dismiss(newest));
+        assert_eq!(messages(&stack)[0], "keymap error");
+        // A reload that still fails raises every diagnostic again.
+        assert!(stack.replace_diagnostics(&diagnostics, now));
+        assert_eq!(messages(&stack)[0], "config error");
+        assert_eq!(stack.contents().len(), 5);
+        // A fixed file clears them but leaves the command notice alone.
+        let fixed = config_diagnostics(path, None, None, &[], None);
+        assert!(fixed.is_empty());
+        assert!(stack.replace_diagnostics(&fixed, now));
+        assert_eq!(messages(&stack), ["Close failed: busy"]);
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_active_configs_own_diagnostics() {
+        let path = Path::new("/tmp/huterm.toml");
+        let active = config_diagnostics(
+            path,
+            None,
+            None,
+            &["binding conflict".to_owned()],
+            Some(config::LEGACY_ALACRITTY_WARNING),
+        );
+        let failed = failed_reload_diagnostics("bad toml", &active);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|content| content.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Config reload failed: bad toml",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING
+            ]
+        );
+        assert_eq!(failed[0].source, NoticeSource::Config);
+        assert_eq!(failed[0].severity, Severity::Error);
+        assert_eq!(failed[0].actions.len(), 2);
+
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.replace_diagnostics(&active, now);
+        stack.replace_diagnostics(&failed, now);
+        assert_eq!(
+            messages(&stack),
+            [
+                "Config reload failed: bad toml",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING,
+            ],
+            "the keymap conflict from the active config stays"
+        );
+    }
+
+    #[test]
+    fn terminal_failures_are_routed_with_their_tab() {
+        let tab = TabId::new(7);
+        let notice = terminal_notice(
+            tab,
+            "~/project",
+            TerminalFailure {
+                severity: Severity::Warning,
+                title: "Input rejected",
+                message: "Input buffer full".to_owned(),
+            },
+        );
+        assert_eq!(
+            notice.source,
+            NoticeSource::Terminal {
+                tab,
+                title: "~/project".to_owned()
+            }
+        );
+        assert_eq!(notice.severity, Severity::Warning);
+        assert_eq!(notice.title, "Input rejected");
+        assert_eq!(notice.location.as_deref(), Some("~/project"));
+        assert_eq!(notice.lifetime, Lifetime::Expiring);
+        assert_eq!(
+            notice.smoke_line(),
+            "warning|terminal:~/project|Input buffer full"
+        );
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.push(notice.clone(), now);
+        stack.push(
+            terminal_notice(
+                TabId::new(8),
+                "other",
+                TerminalFailure {
+                    severity: Severity::Error,
+                    title: "Terminal error",
+                    message: "runtime stopped".to_owned(),
+                },
+            ),
+            now,
+        );
+        assert!(stack.replace_source(&notice.source, Vec::new(), now));
+        assert_eq!(messages(&stack), ["runtime stopped"], "keyed by tab");
     }
 
     #[test]

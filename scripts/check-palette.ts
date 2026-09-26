@@ -543,8 +543,8 @@ command = "select_tab"
     await command("invoke-reload");
     await state(
       'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'w0.status=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'desktop.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
     );
     await writeFile(
       config,
@@ -553,12 +553,13 @@ command = "select_tab"
     await command("invoke-reload");
     await state(
       'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'w0.status=Some("Config reload failed:',
+      'desktop.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.notice0="error|config|Config reload failed:',
+      'w0.notice1="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
     );
     await writeFile(config, configDocument);
     await command("invoke-reload");
-    await state("config.warning=None", "config.error=None", "w0.status=None");
+    await state("config.warning=None", "desktop.notices=0", "w0.notices=0");
 
     // Existing modal routing, pointer isolation, and macOS composition coverage.
     await typeText("A");
@@ -946,7 +947,7 @@ command = "select_tab"
     );
     await coreState(2, [], ['name=Some("gone")']);
 
-    // 11. A post-dispatch failure stays in the originating status line.
+    // 11. A post-dispatch failure lands in the originating window's notices.
     await command("open-second");
     await state("windows=3", "w2.tabs=1");
     await coreState(3, [], ['name=Some("gone")']);
@@ -959,8 +960,8 @@ command = "select_tab"
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     const reported = await state(
-      "w0.status=Some(\"Cannot open tab:",
-      "w1.status=None",
+      'w0.notice0="error|command|Cannot open tab:',
+      "w1.notices=0",
     );
     if (!reported.includes("windows=4")) {
       throw new Error("failed window was not published");
@@ -969,7 +970,7 @@ command = "select_tab"
     await command("activate-first");
     await state("w0.terminal_focused=true", "w0.palette=false");
 
-    await command("clear-status");
+    await command("dismiss-notices");
     await shortcut("palette");
     await typeText("show quake");
     await state("w0.palette_state=commands selected=show_quake");
@@ -981,8 +982,8 @@ command = "select_tab"
     await state(
       "w0.palette=false",
       "w0.terminal_focused=true",
-      "w0.status=Some(\"Cannot open tab:",
-      "w1.status=None",
+      'w0.notice0="error|command|Cannot open tab:',
+      "w1.notices=0",
     );
     await coreState(3, [], ['name=Some("gone")']);
     await command("activate-first");
