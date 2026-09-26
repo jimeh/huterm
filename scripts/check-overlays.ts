@@ -169,17 +169,31 @@ label = "title"
     const scale = Number(field(await current(), "scale"));
     if (!(scale > 0)) throw new Error(`invalid window scale ${scale}`);
 
-    // 1. Close dialog: the keyboard operates it, a repeated close shortcut
-    // never confirms, and cancelling leaves the job's shell alive.
+    // 1. Close dialog: pointer input on its scrim never reaches the covered
+    // terminal, the keyboard operates it, a repeated close shortcut never
+    // confirms, and cancelling leaves the job's shell alive.
     await newTab(2);
+    typeText("fill");
+    key("Return");
+    await state("FILLED");
     await busy();
     key("ctrl+shift+w");
     const opened = await state("w0.confirming=true", "w0.dialog_focus=primary", "w0.terminal_focused=false");
     if (!field(opened, "dialog_title").startsWith('"Close')) throw new Error(`${engine}: single-tab dialog title: ${opened}`);
-    key("ctrl+shift+w");
-    await state("w0.confirming=true", 'w0.notice0="error|command|command unavailable: close confirmation pending"');
+    // A middle press and wheel over the scrim beside the panel: the terminal
+    // must neither take focus nor scroll its history. The Tab afterwards is
+    // processed after the pointer events, so the state it produces shows
+    // their effect; the text typed next must never reach the PTY.
+    const covered = parseRect(field(opened, "terminal_bounds"));
+    click((covered.x + 24) * scale, (covered.y + covered.h - 24) * scale, 2);
+    run(["xdotool", "click", "--repeat", "3", "4"]);
     key("Tab");
-    await state("w0.confirming=true", "w0.dialog_focus=cancel");
+    const pointed = await state("w0.confirming=true", "w0.dialog_focus=cancel");
+    if (field(pointed, "terminal_focused") !== "false") throw new Error(`${engine}: a middle press on the scrim focused the terminal: ${pointed}`);
+    if (field(pointed, "scrolled") !== "0") throw new Error(`${engine}: a wheel over the scrim scrolled the terminal: ${pointed}`);
+    typeText("ackscrimx");
+    key("ctrl+shift+w");
+    await state("w0.confirming=true", "w0.dialog_focus=cancel", 'w0.notice0="error|command|command unavailable: close confirmation pending"');
     key("Right");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
     key("Left");
@@ -190,7 +204,7 @@ label = "title"
     await state("w0.confirming=true", "w0.dialog_focus=cancel");
     key("Return");
     await state("w0.confirming=false", "w0.tabs=2", "w0.terminal_focused=true");
-    await ack("ackcancelx");
+    await assertBlocked("ackscrimx", "ackcancelx");
     key("ctrl+shift+w");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
     key("Escape");
@@ -324,6 +338,25 @@ label = "title"
     await writeFile(config, configDocument);
     await command("invoke-reload");
     await state("config.warning=None", "w0.notices=0", "w0.terminal_focused=true");
+    // A tab's next failure replaces its toast even while that toast holds
+    // keyboard focus, and focus returns to the terminal. Enter on a toast
+    // without actions dismisses it instead of raising an error.
+    const terminalNotice = (message: string) => (text: string) =>
+      text.includes("w0.notices=1") && new RegExp(`w0\\.notice0="error\\|terminal:[^"]*\\|${message}"`).test(text);
+    await command("terminal-failure\tfirst smoke failure");
+    await stateWhere(terminalNotice("first smoke failure"), "first terminal toast");
+    await invoke("focus_notices");
+    await state("w0.notice_focus=true", "w0.terminal_focused=false");
+    await command("terminal-failure\tsecond smoke failure");
+    const replaced = await stateWhere(terminalNotice("second smoke failure"), "replaced terminal toast");
+    if (field(replaced, "notice_focus") !== "false" || field(replaced, "terminal_focused") !== "true") {
+      throw new Error(`${engine}: replacing the focused toast stranded keyboard focus: ${replaced}`);
+    }
+    await invoke("focus_notices");
+    await state("w0.notice_focus=true", "w0.terminal_focused=false");
+    key("Return");
+    await state("w0.notices=0", "w0.notice_focus=false", "w0.terminal_focused=true");
+    await ack("acknoticex");
 
     // 7. Scrolled back, clicking the pill returns to live output.
     typeText("fill");
@@ -336,7 +369,7 @@ label = "title"
     await state("w0.scrolled=0", "w0.scroll_pill=false", "w0.terminal_focused=true");
     await ack("ackscrollx");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} dialog=tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape pill=click`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

@@ -1183,6 +1183,7 @@ impl TerminalView {
             || self
                 .tab_overlay
                 .is_some_and(|bounds| bounds.contains(&event.position))
+            || windows::modal_showing(window, cx)
         {
             return;
         }
@@ -1497,6 +1498,7 @@ impl TerminalView {
             || self
                 .tab_overlay
                 .is_some_and(|bounds| bounds.contains(&event.position))
+            || windows::modal_showing(window, cx)
         {
             return;
         }

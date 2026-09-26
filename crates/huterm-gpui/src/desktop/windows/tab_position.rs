@@ -18,7 +18,7 @@ pub(super) struct TabHost {
     /// regular window.
     pub(super) quake: bool,
     /// Linux client-side decorations are active, so Huterm draws the title
-    /// bar. Nothing sets this yet; the Linux title-bar slice will.
+    /// bar; sampled from the window's `FrameState`.
     pub(super) client_decorations: bool,
 }
 

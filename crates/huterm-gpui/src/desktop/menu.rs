@@ -836,16 +836,13 @@ impl Render for Menu {
             .track_focus(&self.focus)
             .occlude()
             .min_w(MENU_MIN_WIDTH)
-            .p(px(PANEL_PADDING))
             .text_size(px(12.5))
             .text_color(swatch.fg)
             .flex()
             .flex_col()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .when_some(self.max_height, Styled::max_h)
             // Typed text reaches `replace_text_in_range` for type-ahead only
-            // while the menu has focus.
+            // while the menu has focus. The canvas stays outside the scrolled
+            // rows container so `scroll_to_item` indexes rows alone.
             .child(
                 canvas(
                     |_, _, _| (),
@@ -872,7 +869,17 @@ impl Render for Menu {
             .on_mouse_up(gpui::MouseButton::Right, |_, _, cx| {
                 cx.stop_propagation();
             })
-            .children(rows)
+            .child(
+                div()
+                    .id("menu-rows")
+                    .p(px(PANEL_PADDING))
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .when_some(self.max_height, Styled::max_h)
+                    .children(rows),
+            )
     }
 }
 

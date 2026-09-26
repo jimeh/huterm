@@ -65,8 +65,10 @@ label = "smart"
 # short (~/P/huterm).
 directory = "name"
 # Tab placement: top, bottom, left, right, or titlebar. Titlebar merges the
-# tabs into the macOS title bar; without one (fullscreen, Quake windows, or
-# Linux, where the window manager draws it) it acts as top.
+# tabs into the title bar: on macOS, or on Linux when the window manager
+# grants client-side decorations (GNOME, KDE). Without a title bar
+# (fullscreen, Quake windows, or a Linux window manager that draws its own)
+# it acts as top.
 position = "top"
 always_show = false
 auto_hide_in_fullscreen = false

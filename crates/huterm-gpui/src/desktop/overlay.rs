@@ -216,9 +216,16 @@ pub(crate) fn raised_panel(swatch: Swatch, radius: f32) -> Div {
         .overflow_hidden()
 }
 
-/// The dimming layer beneath a modal panel, filling its parent.
+/// The dimming layer beneath a modal panel, filling its parent. It occludes
+/// what it covers: GPUI hit-tests every hitbox under the pointer until one
+/// blocks, so without this the terminal beneath still receives the presses
+/// and wheel events the panel does not stop itself.
 pub(crate) fn scrim(swatch: Swatch) -> Div {
-    div().absolute().inset_0().bg(swatch.bg.opacity(0.6))
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .bg(swatch.bg.opacity(0.6))
 }
 
 /// A one-line hover tooltip on the raised surface, for controls whose icon

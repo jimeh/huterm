@@ -118,24 +118,10 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     if let Some(id) = command.strip_prefix("invoke\t") {
         return invoke_catalog(cx, handle, id);
     }
-    let invocation = match command {
-        "invoke-new-tab" => Some(CommandInvocation::new(ids::NEW_TAB, vec![])),
-        "invoke-reload" => {
-            Some(CommandInvocation::new(ids::RELOAD_CONFIG, vec![]))
-        }
-        "invoke-rename-tab" => Some(CommandInvocation::new(
-            ids::RENAME_TAB,
-            vec![CommandArgument::new(
-                "name",
-                CommandValue::Text("blocked".to_owned()),
-            )],
-        )),
-        "invoke-palette" => {
-            Some(CommandInvocation::new(ids::OPEN_COMMAND_PALETTE, vec![]))
-        }
-        _ => None,
-    };
-    if let Some(invocation) = invocation {
+    if let Some(message) = command.strip_prefix("terminal-failure\t") {
+        return report_terminal_failure(cx, handle, message);
+    }
+    if let Some(invocation) = fixed_invocation(command) {
         return Ok(format!(
             "{:?}",
             Desktop::invoke(cx, &invocation, Some(handle))
@@ -201,6 +187,55 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 anyhow::bail!("unknown palette smoke command {command:?}")
             }
         })
+    })?
+}
+
+/// The `invoke-*` commands that run a fixed invocation through
+/// [`Desktop::invoke`].
+fn fixed_invocation(command: &str) -> Option<CommandInvocation> {
+    match command {
+        "invoke-new-tab" => Some(CommandInvocation::new(ids::NEW_TAB, vec![])),
+        "invoke-reload" => {
+            Some(CommandInvocation::new(ids::RELOAD_CONFIG, vec![]))
+        }
+        "invoke-rename-tab" => Some(CommandInvocation::new(
+            ids::RENAME_TAB,
+            vec![CommandArgument::new(
+                "name",
+                CommandValue::Text("blocked".to_owned()),
+            )],
+        )),
+        "invoke-palette" => {
+            Some(CommandInvocation::new(ids::OPEN_COMMAND_PALETTE, vec![]))
+        }
+        _ => None,
+    }
+}
+
+/// `terminal-failure\t<message>` queues a failure on the active terminal as
+/// its runtime would, so it reaches the window through the tab's activity
+/// drain and replaces the tab's earlier toast. Repeated messages are dropped
+/// by the queue, so each call needs a distinct one.
+fn report_terminal_failure(
+    cx: &mut App,
+    handle: gpui::AnyWindowHandle,
+    message: &str,
+) -> anyhow::Result<String> {
+    let message = message.to_owned();
+    handle.update(cx, |root, _, cx| -> anyhow::Result<String> {
+        let view = root
+            .downcast::<WorkspaceView>()
+            .map_err(|_| anyhow::anyhow!("workspace root"))?;
+        let terminal =
+            view.read(cx).active_view().context("active terminal")?;
+        let queued = terminal.update(cx, |terminal, _| {
+            terminal.report_failure(
+                super::notices::Severity::Error,
+                "Terminal error",
+                message,
+            )
+        });
+        Ok(format!("terminal failure queued={queued}"))
     })?
 }
 

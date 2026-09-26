@@ -253,11 +253,11 @@ bottom. Padding accepts values from 0 to 256 points.
 palette, tab and window commands, Copy and Paste, fullscreen, settings, reload,
 waiting notices, About, and Quit, with each item's current shortcut. On macOS
 it sits at the right end of the title bar. Without a title bar (fullscreen on
-either platform, or Linux, where the window manager draws it) it joins the tab
-bar: the far right of a top or bottom bar, or beside `+` under a left or right
-column, and it hides with an auto-hidden bar. A yellow dot marks waiting
-notices. `menu_button = false` removes it; `open_menu` and every item stay
-available through the palette and shortcuts.
+either platform, or Linux without client-side decorations, where the window
+manager draws it) it joins the tab bar: the far right of a top or bottom bar,
+or beside `+` under a left or right column, and it hides with an auto-hidden
+bar. A yellow dot marks waiting notices. `menu_button = false` removes it;
+`open_menu` and every item stay available through the palette and shortcuts.
 
 Right-clicking any tab, active or not, opens its context menu at the pointer
 without activating it; the targeted tab is outlined while the menu is open.

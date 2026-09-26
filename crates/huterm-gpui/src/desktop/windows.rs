@@ -1497,7 +1497,6 @@ fn open_window_with_profile(
                 menu: None,
                 menu_target: None,
                 menu_pointer: None,
-                menu_button_focus: cx.focus_handle(),
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 menu_bounds: Rc::new(Cell::new(None)),
                 window_controls_bounds: Rc::new(Cell::new(None)),
@@ -1511,10 +1510,14 @@ fn open_window_with_profile(
                 view.frame_clock.observe(cx);
                 view.raise_desktop_notices(cx);
                 let notice_focus = view.notice_focus.clone();
-                cx.on_focus_out(&notice_focus, window, |view, _, _, cx| {
-                    view.focused_notice = None;
-                    view.sync_notice_pause(cx);
-                })
+                cx.on_focus_out(
+                    &notice_focus,
+                    window,
+                    |view, _, window, cx| {
+                        view.focused_notice = None;
+                        view.reconcile_notices(window, cx);
+                    },
+                )
                 .detach();
                 quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
@@ -1735,34 +1738,29 @@ impl WorkspaceView {
 
     /// Drops focus and hover state for notices that no longer exist, returns
     /// focus to the terminal when the focused toast went away, and repaints.
+    /// Every change to the stack or to focus and hover state ends here.
     fn reconcile_notices(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(id) = self.focused_notice
-            && self.notices.get(id).is_none()
-        {
-            self.focused_notice = None;
-            self.restore_tab_focus(window, cx);
-        }
-        self.sync_notice_pause(cx);
+        self.heal_notice_state(window, cx);
         cx.notify();
     }
 
-    /// Pauses expiry while a live toast is hovered or focused.
-    /// `focused_notice` mirrors the focus handle: the focus-out
-    /// subscription clears it, so no window read is needed here.
-    fn sync_notice_pause(&mut self, cx: &mut Context<'_, Self>) {
-        self.hovered_notices
-            .retain(|id| self.notices.get(*id).is_some());
-        let now = Instant::now();
-        if self.focused_notice.is_some() || !self.hovered_notices.is_empty() {
-            self.notices.pause(now);
-        } else {
-            self.notices.resume(now);
+    /// The bookkeeping behind [`Self::reconcile_notices`] without a repaint.
+    /// Render runs it too: a stack change that skipped reconciling would
+    /// otherwise keep keyboard focus on a dead toast, where every `notice_*`
+    /// key fails and the paused stack never expires.
+    fn heal_notice_state(&mut self, window: &mut Window, cx: &App) {
+        if reconcile_notice_state(
+            &mut self.notices,
+            &mut self.focused_notice,
+            &mut self.hovered_notices,
+            Instant::now(),
+        ) {
+            self.restore_tab_focus(window, cx);
         }
-        cx.notify();
     }
 
     fn focus_notice(
@@ -1773,7 +1771,7 @@ impl WorkspaceView {
     ) {
         self.focused_notice = Some(id);
         self.notice_focus.focus(window);
-        self.sync_notice_pause(cx);
+        self.reconcile_notices(window, cx);
     }
 
     /// The focused toast, for the `notice_*` commands.
@@ -1865,7 +1863,8 @@ impl WorkspaceView {
 
     /// Runs `command` from notice `id`, or its first action when `None`.
     /// An expiring notice is dismissed first; a persistent one stays until
-    /// its source replaces it.
+    /// its source replaces it. Enter on a toast without actions dismisses
+    /// it, as most terminal failure and exit toasts have none.
     fn run_notice_action(
         &mut self,
         id: NoticeId,
@@ -1874,23 +1873,22 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         let notice = self.notices.get(id).ok_or(CommandError::StaleTarget)?;
-        let command = match command {
-            Some(command) => command,
-            None => notice
-                .content
-                .actions
-                .first()
-                .map(|action| action.command.clone())
-                .ok_or_else(|| {
-                    CommandError::Unavailable("notice has no action".to_owned())
-                })?,
+        let lifetime = notice.content.lifetime;
+        let first_action = notice
+            .content
+            .actions
+            .first()
+            .map(|action| action.command.clone());
+        let Some(command) = command.or(first_action) else {
+            self.dismiss_notice(id, window, cx);
+            return Ok(CommandOutcome::Completed);
         };
-        if notice.content.lifetime == Lifetime::Expiring {
+        if lifetime == Lifetime::Expiring {
             self.dismiss_notice(id, window, cx);
         } else if self.focused_notice == Some(id) {
             self.focused_notice = None;
             self.restore_tab_focus(window, cx);
-            self.sync_notice_pause(cx);
+            self.reconcile_notices(window, cx);
         }
         self.invoke_interactive(&command, window, cx)
     }
@@ -1937,14 +1935,14 @@ impl WorkspaceView {
                     }
                 });
             }),
-            hover: Rc::new(move |id, hovering, _, cx| {
+            hover: Rc::new(move |id, hovering, window, cx| {
                 let _ = hover.update(cx, |view, cx| {
                     if hovering {
                         view.hovered_notices.insert(id);
                     } else {
                         view.hovered_notices.remove(&id);
                     }
-                    view.sync_notice_pause(cx);
+                    view.reconcile_notices(window, cx);
                 });
             }),
         };
@@ -2242,8 +2240,6 @@ struct WorkspaceView {
     /// Where a tab menu was opened, in window coordinates; `None` for the
     /// window menu, which anchors to its button.
     menu_pointer: Option<gpui::Point<Pixels>>,
-    /// Focus for the `⋯` button, which Escape returns to.
-    menu_button_focus: FocusHandle,
     /// Where the `⋯` button was last painted, for anchoring the menu and
     /// letting a press on it toggle rather than dismiss; `None` while the
     /// button is not drawn.
@@ -2359,6 +2355,26 @@ impl CloseTarget {
             Self::Window | Self::Application => None,
         }
     }
+}
+
+/// The owner-side bookkeeping after the notice stack changed: focus and
+/// hover state for notices that no longer exist are dropped, and expiry
+/// pauses only while a live toast is hovered or focused. Returns whether the
+/// focused toast went away, so the caller returns focus to the terminal.
+fn reconcile_notice_state(
+    notices: &mut NoticeStack,
+    focused: &mut Option<NoticeId>,
+    hovered: &mut HashSet<NoticeId>,
+    now: Instant,
+) -> bool {
+    let focus_lost = focused.take_if(|id| notices.get(*id).is_none()).is_some();
+    hovered.retain(|id| notices.get(*id).is_some());
+    if focused.is_some() || !hovered.is_empty() {
+        notices.pause(now);
+    } else {
+        notices.resume(now);
+    }
+    focus_lost
 }
 
 /// The tab target for `tabs`: none when empty, a single tab for one, and a
@@ -2496,12 +2512,31 @@ impl CloseState {
     /// close shortcut can neither confirm nor replace the dialog.
     fn check_tab_close_available(&self) -> Result<(), CommandError> {
         if self.confirmation.is_some() {
-            Err(CommandError::Unavailable(
-                "close confirmation pending".to_owned(),
-            ))
+            Err(Self::confirmation_pending())
         } else {
             Ok(())
         }
+    }
+    /// Refuses `target` while the showing confirmation already covers it:
+    /// a repeated close-window shortcut would otherwise re-assess the same
+    /// target and reset the dialog's focused button. A wider target, such
+    /// as closing the window while a tab confirmation shows, still merges.
+    fn check_close_available(
+        &self,
+        target: &CloseTarget,
+    ) -> Result<(), CommandError> {
+        match &self.confirmation {
+            Some(showing)
+                if merge_close(Some(showing.clone()), target.clone())
+                    == *showing =>
+            {
+                Err(Self::confirmation_pending())
+            }
+            _ => Ok(()),
+        }
+    }
+    fn confirmation_pending() -> CommandError {
+        CommandError::Unavailable("close confirmation pending".to_owned())
     }
     /// Takes the queued request, dropping tabs that no longer exist.
     fn take_pending(
@@ -3271,10 +3306,11 @@ impl WorkspaceView {
         let result = tab
             .view
             .update(cx, |terminal, cx| terminal.refresh(window, cx));
+        let title = tab.label(self.config.tabs, cx).0;
         if !result.failures.is_empty() {
             // A tab is one keyed source: its latest failures replace the
-            // earlier ones, so a flooding tab cannot fill the stack.
-            let title = tab.label(self.config.tabs, cx).0;
+            // earlier ones, so a flooding tab cannot fill the stack. The
+            // replaced toast may have been the focused one.
             let source = NoticeSource::Terminal {
                 tab: tab_id,
                 title: title.clone(),
@@ -3286,10 +3322,9 @@ impl WorkspaceView {
                 .collect();
             self.notices
                 .replace_source(&source, replacements, Instant::now());
-            cx.notify();
+            self.reconcile_notices(window, cx);
         }
         if result.exited && !self.config.terminal.close_on_exit {
-            let title = tab.label(self.config.tabs, cx).0;
             self.notices.push(
                 exit_notice(tab_id, &title, result.exit_code),
                 Instant::now(),
@@ -3487,9 +3522,11 @@ impl WorkspaceView {
                                     desktop.latched.retain(|content| {
                                         content.message != message
                                     });
-                                    view.notices.dismiss_where(|content| {
+                                    if view.notices.dismiss_where(|content| {
                                         content.message == message
-                                    });
+                                    }) {
+                                        view.reconcile_notices(window, cx);
+                                    }
                                 }
                             }
                         }
@@ -4022,7 +4059,8 @@ impl WorkspaceView {
                 | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
                     self.check_fullscreen_available(command)
                 }
-                ids::CLOSE_WINDOW | ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
+                ids::CLOSE_WINDOW => self.check_close_window_available(),
+                ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
                 other => Err(CommandError::UnknownCommand(other)),
             },
             CommandScope::Runtime => {
@@ -4071,7 +4109,7 @@ impl WorkspaceView {
         cx: &App,
     ) -> Result<(), CommandError> {
         if command != ids::COPY_TAB_DIRECTORY {
-            self.close.check_tab_close_available()?;
+            self.check_tab_close_available()?;
         }
         let tab = tab.map_or_else(
             || self.active_tab_id(),
@@ -4222,15 +4260,28 @@ impl WorkspaceView {
             .ok_or_else(|| CommandError::Unavailable(reason.to_owned()))
     }
 
+    /// Tab closes are refused while a confirmation or the About panel is
+    /// showing. Unlike [`Self::check_available`], a structural operation in
+    /// progress does not refuse them: the close queues behind it.
+    fn check_tab_close_available(&self) -> Result<(), CommandError> {
+        tab_close_availability(&self.close, self.about.is_some())
+    }
+
+    /// `close_window` is refused only while its own confirmation shows; it
+    /// widens a tab confirmation and queues behind structural work.
+    fn check_close_window_available(&self) -> Result<(), CommandError> {
+        self.close.check_close_available(&CloseTarget::Window)
+    }
+
     /// Closes the named or active tab, or the tabs around it, unless a
-    /// confirmation is already showing.
+    /// confirmation or the About panel is already showing.
     fn run_tab_close(
         &mut self,
         invocation: &CommandInvocation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.close.check_tab_close_available()?;
+        self.check_tab_close_available()?;
         let tab = self.target_tab(invocation)?;
         let target = if invocation.id == ids::CLOSE_TAB {
             CloseTarget::Tab(tab)
@@ -4447,6 +4498,7 @@ impl WorkspaceView {
                 self.run_notice_command(invocation.id, window, cx)
             }
             ids::CLOSE_WINDOW => {
+                self.check_close_window_available()?;
                 self.request_close(CloseTarget::Window, window, cx);
                 Ok(CommandOutcome::Accepted)
             }
@@ -4544,9 +4596,25 @@ struct TabTitle {
     title: String,
 }
 
+/// Tab closes are refused while a confirmation is showing, or while the
+/// About panel is up and would otherwise stay over a closing tab.
+fn tab_close_availability(
+    close: &CloseState,
+    about_showing: bool,
+) -> Result<(), CommandError> {
+    close.check_tab_close_available()?;
+    if about_showing {
+        return Err(CommandError::Unavailable(
+            "About panel is showing".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Maps assessed job evidence onto the dialog's busy groups. `titles` lists
 /// the tabs the dialog may cover, in window order; idle terminals are
-/// omitted, and headings are set when the dialog covers more than one tab.
+/// omitted, and headings are set when the dialog covers more than one tab:
+/// a tab set, the application, or a window with more than one tab.
 fn close_dialog_input<'a>(
     target: &CloseTarget,
     jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
@@ -4564,7 +4632,11 @@ fn close_dialog_input<'a>(
         CloseTarget::Window => CloseDialogTarget::Window,
         CloseTarget::Application => CloseDialogTarget::Application,
     };
-    let headings = !matches!(dialog_target, CloseDialogTarget::Tab { .. });
+    let headings = match dialog_target {
+        CloseDialogTarget::Tab { .. } => false,
+        CloseDialogTarget::Window => titles.len() > 1,
+        CloseDialogTarget::Tabs { .. } | CloseDialogTarget::Application => true,
+    };
     let groups = jobs
         .into_iter()
         .filter_map(|(terminal, state)| {
@@ -6131,6 +6203,7 @@ impl Render for WorkspaceView {
         self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
         self.sync_window_title(window, cx);
+        self.heal_notice_state(window, cx);
         let tabs = self.layout_tabs();
         let position = tabs.position;
         let layout = self.chrome_layout(window);
@@ -6344,11 +6417,9 @@ impl Render for WorkspaceView {
         // A top bar on the notch shelf, currently shown.
         let shelf_bar = self.notch_shelf().is_some()
             && self.presentation() == Presentation::Reserved;
-        let title_menu_button =
-            (menu_placement == MenuButtonPlacement::TitleStrip).then(|| {
-                self.menu_button_element(colors, window, cx)
-                    .mr(CONTROL_INSET)
-            });
+        let title_menu_button = (menu_placement
+            == MenuButtonPlacement::TitleStrip)
+            .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
         // The strip's trailing group: the `⋯` button when the strip holds
         // it, then the window controls in the row Huterm draws.
         let title_trailing = div()
@@ -6763,7 +6834,7 @@ impl Render for WorkspaceView {
             };
             if let Some(origin) = bar_menu_button {
                 chrome = chrome.child(
-                    self.menu_button_element(colors, window, cx)
+                    self.menu_button_element(colors, cx)
                         .absolute()
                         .left(origin.x)
                         .top(origin.y),
@@ -6993,9 +7064,9 @@ impl Render for WorkspaceView {
             root = root.child(menu);
         }
         if let Some(details) = &self.about {
-            root = root.child(render_about(
+            let about = render_about(
                 details,
-                window.viewport_size(),
+                content.size,
                 Swatch::from_theme(&self.config.theme),
                 cx.listener(|view, _, _, cx| {
                     view.copy_about_details(cx);
@@ -7003,15 +7074,16 @@ impl Render for WorkspaceView {
                 cx.listener(|view, _, window, cx| {
                     view.close_about(window, cx);
                 }),
-            ));
+            );
+            root = root.child(modal_layer(about, &layout));
         }
         if let Some(target) = self.close.confirmation.clone() {
             let model =
                 build_close_dialog(&self.close_dialog_input(&target, cx));
-            root = root.child(render_close_dialog(
+            let dialog = render_close_dialog(
                 &model,
                 self.close.dialog_focus,
-                window.viewport_size(),
+                content.size,
                 Swatch::from_theme(&self.config.theme),
                 cx.listener(|view, _, window, cx| {
                     view.cancel_close(window, cx);
@@ -7019,7 +7091,8 @@ impl Render for WorkspaceView {
                 cx.listener(move |view, _, window, cx| {
                     view.finish_close(target.clone(), window, cx);
                 }),
-            ));
+            );
+            root = root.child(modal_layer(dialog, &layout));
         }
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
@@ -7056,6 +7129,23 @@ impl Render for WorkspaceView {
         );
         root
     }
+}
+
+/// Hosts a modal `overlay` that fills its parent: the whole window, or the
+/// content inside a drawn client frame, so the transparent border around
+/// the frame's shadow stays untinted and its rounded top corners hold.
+fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
+    if !layout.frame.decorated() {
+        return overlay;
+    }
+    let content = layout.content;
+    div()
+        .absolute()
+        .left(content.origin.x)
+        .top(content.origin.y)
+        .w(content.size.width)
+        .h(content.size.height)
+        .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
 }
 
 /// The `menu_*` commands act on the open menu instead of replacing it.
@@ -7423,25 +7513,23 @@ impl WorkspaceView {
     }
 
     /// The `⋯` control: a 14-point icon in the 26-point control with the
-    /// tab-bar hover style, a "Menu" tooltip, a yellow dot while notices
-    /// wait, and a focus ring while it holds focus after Escape. The caller
-    /// positions it. It records its painted bounds for the menu's anchor.
+    /// tab-bar hover style, a "Menu" tooltip, and a yellow dot while notices
+    /// wait. It never holds keyboard focus: Escape returns focus to the
+    /// terminal. The caller positions it. It records its painted bounds for
+    /// the menu's anchor.
     fn menu_button_element(
         &self,
         colors: TabColors,
-        window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let bounds_cell = Rc::clone(&self.menu_button_bounds);
         let open = self.menu.is_some();
         let dot = !open && !self.notices.is_empty();
         let swatch = Swatch::from_theme(&self.config.theme);
-        let focused = self.menu_button_focus.is_focused(window);
         div()
             .id("window-menu")
             .group("window-menu")
             .occlude()
-            .track_focus(&self.menu_button_focus)
             .w(CONTROL_SIZE)
             .h(CONTROL_SIZE)
             .flex()
@@ -7450,7 +7538,6 @@ impl WorkspaceView {
             .rounded_md()
             .hover(|style| style.bg(colors.control_hover))
             .when(open, |button| button.bg(colors.control_hover))
-            .when(focused, |button| button.shadow(swatch.focus_ring()))
             .tooltip(move |_, cx| TextTooltip::view("Menu", swatch, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
@@ -7773,6 +7860,16 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";")
     }
+}
+
+/// Whether the window's root shows a close confirmation or the About panel.
+/// The scrim occludes the terminal beneath; this keeps pointer input out
+/// even if a modal is ever mounted without one.
+pub(super) fn modal_showing(window: &Window, cx: &App) -> bool {
+    window
+        .root::<WorkspaceView>()
+        .flatten()
+        .is_some_and(|root| root.read(cx).dialog_showing())
 }
 
 #[cfg(target_os = "macos")]
@@ -9128,6 +9225,108 @@ mod tests {
     }
 
     #[test]
+    fn tab_closes_are_refused_while_the_about_panel_shows() {
+        let close = CloseState::default();
+        assert_eq!(tab_close_availability(&close, false), Ok(()));
+        assert_eq!(
+            tab_close_availability(&close, true),
+            Err(CommandError::Unavailable(
+                "About panel is showing".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_repeated_close_window_is_refused_while_its_confirmation_shows() {
+        let pending = Err(CommandError::Unavailable(
+            "close confirmation pending".to_owned(),
+        ));
+        let mut close = CloseState::default();
+        assert_eq!(close.check_close_available(&CloseTarget::Window), Ok(()));
+        close.begin_check(CloseTarget::Tab(TabId::new(1)));
+        close.checked(true);
+        assert_eq!(
+            close.check_close_available(&CloseTarget::Window),
+            Ok(()),
+            "closing the window widens a tab confirmation"
+        );
+        close.cancel();
+        close.begin_check(CloseTarget::Window);
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Window))
+        );
+        close.dialog_focus = DialogFocus::Cancel;
+        assert_eq!(close.check_close_available(&CloseTarget::Window), pending);
+        assert_eq!(
+            close.check_close_available(&CloseTarget::Application),
+            Ok(()),
+            "Quit still widens a window confirmation"
+        );
+        assert_eq!(
+            close.dialog_focus,
+            DialogFocus::Cancel,
+            "the refused repeat leaves the focused button alone"
+        );
+        close.cancel();
+        close.begin_check(CloseTarget::Application);
+        close.checked(true);
+        assert_eq!(close.check_close_available(&CloseTarget::Window), pending);
+    }
+
+    #[test]
+    fn a_replaced_focused_toast_releases_focus_and_resumes_expiry() {
+        let now = Instant::now();
+        let tab = TabId::new(1);
+        let failure = |message: &str| {
+            terminal_notice(
+                tab,
+                "shell",
+                TerminalFailure {
+                    severity: Severity::Error,
+                    title: "Terminal error",
+                    message: message.to_owned(),
+                },
+            )
+        };
+        let mut stack = NoticeStack::default();
+        let first = stack.push(failure("first"), now);
+        let mut focused = Some(first);
+        let mut hovered = HashSet::from([first]);
+        assert!(
+            !reconcile_notice_state(
+                &mut stack,
+                &mut focused,
+                &mut hovered,
+                now
+            ),
+            "a live focused toast keeps focus"
+        );
+        assert_eq!(focused, Some(first));
+        assert_eq!(stack.next_deadline(), None, "focus pauses expiry");
+
+        // The tab's next failure replaces its toast, including the focused one.
+        let source = NoticeSource::Terminal {
+            tab,
+            title: "shell".to_owned(),
+        };
+        assert!(stack.replace_source(&source, vec![failure("second")], now));
+        assert!(
+            reconcile_notice_state(&mut stack, &mut focused, &mut hovered, now),
+            "the focused toast went away, so focus returns to the terminal"
+        );
+        assert_eq!(focused, None);
+        assert!(
+            hovered.is_empty(),
+            "the hover id of the replaced toast goes"
+        );
+        assert!(
+            stack.next_deadline().is_some(),
+            "nothing live is focused or hovered, so expiry resumes"
+        );
+    }
+
+    #[test]
     fn a_set_check_widens_to_a_tab_queued_during_the_assessment() {
         let (first, second, third) =
             (TabId::new(1), TabId::new(2), TabId::new(3));
@@ -9269,6 +9468,43 @@ mod tests {
                 tab_title: Some("Detached terminal".to_owned()),
                 state: ProcessGroupState::Known(vec![row]),
             }]
+        );
+    }
+
+    #[test]
+    fn a_one_tab_window_dialog_has_no_headings() {
+        use huterm_core::{JobProcess, JobState};
+        let titles = [TabTitle {
+            tab: TabId::new(1),
+            terminal: TerminalId::new(10),
+            title: "build".to_owned(),
+        }];
+        let cargo = JobProcess {
+            pid: 41,
+            group: 41,
+            group_started: None,
+            foreground: true,
+            identity: "cargo".to_owned(),
+            command: "cargo".to_owned(),
+            command_line: None,
+        };
+        let running = JobState::Running(vec![cargo]);
+        let jobs = [(TerminalId::new(10), &running)];
+        let window = close_dialog_input(&CloseTarget::Window, jobs, &titles);
+        assert_eq!(
+            window
+                .groups
+                .iter()
+                .map(|group| &group.tab_title)
+                .collect::<Vec<_>>(),
+            [&None],
+            "the dialog covers one tab, so its rows need no heading"
+        );
+        let quit = close_dialog_input(&CloseTarget::Application, jobs, &titles);
+        assert_eq!(
+            quit.groups[0].tab_title.as_deref(),
+            Some("build"),
+            "Quit may cover other windows, so it keeps headings"
         );
     }
 

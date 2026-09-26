@@ -237,8 +237,11 @@ pub(crate) fn build_close_dialog(input: &CloseDialogInput) -> CloseDialogModel {
             ProcessGroupState::Unknown => 0,
         })
         .sum();
+    // Only tabs with known processes are busy; unknown-state tabs get their
+    // own sentence.
+    let busy = groups.len() - unknown_tabs;
     let (title, subtitle, primary_label) =
-        dialog_copy(&input.target, groups.len(), processes, unknown_tabs);
+        dialog_copy(&input.target, busy, processes, unknown_tabs);
     let fallback_title = match &input.target {
         CloseDialogTarget::Tab { title } => title.as_str(),
         _ => "This tab",
@@ -651,15 +654,28 @@ mod tests {
             CloseDialogTarget::Tabs { count: 2 },
             vec![
                 known(Some("cargo build"), vec![process("cargo", 1, true)]),
-                unknown(Some("ssh build-host")),
+                known(Some("nvim"), vec![process("nvim", 2, true)]),
             ],
         );
         assert_eq!(
             all.subtitle,
-            "All 2 have running processes. Closing ends 1 process. One tab's \
-             process state is unavailable, so it may have running jobs."
+            "All 2 have running processes. Closing ends 2 processes."
         );
-        assert_eq!(all.mark, DialogMark::Question);
+        // An unknown-state tab is not counted as busy: it has its own
+        // sentence.
+        let mixed = build(
+            CloseDialogTarget::Tabs { count: 2 },
+            vec![
+                known(Some("cargo build"), vec![process("cargo", 1, true)]),
+                unknown(Some("ssh build-host")),
+            ],
+        );
+        assert_eq!(
+            mixed.subtitle,
+            "1 of them has running processes. Closing ends 1 process. One \
+             tab's process state is unavailable, so it may have running jobs."
+        );
+        assert_eq!(mixed.mark, DialogMark::Question);
     }
 
     #[test]
