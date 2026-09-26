@@ -210,17 +210,41 @@ impl TerminalRenderer {
         }
     }
 
-    /// Records how long the oldest content of an applied snapshot waited, and
-    /// keeps its instant so the next paint reports the delay to pixels.
+    /// Records how long the oldest content of an applied snapshot waited. When
+    /// the snapshot changed what the view shows, keeps its instant so the next
+    /// paint reports the delay to pixels; an unchanged snapshot is not painted.
     pub(super) fn record_output_applied(
         &mut self,
         invalidated_at: Option<Instant>,
+        shown: bool,
     ) {
-        if let (Some(stats), Some(invalidated_at)) =
-            (&mut self.stats, invalidated_at)
-        {
-            stats.output_applied.push(invalidated_at.elapsed());
+        let Some(stats) = &mut self.stats else {
+            return;
+        };
+        stats.snapshots += 1;
+        let Some(invalidated_at) = invalidated_at else {
+            return;
+        };
+        stats.output_applied.push(invalidated_at.elapsed());
+        if shown {
             stats.pending_output.get_or_insert(invalidated_at);
+        }
+        // Output invalidated after the key was sent carries its echo.
+        if let Some(sent) =
+            stats.pending_key.take_if(|sent| invalidated_at >= *sent)
+        {
+            stats.key_applied.push(sent.elapsed());
+            if shown {
+                stats.pending_echo = Some(sent);
+            }
+        }
+    }
+
+    /// Starts a keystroke-to-echo sample for the key benchmark.
+    pub(super) fn record_key_sent(&mut self, sent: Instant) {
+        if let Some(stats) = &mut self.stats {
+            stats.keys += 1;
+            stats.pending_key = Some(sent);
         }
     }
 
@@ -1195,6 +1219,15 @@ struct RendererStats {
     output_applied: Vec<Duration>,
     output_painted: Vec<Duration>,
     pending_output: Option<Instant>,
+    /// Snapshots applied, including those without new output.
+    snapshots: u64,
+    /// Delay from a benchmark keystroke to the snapshot holding its echo,
+    /// then to the end of the paint that shows it.
+    keys: u64,
+    key_applied: Vec<Duration>,
+    key_painted: Vec<Duration>,
+    pending_key: Option<Instant>,
+    pending_echo: Option<Instant>,
     continuous_frames: bool,
 }
 
@@ -1215,6 +1248,12 @@ impl RendererStats {
             output_applied: Vec::new(),
             output_painted: Vec::new(),
             pending_output: None,
+            snapshots: 0,
+            keys: 0,
+            key_applied: Vec::new(),
+            key_painted: Vec::new(),
+            pending_key: None,
+            pending_echo: None,
         }
     }
 
@@ -1251,6 +1290,9 @@ impl RendererStats {
         if let Some(invalidated_at) = self.pending_output.take() {
             self.output_painted.push(invalidated_at.elapsed());
         }
+        if let Some(sent) = self.pending_echo.take() {
+            self.key_painted.push(sent.elapsed());
+        }
         if self.interval_started.elapsed() < Duration::from_secs(1) {
             return;
         }
@@ -1280,6 +1322,20 @@ impl RendererStats {
                 self.interval_started.elapsed().as_micros(),
                 self.output_applied.len(),
                 self.output_painted.len(),
+            );
+        }
+        if self.keys > 0 {
+            let (applied_median, applied_max) =
+                median_and_max_micros(&mut self.key_applied);
+            let (painted_median, painted_max) =
+                median_and_max_micros(&mut self.key_painted);
+            eprintln!(
+                "huterm-render keys elapsed_us={} keys={} echoes={} snapshots={} applied_us_median={applied_median} applied_us_max={applied_max} paints={} painted_us_median={painted_median} painted_us_max={painted_max}",
+                self.interval_started.elapsed().as_micros(),
+                self.keys,
+                self.key_applied.len(),
+                self.snapshots,
+                self.key_painted.len(),
             );
         }
         let mode = if self.continuous_frames {

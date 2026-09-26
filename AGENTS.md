@@ -81,7 +81,8 @@ Keep view destruction and detachment separate from explicit close.
   bounded so output cannot starve. Client input, resize, and presentation
   messages have their own bounded queue, taken ahead of PTY output and
   alternating with it when both wait, so an output flood cannot refuse input.
-  Writer dequeue signals capacity. Unix PTY readiness waits include
+  Writer dequeue wakes the runtime only after the runtime has spilled writes,
+  recorded the request, and retried them once. Unix PTY readiness waits include
   cancellation descriptors; signal them and drop the data receiver before
   joining workers. The child waiter owns the physical child without holding a
   shared lock across `wait`; bounded teardown uses its cached-status proxy.
@@ -109,7 +110,11 @@ Run `mise tasks` to discover the full task set.
   that sustained output stays paced. `ci:benchmarks` runs the `echo` mode with
   `HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000`, the only automated check of
   the activity-driven snapshot path: without it the median waits for the
-  16 ms refresh pump.
+  16 ms refresh pump. `-- keys` types through GPUI's window dispatch and times
+  each key to its painted echo; `ci:benchmarks` fails it above 1.5 snapshots
+  per key. Input must not request a snapshot unless it leaves history: one
+  started before the echo exists spends the frame's allowance and delays the
+  echo by a frame.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint

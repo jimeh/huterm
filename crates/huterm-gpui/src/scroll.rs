@@ -515,6 +515,21 @@ mod tests {
     }
 
     #[test]
+    fn input_at_live_output_requests_no_snapshot_but_leaves_history() {
+        // Typed input relies on this: its echo requests the next snapshot.
+        let mut controller = controller_with_history(100);
+        assert!(!controller.bottom());
+        assert_eq!(controller.begin_request(), None);
+
+        controller.set_desired(7);
+        let _ = controller.begin_request();
+        controller.complete(Viewport { bottom_offset: 7 }, 100);
+        assert!(controller.bottom());
+        assert_eq!(controller.begin_request(), Some(Viewport::default()));
+        assert_eq!(controller.submitted_scroll(), Some(ScrollCommand::Live));
+    }
+
+    #[test]
     fn return_to_bottom_wins_over_growth_during_an_older_request() {
         let mut controller = controller_with_history(100);
         controller.set_desired(10);

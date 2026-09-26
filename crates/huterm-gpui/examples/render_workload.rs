@@ -1,4 +1,5 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -24,12 +25,43 @@ fn echo(stdout: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
+/// Echoes each typed byte as a shell would, from raw mode, so a keystroke's
+/// latency to the screen includes the child's read and write.
+fn keys(stdout: &mut impl Write) -> io::Result<()> {
+    // stty configures the terminal on its inherited standard input.
+    if !Command::new("stty")
+        .args(["raw", "-echo"])
+        .status()?
+        .success()
+    {
+        return Err(io::Error::other("stty could not enter raw mode"));
+    }
+    let mut stdin = io::stdin().lock();
+    let mut byte = [0_u8; 1];
+    for index in 0_u64.. {
+        if stdin.read(&mut byte)? == 0 {
+            break;
+        }
+        let written =
+            write!(stdout, "\r{index:>8}").and_then(|()| stdout.flush());
+        if let Err(error) = written {
+            return if error.kind() == io::ErrorKind::BrokenPipe {
+                Ok(())
+            } else {
+                Err(error)
+            };
+        }
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    if std::env::var("HUTERM_RENDER_WORKLOAD").is_ok_and(|mode| mode == "echo")
-    {
-        return echo(&mut stdout);
+    match std::env::var("HUTERM_RENDER_WORKLOAD").as_deref() {
+        Ok("echo") => return echo(&mut stdout),
+        Ok("keys") => return keys(&mut stdout),
+        _ => {}
     }
     let mut frame = 0_u64;
     let mut output = Vec::with_capacity(COLUMNS * ROWS * 16);
