@@ -97,6 +97,20 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
+Ghostty resolves a `Point::Screen` grid reference by walking page nodes from
+the top of history, but a `Point::Viewport` reference from the viewport's own
+position. Link lookup therefore reads rows at or below the current viewport
+top, scrolled or not, through viewport points and keeps screen points for rows
+above it. Plain-text lookup reads only the token under the pointer, up to the
+nearest delimiters, and applies the scan limits to that token; the bounding
+delimiters do not count. Reads above the viewport still cost one walk each as
+history grows, because there is no native API to step a reference between rows.
+They occur for every cell of a token that extends above the viewport, and once
+when a token reaches the viewport's top-left cell and the row above must be
+checked for a soft wrap. That check reads the row above's own wrap flag: the
+next row's continuation flag can disagree with it after line insertion or
+deletion.
+
 Core seeds foreground, background, cursor, palette, grid, and physical cell size
 before spawning the child. It answers native OSC 4,
 10/11/12, CSI 14/16/18t, and CSI ?996n queries from that ordered retained state.
@@ -152,6 +166,9 @@ mise run bench:links
 The engine benchmark reports the fixed Ghostty revision, p50/p95 elapsed
 processing and snapshot times, row reuse, throughput, and retained history.
 The scroll and link gates keep their existing thresholds and queue limits.
+The link benchmark runs its viewport, above-viewport, long-line, and scrolled
+fixtures with empty and saturated scrollback so their elapsed times can be
+compared.
 Elapsed time includes scheduler preemption; Xvfb snapshot evidence does not
 prove continuous presentation.
 
