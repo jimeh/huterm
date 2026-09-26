@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol"]
-exclude = ["third-party/vendor/libghostty-vt-0.2.1", "third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-0.2.2"]
+exclude = ["third-party/vendor/libghostty-vt-0.2.1", "third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-0.2.2", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
 [workspace.package]
@@ -85,3 +85,4 @@ libghostty-vt = { path = "third-party/vendor/libghostty-vt-0.2.1" }
 global-hotkey = { path = "third-party/vendor/global-hotkey-0.8.0" }
 gpui = { path = "third-party/vendor/gpui-0.2.2" }
 libghostty-vt-sys = { path = "third-party/vendor/libghostty-vt-sys-0.2.1" }
+portable-pty = { path = "third-party/vendor/portable-pty-0.9.0" }
