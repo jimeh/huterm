@@ -993,14 +993,6 @@ const CATALOG: &[CommandSpec] = &[
         TAB,
     ),
     spec(
-        ids::COPY_TAB_DIRECTORY,
-        CommandScope::Window,
-        "Copy Tab Directory",
-        "Copy a tab's working directory to the clipboard; defaults to the \
-         active tab.",
-        TAB,
-    ),
-    spec(
         ids::CLOSE_WINDOW,
         CommandScope::Window,
         "Close Window",
@@ -1089,6 +1081,14 @@ const CATALOG: &[CommandSpec] = &[
         "Paste",
         "Paste the clipboard into the terminal.",
         &[],
+    ),
+    spec(
+        ids::COPY_TAB_DIRECTORY,
+        CommandScope::Window,
+        "Copy Tab Directory",
+        "Copy a tab's working directory to the clipboard; defaults to the \
+         active tab.",
+        TAB,
     ),
     spec(
         ids::SCROLL_PAGE_UP,

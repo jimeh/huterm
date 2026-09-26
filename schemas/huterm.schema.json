@@ -500,7 +500,6 @@
                 "close_tab",
                 "close_other_tabs",
                 "close_tabs_after",
-                "copy_tab_directory",
                 "close_window",
                 "next_tab",
                 "previous_tab",
@@ -512,6 +511,7 @@
                 "zoom",
                 "copy",
                 "paste",
+                "copy_tab_directory",
                 "scroll_page_up",
                 "scroll_page_down",
                 "scroll_to_bottom",
@@ -1400,53 +1400,6 @@
           "if": {
             "properties": {
               "command": {
-                "const": "copy_tab_directory"
-              }
-            },
-            "required": [
-              "command"
-            ]
-          },
-          "then": {
-            "additionalProperties": false,
-            "description": "Copy a tab's working directory to the clipboard; defaults to the active tab.",
-            "properties": {
-              "args": {
-                "additionalProperties": false,
-                "properties": {},
-                "required": [],
-                "type": "object"
-              },
-              "command": {
-                "const": "copy_tab_directory",
-                "description": "Copy a tab's working directory to the clipboard; defaults to the active tab.",
-                "type": "string"
-              },
-              "description": {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "key": {
-                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
-                "pattern": "\\S",
-                "type": "string"
-              },
-              "when": {
-                "description": "GPUI key-context predicate, parsed at runtime.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "key",
-              "command"
-            ],
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "command": {
                 "const": "close_window"
               }
             },
@@ -1943,6 +1896,53 @@
               "command": {
                 "const": "paste",
                 "description": "Paste the clipboard into the terminal.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "copy_tab_directory"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Copy a tab's working directory to the clipboard; defaults to the active tab.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "copy_tab_directory",
+                "description": "Copy a tab's working directory to the clipboard; defaults to the active tab.",
                 "type": "string"
               },
               "description": {
