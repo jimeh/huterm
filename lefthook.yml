@@ -17,6 +17,7 @@ pre-commit:
         - "third-party/vendor/gpui-0.2.2/**"
         - "third-party/vendor/global-hotkey-0.8.0/**"
         - "third-party/vendor/libghostty-vt-0.2.1/**"
+        - "third-party/vendor/portable-pty-0.9.0/**"
       run: mise run lint:docs:files {staged_files}
 
     - name: workflows
