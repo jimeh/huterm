@@ -52,6 +52,7 @@ use crate::ui::scrollbar::{
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
+use overlay::{Swatch, key_cap, mono_font_family, raised_panel};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
@@ -79,12 +80,19 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
+/// The `scroll_to_bottom` default on every platform, shown by the scroll
+/// pill until the window supplies the compiled keymap's binding.
+const DEFAULT_SCROLL_TO_BOTTOM_KEY: &str = "shift-end";
 const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
+mod close_dialog;
 mod composition;
 mod key_bench;
 mod keyboard;
 mod links;
+mod menu;
+mod notices;
+mod overlay;
 pub(crate) mod palette;
 mod refresh;
 pub(crate) use windows::{
@@ -356,6 +364,8 @@ struct TerminalView {
     selecting: bool,
     scrollbars: Scrollbars,
     resize_visibility: IndicatorVisibility,
+    /// Key cap shown beside "Jump to live" in the scroll pill.
+    scroll_to_bottom_key: String,
     last_viewport: Option<gpui::Size<Pixels>>,
     selection_edge_direction: i64,
     scroll_benchmark: Option<ScrollBenchmark>,
@@ -551,6 +561,7 @@ impl TerminalView {
             selecting: false,
             scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
             resize_visibility: IndicatorVisibility::default(),
+            scroll_to_bottom_key: DEFAULT_SCROLL_TO_BOTTOM_KEY.to_owned(),
             last_viewport: None,
             selection_edge_direction: 0,
             scroll_benchmark: ScrollBenchmark::from_environment(
@@ -1937,6 +1948,23 @@ impl TerminalView {
         context
     }
 
+    /// Shows `key` (the compiled keymap's first `scroll_to_bottom` binding
+    /// in the Terminal context) in the scroll pill; `None` restores the
+    /// platform default.
+    #[expect(dead_code, reason = "the window supplies its keymap later")]
+    pub(super) fn set_scroll_to_bottom_key(
+        &mut self,
+        key: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let key =
+            key.unwrap_or_else(|| DEFAULT_SCROLL_TO_BOTTOM_KEY.to_owned());
+        if self.scroll_to_bottom_key != key {
+            self.scroll_to_bottom_key = key;
+            cx.notify();
+        }
+    }
+
     fn set_status(&mut self, status: String) -> bool {
         if self.status.as_ref() == Some(&status) {
             false
@@ -2106,6 +2134,139 @@ impl Focusable for TerminalView {
     }
 }
 
+impl TerminalView {
+    /// The pill at the bottom centre of the terminal bounds while scrolled
+    /// back. It consumes presses and releases so a click cannot start a
+    /// selection or application mouse input, and fades with the indicator.
+    fn render_scroll_pill(
+        &self,
+        pill: ScrollPill,
+        terminal_bounds: Bounds<Pixels>,
+        viewport_height: Pixels,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        let bottom = viewport_height
+            - (terminal_bounds.origin.y + terminal_bounds.size.height)
+            + px(12.0);
+        let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+        };
+        let release = |_: &MouseUpEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+        };
+        div()
+            .absolute()
+            .left(terminal_bounds.origin.x)
+            .w(terminal_bounds.size.width)
+            .bottom(bottom)
+            .flex()
+            .justify_center()
+            .child(
+                raised_panel(swatch, 15.0)
+                    .id("scroll-pill")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(10.0))
+                    .h(px(30.0))
+                    .pl(px(12.0))
+                    .pr(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(swatch.fg)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .hover(|pill| pill.bg(swatch.surface.blend(swatch.hover)))
+                    .opacity(self.scrollbars.opacity(Axis::Vertical))
+                    .on_mouse_down(MouseButton::Left, stop)
+                    .on_mouse_down(MouseButton::Right, stop)
+                    .on_mouse_down(MouseButton::Middle, stop)
+                    .on_mouse_up(MouseButton::Left, release)
+                    .on_mouse_up(MouseButton::Right, release)
+                    .on_mouse_up(MouseButton::Middle, release)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.scroll_command(cx, |scroll, _| scroll.bottom());
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child("↑")
+                            .child(
+                                div()
+                                    .font_family(mono_font_family())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(pill.offset),
+                            )
+                            .child(format!("of {} lines", pill.total)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .h(px(18.0))
+                            .pl(px(10.0))
+                            .pr(px(4.0))
+                            .border_l_1()
+                            .border_color(swatch.line)
+                            .text_color(swatch.muted)
+                            .child("Jump to live")
+                            .child(key_cap(&self.scroll_to_bottom_key, swatch)),
+                    ),
+            )
+    }
+
+    /// The centred `columns × rows` panel while the grid size changes. The
+    /// surface stays opaque; the fade applies to the whole panel.
+    fn render_size_panel(&self) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                raised_panel(swatch, 12.0)
+                    .opacity(self.resize_visibility.opacity)
+                    .pt(px(14.0))
+                    .pb(px(12.0))
+                    .px(px(22.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .font_family(mono_font_family())
+                            .text_size(px(26.0))
+                            .line_height(px(26.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(swatch.fg)
+                            .child(self.last_grid_size.columns.to_string())
+                            .child(
+                                div()
+                                    .mx(px(6.0))
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .text_color(swatch.dim)
+                                    .child("×"),
+                            )
+                            .child(self.last_grid_size.rows.to_string()),
+                    )
+                    .child(
+                        div()
+                            .mt(px(6.0))
+                            .text_size(px(11.0))
+                            .text_color(swatch.muted)
+                            .child("columns × rows"),
+                    ),
+            )
+    }
+}
+
 impl Render for TerminalView {
     #[expect(
         clippy::too_many_lines,
@@ -2149,6 +2310,7 @@ impl Render for TerminalView {
         self.scrollbars
             .set_axis(Axis::Vertical, Some(self.scrollbar_options()));
         let layout = self.terminal_layout(window);
+        let terminal_bounds = layout.bounds;
         let hovered_link = self.links.hover().cloned();
         let link_metrics = self.metrics;
         let underline = color(self.theme.foreground);
@@ -2358,45 +2520,19 @@ impl Render for TerminalView {
                     .layers(&geometries, scrollbar_colors(&self.theme))
                     .collect::<Vec<_>>(),
             );
-            if let Some(label) = scroll_position_label(displayed_offset) {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .right(px(self.scrollbars.strip_inset(Axis::Vertical)))
-                        .bottom(px(12.0))
-                        .px_2()
-                        .py_1()
-                        .rounded(px(3.0))
-                        .bg(color(self.theme.background))
-                        .text_color(color(self.theme.foreground))
-                        .opacity(self.scrollbars.opacity(Axis::Vertical))
-                        .child(label),
-                );
+            if let Some(pill) =
+                ScrollPill::new(displayed_offset, self.scroll.history())
+            {
+                root = root.child(self.render_scroll_pill(
+                    pill,
+                    terminal_bounds,
+                    self.viewport(window).height,
+                    cx,
+                ));
             }
         }
         if self.resize_visibility.opacity > 0.0 {
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(3.0))
-                            .bg(color(self.theme.background))
-                            .text_color(color(self.theme.foreground))
-                            .opacity(self.resize_visibility.opacity)
-                            .child(format!(
-                                "{} x {}",
-                                self.last_grid_size.columns,
-                                self.last_grid_size.rows
-                            )),
-                    ),
-            );
+            root = root.child(self.render_size_panel());
         }
         root.when_some(status, |view, status| {
             view.child(
@@ -2738,9 +2874,28 @@ fn format_line_count(value: usize) -> String {
     }
     formatted
 }
-fn scroll_position_label(displayed_offset: usize) -> Option<String> {
-    (displayed_offset > 0)
-        .then(|| format!("{} lines up", format_line_count(displayed_offset)))
+
+/// Text for the scroll pill: the displayed snapshot's offset within its
+/// retained history, both with thousands separators.
+struct ScrollPill {
+    offset: String,
+    total: String,
+}
+
+impl ScrollPill {
+    /// `None` at the live bottom, where the pill hides while the indicator
+    /// fades.
+    fn new(displayed_offset: usize, history: usize) -> Option<Self> {
+        (displayed_offset > 0).then(|| Self {
+            offset: format_line_count(displayed_offset),
+            total: format_line_count(history.max(displayed_offset)),
+        })
+    }
+
+    #[cfg(test)]
+    fn text(&self) -> String {
+        format!("↑ {} of {} lines", self.offset, self.total)
+    }
 }
 
 fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
@@ -3121,15 +3276,24 @@ mod tests {
         assert!(candidate.range().is_some(), "vertical dragging must select");
     }
     #[test]
-    fn live_bottom_hides_its_label_while_the_indicator_fades() {
-        assert_eq!(scroll_position_label(0), None);
+    fn live_bottom_hides_the_scroll_pill_while_the_indicator_fades() {
+        assert!(ScrollPill::new(0, 9_870).is_none());
     }
 
     #[test]
-    fn scroll_position_label_uses_the_displayed_snapshot_offset() {
+    fn scroll_pill_uses_the_displayed_snapshot_offset_and_history() {
         assert_eq!(
-            scroll_position_label(1_284).as_deref(),
-            Some("1,284 lines up")
+            ScrollPill::new(1_284, 9_870).map(|pill| pill.text()),
+            Some("↑ 1,284 of 9,870 lines".to_owned())
+        );
+        assert_eq!(
+            ScrollPill::new(12, 12).map(|pill| pill.text()),
+            Some("↑ 12 of 12 lines".to_owned())
+        );
+        // A snapshot from before history shrank can exceed the new total.
+        assert_eq!(
+            ScrollPill::new(5, 3).map(|pill| pill.text()),
+            Some("↑ 5 of 5 lines".to_owned())
         );
     }
     #[test]

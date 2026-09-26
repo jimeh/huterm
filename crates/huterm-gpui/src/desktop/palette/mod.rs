@@ -34,6 +34,7 @@ use slots::{
 };
 
 use super::TerminalView;
+use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
 use crate::keymap::InstalledKeymap;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
@@ -112,6 +113,23 @@ pub(super) struct PaletteColors {
     pub(super) selection: Hsla,
     pub(super) accent: Hsla,
     pub(super) scrollbar: ScrollbarColors,
+}
+
+impl PaletteColors {
+    /// The palette draws no severity colours, so `danger` and `warning`
+    /// reuse the accent until the window constructs [`OverlayColors`]
+    /// directly.
+    fn overlay(self) -> OverlayColors {
+        OverlayColors {
+            foreground: self.foreground,
+            background: self.background,
+            selection: self.selection,
+            accent: self.accent,
+            danger: self.accent,
+            warning: self.accent,
+            scrollbar: self.scrollbar,
+        }
+    }
 }
 
 /// One configured quake profile for the profile picker.
@@ -1410,48 +1428,6 @@ impl EventEmitter<PaletteEvent> for CommandPalette {}
 
 // ---- presentation ---------------------------------------------------------
 
-#[derive(Clone, Copy)]
-struct Swatch {
-    fg: Hsla,
-    bg: Hsla,
-    muted: Hsla,
-    dim: Hsla,
-    line: Hsla,
-    selection: Hsla,
-    accent: Hsla,
-    chip: Hsla,
-    scrollbar: ScrollbarColors,
-}
-
-impl Swatch {
-    fn new(colors: PaletteColors) -> Self {
-        Self {
-            fg: colors.foreground,
-            bg: colors.background,
-            muted: colors.foreground.opacity(0.62),
-            dim: colors.foreground.opacity(0.38),
-            line: colors.foreground.opacity(0.1),
-            selection: colors.selection.opacity(0.35),
-            accent: colors.accent,
-            chip: colors.foreground.opacity(0.1),
-            scrollbar: colors.scrollbar,
-        }
-    }
-}
-
-fn key_cap(key: &str, swatch: Swatch) -> impl IntoElement {
-    div()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(4.0))
-        .bg(swatch.chip)
-        .border_1()
-        .border_color(swatch.line)
-        .text_size(px(10.5))
-        .text_color(swatch.fg)
-        .child(key.to_owned())
-}
-
 fn tag(text: String, swatch: Swatch, dashed: bool) -> impl IntoElement {
     div()
         .px(px(6.0))
@@ -2024,7 +2000,7 @@ impl Render for CommandPalette {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let swatch = Swatch::new(self.colors);
+        let swatch = Swatch::new(self.colors.overlay());
         let palette = cx.entity();
         let viewport = f32::from(window.viewport_size().height);
         let available = viewport - PANEL_TOP_INSET * 2.0 - PANEL_CHROME_HEIGHT;
@@ -2074,27 +2050,7 @@ impl Render for CommandPalette {
             }
         };
 
-        let mut footer = div()
-            .flex()
-            .items_center()
-            .gap(px(14.0))
-            .px(px(12.0))
-            .py(px(6.0))
-            .border_t_1()
-            .border_color(swatch.line)
-            .bg(swatch.fg.opacity(0.03))
-            .text_size(px(11.5))
-            .text_color(swatch.muted);
-        for (key, label) in hints {
-            footer = footer.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .child(key_cap(&key, swatch))
-                    .child(label),
-            );
-        }
+        let footer = footer_hints(hints, swatch);
 
         let geometries = self.scrollbar_geometries();
         // Before the list's first layout its scroll bounds are empty, so
