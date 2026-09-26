@@ -843,7 +843,9 @@ pub(super) fn run() -> anyhow::Result<()> {
 pub(super) fn run_with_startup(
     startup: impl FnOnce(&mut App) + 'static,
 ) -> anyhow::Result<()> {
-    // Production and every terminal-hosting smoke start here.
+    // Production and every terminal-hosting smoke start here, except the
+    // native quit smoke, which spawns its terminal directly and raises the
+    // limit itself.
     huterm_core::raise_open_file_limit();
     let loaded = config::load();
     if loaded.fatal {

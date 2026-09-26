@@ -10,7 +10,9 @@ whose descriptors are numbered 1024 or higher behave like any other terminal.
 Child shells see the soft limit that Huterm started with, as they do in Ghostty.
 
 Two ceilings exist today. Each terminal holds 9 descriptors, and nothing raises
-the soft limit, so a 256 limit fails the 29th spawn. Above that, the macOS
+the soft limit, so a 256 limit failed the 29th spawn in a bare core test
+process. The app holds descriptors of its own and fails a few terminals
+sooner. Above that, the macOS
 readiness wait uses `filedescriptor` 0.8.3's `select(2)` path, which rejects
 descriptors at or above `FD_SETSIZE` (1024). That failure happens after startup,
 so the user sees a stopped runtime instead of a creation error.

@@ -71,7 +71,8 @@ Keep view destruction and detachment separate from explicit close.
   Ghostty, it raises the soft `RLIMIT_NOFILE` and records the original, which
   `pty::spawn` passes to the vendored portable-pty `nofile_limit` setter so
   children start with the limit Huterm inherited. Without the raise, a
-  launchd soft limit of 256 fails the 29th terminal. Tests that lower the
+  launchd soft limit of 256 stops terminal creation after about 28 terminals,
+  or fewer once the app's own descriptors count. Tests that lower the
   limit, exhaust the descriptor table, or call `raise_open_file_limit()` live
   in `crates/huterm-core/tests/descriptor_limits.rs`, their own process. Core
   unit tests may only raise the soft limit and must release filler
