@@ -227,6 +227,7 @@ impl PtyFd {
 
     fn spawn_command(&self, builder: CommandBuilder) -> anyhow::Result<std::process::Child> {
         let configured_umask = builder.umask;
+        let configured_nofile_limit = builder.nofile_limit;
 
         let mut cmd = builder.as_command()?;
         let controlling_tty = builder.get_controlling_tty();
@@ -274,6 +275,14 @@ impl PtyFd {
                     }
 
                     close_random_fds();
+
+                    if let Some((soft, hard)) = configured_nofile_limit {
+                        let limit = libc::rlimit {
+                            rlim_cur: soft,
+                            rlim_max: hard,
+                        };
+                        libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+                    }
 
                     if let Some(mask) = configured_umask {
                         libc::umask(mask);

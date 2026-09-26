@@ -964,6 +964,66 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn child_starts_with_the_configured_open_file_limit() {
+        use nix::sys::resource::{Resource, getrlimit, rlim_t};
+
+        // Below any usable inherited limit, so the test never raises limits.
+        const CHILD_SOFT_LIMIT: rlim_t = 200;
+        let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+        assert!(
+            soft > CHILD_SOFT_LIMIT,
+            "soft descriptor limit {soft} is not above {CHILD_SOFT_LIMIT}"
+        );
+        let pair = portable_pty::native_pty_system()
+            .openpty(PtySize {
+                rows: 8,
+                cols: 40,
+                pixel_width: 320,
+                pixel_height: 128,
+            })
+            .unwrap();
+        set_nonblocking(pair.master.as_ref()).unwrap();
+        let reader_waiter =
+            ReadinessWaiter::new(pair.master.as_ref(), Readiness::Read)
+                .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "ulimit -Sn"]);
+        command.nofile_limit(Some((CHILD_SOFT_LIMIT, hard)));
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let mut output = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let mut buffer = [0_u8; 64];
+            match reader.read(&mut buffer) {
+                Ok(count) if count > 0 => {
+                    output.extend_from_slice(&buffer[..count]);
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "shell did not exit: {:?}",
+                        String::from_utf8_lossy(&output)
+                    );
+                    reader_waiter.wait(Some(POLL_INTERVAL)).unwrap();
+                }
+                // End-of-file, or EIO once the child has closed the slave.
+                _ => break,
+            }
+        }
+        drop(reader);
+        drop(pair.master);
+        assert!(reap_child(child));
+        assert_eq!(
+            String::from_utf8_lossy(&output).trim(),
+            CHILD_SOFT_LIMIT.to_string()
+        );
+    }
+
     #[derive(Debug)]
     struct ControlledChild {
         exit: Mutex<Receiver<()>>,

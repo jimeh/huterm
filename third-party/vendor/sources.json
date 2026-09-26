@@ -142,7 +142,13 @@
         "revision": "f8921727a11b9f8b073e8c24821d72fd41283500",
         "path": "pty"
       },
-      "patches": []
+      "patches": [
+        {
+          "name": "child-nofile-limit",
+          "file": "patches/portable-pty/child-nofile-limit.patch",
+          "description": "Let callers set the child's RLIMIT_NOFILE between fork and exec, so a parent that raised its own soft limit can restore the original for children."
+        }
+      ]
     }
   ]
 }

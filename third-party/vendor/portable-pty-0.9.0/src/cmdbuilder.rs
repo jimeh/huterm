@@ -206,6 +206,8 @@ pub struct CommandBuilder {
     cwd: Option<OsString>,
     #[cfg(unix)]
     pub(crate) umask: Option<libc::mode_t>,
+    #[cfg(unix)]
+    pub(crate) nofile_limit: Option<(libc::rlim_t, libc::rlim_t)>,
     controlling_tty: bool,
 }
 
@@ -219,6 +221,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(unix)]
             umask: None,
+            #[cfg(unix)]
+            nofile_limit: None,
             controlling_tty: true,
         }
     }
@@ -231,6 +235,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(unix)]
             umask: None,
+            #[cfg(unix)]
+            nofile_limit: None,
             controlling_tty: true,
         }
     }
@@ -258,6 +264,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(unix)]
             umask: None,
+            #[cfg(unix)]
+            nofile_limit: None,
             controlling_tty: true,
         }
     }
@@ -407,6 +415,12 @@ impl CommandBuilder {
 impl CommandBuilder {
     pub fn umask(&mut self, mask: Option<libc::mode_t>) {
         self.umask = mask;
+    }
+
+    /// Set the soft and hard `RLIMIT_NOFILE` limits applied in the child
+    /// before it executes the program. Failure to apply them is ignored.
+    pub fn nofile_limit(&mut self, limit: Option<(libc::rlim_t, libc::rlim_t)>) {
+        self.nofile_limit = limit;
     }
 
     fn resolve_path(&self) -> Option<&OsStr> {

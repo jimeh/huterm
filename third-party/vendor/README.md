@@ -253,15 +253,22 @@ are unchanged. Remove this patch when a reviewed release exposes exclusive
 registration and Huterm selects it. The native quake smoke holds the shortcut
 in a separate process and checks startup and reload rejection.
 
-## portable-pty baseline
+## portable-pty child descriptor limit
 
 `portable-pty-0.9.0` is the published MIT crate from WezTerm's `pty` directory.
 The archive SHA-256 is
 `b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e`; its upstream
-revision is `f8921727a11b9f8b073e8c24821d72fd41283500`. All published files are
-retained, and the crate currently carries no patches. It is vendored so the
-child-side restoration of the original `RLIMIT_NOFILE` soft limit planned in
-[the descriptor limits plan](../../docs/plans/descriptor-limits.md) can run
-between `fork` and `exec` in vendored code. The crate exposes no safe pre-exec
-hook, and Huterm denies `unsafe_code`. Remove the override and vendored source
-if no patch remains needed.
+revision is `f8921727a11b9f8b073e8c24821d72fd41283500`. All other published
+files are unchanged.
+
+The `child-nofile-limit` patch adds a Unix-only `CommandBuilder::nofile_limit`
+setter that stores an optional soft and hard `RLIMIT_NOFILE` pair, like the
+existing `umask` field. The Unix `pre_exec` closure applies it with
+`setrlimit` after `close_random_fds` and before the umask, and ignores failure,
+as Ghostty does. This lets Huterm raise its own soft limit while children keep
+the limit it started with; see
+[the descriptor limits plan](../../docs/plans/descriptor-limits.md). The crate
+exposes no safe pre-exec hook, and Huterm denies `unsafe_code`, so the
+child-side call lives here. `pty::tests::child_starts_with_the_configured_open_file_limit`
+in huterm-core checks the child's soft limit. Remove the patch when a reviewed
+release offers an equivalent option.
