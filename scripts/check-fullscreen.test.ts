@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid } from "./check-fullscreen";
+import { assertRefitIntervals, assertRestored, assertTimeout, assertWindowedBounds, nativeFrameIsUsable, parseState, ptyMatchesGrid, windowedBoundsOnDisplay } from "./check-fullscreen";
 
 describe("fullscreen evidence checker", () => {
   test("rejects screen-sized restore bounds and changed PTY geometry", () => {
@@ -45,6 +45,15 @@ describe("fullscreen evidence checker", () => {
     expect(() => assertRestored(before, moved, true, true)).not.toThrow();
     expect(nativeFrameIsUsable(moved)).toBe(true);
     expect(nativeFrameIsUsable({ ...moved, "w0.content": "556,832,808,584" })).toBe(false);
+  });
+  test("adapterless native exit waits for a recorded frame on its display", () => {
+    const settled = { "w0.restore": "108,25,808,552", "w0.window_bounds": "108,25,808,552", "w0.display": "1024,768" };
+    expect(windowedBoundsOnDisplay(settled)).toBe(true);
+    expect(windowedBoundsOnDisplay({ ...settled, "w0.restore": "108,-444,808,552", "w0.window_bounds": "108,-444,808,552" })).toBe(false);
+    expect(windowedBoundsOnDisplay({ ...settled, "w0.restore": "300,25,808,552", "w0.window_bounds": "300,25,808,552" })).toBe(false);
+    expect(windowedBoundsOnDisplay({ ...settled, "w0.restore": "108,-444,808,552" })).toBe(false);
+    const { "w0.display": _, ...withoutDisplay } = settled;
+    expect(windowedBoundsOnDisplay(withoutDisplay)).toBe(false);
   });
 });
 

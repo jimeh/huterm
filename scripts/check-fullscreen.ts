@@ -48,6 +48,16 @@ export function nativeFrameIsUsable(state: State): boolean {
     && y + height <= screenY + screenHeight;
 }
 
+export function windowedBoundsOnDisplay(state: State): boolean {
+  const restore = state["w0.restore"]?.split(",").map(Number);
+  const display = state["w0.display"]?.split(",").map(Number);
+  if (restore?.length !== 4 || display?.length !== 2 || [...restore, ...display].some(Number.isNaN)) return false;
+  const [x, y, width, height] = restore as [number, number, number, number];
+  const [displayWidth, displayHeight] = display as [number, number];
+  return state["w0.restore"] === state["w0.window_bounds"]
+    && x >= 0 && y >= 0 && x + width <= displayWidth && y + height <= displayHeight;
+}
+
 export function assertTimeout(state: State, diagnostics: string): void {
   if (state["w0.pending"] !== "false" || state["w0.mode"] !== "Windowed") throw new Error("ignored request remains pending");
   if (state["w0.status"] !== "Fullscreen transition timed out") throw new Error("missing window timeout status");
@@ -411,7 +421,10 @@ done
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
     if (fallback) {
-      if (original["w0.fullscreen_fallback"] !== "true" || original["w0.fullscreen_armed"] !== "true") throw new Error("forced fallback did not arm");
+      if (original["w0.fullscreen_fallback"] !== "true") throw new Error("forced fallback was not constructed");
+      // A fired timer clears its deadline before the next pass rearms it, so a
+      // single published state can fall between the two.
+      await waitFor(async () => (await state())["w0.fullscreen_armed"] === "true", "forced fallback arming");
       // Read-only ticks cannot reconcile fullscreen. Prove repeated timer work
       // before a native toggle can supply a repairing bounds notification.
       await waitFor(async () => {
@@ -427,6 +440,9 @@ done
       await accepted("native\tfullscreen");
       await stable("Windowed");
       await waitFor(async () => await readFile(join(directory, "native-did"), "utf8") === "Windowed", "external native DidExit");
+      // AppKit can deliver native did-exit with an offscreen frame. Quit must
+      // capture the settled windowed frame, so wait for it before sampling.
+      await waitFor(async () => windowedBoundsOnDisplay(await state()), "external native exit frame on its display");
       console.log("FULLSCREEN_SMOKE no-adapter external-toggle");
     } else if (schedulerOnly) {
       await accepted("0 toggle_non_native_fullscreen");
