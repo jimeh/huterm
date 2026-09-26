@@ -223,7 +223,7 @@ run = "bun scripts/run-idle-benchmark.ts"
 
 [tasks."bench:output-latency"]
 depends = ["ghostty:prepare", "scripts:install"]
-description = "Measure delay from terminal output to an applied snapshot; pass echo or flood after --"
+description = "Measure delay from terminal output or a keystroke to an applied snapshot; pass echo, flood, or keys after --"
 # Mise appends task arguments to the final command.
 run = [
   "bash scripts/build-exec.sh cargo build --release --locked -p huterm",
@@ -954,11 +954,12 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll, output latency, and link lookup budgets for Ghostty"
+description = "Run CI scroll, output latency, keystroke snapshot, and link lookup budgets for Ghostty"
 depends = ["verify:toolchain"]
 run = [
   "mise run bench:scroll",
   "HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US=5000 mise run bench:output-latency",
+  "HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET=1.5 mise run bench:output-latency -- keys",
   "mise run bench:links",
 ]
 

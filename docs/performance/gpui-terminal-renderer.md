@@ -142,6 +142,15 @@ animated grid, which checks that sustained output stays paced. `applied_us` is
 valid under Xvfb; `painted_us` there reflects GPUI's 60 Hz refresh timer rather
 than a display.
 
+Pass `-- keys` to time typed input instead. Huterm then dispatches a key
+through GPUI's window about every 100 ms, the workload echoes it from raw mode,
+and each `huterm-render keys` line reports the delay from the key to the
+snapshot holding its echo and to the paint that shows it, plus the snapshots
+applied per key. The runner summarizes `snapshots_per_key` and fails when
+`HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET` is exceeded; `ci:benchmarks`
+uses 1.5. Keys enter through GPUI's dispatch rather than the operating system,
+so the measurement excludes platform input delivery.
+
 A terminal view starts a snapshot as soon as its runtime signals activity, when
 it is visible and its last snapshot started at least 8 ms earlier. Otherwise the
 window refresh pump starts it on its next 16 ms tick. The pump remains the only
@@ -169,7 +178,9 @@ output, even on a display that refreshes faster than 60 Hz.
 After an activity snapshot, the pump still drains the queued invalidation and
 starts one more snapshot, which reuses every row. It cannot be skipped by
 comparing generations: presentation updates invalidate without advancing the
-content generation.
+content generation. Since #163, the view compares the reply's rows by `Arc`
+identity, plus its cursor, modes, viewport, and history size, and skips the
+re-render when none changed.
 
 ### Pre-refresh-change baseline, 2026-09-19
 
@@ -1406,3 +1417,51 @@ discarded:
 
 The remaining full-rebuild cost is mostly per-field native getters. A bulk row
 export from Ghostty would be needed to reduce it further.
+
+## Keystroke echo scheduling (2026-09-26)
+
+This section covers [#163](https://github.com/jimeh/huterm/issues/163). Every
+keystroke used to invalidate the view after queueing its input, so the view
+requested a snapshot before the shell's echo existed. That snapshot spent the
+frame's output allowance, and the echo's snapshot then waited for the next
+frame callback. Typed input, composition, paste, and file drop now request a
+snapshot only when they return the viewport from history; the echo's own
+invalidation requests the snapshot that shows it.
+
+`bench:output-latency -- keys` measured this directly. Both arms ran on Linux
+x86_64 under Xvfb with twm, on an AMD Ryzen 5 5600GT with 6 CPUs. The baseline
+is `8e38546` with only the benchmark added; the feature build adds the input
+and notification changes. Runs alternated between the two release binaries,
+each summarizing six steady intervals. Values are medians of per-interval
+medians, with the worst interval maximum in parentheses:
+
+| Arm and run | Snapshots per key | Echoes / keys | Applied µs | Painted µs |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 2.02 | 56 / 60 | 16,071 (24,645) | 25,175 (39,804) |
+| Baseline 2 | 2.00 | 54 / 60 | 16,799 (24,494) | 26,653 (31,615) |
+| Baseline 3 | 2.02 | 55 / 60 | 15,586 (26,727) | 24,474 (42,125) |
+| Feature 1 | 1.00 | 61 / 61 | 380 (608) | 9,465 (16,623) |
+| Feature 2 | 1.00 | 61 / 61 | 321 (3,292) | 10,160 (18,665) |
+| Feature 3 | 1.00 | 62 / 62 | 357 (677) | 9,005 (16,550) |
+
+The baseline's echo snapshot waited for the next 60 Hz callback, about one
+frame after the pre-echo snapshot's paint. Some baseline keys recorded no echo
+sample because their echo was not applied before the next key replaced the
+pending sample. Painted latency under Xvfb still includes GPUI's refresh timer,
+so native displays need their own measurement; on a host that delivers frames
+we expect the saving to be about one frame.
+
+The same binaries showed no change for output that does not come from input:
+`echo` applied medians were 124-144 µs for the baseline and 125-127 µs for the
+feature, with painted medians of 7.3-9.0 ms and 7.3-8.4 ms. One `flood` run
+each held 61 and 62 snapshots per second.
+
+The same change removes re-renders that changed nothing visible: modifier key
+presses without a link hover change, wheel events that do not reveal the
+scrollbar (their rows arrive with the next snapshot), selection drags within
+one cell, and
+snapshot replies whose rows, cursor, modes, viewport, history size, and link
+hover are unchanged. The PTY writer also wakes the runtime only after the
+runtime has recorded spilled writes, instead of once per dequeued keystroke.
+No benchmark isolates these; `mise run test` and the Linux input smoke cover
+their behavior.

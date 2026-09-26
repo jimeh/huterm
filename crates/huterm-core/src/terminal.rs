@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
     self, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
 };
@@ -72,6 +72,21 @@ impl RuntimeClient {
     ///
     /// Returns an error when the terminal has stopped.
     pub fn send_input(&self, input: TerminalInput) -> Result<(), RuntimeError> {
+        self.offer_input(input).map_err(|refused| refused.error)
+    }
+
+    /// Sends input like [`Self::send_input`], but returns refused input to
+    /// the caller, which can then queue it for retry without copying it first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the input with [`RuntimeError::Busy`] when the runtime cannot
+    /// accept it yet, or with [`RuntimeError::Stopped`] when the terminal has
+    /// stopped.
+    pub fn offer_input(
+        &self,
+        input: TerminalInput,
+    ) -> Result<(), RefusedInput> {
         let reserved_bytes = input_bytes(&input).max(1);
         if reserved_bytes > INPUT_BYTE_CAPACITY
             || self
@@ -83,24 +98,30 @@ impl RuntimeClient {
                 })
                 .is_err()
         {
-            return Err(RuntimeError::Busy);
+            return Err(RefusedInput {
+                error: RuntimeError::Busy,
+                input,
+            });
         }
-        match self.messages.try_send(RuntimeMessage::Input {
-            input,
-            reserved_bytes,
-        }) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                self.queued_input_bytes
-                    .fetch_sub(reserved_bytes, Ordering::AcqRel);
-                Err(RuntimeError::Busy)
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                self.queued_input_bytes
-                    .fetch_sub(reserved_bytes, Ordering::AcqRel);
-                Err(RuntimeError::Stopped)
-            }
-        }
+        let (error, message) =
+            match self.messages.try_send(RuntimeMessage::Input {
+                input,
+                reserved_bytes,
+            }) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(message)) => {
+                    (RuntimeError::Busy, message)
+                }
+                Err(TrySendError::Disconnected(message)) => {
+                    (RuntimeError::Stopped, message)
+                }
+            };
+        self.queued_input_bytes
+            .fetch_sub(reserved_bytes, Ordering::AcqRel);
+        let RuntimeMessage::Input { input, .. } = message else {
+            unreachable!("the refused message is the input just sent");
+        };
+        Err(RefusedInput { error, input })
     }
 
     /// Resizes both the PTY and canonical emulator grid.
@@ -622,6 +643,15 @@ pub enum RuntimeError {
     EventReceiverPoisoned,
 }
 
+/// Input a runtime did not accept, returned to its sender.
+#[derive(Debug)]
+pub struct RefusedInput {
+    /// Why the runtime refused the input.
+    pub error: RuntimeError,
+    /// The input, unchanged.
+    pub input: TerminalInput,
+}
+
 /// Ordered client requests. Their queue is separate from PTY output so a
 /// flood cannot refuse input.
 #[derive(Debug)]
@@ -779,6 +809,7 @@ fn run_terminal(
     let (writer_sender, writer_receiver) =
         async_channel::bounded(WRITER_CAPACITY);
     let input_closed = Arc::new(AtomicBool::new(false));
+    let writer_capacity = Arc::new(WriterCapacity::default());
     let writer_cancel = writer_waiter.cancellation();
     let writer_join = match spawn_writer(
         terminal_id,
@@ -786,6 +817,7 @@ fn run_terminal(
         WriterReadiness::Pty(writer_waiter),
         writer_receiver,
         control_sender,
+        Arc::clone(&writer_capacity),
         Arc::clone(&closing),
         Arc::clone(&input_closed),
     ) {
@@ -1007,7 +1039,15 @@ fn run_terminal(
             writer_sender.close();
             writer_cancel.cancel();
         }
-        match flush_pending_write(&writer_sender, &mut pending_writes) {
+        let mut writer_state =
+            flush_pending_write(&writer_sender, &mut pending_writes);
+        if writer_state == WriterQueueState::Full {
+            writer_capacity.request_wake();
+            // The writer may have dequeued before it saw the request.
+            writer_state =
+                flush_pending_write(&writer_sender, &mut pending_writes);
+        }
+        match writer_state {
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
                 if controls_drained < MESSAGE_CAPACITY {
@@ -1418,6 +1458,33 @@ fn observe_child_exit(
     Ok(())
 }
 
+/// Wakes the runtime when the writer frees queue capacity, but only while the
+/// runtime holds spilled writes. Waking on every dequeue would wake the
+/// runtime a second time for each keystroke.
+#[derive(Debug, Default)]
+struct WriterCapacity {
+    requested: AtomicBool,
+}
+
+impl WriterCapacity {
+    /// Runtime side. The runtime must retry its spilled writes after this
+    /// call: a dequeue that preceded the request freed capacity but sent no
+    /// wake.
+    fn request_wake(&self) {
+        self.requested.store(true, Ordering::Relaxed);
+        // Orders the request before the retry's queue check, pairing with
+        // the fence in `dequeued`.
+        atomic::fence(Ordering::SeqCst);
+    }
+
+    /// Writer side, after each dequeue. Returns whether the runtime asked to
+    /// be woken, consuming the request.
+    fn dequeued(&self) -> bool {
+        atomic::fence(Ordering::SeqCst);
+        self.requested.swap(false, Ordering::Relaxed)
+    }
+}
+
 enum WriterReadiness {
     Pty(pty::ReadinessWaiter),
     #[cfg(test)]
@@ -1434,12 +1501,17 @@ impl WriterReadiness {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the writer thread takes ownership of each runtime handle it shares"
+)]
 fn spawn_writer(
     terminal_id: TerminalId,
     mut writer: Box<dyn Write + Send>,
     readiness: WriterReadiness,
     messages: async_channel::Receiver<WriterMessage>,
     controls: crate::wake::Sender<RuntimeControl>,
+    capacity: Arc<WriterCapacity>,
     closing: Arc<AtomicBool>,
     input_closed: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
@@ -1453,7 +1525,9 @@ fn spawn_writer(
                 if current.is_none() {
                     current = match messages.recv_blocking() {
                         Ok(WriterMessage::Write(bytes)) => {
-                            controls.wake.notify();
+                            if capacity.dequeued() {
+                                controls.wake.notify();
+                            }
                             Some((bytes, 0))
                         }
                         Err(_) => break,
@@ -3353,6 +3427,62 @@ mod tests {
     }
 
     #[test]
+    fn input_beyond_writer_capacity_arrives_once_the_child_reads() {
+        // More writes than the PTY buffer and writer queue hold, but few
+        // enough that the rest fits the runtime's ingress. The client finishes
+        // sending before the child reads, leaving the writer's dequeue as the
+        // runtime's only wake.
+        const INPUTS: usize = 100;
+        const INPUT_BYTES: usize = 4_000;
+        let marker = std::env::temp_dir()
+            .join(format!("huterm-writer-capacity-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!(
+            "stty raw -echo; printf READY; while [ ! -e {marker} ]; do sleep 0.05; done; head -c {total} >/dev/null && printf DONE; sleep 30",
+            marker = marker.display(),
+            total = INPUTS * INPUT_BYTES,
+        );
+        let runtime =
+            TerminalRuntime::spawn(TerminalId::new(21), &command(&script))
+                .expect("runtime should start");
+        let client = runtime.client();
+        wait_for_text(&client, "READY");
+        while client.try_recv_event().unwrap().is_some() {}
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for _ in 0..INPUTS {
+            let mut input = TerminalInput::Text("x".repeat(INPUT_BYTES));
+            // Sending can outpace the runtime. Refused sends wake it, which
+            // is harmless only until the child is released.
+            while let Err(refused) = client.offer_input(input) {
+                assert!(
+                    matches!(refused.error, RuntimeError::Busy),
+                    "runtime stopped: {}",
+                    refused.error
+                );
+                assert!(Instant::now() < deadline, "runtime ingress stalled");
+                input = refused.input;
+                thread::yield_now();
+            }
+        }
+        std::fs::write(&marker, b"").expect("marker should be writable");
+        // Snapshot requests wake the runtime; events do not. DONE is the only
+        // output after READY, and it needs every write delivered.
+        while !matches!(
+            client.try_recv_event().unwrap(),
+            Some(TerminalEvent::Invalidated { .. })
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "runtime did not resume writing after the child read"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        wait_for_text(&client, "DONE");
+        runtime.shutdown().expect("runtime should stop cleanly");
+        std::fs::remove_file(&marker).expect("marker should be removable");
+    }
+
+    #[test]
     fn pending_writer_spill_should_drain_fifo_until_full() {
         let (sender, receiver) = async_channel::bounded(2);
         let mut pending = VecDeque::from([
@@ -3414,6 +3544,7 @@ mod tests {
             WriterReadiness::Immediate,
             receiver,
             controls,
+            Arc::new(WriterCapacity::default()),
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&input_closed),
         )
@@ -3428,6 +3559,59 @@ mod tests {
             "idle writer did not release its descriptor on input closure",
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn writer_wakes_the_runtime_only_after_it_requests_capacity() {
+        struct ReportingWriter(Sender<Vec<u8>>);
+        impl Write for ReportingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.send(bytes.to_vec()).unwrap();
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let (written, observed) = mpsc::channel();
+        let (sender, receiver) = async_channel::bounded(1);
+        let (controls, _control_receiver) = mpsc::channel();
+        let wake = Arc::new(crate::wake::Wake::default());
+        let controls = crate::wake::Sender::new(controls, Arc::clone(&wake));
+        let capacity = Arc::new(WriterCapacity::default());
+        let closing = Arc::new(AtomicBool::new(false));
+        let join = spawn_writer(
+            TerminalId::new(20),
+            Box::new(ReportingWriter(written)),
+            WriterReadiness::Immediate,
+            receiver,
+            controls,
+            Arc::clone(&capacity),
+            Arc::clone(&closing),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("writer worker should start");
+        // The writer dequeues each message before writing it, so an observed
+        // write means its wake decision has been made.
+        let write = |bytes: &[u8]| {
+            sender
+                .send_blocking(WriterMessage::Write(bytes.to_vec()))
+                .expect("write should queue");
+            assert_eq!(
+                observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+                bytes
+            );
+            wake.take_pending()
+        };
+
+        assert!(!write(b"a"), "an unrequested dequeue woke the runtime");
+        capacity.request_wake();
+        assert!(write(b"b"), "a requested dequeue did not wake the runtime");
+        assert!(!write(b"c"), "a consumed request woke the runtime again");
+
+        closing.store(true, Ordering::Release);
+        drop(sender);
+        join.join().expect("writer worker should stop");
     }
 
     #[derive(Debug)]
@@ -3477,6 +3661,7 @@ mod tests {
             WriterReadiness::Immediate,
             receiver,
             controls,
+            Arc::new(WriterCapacity::default()),
             Arc::clone(&closing),
             Arc::new(AtomicBool::new(false)),
         )

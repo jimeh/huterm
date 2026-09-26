@@ -82,6 +82,7 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
 mod composition;
+mod key_bench;
 mod keyboard;
 mod links;
 pub(crate) mod palette;
@@ -561,6 +562,7 @@ impl TerminalView {
             frame_clock,
         };
         view.wake_pending_work();
+        key_bench::start(window.window_handle(), cx);
         view
     }
 
@@ -636,7 +638,7 @@ impl TerminalView {
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
-                match result {
+                let changed = match result {
                     Ok(reply) => {
                         if link_intent.is_some() {
                             view.link_completions += 1;
@@ -654,25 +656,36 @@ impl TerminalView {
                             view.link_diagnostic_at = Some(Instant::now());
                             eprintln!("Link lookup unavailable or exceeded its bounded scan; terminal remains usable");
                         }
+                        let hover = view.links.hover().cloned();
                         view.links.publish(link_intent, reply.link);
-                        view.apply_snapshot(reply.snapshot);
+                        let hover_changed = view.links.hover() != hover.as_ref();
+                        let changed =
+                            view.apply_snapshot(reply.snapshot) || hover_changed;
                         view.renderer
                             .borrow_mut()
-                            .record_output_applied(reply.invalidated_at);
+                            .record_output_applied(reply.invalidated_at, changed);
+                        changed
                     }
                     Err(error) => {
                         view.scroll.fail();
-                        view.set_status(error.to_string());
+                        view.set_status(error.to_string())
                     }
-                }
+                };
                 view.start_snapshot_if_needed(cx);
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
     }
 
-    fn apply_snapshot(&mut self, snapshot: TerminalSnapshot) {
+    /// Applies a snapshot and reports whether the view must render again.
+    fn apply_snapshot(&mut self, snapshot: TerminalSnapshot) -> bool {
+        let mut changed = self
+            .snapshot
+            .as_deref()
+            .is_none_or(|shown| !same_presentation(shown, &snapshot));
         if self.mouse.observe_modes(snapshot.modes) {
             self.input_queue.cancel_motion();
             self.scroll.reset_wheel();
@@ -686,11 +699,13 @@ impl TerminalView {
             selection.generation != snapshot.generation
         }) {
             self.clear_selection();
+            changed = true;
         }
         if self.selecting
             && self.selection_edge_direction != 0
             && self.selection.is_some()
         {
+            changed = true;
             let row = if self.selection_edge_direction > 0 {
                 usize::from(snapshot.size.rows.saturating_sub(1))
             } else {
@@ -704,6 +719,7 @@ impl TerminalView {
             self.update_renderer_selection();
         }
         self.snapshot = Some(Arc::new(snapshot));
+        changed
     }
 
     fn refresh(
@@ -949,6 +965,7 @@ impl TerminalView {
         keystroke: &Keystroke,
         reserved: &ReservedKeys,
         window: &Window,
+        cx: &mut Context<'_, Self>,
     ) -> bool {
         if self.exited
             || keystroke.modifiers.platform
@@ -960,7 +977,9 @@ impl TerminalView {
         #[cfg(target_os = "macos")]
         if let Err(error) = self.option_composition.refresh_source() {
             self.clear_option_composition();
-            self.set_status(format!("Option text input failed: {error}"));
+            if self.set_status(format!("Option text input failed: {error}")) {
+                cx.notify();
+            }
         }
         #[cfg(target_os = "macos")]
         if self.option_composition.is_pending()
@@ -993,9 +1012,11 @@ impl TerminalView {
                     Ok(None) => None,
                     Err(error) => {
                         self.clear_option_composition();
-                        self.set_status(format!(
+                        if self.set_status(format!(
                             "Option text input failed: {error}"
-                        ));
+                        )) {
+                            cx.notify();
+                        }
                         return true;
                     }
                 }
@@ -1009,9 +1030,10 @@ impl TerminalView {
         let Some(input) = input else {
             return false;
         };
-        self.enqueue_input(input);
-        self.scroll.bottom();
-        self.scroll.invalidate();
+        if self.enqueue_input(input) {
+            cx.notify();
+        }
+        self.return_to_live_output();
         // Recognized chords stay consumed even when the bounded queue rejects
         // them. Falling through would send Option text through AppKit instead.
         true
@@ -1078,8 +1100,14 @@ impl TerminalView {
             f32::from(self.metrics.cell_height),
         );
         if self.scroll.history() > 0 {
+            // Rows and the thumb move when their snapshot arrives. Until then
+            // only revealing a hidden or fading indicator changes the view;
+            // an armed animation deadline picks up an extended hold.
+            let revealed = self.scrollbars.opacity(Axis::Vertical) < 1.0;
             self.activate_scrollbar();
-            cx.notify();
+            if revealed {
+                cx.notify();
+            }
         }
         if changed {
             self.start_snapshot_if_needed(cx);
@@ -1142,11 +1170,11 @@ impl TerminalView {
                 if let Some(text) =
                     cx.read_from_clipboard().and_then(|item| item.text())
                 {
-                    self.enqueue_input(TerminalInput::Paste(text));
-                    self.scroll.bottom();
-                    self.scroll.invalidate();
+                    if self.enqueue_input(TerminalInput::Paste(text)) {
+                        cx.notify();
+                    }
+                    self.return_to_live_output();
                     self.start_snapshot_if_needed(cx);
-                    cx.notify();
                 }
             }
             ids::SCROLL_PAGE_UP => {
@@ -1273,8 +1301,7 @@ impl TerminalView {
                     self.admit_input(TerminalInput::Paste(text), false, false);
                 if accepted {
                     self.focus.focus(window);
-                    self.scroll.bottom();
-                    self.scroll.invalidate();
+                    self.return_to_live_output();
                     self.start_snapshot_if_needed(cx);
                 }
             }
@@ -1471,8 +1498,20 @@ impl TerminalView {
             return;
         };
         if let Some(selection) = &mut self.selection {
-            selection.head =
-                point_for_position(position, snapshot, self.metrics);
+            let head = point_for_position(position, snapshot, self.metrics);
+            let direction = edge_scroll_direction(
+                f32::from(position.y),
+                f32::from(layout.bounds.size.height),
+            );
+            // Movement within one cell changes nothing. Past an edge, each
+            // move still scrolls a row, so only the idle case returns early.
+            if selection.head == head
+                && direction == 0
+                && self.selection_edge_direction == 0
+            {
+                return;
+            }
+            selection.head = head;
             self.selected_text = None;
             self.update_renderer_selection();
             if self.selection.and_then(Selection::range).is_none() {
@@ -1480,10 +1519,6 @@ impl TerminalView {
                 cx.notify();
                 return;
             }
-            let direction = edge_scroll_direction(
-                f32::from(position.y),
-                f32::from(layout.bounds.size.height),
-            );
             self.selection_edge_direction = direction;
             if direction != 0 && self.scroll.scroll_rows(direction) {
                 self.activate_scrollbar();
@@ -1785,6 +1820,14 @@ impl TerminalView {
         self.wake_pending_work();
     }
 
+    /// Scrolls back to live output after queueing input. The caller starts the
+    /// snapshot, which is needed only when this moved the viewport: the
+    /// input's echo invalidates the terminal itself, and a snapshot requested
+    /// before the echo exists would spend the frame's allowance and delay it.
+    fn return_to_live_output(&mut self) {
+        self.scroll.bottom();
+    }
+
     fn enqueue_input(&mut self, input: TerminalInput) -> bool {
         self.mouse.boundary();
         let (_, changed) = self.admit_input(input, false, false);
@@ -1800,7 +1843,7 @@ impl TerminalView {
         if self.exited {
             return (false, false);
         }
-        let result = match self.input_queue.enqueue(input, release, |input| self.client.send_input(input)) {
+        let result = match self.input_queue.enqueue(input, release, |input| self.client.offer_input(input)) {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
@@ -1845,7 +1888,7 @@ impl TerminalView {
         }
         if let Err(error) = self
             .input_queue
-            .retry(|input| self.client.send_input(input))
+            .retry(|input| self.client.offer_input(input))
         {
             self.mouse = MouseState::default();
             return self.set_status(error.to_string());
@@ -2127,13 +2170,14 @@ impl Render for TerminalView {
             ))
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                    // Notifies only when link hover changes. Modifier presses
+                    // while typing must not re-render the window.
                     view.update_link_pointer(
                         window.mouse_position(),
                         event.modifiers,
                         window,
                         cx,
                     );
-                    cx.notify();
                 },
             ))
             .on_drag_move::<gpui::ExternalPaths>(cx.listener(
@@ -2543,6 +2587,27 @@ fn locale_environment(
     }
 }
 
+/// Whether two snapshots draw the same view. Unchanged rows share their `Arc`
+/// across snapshots. The generation is not compared: presentation updates
+/// change colors without advancing it.
+fn same_presentation(
+    shown: &TerminalSnapshot,
+    next: &TerminalSnapshot,
+) -> bool {
+    shown.size == next.size
+        && shown.cursor == next.cursor
+        && shown.cursor_color == next.cursor_color
+        && shown.modes == next.modes
+        && shown.viewport == next.viewport
+        && shown.history_size == next.history_size
+        && shown.rows.len() == next.rows.len()
+        && shown
+            .rows
+            .iter()
+            .zip(&next.rows)
+            .all(|(shown, next)| Arc::ptr_eq(shown, next))
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -2743,6 +2808,44 @@ mod tests {
         assert_eq!(presentation.cursor, theme.cursor);
         assert_eq!(presentation.palette[0], theme.indexed(0));
         assert_eq!(presentation.palette[255], theme.indexed(255));
+    }
+
+    #[test]
+    fn snapshot_comparison_ignores_generation_but_not_rows_or_viewport() {
+        let row =
+            || Arc::new(huterm_protocol::TerminalRow { cells: Vec::new() });
+        let shown = TerminalSnapshot {
+            terminal_id: huterm_protocol::TerminalId::new(1),
+            generation: 1,
+            size: GridSize::clamped(1, 2),
+            rows: vec![row(), row()],
+            cursor: None,
+            modes: huterm_protocol::TerminalModes::default(),
+            viewport: huterm_protocol::Viewport { bottom_offset: 0 },
+            history_size: 0,
+            cursor_color: None,
+        };
+        // Presentation updates can change colors without a new generation,
+        // and an unchanged generation must not hide new rows.
+        let recolored = TerminalSnapshot {
+            generation: 2,
+            ..shown.clone()
+        };
+        assert!(same_presentation(&shown, &recolored));
+        let mut new_row = shown.clone();
+        new_row.rows[1] = row();
+        assert!(!same_presentation(&shown, &new_row));
+        let scrolled = TerminalSnapshot {
+            viewport: huterm_protocol::Viewport { bottom_offset: 1 },
+            history_size: 1,
+            ..shown.clone()
+        };
+        assert!(!same_presentation(&shown, &scrolled));
+        let grown = TerminalSnapshot {
+            history_size: 1,
+            ..shown.clone()
+        };
+        assert!(!same_presentation(&shown, &grown), "scrollbar size changed");
     }
 
     #[test]
