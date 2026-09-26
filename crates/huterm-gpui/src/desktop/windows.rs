@@ -67,6 +67,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+mod client_frame;
 mod tab_bar;
 mod tab_menu;
 mod tab_position;
@@ -77,6 +78,9 @@ use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
     ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
+};
+use client_frame::{
+    ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -101,6 +105,16 @@ const CONTROL_INSET: Pixels = px(3.0);
 /// Width the macOS traffic lights take at the start of the title strip; the
 /// strip's title and a merged tab row start after it.
 const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
+/// Where the tabs start in the title row Huterm draws on Linux, which has
+/// no traffic lights.
+const TITLE_ROW_LEAD: Pixels = px(8.0);
+/// The round window controls at the end of the drawn title row.
+const WINDOW_CONTROL_SIZE: Pixels = px(22.0);
+const WINDOW_CONTROL_GAP: Pixels = px(8.0);
+const WINDOW_CONTROLS_PADDING_LEFT: Pixels = px(6.0);
+const WINDOW_CONTROLS_PADDING_RIGHT: Pixels = px(10.0);
+/// The row length the three controls and their padding take.
+const WINDOW_CONTROLS_WIDTH: Pixels = px(6.0 + 22.0 * 3.0 + 8.0 * 2.0 + 10.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
@@ -1226,10 +1240,14 @@ fn layout_tabs(tabs: TabsConfig, host: TabHost) -> TabsConfig {
     }
 }
 
+/// The window size that gives the initial grid its columns and rows
+/// beside the chrome: the tab bar, the title row above the terminal, and
+/// the frame's border on every side.
 fn initial_window_size(
     config: &Config,
     metrics: GridMetrics,
     host: TabHost,
+    frame: WindowFrame,
 ) -> gpui::Size<Pixels> {
     let reserved = if config.tabs.always_show {
         ChromeLayout::bar_reservation(
@@ -1242,12 +1260,25 @@ fn initial_window_size(
     size(
         metrics.cell_width * f32::from(INITIAL_COLUMNS)
             + px(config.window.padding_x * 2.0)
-            + reserved.width,
+            + reserved.width
+            + frame.inset.left
+            + frame.inset.right,
         metrics.cell_height * f32::from(INITIAL_ROWS)
             + px(config.window.padding_y * 2.0)
-            + titlebar_inset(cfg!(target_os = "macos"), false)
-            + reserved.height,
+            + title_row_height(false, frame)
+            + reserved.height
+            + frame.inset.top
+            + frame.inset.bottom,
     )
+}
+
+/// The decoration facts GPUI reports for `window`, sampled together.
+fn frame_state(window: &Window) -> FrameState {
+    FrameState {
+        decorations: window.window_decorations(),
+        maximized: window.is_maximized(),
+        fullscreen: window.is_fullscreen(),
+    }
 }
 
 fn can_open_window(
@@ -1305,6 +1336,8 @@ fn open_window_with_profile(
         }
     };
     // A new window is never fullscreen; its host is fixed by the profile.
+    // Whether it draws its own title bar is known once GPUI has created
+    // it, so the centred bounds assume the window manager's.
     let host = TabHost {
         platform: Platform::current(),
         fullscreen: false,
@@ -1313,7 +1346,7 @@ fn open_window_with_profile(
     };
     let bounds = Bounds::centered(
         display_id,
-        initial_window_size(&config, metrics, host),
+        initial_window_size(&config, metrics, host, WindowFrame::default()),
         cx,
     );
     let result = cx.open_window(
@@ -1322,6 +1355,11 @@ fn open_window_with_profile(
             show: profile.is_none(),
             focus: profile.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_decorations: Some(requested_decorations(
+                config.tabs.position,
+                host.platform,
+                host.quake,
+            )),
             titlebar: Some(TitlebarOptions {
                 title: Some("Huterm".into()),
                 appears_transparent: cfg!(target_os = "macos"),
@@ -1345,11 +1383,24 @@ fn open_window_with_profile(
                 crate::benchmark_display::observe(window, cx, display);
             }
             let scaled_metrics = metrics.at_scale(window.scale_factor());
-            if scaled_metrics != metrics {
+            // GPUI has applied the requested decorations, or fallen back
+            // without a compositor: the window now knows whether it draws
+            // its title row and border, which take their own room.
+            let state = frame_state(window);
+            let host = TabHost {
+                client_decorations: state.client_decorations(),
+                ..host
+            };
+            let frame = WindowFrame::resolve(
+                resolve_tab_position(config.tabs.position, host),
+                state,
+            );
+            if scaled_metrics != metrics || frame != WindowFrame::default() {
                 window.resize(initial_window_size(
                     &config,
                     scaled_metrics,
                     host,
+                    frame,
                 ));
             }
             let profile_requested = profile.is_some();
@@ -1407,6 +1458,8 @@ fn open_window_with_profile(
                 #[cfg(target_os = "macos")]
                 native_fullscreen,
                 fullscreen_work,
+                frame_state: state,
+                applied_frame: None,
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -1486,9 +1539,22 @@ fn open_window_with_profile(
                     if let Some(state) = &view.quake {
                         state.native_wake();
                     }
+                    // Tiling, maximizing, and fullscreen arrive with new
+                    // bounds; the frame follows them before the layout.
+                    view.sync_frame(window);
                     view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);
                     view.sync_tab_layout(window, cx);
+                })
+                .detach();
+                // GPUI reports a decoration change, including the
+                // no-compositor fallback, as an appearance change.
+                cx.observe_window_appearance(window, |view, window, cx| {
+                    if view.sync_frame(window) {
+                        view.refresh_tab_visibility(window, cx);
+                        view.sync_tab_layout(window, cx);
+                        cx.notify();
+                    }
                 })
                 .detach();
             });
@@ -2114,6 +2180,12 @@ struct WorkspaceView {
     bounds: WindowBounds,
     fullscreen: FullscreenController,
     fullscreen_work: crate::fullscreen_work::Work,
+    /// The decorations, maximized, and fullscreen facts GPUI last
+    /// reported; `sync_frame` samples them.
+    frame_state: FrameState,
+    /// The frame last pushed to GPUI as the client inset and background
+    /// appearance; `None` before the first sample.
+    applied_frame: Option<WindowFrame>,
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Areas beside a display notch while custom fullscreen covers it.
     notch_shelves: Option<crate::fullscreen::NotchShelves>,
@@ -2503,8 +2575,49 @@ impl WorkspaceView {
             platform: Platform::current(),
             fullscreen: self.fullscreen.chrome_hidden,
             quake: self.quake.is_some(),
-            client_decorations: false,
+            client_decorations: self.frame_state.client_decorations(),
         }
+    }
+
+    /// The frame this window's chrome sits in, for its resolved position
+    /// and the decorations GPUI last reported.
+    fn window_frame(&self) -> WindowFrame {
+        WindowFrame::resolve(self.layout_tabs().position, self.frame_state)
+    }
+
+    /// The title row above the terminal, if the window has one.
+    fn title_row(&self) -> Pixels {
+        title_row_height(self.chrome_hidden(), self.window_frame())
+    }
+
+    /// Samples the decorations GPUI reports and pushes the frame they
+    /// imply: the client inset the compositor keeps clear for resizing
+    /// and the shadow, and a transparent background while that inset is
+    /// drawn around. Returns whether the sample or the frame changed, so
+    /// the caller relays out.
+    fn sync_frame(&mut self, window: &mut Window) -> bool {
+        let state = frame_state(window);
+        let state_changed = self.frame_state != state;
+        self.frame_state = state;
+        let frame = self.window_frame();
+        if self.applied_frame == Some(frame) {
+            return state_changed;
+        }
+        if self.applied_frame.is_some_and(WindowFrame::decorated)
+            != frame.decorated()
+        {
+            window.set_background_appearance(if frame.decorated() {
+                gpui::WindowBackgroundAppearance::Transparent
+            } else {
+                gpui::WindowBackgroundAppearance::Opaque
+            });
+        }
+        // GPUI writes `_GTK_FRAME_EXTENTS` only when the inset changes,
+        // so a zero inset on a server-decorated window sets no property.
+        window.set_client_inset(frame.inset.top.max(px(0.0)));
+        self.applied_frame = Some(frame);
+        self.layout_pending = true;
+        true
     }
 
     /// The tab configuration with its position resolved for this window.
@@ -2535,11 +2648,12 @@ impl WorkspaceView {
         let tabs = self.layout_tabs();
         ChromeLayout::for_tabs(
             window.viewport_size(),
-            terminal_top(self.chrome_hidden()),
+            self.title_row(),
             tabs,
             self.sidebar_width,
             self.fullscreen_insets,
             self.notch_shelf(),
+            self.window_frame(),
         )
         .present(
             self.presentation(),
@@ -2556,6 +2670,7 @@ impl WorkspaceView {
         let chrome_hidden = self.chrome_hidden();
         let notch_shelf = self.notch_shelf();
         let tabs_config = self.layout_tabs();
+        let window_frame = self.window_frame();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
             .then(|| {
@@ -2575,7 +2690,8 @@ impl WorkspaceView {
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets
-                    || terminal.notch_shelf != notch_shelf;
+                    || terminal.notch_shelf != notch_shelf
+                    || terminal.window_frame != window_frame;
                 changed_any |= geometry_changed
                     || changed
                     || scale_changed
@@ -2587,6 +2703,7 @@ impl WorkspaceView {
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 terminal.notch_shelf = notch_shelf;
+                terminal.window_frame = window_frame;
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
                     terminal.resize_if_needed(window);
@@ -3281,6 +3398,7 @@ impl WorkspaceView {
                                     scroll_key, cx,
                                 );
                                 terminal.tabs_config = view.layout_tabs();
+                                terminal.window_frame = view.window_frame();
                                 terminal
                             });
                             let tab_id = opened.tab.id;
@@ -5391,7 +5509,26 @@ impl WorkspaceView {
             self.close_menu(MenuFocusReturn::Terminal, window, cx);
             self.resizing_sidebar = false;
             self.scroll_target = None;
+            // A position change to or from `titlebar` changes who draws
+            // the Linux title bar. GPUI applies the request at once, and
+            // its appearance callback cannot reach this view while it is
+            // updating, so the frame is sampled here.
+            let quake = self.quake.is_some();
+            let previous = requested_decorations(
+                self.config.tabs.position,
+                Platform::current(),
+                quake,
+            );
+            let requested = requested_decorations(
+                config.tabs.position,
+                Platform::current(),
+                quake,
+            );
+            if previous != requested {
+                window.request_decorations(requested);
+            }
             self.config = config.clone();
+            self.sync_frame(window);
             self.layout_pending = true;
             self.title_widths.clear();
             self.fullscreen_work.wake.signal();
@@ -5400,6 +5537,7 @@ impl WorkspaceView {
             self.family.clone_from(family);
             self.metrics = *metrics;
             let tabs_config = self.layout_tabs();
+            let window_frame = self.window_frame();
             for tab in &self.tabs {
                 tab.view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
@@ -5413,6 +5551,7 @@ impl WorkspaceView {
                     view.metrics = metrics;
                     view.window_config = config.window;
                     view.tabs_config = tabs_config;
+                    view.window_frame = window_frame;
                     view.reload_terminal_config(config.terminal, cx);
                     view.publish_presentation(&config.theme);
                     view.theme = config.theme.clone();
@@ -5474,10 +5613,13 @@ pub(super) fn terminal_corner_radius(
 /// inset; every other placement and style fills the bar.
 /// The strip also starts after `inset` along its axis: the display safe
 /// area a vertical column's background spans but its rows avoid, or the
-/// traffic lights at the start of the title-bar row.
+/// traffic lights at the start of the title-bar row. A horizontal strip
+/// also ends `trailing` before the bar's end: the window controls at the
+/// end of the title row Huterm draws.
 fn strip_bounds(
     tabs: Bounds<Pixels>,
     inset: Pixels,
+    trailing: Pixels,
     config: huterm_config::TabsConfig,
 ) -> Bounds<Pixels> {
     if config.position.vertical() {
@@ -5491,20 +5633,98 @@ fn strip_bounds(
     if config.style == TabStyle::Pill {
         lead = (lead + PILL_INSET - PILL_MARGIN_LEFT).min(tabs.size.width);
     }
+    let trailing = trailing.max(px(0.0)).min(tabs.size.width - lead);
     Bounds::new(
         point(tabs.origin.x + lead, tabs.origin.y),
-        size(tabs.size.width - lead, tabs.size.height),
+        size(tabs.size.width - lead - trailing, tabs.size.height),
     )
+}
+
+/// The window frame the chrome sits in, from Linux client-side
+/// decorations: the border Huterm owns on each side of the content, and
+/// whether the title row is Huterm's own, with its window controls at the
+/// end. Both are zero and false on macOS, in fullscreen, in Quake windows,
+/// and wherever the window manager draws the title bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct WindowFrame {
+    pub(super) inset: gpui::Edges<Pixels>,
+    pub(super) controls: bool,
+}
+
+impl WindowFrame {
+    /// The frame for a window whose tabs resolved to `position`. Only a
+    /// Linux window drawing the merged row owns a border; its inset follows
+    /// the tiling, maximized, and fullscreen state GPUI reports.
+    fn resolve(position: TabPosition, state: FrameState) -> Self {
+        let controls = Platform::current() == Platform::Linux
+            && position == TabPosition::Titlebar;
+        Self {
+            inset: if controls {
+                state.frame().edges()
+            } else {
+                gpui::Edges::default()
+            },
+            controls,
+        }
+    }
+
+    /// The shadow and rounded corners are drawn only around a border.
+    pub(super) fn decorated(self) -> bool {
+        self.client_frame().decorated()
+    }
+
+    fn client_frame(self) -> ClientFrame {
+        ClientFrame {
+            inset: self.inset.top.max(px(0.0)),
+        }
+    }
+}
+
+/// The window's content inside `frame`: the border is clamped to the window
+/// so a tiny window keeps nonnegative content.
+fn content_inside(
+    window: gpui::Size<Pixels>,
+    frame: WindowFrame,
+) -> Bounds<Pixels> {
+    let window = size(window.width.max(px(0.0)), window.height.max(px(0.0)));
+    let left = frame.inset.left.max(px(0.0)).min(window.width);
+    let top = frame.inset.top.max(px(0.0)).min(window.height);
+    let right = frame.inset.right.max(px(0.0)).min(window.width - left);
+    let bottom = frame.inset.bottom.max(px(0.0)).min(window.height - top);
+    Bounds::new(
+        point(left, top),
+        size(window.width - left - right, window.height - top - bottom),
+    )
+}
+
+/// The height of the title row above the terminal: `AppKit`'s strip on
+/// macOS, or the row Huterm draws inside its own frame on Linux, which is
+/// the tab bar's height.
+pub(super) fn title_row_height(
+    chrome_hidden: bool,
+    frame: WindowFrame,
+) -> Pixels {
+    if frame.controls {
+        TAB_HEIGHT
+    } else {
+        terminal_top(chrome_hidden)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
     tabs: Bounds<Pixels>,
+    /// The window inside its frame: the whole viewport without one.
+    pub(super) content: Bounds<Pixels>,
+    pub(super) frame: WindowFrame,
     /// Bar length the strip avoids at its start: the safe-area height a
     /// vertical column spans above its rows, or the traffic lights at the
     /// start of the title-bar row.
     strip_inset: Pixels,
+    /// Bar length the strip leaves free at its end: the window controls
+    /// at the end of the title row Huterm draws.
+    strip_trailing: Pixels,
     /// The bar sits on chrome that exists anyway, a notch shelf or the
     /// title bar, so hiding it frees no terminal space.
     outside_terminal: bool,
@@ -5682,6 +5902,27 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             None,
+            WindowFrame::default(),
+        )
+    }
+
+    /// Lays out with a 32-point bar inside `frame`, with the title row
+    /// Huterm draws when the frame carries its controls.
+    #[cfg(test)]
+    pub(super) fn with_frame(
+        viewport: gpui::Size<Pixels>,
+        position: TabPosition,
+        frame: WindowFrame,
+    ) -> Self {
+        Self::build(
+            viewport,
+            title_row_height(false, frame),
+            position,
+            TAB_HEIGHT,
+            SIDEBAR_WIDTH,
+            gpui::Edges::default(),
+            None,
+            frame,
         )
     }
 
@@ -5705,7 +5946,8 @@ impl ChromeLayout {
     }
 
     /// `notch_shelf` places a top bar in that window-relative area beside a
-    /// display notch instead of below the safe area.
+    /// display notch instead of below the safe area. Everything lies
+    /// inside `frame`, whose inset is the resize border Huterm owns.
     pub(super) fn for_tabs(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
@@ -5713,6 +5955,7 @@ impl ChromeLayout {
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
         notch_shelf: Option<Bounds<Pixels>>,
+        frame: WindowFrame,
     ) -> Self {
         Self::build(
             viewport,
@@ -5722,18 +5965,33 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             notch_shelf,
+            frame,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every input is one fact about the window the layout partitions"
+    )]
     fn build(
-        viewport: gpui::Size<Pixels>,
+        window: gpui::Size<Pixels>,
         titlebar: Pixels,
         position: TabPosition,
         bar_height: Pixels,
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
         notch_shelf: Option<Bounds<Pixels>>,
+        frame: WindowFrame,
     ) -> Self {
+        // The layout partitions the content inside the frame; the frame's
+        // origin is added back at the end. A notch shelf is already
+        // window-relative and never coexists with a frame, so it is
+        // brought into content coordinates like everything else.
+        let content = content_inside(window, frame);
+        let viewport = content.size;
+        let notch_shelf = notch_shelf.map(|shelf| {
+            Bounds::new(shelf.origin - content.origin, shelf.size)
+        });
         let left = safe_area.left.max(px(0.0)).min(viewport.width.max(px(0.0)));
         let top = (titlebar + safe_area.top)
             .max(px(0.0))
@@ -5746,18 +6004,25 @@ impl ChromeLayout {
         let mut terminal = Bounds::new(point(left, top), available);
         let mut tabs = terminal;
         let mut strip_inset = px(0.0);
+        let mut strip_trailing = px(0.0);
         let mut outside_terminal = false;
         if position == TabPosition::Titlebar {
             // The merged row is the title strip itself: the full window
             // width above the terminal, at the strip's height. Its tabs
-            // start after the traffic lights; the terminal keeps the whole
-            // area below the strip.
+            // start after the traffic lights, or after a small lead in the
+            // row Huterm draws, whose window controls end the row; the
+            // terminal keeps the whole area below the strip.
             let row = titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
             tabs = Bounds::new(
                 point(px(0.0), px(0.0)),
                 size(viewport.width.max(px(0.0)), row),
             );
-            strip_inset = TRAFFIC_LIGHT_INSET;
+            if frame.controls {
+                strip_inset = TITLE_ROW_LEAD;
+                strip_trailing = WINDOW_CONTROLS_WIDTH;
+            } else {
+                strip_inset = TRAFFIC_LIGHT_INSET;
+            }
             outside_terminal = true;
         } else if position.vertical() {
             tabs.size.width = sidebar_width
@@ -5807,10 +6072,15 @@ impl ChromeLayout {
                 tabs.origin.y += terminal.size.height;
             }
         }
+        terminal.origin += content.origin;
+        tabs.origin += content.origin;
         Self {
             terminal,
             tabs,
+            content,
+            frame,
             strip_inset,
+            strip_trailing,
             outside_terminal,
         }
     }
@@ -5820,7 +6090,17 @@ impl ChromeLayout {
         &self,
         config: huterm_config::TabsConfig,
     ) -> Bounds<Pixels> {
-        strip_bounds(self.tabs, self.strip_inset, config)
+        strip_bounds(self.tabs, self.strip_inset, self.strip_trailing, config)
+    }
+
+    /// The one-point line under the title row Huterm draws, across the
+    /// whole content width so it also runs under the window controls.
+    fn title_row_border(&self) -> Bounds<Pixels> {
+        let line = px(1.0);
+        Bounds::new(
+            point(self.content.origin.x, self.tabs.bottom() - line),
+            size(self.content.size.width, line),
+        )
     }
 }
 
@@ -5835,15 +6115,22 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.measure_tab_widths(window, cx);
+        self.sync_frame(window);
         self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
         self.sync_window_title(window, cx);
         let tabs = self.layout_tabs();
         let position = tabs.position;
         let layout = self.chrome_layout(window);
+        let frame = layout.frame;
+        let content = layout.content;
+        // Inside a drawn border the window is transparent around a rounded,
+        // shadowed panel; otherwise the root fills the window.
+        let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
         let colors = TabColors::new(&self.config.theme);
+        let swatch = Swatch::from_theme(&self.config.theme);
         let menu_placement = self.menu_button_placement();
         if menu_placement == MenuButtonPlacement::Hidden {
             // A hidden button anchors nothing; `open_menu` falls back.
@@ -5852,7 +6139,7 @@ impl Render for WorkspaceView {
         let mut root = div()
             .size_full()
             .relative()
-            .bg(background)
+            .when(!decorated, |root| root.bg(background))
             .text_color(foreground)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
@@ -5888,6 +6175,20 @@ impl Render for WorkspaceView {
                 },
             ))
             .on_action(cx.listener(Self::invoke_palette));
+        if decorated {
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(content.origin.x)
+                    .top(content.origin.y)
+                    .w(content.size.width)
+                    .h(content.size.height)
+                    .bg(background)
+                    .rounded_tl(FRAME_RADIUS)
+                    .rounded_tr(FRAME_RADIUS)
+                    .shadow(swatch.frame_shadow()),
+            );
+        }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
         let press_view = move_view.clone();
@@ -6013,7 +6314,7 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
-        let titlebar = terminal_top(self.chrome_hidden());
+        let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
         let bar_drawn = self.presentation() == Presentation::Reserved
             || self.presentation() == Presentation::Overlay
@@ -6027,17 +6328,32 @@ impl Render for WorkspaceView {
         let title_menu_button =
             (menu_placement == MenuButtonPlacement::TitleStrip).then(|| {
                 self.menu_button_element(colors, window, cx)
-                    .ml_auto()
                     .mr(CONTROL_INSET)
             });
+        // The strip's trailing group: the `⋯` button when the strip holds
+        // it, then the window controls in the row Huterm draws.
+        let title_trailing = div()
+            .ml_auto()
+            .flex()
+            .items_center()
+            .children(title_menu_button)
+            .when(frame.controls, |trailing| {
+                trailing.child(self.window_controls_element(colors, window, cx))
+            });
+        // The title centres between the space its ends reserve.
+        let title_padding =
+            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT);
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
+                    .top(content.origin.y)
+                    .left(content.origin.x)
+                    .w(content.size.width)
                     .h(top_chrome)
+                    .when(decorated, |bar| {
+                        bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
+                    })
                     .bg(
                         // A shelf bar fills the whole safe-area strip, so
                         // the bar reads as one band across the notch.
@@ -6060,7 +6376,13 @@ impl Render for WorkspaceView {
                         bar.flex()
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
-                            .children(title_menu_button)
+                            .child(title_trailing)
+                    })
+                    .when(frame.controls, |bar| {
+                        // Huterm's own title row: its empty space moves
+                        // the window, a double-click maximizes it, and a
+                        // secondary press opens the window manager's menu.
+                        Self::title_row_gestures(bar)
                     })
                     .when(titlebar > px(0.0) && !merged_row, |bar| {
                         // The active tab's title, centred across the strip
@@ -6078,7 +6400,7 @@ impl Render for WorkspaceView {
                             div()
                                 .absolute()
                                 .inset_0()
-                                .px(TRAFFIC_LIGHT_INSET)
+                                .px(title_padding)
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -6137,7 +6459,10 @@ impl Render for WorkspaceView {
                     .h(layout.tabs.size.height)
                     .bg(colors.bar)
                     .occlude()
-                    .when(merged_row, |row| {
+                    .when(merged_row && decorated, |row| {
+                        row.rounded_tl(FRAME_RADIUS)
+                    })
+                    .when(merged_row && !frame.controls, |row| {
                         // The space after the tabs is still the title bar:
                         // it drags the window, and a double-click performs
                         // the system title-bar action. Tabs, `+`, and `⋯`
@@ -6148,6 +6473,11 @@ impl Render for WorkspaceView {
                                     window.titlebar_double_click();
                                 }
                             })
+                    })
+                    .when(merged_row && frame.controls, |row| {
+                        // The same space in Huterm's own row asks the
+                        // window manager for the move, maximize, and menu.
+                        Self::title_row_gestures(row)
                     }),
             );
             if shelf_bar {
@@ -6164,7 +6494,13 @@ impl Render for WorkspaceView {
                         .bg(colors.border),
                 );
             } else {
-                let edge = layout.tab_border(position);
+                // Huterm's own row also runs its line under the window
+                // controls, which lie beyond the tab bar.
+                let edge = if merged_row && frame.controls {
+                    layout.title_row_border()
+                } else {
+                    layout.tab_border(position)
+                };
                 chrome = chrome.child(
                     div()
                         .absolute()
@@ -6184,6 +6520,10 @@ impl Render for WorkspaceView {
                 .w(strip.bounds.size.width)
                 .h(strip.bounds.size.height)
                 .overflow_hidden()
+                // The strip occludes the row beneath it, so its own empty
+                // space after the last tab carries the row's gestures too;
+                // tabs stop their presses before they reach it.
+                .when(merged_row && frame.controls, Self::title_row_gestures)
                 .on_scroll_wheel(cx.listener(
                     move |view, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(px(32.0));
@@ -6371,8 +6711,10 @@ impl Render for WorkspaceView {
                     ),
             );
             let bar_menu_button = match menu_placement {
+                // The strip ends where the bar does, or before the window
+                // controls in Huterm's own title row.
                 MenuButtonPlacement::BarEnd => Some(point(
-                    layout.tabs.right() - clip.origin.x - CONTROL_SLOT
+                    strip.bounds.right() - clip.origin.x - CONTROL_SLOT
                         + CONTROL_INSET,
                     strip.bounds.origin.y - clip.origin.y + bar_inset,
                 )),
@@ -6654,6 +6996,30 @@ impl Render for WorkspaceView {
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
         }
+        if decorated {
+            // The border around the content: a press on it asks the window
+            // manager to resize from that edge or corner.
+            for (edge, zone) in
+                frame.client_frame().resize_zones(window.viewport_size())
+            {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(zone.origin.x)
+                        .top(zone.origin.y)
+                        .w(zone.size.width)
+                        .h(zone.size.height)
+                        .cursor(resize_cursor(edge))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, window, cx| {
+                                window.start_window_resize(edge);
+                                cx.stop_propagation();
+                            },
+                        ),
+                );
+            }
+        }
         // Layout may change drag geometry or clear hover without an input event.
         self.frame_clock.animate(
             cx.entity().downgrade(),
@@ -6700,7 +7066,7 @@ impl WorkspaceView {
     fn bar_menu_placement(&self) -> MenuButtonPlacement {
         menu_button_placement(
             self.config.window.menu_button,
-            terminal_top(self.chrome_hidden()) > px(0.0),
+            self.title_row() > px(0.0),
             self.layout_tabs().position,
             true,
         )
@@ -6714,7 +7080,7 @@ impl WorkspaceView {
                 && self.reveal.progress > 0.0;
         menu_button_placement(
             self.config.window.menu_button,
-            terminal_top(self.chrome_hidden()) > px(0.0),
+            self.title_row() > px(0.0),
             self.layout_tabs().position,
             bar_shown,
         )
@@ -7095,6 +7461,91 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
+    }
+
+    /// The gestures of the title row Huterm draws, on its empty space: a
+    /// primary press starts the window manager's move, a double-click
+    /// toggles maximize, and a secondary press opens its window menu.
+    fn title_row_gestures<E: InteractiveElement>(row: E) -> E {
+        row.on_mouse_down(MouseButton::Left, |event, window, cx| {
+            if event.click_count == 2 {
+                window.zoom_window();
+            } else {
+                window.start_window_move();
+            }
+            cx.stop_propagation();
+        })
+        .on_mouse_down(MouseButton::Right, |event, window, cx| {
+            window.show_window_menu(event.position);
+            cx.stop_propagation();
+        })
+    }
+
+    /// The minimize, maximize or restore, and close controls at the end of
+    /// the title row Huterm draws: round 22-point buttons with a subtle
+    /// fill. Close takes the assessed window-close path, like the
+    /// `close_window` command, so live jobs still get their confirmation.
+    fn window_controls_element(
+        &self,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Div {
+        let maximized = window.is_maximized();
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let button = |id: &'static str, icon: Icon, label: &'static str| {
+            div()
+                .id(id)
+                .group(id)
+                .occlude()
+                .w(WINDOW_CONTROL_SIZE)
+                .h(WINDOW_CONTROL_SIZE)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(colors.hover)
+                .hover(|style| style.bg(colors.control_hover))
+                .tooltip(move |_, cx| TextTooltip::view(label, swatch, cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    icon_element(icon, colors.inactive)
+                        .group_hover(id, |style| {
+                            style.text_color(colors.foreground)
+                        }),
+                )
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(WINDOW_CONTROL_GAP)
+            .pl(WINDOW_CONTROLS_PADDING_LEFT)
+            .pr(WINDOW_CONTROLS_PADDING_RIGHT)
+            .child(button("window-minimize", Icon::Minus, "Minimize").on_click(
+                |_, window, cx| {
+                    window.minimize_window();
+                    cx.stop_propagation();
+                },
+            ))
+            .child(
+                button(
+                    "window-maximize",
+                    if maximized { Icon::Copy } else { Icon::Square },
+                    if maximized { "Restore" } else { "Maximize" },
+                )
+                .on_click(|_, window, cx| {
+                    window.zoom_window();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(button("window-close", Icon::X, "Close window").on_click(
+                cx.listener(|view, _, window, cx| {
+                    view.request_close(CloseTarget::Window, window, cx);
+                    cx.stop_propagation();
+                }),
+            ))
     }
 
     /// The open menu mounted at its placement: below the anchor, or above
@@ -8800,6 +9251,173 @@ mod tests {
             tiny.strip_bounds(tabs(TabStyle::Strip)).size.width,
             px(0.0)
         );
+    }
+
+    fn framed(state: FrameState) -> WindowFrame {
+        WindowFrame::resolve(
+            resolve_tab_position(
+                TabPosition::Titlebar,
+                TabHost {
+                    platform: Platform::Linux,
+                    fullscreen: false,
+                    quake: false,
+                    client_decorations: state.client_decorations(),
+                },
+            ),
+            state,
+        )
+    }
+
+    #[test]
+    fn the_drawn_title_row_and_terminal_sit_inside_the_frame() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let state = FrameState {
+            decorations: gpui::Decorations::Client {
+                tiling: gpui::Tiling::default(),
+            },
+            maximized: false,
+            fullscreen: false,
+        };
+        let frame = framed(state);
+        assert!(frame.controls);
+        assert!(frame.decorated());
+        let inset = client_frame::CLIENT_INSET;
+        assert_eq!(frame.inset, gpui::Edges::all(inset));
+        let layout =
+            ChromeLayout::with_frame(viewport, TabPosition::Titlebar, frame);
+        // The content is the viewport less the border on every side.
+        assert_eq!(
+            layout.content,
+            Bounds::new(
+                point(inset, inset),
+                size(px(800.0) - inset * 2.0, px(600.0) - inset * 2.0)
+            )
+        );
+        // The row spans the content's top at the bar's height; the
+        // terminal takes the rest, shrunk by the inset on every side.
+        assert_eq!(
+            layout.tabs,
+            Bounds::new(
+                point(inset, inset),
+                size(px(800.0) - inset * 2.0, TAB_HEIGHT)
+            )
+        );
+        assert_eq!(
+            layout.terminal,
+            Bounds::new(
+                point(inset, inset + TAB_HEIGHT),
+                size(
+                    px(800.0) - inset * 2.0,
+                    px(600.0) - inset * 2.0 - TAB_HEIGHT
+                )
+            )
+        );
+        assert_eq!(layout.tabs.bottom(), layout.terminal.top());
+        // Tabs start after the small lead and stop before the window
+        // controls; the `⋯` slot sits just before them.
+        let tabs = TabsConfig {
+            position: TabPosition::Titlebar,
+            style: TabStyle::Strip,
+            ..TabsConfig::default()
+        };
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.origin, point(inset + TITLE_ROW_LEAD, inset));
+        assert_eq!(strip.right(), layout.tabs.right() - WINDOW_CONTROLS_WIDTH);
+        assert_eq!(
+            layout.title_row_border(),
+            Bounds::new(
+                point(inset, inset + TAB_HEIGHT - px(1.0)),
+                size(px(800.0) - inset * 2.0, px(1.0))
+            )
+        );
+        // Hiding the bar frees nothing: the row is the title bar.
+        let hidden =
+            layout.present(Presentation::Hidden, TabPosition::Titlebar, 0.0);
+        assert_eq!(hidden.terminal, layout.terminal);
+        // The row is the title bar: it takes its height from the content
+        // like AppKit's strip, not a reservation on top of it.
+        assert_eq!(title_row_height(false, frame), TAB_HEIGHT);
+        assert_eq!(
+            ChromeLayout::bar_reservation(tabs, SIDEBAR_WIDTH),
+            size(px(0.0), px(0.0))
+        );
+    }
+
+    #[test]
+    fn tiled_maximized_and_fullscreen_frames_keep_the_row_but_no_border() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let client = |tiling| gpui::Decorations::Client { tiling };
+        for state in [
+            FrameState {
+                decorations: client(gpui::Tiling {
+                    left: true,
+                    ..gpui::Tiling::default()
+                }),
+                maximized: false,
+                fullscreen: false,
+            },
+            FrameState {
+                decorations: client(gpui::Tiling::default()),
+                maximized: true,
+                fullscreen: false,
+            },
+        ] {
+            let frame = framed(state);
+            assert!(frame.controls, "{state:?}");
+            assert!(!frame.decorated(), "{state:?}");
+            assert_eq!(frame.inset, gpui::Edges::default(), "{state:?}");
+            let layout = ChromeLayout::with_frame(
+                viewport,
+                TabPosition::Titlebar,
+                frame,
+            );
+            assert_eq!(
+                layout.content,
+                Bounds::new(point(px(0.0), px(0.0)), viewport)
+            );
+            assert_eq!(
+                layout.tabs,
+                Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(800.0), TAB_HEIGHT)
+                )
+            );
+            assert_eq!(layout.terminal.origin, point(px(0.0), TAB_HEIGHT));
+            assert_eq!(layout.terminal.right(), px(800.0));
+            assert_eq!(layout.terminal.bottom(), px(600.0));
+        }
+        // Fullscreen hides the row: the tabs become a top bar with no frame.
+        let fullscreen = WindowFrame::resolve(
+            resolve_tab_position(
+                TabPosition::Titlebar,
+                TabHost {
+                    platform: Platform::Linux,
+                    fullscreen: true,
+                    quake: false,
+                    client_decorations: true,
+                },
+            ),
+            FrameState {
+                decorations: client(gpui::Tiling::tiled()),
+                maximized: false,
+                fullscreen: true,
+            },
+        );
+        assert_eq!(fullscreen, WindowFrame::default());
+        assert_eq!(title_row_height(true, fullscreen), px(0.0));
+        // Without a compositor the row is the window manager's.
+        let fallback = framed(FrameState::default());
+        assert_eq!(fallback, WindowFrame::default());
+        assert_eq!(title_row_height(false, fallback), px(0.0));
+        let layout =
+            ChromeLayout::with_frame(viewport, TabPosition::Top, fallback);
+        assert_eq!(layout.terminal.origin, point(px(0.0), TAB_HEIGHT));
     }
 
     #[test]

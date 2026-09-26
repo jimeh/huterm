@@ -638,4 +638,27 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   title; entering and leaving fullscreen, including the notch shelf, keeps
   PTY dimensions equal to the published grid. If AppKit takes the tab drag,
   try the tracked vendor patch before changing the design.
-- Step 13 (Linux title bar) is not started.
+- Step 13 (Linux title bar, build): an ordinary Linux window configured
+  for `titlebar` requests `WindowDecorations::Client` at creation and on a
+  reload that crosses `titlebar`, and samples `window_decorations()`,
+  `is_maximized()`, and `is_fullscreen()` into `FrameState`
+  (`crates/huterm-gpui/src/desktop/windows/client_frame.rs`) at creation,
+  on every bounds change, on GPUI's appearance callback, and before each
+  render; the sample feeds `TabHost::client_decorations`, so the
+  no-compositor fallback resolves to `top` without any Huterm-side guess.
+  `WindowFrame` (inset plus whether Huterm draws the controls) is an input
+  to `ChromeLayout::build`, which lays out inside the frame and exposes
+  `content`; each `TerminalView` carries the same frame, so PTY, scrollbar,
+  and mouse geometry follow. The drawn row is the tab bar's height with an
+  8-point lead, the `⋯` slot before a 98-point controls group (minimize,
+  maximize or restore, close as 22-point round buttons), and gestures on
+  its empty space: primary press `start_window_move`, double-click
+  `zoom_window`, secondary press `show_window_menu`. A 10-point client
+  inset with a shadow and 12-point rounded top corners exists only while
+  the window is windowed and untiled; eight resize zones in that inset call
+  `start_window_resize`. Verified under Xvfb without a compositor: the
+  `Client` request left `_MOTIF_WM_HINTS` at server decorations and set no
+  `_GTK_FRAME_EXTENTS`, and the app ran without panics. Not yet run: any
+  compositor session; the compositor smoke and the `vm:linux:dev` checks
+  (drag, resize from every edge, maximize, the window menu, fullscreen
+  root geometry, and the fallback) remain.

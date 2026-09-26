@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use gpui::{Application, AssetSource, SharedString};
 
-const ASSETS: [(&str, &[u8]); 7] = [
+const ASSETS: [(&str, &[u8]); 10] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -22,6 +22,15 @@ const ASSETS: [(&str, &[u8]); 7] = [
         "icons/ellipsis.svg",
         include_bytes!("../assets/icons/ellipsis.svg"),
     ),
+    (
+        "icons/minus.svg",
+        include_bytes!("../assets/icons/minus.svg"),
+    ),
+    (
+        "icons/square.svg",
+        include_bytes!("../assets/icons/square.svg"),
+    ),
+    ("icons/copy.svg", include_bytes!("../assets/icons/copy.svg")),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,11 +42,14 @@ pub(crate) enum Icon {
     CircleAlert,
     Bell,
     Ellipsis,
+    Minus,
+    Square,
+    Copy,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 10] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -45,6 +57,9 @@ impl Icon {
         Self::CircleAlert,
         Self::Bell,
         Self::Ellipsis,
+        Self::Minus,
+        Self::Square,
+        Self::Copy,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -56,6 +71,9 @@ impl Icon {
             Self::CircleAlert => "icons/circle-alert.svg",
             Self::Bell => "icons/bell.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
+            Self::Minus => "icons/minus.svg",
+            Self::Square => "icons/square.svg",
+            Self::Copy => "icons/copy.svg",
         }
     }
 }

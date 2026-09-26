@@ -666,7 +666,8 @@ mod tests {
     use gpui::{point, size};
 
     use super::super::{
-        ChromeLayout, select_notch_shelf, strip_bounds, terminal_corner_radius,
+        ChromeLayout, WindowFrame, select_notch_shelf, strip_bounds,
+        terminal_corner_radius,
     };
     use super::*;
 
@@ -874,7 +875,8 @@ mod tests {
             style: TabStyle::Pill,
             ..TabsConfig::default()
         };
-        let strip = strip_bounds(tabs, px(0.0), pill(TabPosition::Top));
+        let strip =
+            strip_bounds(tabs, px(0.0), px(0.0), pill(TabPosition::Top));
         // The first pill's own margin plus the lead equals the vertical inset.
         assert_eq!(
             strip.origin.x + PILL_MARGIN_LEFT,
@@ -882,19 +884,23 @@ mod tests {
         );
         assert_eq!(strip.right(), tabs.right());
         assert_eq!(strip.size.height, tabs.size.height);
-        assert_eq!(strip_bounds(tabs, px(0.0), pill(TabPosition::Left)), tabs);
+        assert_eq!(
+            strip_bounds(tabs, px(0.0), px(0.0), pill(TabPosition::Left)),
+            tabs
+        );
         // A column keeps its rows below the safe area it spans.
-        let inset = strip_bounds(tabs, px(10.0), pill(TabPosition::Left));
+        let inset =
+            strip_bounds(tabs, px(10.0), px(0.0), pill(TabPosition::Left));
         assert_eq!(inset.origin.y, tabs.origin.y + px(10.0));
         assert_eq!(inset.bottom(), tabs.bottom());
         let strip_style = TabsConfig {
             style: TabStyle::Strip,
             ..TabsConfig::default()
         };
-        assert_eq!(strip_bounds(tabs, px(0.0), strip_style), tabs);
+        assert_eq!(strip_bounds(tabs, px(0.0), px(0.0), strip_style), tabs);
         let tiny = Bounds::new(tabs.origin, size(px(1.0), px(32.0)));
         assert_eq!(
-            strip_bounds(tiny, px(0.0), pill(TabPosition::Bottom))
+            strip_bounds(tiny, px(0.0), px(0.0), pill(TabPosition::Bottom))
                 .size
                 .width,
             px(0.0)
@@ -932,6 +938,7 @@ mod tests {
             px(220.0),
             gpui::Edges::default(),
             None,
+            WindowFrame::default(),
         );
         assert_eq!(layout.tabs.size.height, px(34.0));
         assert_eq!(layout.terminal.origin.y, px(28.0 + 34.0));
@@ -957,6 +964,7 @@ mod tests {
             px(220.0),
             safe_area,
             Some(shelf),
+            WindowFrame::default(),
         );
         // Bottom-aligned in the shelf at the Pill bar's own height.
         assert_eq!(layout.tabs.size, size(px(790.0), px(34.0)));
@@ -978,6 +986,7 @@ mod tests {
                 point(px(0.0), px(0.0)),
                 size(px(790.0), px(30.0)),
             )),
+            WindowFrame::default(),
         );
         assert_eq!(short.tabs.size.height, px(34.0));
         assert_eq!(short.tabs.origin.y, px(38.0));
@@ -998,6 +1007,7 @@ mod tests {
             px(220.0),
             safe_area,
             Some(shelf),
+            WindowFrame::default(),
         );
         assert_eq!(column.tabs.origin.y, px(0.0));
         assert!(column.tabs.size.height > px(1000.0));
@@ -1107,6 +1117,7 @@ mod tests {
             px(220.0),
             safe_area,
             None,
+            WindowFrame::default(),
         );
         let overlay =
             reserved.present(Presentation::Overlay, TabPosition::Left, 0.5);

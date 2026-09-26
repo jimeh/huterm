@@ -365,6 +365,9 @@ struct TerminalView {
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Shelf beside a display notch that holds the top tab bar, if any.
     notch_shelf: Option<Bounds<Pixels>>,
+    /// The window frame the chrome sits in; the workspace keeps it current
+    /// with the Linux client-side decorations GPUI reports.
+    window_frame: windows::WindowFrame,
     theme: Theme,
     /// Failures waiting for the window's notice stack, oldest first. The
     /// tab's activity drain collects them with [`TerminalView::refresh`].
@@ -575,6 +578,7 @@ impl TerminalView {
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
             notch_shelf: None,
+            window_frame: windows::WindowFrame::default(),
             theme,
             failures: Vec::new(),
             failure_wake,
@@ -1835,7 +1839,10 @@ impl TerminalView {
             margins: terminal_track_margins(
                 self.tab_presentation,
                 self.tabs_config.position,
-                terminal_top(self.chrome_hidden),
+                windows::title_row_height(
+                    self.chrome_hidden,
+                    self.window_frame,
+                ),
                 self.window_config,
             ),
             ..TERMINAL_SCROLLBAR
@@ -1899,11 +1906,12 @@ impl TerminalView {
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
         windows::ChromeLayout::for_tabs(
             window.viewport_size(),
-            terminal_top(self.chrome_hidden),
+            windows::title_row_height(self.chrome_hidden, self.window_frame),
             self.tabs_config,
             self.sidebar_width,
             self.fullscreen_insets,
             self.notch_shelf,
+            self.window_frame,
         )
         .present(self.tab_presentation, self.tabs_config.position, 0.0)
         .terminal

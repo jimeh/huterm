@@ -287,12 +287,20 @@ the 32-point title strip becomes the tab row: it starts after the traffic
 lights, holds the tabs and `+`, keeps its trailing space draggable with the
 usual double-click action, and ends with the `⋯` button. The terminal gains
 the height a top bar would take. A single tab with `always_show = false` shows
-the strip with the active tab's title, as the other positions do. Wherever no
-title bar exists the tabs take a top bar instead: fullscreen on either
-platform, Quake windows, and, for now, every Linux window, where the window
-manager draws the title bar. A later release draws the Linux title bar itself
-when the compositor allows client-side decorations; until then `titlebar`
-behaves as `top` on Linux.
+the strip with the active tab's title, as the other positions do. On Linux,
+Huterm asks for client-side decorations and draws the whole row itself: the
+tabs and `+` from the left edge, draggable empty space, the `⋯` button, then
+round minimize, maximize, and close controls on the right. Dragging the empty
+space moves the window, double-clicking it maximizes, and a right-click opens
+the window manager's menu; the close control takes the same assessed close
+path as the `close_window` command. A windowed, untiled window also gets a
+thin invisible border for resizing, a shadow, and rounded top corners, which
+disappear while it is maximized, tiled, or fullscreen. This needs a
+compositing window manager (GNOME, KDE, or any X11 session with a compositor;
+GNOME on Wayland runs Huterm through XWayland, which Mutter composites).
+Without one, GPUI falls back to the window manager's title bar and `titlebar`
+behaves as `top`. Wherever no title bar exists the tabs take a top bar
+instead: fullscreen on either platform and Quake windows.
 
 `style` selects Pill (the default) or Strip tabs for every placement. Left and
 right Strip tabs put the accent line on the window edge; left and right Pill

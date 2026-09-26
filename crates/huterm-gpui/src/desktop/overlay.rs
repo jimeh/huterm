@@ -92,6 +92,18 @@ impl Swatch {
         self.bg.l > 0.5
     }
 
+    /// The soft shadow the Linux client-side frame paints in its border:
+    /// it must stay within the ten-point inset around the content.
+    pub(crate) fn frame_shadow(&self) -> Vec<BoxShadow> {
+        let strength = if self.light() { 0.28 } else { 0.55 };
+        vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, strength),
+            offset: point(px(0.0), px(2.0)),
+            blur_radius: px(8.0),
+            spread_radius: px(0.0),
+        }]
+    }
+
     /// The two-layer drop shadow raised surfaces carry.
     pub(crate) fn shadow(&self) -> Vec<BoxShadow> {
         let (far, near) = if self.light() {

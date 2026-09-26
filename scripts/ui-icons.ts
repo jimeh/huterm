@@ -13,6 +13,9 @@ export const iconNames = [
   "circle-alert",
   "bell",
   "ellipsis",
+  "minus",
+  "square",
+  "copy",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {
