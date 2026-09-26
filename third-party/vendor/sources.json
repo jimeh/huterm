@@ -131,6 +131,24 @@
           "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/5988a0b78b4aa804d1c12e66bbfe662bd97d81c0"
         }
       ]
+    },
+    {
+      "name": "portable-pty",
+      "version": "0.9.0",
+      "url": "https://static.crates.io/crates/portable-pty/portable-pty-0.9.0.crate",
+      "sha256": "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e",
+      "upstream": {
+        "repository": "https://github.com/wezterm/wezterm",
+        "revision": "f8921727a11b9f8b073e8c24821d72fd41283500",
+        "path": "pty"
+      },
+      "patches": [
+        {
+          "name": "child-nofile-limit",
+          "file": "patches/portable-pty/child-nofile-limit.patch",
+          "description": "Let callers set the child's RLIMIT_NOFILE between fork and exec, so a parent that raised its own soft limit can restore the original for children."
+        }
+      ]
     }
   ]
 }

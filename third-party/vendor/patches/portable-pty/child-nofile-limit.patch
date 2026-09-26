@@ -1,0 +1,80 @@
+diff --git a/src/cmdbuilder.rs b/src/cmdbuilder.rs
+index b4ce50a85319207d2d3495fef96da35e5941bf5f..1d57e4a4a4dac81d6c0451107597883081c1f0af 100644
+--- a/src/cmdbuilder.rs
++++ b/src/cmdbuilder.rs
+@@ -206,6 +206,8 @@ pub struct CommandBuilder {
+     cwd: Option<OsString>,
+     #[cfg(unix)]
+     pub(crate) umask: Option<libc::mode_t>,
++    #[cfg(unix)]
++    pub(crate) nofile_limit: Option<(libc::rlim_t, libc::rlim_t)>,
+     controlling_tty: bool,
+ }
+ 
+@@ -219,6 +221,8 @@ impl CommandBuilder {
+             cwd: None,
+             #[cfg(unix)]
+             umask: None,
++            #[cfg(unix)]
++            nofile_limit: None,
+             controlling_tty: true,
+         }
+     }
+@@ -231,6 +235,8 @@ impl CommandBuilder {
+             cwd: None,
+             #[cfg(unix)]
+             umask: None,
++            #[cfg(unix)]
++            nofile_limit: None,
+             controlling_tty: true,
+         }
+     }
+@@ -258,6 +264,8 @@ impl CommandBuilder {
+             cwd: None,
+             #[cfg(unix)]
+             umask: None,
++            #[cfg(unix)]
++            nofile_limit: None,
+             controlling_tty: true,
+         }
+     }
+@@ -409,6 +417,12 @@ impl CommandBuilder {
+         self.umask = mask;
+     }
+ 
++    /// Set the soft and hard `RLIMIT_NOFILE` limits applied in the child
++    /// before it executes the program. Failure to apply them is ignored.
++    pub fn nofile_limit(&mut self, limit: Option<(libc::rlim_t, libc::rlim_t)>) {
++        self.nofile_limit = limit;
++    }
++
+     fn resolve_path(&self) -> Option<&OsStr> {
+         self.get_env("PATH")
+     }
+diff --git a/src/unix.rs b/src/unix.rs
+index cc458ce9701c71d0063ae25769500627bb92b4ee..23d66a4a106824d10b9cb1ca4d959fa61d500410 100644
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -227,6 +227,7 @@ impl PtyFd {
+ 
+     fn spawn_command(&self, builder: CommandBuilder) -> anyhow::Result<std::process::Child> {
+         let configured_umask = builder.umask;
++        let configured_nofile_limit = builder.nofile_limit;
+ 
+         let mut cmd = builder.as_command()?;
+         let controlling_tty = builder.get_controlling_tty();
+@@ -275,6 +276,14 @@ impl PtyFd {
+ 
+                     close_random_fds();
+ 
++                    if let Some((soft, hard)) = configured_nofile_limit {
++                        let limit = libc::rlimit {
++                            rlim_cur: soft,
++                            rlim_max: hard,
++                        };
++                        libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
++                    }
++
+                     if let Some(mask) = configured_umask {
+                         libc::umask(mask);
+                     }

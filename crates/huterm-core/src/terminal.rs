@@ -1275,7 +1275,7 @@ fn spawn_reader(
         .spawn(move || {
             forward_output(
                 &mut *reader,
-                || reader_waiter.wait(None),
+                || reader_waiter.wait(None).map(drop),
                 &output,
                 &controls,
                 &closing,
@@ -1427,7 +1427,7 @@ enum WriterReadiness {
 impl WriterReadiness {
     fn wait(&self) -> std::io::Result<()> {
         match self {
-            Self::Pty(waiter) => waiter.wait(None),
+            Self::Pty(waiter) => waiter.wait(None).map(drop),
             #[cfg(test)]
             Self::Immediate => Ok(()),
         }

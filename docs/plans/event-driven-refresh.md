@@ -490,7 +490,7 @@ replacement wake source before the timeout can go:
 | Observe `closing` | `while !closing.load(..)` | A message sent wherever `closing` is set outside the loop |
 | Retry a full writer queue | `WriterQueueState::Full` sleeps 2 ms | A writer acknowledgement when its queue drains |
 | Writer thread | `recv_timeout` in the writer loop | Block on `recv`; wake it explicitly on close and input closure |
-| PTY reader readiness | `ReadinessWaiter::wait(2 ms)` after `WouldBlock` | Interruptible readiness wait covering both PTY readability and explicit shutdown; preserve the macOS-safe `filedescriptor` path |
+| PTY reader readiness | `ReadinessWaiter::wait(2 ms)` after `WouldBlock` | Interruptible readiness wait covering both PTY readability and explicit shutdown. This plan originally kept `filedescriptor`'s macOS `select(2)` path; waits now use `poll(2)` on every Unix platform, see [descriptor limits](descriptor-limits.md) |
 | Reader queue pressure and writer readiness | Reader retries a full message queue; writer sleeps on `WouldBlock` | Capacity/readiness notification with a shutdown escape; distinguish idle waits from active backpressure |
 
 The runtime checkpoint keeps bounded data and separate priority controls, with a

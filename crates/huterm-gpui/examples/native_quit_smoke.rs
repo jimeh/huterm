@@ -60,6 +60,7 @@ fn main() {
         std::io::stdout().flush().unwrap();
     }
 
+    huterm_core::raise_open_file_limit();
     let command = TerminalCommand {
         program: "/bin/sh".into(),
         arguments: vec!["-c".into(), r#"printf READY; while IFS= read -r value; do printf 'ACK:%s\n' "$value"; done"#.into()],

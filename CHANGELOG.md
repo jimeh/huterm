@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.1](https://github.com/jimeh/huterm/compare/v0.13.0...v0.13.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* let Huterm open hundreds of terminals under launchd's descriptor limit ([#171](https://github.com/jimeh/huterm/issues/171)) ([a08b3a9](https://github.com/jimeh/huterm/commit/a08b3a921826ca411ad7345830b4bcf43b180b86))
+
+
+### Performance Improvements
+
+* reduce terminal snapshot rebuild cost ([#166](https://github.com/jimeh/huterm/issues/166)) ([cdb720d](https://github.com/jimeh/huterm/commit/cdb720dd04f9fec8db76475f7be54288b1df88f6))
+
 ## [0.13.0](https://github.com/jimeh/huterm/compare/v0.12.3...v0.13.0) (2026-09-25)
 
 
