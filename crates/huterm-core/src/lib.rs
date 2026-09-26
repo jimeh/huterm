@@ -32,7 +32,7 @@ pub use mux::{
 };
 pub use presentation::PresentationController;
 pub use terminal::{
-    RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
+    RefusedInput, RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
     SnapshotRequest, TerminalRuntime,
 };
 

@@ -115,11 +115,11 @@ impl TerminalView {
 
     fn send_composed_text(&mut self, text: String, cx: &mut Context<'_, Self>) {
         if !text.is_empty() {
-            self.enqueue_input(TerminalInput::Text(text));
-            self.scroll.bottom();
-            self.scroll.invalidate();
+            if self.enqueue_input(TerminalInput::Text(text)) {
+                cx.notify();
+            }
+            self.return_to_live_output();
             self.start_snapshot_if_needed(cx);
-            cx.notify();
         }
     }
 }

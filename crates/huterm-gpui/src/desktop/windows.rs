@@ -964,10 +964,13 @@ fn observe_keystroke(
                     if input_blocked {
                         return;
                     }
-                    if tab.handle_keystroke(&event.keystroke, &reserved, window)
-                    {
+                    if tab.handle_keystroke(
+                        &event.keystroke,
+                        &reserved,
+                        window,
+                        cx,
+                    ) {
                         cx.stop_propagation();
-                        cx.notify();
                     }
                     tab.start_snapshot_if_needed(cx);
                 });

@@ -2,7 +2,7 @@
 //! bindings, an effective-binding list, and the reserved-key set that keeps
 //! bound chords away from terminal input.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -88,14 +88,16 @@ impl EffectiveBinding {
 /// sequences and matched final strokes. Conditional single-key bindings reserve
 /// nothing, so their stroke reaches the terminal when the predicate is false.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ReservedKeys(HashSet<(Modifiers, String)>);
+// Keyed by key so a lookup can borrow the keystroke's key without copying it.
+pub(crate) struct ReservedKeys(HashMap<String, HashSet<Modifiers>>);
 
 impl ReservedKeys {
     /// Reports whether `keystroke` is independently reserved. `key_char` is
     /// ignored so `alt-r` stays reserved when macOS reports `®`.
     pub(crate) fn is_reserved(&self, keystroke: &Keystroke) -> bool {
         self.0
-            .contains(&(keystroke.modifiers, keystroke.key.clone()))
+            .get(keystroke.key.as_str())
+            .is_some_and(|modifiers| modifiers.contains(&keystroke.modifiers))
     }
 
     /// A later chord stroke is unbound when typed alone. Reserve only the
@@ -105,7 +107,10 @@ impl ReservedKeys {
         if (!conditional || keystrokes.len() > 1)
             && let Some(keystroke) = keystrokes.first()
         {
-            self.0.insert((keystroke.modifiers, keystroke.key.clone()));
+            self.0
+                .entry(keystroke.key.clone())
+                .or_default()
+                .insert(keystroke.modifiers);
         }
     }
 }

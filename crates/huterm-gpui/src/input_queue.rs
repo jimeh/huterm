@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use huterm_core::RuntimeError;
+use huterm_core::{RefusedInput, RuntimeError};
 use huterm_protocol::{MouseAction, TerminalInput};
 
 pub(super) const PENDING_INPUT_CAPACITY: usize = 256;
@@ -51,7 +51,7 @@ impl InputQueue {
         &mut self,
         input: TerminalInput,
         owned_release: bool,
-        mut send: impl FnMut(TerminalInput) -> Result<(), RuntimeError>,
+        mut send: impl FnMut(TerminalInput) -> Result<(), RefusedInput>,
     ) -> Result<Admission, RuntimeError> {
         if self.closed {
             return Ok(Admission::Closed);
@@ -78,16 +78,21 @@ impl InputQueue {
         {
             return Ok(Admission::Full);
         }
-        if self.inputs.is_empty() && !motion {
-            match send(input.clone()) {
+        let input = if self.inputs.is_empty() && !motion {
+            match send(input) {
                 Ok(()) => return Ok(Admission::Accepted),
-                Err(RuntimeError::Busy) => {}
-                Err(error) => {
+                Err(RefusedInput {
+                    error: RuntimeError::Busy,
+                    input,
+                }) => input,
+                Err(refused) => {
                     *self = Self::default();
-                    return Err(error);
+                    return Err(refused.error);
                 }
             }
-        }
+        } else {
+            input
+        };
         self.inputs.push_back(input);
         self.bytes += bytes;
         self.motion_run = motion;
@@ -96,19 +101,22 @@ impl InputQueue {
 
     pub(super) fn retry(
         &mut self,
-        mut send: impl FnMut(TerminalInput) -> Result<(), RuntimeError>,
+        mut send: impl FnMut(TerminalInput) -> Result<(), RefusedInput>,
     ) -> Result<(), RuntimeError> {
-        while let Some(input) = self.inputs.front().cloned() {
+        while let Some(input) = self.inputs.pop_front() {
+            let bytes = buffered_input_bytes(&input);
             match send(input) {
-                Ok(()) => {
-                    if let Some(sent) = self.inputs.pop_front() {
-                        self.bytes -= buffered_input_bytes(&sent);
-                    }
+                Ok(()) => self.bytes -= bytes,
+                Err(RefusedInput {
+                    error: RuntimeError::Busy,
+                    input,
+                }) => {
+                    self.inputs.push_front(input);
+                    break;
                 }
-                Err(RuntimeError::Busy) => break,
-                Err(error) => {
+                Err(refused) => {
                     *self = Self::default();
-                    return Err(error);
+                    return Err(refused.error);
                 }
             }
         }
@@ -135,6 +143,13 @@ mod tests {
     use crate::mouse::MouseState;
     use huterm_protocol::{Modifiers, MouseButton, MouseInput, MousePosition};
 
+    fn busy(input: TerminalInput) -> Result<(), RefusedInput> {
+        Err(RefusedInput {
+            error: RuntimeError::Busy,
+            input,
+        })
+    }
+
     fn mouse(action: MouseAction, column: u32) -> TerminalInput {
         TerminalInput::Mouse(MouseInput {
             action,
@@ -155,7 +170,7 @@ mod tests {
             .enqueue(
                 TerminalInput::Text("x".repeat(PENDING_INPUT_BYTE_CAPACITY)),
                 false,
-                |_| Err(RuntimeError::Busy),
+                busy,
             )
             .unwrap();
         assert_eq!(
@@ -218,9 +233,7 @@ mod tests {
             meta: true,
         };
         assert_eq!(
-            queue
-                .enqueue(fits, false, |_| Err(RuntimeError::Busy))
-                .unwrap(),
+            queue.enqueue(fits, false, busy).unwrap(),
             Admission::Accepted
         );
         assert_eq!(queue.bytes, PENDING_INPUT_BYTE_CAPACITY);
@@ -246,9 +259,7 @@ mod tests {
         ];
         for input in &inputs {
             assert_eq!(
-                queue
-                    .enqueue(input.clone(), false, |_| Err(RuntimeError::Busy))
-                    .unwrap(),
+                queue.enqueue(input.clone(), false, busy).unwrap(),
                 Admission::Accepted
             );
         }
@@ -267,8 +278,8 @@ mod tests {
     fn exit_discards_pending_input_and_rejects_all_later_terminal_input() {
         let mut queue = InputQueue::default();
         queue
-            .enqueue(TerminalInput::Text("queued".into()), false, |_| {
-                Err(RuntimeError::Busy)
+            .enqueue(TerminalInput::Text("queued".into()), false, |input| {
+                busy(input)
             })
             .unwrap();
         queue.close();
@@ -302,9 +313,7 @@ mod tests {
         let mut state = MouseState::default();
         state.down(MouseButton::Left, true);
         let press = mouse(MouseAction::Press(MouseButton::Left), 0);
-        queue
-            .enqueue(press.clone(), false, |_| Err(RuntimeError::Busy))
-            .unwrap();
+        queue.enqueue(press.clone(), false, busy).unwrap();
         state.accepted(MouseButton::Left, MousePosition::default());
         queue
             .enqueue(
@@ -349,9 +358,7 @@ mod tests {
         let mut queue = InputQueue::default();
         for _ in 0..PENDING_INPUT_CAPACITY - 2 {
             queue
-                .enqueue(TerminalInput::Focus(true), false, |_| {
-                    Err(RuntimeError::Busy)
-                })
+                .enqueue(TerminalInput::Focus(true), false, busy)
                 .unwrap();
         }
         let mut state = MouseState::default();
@@ -398,9 +405,7 @@ mod tests {
         }
         assert_eq!(queue.inputs.len(), 1);
         let keyboard = TerminalInput::Text("K".into());
-        queue
-            .enqueue(keyboard.clone(), false, |_| Err(RuntimeError::Busy))
-            .unwrap();
+        queue.enqueue(keyboard.clone(), false, busy).unwrap();
         queue.enqueue(motion(4), false, |_| unreachable!()).unwrap();
         queue
             .enqueue(
@@ -426,12 +431,8 @@ mod tests {
         let mut sent = Vec::new();
         queue
             .retry(|input| {
-                sent.push(input);
-                if sent.len() == 2 {
-                    Err(RuntimeError::Busy)
-                } else {
-                    Ok(())
-                }
+                sent.push(input.clone());
+                if sent.len() == 2 { busy(input) } else { Ok(()) }
             })
             .unwrap();
         assert_eq!(sent, expected[..2]);
@@ -457,11 +458,7 @@ mod tests {
             state.down(button, true);
             assert_eq!(
                 queue
-                    .enqueue(
-                        mouse(MouseAction::Press(button), 0),
-                        false,
-                        |_| Err(RuntimeError::Busy)
-                    )
+                    .enqueue(mouse(MouseAction::Press(button), 0), false, busy)
                     .unwrap(),
                 Admission::Accepted
             );
@@ -532,9 +529,7 @@ mod tests {
         let mut queue = InputQueue::default();
         let press = mouse(MouseAction::Press(MouseButton::Left), 0);
         let size = buffered_input_bytes(&press);
-        queue
-            .enqueue(press, false, |_| Err(RuntimeError::Busy))
-            .unwrap();
+        queue.enqueue(press, false, busy).unwrap();
         queue
             .enqueue(
                 TerminalInput::Paste(
@@ -573,11 +568,14 @@ mod tests {
                 .unwrap(),
             Admission::Full
         );
-        let error = queue.retry(|_| Err(RuntimeError::Busy));
+        let error = queue.retry(busy);
         assert!(error.is_ok());
         assert_eq!(queue.inputs.len(), 3);
         assert!(matches!(
-            queue.retry(|_| Err(RuntimeError::Stopped)),
+            queue.retry(|input| Err(RefusedInput {
+                error: RuntimeError::Stopped,
+                input,
+            })),
             Err(RuntimeError::Stopped)
         ));
         assert!(queue.inputs.is_empty());
@@ -604,7 +602,7 @@ mod tests {
                 .enqueue(
                     mouse(MouseAction::Release(MouseButton::Left), 0),
                     true,
-                    |_| Err(RuntimeError::Busy)
+                    busy
                 )
                 .unwrap(),
             Admission::Accepted
