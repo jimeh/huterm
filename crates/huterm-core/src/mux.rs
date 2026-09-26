@@ -815,6 +815,9 @@ pub enum MuxError {
     /// Current job evidence requires explicit user consent.
     #[error("close requires confirmation")]
     ConfirmationRequired,
+    /// A multi-tab close request named no tabs.
+    #[error("close request names no tabs")]
+    EmptyClose,
     /// No more stable identities or creation ordinals can be allocated.
     #[error("runtime identity space exhausted")]
     IdExhausted,

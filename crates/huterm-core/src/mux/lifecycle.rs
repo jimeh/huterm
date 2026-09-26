@@ -4,7 +4,7 @@ mod holder_fixture;
 
 use super::{
     AttachmentId, Mux, MuxError, RuntimeClient, RuntimeId, Session, SessionId,
-    TabId, Workspace, WorkspaceId,
+    TabId, TerminalId, Workspace, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const CLOSE_ASSESSMENT_MAX_AGE: Duration = Duration::from_secs(2);
 
 /// Explicit scope requested by a desktop lifecycle operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CloseRequest {
     /// Close one view, terminating its session only if it is the final view.
     Window(AttachmentId),
@@ -25,12 +25,20 @@ pub enum CloseRequest {
         /// Selected tab.
         tab: TabId,
     },
+    /// Close several tabs of one workspace together.
+    Tabs {
+        /// Expected owning workspace of every tab.
+        workspace: WorkspaceId,
+        /// Selected tabs. Repeated entries close once; an empty list is
+        /// rejected.
+        tabs: Vec<TabId>,
+    },
     /// Terminate every surviving session, including unattached sessions.
     Application,
 }
 
 /// Resolved effect captured before process inspection or confirmation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CloseEffect {
     /// Only remove this attachment; the session and processes survive.
     Detach(AttachmentId),
@@ -42,6 +50,13 @@ pub enum CloseEffect {
         workspace: WorkspaceId,
         /// Selected tab.
         tab: TabId,
+    },
+    /// Terminate several tabs of one workspace.
+    Tabs {
+        /// Expected owning workspace.
+        workspace: WorkspaceId,
+        /// Distinct tabs in request order.
+        tabs: Vec<TabId>,
     },
     /// Terminate the entire runtime.
     Application,
@@ -67,6 +82,7 @@ pub struct CloseTicket {
     revision: u64,
     request: CloseRequest,
     effect: CloseEffect,
+    /// Affected terminals, in the order their job evidence is reported.
     clients: Vec<RuntimeClient>,
 }
 
@@ -97,7 +113,7 @@ impl CloseTicket {
     /// Returns the exact resolved effect.
     #[must_use]
     pub fn effect(&self) -> CloseEffect {
-        self.effect
+        self.effect.clone()
     }
 }
 impl CloseAssessment {
@@ -112,6 +128,25 @@ impl CloseAssessment {
     #[must_use]
     pub fn jobs(&self) -> &[JobState] {
         &self.jobs
+    }
+    /// Returns the affected terminals in the same order as [`Self::jobs`].
+    #[must_use]
+    pub fn terminals(&self) -> Vec<TerminalId> {
+        self.ticket
+            .clients
+            .iter()
+            .map(RuntimeClient::terminal_id)
+            .collect()
+    }
+    /// Pairs each affected terminal with its job evidence.
+    pub fn terminal_jobs(
+        &self,
+    ) -> impl Iterator<Item = (TerminalId, &JobState)> + '_ {
+        self.ticket
+            .clients
+            .iter()
+            .map(RuntimeClient::terminal_id)
+            .zip(&self.jobs)
     }
     /// Carries observed job groups to terminal cleanup without process scanning.
     /// Call only for a fresh assessment immediately before explicit teardown.
@@ -211,42 +246,65 @@ impl Mux {
         &self,
         request: CloseRequest,
     ) -> Result<CloseTicket, MuxError> {
-        let effect = match request {
+        let effect = match &request {
             CloseRequest::Window(attachment) => {
-                let session = self.attachment_session(attachment)?;
+                let session = self.attachment_session(*attachment)?;
                 if self.attachments.values().filter(|s| **s == session).count()
                     > 1
                 {
-                    CloseEffect::Detach(attachment)
+                    CloseEffect::Detach(*attachment)
                 } else {
                     CloseEffect::Session(session)
                 }
             }
             CloseRequest::Session(session) => {
-                self.select_session(session)?;
-                CloseEffect::Session(session)
+                self.select_session(*session)?;
+                CloseEffect::Session(*session)
             }
             CloseRequest::Tab { workspace, tab } => {
-                self.select_workspace(workspace)?;
-                if self.select_tab(tab)?.workspace != Some(workspace) {
-                    return Err(MuxError::UnknownTab(tab));
+                self.select_workspace_tab(*workspace, *tab)?;
+                CloseEffect::Tab {
+                    workspace: *workspace,
+                    tab: *tab,
                 }
-                CloseEffect::Tab { workspace, tab }
+            }
+            CloseRequest::Tabs { workspace, tabs } => {
+                self.select_workspace(*workspace)?;
+                if tabs.is_empty() {
+                    return Err(MuxError::EmptyClose);
+                }
+                let mut distinct = Vec::with_capacity(tabs.len());
+                for &tab in tabs {
+                    self.select_workspace_tab(*workspace, tab)?;
+                    if !distinct.contains(&tab) {
+                        distinct.push(tab);
+                    }
+                }
+                CloseEffect::Tabs {
+                    workspace: *workspace,
+                    tabs: distinct,
+                }
             }
             CloseRequest::Application => CloseEffect::Application,
         };
-        let ids: Vec<_> = match effect {
+        let terminal = |tab: &TabId| {
+            self.tab(*tab)
+                .map(|tab| tab.terminal_id)
+                .ok_or(MuxError::UnknownTab(*tab))
+        };
+        let ids: Vec<_> = match &effect {
             CloseEffect::Detach(_) => Vec::new(),
             CloseEffect::Session(session) => self
                 .workspaces
                 .values()
-                .filter(|w| w.session_id == session)
+                .filter(|w| w.session_id == *session)
                 .flat_map(|w| &w.tabs)
                 .map(|t| t.terminal_id)
                 .collect(),
-            CloseEffect::Tab { tab, .. } => vec![
-                self.tab(tab).ok_or(MuxError::UnknownTab(tab))?.terminal_id,
-            ],
+            CloseEffect::Tab { tab, .. } => vec![terminal(tab)?],
+            CloseEffect::Tabs { tabs, .. } => {
+                tabs.iter().map(terminal).collect::<Result<_, _>>()?
+            }
             CloseEffect::Application => {
                 self.terminals.keys().copied().collect()
             }
@@ -306,14 +364,46 @@ impl Mux {
         self.validate_close_at(consent, current, confirmed, now())?;
         before_teardown(self);
         current.record_cleanup_groups();
-        match current.ticket.effect {
-            CloseEffect::Detach(attachment) => self.detach_session(attachment),
-            CloseEffect::Session(session) => self.close_session(session),
+        match &current.ticket.effect {
+            CloseEffect::Detach(attachment) => self.detach_session(*attachment),
+            CloseEffect::Session(session) => self.close_session(*session),
             CloseEffect::Tab { workspace, tab } => {
-                self.close_tab(workspace, tab)
+                self.close_tab(*workspace, *tab)
+            }
+            CloseEffect::Tabs { workspace, tabs } => {
+                self.close_tabs(*workspace, tabs)
             }
             CloseEffect::Application => self.shutdown(),
         }
+    }
+    /// Validates that a tab currently belongs to the workspace.
+    fn select_workspace_tab(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+    ) -> Result<(), MuxError> {
+        self.select_workspace(workspace)?;
+        if self.select_tab(tab)?.workspace == Some(workspace) {
+            Ok(())
+        } else {
+            Err(MuxError::UnknownTab(tab))
+        }
+    }
+    /// Closes every tab like [`Mux::close_tab`], attempting each cleanup even
+    /// if an earlier one fails, and reports the first failure.
+    fn close_tabs(
+        &mut self,
+        workspace: WorkspaceId,
+        tabs: &[TabId],
+    ) -> Result<(), MuxError> {
+        let mut outcome = Ok(());
+        for &tab in tabs {
+            let result = self.close_tab(workspace, tab);
+            if outcome.is_ok() {
+                outcome = result;
+            }
+        }
+        outcome
     }
     /// Validates consent without mutation, allowing capture before an approved quit.
     /// # Errors
@@ -651,6 +741,8 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| panic!("orphan missing: {:?}", busy.jobs()));
         assert!(!orphan.foreground);
+        assert_eq!(orphan.command, "sleep");
+        assert_eq!(orphan.command_line.as_deref(), Some("sleep 30"));
         mux.commit_close(&busy, &busy.recheck(), true).unwrap();
         assert_eq!(
             nix::sys::signal::kill(
@@ -899,6 +991,125 @@ mod tests {
         assert_eq!(clock_reads.get(), 1, "teardown rechecked freshness");
         assert_eq!(captured.unwrap().sessions[0].id, session);
         assert!(mux.sessions().is_empty());
+    }
+
+    /// Opens `count` idle tabs and waits for each shell to reach `read`.
+    fn open_idle_tabs(
+        mux: &mut Mux,
+        workspace: WorkspaceId,
+        count: usize,
+    ) -> Vec<crate::OpenedTab> {
+        let tabs: Vec<_> = (0..count)
+            .map(|_| {
+                mux.open_tab(workspace, &command("printf READY; read value"))
+                    .unwrap()
+            })
+            .collect();
+        for opened in &tabs {
+            ready(&opened.client, "READY");
+        }
+        tabs
+    }
+    fn tab_ids(mux: &Mux, workspace: WorkspaceId) -> Vec<TabId> {
+        mux.workspace(workspace)
+            .unwrap()
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect()
+    }
+
+    #[test]
+    fn tabs_ticket_covers_the_distinct_requested_terminals_and_commit_keeps_siblings()
+     {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let [first, second, third] =
+            <[_; 3]>::try_from(open_idle_tabs(&mut mux, workspace, 3))
+                .ok()
+                .unwrap();
+        let ticket = mux
+            .prepare_close(CloseRequest::Tabs {
+                workspace,
+                tabs: vec![third.tab.id, first.tab.id, third.tab.id],
+            })
+            .unwrap();
+        assert_eq!(
+            ticket.effect(),
+            CloseEffect::Tabs {
+                workspace,
+                tabs: vec![third.tab.id, first.tab.id],
+            }
+        );
+        let assessment = ticket.check_jobs();
+        assert_eq!(
+            assessment.terminals(),
+            vec![third.tab.terminal_id, first.tab.terminal_id]
+        );
+        assert_eq!(assessment.jobs().len(), 2);
+        assert!(
+            assessment
+                .terminal_jobs()
+                .map(|(terminal, _)| terminal)
+                .eq(assessment.terminals()),
+            "paired evidence must follow the terminal order"
+        );
+        assert!(!assessment.needs_confirmation(), "{:?}", assessment.jobs());
+        mux.commit_close(&assessment, &assessment.recheck(), false)
+            .unwrap();
+        assert_eq!(tab_ids(&mux, workspace), vec![second.tab.id]);
+        assert_eq!(mux.terminal_count(), 1);
+        assert!(second.client.read_snapshot().is_ok());
+        assert!(first.client.read_snapshot().is_err());
+        assert!(third.client.read_snapshot().is_err());
+        mux.shutdown().unwrap();
+    }
+
+    #[test]
+    fn tabs_close_rejects_invalid_requests_and_is_stale_after_structural_change()
+     {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let other = mux.create_workspace(session, None).unwrap();
+        let [first, second] =
+            <[_; 2]>::try_from(open_idle_tabs(&mut mux, workspace, 2))
+                .ok()
+                .unwrap();
+        assert!(matches!(
+            mux.prepare_close(CloseRequest::Tabs {
+                workspace,
+                tabs: Vec::new()
+            }),
+            Err(MuxError::EmptyClose)
+        ));
+        let assessment = mux
+            .prepare_close(CloseRequest::Tabs {
+                workspace,
+                tabs: vec![first.tab.id, second.tab.id],
+            })
+            .unwrap()
+            .check_jobs();
+        mux.move_tab(workspace, first.tab.id, other, None).unwrap();
+        assert!(matches!(
+            mux.commit_close(&assessment, &assessment.recheck(), true),
+            Err(MuxError::StaleClose)
+        ));
+        assert_eq!(tab_ids(&mux, workspace), vec![second.tab.id]);
+        assert_eq!(tab_ids(&mux, other), vec![first.tab.id]);
+        assert_eq!(mux.terminal_count(), 2);
+        assert!(first.client.read_snapshot().is_ok());
+        assert!(second.client.read_snapshot().is_ok());
+        assert!(matches!(
+            mux.prepare_close(CloseRequest::Tabs {
+                workspace,
+                tabs: vec![second.tab.id, first.tab.id],
+            }),
+            Err(MuxError::UnknownTab(id)) if id == first.tab.id
+        ));
+        assert_eq!(mux.terminal_count(), 2);
+        mux.shutdown().unwrap();
     }
 
     #[test]

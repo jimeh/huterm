@@ -17,7 +17,7 @@ pub use host_effects::{
     DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
     HostEffectRecipientOptions, PendingHostEffect,
 };
-pub use jobs::{JobProcess, JobState};
+pub use jobs::{COMMAND_LINE_MAX_CHARS, JobProcess, JobState};
 pub use limits::raise_open_file_limit;
 mod mux;
 mod presentation;
