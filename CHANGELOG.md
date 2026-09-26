@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/jimeh/huterm/compare/v0.13.1...v0.13.2) (2026-09-26)
+
+
+### Performance Improvements
+
+* make terminal link lookup cost independent of scrollback length ([#172](https://github.com/jimeh/huterm/issues/172)) ([8e38546](https://github.com/jimeh/huterm/commit/8e38546e8a8cfabc91c256244696461fdc6b9093))
+
 ## [0.13.1](https://github.com/jimeh/huterm/compare/v0.13.0...v0.13.1) (2026-09-26)
 
 
