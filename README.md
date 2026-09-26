@@ -690,7 +690,10 @@ Commands, their scope, and arguments:
 | `about` | Window | |
 | `open_command_palette` | Window | |
 | `new_tab` | Window | |
-| `close_tab` | Window | |
+| `close_tab` | Window | optional `tab`; defaults to the active tab. |
+| `close_other_tabs` | Window | optional `tab`; defaults to the active tab. |
+| `close_tabs_after` | Window | optional `tab`; defaults to the active tab. |
+| `copy_tab_directory` | Window | optional `tab`; defaults to the active tab. |
 | `close_window` | Window | |
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
@@ -709,6 +712,25 @@ Commands, their scope, and arguments:
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
 | `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
+| `open_menu` | Window | |
+| `focus_notices` | Window | |
+| `dismiss_all_notices` | Window | |
+| `dialog_confirm` | Window | Bound only while `confirming`. |
+| `dialog_cancel` | Window | Bound only while `confirming`. |
+| `dialog_focus_next` | Window | Bound only while `confirming`. |
+| `dialog_focus_previous` | Window | Bound only while `confirming`. |
+| `menu_select_next` | Window | Bound only while `menu`. |
+| `menu_select_previous` | Window | Bound only while `menu`. |
+| `menu_select_first` | Window | Bound only while `menu`. |
+| `menu_select_last` | Window | Bound only while `menu`. |
+| `menu_select_right` | Window | Bound only while `menu`. |
+| `menu_select_left` | Window | Bound only while `menu`. |
+| `menu_confirm` | Window | Bound only while `menu`. |
+| `menu_close` | Window | Bound only while `menu`. |
+| `notice_next` | Window | Bound only while `notices`. |
+| `notice_previous` | Window | Bound only while `notices`. |
+| `notice_run_action` | Window | Bound only while `notices`. |
+| `notice_dismiss` | Window | Bound only while `notices`. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
 | `palette_page_down` | Palette | |
@@ -736,8 +758,9 @@ Commands, their scope, and arguments:
 
 Runtime commands execute in the core against canonical structure; the ID
 arguments cannot be written in config and are filled from the invoking window.
-Palette-scope commands imply the `Palette` context. User bindings for them need
-no `when`; the keymap adds the context predicate.
+Palette-scope commands imply the `Palette` context, and dialog, menu, and
+notice commands imply `confirming`, `menu`, and `notices`. User bindings for
+them need no `when`; the keymap adds the context predicate.
 
 Default bindings differ per platform:
 
