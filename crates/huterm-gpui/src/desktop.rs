@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle, Focusable,
     KeyContext, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
-    SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
+    ScrollDelta, ScrollWheelEvent, Subscription, SystemMenuType, Task,
+    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
+    canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,
@@ -87,6 +87,7 @@ const TITLEBAR_HEIGHT: Pixels = px(32.0);
 const DEFAULT_SCROLL_TO_BOTTOM_KEY: &str = "shift-end";
 const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
+mod about;
 mod close_dialog;
 mod composition;
 mod key_bench;

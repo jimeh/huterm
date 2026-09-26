@@ -24,12 +24,14 @@ pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
+use super::about::{AboutDetails, BuildFacts, about_details, render_about};
 use super::close_dialog::{
     CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
 use super::menu::{
-    MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, place_menu,
+    MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
+    place_menu,
 };
 use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
@@ -66,6 +68,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod tab_bar;
+mod tab_menu;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod window_menu;
@@ -76,9 +79,10 @@ use crate::ui::scrollbar::{
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
-    TabColors, TabItem, VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y,
-    icon_element, tab_bar_height, top_chrome_uses_bar,
+    TabColors, TabItem, TabStatus, VERTICAL_ROW_MARGIN_X,
+    VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height, top_chrome_uses_bar,
 };
+use tab_menu::{TabMenuInput, tab_menu_model};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
 use window_menu::{
@@ -1047,7 +1051,7 @@ fn observe_keystroke(
     if let Some(root) = window.root::<WorkspaceView>().flatten() {
         root.update(cx, |view, cx| {
             let input_blocked = view.busy
-                || view.close.confirmation.is_some()
+                || view.dialog_showing()
                 || view.reorder.is_some()
                 || view.palette.is_some()
                 || view.menu.is_some();
@@ -1401,10 +1405,14 @@ fn open_window_with_profile(
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
                 menu: None,
+                menu_target: None,
+                menu_pointer: None,
                 menu_button_focus: cx.focus_handle(),
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 menu_bounds: Rc::new(Cell::new(None)),
                 menu_contexts: Vec::new(),
+                about: None,
+                window_title: String::new(),
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
@@ -1426,7 +1434,7 @@ fn open_window_with_profile(
                     }
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
-                    view.refresh_menu(cx);
+                    view.refresh_menu(window, cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -1862,22 +1870,24 @@ struct TabView {
 }
 
 impl TabView {
-    /// The tab's label with status text, for previews and dialogs.
+    /// The tab's label with status text, for previews, dialogs, and the
+    /// window title.
     fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
-        let (title, exited, _, _) = self.label(tabs, cx);
-        if exited {
+        let (title, status) = self.label(tabs, cx);
+        if status.exited() {
             format!("{title} · exited")
         } else {
             title
         }
     }
 
-    /// Returns the display name without status text, and whether it exited.
+    /// Returns the display name without status text, and the status its
+    /// indicator reports.
     fn label(
         &self,
         tabs: huterm_config::TabsConfig,
         cx: &App,
-    ) -> (String, bool, bool, bool) {
+    ) -> (String, TabStatus) {
         let terminal = self.view.read(cx);
         let fallback = self.record.display_name(&terminal.title);
         let label = if self.record.custom_name().is_some() {
@@ -1893,11 +1903,50 @@ impl TabView {
         };
         (
             label,
-            terminal.exited,
-            terminal.failed,
-            terminal.bell.unseen,
+            TabStatus::new(
+                terminal.exited,
+                terminal.failed,
+                terminal.bell.unseen,
+                terminal.metadata.foreground_process(),
+            ),
         )
     }
+}
+
+/// The native window title: the active tab's title before the application
+/// name, or the name alone without a tab.
+fn window_title(active_tab: Option<&str>) -> String {
+    match active_tab {
+        Some(title) => format!("{title} — Huterm"),
+        None => "Huterm".to_owned(),
+    }
+}
+
+/// The directory `copy_tab_directory` copies: the tab's latest reported
+/// path, local or remote, when it has one.
+fn tab_directory_path(
+    metadata: &huterm_protocol::TerminalMetadata,
+) -> Option<String> {
+    metadata
+        .directory()
+        .map(|directory| directory.path().to_owned())
+        .filter(|path| !path.is_empty())
+}
+
+/// The display backend named in the About panel's platform row.
+#[cfg(target_os = "linux")]
+fn display_backend(window: &Window) -> Option<&'static str> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_) => Some("X11"),
+        RawWindowHandle::Wayland(_) => Some("Wayland"),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn display_backend(_: &Window) -> Option<&'static str> {
+    None
 }
 
 /// `$HOME` as written and resolved, read once. Shells report the logical
@@ -2074,8 +2123,13 @@ struct WorkspaceView {
     retained_query: Option<(String, Instant)>,
     recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
-    /// The open window menu.
+    /// The open window or tab menu.
     menu: Option<Entity<MenuView>>,
+    /// The tab whose context menu is open; `None` for the window menu.
+    menu_target: Option<TabId>,
+    /// Where a tab menu was opened, in window coordinates; `None` for the
+    /// window menu, which anchors to its button.
+    menu_pointer: Option<gpui::Point<Pixels>>,
     /// Focus for the `⋯` button, which Escape returns to.
     menu_button_focus: FocusHandle,
     /// Where the `⋯` button was last painted, for anchoring the menu and
@@ -2086,6 +2140,10 @@ struct WorkspaceView {
     menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The key contexts captured when the menu opened, for shortcut text.
     menu_contexts: Vec<KeyContext>,
+    /// The About panel's details while it is showing.
+    about: Option<AboutDetails>,
+    /// The native window title last set, so unchanged titles are not reset.
+    window_title: String,
 }
 
 /// Where focus goes when the window menu closes.
@@ -3639,7 +3697,7 @@ impl WorkspaceView {
             tabs: self.tabs.len(),
             active: self.active,
             busy: self.busy,
-            confirming: self.close.confirmation.is_some(),
+            confirming: self.dialog_showing(),
             reordering: self.reorder.is_some(),
             quake: self
                 .quake
@@ -3718,23 +3776,21 @@ impl WorkspaceView {
             CommandScope::Application => app_command_availability(cx, command),
             CommandScope::Window => match command {
                 ids::NEW_TAB => self.check_new_tab_available(cx),
-                ids::CLOSE_TAB => {
-                    self.close.check_tab_close_available()?;
-                    self.active_tab_id().map(|_| ())
-                }
-                ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
-                    self.close.check_tab_close_available()?;
-                    let tab = target.tab.map_or_else(
-                        || self.active_tab_id(),
-                        |tab| self.existing_tab(tab),
-                    )?;
-                    self.tab_set_target(command, tab).map(|_| ())
+                ids::CLOSE_TAB
+                | ids::CLOSE_OTHER_TABS
+                | ids::CLOSE_TABS_AFTER
+                | ids::COPY_TAB_DIRECTORY => {
+                    self.tab_command_availability(command, target.tab, cx)
                 }
                 ids::DIALOG_CONFIRM
                 | ids::DIALOG_CANCEL
                 | ids::DIALOG_FOCUS_NEXT
                 | ids::DIALOG_FOCUS_PREVIOUS => {
-                    self.confirming_target().map(|_| ())
+                    if self.about.is_some() {
+                        Ok(())
+                    } else {
+                        self.confirming_target().map(|_| ())
+                    }
                 }
                 ids::FOCUS_NOTICES
                 | ids::DISMISS_ALL_NOTICES
@@ -3814,6 +3870,28 @@ impl WorkspaceView {
         }
     }
 
+    /// Availability of the commands that take an optional `tab` target:
+    /// the named tab must exist, or the window must have an active one.
+    fn tab_command_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+        tab: Option<TabId>,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        if command != ids::COPY_TAB_DIRECTORY {
+            self.close.check_tab_close_available()?;
+        }
+        let tab = tab.map_or_else(
+            || self.active_tab_id(),
+            |tab| self.existing_tab(tab),
+        )?;
+        match command {
+            ids::CLOSE_TAB => Ok(()),
+            ids::COPY_TAB_DIRECTORY => self.tab_directory(tab, cx).map(|_| ()),
+            other => self.tab_set_target(other, tab).map(|_| ()),
+        }
+    }
+
     fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
         self.palette_refresh_state = None;
         self.refresh_palette(cx);
@@ -3833,11 +3911,12 @@ impl WorkspaceView {
     }
 
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
-    /// `reordering`, and `fullscreen` while those states hold.
+    /// `reordering`, and `fullscreen` while those states hold. The About
+    /// panel sets `confirming` too, so the `dialog_*` bindings close it.
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
-        if self.close.confirmation.is_some() {
+        if self.dialog_showing() {
             context.add("confirming");
         }
         if self.reorder.is_some() {
@@ -3859,6 +3938,8 @@ impl WorkspaceView {
             "structural operation in progress"
         } else if self.close.confirmation.is_some() {
             "close confirmation pending"
+        } else if self.about.is_some() {
+            "About panel is showing"
         } else if reordering && self.reorder.is_some() {
             "tab reorder in progress"
         } else {
@@ -3867,10 +3948,46 @@ impl WorkspaceView {
         Err(CommandError::Unavailable(reason.to_owned()))
     }
 
+    /// A modal panel that takes the `confirming` context and blocks
+    /// terminal input: a close confirmation or the About panel.
+    fn dialog_showing(&self) -> bool {
+        self.close.confirmation.is_some() || self.about.is_some()
+    }
+
     fn active_tab_id(&self) -> Result<TabId, CommandError> {
         self.active.ok_or_else(|| {
             CommandError::Unavailable("window has no tab".to_owned())
         })
+    }
+
+    /// The directory `copy_tab_directory` copies for `tab`, refused while
+    /// the tab has reported none.
+    fn tab_directory(
+        &self,
+        tab: TabId,
+        cx: &App,
+    ) -> Result<String, CommandError> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|record| record.id == tab)
+            .ok_or(CommandError::StaleTarget)?;
+        tab_directory_path(&tab.view.read(cx).metadata).ok_or_else(|| {
+            CommandError::Unavailable("directory unknown".to_owned())
+        })
+    }
+
+    /// Copies the named or active tab's working directory through the
+    /// application clipboard write path.
+    fn copy_tab_directory(
+        &self,
+        invocation: &CommandInvocation,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let tab = self.target_tab(invocation)?;
+        let path = self.tab_directory(tab, cx)?;
+        cx.write_to_clipboard(ClipboardItem::new_string(path));
+        Ok(CommandOutcome::Completed)
     }
 
     fn existing_tab(&self, tab: TabId) -> Result<TabId, CommandError> {
@@ -3933,13 +4050,25 @@ impl WorkspaceView {
     }
 
     /// Runs a `dialog_*` command against the showing confirmation. Confirm
-    /// presses the focused button, so Enter on Cancel cancels.
+    /// presses the focused button, so Enter on Cancel cancels. The About
+    /// panel shares these bindings: Enter and Escape close it, and its
+    /// buttons are not keyboard-focusable.
     fn run_dialog_command(
         &mut self,
         command: huterm_protocol::CommandId,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.about.is_some() {
+            match command {
+                ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL => {
+                    self.close_about(window, cx);
+                }
+                ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS => {}
+                other => return Err(CommandError::UnknownCommand(other)),
+            }
+            return Ok(CommandOutcome::Completed);
+        }
         let target = self.confirming_target()?;
         match (command, self.close.dialog_focus) {
             (ids::DIALOG_CONFIRM, DialogFocus::Primary) => {
@@ -4110,6 +4239,7 @@ impl WorkspaceView {
             ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
                 self.run_tab_close(invocation, window, cx)
             }
+            ids::COPY_TAB_DIRECTORY => self.copy_tab_directory(invocation, cx),
             ids::DIALOG_CONFIRM
             | ids::DIALOG_CANCEL
             | ids::DIALOG_FOCUS_NEXT
@@ -4147,10 +4277,7 @@ impl WorkspaceView {
                 window.zoom_window();
                 Ok(CommandOutcome::Completed)
             }
-            ids::ABOUT => {
-                show_about(window, cx);
-                Ok(CommandOutcome::Completed)
-            }
+            ids::ABOUT => self.show_about(window, cx),
             ids::OPEN_SETTINGS => {
                 let config_path = cx.global::<Desktop>().config_path.clone();
                 config::create_default(&config_path).map_err(|error| {
@@ -4284,14 +4411,64 @@ fn close_dialog_input<'a>(
     }
 }
 
-fn show_about(window: &mut Window, cx: &mut Context<'_, WorkspaceView>) {
-    let detail = format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
-    let answer =
-        window.prompt(PromptLevel::Info, "Huterm", Some(&detail), &["OK"], cx);
-    cx.spawn(async move |_, _| {
-        let _ = answer.await;
-    })
-    .detach();
+impl WorkspaceView {
+    /// Shows the About panel, or refocuses it when it is already showing.
+    /// It takes the root focus so the `confirming` bindings close it, and
+    /// blocks terminal input while it is up.
+    fn show_about(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if self.about.is_some() {
+            self.focus.focus(window);
+            cx.notify();
+            return Ok(CommandOutcome::Completed);
+        }
+        self.check_available(false)?;
+        self.cancel_reorder(window, cx);
+        self.resizing_sidebar = false;
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let facts = BuildFacts::current(display_backend(window));
+        self.about = Some(about_details(&facts));
+        self.focus.focus(window);
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Closes the About panel and returns focus to the terminal.
+    fn close_about(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.about.take().is_none() {
+            return;
+        }
+        self.focus_terminal(window, cx);
+        cx.notify();
+    }
+
+    /// Copies the About panel's details as plain text.
+    fn copy_about_details(&self, cx: &mut Context<'_, Self>) {
+        if let Some(details) = &self.about {
+            cx.write_to_clipboard(ClipboardItem::new_string(details.text()));
+        }
+    }
+
+    /// Sets the native window title from the active tab, only when it
+    /// changes, so tab switches and title changes reach window managers and
+    /// switchers without resetting an unchanged title every frame.
+    fn sync_window_title(&mut self, window: &mut Window, cx: &App) {
+        let active = self
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == self.active)
+            .map(|tab| tab.title(self.config.tabs, cx));
+        let title = window_title(active.as_deref());
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+    }
 }
 
 fn usable_launch_directory(directory: &Path) -> bool {
@@ -4889,6 +5066,7 @@ impl WorkspaceView {
                     Some(CloseDecision::Confirm(_)) => {
                         view.dismiss_palette_for_confirmation(cx);
                         view.close_menu(MenuFocusReturn::Keep, window, cx);
+                        view.about = None;
                         view.focus.focus(window);
                         cx.notify();
                     }
@@ -5561,6 +5739,7 @@ impl Render for WorkspaceView {
         self.measure_tab_widths(window, cx);
         self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
+        self.sync_window_title(window, cx);
         let position = self.config.tabs.position;
         let layout = self.chrome_layout(window);
         let foreground = color(self.config.theme.foreground);
@@ -5771,11 +5950,30 @@ impl Render for WorkspaceView {
                         },
                     )
                     .when(titlebar > px(0.0), |bar| {
-                        bar.pl(px(84.0))
-                            .flex()
+                        // The active tab's title, centred across the strip
+                        // and kept clear of the traffic lights and the
+                        // `⋯` button; the strip stays draggable.
+                        let strip_title = self
+                            .tabs
+                            .iter()
+                            .find(|tab| Some(tab.id) == self.active)
+                            .map_or_else(
+                                || "Huterm".to_owned(),
+                                |tab| tab.title(self.config.tabs, cx),
+                            );
+                        bar.flex()
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
-                            .child("Huterm")
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .px(px(84.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(div().truncate().child(strip_title)),
+                            )
                             .children(title_menu_button)
                     }),
             );
@@ -5887,8 +6085,7 @@ impl Render for WorkspaceView {
                 ((layout.tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0));
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
-                let (title, exited, failed, bell) =
-                    tab.label(self.config.tabs, cx);
+                let (title, status) = tab.label(self.config.tabs, cx);
                 let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
@@ -5905,7 +6102,7 @@ impl Render for WorkspaceView {
                     id: tab.id,
                     index,
                     title,
-                    status: tab_bar::TabStatus::new(exited, failed, bell),
+                    status,
                     activity: if Some(tab.id) == self.active {
                         Activity::Active
                     } else if index > 0
@@ -5916,6 +6113,7 @@ impl Render for WorkspaceView {
                         Activity::Inactive
                     },
                     flush_start: index == 0 && strip.offset == px(0.0),
+                    targeted: self.menu_target == Some(tab.id),
                 };
                 bar = bar
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
@@ -6306,6 +6504,19 @@ impl Render for WorkspaceView {
         if let Some(menu) = self.render_menu(&layout, window, cx) {
             root = root.child(menu);
         }
+        if let Some(details) = &self.about {
+            root = root.child(render_about(
+                details,
+                window.viewport_size(),
+                Swatch::from_theme(&self.config.theme),
+                cx.listener(|view, _, _, cx| {
+                    view.copy_about_details(cx);
+                }),
+                cx.listener(|view, _, window, cx| {
+                    view.close_about(window, cx);
+                }),
+            ));
+        }
         if let Some(target) = self.close.confirmation.clone() {
             let model =
                 build_close_dialog(&self.close_dialog_input(&target, cx));
@@ -6404,9 +6615,9 @@ impl WorkspaceView {
         WindowMenuInput::for_build(selection, self.notices.contents().len())
     }
 
-    /// Opens the window menu, or focuses it when it is already open.
-    /// `from_keyboard` selects the first item, as `open_menu` does; the
-    /// button opens with no selection.
+    /// Opens the window menu, or focuses it when it is already open; an
+    /// open tab menu is replaced. `from_keyboard` selects the first item,
+    /// as `open_menu` does; the button opens with no selection.
     fn open_menu(
         &mut self,
         from_keyboard: bool,
@@ -6414,7 +6625,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.check_available(false)?;
-        if let Some(menu) = &self.menu {
+        if let Some(menu) = &self.menu
+            && self.menu_target.is_none()
+        {
             menu.read(cx).focus_handle(cx).focus(window);
             cx.notify();
             return Ok(CommandOutcome::Completed);
@@ -6424,6 +6637,7 @@ impl WorkspaceView {
                 "command palette is open".to_owned(),
             ));
         }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
         if let Some(terminal) = self.active_view() {
             terminal.update(cx, TerminalView::clear_composition);
         }
@@ -6433,6 +6647,86 @@ impl WorkspaceView {
             &cx.global::<Desktop>().keymap,
             &self.menu_contexts,
         );
+        self.mount_menu(model, from_keyboard, window, cx);
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Opens the context menu for `tab` at `pointer`, replacing any open
+    /// menu, without activating the tab. It refuses while structural work,
+    /// a close confirmation, the About panel, the palette, or a tab drag
+    /// is in progress, so a right press never disturbs reorder capture.
+    fn open_tab_menu(
+        &mut self,
+        tab: TabId,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.check_available(true).is_err()
+            || self.palette.is_some()
+            || !self.tabs.iter().any(|record| record.id == tab)
+        {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        self.menu_contexts = window.context_stack();
+        self.menu_target = Some(tab);
+        self.menu_pointer = Some(pointer);
+        let Some(model) = self.tab_menu_model(cx) else {
+            self.menu_target = None;
+            self.menu_pointer = None;
+            return;
+        };
+        self.mount_menu(model, false, window, cx);
+    }
+
+    /// The open tab menu's rows, or `None` once its tab is gone.
+    fn tab_menu_model(&self, cx: &App) -> Option<MenuModel> {
+        let tab = self.menu_target?;
+        let index = self.tabs.iter().position(|record| record.id == tab)?;
+        let directory_known =
+            tab_directory_path(&self.tabs[index].view.read(cx).metadata)
+                .is_some();
+        let input = TabMenuInput {
+            platform: Platform::current(),
+            index,
+            count: self.tabs.len(),
+            active: self.active == Some(tab),
+            vertical: self.config.tabs.position.vertical(),
+            directory_known,
+        };
+        Some(tab_menu_model(
+            &input,
+            &cx.global::<Desktop>().keymap,
+            &self.menu_contexts,
+        ))
+    }
+
+    /// The rows for whichever menu is open.
+    fn current_menu_model(&self, cx: &App) -> Option<MenuModel> {
+        if self.menu_target.is_some() {
+            self.tab_menu_model(cx)
+        } else {
+            Some(window_menu_model(
+                &self.window_menu_input(cx),
+                &cx.global::<Desktop>().keymap,
+                &self.menu_contexts,
+            ))
+        }
+    }
+
+    /// Creates the menu entity over `model`, subscribes to its events, and
+    /// focuses it.
+    fn mount_menu(
+        &mut self,
+        model: MenuModel,
+        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let swatch = Swatch::from_theme(&self.config.theme);
         let menu = cx.new(|cx| MenuView::new(model, swatch, from_keyboard, cx));
         cx.subscribe_in(&menu, window, Self::handle_menu_event)
@@ -6441,7 +6735,6 @@ impl WorkspaceView {
         self.menu = Some(menu);
         self.menu_bounds.set(None);
         cx.notify();
-        Ok(CommandOutcome::Completed)
     }
 
     /// The `⋯` button: closes an open menu, otherwise opens one with no
@@ -6465,6 +6758,8 @@ impl WorkspaceView {
         if self.menu.take().is_none() {
             return false;
         }
+        self.menu_target = None;
+        self.menu_pointer = None;
         self.menu_bounds.set(None);
         match focus {
             MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
@@ -6482,18 +6777,25 @@ impl WorkspaceView {
         }
     }
 
-    /// Rebuilds the open menu's rows so Show Notices and Copy follow the
-    /// window's state; an unchanged model leaves the menu alone.
-    fn refresh_menu(&mut self, cx: &mut Context<'_, Self>) {
+    /// Rebuilds the open menu's rows so Show Notices, Copy, and a tab
+    /// menu's enablement follow the window's state; an unchanged model
+    /// leaves the menu alone, and a tab menu closes with its tab.
+    fn refresh_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some(menu) = self.menu.clone() else {
             return;
         };
-        let model = window_menu_model(
-            &self.window_menu_input(cx),
-            &cx.global::<Desktop>().keymap,
-            &self.menu_contexts,
-        );
-        menu.update(cx, |menu, cx| menu.set_model(model, cx));
+        match self.current_menu_model(cx) {
+            Some(model) => {
+                menu.update(cx, |menu, cx| menu.set_model(model, cx));
+            }
+            None => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+            }
+        }
     }
 
     fn handle_menu_event(
@@ -6515,6 +6817,16 @@ impl WorkspaceView {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
             }
             MenuEvent::Picked(id) => {
+                // A tab menu's picks carry their target tab.
+                let args = self
+                    .menu_target
+                    .map(|tab| {
+                        vec![CommandArgument::new(
+                            "tab",
+                            CommandValue::Tab(tab),
+                        )]
+                    })
+                    .unwrap_or_default();
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
                 let Some(spec) = huterm_protocol::lookup(id) else {
                     self.report_failure(
@@ -6524,7 +6836,7 @@ impl WorkspaceView {
                     );
                     return;
                 };
-                let invocation = CommandInvocation::new(spec.id, Vec::new());
+                let invocation = CommandInvocation::new(spec.id, args);
                 let result = match spec.scope {
                     CommandScope::Terminal => self
                         .active_view()
@@ -6680,11 +6992,12 @@ impl WorkspaceView {
         let menu = self.menu.clone()?;
         let viewport = window.viewport_size();
         let height = menu.read(cx).model().height();
-        let placement = place_menu(
-            MenuAnchor::Button(self.menu_anchor(layout)),
-            size(MENU_MIN_WIDTH, height),
-            viewport,
-        );
+        let anchor = match self.menu_pointer {
+            Some(pointer) => MenuAnchor::Pointer(pointer),
+            None => MenuAnchor::Button(self.menu_anchor(layout)),
+        };
+        let placement =
+            place_menu(anchor, size(MENU_MIN_WIDTH, height), viewport);
         menu.update(cx, |menu, cx| {
             menu.set_max_height(Some(placement.max_height), cx);
         });
@@ -6721,8 +7034,16 @@ impl WorkspaceView {
     }
 
     /// Smoke output for the menu: whether it is open, whether it holds
-    /// focus, and the selected item.
+    /// focus, the selected item, the targeted tab's index for a tab menu,
+    /// and whether the About panel is showing.
     pub(super) fn menu_smoke_state(&self, window: &Window, cx: &App) -> String {
+        let target = self
+            .menu_target
+            .and_then(|tab| {
+                self.tabs.iter().position(|record| record.id == tab)
+            })
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+        let about = self.about.is_some();
         match &self.menu {
             Some(menu) => {
                 let menu = menu.read(cx);
@@ -6731,13 +7052,13 @@ impl WorkspaceView {
                     .and_then(|selection| menu.model().id_at(selection))
                     .unwrap_or("none");
                 format!(
-                    "menu=true menu_focused={} menu_selection={selection}",
+                    "menu=true menu_focused={} menu_selection={selection} menu_target={target} about={about}",
                     menu.focus_handle(cx).is_focused(window)
                 )
             }
-            None => {
-                "menu=false menu_focused=false menu_selection=none".to_owned()
-            }
+            None => format!(
+                "menu=false menu_focused=false menu_selection=none menu_target={target} about={about}"
+            ),
         }
     }
 }
@@ -6750,7 +7071,7 @@ pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
         .is_some_and(|root| {
             let view = root.read(cx);
             !view.busy
-                && view.close.confirmation.is_none()
+                && !view.dialog_showing()
                 && view.reorder.is_none()
                 && view.palette.is_none()
                 && view.menu.is_none()
@@ -6772,6 +7093,53 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_title_names_the_active_tab_before_huterm() {
+        assert_eq!(window_title(Some("cargo build")), "cargo build — Huterm");
+        assert_eq!(window_title(Some("zsh · exited")), "zsh · exited — Huterm");
+        assert_eq!(window_title(None), "Huterm");
+        // Unchanged text must not reach `set_window_title` again; the sync
+        // compares against the last title it set.
+        let mut last = String::new();
+        let mut sets = 0;
+        for active in [Some("zsh"), Some("zsh"), Some("vim"), None, None] {
+            let title = window_title(active);
+            if title != last {
+                sets += 1;
+                last = title;
+            }
+        }
+        assert_eq!(sets, 3);
+    }
+
+    #[test]
+    fn copy_tab_directory_uses_the_reported_path_local_or_remote() {
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+        let local = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, "/home/jim/src".into(), true)),
+            None,
+        );
+        assert_eq!(
+            tab_directory_path(&local).as_deref(),
+            Some("/home/jim/src")
+        );
+        let remote = TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("build-host".into()),
+                "/srv/build".into(),
+                false,
+            )),
+            Some("ssh".into()),
+        );
+        assert_eq!(tab_directory_path(&remote).as_deref(), Some("/srv/build"));
+        assert_eq!(tab_directory_path(&TerminalMetadata::default()), None);
+        let blank = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, String::new(), true)),
+            None,
+        );
+        assert_eq!(tab_directory_path(&blank), None, "a blank path is unknown");
+    }
 
     #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
     #[test]

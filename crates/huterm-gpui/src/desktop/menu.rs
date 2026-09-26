@@ -55,10 +55,6 @@ impl MenuItem {
         self
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the tab context menu disables items")
-    )]
     pub(crate) fn disabled(mut self, hint: Option<String>) -> Self {
         self.enabled = false;
         self.disabled_hint = hint;
@@ -316,13 +312,6 @@ pub(crate) enum MenuAnchor {
     /// The bounds of the control that opened it, in window coordinates.
     Button(Bounds<Pixels>),
     /// The pointer position for a context menu.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the tab context menu opens at the pointer"
-        )
-    )]
     Pointer(Point<Pixels>),
 }
 

@@ -259,6 +259,29 @@ column, and it hides with an auto-hidden bar. A yellow dot marks waiting
 notices. `menu_button = false` removes it; `open_menu` and every item stay
 available through the palette and shortcuts.
 
+Right-clicking any tab, active or not, opens its context menu at the pointer
+without activating it; the targeted tab is outlined while the menu is open.
+The menu lists Rename Tab…, Copy Directory Path (disabled with "Directory
+unknown" until the tab reports a working directory; `copy_tab_directory`
+copies the local or remote path), Close Tab (its shortcut shows only on the
+active tab), Close Other Tabs (disabled with one tab), and Close Tabs to the
+Right, worded Close Tabs Below under a left or right column (disabled on the
+last tab). It does not open during a tab drag or while a close confirmation is
+showing, and it uses the same keys, dismissal, and focus return as the window
+menu.
+
+Tabs show a small yellow dot before their title while a program holds the
+foreground; the exit, error, and bell indicators take its place. The native
+window title is `<active tab title> — Huterm` and follows tab switches and
+title changes, so window managers and switchers show the active tab. On macOS
+the title bar shows the active tab's title in place of the application name.
+
+About Huterm (`about`) opens a themed panel on both platforms with the version,
+identifier, platform (OS version, architecture, and the display backend on
+Linux), terminal engine, and build profile plus the short source revision
+when the build embedded one. Copy Details copies those lines as text; Enter
+or Escape closes it, and terminal input is blocked while it is showing.
+
 `style` selects Pill (the default) or Strip tabs for every placement. Left and
 right Strip tabs put the accent line on the window edge; left and right Pill
 tabs are rounded rows inset in the column. `pill_accent = true` draws an
@@ -825,9 +848,11 @@ Default bindings differ per platform:
 
 #### Dialog
 
-These bind only while a close confirmation is showing (`confirming`), so
-they take nothing from terminal input. The primary button has focus when the
-dialog opens; a repeated close shortcut never confirms.
+These bind only while a close confirmation or the About panel is showing
+(`confirming`), so they take nothing from terminal input. The primary button
+has focus when the dialog opens; a repeated close shortcut never confirms. In
+the About panel, `dialog_confirm` and `dialog_cancel` both close it and the
+focus commands do nothing.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -893,6 +918,10 @@ gate, while `mise run verify` also runs tests, the dependency-license policy,
 and GitHub Actions checks. See the
 [development guide](docs/agents/development.md) for platform prerequisites,
 limits, and the validation ladder.
+
+Set `HUTERM_SOURCE_REVISION` to the source commit when building to embed its
+short form in the About panel's Build row; the container-based Linux runner
+passes the host `HEAD`, and builds without it omit the revision.
 
 Release Please creates draft GitHub releases. The release workflow signs,
 notarizes, staples, verifies, and publishes the universal app only after its

@@ -10,9 +10,9 @@ use crate::ui::scrollbar::ScrollbarColors;
 use super::super::scrollbar_colors;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Presentation,
-    StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId, TabPosition, Theme,
-    Window, WorkspaceView, color, div, px,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    Presentation, StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId,
+    TabPosition, Theme, Window, WorkspaceView, color, div, px,
 };
 
 /// Bounds the title width cache so long-lived windows with changing titles
@@ -24,6 +24,8 @@ const TITLE_WIDTH_CACHE_LIMIT: usize = 512;
 pub(super) const PILL_HEIGHT: Pixels = px(26.0);
 pub(super) const PILL_INSET: Pixels = px(4.0);
 const ICON_SIZE: Pixels = px(12.0);
+/// The running dot shown while a program holds the foreground.
+const DOT_SIZE: Pixels = px(6.0);
 const CLOSE_SIZE: Pixels = px(18.0);
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
@@ -55,6 +57,8 @@ pub(super) struct TabColors {
     pub(super) accent: Hsla,
     pub(super) terminal: Hsla,
     pub(super) error: Hsla,
+    /// The running dot: the theme's ANSI yellow.
+    pub(super) running: Hsla,
     /// Overlay on a hovered tab.
     pub(super) hover: Hsla,
     /// Overlay on a hovered control, twice as strong as a tab's.
@@ -79,6 +83,7 @@ impl TabColors {
             accent: color(ui.tab_accent),
             terminal: color(theme.background),
             error: color(theme.ansi[1]),
+            running: color(theme.ansi[3]),
             hover: rgba_color(hover),
             control_hover: rgba_color(control_hover),
             scrollbar: scrollbar_colors(theme),
@@ -143,24 +148,52 @@ pub(super) enum Activity {
     Inactive,
 }
 
+/// What a tab's leading indicator reports, in precedence order from the
+/// least to the most urgent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TabStatus {
-    Running,
+    /// A shell waiting at its prompt; no indicator.
+    Idle,
+    /// A program holds the foreground; the running dot.
+    Busy,
     Bell,
     Exited,
     Failed,
 }
 
 impl TabStatus {
-    pub(super) fn new(exited: bool, failed: bool, bell: bool) -> Self {
+    /// `foreground` is the metadata's foreground process, published only
+    /// while a program holds the foreground; a name there means Busy.
+    pub(super) fn new(
+        exited: bool,
+        failed: bool,
+        bell: bool,
+        foreground: Option<&str>,
+    ) -> Self {
         if failed {
             Self::Failed
         } else if exited {
             Self::Exited
         } else if bell {
             Self::Bell
+        } else if foreground.is_some_and(|process| !process.is_empty()) {
+            Self::Busy
         } else {
-            Self::Running
+            Self::Idle
+        }
+    }
+
+    /// Whether the root process has exited, with or without failure.
+    pub(super) fn exited(self) -> bool {
+        matches!(self, Self::Exited | Self::Failed)
+    }
+
+    /// The width the indicator takes before the title, without its gap.
+    fn indicator_width(self) -> Pixels {
+        match self {
+            Self::Idle => px(0.0),
+            Self::Busy => DOT_SIZE,
+            Self::Bell | Self::Exited | Self::Failed => ICON_SIZE,
         }
     }
 }
@@ -174,6 +207,8 @@ pub(super) struct TabItem {
     /// The first tab while the strip is scrolled to its start, so its edge
     /// meets the bar's own edge.
     pub(super) flush_start: bool,
+    /// The tab whose context menu is open, outlined while it stays open.
+    pub(super) targeted: bool,
 }
 
 impl TabItem {
@@ -190,7 +225,7 @@ impl TabItem {
 
 /// Content shared by every tab style: status, title, and close button.
 struct TabParts {
-    status: Option<Svg>,
+    status: Option<gpui::AnyElement>,
     title: Div,
     close: Stateful<Div>,
 }
@@ -229,17 +264,37 @@ impl WorkspaceView {
                     view.begin_reorder(id, event.position, window, cx);
                     cx.stop_propagation();
                 }),
-            );
+            )
+            // A right press opens the tab's menu at the pointer without
+            // activating the tab; it never reaches the reorder listener.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.open_tab_menu(id, event.position, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .when(item.targeted, |shell| {
+                shell.child(
+                    div()
+                        .absolute()
+                        .inset(px(1.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.accent),
+                )
+            });
         let parts = TabParts {
-            status: if matches!(
-                item.status,
-                TabStatus::Exited | TabStatus::Failed
-            ) {
-                Some(icon_element(Icon::CircleAlert, colors.error))
-            } else if item.status == TabStatus::Bell {
-                Some(icon_element(Icon::Bell, colors.accent))
-            } else {
-                None
+            status: match item.status {
+                TabStatus::Exited | TabStatus::Failed => Some(
+                    icon_element(Icon::CircleAlert, colors.error)
+                        .into_any_element(),
+                ),
+                TabStatus::Bell => Some(
+                    icon_element(Icon::Bell, colors.accent).into_any_element(),
+                ),
+                TabStatus::Busy => Some(running_dot(colors).into_any_element()),
+                TabStatus::Idle => None,
             },
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
@@ -290,7 +345,7 @@ impl WorkspaceView {
         let font = window.text_style().font();
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
-            let (title, exited, failed, bell) = tab.label(self.config.tabs, cx);
+            let (title, status) = tab.label(self.config.tabs, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
@@ -309,7 +364,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(text, tabs, exited || failed || bell));
+            widths.push(fit_tab_width(text, tabs, status));
         }
         self.tab_widths = widths;
     }
@@ -374,6 +429,16 @@ fn accent_bar(colors: TabColors, inset: Pixels) -> Div {
         .w(px(3.0))
         .rounded(px(3.0))
         .bg(colors.accent)
+}
+
+/// The running dot: a small yellow circle before the title.
+fn running_dot(colors: TabColors) -> Div {
+    div()
+        .flex_shrink_0()
+        .w(DOT_SIZE)
+        .h(DOT_SIZE)
+        .rounded_full()
+        .bg(colors.running)
 }
 
 /// A short vertical line on a horizontal tab's leading edge.
@@ -555,17 +620,17 @@ fn pill_padding_left(accent: bool) -> Pixels {
 
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
 /// to the configured bounds. It mirrors the padding, gaps, and slots rendered
-/// by `strip_tab` and `pill_tab`.
+/// by `strip_tab` and `pill_tab`, including the indicator `status` draws.
 pub(super) fn fit_tab_width(
     title_width: Pixels,
     tabs: TabsConfig,
-    exited: bool,
+    status: TabStatus,
 ) -> Pixels {
     let style = tabs.style;
-    let status = if exited {
-        ICON_SIZE + gap(style)
-    } else {
+    let status = if status == TabStatus::Idle {
         px(0.0)
+    } else {
+        status.indicator_width() + gap(style)
     };
     // Every tab has a title and a close button separated by one gap.
     let chrome = match style {
@@ -618,34 +683,47 @@ mod tests {
 
     #[test]
     fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
+        let idle = TabStatus::Idle;
         let strip_tabs = tabs(TabStyle::Strip, false, 48.0, 600.0);
-        let strip = fit_tab_width(px(20.0), strip_tabs, false);
+        let strip = fit_tab_width(px(20.0), strip_tabs, idle);
         assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
+        for status in [TabStatus::Exited, TabStatus::Failed, TabStatus::Bell] {
+            assert_eq!(
+                fit_tab_width(px(20.0), strip_tabs, status),
+                strip + ICON_SIZE + STRIP_GAP,
+                "{status:?}"
+            );
+        }
         assert_eq!(
-            fit_tab_width(px(20.0), strip_tabs, true),
-            strip + ICON_SIZE + STRIP_GAP
+            fit_tab_width(px(20.0), strip_tabs, TabStatus::Busy),
+            strip + DOT_SIZE + STRIP_GAP,
+            "the running dot takes its own width"
         );
         let pill_tabs = tabs(TabStyle::Pill, false, 48.0, 600.0);
-        let pill = fit_tab_width(px(20.0), pill_tabs, false);
+        let pill = fit_tab_width(px(20.0), pill_tabs, idle);
         assert_eq!(pill, px(20.0 + 3.0 + 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.0), pill_tabs, true),
+            fit_tab_width(px(20.0), pill_tabs, TabStatus::Exited),
             pill + ICON_SIZE + PILL_GAP
+        );
+        assert_eq!(
+            fit_tab_width(px(20.0), pill_tabs, TabStatus::Busy),
+            pill + DOT_SIZE + PILL_GAP
         );
         assert_eq!(
             fit_tab_width(
                 px(20.0),
                 tabs(TabStyle::Pill, true, 48.0, 600.0),
-                false
+                idle
             ),
             pill + PILL_ACCENT_PADDING_LEFT - PILL_PADDING_LEFT
         );
-        assert_eq!(fit_tab_width(px(20.4), strip_tabs, false), px(64.0));
+        assert_eq!(fit_tab_width(px(20.4), strip_tabs, idle), px(64.0));
         assert_eq!(
             fit_tab_width(
                 px(1.0),
                 tabs(TabStyle::Strip, false, 96.0, 240.0),
-                false
+                idle
             ),
             px(96.0)
         );
@@ -653,7 +731,7 @@ mod tests {
             fit_tab_width(
                 px(900.0),
                 tabs(TabStyle::Pill, false, 96.0, 240.0),
-                false
+                idle
             ),
             px(240.0)
         );
@@ -665,9 +743,10 @@ mod tests {
             id: TabId::new(1),
             index,
             title: String::new(),
-            status: TabStatus::Running,
+            status: TabStatus::Idle,
             activity,
             flush_start: false,
+            targeted: false,
         };
         assert!(item(1, Activity::Inactive).divided());
         assert!(!item(0, Activity::Inactive).divided());
@@ -676,10 +755,22 @@ mod tests {
     }
 
     #[test]
-    fn error_and_exit_status_take_precedence_over_bell_attention() {
-        assert_eq!(TabStatus::new(false, false, true), TabStatus::Bell);
-        assert_eq!(TabStatus::new(true, false, true), TabStatus::Exited);
-        assert_eq!(TabStatus::new(true, true, true), TabStatus::Failed);
+    fn error_exit_and_bell_take_precedence_over_the_running_dot() {
+        let job = Some("cargo");
+        assert_eq!(TabStatus::new(false, false, false, None), TabStatus::Idle);
+        assert_eq!(
+            TabStatus::new(false, false, false, Some("")),
+            TabStatus::Idle,
+            "an empty name is no foreground program"
+        );
+        assert_eq!(TabStatus::new(false, false, false, job), TabStatus::Busy);
+        assert_eq!(TabStatus::new(false, false, true, job), TabStatus::Bell);
+        assert_eq!(TabStatus::new(false, false, true, None), TabStatus::Bell);
+        assert_eq!(TabStatus::new(true, false, true, job), TabStatus::Exited);
+        assert_eq!(TabStatus::new(true, true, true, job), TabStatus::Failed);
+        assert!(TabStatus::Exited.exited());
+        assert!(TabStatus::Failed.exited());
+        assert!(!TabStatus::Busy.exited());
     }
 
     #[test]

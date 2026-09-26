@@ -210,11 +210,13 @@ impl WindowMenuInput {
 }
 
 /// Labels the plan words differently from the catalog: prompting items end
-/// in an ellipsis and the application items name Huterm.
-fn label(id: CommandId) -> String {
+/// in an ellipsis, the application items name Huterm, and the tab menu's
+/// copy item names the path.
+pub(super) fn label(id: CommandId) -> String {
     match id {
         ids::OPEN_COMMAND_PALETTE => "Command Palette…".to_owned(),
         ids::RENAME_TAB => "Rename Tab…".to_owned(),
+        ids::COPY_TAB_DIRECTORY => "Copy Directory Path".to_owned(),
         ids::CHECK_FOR_UPDATES => "Check for Updates…".to_owned(),
         ids::QUIT => "Quit Huterm".to_owned(),
         ids::FOCUS_NOTICES => "Show Notices".to_owned(),
