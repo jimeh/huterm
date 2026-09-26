@@ -236,6 +236,12 @@ fn read_state(cx: &mut App) -> String {
             writeln!(output, "w{index}.fullscreen_passes={passes}\nw{index}.fullscreen_timers={timers}\nw{index}.fullscreen_armed={armed}\nw{index}.fullscreen_closed={}\nw{index}.fullscreen_fallback={}", view.fullscreen.is_closed(), view.fullscreen_work.fallback).unwrap();
             writeln!(output, "w{index}.default={:?}", view.config.window.macos_fullscreen_mode).unwrap();
             writeln!(output, "w{index}.window_bounds={}", bounds(window.window_bounds())).unwrap();
+            // macOS window bounds are relative to their display's top-left
+            // corner, so the display size alone decides whether they lie on it.
+            if let Some(display) = window.display(cx) {
+                let size = display.bounds().size;
+                writeln!(output, "w{index}.display={},{}", f32::from(size.width), f32::from(size.height)).unwrap();
+            }
             writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.status={}\nw{index}.confirming={}",
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
