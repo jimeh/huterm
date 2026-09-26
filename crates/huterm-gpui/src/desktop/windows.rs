@@ -28,11 +28,14 @@ use super::close_dialog::{
     CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
     ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
 };
+use super::menu::{
+    MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, place_menu,
+};
 use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
     ToastHandlers, render_notice_stack,
 };
-use super::overlay::{OverlayColors, Swatch};
+use super::overlay::{OverlayColors, Swatch, TextTooltip};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
     PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
@@ -55,6 +58,7 @@ use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, SessionId, TerminalId,
     WorkspaceId, catalog, validate, validate_supplied,
 };
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +68,7 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod tab_bar;
 mod tab_strip;
 pub(super) mod tab_visibility;
+mod window_menu;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
@@ -76,6 +81,10 @@ use tab_bar::{
 };
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
+use window_menu::{
+    MenuButtonPlacement, WindowMenuInput, menu_button_placement,
+    split_new_tab_row, window_menu_model,
+};
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// Visible size of the new-tab and scroll controls. Along the strip they sit
@@ -1040,7 +1049,8 @@ fn observe_keystroke(
             let input_blocked = view.busy
                 || view.close.confirmation.is_some()
                 || view.reorder.is_some()
-                || view.palette.is_some();
+                || view.palette.is_some()
+                || view.menu.is_some();
             if let Some(tab) = view.active_view() {
                 tab.update(cx, |tab, cx| {
                     #[cfg(target_os = "macos")]
@@ -1390,6 +1400,11 @@ fn open_window_with_profile(
                 retained_query: None,
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
+                menu: None,
+                menu_button_focus: cx.focus_handle(),
+                menu_button_bounds: Rc::new(Cell::new(None)),
+                menu_bounds: Rc::new(Cell::new(None)),
+                menu_contexts: Vec::new(),
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
@@ -1411,6 +1426,7 @@ fn open_window_with_profile(
                     }
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
+                    view.refresh_menu(cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -2058,6 +2074,29 @@ struct WorkspaceView {
     retained_query: Option<(String, Instant)>,
     recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
+    /// The open window menu.
+    menu: Option<Entity<MenuView>>,
+    /// Focus for the `⋯` button, which Escape returns to.
+    menu_button_focus: FocusHandle,
+    /// Where the `⋯` button was last painted, for anchoring the menu and
+    /// letting a press on it toggle rather than dismiss; `None` while the
+    /// button is not drawn.
+    menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Where the open menu was last painted, for outside-press dismissal.
+    menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The key contexts captured when the menu opened, for shortcut text.
+    menu_contexts: Vec<KeyContext>,
+}
+
+/// Where focus goes when the window menu closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MenuFocusReturn {
+    /// The active terminal, after Escape, a pick, an outside press, or a
+    /// command. Returning to the `⋯` button would leave terminal bindings
+    /// inactive until the user clicked back into the terminal.
+    Terminal,
+    /// Whatever takes focus next, such as a close confirmation.
+    Keep,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2526,13 +2565,15 @@ impl WorkspaceView {
                 && self.native_fullscreen.as_ref().is_some_and(
                     crate::native_fullscreen::Adapter::pointer_in_top_edge,
                 ));
+        // An open window menu holds the bar that anchors its button.
         let hover = !gesture
             && (edge
                 || (self.reveal.progress > 0.0
                     && hovered
                     && layout.tabs.contains(&pointer))
                 || self.reorder.is_some()
-                || self.resizing_sidebar);
+                || self.resizing_sidebar
+                || self.menu.is_some());
         if self
             .reveal
             .set_input(Instant::now(), hover, enabled && !gesture)
@@ -2570,6 +2611,7 @@ impl WorkspaceView {
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
+            self.bar_menu_placement() == MenuButtonPlacement::BarEnd,
         )
     }
 
@@ -3101,8 +3143,11 @@ impl WorkspaceView {
                                     .is_allowed(),
                             );
                             let activity_client = opened.client.clone();
+                            let scroll_key = scroll_to_bottom_key(
+                                &cx.global::<Desktop>().keymap,
+                            );
                             let terminal = cx.new(|cx| {
-                                TerminalView::new(
+                                let mut terminal = TerminalView::new(
                                     opened.client,
                                     authority,
                                     Rc::clone(&view.frame_clock),
@@ -3112,7 +3157,11 @@ impl WorkspaceView {
                                         .at_scale(window.scale_factor()),
                                     window,
                                     cx,
-                                )
+                                );
+                                terminal.set_scroll_to_bottom_key(
+                                    scroll_key, cx,
+                                );
+                                terminal
                             });
                             let tab_id = opened.tab.id;
                             let failure_wakes =
@@ -3693,6 +3742,15 @@ impl WorkspaceView {
                 | ids::NOTICE_PREVIOUS
                 | ids::NOTICE_RUN_ACTION
                 | ids::NOTICE_DISMISS => self.notice_availability(command),
+                ids::OPEN_MENU => self.check_available(false),
+                ids::MENU_SELECT_NEXT
+                | ids::MENU_SELECT_PREVIOUS
+                | ids::MENU_SELECT_FIRST
+                | ids::MENU_SELECT_LAST
+                | ids::MENU_SELECT_RIGHT
+                | ids::MENU_SELECT_LEFT
+                | ids::MENU_CONFIRM
+                | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available()
                 }
@@ -3989,6 +4047,34 @@ impl WorkspaceView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this window does not own as [`CommandError::UnknownCommand`].
+    fn run_fullscreen_toggle(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if self.quake.is_some() {
+            self.check_fullscreen_available(command)?;
+            return quake_windows::toggle(self, window, cx);
+        }
+        self.observe_fullscreen(window, cx, true);
+        self.fullscreen_work.wake.signal();
+        let intent = match command {
+            ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
+            ids::TOGGLE_NON_NATIVE_FULLSCREEN => ToggleIntent::NonNative,
+            _ => ToggleIntent::Default,
+        };
+        self.check_fullscreen_available(command)?;
+        self.fullscreen
+            .toggle_checked(intent, || Ok(()))
+            .map_err(CommandError::Unavailable)?;
+        if self.advance_fullscreen(window, cx) {
+            self.fullscreen_work.wake.signal();
+        }
+        self.arm_fullscreen(cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -4005,8 +4091,22 @@ impl WorkspaceView {
         if let Some(tab) = self.active_view() {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
+        // A shortcut pressed while the menu is open runs its command in
+        // place of the menu.
+        if !is_menu_command(invocation.id) {
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
+        }
         match invocation.id {
             ids::NEW_TAB => self.new_tab(window, cx),
+            ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::MENU_SELECT_NEXT
+            | ids::MENU_SELECT_PREVIOUS
+            | ids::MENU_SELECT_FIRST
+            | ids::MENU_SELECT_LAST
+            | ids::MENU_SELECT_RIGHT
+            | ids::MENU_SELECT_LEFT
+            | ids::MENU_CONFIRM
+            | ids::MENU_CLOSE => self.run_menu_command(invocation.id, cx),
             ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
                 self.run_tab_close(invocation, window, cx)
             }
@@ -4035,28 +4135,7 @@ impl WorkspaceView {
             ids::TOGGLE_FULLSCREEN
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
-                if self.quake.is_some() {
-                    self.check_fullscreen_available(invocation.id)?;
-                    return quake_windows::toggle(self, window, cx);
-                }
-                self.observe_fullscreen(window, cx, true);
-                self.fullscreen_work.wake.signal();
-                let intent = match invocation.id {
-                    ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
-                    ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
-                        ToggleIntent::NonNative
-                    }
-                    _ => ToggleIntent::Default,
-                };
-                self.check_fullscreen_available(invocation.id)?;
-                self.fullscreen
-                    .toggle_checked(intent, || Ok(()))
-                    .map_err(CommandError::Unavailable)?;
-                if self.advance_fullscreen(window, cx) {
-                    self.fullscreen_work.wake.signal();
-                }
-                self.arm_fullscreen(cx);
-                Ok(CommandOutcome::Accepted)
+                self.run_fullscreen_toggle(invocation.id, window, cx)
             }
             ids::MINIMIZE => {
                 self.check_presentation_available()?;
@@ -4809,6 +4888,7 @@ impl WorkspaceView {
                     }
                     Some(CloseDecision::Confirm(_)) => {
                         view.dismiss_palette_for_confirmation(cx);
+                        view.close_menu(MenuFocusReturn::Keep, window, cx);
                         view.focus.focus(window);
                         cx.notify();
                     }
@@ -5066,7 +5146,9 @@ impl WorkspaceView {
         if let Some(tab) = self.active_view() {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
+        let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
         if let Some((config, family, metrics)) = loaded {
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
             self.resizing_sidebar = false;
             self.scroll_target = None;
             self.config = config.clone();
@@ -5093,6 +5175,7 @@ impl WorkspaceView {
                     view.reload_terminal_config(config.terminal, cx);
                     view.publish_presentation(&config.theme);
                     view.theme = config.theme.clone();
+                    view.set_scroll_to_bottom_key(scroll_key.clone(), cx);
                     cx.notify();
                 });
             }
@@ -5468,7 +5551,7 @@ impl ChromeLayout {
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
-        reason = "window chrome composes tab controls and close confirmation"
+        reason = "window chrome composes tab controls, the window menu, and close confirmation"
     )]
     fn render(
         &mut self,
@@ -5483,6 +5566,11 @@ impl Render for WorkspaceView {
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
         let colors = TabColors::new(&self.config.theme);
+        let menu_placement = self.menu_button_placement();
+        if menu_placement == MenuButtonPlacement::Hidden {
+            // A hidden button anchors nothing; `open_menu` falls back.
+            self.menu_button_bounds.set(None);
+        }
         let mut root = div()
             .size_full()
             .relative()
@@ -5566,11 +5654,32 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
-                        move |_: &gpui::MouseDownEvent, phase, window, cx| {
+                        move |event: &gpui::MouseDownEvent,
+                              phase,
+                              window,
+                              cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
                                     view.defer_pointer_refresh(window, cx);
+                                    // A press outside the menu closes it and
+                                    // then proceeds; the button toggles it.
+                                    let inside = [
+                                        view.menu_bounds.get(),
+                                        view.menu_button_bounds.get(),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|bounds| {
+                                        bounds.contains(&event.position)
+                                    });
+                                    if view.menu.is_some() && !inside {
+                                        view.close_menu(
+                                            MenuFocusReturn::Terminal,
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                 });
                             }
                         },
@@ -5631,6 +5740,12 @@ impl Render for WorkspaceView {
         // A top bar on the notch shelf, currently shown.
         let shelf_bar = self.notch_shelf().is_some()
             && self.presentation() == Presentation::Reserved;
+        let title_menu_button =
+            (menu_placement == MenuButtonPlacement::TitleStrip).then(|| {
+                self.menu_button_element(colors, window, cx)
+                    .ml_auto()
+                    .mr(CONTROL_INSET)
+            });
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
@@ -5661,6 +5776,7 @@ impl Render for WorkspaceView {
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
                             .child("Huterm")
+                            .children(title_menu_button)
                     }),
             );
         }
@@ -5879,6 +5995,12 @@ impl Render for WorkspaceView {
                     );
                 }
             }
+            // A vertical column shares the new-tab row with the `⋯` control.
+            let row = split_new_tab_row(
+                (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
+                    .max(px(0.0)),
+                menu_placement == MenuButtonPlacement::SplitRow,
+            );
             chrome = chrome.child(bar).child(
                 div()
                     .id("new-tab")
@@ -5904,8 +6026,7 @@ impl Render for WorkspaceView {
                             },
                     )
                     .w(if vertical {
-                        (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
-                            .max(px(0.0))
+                        row.plus_width
                     } else {
                         CONTROL_SIZE
                     })
@@ -5933,6 +6054,35 @@ impl Render for WorkspaceView {
                             }),
                     ),
             );
+            let bar_menu_button = match menu_placement {
+                MenuButtonPlacement::BarEnd => Some(point(
+                    layout.tabs.right() - clip.origin.x - CONTROL_SLOT
+                        + CONTROL_INSET,
+                    strip.bounds.origin.y - clip.origin.y + bar_inset,
+                )),
+                MenuButtonPlacement::SplitRow => row.menu_x.map(|menu_x| {
+                    let row_height = CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0;
+                    point(
+                        strip.bounds.origin.x - clip.origin.x
+                            + VERTICAL_ROW_MARGIN_X
+                            + menu_x,
+                        strip.bounds.origin.y - clip.origin.y
+                            + strip.available()
+                            + VERTICAL_ROW_MARGIN_Y
+                            + (row_height - CONTROL_SIZE) / 2.0,
+                    )
+                }),
+                MenuButtonPlacement::TitleStrip
+                | MenuButtonPlacement::Hidden => None,
+            };
+            if let Some(origin) = bar_menu_button {
+                chrome = chrome.child(
+                    self.menu_button_element(colors, window, cx)
+                        .absolute()
+                        .left(origin.x)
+                        .top(origin.y),
+                );
+            }
             if vertical {
                 let handle = layout.sidebar_resize_handle(position);
                 chrome = chrome.child(
@@ -6153,6 +6303,9 @@ impl Render for WorkspaceView {
         if let Some(notices) = self.render_notices(layout.terminal, cx) {
             root = root.child(notices);
         }
+        if let Some(menu) = self.render_menu(&layout, window, cx) {
+            root = root.child(menu);
+        }
         if let Some(target) = self.close.confirmation.clone() {
             let model =
                 build_close_dialog(&self.close_dialog_input(&target, cx));
@@ -6182,6 +6335,413 @@ impl Render for WorkspaceView {
     }
 }
 
+/// The `menu_*` commands act on the open menu instead of replacing it.
+fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
+    matches!(
+        command,
+        ids::OPEN_MENU
+            | ids::MENU_SELECT_NEXT
+            | ids::MENU_SELECT_PREVIOUS
+            | ids::MENU_SELECT_FIRST
+            | ids::MENU_SELECT_LAST
+            | ids::MENU_SELECT_RIGHT
+            | ids::MENU_SELECT_LEFT
+            | ids::MENU_CONFIRM
+            | ids::MENU_CLOSE
+    )
+}
+
+/// The compiled keymap's first `scroll_to_bottom` binding as a terminal
+/// sees it, for the scroll pill's key cap.
+fn scroll_to_bottom_key(keymap: &InstalledKeymap) -> Option<String> {
+    let contexts = [
+        KeyContext::parse("Workspace").unwrap_or_default(),
+        KeyContext::parse("Terminal").unwrap_or_default(),
+    ];
+    keymap
+        .shortcuts(ids::SCROLL_TO_BOTTOM, &contexts, None)
+        .first()
+        .map(|binding| binding.key.clone())
+}
+
+impl WorkspaceView {
+    /// The button's placement when the tab bar is drawn. Bar geometry
+    /// reserves the slot whether or not an overlay bar is revealed, so
+    /// scrolling and drop mapping do not shift with the reveal.
+    fn bar_menu_placement(&self) -> MenuButtonPlacement {
+        menu_button_placement(
+            self.config.window.menu_button,
+            terminal_top(self.chrome_hidden()) > px(0.0),
+            self.config.tabs.position,
+            true,
+        )
+    }
+
+    /// Where the `⋯` button is drawn this frame.
+    fn menu_button_placement(&self) -> MenuButtonPlacement {
+        let presentation = self.presentation();
+        let bar_shown = presentation == Presentation::Reserved
+            || presentation == Presentation::Overlay
+                && self.reveal.progress > 0.0;
+        menu_button_placement(
+            self.config.window.menu_button,
+            terminal_top(self.chrome_hidden()) > px(0.0),
+            self.config.tabs.position,
+            bar_shown,
+        )
+    }
+
+    fn open_menu_entity(&self) -> Result<Entity<MenuView>, CommandError> {
+        self.menu.clone().ok_or_else(|| {
+            CommandError::Unavailable("no menu is open".to_owned())
+        })
+    }
+
+    fn window_menu_input(&self, cx: &App) -> WindowMenuInput {
+        let selection = self.active_view().is_some_and(|terminal| {
+            terminal.read(cx).command_availability(ids::COPY).is_ok()
+        });
+        WindowMenuInput::for_build(selection, self.notices.contents().len())
+    }
+
+    /// Opens the window menu, or focuses it when it is already open.
+    /// `from_keyboard` selects the first item, as `open_menu` does; the
+    /// button opens with no selection.
+    fn open_menu(
+        &mut self,
+        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(false)?;
+        if let Some(menu) = &self.menu {
+            menu.read(cx).focus_handle(cx).focus(window);
+            cx.notify();
+            return Ok(CommandOutcome::Completed);
+        }
+        if self.palette.is_some() {
+            return Err(CommandError::Unavailable(
+                "command palette is open".to_owned(),
+            ));
+        }
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        self.menu_contexts = window.context_stack();
+        let model = window_menu_model(
+            &self.window_menu_input(cx),
+            &cx.global::<Desktop>().keymap,
+            &self.menu_contexts,
+        );
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let menu = cx.new(|cx| MenuView::new(model, swatch, from_keyboard, cx));
+        cx.subscribe_in(&menu, window, Self::handle_menu_event)
+            .detach();
+        menu.read(cx).focus_handle(cx).focus(window);
+        self.menu = Some(menu);
+        self.menu_bounds.set(None);
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// The `⋯` button: closes an open menu, otherwise opens one with no
+    /// selection.
+    fn toggle_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.close_menu(MenuFocusReturn::Terminal, window, cx) {
+            return;
+        }
+        if let Err(error) = self.open_menu(false, window, cx) {
+            self.report_failure("Open Menu", error.to_string(), cx);
+        }
+    }
+
+    /// Closes the menu and moves focus; `false` when none was open.
+    fn close_menu(
+        &mut self,
+        focus: MenuFocusReturn,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.menu.take().is_none() {
+            return false;
+        }
+        self.menu_bounds.set(None);
+        match focus {
+            MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
+            MenuFocusReturn::Keep => {}
+        }
+        cx.notify();
+        true
+    }
+
+    fn focus_terminal(&self, window: &mut Window, cx: &App) {
+        if let Some(terminal) = self.active_view() {
+            terminal.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+        }
+    }
+
+    /// Rebuilds the open menu's rows so Show Notices and Copy follow the
+    /// window's state; an unchanged model leaves the menu alone.
+    fn refresh_menu(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(menu) = self.menu.clone() else {
+            return;
+        };
+        let model = window_menu_model(
+            &self.window_menu_input(cx),
+            &cx.global::<Desktop>().keymap,
+            &self.menu_contexts,
+        );
+        menu.update(cx, |menu, cx| menu.set_model(model, cx));
+    }
+
+    fn handle_menu_event(
+        &mut self,
+        menu: &Entity<MenuView>,
+        event: &MenuEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self
+            .menu
+            .as_ref()
+            .is_none_or(|current| current.entity_id() != menu.entity_id())
+        {
+            return;
+        }
+        match event {
+            MenuEvent::Dismissed => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+            }
+            MenuEvent::Picked(id) => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+                let Some(spec) = huterm_protocol::lookup(id) else {
+                    self.report_failure(
+                        "Command failed",
+                        format!("unknown command `{id}`"),
+                        cx,
+                    );
+                    return;
+                };
+                let invocation = CommandInvocation::new(spec.id, Vec::new());
+                let result = match spec.scope {
+                    CommandScope::Terminal => self
+                        .active_view()
+                        .ok_or_else(|| {
+                            CommandError::Unavailable(
+                                "window has no active terminal".to_owned(),
+                            )
+                        })
+                        .and_then(|terminal| {
+                            terminal.update(cx, |terminal, cx| {
+                                terminal.run_command(&invocation, window, cx)
+                            })
+                        }),
+                    _ => self.invoke_interactive(&invocation, window, cx),
+                };
+                match result {
+                    Ok(_) => {
+                        self.recent.record(spec.id);
+                        cx.global_mut::<Desktop>().frequency.record(spec.id);
+                    }
+                    Err(error) => {
+                        self.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Runs a `menu_*` command against the open menu. Confirm and close
+    /// report through [`MenuEvent`], so the keyboard and pointer share one
+    /// path.
+    fn run_menu_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let menu = self.open_menu_entity()?;
+        menu.update(cx, |menu, cx| {
+            match command {
+                ids::MENU_SELECT_NEXT => menu.select_next(cx),
+                ids::MENU_SELECT_PREVIOUS => menu.select_previous(cx),
+                ids::MENU_SELECT_FIRST => menu.select_first(cx),
+                ids::MENU_SELECT_LAST => menu.select_last(cx),
+                ids::MENU_SELECT_RIGHT => menu.select_right(cx),
+                ids::MENU_SELECT_LEFT => menu.select_left(cx),
+                ids::MENU_CONFIRM => menu.confirm(cx),
+                ids::MENU_CLOSE => MenuView::dismiss(cx),
+                other => return Err(CommandError::UnknownCommand(other)),
+            }
+            Ok(())
+        })?;
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// The menu's anchor: the painted `⋯` button, or the terminal's top
+    /// right corner when the button is hidden and `open_menu` ran.
+    fn menu_anchor(&self, layout: &ChromeLayout) -> Bounds<Pixels> {
+        self.menu_button_bounds.get().unwrap_or_else(|| {
+            Bounds::new(
+                point(
+                    layout.terminal.right() - CONTROL_SLOT + CONTROL_INSET,
+                    layout.terminal.origin.y + CONTROL_INSET,
+                ),
+                size(CONTROL_SIZE, CONTROL_SIZE),
+            )
+        })
+    }
+
+    /// The `⋯` control: a 14-point icon in the 26-point control with the
+    /// tab-bar hover style, a "Menu" tooltip, a yellow dot while notices
+    /// wait, and a focus ring while it holds focus after Escape. The caller
+    /// positions it. It records its painted bounds for the menu's anchor.
+    fn menu_button_element(
+        &self,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let bounds_cell = Rc::clone(&self.menu_button_bounds);
+        let open = self.menu.is_some();
+        let dot = !open && !self.notices.is_empty();
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let focused = self.menu_button_focus.is_focused(window);
+        div()
+            .id("window-menu")
+            .group("window-menu")
+            .occlude()
+            .track_focus(&self.menu_button_focus)
+            .w(CONTROL_SIZE)
+            .h(CONTROL_SIZE)
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .hover(|style| style.bg(colors.control_hover))
+            .when(open, |button| button.bg(colors.control_hover))
+            .when(focused, |button| button.shadow(swatch.focus_ring()))
+            .tooltip(move |_, cx| TextTooltip::view("Menu", swatch, cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.toggle_menu(window, cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                icon_element(Icon::Ellipsis, colors.inactive)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .group_hover("window-menu", |style| {
+                        style.text_color(colors.foreground)
+                    }),
+            )
+            .when(dot, |button| {
+                button.child(
+                    div()
+                        .absolute()
+                        .top(px(2.0))
+                        .right(px(2.0))
+                        .w(px(9.0))
+                        .h(px(9.0))
+                        .rounded_full()
+                        .bg(swatch.warning)
+                        .border_1()
+                        .border_color(colors.bar),
+                )
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+
+    /// The open menu mounted at its placement: below the anchor, or above
+    /// it from the lower half; right-aligned from the right half; scrolling
+    /// within the space left. Edges facing the anchor stay flush even if
+    /// the panel measures wider or shorter than expected.
+    fn render_menu(
+        &self,
+        layout: &ChromeLayout,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::Div> {
+        let menu = self.menu.clone()?;
+        let viewport = window.viewport_size();
+        let height = menu.read(cx).model().height();
+        let placement = place_menu(
+            MenuAnchor::Button(self.menu_anchor(layout)),
+            size(MENU_MIN_WIDTH, height),
+            viewport,
+        );
+        menu.update(cx, |menu, cx| {
+            menu.set_max_height(Some(placement.max_height), cx);
+        });
+        let bounds_cell = Rc::clone(&self.menu_bounds);
+        let shown_height = height.min(placement.max_height);
+        let wrapper = div()
+            .absolute()
+            .when(placement.align_right, |wrapper| {
+                wrapper.right(
+                    viewport.width - (placement.origin.x + MENU_MIN_WIDTH),
+                )
+            })
+            .when(!placement.align_right, |wrapper| {
+                wrapper.left(placement.origin.x)
+            })
+            .when(placement.opens_up, |wrapper| {
+                wrapper.bottom(
+                    viewport.height - (placement.origin.y + shown_height),
+                )
+            })
+            .when(!placement.opens_up, |wrapper| {
+                wrapper.top(placement.origin.y)
+            })
+            .child(menu)
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
+                )
+                .absolute()
+                .inset_0(),
+            );
+        Some(wrapper)
+    }
+
+    /// Smoke output for the menu: whether it is open, whether it holds
+    /// focus, and the selected item.
+    pub(super) fn menu_smoke_state(&self, window: &Window, cx: &App) -> String {
+        match &self.menu {
+            Some(menu) => {
+                let menu = menu.read(cx);
+                let selection = menu
+                    .selection()
+                    .and_then(|selection| menu.model().id_at(selection))
+                    .unwrap_or("none");
+                format!(
+                    "menu=true menu_focused={} menu_selection={selection}",
+                    menu.focus_handle(cx).is_focused(window)
+                )
+            }
+            None => {
+                "menu=false menu_focused=false menu_selection=none".to_owned()
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
     window
@@ -6193,6 +6753,7 @@ pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
                 && view.close.confirmation.is_none()
                 && view.reorder.is_none()
                 && view.palette.is_none()
+                && view.menu.is_none()
         })
 }
 
@@ -6552,6 +7113,7 @@ mod tests {
                 position.vertical(),
                 TabExtents::Uniform(8),
                 px(0.0),
+                false,
             );
             let extent = strip.tab_extent(0);
             let pointer = if strip.vertical {

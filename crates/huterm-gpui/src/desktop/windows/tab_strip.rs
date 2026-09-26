@@ -31,11 +31,15 @@ pub(super) struct TabStrip {
     reason = "tab counts fit practical pixel geometry"
 )]
 impl TabStrip {
+    /// `menu_slot` reserves a second control slot at a horizontal bar's far
+    /// end for the window menu button; a vertical column shares the new-tab
+    /// row instead and ignores it.
     pub(super) fn new(
         mut bounds: Bounds<Pixels>,
         vertical: bool,
         extents: TabExtents,
         offset: Pixels,
+        menu_slot: bool,
     ) -> Self {
         let available = if vertical {
             bounds.size.height
@@ -46,6 +50,8 @@ impl TabStrip {
         // it does not touch the window edge when tabs overflow.
         let reserved = if vertical {
             CONTROL_SLOT + VERTICAL_END_MARGIN
+        } else if menu_slot {
+            CONTROL_SLOT * 2.0
         } else {
             CONTROL_SLOT
         };
@@ -220,6 +226,7 @@ mod tests {
             vertical,
             TabExtents::Uniform(count),
             px(offset),
+            false,
         )
     }
 
@@ -229,7 +236,46 @@ mod tests {
             false,
             TabExtents::Fit(widths.iter().map(|width| px(*width)).collect()),
             px(offset),
+            false,
         )
+    }
+
+    #[test]
+    fn a_menu_slot_shortens_horizontal_bars_and_leaves_columns_alone() {
+        let with_menu = TabStrip::new(
+            bounds(),
+            false,
+            TabExtents::Uniform(6),
+            px(0.0),
+            true,
+        );
+        assert_eq!(with_menu.available(), px(568.0));
+        assert_eq!(with_menu.max_offset(), px(152.0));
+        let fitting = TabStrip::new(
+            bounds(),
+            false,
+            TabExtents::Fit(vec![px(240.0); 4]),
+            px(0.0),
+            true,
+        );
+        assert_eq!(fitting.available(), px(568.0));
+        assert_eq!(fitting.max_offset(), px(392.0));
+        let short = TabStrip::new(
+            bounds(),
+            false,
+            TabExtents::Fit(vec![px(100.0); 2]),
+            px(0.0),
+            true,
+        );
+        assert_eq!(short.available(), px(200.0), "follows the last tab");
+        let column = TabStrip::new(
+            bounds(),
+            true,
+            TabExtents::Uniform(20),
+            px(0.0),
+            true,
+        );
+        assert_eq!(column.available(), strip(true, 20, 0.0).available());
     }
 
     #[test]
@@ -259,6 +305,7 @@ mod tests {
             true,
             TabExtents::Fit(vec![px(300.0); 2]),
             px(0.0),
+            false,
         );
         assert_eq!(ignored.tab_extent(1), TAB_HEIGHT);
     }

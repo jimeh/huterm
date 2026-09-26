@@ -339,6 +339,16 @@ fn read_state(cx: &mut App) -> String {
                 terminal_text
             )
             .unwrap();
+            let menu = view.menu_smoke_state(window, cx);
+            writeln!(
+                output,
+                "{}",
+                menu.split(' ')
+                    .map(|field| format!("w{index}.{field}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .unwrap();
             if let Some(palette) = palette {
                 writeln!(
                     output,

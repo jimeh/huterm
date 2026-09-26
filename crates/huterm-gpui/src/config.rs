@@ -53,6 +53,8 @@ padding_x = 4.0
 padding_y = 4.0
 # Split unused column space between left and right instead of only the right.
 padding_balance = false
+# Show the window menu button in the title bar, or in the tab bar without one.
+menu_button = true
 
 [tabs]
 # Automatic label: smart, title, process, directory, or process_and_directory.
@@ -436,7 +438,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 188);
+        assert_eq!(fixtures.len(), 191);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -1101,6 +1103,7 @@ background = "#040506"
                 padding_y: 0.0,
                 padding_balance: false,
                 macos_fullscreen_mode: MacosFullscreenMode::NonNative,
+                menu_button: true,
             }
         );
     }

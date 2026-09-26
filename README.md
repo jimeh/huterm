@@ -227,6 +227,7 @@ padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
+menu_button = true # the window menu button in the title bar or tab bar
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
@@ -247,6 +248,16 @@ Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+`menu_button` shows a `⋯` button that opens the window menu: the command
+palette, tab and window commands, Copy and Paste, fullscreen, settings, reload,
+waiting notices, About, and Quit, with each item's current shortcut. On macOS
+it sits at the right end of the title bar. Without a title bar (fullscreen on
+either platform, or Linux, where the window manager draws it) it joins the tab
+bar: the far right of a top or bottom bar, or beside `+` under a left or right
+column, and it hides with an auto-hidden bar. A yellow dot marks waiting
+notices. `menu_button = false` removes it; `open_menu` and every item stay
+available through the palette and shortcuts.
 
 `style` selects Pill (the default) or Strip tabs for every placement. Left and
 right Strip tabs put the accent line on the window edge; left and right Pill
@@ -667,6 +678,7 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `exited` | That terminal's root shell has exited. |
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation is open. |
+| `menu` | The window menu has keyboard focus. |
 | `notices` | A notice toast has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
@@ -781,7 +793,7 @@ Default bindings differ per platform:
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
 | `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
 | `reload_config` | `cmd-<` | `ctrl-<` |
-| `open_settings` | `cmd-,` | |
+| `open_settings` | `cmd-,` | `ctrl-,` |
 | `quit` | `cmd-q` | |
 | `minimize` | `cmd-m` | |
 | `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
@@ -823,6 +835,26 @@ dialog opens; a repeated close shortcut never confirms.
 | `dialog_cancel` | `escape` | `escape` |
 | `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
 | `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
+
+#### Menu
+
+These bind only while the window menu has focus (`menu`), so they take
+nothing from terminal input. `open_menu` has no default binding; the `⋯`
+button opens the menu with no selection, and `open_menu` selects the first
+item. Typing a letter jumps to the next item starting with it. Escape, Tab,
+running an item, or clicking elsewhere closes the menu and returns focus to
+the terminal.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `menu_select_next` | `down` | `down` |
+| `menu_select_previous` | `up` | `up` |
+| `menu_select_first` | `home` | `home` |
+| `menu_select_last` | `end` | `end` |
+| `menu_select_right` | `right` | `right` |
+| `menu_select_left` | `left` | `left` |
+| `menu_confirm` | `enter`, `space` | `enter`, `space` |
+| `menu_close` | `escape`, `tab` | `escape`, `tab` |
 
 #### Notices
 

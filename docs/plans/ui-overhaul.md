@@ -277,9 +277,10 @@ disabled rows, and the inline button row.
 - Up and Down move between enabled rows, Left and Right between buttons in the
   Edit row, Home and End jump, and typed letters jump to the next item that
   starts with them. Enter or Space runs the selection.
-- Escape, Tab, a click outside, or running an item closes the menu. Escape
-  returns focus to the `⋯` button for the window menu, and to the terminal for
-  the tab menu.
+- Escape, Tab, a click outside, or running an item closes the menu and
+  returns focus to the terminal. (An earlier draft returned Escape to the `⋯`
+  button, which left terminal bindings inactive until the user clicked back
+  into the terminal.)
 - The window menu opens below its button, or above it when the button is in
   the lower half of the window. It right-aligns when the button is in the right
   half, left-aligns otherwise, and scrolls when taller than the available

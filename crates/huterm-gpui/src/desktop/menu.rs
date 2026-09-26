@@ -4,19 +4,22 @@
 //! placement logic are pure so they can be tested without a window. [`Menu`]
 //! is the GPUI entity that renders a model under the `menu` key context and
 //! reports picks and dismissal as [`MenuEvent`]s. The owner anchors it into
-//! its tree (GPUI's `anchored` or an absolute wrapper at the placement
-//! origin), routes the `menu_*` catalog commands to its methods, and handles
-//! outside clicks and focus return itself.
+//! its tree (an absolute wrapper at the placement origin), routes the
+//! `menu_*` catalog commands to its methods, and handles outside clicks and
+//! focus return itself. Printable text typed while the menu has focus
+//! arrives through the same input-handler route as the palette's text field
+//! and drives type-ahead.
 
-#![expect(dead_code, reason = "the window and tab menus land later")]
+use std::ops::Range;
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, Pixels, Point,
-    Render, ScrollHandle, SharedString, Size, Styled, Window, div, point,
+    App, Bounds, Context, ElementInputHandler, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, Pixels, Point, Render, ScrollHandle,
+    SharedString, Size, Styled, UTF16Selection, Window, canvas, div, point,
     prelude::*, px,
 };
 
-use super::overlay::{Swatch, raised_panel};
+use super::overlay::{Swatch, TextTooltip, raised_panel};
 
 /// Identifies a menu item or button to its owner.
 pub(crate) type MenuItemId = &'static str;
@@ -52,6 +55,10 @@ impl MenuItem {
         self
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the tab context menu disables items")
+    )]
     pub(crate) fn disabled(mut self, hint: Option<String>) -> Self {
         self.enabled = false;
         self.disabled_hint = hint;
@@ -70,7 +77,7 @@ pub(crate) struct MenuButton {
     pub(crate) id: MenuItemId,
     pub(crate) label: String,
     pub(crate) enabled: bool,
-    /// Explains a disabled button; not yet rendered.
+    /// Explains a disabled button on hover.
     pub(crate) tooltip: Option<String>,
 }
 
@@ -117,6 +124,22 @@ pub(crate) struct MenuSelection {
 impl MenuModel {
     pub(crate) fn new(rows: Vec<MenuRow>) -> Self {
         Self { rows }
+    }
+
+    /// The rendered height before any scrolling: every row's fixed height
+    /// plus the panel's padding and border. Placement uses it so the menu
+    /// sits flush against its anchor when it opens upward.
+    pub(crate) fn height(&self) -> Pixels {
+        let rows: f32 = self
+            .rows
+            .iter()
+            .map(|row| match row {
+                MenuRow::Item(_) => ROW_HEIGHT,
+                MenuRow::Separator => SEPARATOR_HEIGHT,
+                MenuRow::Buttons { .. } => BUTTON_ROW_HEIGHT,
+            })
+            .sum();
+        px(rows + (PANEL_PADDING + PANEL_BORDER) * 2.0)
     }
 
     /// The selection entering `row` from the keyboard: the item, or the
@@ -293,6 +316,13 @@ pub(crate) enum MenuAnchor {
     /// The bounds of the control that opened it, in window coordinates.
     Button(Bounds<Pixels>),
     /// The pointer position for a context menu.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the tab context menu opens at the pointer"
+        )
+    )]
     Pointer(Point<Pixels>),
 }
 
@@ -386,7 +416,14 @@ pub(crate) enum MenuEvent {
 }
 
 const ROW_HEIGHT: f32 = 28.0;
-const MIN_WIDTH: f32 = 264.0;
+const BUTTON_ROW_HEIGHT: f32 = 30.0;
+/// A one-point line with four points of margin above and below.
+const SEPARATOR_HEIGHT: f32 = 9.0;
+const PANEL_PADDING: f32 = 5.0;
+const PANEL_BORDER: f32 = 1.0;
+/// The menu's minimum width; labels never need more, so placement treats it
+/// as the width.
+pub(crate) const MENU_MIN_WIDTH: Pixels = px(264.0);
 
 /// The rendered menu. Presses inside stop before the terminal, so a click on
 /// a row cannot start a selection. Focus the handle from [`Focusable`] after
@@ -437,11 +474,16 @@ impl Menu {
     }
 
     /// Replaces the rows, keeping the selection where it still resolves.
+    /// An unchanged model is ignored, so owners may refresh it on every
+    /// notification.
     pub(crate) fn set_model(
         &mut self,
         model: MenuModel,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.model == model {
+            return;
+        }
         self.model = model;
         self.selection = self
             .selection
@@ -645,11 +687,17 @@ impl Menu {
                 });
             let id = button.id;
             let enabled = button.enabled;
+            let tooltip = button.tooltip.clone();
             line = line.child(
                 div()
                     .id(SharedString::from(format!(
                         "menu-button-{row}-{index}"
                     )))
+                    .when_some(tooltip, |button, tooltip| {
+                        button.tooltip(move |_, cx| {
+                            TextTooltip::view(tooltip.clone(), swatch, cx)
+                        })
+                    })
                     .flex_none()
                     .h(px(24.0))
                     .px(px(10.0))
@@ -689,6 +737,81 @@ impl Menu {
     }
 }
 
+/// Type-ahead: the menu keeps no text, so every insertion is a fresh
+/// prefix and the remaining methods report an empty document.
+impl EntityInputHandler for Menu {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<'_, Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.type_ahead(text, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        _: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) {
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for Menu {
     fn render(
         &mut self,
@@ -716,12 +839,15 @@ impl Render for Menu {
                 }
             })
             .collect();
+        let focus = self.focus.clone();
+        let menu = cx.entity();
         raised_panel(swatch, 9.0)
             .id("menu")
             .key_context("menu")
             .track_focus(&self.focus)
-            .min_w(px(MIN_WIDTH))
-            .p(px(5.0))
+            .occlude()
+            .min_w(MENU_MIN_WIDTH)
+            .p(px(PANEL_PADDING))
             .text_size(px(12.5))
             .text_color(swatch.fg)
             .flex()
@@ -729,6 +855,22 @@ impl Render for Menu {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .when_some(self.max_height, Styled::max_h)
+            // Typed text reaches `replace_text_in_range` for type-ahead only
+            // while the menu has focus.
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, cx| {
+                        window.handle_input(
+                            &focus,
+                            ElementInputHandler::new(bounds, menu.clone()),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
@@ -869,6 +1011,14 @@ mod tests {
 
     fn window() -> Size<Pixels> {
         size(px(1000.0), px(600.0))
+    }
+
+    #[test]
+    fn the_model_height_sums_fixed_row_heights_and_panel_chrome() {
+        // Six items, three separators, one button row, plus 5pt padding and
+        // a 1pt border on both sides.
+        assert_eq!(model().height(), px(6.0 * 28.0 + 3.0 * 9.0 + 30.0 + 12.0));
+        assert_eq!(MenuModel::default().height(), px(12.0));
     }
 
     #[test]

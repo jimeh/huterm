@@ -585,6 +585,11 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("ctrl-shift-c", ids::COPY, "Copy the selection"),
             default("ctrl-shift-v", ids::PASTE, "Paste from the clipboard"),
+            default(
+                "ctrl-,",
+                ids::OPEN_SETTINGS,
+                "Open the configuration file",
+            ),
             default("ctrl-<", ids::RELOAD_CONFIG, "Reload the configuration"),
         ]),
     }
@@ -625,6 +630,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
         )
     }));
     entries.extend(dialog_defaults());
+    entries.extend(menu_defaults());
     entries.extend(notice_defaults());
     entries.extend(palette_defaults(platform));
     entries
@@ -640,6 +646,24 @@ fn dialog_defaults() -> Vec<BindingEntry> {
         default("right", ids::DIALOG_FOCUS_NEXT, "Next Button"),
         default("shift-tab", ids::DIALOG_FOCUS_PREVIOUS, "Previous Button"),
         default("left", ids::DIALOG_FOCUS_PREVIOUS, "Previous Button"),
+    ]
+}
+
+/// Menu bindings, identical on both platforms. Their commands carry the
+/// `menu` context, so they match only while a menu has focus and reserve
+/// nothing from terminals.
+fn menu_defaults() -> Vec<BindingEntry> {
+    vec![
+        default("down", ids::MENU_SELECT_NEXT, "Next Item"),
+        default("up", ids::MENU_SELECT_PREVIOUS, "Previous Item"),
+        default("home", ids::MENU_SELECT_FIRST, "First Item"),
+        default("end", ids::MENU_SELECT_LAST, "Last Item"),
+        default("right", ids::MENU_SELECT_RIGHT, "Next Button"),
+        default("left", ids::MENU_SELECT_LEFT, "Previous Button"),
+        default("enter", ids::MENU_CONFIRM, "Run Item"),
+        default("space", ids::MENU_CONFIRM, "Run Item"),
+        default("escape", ids::MENU_CLOSE, "Close"),
+        default("tab", ids::MENU_CLOSE, "Close"),
     ]
 }
 
@@ -1399,6 +1423,110 @@ mod tests {
             assert_eq!(matched("enter", &palette), vec![ids::PALETTE_CONFIRM]);
             assert_eq!(matched("escape", &palette), vec![ids::PALETTE_BACK]);
         }
+    }
+
+    #[test]
+    fn menu_defaults_match_only_while_a_menu_has_focus() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let compiled = compile(platform, &[]).unwrap();
+            for key in [
+                "down", "up", "home", "end", "right", "left", "enter", "space",
+                "escape", "tab",
+            ] {
+                assert!(
+                    !compiled.reserved.is_reserved(&keystroke(key)),
+                    "{platform:?}: {key} reserved from terminal input"
+                );
+            }
+            let keymap = Keymap::new(compiled.bindings);
+            let menu = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("menu").unwrap(),
+            ];
+            let terminal = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Terminal").unwrap(),
+            ];
+            let confirming =
+                [KeyContext::parse("Workspace confirming").unwrap()];
+            let notices = [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("notices").unwrap(),
+            ];
+            let palette = [
+                KeyContext::parse("Workspace palette").unwrap(),
+                KeyContext::parse("Palette").unwrap(),
+            ];
+            let matched = |key: &str, contexts: &[KeyContext]| {
+                let (bindings, pending) =
+                    keymap.bindings_for_input(&[keystroke(key)], contexts);
+                assert!(!pending, "{platform:?}: {key} left a pending chord");
+                bindings.iter().map(command_of).collect::<Vec<_>>()
+            };
+            for (key, command) in [
+                ("down", ids::MENU_SELECT_NEXT),
+                ("up", ids::MENU_SELECT_PREVIOUS),
+                ("home", ids::MENU_SELECT_FIRST),
+                ("end", ids::MENU_SELECT_LAST),
+                ("right", ids::MENU_SELECT_RIGHT),
+                ("left", ids::MENU_SELECT_LEFT),
+                ("enter", ids::MENU_CONFIRM),
+                ("space", ids::MENU_CONFIRM),
+                ("escape", ids::MENU_CLOSE),
+                ("tab", ids::MENU_CLOSE),
+            ] {
+                assert_eq!(
+                    matched(key, &menu),
+                    vec![command],
+                    "{platform:?}: {key} with a focused menu"
+                );
+                for (name, contexts) in [
+                    ("terminal", &terminal[..]),
+                    ("dialog", &confirming[..]),
+                    ("notices", &notices[..]),
+                    ("palette", &palette[..]),
+                ] {
+                    assert!(
+                        !matched(key, contexts).contains(&command),
+                        "{platform:?}: {key} dispatched a menu command in the {name}"
+                    );
+                }
+            }
+            assert_eq!(
+                matched("enter", &notices),
+                vec![ids::NOTICE_RUN_ACTION]
+            );
+            assert_eq!(matched("escape", &palette), vec![ids::PALETTE_BACK]);
+        }
+    }
+
+    #[test]
+    fn linux_binds_ctrl_comma_to_open_settings_and_reserves_it() {
+        let compiled = compile(Platform::Linux, &[]).unwrap();
+        assert!(compiled.reserved.is_reserved(&keystroke("ctrl-,")));
+        assert!(!compiled.reserved.is_reserved(&keystroke(",")));
+        let (bindings, installed) = compiled.install_parts();
+        let keymap = Keymap::new(bindings);
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let (bindings, pending) =
+            keymap.bindings_for_input(&[keystroke("ctrl-,")], &terminal);
+        assert!(!pending);
+        assert_eq!(
+            bindings.iter().map(command_of).collect::<Vec<_>>(),
+            vec![ids::OPEN_SETTINGS]
+        );
+        let keys: Vec<&str> = installed
+            .shortcuts(ids::OPEN_SETTINGS, &terminal, None)
+            .iter()
+            .map(|binding| binding.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["ctrl-,"]);
+        let mac = compile(Platform::MacOs, &[]).unwrap();
+        assert!(!mac.reserved.is_reserved(&keystroke("ctrl-,")));
+        assert!(mac.reserved.is_reserved(&keystroke("cmd-,")));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! raised panels, and the scrim.
 
 use gpui::{
-    BoxShadow, Div, Hsla, Rgba, SharedString, div, hsla, point, prelude::*, px,
+    AnyView, App, BoxShadow, Context, Div, Hsla, Render, Rgba, SharedString,
+    Window, div, hsla, point, prelude::*, px,
 };
 
 use super::scrollbar_colors;
@@ -206,6 +207,47 @@ pub(crate) fn raised_panel(swatch: Swatch, radius: f32) -> Div {
 /// The dimming layer beneath a modal panel, filling its parent.
 pub(crate) fn scrim(swatch: Swatch) -> Div {
     div().absolute().inset_0().bg(swatch.bg.opacity(0.6))
+}
+
+/// A one-line hover tooltip on the raised surface, for controls whose icon
+/// or disabled state needs a word of explanation.
+pub(crate) struct TextTooltip {
+    text: SharedString,
+    swatch: Swatch,
+}
+
+impl TextTooltip {
+    /// The view GPUI's `tooltip` builder expects.
+    pub(crate) fn view(
+        text: impl Into<SharedString>,
+        swatch: Swatch,
+        cx: &mut App,
+    ) -> AnyView {
+        let text = text.into();
+        cx.new(|_| Self { text, swatch }).into()
+    }
+}
+
+impl Render for TextTooltip {
+    fn render(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let swatch = self.swatch;
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(6.0))
+            .bg(swatch.surface)
+            .border_1()
+            .border_color(swatch.line_strong)
+            .shadow(swatch.shadow())
+            .text_size(px(11.5))
+            .text_color(swatch.fg)
+            .whitespace_nowrap()
+            .child(self.text.clone())
+    }
 }
 
 /// A severity mark: a filled circle with a single glyph.

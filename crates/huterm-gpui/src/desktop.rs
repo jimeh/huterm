@@ -2096,7 +2096,6 @@ impl TerminalView {
     /// Shows `key` (the compiled keymap's first `scroll_to_bottom` binding
     /// in the Terminal context) in the scroll pill; `None` restores the
     /// platform default.
-    #[expect(dead_code, reason = "the window supplies its keymap later")]
     pub(super) fn set_scroll_to_bottom_key(
         &mut self,
         key: Option<String>,

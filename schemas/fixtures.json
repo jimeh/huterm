@@ -120,6 +120,24 @@
     "theme": false
   },
   {
+    "name": "window menu button off",
+    "toml": "[window]\nmenu_button = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window menu button on",
+    "toml": "[window]\nmenu_button = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window menu button string",
+    "toml": "[window]\nmenu_button = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "selected theme name",
     "toml": "[theme]\nname = \"huterm-dark\"",
     "valid": true,
