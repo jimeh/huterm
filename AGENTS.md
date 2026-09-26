@@ -56,9 +56,14 @@ Keep view destruction and detachment separate from explicit close.
 - On Unix, configure the PTY master as nonblocking before cloning reader and
   writer handles; the clones share its open-file-description flags.
 - After a nonblocking PTY read returns `WouldBlock`, wait for readability
-  instead of sleeping before every retry. Use `filedescriptor` for this wait:
-  its macOS implementation avoids the platform's unreliable PTY `poll(2)` by
-  using `select(2)`.
+  instead of sleeping before every retry. Wait through `nix::poll` on every
+  Unix platform. Descriptors at or above `FD_SETSIZE` (1024) must remain
+  usable, so never wait through `select(2)`, including `filedescriptor::poll`,
+  whose macOS path uses it. The old "broken macOS `poll(2)`" rule came only
+  from that crate's comment. A macOS 27 probe at descriptors 1500 and 1700
+  saw correct PTY master readability, write backpressure, drain, hangup, and
+  socket-pair cancellation, and Ghostty's read thread polls its PTY the same
+  way.
 - Runtime data and priority controls share a coalesced wake; keep control drains
   bounded so output cannot starve. Client input, resize, and presentation
   messages have their own bounded queue, taken ahead of PTY output and

@@ -21,7 +21,7 @@ huterm-protocol = { path = "crates/huterm-protocol", version = "=0.13.0" } # x-r
 filedescriptor = "=0.8.3"
 memchr = "=2.8.3"
 portable-pty = "=0.9.0"
-nix = { version = "=0.29.0", features = ["fs", "hostname", "process", "signal"] }
+nix = { version = "=0.29.0", features = ["fs", "hostname", "poll", "process", "resource", "signal", "term"] }
 nucleo-matcher = "=0.3.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
