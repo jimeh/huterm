@@ -98,8 +98,10 @@ impl ClientFrame {
         self.inset > px(0.0)
     }
 
-    /// The eight resize zones in the inset: the corners take
-    /// [`CORNER_REACH`] along each edge, the edges the rest.
+    /// The resize zones in the inset. Each corner takes [`CORNER_REACH`]
+    /// along both of its edges as an L-shaped band of two rectangles, so
+    /// its inner square stays content: the close control sits in the top
+    /// right one. The edges take the rest of the band.
     pub(super) fn resize_zones(
         self,
         viewport: Size<Pixels>,
@@ -113,35 +115,53 @@ impl ClientFrame {
         let corner = (inset + CORNER_REACH).min(width / 2.0).min(height / 2.0);
         let middle_width = (width - corner * 2.0).max(px(0.0));
         let middle_height = (height - corner * 2.0).max(px(0.0));
+        let reach = (corner - inset).max(px(0.0));
         let right = width - inset;
         let bottom = height - inset;
         // Corners first: a press in the shared reach resizes diagonally.
-        vec![
+        // Each is the band along its horizontal edge plus the band along
+        // its vertical edge below or above that.
+        let mut zones = vec![
             (
                 ResizeEdge::TopLeft,
-                Bounds::new(point(px(0.0), px(0.0)), size(corner, corner)),
+                Bounds::new(point(px(0.0), px(0.0)), size(corner, inset)),
+            ),
+            (
+                ResizeEdge::TopLeft,
+                Bounds::new(point(px(0.0), inset), size(inset, reach)),
             ),
             (
                 ResizeEdge::TopRight,
                 Bounds::new(
                     point(width - corner, px(0.0)),
-                    size(corner, corner),
+                    size(corner, inset),
                 ),
+            ),
+            (
+                ResizeEdge::TopRight,
+                Bounds::new(point(right, inset), size(inset, reach)),
+            ),
+            (
+                ResizeEdge::BottomLeft,
+                Bounds::new(point(px(0.0), bottom), size(corner, inset)),
             ),
             (
                 ResizeEdge::BottomLeft,
                 Bounds::new(
                     point(px(0.0), height - corner),
-                    size(corner, corner),
+                    size(inset, reach),
                 ),
             ),
             (
                 ResizeEdge::BottomRight,
-                Bounds::new(
-                    point(width - corner, height - corner),
-                    size(corner, corner),
-                ),
+                Bounds::new(point(width - corner, bottom), size(corner, inset)),
             ),
+            (
+                ResizeEdge::BottomRight,
+                Bounds::new(point(right, height - corner), size(inset, reach)),
+            ),
+        ];
+        zones.extend([
             (
                 ResizeEdge::Top,
                 Bounds::new(point(corner, px(0.0)), size(middle_width, inset)),
@@ -158,30 +178,18 @@ impl ClientFrame {
                 ResizeEdge::Right,
                 Bounds::new(point(right, corner), size(inset, middle_height)),
             ),
-        ]
+        ]);
+        zones
     }
 
     /// The edge a press at `position` resizes, or `None` inside the
-    /// content. Production presses hit the zones themselves; this checks
-    /// that mapping.
+    /// content, from the zones production mounts.
     #[cfg(test)]
     pub(super) fn resize_edge(
         self,
         position: gpui::Point<Pixels>,
         viewport: Size<Pixels>,
     ) -> Option<ResizeEdge> {
-        // A corner zone's inner square is content; only its L-shaped band
-        // in the inset resizes.
-        let width = viewport.width.max(px(0.0));
-        let height = viewport.height.max(px(0.0));
-        let inset = self.inset.min(width / 2.0).min(height / 2.0);
-        let in_band = position.x < inset
-            || position.y < inset
-            || position.x >= width - inset
-            || position.y >= height - inset;
-        if !in_band {
-            return None;
-        }
         self.resize_zones(viewport)
             .into_iter()
             .find(|(_, bounds)| bounds.contains(&position))
@@ -372,8 +380,8 @@ mod tests {
         assert_eq!(edge(35.0, 5.0), Some(ResizeEdge::Top));
         assert_eq!(edge(5.0, 35.0), Some(ResizeEdge::Left));
         // Content, including the corner squares inside the band, is not
-        // a resize.
-        assert_eq!(edge(10.0, 10.0), None);
+        // a resize. The band's far edge itself still counts, as above.
+        assert_eq!(edge(10.5, 10.5), None);
         assert_eq!(edge(20.0, 20.0), None);
         assert_eq!(edge(400.0, 300.0), None);
         assert_eq!(edge(789.9, 589.9), None);
@@ -383,19 +391,28 @@ mod tests {
                 .resize_edge(point(px(0.0), px(0.0)), viewport),
             None
         );
-        // The zones tile the band exactly: every band point maps once.
+        // The zones tile the band and nothing else: every band point maps
+        // to one edge, and no content point, including the corner squares
+        // inside the band, maps at all.
         let zones = frame.resize_zones(viewport);
-        assert_eq!(zones.len(), 8);
+        assert_eq!(zones.len(), 12);
         for x in (0..800_u16).step_by(7) {
             for y in (0..600_u16).step_by(7) {
                 let position = point(px(f32::from(x)), px(f32::from(y)));
-                let hits = zones
+                let hits: Vec<ResizeEdge> = zones
                     .iter()
                     .filter(|(_, bounds)| bounds.contains(&position))
-                    .count();
+                    .map(|(edge, _)| *edge)
+                    .collect();
                 let in_band = x < 10 || y < 10 || x >= 790 || y >= 590;
                 if in_band {
-                    assert_eq!(hits, 1, "({x}, {y})");
+                    assert!(!hits.is_empty(), "({x}, {y})");
+                    assert!(
+                        hits.iter().all(|edge| *edge == hits[0]),
+                        "({x}, {y})"
+                    );
+                } else {
+                    assert!(hits.is_empty(), "({x}, {y}) {hits:?}");
                 }
             }
         }

@@ -112,7 +112,11 @@ The plan was revised after rebasing onto `cdb720d`.
   implements `WindowControlArea` hit testing. The macOS title strip drags
   because AppKit handles the title-bar region natively. With tabs there, AppKit
   may start a window drag when a tab reorder begins.
-- **Linux client-side decorations need a compositor.** GPUI's X11 backend
+- **Linux client-side decorations need a supporting window manager.**
+  (Corrected during implementation: GPUI grants them only when the window
+  manager lists `_GTK_FRAME_EXTENTS` in the root `_NET_SUPPORTED`, as Mutter
+  and KWin do and Openbox does not; its compositor probe accepts any EWMH
+  window manager.) GPUI's X11 backend
   supports `WindowDecorations::Client` through `_MOTIF_WM_HINTS`,
   `start_window_move` and `start_window_resize` through `_NET_WM_MOVERESIZE`,
   `show_window_menu`, and `set_client_inset` through `_GTK_FRAME_EXTENTS`.
@@ -658,7 +662,15 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   the window is windowed and untiled; eight resize zones in that inset call
   `start_window_resize`. Verified under Xvfb without a compositor: the
   `Client` request left `_MOTIF_WM_HINTS` at server decorations and set no
-  `_GTK_FRAME_EXTENTS`, and the app ran without panics. Not yet run: any
-  compositor session; the compositor smoke and the `vm:linux:dev` checks
-  (drag, resize from every edge, maximize, the window menu, fullscreen
-  root geometry, and the fallback) remain.
+  `_GTK_FRAME_EXTENTS`, and the app ran without panics. The client-frame
+  smoke later verified the drawn row under `xcompmgr` with Openbox advertising
+  `_GTK_FRAME_EXTENTS`: decorations off, 10-point extents, the assessed close
+  from the drawn control, minimize, double-click maximize, drag, and exact
+  fullscreen restoration, plus the fallback. The `vm:linux:dev` checks under
+  real Mutter remain.
+- Smoke slice: `scripts/check-overlays.ts` covers the close dialog keys,
+  multi-tab close, the window and tab menus, notice focus, window titles, the
+  scroll pill, and About on Linux; it found and fixed the `⋯` button drawn
+  over the last tab, unreachable drawn window controls, corner resize zones
+  covering the close button, and a title-row double-click lost to the move
+  grab. macOS ports of these smokes remain.

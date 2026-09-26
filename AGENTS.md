@@ -1200,8 +1200,13 @@ stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<me
 Linux windows without granted client-side decorations. Only drawing code
 matches `Titlebar`. GPUI 0.2.2's `WindowControlArea` hit testing exists only on
 Windows; macOS title-bar dragging is AppKit's own, and X11 moves need
-`start_window_move`. X11 client-side decorations need a compositor that owns
-`_NET_WM_CM_S0` before Huterm starts, and GPUI silently falls back to server
-decorations otherwise, so read `window.window_decorations()` instead of
-trusting the request; decoration changes arrive through the window appearance
-callback.
+`start_window_move`. GPUI grants X11 client-side decorations only when, at
+client start, the window manager lists `_GTK_FRAME_EXTENTS` in the root
+`_NET_SUPPORTED` (Mutter and KWin do, Openbox does not); its compositor probe
+accepts any EWMH window manager. It silently falls back to server decorations
+otherwise, so read `window.window_decorations()` instead of trusting the
+request; decoration changes arrive through the window appearance callback.
+The client-frame smoke appends `_GTK_FRAME_EXTENTS` to Openbox's
+`_NET_SUPPORTED` under `xcompmgr` to stand in for such a window manager.
+Start a title-row move on the first drag motion, not the press: the window
+manager's move grab otherwise swallows the second click of a double-click.

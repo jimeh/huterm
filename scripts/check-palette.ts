@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
+import { checkClientFrame, withCompositor } from "./check-client-frame";
+import { checkOverlays } from "./check-overlays";
 
 const commandFlag = 1 << 20;
 const optionFlag = 1 << 19;
@@ -1025,11 +1027,26 @@ if (import.meta.main) {
   if (!(["darwin", "linux"] as string[]).includes(process.platform)) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
+    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|frame narrows a local run.
+    const only = process.env.HUTERM_PALETTE_SMOKE_ONLY;
     const checks = async (wm?: X11Process) => {
-      await checkPalette(executable, "ghostty", wm);
-      console.log("PALETTE_SMOKE_ALL engine=ghostty");
+      if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
+      // The overlay fixtures drive X11 input; macOS needs native events.
+      if (process.platform === "linux" && wm && (!only || only === "overlays")) {
+        await checkOverlays(executable, wm);
+      }
     };
     if (process.platform === "darwin") await checks();
-    else await withOpenbox(checks);
+    else {
+      await withOpenbox(checks);
+      if (!only || only === "frame") {
+        // Client-side decorations need the compositor and the advertised
+        // frame extents before Huterm starts; the fallback run needs a
+        // fresh Openbox whose root properties never saw them.
+        await withOpenbox((wm) => withCompositor(() => checkClientFrame(executable, wm, true)));
+        await withOpenbox((wm) => checkClientFrame(executable, wm, false));
+      }
+    }
+    console.log("PALETTE_SMOKE_ALL engine=ghostty");
   }
 }

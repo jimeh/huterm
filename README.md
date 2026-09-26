@@ -295,11 +295,12 @@ space moves the window, double-clicking it maximizes, and a right-click opens
 the window manager's menu; the close control takes the same assessed close
 path as the `close_window` command. A windowed, untiled window also gets a
 thin invisible border for resizing, a shadow, and rounded top corners, which
-disappear while it is maximized, tiled, or fullscreen. This needs a
-compositing window manager (GNOME, KDE, or any X11 session with a compositor;
-GNOME on Wayland runs Huterm through XWayland, which Mutter composites).
-Without one, GPUI falls back to the window manager's title bar and `titlebar`
-behaves as `top`. Wherever no title bar exists the tabs take a top bar
+disappear while it is maximized, tiled, or fullscreen. This needs a window
+manager that supports client-side decorations by advertising
+`_GTK_FRAME_EXTENTS`, such as GNOME's Mutter or KDE's KWin; GNOME on Wayland
+runs Huterm through XWayland, which Mutter manages. Other window managers,
+such as Openbox or i3, keep their own title bar, and `titlebar` behaves as
+`top` there. Wherever no title bar exists the tabs take a top bar
 instead: fullscreen on either platform and Quake windows.
 
 `style` selects Pill (the default) or Strip tabs for every placement. Left and

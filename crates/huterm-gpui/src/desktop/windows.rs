@@ -1500,6 +1500,9 @@ fn open_window_with_profile(
                 menu_button_focus: cx.focus_handle(),
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 menu_bounds: Rc::new(Cell::new(None)),
+                window_controls_bounds: Rc::new(Cell::new(None)),
+                title_row_press: Rc::new(Cell::new(false)),
+                title_row_moves: Rc::new(Cell::new(0)),
                 menu_contexts: Vec::new(),
                 about: None,
                 window_title: String::new(),
@@ -2245,6 +2248,15 @@ struct WorkspaceView {
     /// letting a press on it toggle rather than dismiss; `None` while the
     /// button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The window controls' painted bounds in Huterm's own title row, for
+    /// smoke pointer fixtures; `None` while the row is not drawn.
+    window_controls_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A primary press on the drawn title row's empty space that has not
+    /// yet moved: the first drag motion turns it into a window move. Any
+    /// press elsewhere clears it.
+    title_row_press: Rc<Cell<bool>>,
+    /// How many window moves the title row has started, for smokes.
+    title_row_moves: Rc<Cell<u32>>,
     /// Where the open menu was last painted, for outside-press dismissal.
     menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The key contexts captured when the menu opened, for shortcut text.
@@ -6136,6 +6148,9 @@ impl Render for WorkspaceView {
             // A hidden button anchors nothing; `open_menu` falls back.
             self.menu_button_bounds.set(None);
         }
+        if !frame.controls {
+            self.window_controls_bounds.set(None);
+        }
         let mut root = div()
             .size_full()
             .relative()
@@ -6240,6 +6255,10 @@ impl Render for WorkspaceView {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
+                                    // Only a press the title row itself
+                                    // accepts (in its bubble handler) may
+                                    // become a window move.
+                                    view.title_row_press.set(false);
                                     view.defer_pointer_refresh(window, cx);
                                     // A press outside the menu closes it and
                                     // then proceeds; the button toggles it.
@@ -6382,7 +6401,7 @@ impl Render for WorkspaceView {
                         // Huterm's own title row: its empty space moves
                         // the window, a double-click maximizes it, and a
                         // secondary press opens the window manager's menu.
-                        Self::title_row_gestures(bar)
+                        self.title_row_gestures(bar)
                     })
                     .when(titlebar > px(0.0) && !merged_row, |bar| {
                         // The active tab's title, centred across the strip
@@ -6455,7 +6474,10 @@ impl Render for WorkspaceView {
                     .absolute()
                     .left(layout.tabs.origin.x - clip.origin.x)
                     .top(layout.tabs.origin.y - clip.origin.y)
-                    .w(layout.tabs.size.width)
+                    // The bar occludes the title strip beneath it, so it
+                    // stops before the strip's trailing reserve, where the
+                    // strip draws the window controls.
+                    .w(layout.tabs.size.width - layout.strip_trailing)
                     .h(layout.tabs.size.height)
                     .bg(colors.bar)
                     .occlude()
@@ -6477,7 +6499,7 @@ impl Render for WorkspaceView {
                     .when(merged_row && frame.controls, |row| {
                         // The same space in Huterm's own row asks the
                         // window manager for the move, maximize, and menu.
-                        Self::title_row_gestures(row)
+                        self.title_row_gestures(row)
                     }),
             );
             if shelf_bar {
@@ -6523,7 +6545,9 @@ impl Render for WorkspaceView {
                 // The strip occludes the row beneath it, so its own empty
                 // space after the last tab carries the row's gestures too;
                 // tabs stop their presses before they reach it.
-                .when(merged_row && frame.controls, Self::title_row_gestures)
+                .when(merged_row && frame.controls, |bar| {
+                    self.title_row_gestures(bar)
+                })
                 .on_scroll_wheel(cx.listener(
                     move |view, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(px(32.0));
@@ -6711,10 +6735,14 @@ impl Render for WorkspaceView {
                     ),
             );
             let bar_menu_button = match menu_placement {
-                // The strip ends where the bar does, or before the window
-                // controls in Huterm's own title row.
+                // The strip area ends where the bar does, or before the
+                // window controls in Huterm's own title row. `TabStrip`
+                // shrinks its own bounds to Fit tabs' total width, so the
+                // layout's strip area anchors the button, not `strip`.
                 MenuButtonPlacement::BarEnd => Some(point(
-                    strip.bounds.right() - clip.origin.x - CONTROL_SLOT
+                    layout.strip_bounds(tabs).right()
+                        - clip.origin.x
+                        - CONTROL_SLOT
                         + CONTROL_INSET,
                     strip.bounds.origin.y - clip.origin.y + bar_inset,
                 )),
@@ -7466,15 +7494,32 @@ impl WorkspaceView {
     /// The gestures of the title row Huterm draws, on its empty space: a
     /// primary press starts the window manager's move, a double-click
     /// toggles maximize, and a secondary press opens its window menu.
-    fn title_row_gestures<E: InteractiveElement>(row: E) -> E {
-        row.on_mouse_down(MouseButton::Left, |event, window, cx| {
+    ///
+    /// The move starts on the first drag motion after the press, not on
+    /// the press itself: `_NET_WM_MOVERESIZE` hands the pointer to the
+    /// window manager's grab, which would swallow the release and keep a
+    /// second press from counting as the double-click.
+    fn title_row_gestures<E: InteractiveElement>(&self, row: E) -> E {
+        let pressed = Rc::clone(&self.title_row_press);
+        let dragged = Rc::clone(&self.title_row_press);
+        let released = Rc::clone(&self.title_row_press);
+        let moves = Rc::clone(&self.title_row_moves);
+        row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
             if event.click_count == 2 {
+                pressed.set(false);
                 window.zoom_window();
             } else {
-                window.start_window_move();
+                pressed.set(true);
             }
             cx.stop_propagation();
         })
+        .on_mouse_move(move |event, window, _| {
+            if event.dragging() && dragged.replace(false) {
+                moves.set(moves.get() + 1);
+                window.start_window_move();
+            }
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, _| released.set(false))
         .on_mouse_down(MouseButton::Right, |event, window, cx| {
             window.show_window_menu(event.position);
             cx.stop_propagation();
@@ -7493,6 +7538,7 @@ impl WorkspaceView {
     ) -> gpui::Div {
         let maximized = window.is_maximized();
         let swatch = Swatch::from_theme(&self.config.theme);
+        let bounds_cell = Rc::clone(&self.window_controls_bounds);
         let button = |id: &'static str, icon: Icon, label: &'static str| {
             div()
                 .id(id)
@@ -7546,6 +7592,14 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             ))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
+                )
+                .absolute()
+                .inset_0(),
+            )
     }
 
     /// The open menu mounted at its placement: below the anchor, or above
@@ -7602,10 +7656,20 @@ impl WorkspaceView {
         Some(wrapper)
     }
 
-    /// Smoke output for the menu: whether it is open, whether it holds
-    /// focus, the selected item, the targeted tab's index for a tab menu,
-    /// and whether the About panel is showing.
-    pub(super) fn menu_smoke_state(&self, window: &Window, cx: &App) -> String {
+    /// Smoke output for the transient UI, each field named after `prefix`:
+    /// the menu (open, focused, selected item, targeted tab index), the
+    /// About panel, the close confirmation (showing, focused button,
+    /// Debug-quoted title), notice focus, the Debug-quoted native window
+    /// title, the painted `⋯` button and window-controls bounds in logical
+    /// points, the window scale, the sampled frame (granted client decorations, applied inset,
+    /// maximized, observed fullscreen mode), and the content bounds inside
+    /// the frame. Quoted values may contain spaces.
+    pub(super) fn ui_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> String {
         let target = self
             .menu_target
             .and_then(|tab| {
@@ -7613,7 +7677,7 @@ impl WorkspaceView {
             })
             .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let about = self.about.is_some();
-        match &self.menu {
+        let menu = match &self.menu {
             Some(menu) => {
                 let menu = menu.read(cx);
                 let selection = menu
@@ -7621,14 +7685,93 @@ impl WorkspaceView {
                     .and_then(|selection| menu.model().id_at(selection))
                     .unwrap_or("none");
                 format!(
-                    "menu=true menu_focused={} menu_selection={selection} menu_target={target} about={about}",
+                    "{prefix}menu=true {prefix}menu_focused={} {prefix}menu_selection={selection}",
                     menu.focus_handle(cx).is_focused(window)
                 )
             }
             None => format!(
-                "menu=false menu_focused=false menu_selection=none menu_target={target} about={about}"
+                "{prefix}menu=false {prefix}menu_focused=false {prefix}menu_selection=none"
             ),
-        }
+        };
+        let dialog_focus = match self.close.dialog_focus {
+            DialogFocus::Primary => "primary",
+            DialogFocus::Cancel => "cancel",
+        };
+        let dialog_title = self.close.confirmation.as_ref().map_or_else(
+            || "none".to_owned(),
+            |target| {
+                format!(
+                    "{:?}",
+                    build_close_dialog(&self.close_dialog_input(target, cx))
+                        .title
+                )
+            },
+        );
+        let painted = |cell: &Cell<Option<Bounds<Pixels>>>| {
+            cell.get().map_or_else(
+                || "none".to_owned(),
+                |bounds| {
+                    format!(
+                        "{},{},{},{}",
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.y),
+                        f32::from(bounds.size.width),
+                        f32::from(bounds.size.height)
+                    )
+                },
+            )
+        };
+        let button = painted(&self.menu_button_bounds);
+        let controls = painted(&self.window_controls_bounds);
+        let content = self.chrome_layout(window).content;
+        format!(
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_controls={controls} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            self.close.confirmation.is_some(),
+            self.notice_focus.is_focused(window),
+            self.window_title,
+            self.title_row_moves.get(),
+            window.scale_factor(),
+            self.frame_state.client_decorations(),
+            f32::from(self.window_frame().inset.top),
+            self.frame_state.maximized,
+            self.fullscreen.observed,
+            f32::from(content.origin.x),
+            f32::from(content.origin.y),
+            f32::from(content.size.width),
+            f32::from(content.size.height),
+        )
+    }
+
+    /// Smoke output for tab geometry: each tab's painted bounds in logical
+    /// points as `x,y,w,h`, joined by `;`, from the strip's current layout.
+    pub(super) fn tab_smoke_rects(&self, window: &Window) -> String {
+        let strip = self.tab_strip(window);
+        let vertical = self.layout_tabs().position.vertical();
+        (0..self.tabs.len())
+            .map(|index| {
+                let offset = strip.start(index) - strip.offset;
+                let extent = strip.tab_extent(index);
+                let bounds = if vertical {
+                    Bounds::new(
+                        strip.bounds.origin + point(px(0.0), offset),
+                        size(strip.bounds.size.width, extent),
+                    )
+                } else {
+                    Bounds::new(
+                        strip.bounds.origin + point(offset, px(0.0)),
+                        size(extent, strip.bounds.size.height),
+                    )
+                };
+                format!(
+                    "{},{},{},{}",
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";")
     }
 }
 

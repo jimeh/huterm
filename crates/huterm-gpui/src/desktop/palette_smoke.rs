@@ -115,6 +115,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
         return Ok("approved quit requested".to_owned());
     }
     let handle = *cx.windows().first().context("palette smoke window")?;
+    if let Some(id) = command.strip_prefix("invoke\t") {
+        return invoke_catalog(cx, handle, id);
+    }
     let invocation = match command {
         "invoke-new-tab" => Some(CommandInvocation::new(ids::NEW_TAB, vec![])),
         "invoke-reload" => {
@@ -199,6 +202,24 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             }
         })
     })?
+}
+
+/// `invoke\t<command id>` runs any argument-free catalog command through
+/// the production router, as a binding or menu pick would.
+fn invoke_catalog(
+    cx: &mut App,
+    handle: gpui::AnyWindowHandle,
+    id: &str,
+) -> anyhow::Result<String> {
+    let spec = huterm_protocol::catalog()
+        .iter()
+        .find(|spec| spec.id.as_str() == id)
+        .with_context(|| format!("unknown catalog command {id:?}"))?;
+    let invocation = CommandInvocation::new(spec.id, vec![]);
+    Ok(format!(
+        "{:?}",
+        Desktop::invoke(cx, &invocation, Some(handle))
+    ))
 }
 
 fn quake_state(cx: &App) -> anyhow::Result<String> {
@@ -287,10 +308,11 @@ fn read_state(cx: &mut App) -> String {
     );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
-            let Ok(view) = root.downcast::<WorkspaceView>() else {
+            let Ok(entity) = root.downcast::<WorkspaceView>() else {
                 return;
             };
-            let view = view.read(cx);
+            let ui = ui_state(&entity, index, window, cx);
+            let view = entity.read(cx);
             let palette = view.palette.as_ref();
             let palette_focused = palette.is_some_and(|palette| {
                 palette.read(cx).focus_handle(cx).is_focused(window)
@@ -339,16 +361,7 @@ fn read_state(cx: &mut App) -> String {
                 terminal_text
             )
             .unwrap();
-            let menu = view.menu_smoke_state(window, cx);
-            writeln!(
-                output,
-                "{}",
-                menu.split(' ')
-                    .map(|field| format!("w{index}.{field}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-            .unwrap();
+            writeln!(output, "{ui}").unwrap();
             if let Some(palette) = palette {
                 writeln!(
                     output,
@@ -360,6 +373,55 @@ fn read_state(cx: &mut App) -> String {
         });
     }
     output
+}
+
+/// Transient UI, tab geometry, and the active terminal's scroll state for
+/// pointer fixtures, as `w<index>.` fields: `scrolled` is the displayed
+/// offset (distinct from the palette's `scroll_offset`), `scroll_pill`
+/// whether the pill is drawn, and `grid` the last PTY size as
+/// `columns,rows`.
+fn ui_state(
+    entity: &gpui::Entity<WorkspaceView>,
+    index: usize,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) -> String {
+    let prefix = format!("w{index}.");
+    entity.update(cx, |view, cx| {
+        let terminal_line = view.active_view().map_or_else(
+            || {
+                format!(
+                    "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0"
+                )
+            },
+            |terminal| {
+                let terminal = terminal.read(cx);
+                format!(
+                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{}",
+                    rect(terminal.content_bounds(window)),
+                    terminal.scroll.displayed(),
+                    terminal.scroll_pill_visible(),
+                    terminal.last_grid_size.columns,
+                    terminal.last_grid_size.rows
+                )
+            },
+        );
+        format!(
+            "{} {prefix}tabs_rects={} {terminal_line}",
+            view.ui_smoke_state(&prefix, window, cx),
+            view.tab_smoke_rects(window)
+        )
+    })
+}
+
+fn rect(value: gpui::Bounds<gpui::Pixels>) -> String {
+    format!(
+        "{},{},{},{}",
+        f32::from(value.origin.x),
+        f32::from(value.origin.y),
+        f32::from(value.size.width),
+        f32::from(value.size.height)
+    )
 }
 
 fn publish(directory: &Path, name: &str, text: &str) {
