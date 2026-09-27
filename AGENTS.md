@@ -718,6 +718,12 @@ GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
 ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
 never participates and cannot detect conditional bindings moving ahead of defaults.
 
+GPUI dispatches input against the last drawn frame. A press that lands before
+the frame showing a dialog's scrim still runs the covered terminal's
+focus-on-click, so the terminal hands focus back to an open dialog. Keys that
+arrive before the terminal is in a drawn frame are dropped: after focusing a
+window, input smokes repeat a probe key until the fixture reads one, then send
+a release byte, instead of typing immediately or sleeping.
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
