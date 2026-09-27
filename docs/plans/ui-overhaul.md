@@ -629,19 +629,25 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   `TitlebarOptions::traffic_light_position` to 7 by 10 points so the
   12-point buttons centre in the 32-point row; GPUI's default centres them in
   AppKit's 28-point title bar, two points higher.
-- The step 12 spike has not run: this slice was built on Linux, where the
-  macOS path does not compile, and no vendor patch was attempted. The
-  following must be checked on a Mac with `position = "titlebar"` before the
-  feature is called done: a tab press-and-drag reorders the tab without moving
-  the window; a tab click activates it and its close button closes it;
-  right-click opens the tab menu; a double-click on the empty trailing space
-  performs the system title-bar action exactly once (a second toggle means
-  AppKit also handled it and the `on_click` handler must go); a drag on that
-  space moves the window; the traffic lights sit centred in the row and clear
-  of the first tab; a single tab with `always_show = false` shows the centred
-  title; entering and leaving fullscreen, including the notch shelf, keeps
-  PTY dimensions equal to the published grid. If AppKit takes the tab drag,
-  try the tracked vendor patch before changing the design.
+- The step 12 spike ran on macOS 27 in a Tart VM with real HID input
+  (`scripts/hid-pointer.swift`). AppKit owned the transparent title bar: a
+  tab press-and-drag moved the window instead of reordering, while a tab
+  click still activated it. The tracked `macos-app-owned-titlebar-drag`
+  vendor patch backports GPUI's `app_owns_titlebar_drag` option and macOS
+  `start_window_move` (zed#60620, zed#41839). Every macOS window now claims
+  its title bar, and `title_row_gestures` moves it from empty strip space on
+  the first drag motion and runs `titlebar_double_click`, in every tab
+  position. `check-macos-titlebar.ts`, part of `smoke:macos-palette`, covers
+  both `titlebar` and `top`: tab click, tab reorder without a window move,
+  right-click, `⋯`, `+`, an empty-space drag, and a double-click that zooms
+  exactly once and restores. Building with `app_owns_titlebar_drag: false`
+  makes it fail at the tab drag. The window server can drop part of an
+  app-started synthetic drag, so fast drags may trail the pointer slightly.
+  VM screenshots show the traffic lights centred in the row and clear of
+  the first tab, and a single tab with `always_show = false` showing its
+  centred title. Still unchecked: the notch shelf on physical hardware, and
+  a reload that crosses `titlebar`, which keeps the traffic lights where the
+  window was created.
 - Step 13 (Linux title bar, build): an ordinary Linux window configured
   for `titlebar` requests `WindowDecorations::Client` at creation and on a
   reload that crosses `titlebar`, and samples `window_decorations()`,
@@ -670,7 +676,19 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   real Mutter remain.
 - Smoke slice: `scripts/check-overlays.ts` covers the close dialog keys,
   multi-tab close, the window and tab menus, notice focus, window titles, the
-  scroll pill, and About on Linux; it found and fixed the `⋯` button drawn
+  scroll pill, and About; it found and fixed the `⋯` button drawn
   over the last tab, unreachable drawn window controls, corner resize zones
   covering the close button, and a title-row double-click lost to the move
-  grab. macOS ports of these smokes remain.
+  grab. It runs on macOS through AppKit events posted to the app, without
+  the synthetic wheel checks, and reads the native title from the key
+  NSWindow. `smoke:macos-fullscreen` and `smoke:linux-fullscreen` enter and
+  leave fullscreen with `titlebar`, checking the PTY against the grid.
+- macOS CI follow-ups: the first macOS build found a stale
+  `Option`-to-`Vec` diagnostics call in the menus smoke and two macOS-only
+  Clippy failures. `bench:scroll` caught a Linux regression: the first
+  render rewrote the creation title through GPUI's blocking X11 `set_title`,
+  stranding the window's MapNotify so it never drew again. The
+  `x11-drain-buffered-events` vendor patch backports zed#62081, and the
+  window title now starts as the creation title.
+- Still open: `bench:idle` on macOS and exporting `HUTERM_SOURCE_REVISION`
+  in macOS packaging and release builds.
