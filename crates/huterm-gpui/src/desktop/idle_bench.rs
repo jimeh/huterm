@@ -103,6 +103,16 @@ fn terminal_progress(terminal: &super::TerminalView) -> String {
     )
 }
 
+/// Startup must not raise a notice; the error lists any that did.
+fn ensure_no_notices(view: &WorkspaceView) -> anyhow::Result<()> {
+    ensure!(
+        view.notices.is_empty(),
+        "startup {}",
+        super::notices::smoke_lines("", view.notices.contents())
+    );
+    Ok(())
+}
+
 fn advance(
     cx: &mut App,
     tabs: usize,
@@ -137,14 +147,7 @@ fn advance(
                 "unexpected native fullscreen adapter or fallback state"
             );
             adapters += usize::from(view.native_fullscreen.is_some());
-            ensure!(
-                view.notices.is_empty(),
-                "startup notices: {:?}",
-                view.notices
-                    .contents()
-                    .map(super::notices::NoticeContent::smoke_line)
-                    .collect::<Vec<_>>()
-            );
+            ensure_no_notices(view)?;
             let ready = view.active_view().is_some_and(|terminal| {
                 terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
                     snapshot

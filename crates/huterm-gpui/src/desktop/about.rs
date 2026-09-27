@@ -135,6 +135,7 @@ fn os_name_and_version() -> (String, Option<String>) {
 }
 
 /// The `PRETTY_NAME` value of an `os-release` file, without its quotes.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn os_release_pretty_name(release: &str) -> Option<String> {
     release.lines().find_map(|line| {
         let value = line.trim().strip_prefix("PRETTY_NAME=")?.trim();
