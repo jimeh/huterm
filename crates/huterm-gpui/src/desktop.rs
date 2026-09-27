@@ -498,9 +498,10 @@ impl TerminalView {
             window,
             |view: &mut TerminalView, window, cx| {
                 // Focus that reaches the terminal while a dialog shows goes
-                // back to the dialog; the program is told nothing. GPUI runs
-                // this only at the next draw, so terminal presses suppress
-                // their own focus-on-click instead of relying on it.
+                // back to the dialog; the program is told nothing. GPUI calls
+                // this only when drawn frames' focus changes, so it misses
+                // focus that returns to the terminal before the dialog's
+                // first frame. Terminal presses suppress that focus-on-click.
                 if let Some(dialog) = windows::modal_focus(window, cx) {
                     dialog.focus(window);
                     return;

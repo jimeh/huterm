@@ -721,11 +721,12 @@ never participates and cannot detect conditional bindings moving ahead of defaul
 GPUI dispatches input against the last drawn frame. A press that lands before
 the frame showing a dialog's scrim still reaches the covered terminal, whose
 mouse-down listener must `prevent_default` to stop `track_focus` from focusing
-it. The terminal's `on_focus` hand-back to the dialog is only a fallback: GPUI
-runs focus listeners at the next draw, and slow Xvfb hosts can read state or
-deliver keys before it. Keys that arrive before the terminal is in a drawn
-frame are dropped: after focusing a window, input smokes repeat a probe key
-until the fixture reads one, then send a release byte, instead of typing
+it. The terminal's `on_focus` hand-back to the dialog cannot cover that case:
+GPUI raises focus events by comparing drawn frames. When the dialog takes focus
+and a stale press returns it to the terminal before the next draw, no event
+fires and the terminal keeps focus. Keys that arrive before the terminal is in
+a drawn frame are dropped: after focusing a window, input smokes repeat a probe
+key until the fixture reads one, then send a release byte, instead of typing
 immediately or sleeping.
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
