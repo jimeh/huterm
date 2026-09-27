@@ -1199,6 +1199,10 @@ pill, dialog buttons, and the About panel; the palette and menus always show
 theirs. The tab position default differs by platform, so the schema describes
 it instead of stating a default, and the config template leaves it commented.
 Pin `position` in smoke fixtures whose geometry assumes one.
+GPUI 0.2.2's Linux shadow shader divides by the blur radius, so a zero-blur
+shadow such as the focus ring drew nothing there while Metal drew it sharp. The
+`linux-sharp-shadows` patch backports Metal's sharp branch (zed#57685). Xvfb
+captures of GPUI windows are black, so check Linux visuals in `vm:linux:dev`.
 Palette ranking ties fall back to catalog order. A new command whose title
 shares a prefix with an existing one, such as Copy Tab Directory beside Copy,
 must come after it in the catalog, or the palette smoke's `copy` query selects

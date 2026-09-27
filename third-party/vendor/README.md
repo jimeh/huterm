@@ -9,7 +9,7 @@ Keep each coherent fix together. GPUI has separate file-drop and explicit-float
 patches, plus hidden-window creation, X11 native-handle, application-lifetime,
 buffered-event drain, and macOS offscreen-display, per-window
 frame-constraint, app-owned title-bar drag, and borderless traffic-light
-fixes. The sys crate
+fixes, and sharp Linux shadows. The sys crate
 has a matched upstream upgrade plus build-script watch-path, license, and
 build-source staging patches. The safe wrapper has the same upstream upgrade.
 
