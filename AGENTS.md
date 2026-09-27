@@ -1199,9 +1199,15 @@ stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<me
 `tab_position::resolve_tab_position`: `top` in fullscreen, Quake windows, and
 Linux windows without granted client-side decorations. Only drawing code
 matches `Titlebar`. GPUI 0.2.2's `WindowControlArea` hit testing exists only on
-Windows; macOS title-bar dragging is AppKit's own, and X11 moves need
-`start_window_move`. GPUI grants X11 client-side decorations only when, at
-client start, the window manager lists `_GTK_FRAME_EXTENTS` in the root
+Windows. Huterm owns macOS title-bar drags: windows set
+`app_owns_titlebar_drag`, and `title_row_gestures` moves them through
+`start_window_move` on the first drag motion and runs `titlebar_double_click`.
+Otherwise the window server takes a press on a tab in the title strip as a
+window drag, and AppKit and Huterm could both act on a double-click. The
+`macos-app-owned-titlebar-drag` vendor patch backports both GPUI pieces
+(zed#41839, zed#60620). X11 moves also need `start_window_move`. GPUI grants
+X11 client-side decorations only when, at client start, the window manager
+lists `_GTK_FRAME_EXTENTS` in the root
 `_NET_SUPPORTED` (Mutter and KWin do, Openbox does not); its compositor probe
 accepts any EWMH window manager. It silently falls back to server decorations
 otherwise, so read `window.window_decorations()` instead of trusting the

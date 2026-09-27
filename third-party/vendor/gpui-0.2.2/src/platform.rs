@@ -1107,6 +1107,18 @@ pub struct WindowOptions {
     /// Whether the window should be movable by the user
     pub is_movable: bool,
 
+    /// Whether the application owns dragging of the (custom) titlebar, rather than
+    /// AppKit. Only has an effect on macOS.
+    ///
+    /// Set this to `true` for windows that draw their own titlebar and move the window
+    /// themselves via [`Window::start_window_move`]. It marks the whole content view as
+    /// app-owned titlebar content, so AppKit neither drags the window from the titlebar
+    /// nor delays titlebar clicks while disambiguating double-clicks. It is independent
+    /// of `is_movable`, so such windows stay user-movable (via their own drag).
+    ///
+    /// Leave this `false` for windows that rely on AppKit's native titlebar dragging.
+    pub app_owns_titlebar_drag: bool,
+
     /// Whether the window should be resizable by the user
     pub is_resizable: bool,
 
@@ -1157,6 +1169,13 @@ pub(crate) struct WindowParams {
     /// Whether the window should be movable by the user
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub is_movable: bool,
+
+    /// Whether the application owns dragging of the (custom) titlebar (macOS only)
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        allow(dead_code)
+    )]
+    pub app_owns_titlebar_drag: bool,
 
     /// Whether the window should be resizable by the user
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
@@ -1231,6 +1250,7 @@ impl Default for WindowOptions {
             show: true,
             kind: WindowKind::Normal,
             is_movable: true,
+            app_owns_titlebar_drag: false,
             is_resizable: true,
             is_minimizable: true,
             display_id: None,

@@ -64,6 +64,12 @@
           "file": "patches/gpui/x11-drain-buffered-events.patch",
           "description": "Process X11 events that synchronous requests buffered during foreground work, so a stranded MapNotify cannot leave a window without frames.",
           "upstream": "https://github.com/zed-industries/zed/pull/62081"
+        },
+        {
+          "name": "macos-app-owned-titlebar-drag",
+          "file": "patches/gpui/macos-app-owned-titlebar-drag.patch",
+          "description": "Let a macOS window claim its title bar from AppKit's window drag and move itself through start_window_move, so title-bar controls keep their presses.",
+          "upstream": "https://github.com/zed-industries/zed/pull/60620"
         }
       ]
     },

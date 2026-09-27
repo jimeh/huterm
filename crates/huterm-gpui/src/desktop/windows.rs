@@ -1360,6 +1360,11 @@ fn open_window_with_profile(
                 host.platform,
                 host.quake,
             )),
+            // A macOS title strip holds tabs, `+`, and `⋯`. When AppKit
+            // owns the strip, the window server takes a press there as a
+            // window drag, so Huterm moves the window from empty strip
+            // space itself (`title_row_gestures`).
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             titlebar: Some(TitlebarOptions {
                 title: Some(window_title(None).into()),
                 appears_transparent: cfg!(target_os = "macos"),
@@ -6478,10 +6483,11 @@ impl Render for WorkspaceView {
                             .window_control_area(WindowControlArea::Drag)
                             .child(title_trailing)
                     })
-                    .when(frame.controls, |bar| {
-                        // Huterm's own title row: its empty space moves
-                        // the window, a double-click maximizes it, and a
-                        // secondary press opens the window manager's menu.
+                    .when(titlebar > px(0.0) || frame.controls, |bar| {
+                        // The macOS strip or Huterm's own Linux title row:
+                        // its empty space moves the window, a double-click
+                        // runs the title-bar action, and a secondary press
+                        // opens the window manager's menu.
                         self.title_row_gestures(bar)
                     })
                     .when(titlebar > px(0.0) && !merged_row, |bar| {
@@ -6565,22 +6571,14 @@ impl Render for WorkspaceView {
                     .when(merged_row && decorated, |row| {
                         row.rounded_tl(FRAME_RADIUS)
                     })
-                    .when(merged_row && !frame.controls, |row| {
+                    .when(merged_row, |row| {
                         // The space after the tabs is still the title bar:
-                        // it drags the window, and a double-click performs
-                        // the system title-bar action. Tabs, `+`, and `⋯`
-                        // sit above this background and keep their clicks.
-                        row.window_control_area(WindowControlArea::Drag)
-                            .on_click(|event, window, _| {
-                                if event.click_count() == 2 {
-                                    window.titlebar_double_click();
-                                }
-                            })
-                    })
-                    .when(merged_row && frame.controls, |row| {
-                        // The same space in Huterm's own row asks the
-                        // window manager for the move, maximize, and menu.
-                        self.title_row_gestures(row)
+                        // it moves the window and takes the title-bar
+                        // double-click. Tabs, `+`, and `⋯` sit above this
+                        // background and keep their presses.
+                        self.title_row_gestures(
+                            row.window_control_area(WindowControlArea::Drag),
+                        )
                     }),
             );
             if shelf_bar {
@@ -7588,13 +7586,14 @@ impl WorkspaceView {
             )
     }
 
-    /// The gestures of the title row Huterm draws, on its empty space: a
-    /// primary press starts the window manager's move, a double-click
-    /// toggles maximize, and a secondary press opens its window menu.
+    /// The gestures of a title row Huterm owns, on its empty space: a
+    /// primary drag starts the platform's window move, a double-click
+    /// runs the title-bar action, and a secondary press opens the window
+    /// manager's menu on Linux.
     ///
     /// The move starts on the first drag motion after the press, not on
-    /// the press itself: `_NET_WM_MOVERESIZE` hands the pointer to the
-    /// window manager's grab, which would swallow the release and keep a
+    /// the press itself: `_NET_WM_MOVERESIZE` and `AppKit`'s window drag
+    /// take over the pointer, which would swallow the release and keep a
     /// second press from counting as the double-click.
     fn title_row_gestures<E: InteractiveElement>(&self, row: E) -> E {
         let pressed = Rc::clone(&self.title_row_press);
@@ -7604,7 +7603,12 @@ impl WorkspaceView {
         row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
             if event.click_count == 2 {
                 pressed.set(false);
-                window.zoom_window();
+                // macOS follows the user's double-click preference.
+                if cfg!(target_os = "macos") {
+                    window.titlebar_double_click();
+                } else {
+                    window.zoom_window();
+                }
             } else {
                 pressed.set(true);
             }
