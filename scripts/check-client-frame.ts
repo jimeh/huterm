@@ -15,6 +15,10 @@
  * window manager while Openbox still honours the Motif hints, maximize,
  * and fullscreen. xcompmgr owns `_NET_WM_CM_S0` so the transparent
  * surface the frame needs is composited as on a desktop.
+ *
+ * The composited run finishes by starting an XSettings manager, as GNOME's
+ * settings daemon would, and changing its `Gtk/DecorationLayout`: the drawn
+ * window buttons must follow it live to the start or end of the row.
  */
 import { dlopen, ptr } from "bun:ffi";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -63,6 +67,9 @@ function openXlib() {
     XGetSelectionOwner: { args: ["ptr", "u64"], returns: "u64" },
     // Format 32 data is an array of C `long`, so each atom is 8 bytes here.
     XChangeProperty: { args: ["ptr", "u64", "u64", "u64", "i32", "i32", "ptr", "i32"], returns: "i32" },
+    XCreateSimpleWindow: { args: ["ptr", "u64", "i32", "i32", "u32", "u32", "u32", "u64", "u64"], returns: "u64" },
+    XSetSelectionOwner: { args: ["ptr", "u64", "u64", "u64"], returns: "i32" },
+    XSendEvent: { args: ["ptr", "u64", "i32", "i64", "ptr"], returns: "i32" },
     XSync: { args: ["ptr", "i32"], returns: "i32" },
     XCloseDisplay: { args: ["ptr"], returns: "i32" },
   });
@@ -129,6 +136,96 @@ export async function withCompositor(check: (compositor: X11Process) => Promise<
     if (text) process.stderr.write(text);
   }
   await waitFor(async () => !compositorOwnsScreen(), "compositor selection release");
+}
+
+/** An `_XSETTINGS_SETTINGS` property holding one string setting, little endian. */
+export function xsettingsString(serial: number, name: string, value: string): Buffer {
+  const padded = (bytes: Buffer) => Buffer.concat([bytes, Buffer.alloc((4 - (bytes.length % 4)) % 4)]);
+  const nameBytes = Buffer.from(name);
+  const valueBytes = Buffer.from(value);
+  const header = Buffer.alloc(12);
+  header.writeUInt32LE(serial, 4);
+  header.writeUInt32LE(1, 8);
+  const entry = Buffer.alloc(4);
+  entry.writeUInt8(1, 0);
+  entry.writeUInt16LE(nameBytes.length, 2);
+  const counts = Buffer.alloc(8);
+  counts.writeUInt32LE(serial, 0);
+  counts.writeUInt32LE(valueBytes.length, 4);
+  return Buffer.concat([header, entry, padded(nameBytes), counts, padded(valueBytes)]);
+}
+
+/**
+ * Owns `_XSETTINGS_S0` through its own Xlib connection, announces itself
+ * with the MANAGER client message, and republishes `Gtk/DecorationLayout`
+ * on request. Closing the connection destroys the window and releases the
+ * selection.
+ */
+class XSettingsManager {
+  private readonly x11 = openXlib();
+  private readonly display: NonNullable<ReturnType<ReturnType<typeof openXlib>["symbols"]["XOpenDisplay"]>>;
+  private readonly window: bigint;
+  private readonly settings: bigint;
+  private serial = 0;
+
+  constructor(layout: string) {
+    const x11 = this.x11.symbols;
+    const display = x11.XOpenDisplay(null);
+    if (!display) {
+      this.x11.close();
+      throw new Error("cannot open the X11 display for the XSettings manager");
+    }
+    this.display = display;
+    const root = x11.XDefaultRootWindow(display);
+    const selection = x11.XInternAtom(display, ptr(atomName("_XSETTINGS_S0")), 0);
+    const manager = x11.XInternAtom(display, ptr(atomName("MANAGER")), 0);
+    this.settings = x11.XInternAtom(display, ptr(atomName("_XSETTINGS_SETTINGS")), 0);
+    this.window = x11.XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0n, 0n);
+    this.publish(layout);
+    const CurrentTime = 0n;
+    x11.XSetSelectionOwner(display, selection, this.window, CurrentTime);
+    if (x11.XGetSelectionOwner(display, selection) !== this.window) throw new Error("another XSettings manager owns _XSETTINGS_S0");
+    // XClientMessageEvent on LP64: type, serial, send_event, display,
+    // window, message_type, format, then five longs of data.
+    const bytes = new Uint8Array(192);
+    const event = new DataView(bytes.buffer);
+    const ClientMessage = 33;
+    event.setInt32(0, ClientMessage, true);
+    event.setBigUint64(32, root, true);
+    event.setBigUint64(40, manager, true);
+    event.setInt32(48, 32, true);
+    event.setBigUint64(56, CurrentTime, true);
+    event.setBigUint64(64, selection, true);
+    event.setBigUint64(72, this.window, true);
+    const StructureNotifyMask = 1n << 17n;
+    x11.XSendEvent(display, root, 0, StructureNotifyMask, ptr(bytes));
+    x11.XSync(display, 0);
+  }
+
+  publish(layout: string): void {
+    const data = xsettingsString(++this.serial, "Gtk/DecorationLayout", layout);
+    const PropModeReplace = 0;
+    this.x11.symbols.XChangeProperty(this.display, this.window, this.settings, this.settings, 8, PropModeReplace, ptr(data), data.length);
+    this.x11.symbols.XSync(this.display, 0);
+  }
+
+  close(): void {
+    this.x11.symbols.XCloseDisplay(this.display);
+    this.x11.close();
+  }
+}
+
+type Rect = { x: number; y: number; w: number; h: number };
+
+/** The drawn window buttons, `name@x,y,w,h` in row order. */
+export function windowButtons(text: string): { name: string; rect: Rect }[] {
+  const value = field(text, "window_buttons");
+  if (value === "none") return [];
+  return value.split(";").map((entry) => {
+    const [name, rect] = entry.split("@");
+    if (!name || !rect) throw new Error(`invalid window button ${JSON.stringify(entry)}`);
+    return { name, rect: parseRect(rect) };
+  });
 }
 
 function property(windowId: string, name: string): string {
@@ -255,17 +352,63 @@ done
   function windowState(): string {
     return property(windowId, "_NET_WM_STATE");
   }
+  /**
+   * The drawn buttons, checked against `expected` names in row order. Each
+   * group is padded 10 points at the window edge and 6 towards the tabs,
+   * with 22-point buttons 8 apart; `leading` names the ones at the start.
+   */
+  function assertButtons(text: string, expected: string[], leading: number): Map<string, Rect> {
+    const buttons = windowButtons(text);
+    const content = parseRect(field(text, "content"));
+    const names = buttons.map((button) => button.name);
+    const fail = (reason: string) => {
+      throw new Error(`${engine} ${label}: window buttons ${field(text, "window_buttons")} ${reason} in ${field(text, "content")}`);
+    };
+    if (JSON.stringify(names) !== JSON.stringify(expected)) fail(`are not ${expected.join(",")}`);
+    buttons.forEach(({ rect }, index) => {
+      const trailingIndex = index - leading;
+      const trailingCount = buttons.length - leading;
+      const x = index < leading
+        ? content.x + 10 + index * 30
+        : content.x + content.w - 10 - 22 - (trailingCount - 1 - trailingIndex) * 30;
+      if (rect.x !== x || rect.w !== 22 || rect.y < content.y || rect.y + rect.h > content.y + 32) fail(`do not sit at their end of the row (button ${index} expected at x=${x})`);
+    });
+    return new Map(buttons.map(({ name, rect }) => [name, rect]));
+  }
+  /**
+   * Waits for the painted buttons to match: a layout change publishes the
+   * new order before the next paint records the new positions.
+   */
+  async function settledButtons(expected: string[], leading: number): Promise<{ text: string; buttons: Map<string, Rect> }> {
+    let text = "";
+    let failure: unknown;
+    try {
+      await waitFor(async () => {
+        text = await current();
+        try {
+          assertButtons(text, expected, leading);
+          return true;
+        } catch (error) {
+          failure = error;
+          return false;
+        }
+      }, `window buttons ${expected.join(",")}`);
+    } catch {
+      throw failure;
+    }
+    return { text, buttons: assertButtons(text, expected, leading) };
+  }
   /** Empty title-row space: between the `+` control after the last tab and the menu button. */
   function emptyRowSpace(text: string): { x: number; y: number } {
     const tabs = field(text, "tabs_rects").split(";").map(parseRect);
     const last = tabs[tabs.length - 1];
     const button = parseRect(field(text, "menu_button"));
-    const controls = parseRect(field(text, "window_controls"));
+    const first = windowButtons(text)[0]?.rect;
     const content = parseRect(field(text, "content"));
-    if (!last) throw new Error(`${engine} ${label}: no tab rects: ${text}`);
-    // The menu button ends the strip area just before the controls.
-    if (button.x + button.w > controls.x || button.x < last.x + last.w + 32) {
-      throw new Error(`${engine} ${label}: the menu button ${field(text, "menu_button")} is not between the + slot after ${field(text, "tabs_rects")} and the controls ${field(text, "window_controls")}`);
+    if (!last || !first) throw new Error(`${engine} ${label}: no tab or window button rects: ${text}`);
+    // The menu button ends the strip area just before the buttons.
+    if (button.x + button.w > first.x - 6 || button.x < last.x + last.w + 32) {
+      throw new Error(`${engine} ${label}: the menu button ${field(text, "menu_button")} is not between the + slot after ${field(text, "tabs_rects")} and the window buttons ${field(text, "window_buttons")}`);
     }
     const left = last.x + last.w + 32 + 8;
     const right = button.x - 8;
@@ -319,23 +462,22 @@ done
     typeText("busy");
     key("Return");
     await state("BUSY");
-    // The controls group is padded 6 left and 10 right around three
-    // 22-point buttons 8 apart: close is last, minimize first.
-    const controls = parseRect(field(await current(), "window_controls"));
-    if (controls.x + controls.w !== content.x + content.w || controls.y < content.y || controls.y + controls.h > content.y + 32) {
-      throw new Error(`${engine} ${label}: window controls ${field(await current(), "window_controls")} do not end the title row of ${field(await current(), "content")}`);
-    }
-    const controlY = (controls.y + controls.h / 2) * scale;
-    const closeX = (controls.x + controls.w - 10 - 11) * scale;
-    const minimizeX = (controls.x + 6 + 11) * scale;
-    click(closeX, controlY);
+    // Without an XSettings manager the row ends with all three buttons.
+    const { buttons } = await settledButtons(["minimize", "maximize", "close"], 0);
+    const centre = (rect: Rect | undefined) => {
+      if (!rect) throw new Error(`${engine} ${label}: missing window button`);
+      return { x: (rect.x + rect.w / 2) * scale, y: (rect.y + rect.h / 2) * scale };
+    };
+    const close = centre(buttons.get("close"));
+    const minimize = centre(buttons.get("minimize"));
+    click(close.x, close.y);
     await state("w0.confirming=true", 'w0.dialog_title="Close this window?"', "w0.dialog_focus=primary");
     key("Escape");
     await state("w0.confirming=false", "w0.terminal_focused=true", "w0.tabs=1");
     await ack("ackclosex");
 
     // 3. Minimize hides the window; activation restores it.
-    click(minimizeX, controlY);
+    click(minimize.x, minimize.y);
     await waitFor(async () => windowState().includes("_NET_WM_STATE_HIDDEN"), "minimized window state");
     run(["xdotool", "windowactivate", "--sync", windowId]);
     await waitFor(async () => !windowState().includes("_NET_WM_STATE_HIDDEN"), "restored window state");
@@ -396,7 +538,37 @@ done
     await assertPtyMatchesGrid();
     await ack("ackfullscreenx");
 
-    console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=client extents=${inset} close=assessed-cancel minimize=hidden-restored maximize=double-click-zero-extents drag=moved fullscreen=exact-root-geometry`);
+    // 7. A desktop layout moves the buttons live: first all at the start,
+    // pushing the tabs after them, then only close at the end.
+    const settings = new XSettingsManager("close,minimize,maximize:appmenu");
+    try {
+      const { text: leftText, buttons: left } = await settledButtons(["close", "minimize", "maximize"], 3);
+      const firstTab = parseRect(field(leftText, "tabs_rects").split(";")[0] ?? "");
+      const maximize = left.get("maximize");
+      if (!maximize || firstTab.x < maximize.x + maximize.w + 6) {
+        throw new Error(`${engine} ${label}: the first tab ${JSON.stringify(firstTab)} overlaps the leading buttons ${field(leftText, "window_buttons")}`);
+      }
+      const leftClose = centre(left.get("close"));
+      click(leftClose.x, leftClose.y);
+      await state("w0.confirming=true", 'w0.dialog_title="Close this window?"');
+      key("Escape");
+      await state("w0.confirming=false", "w0.terminal_focused=true", "w0.tabs=1");
+      await ack("ackleftclosex");
+      settings.publish("appmenu:close");
+      const { text } = await settledButtons(["close"], 0);
+      const movedTab = parseRect(field(text, "tabs_rects").split(";")[0] ?? "");
+      if (movedTab.x >= parseRect(field(text, "content")).x + 20) {
+        throw new Error(`${engine} ${label}: the first tab ${JSON.stringify(movedTab)} did not return to the start of the row`);
+      }
+      await assertPtyMatchesGrid();
+    } finally {
+      settings.close();
+    }
+    // The manager is gone: the row falls back to the standard layout.
+    await settledButtons(["minimize", "maximize", "close"], 0);
+    await ack("acklayoutx");
+
+    console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=client extents=${inset} close=assessed-cancel minimize=hidden-restored maximize=double-click-zero-extents drag=moved fullscreen=exact-root-geometry layout=leading-then-close-only-then-standard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

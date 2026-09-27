@@ -67,6 +67,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+mod button_layout;
 mod client_frame;
 mod tab_bar;
 mod tab_menu;
@@ -78,6 +79,10 @@ use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
     ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
+};
+use button_layout::{
+    ButtonGroup, ButtonLayout, WINDOW_CONTROL_GAP, WINDOW_CONTROL_SIZE,
+    WINDOW_CONTROLS_PADDING_INNER, WINDOW_CONTROLS_PADDING_OUTER, WindowButton,
 };
 use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
@@ -108,13 +113,6 @@ const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
 /// Where the tabs start in the title row Huterm draws on Linux, which has
 /// no traffic lights.
 const TITLE_ROW_LEAD: Pixels = px(8.0);
-/// The round window controls at the end of the drawn title row.
-const WINDOW_CONTROL_SIZE: Pixels = px(22.0);
-const WINDOW_CONTROL_GAP: Pixels = px(8.0);
-const WINDOW_CONTROLS_PADDING_LEFT: Pixels = px(6.0);
-const WINDOW_CONTROLS_PADDING_RIGHT: Pixels = px(10.0);
-/// The row length the three controls and their padding take.
-const WINDOW_CONTROLS_WIDTH: Pixels = px(6.0 + 22.0 * 3.0 + 8.0 * 2.0 + 10.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
@@ -535,6 +533,8 @@ struct Desktop {
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
+    /// The window buttons the desktop asks title rows to draw.
+    button_layout: ButtonLayout,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
@@ -1014,9 +1014,12 @@ pub(super) fn run_with_startup(
             pending_spawns: 0,
             quit_pending: false,
             external_drag_window: None,
+            button_layout: ButtonLayout::standard(),
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
+        #[cfg(target_os = "linux")]
+        follow_button_layout(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
@@ -1057,6 +1060,31 @@ pub(super) fn run_with_startup(
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
+}
+
+/// Follows the desktop's window-button layout, relaying each change to
+/// every window.
+#[cfg(target_os = "linux")]
+fn follow_button_layout(cx: &mut App) {
+    let (sender, receiver) = async_channel::bounded(1);
+    button_layout::watch(sender);
+    cx.spawn(async move |cx| {
+        while let Ok(layout) = receiver.recv().await {
+            let updated = cx.update(|cx| {
+                cx.global_mut::<Desktop>().button_layout = layout;
+                for view in cx.global::<Desktop>().windows.clone() {
+                    let _ = view.update(cx, |view, cx| {
+                        view.button_layout = layout;
+                        cx.notify();
+                    });
+                }
+            });
+            if updated.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 fn observe_keystroke(
@@ -1397,9 +1425,11 @@ fn open_window_with_profile(
                 client_decorations: state.client_decorations(),
                 ..host
             };
+            let button_layout = cx.global::<Desktop>().button_layout;
             let frame = WindowFrame::resolve(
                 resolve_tab_position(config.tabs.position, host),
                 state,
+                button_layout,
             );
             if scaled_metrics != metrics || frame != WindowFrame::default() {
                 window.resize(initial_window_size(
@@ -1466,6 +1496,7 @@ fn open_window_with_profile(
                 fullscreen_work,
                 frame_state: state,
                 applied_frame: None,
+                button_layout,
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -1505,7 +1536,7 @@ fn open_window_with_profile(
                 menu_pointer: None,
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 menu_bounds: Rc::new(Cell::new(None)),
-                window_controls_bounds: Rc::new(Cell::new(None)),
+                window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
                 menu_contexts: Vec::new(),
@@ -2197,6 +2228,8 @@ struct WorkspaceView {
     /// The frame last pushed to GPUI as the client inset and background
     /// appearance; `None` before the first sample.
     applied_frame: Option<WindowFrame>,
+    /// The window buttons the desktop last published.
+    button_layout: ButtonLayout,
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Areas beside a display notch while custom fullscreen covers it.
     notch_shelves: Option<crate::fullscreen::NotchShelves>,
@@ -2256,7 +2289,8 @@ struct WorkspaceView {
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
-    window_controls_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The painted window buttons, by [`WindowButton::index`].
+    window_button_bounds: Rc<[Cell<Option<Bounds<Pixels>>>; 3]>,
     /// A primary press on the drawn title row's empty space that has not
     /// yet moved: the first drag motion turns it into a window move. Any
     /// press elsewhere clears it.
@@ -2639,7 +2673,11 @@ impl WorkspaceView {
     /// The frame this window's chrome sits in, for its resolved position
     /// and the decorations GPUI last reported.
     fn window_frame(&self) -> WindowFrame {
-        WindowFrame::resolve(self.layout_tabs().position, self.frame_state)
+        WindowFrame::resolve(
+            self.layout_tabs().position,
+            self.frame_state,
+            self.button_layout,
+        )
     }
 
     /// The title row above the terminal, if the window has one.
@@ -5755,30 +5793,37 @@ fn strip_bounds(
 }
 
 /// The window frame the chrome sits in, from Linux client-side
-/// decorations: the border Huterm owns on each side of the content, and
-/// whether the title row is Huterm's own, with its window controls at the
-/// end. Both are zero and false on macOS, in fullscreen, in Quake windows,
-/// and wherever the window manager draws the title bar.
+/// decorations: the border Huterm owns on each side of the content,
+/// whether the title row is Huterm's own, and the window buttons it draws
+/// at the row's ends. They are zero, false, and none on macOS, in
+/// fullscreen, in Quake windows, and wherever the window manager draws the
+/// title bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct WindowFrame {
     pub(super) inset: gpui::Edges<Pixels>,
     pub(super) controls: bool,
+    pub(super) buttons: ButtonLayout,
 }
 
 impl WindowFrame {
     /// The frame for a window whose tabs resolved to `position`. Only a
     /// Linux window drawing the merged row owns a border; its inset follows
-    /// the tiling, maximized, and fullscreen state GPUI reports.
-    fn resolve(position: TabPosition, state: FrameState) -> Self {
+    /// the tiling, maximized, and fullscreen state GPUI reports, and its
+    /// row draws the desktop's `buttons`.
+    fn resolve(
+        position: TabPosition,
+        state: FrameState,
+        buttons: ButtonLayout,
+    ) -> Self {
         let controls = Platform::current() == Platform::Linux
             && position == TabPosition::Titlebar;
+        if !controls {
+            return Self::default();
+        }
         Self {
-            inset: if controls {
-                state.frame().edges()
-            } else {
-                gpui::Edges::default()
-            },
+            inset: state.frame().edges(),
             controls,
+            buttons,
         }
     }
 
@@ -5833,11 +5878,11 @@ pub(super) struct ChromeLayout {
     pub(super) content: Bounds<Pixels>,
     pub(super) frame: WindowFrame,
     /// Bar length the strip avoids at its start: the safe-area height a
-    /// vertical column spans above its rows, or the traffic lights at the
-    /// start of the title-bar row.
+    /// vertical column spans above its rows, or the traffic lights or
+    /// window buttons at the start of the title-bar row.
     strip_inset: Pixels,
-    /// Bar length the strip leaves free at its end: the window controls
-    /// at the end of the title row Huterm draws.
+    /// Bar length the strip leaves free at its end: the window buttons at
+    /// the end of the title row Huterm draws.
     strip_trailing: Pixels,
     /// The bar sits on chrome that exists anyway, a notch shelf or the
     /// title bar, so hiding it frees no terminal space.
@@ -6132,8 +6177,12 @@ impl ChromeLayout {
                 size(viewport.width.max(px(0.0)), row),
             );
             if frame.controls {
-                strip_inset = TITLE_ROW_LEAD;
-                strip_trailing = WINDOW_CONTROLS_WIDTH;
+                strip_inset = if frame.buttons.leading.is_empty() {
+                    TITLE_ROW_LEAD
+                } else {
+                    frame.buttons.leading.width()
+                };
+                strip_trailing = frame.buttons.trailing.width();
             } else {
                 strip_inset = TRAFFIC_LIGHT_INSET;
             }
@@ -6251,8 +6300,10 @@ impl Render for WorkspaceView {
             // A hidden button anchors nothing; `open_menu` falls back.
             self.menu_button_bounds.set(None);
         }
-        if !frame.controls {
-            self.window_controls_bounds.set(None);
+        for button in WindowButton::ALL {
+            if !frame.buttons.contains(button) {
+                self.window_button_bounds[button.index()].set(None);
+            }
         }
         let mut root = div()
             .size_full()
@@ -6450,15 +6501,31 @@ impl Render for WorkspaceView {
         let title_menu_button = (menu_placement
             == MenuButtonPlacement::TitleStrip)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
+        // The window buttons that start the row Huterm draws.
+        let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
+            self.window_controls_element(
+                frame.buttons.leading,
+                true,
+                colors,
+                window,
+                cx,
+            )
+        });
         // The strip's trailing group: the menu button when the strip holds
-        // it, then the window controls in the row Huterm draws.
+        // it, then the window buttons that end the row Huterm draws.
         let title_trailing = div()
             .ml_auto()
             .flex()
             .items_center()
             .children(title_menu_button)
-            .when(frame.controls, |trailing| {
-                trailing.child(self.window_controls_element(colors, window, cx))
+            .when(!frame.buttons.trailing.is_empty(), |trailing| {
+                trailing.child(self.window_controls_element(
+                    frame.buttons.trailing,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
             });
         // The title centres between the space its ends reserve.
         let title_padding =
@@ -6496,6 +6563,7 @@ impl Render for WorkspaceView {
                         bar.flex()
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
+                            .children(title_leading)
                             .child(title_trailing)
                     })
                     .when(titlebar > px(0.0) || frame.controls, |bar| {
@@ -6570,21 +6638,30 @@ impl Render for WorkspaceView {
                 .w(clip.size.width)
                 .h(clip.size.height)
                 .overflow_hidden();
+            // The bar occludes the title strip beneath it, so it leaves out
+            // the ends where the strip draws the window buttons.
+            let bar_lead = frame.buttons.leading.width();
             chrome = chrome.child(
                 div()
                     .id("tab-bar")
                     .absolute()
-                    .left(layout.tabs.origin.x - clip.origin.x)
+                    .left(layout.tabs.origin.x + bar_lead - clip.origin.x)
                     .top(layout.tabs.origin.y - clip.origin.y)
-                    // The bar occludes the title strip beneath it, so it
-                    // stops before the strip's trailing reserve, where the
-                    // strip draws the window controls.
-                    .w(layout.tabs.size.width - layout.strip_trailing)
+                    .w(layout.tabs.size.width
+                        - bar_lead
+                        - layout.strip_trailing)
                     .h(layout.tabs.size.height)
                     .bg(colors.bar)
                     .occlude()
                     .when(merged_row && decorated, |row| {
-                        row.rounded_tl(FRAME_RADIUS)
+                        // Where the bar reaches a top corner of the frame,
+                        // it takes the frame's rounding.
+                        row.when(bar_lead == px(0.0), |row| {
+                            row.rounded_tl(FRAME_RADIUS)
+                        })
+                        .when(layout.strip_trailing == px(0.0), |row| {
+                            row.rounded_tr(FRAME_RADIUS)
+                        })
                     })
                     .when(merged_row, |row| {
                         // The space after the tabs is still the title bar:
@@ -7687,24 +7764,50 @@ impl WorkspaceView {
         })
     }
 
-    /// The minimize, maximize or restore, and close controls at the end of
-    /// the title row Huterm draws: round 22-point buttons with a subtle
-    /// fill. Close takes the assessed window-close path, like the
-    /// `close_window` command, so live jobs still get their confirmation.
+    /// One side's window buttons in the title row Huterm draws: round
+    /// 22-point buttons with a subtle fill, in the desktop's order, padded
+    /// more at the window edge. Close takes the assessed window-close path,
+    /// like the `close_window` command, so live jobs still get their
+    /// confirmation.
     fn window_controls_element(
         &self,
+        group: ButtonGroup,
+        leading: bool,
         colors: TabColors,
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> gpui::Div {
         let maximized = window.is_maximized();
         let swatch = Swatch::from_theme(&self.config.theme);
-        let bounds_cell = Rc::clone(&self.window_controls_bounds);
-        let button = |id: &'static str, icon: Icon, label: &'static str| {
-            div()
+        let (outer, inner) =
+            (WINDOW_CONTROLS_PADDING_OUTER, WINDOW_CONTROLS_PADDING_INNER);
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap(WINDOW_CONTROL_GAP)
+            .pl(if leading { outer } else { inner })
+            .pr(if leading { inner } else { outer });
+        for button in group.iter() {
+            let (id, icon, label) = match button {
+                WindowButton::Minimize => {
+                    ("window-minimize", Icon::Minus, "Minimize")
+                }
+                WindowButton::Maximize if maximized => {
+                    ("window-maximize", Icon::Copy, "Restore")
+                }
+                WindowButton::Maximize => {
+                    ("window-maximize", Icon::Square, "Maximize")
+                }
+                WindowButton::Close => {
+                    ("window-close", Icon::X, "Close window")
+                }
+            };
+            let bounds = Rc::clone(&self.window_button_bounds);
+            let element = div()
                 .id(id)
                 .group(id)
                 .occlude()
+                .relative()
                 .w(WINDOW_CONTROL_SIZE)
                 .h(WINDOW_CONTROL_SIZE)
                 .flex()
@@ -7723,44 +7826,34 @@ impl WorkspaceView {
                             style.text_color(colors.foreground)
                         }),
                 )
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap(WINDOW_CONTROL_GAP)
-            .pl(WINDOW_CONTROLS_PADDING_LEFT)
-            .pr(WINDOW_CONTROLS_PADDING_RIGHT)
-            .child(button("window-minimize", Icon::Minus, "Minimize").on_click(
-                |_, window, cx| {
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |painted, (), _, _| {
+                            bounds[button.index()].set(Some(painted));
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
+            controls = controls.child(match button {
+                WindowButton::Minimize => element.on_click(|_, window, cx| {
                     window.minimize_window();
                     cx.stop_propagation();
-                },
-            ))
-            .child(
-                button(
-                    "window-maximize",
-                    if maximized { Icon::Copy } else { Icon::Square },
-                    if maximized { "Restore" } else { "Maximize" },
-                )
-                .on_click(|_, window, cx| {
+                }),
+                WindowButton::Maximize => element.on_click(|_, window, cx| {
                     window.zoom_window();
                     cx.stop_propagation();
                 }),
-            )
-            .child(button("window-close", Icon::X, "Close window").on_click(
-                cx.listener(|view, _, window, cx| {
-                    view.request_close(CloseTarget::Window, window, cx);
-                    cx.stop_propagation();
-                }),
-            ))
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
-                )
-                .absolute()
-                .inset_0(),
-            )
+                WindowButton::Close => {
+                    element.on_click(cx.listener(|view, _, window, cx| {
+                        view.request_close(CloseTarget::Window, window, cx);
+                        cx.stop_propagation();
+                    }))
+                }
+            });
+        }
+        controls
     }
 
     /// The open menu mounted at its placement: below the anchor, or above
@@ -7883,10 +7976,24 @@ impl WorkspaceView {
             )
         };
         let button = painted(&self.menu_button_bounds);
-        let controls = painted(&self.window_controls_bounds);
+        let window_buttons = self
+            .window_frame()
+            .buttons
+            .buttons()
+            .map(|button| (button, &self.window_button_bounds[button.index()]))
+            .filter(|(_, bounds)| bounds.get().is_some())
+            .map(|(button, bounds)| {
+                format!("{}@{}", button.name(), painted(bounds))
+            })
+            .collect::<Vec<_>>();
+        let controls = if window_buttons.is_empty() {
+            "none".to_owned()
+        } else {
+            window_buttons.join(";")
+        };
         let content = self.chrome_layout(window).content;
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_controls={controls} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.notice_focus.is_focused(window),
             self.window_title,
@@ -9707,6 +9814,10 @@ mod tests {
     }
 
     fn framed(state: FrameState) -> WindowFrame {
+        framed_with(state, ButtonLayout::standard())
+    }
+
+    fn framed_with(state: FrameState, buttons: ButtonLayout) -> WindowFrame {
         WindowFrame::resolve(
             resolve_tab_position(
                 TabPosition::Titlebar,
@@ -9718,6 +9829,7 @@ mod tests {
                 },
             ),
             state,
+            buttons,
         )
     }
 
@@ -9778,7 +9890,10 @@ mod tests {
         };
         let strip = layout.strip_bounds(tabs);
         assert_eq!(strip.origin, point(inset + TITLE_ROW_LEAD, inset));
-        assert_eq!(strip.right(), layout.tabs.right() - WINDOW_CONTROLS_WIDTH);
+        assert_eq!(
+            strip.right(),
+            layout.tabs.right() - ButtonLayout::standard().trailing.width()
+        );
         assert_eq!(
             layout.title_row_border(),
             Bounds::new(
@@ -9797,6 +9912,60 @@ mod tests {
             ChromeLayout::bar_reservation(tabs, SIDEBAR_WIDTH),
             size(px(0.0), px(0.0))
         );
+    }
+
+    #[test]
+    fn the_title_row_follows_the_desktop_button_layout() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let state = FrameState {
+            decorations: gpui::Decorations::Client {
+                tiling: gpui::Tiling::default(),
+            },
+            maximized: false,
+            fullscreen: false,
+        };
+        let inset = client_frame::CLIENT_INSET;
+        let tabs = TabsConfig {
+            position: TabPosition::Titlebar,
+            style: TabStyle::Strip,
+            ..TabsConfig::default()
+        };
+        // Buttons at the start push the tabs after them; with none at the
+        // end the strip runs to the row's end, as beside macOS's lights.
+        let left = ButtonLayout::parse("close,minimize,maximize:");
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, left),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + left.leading.width());
+        assert_eq!(strip.right(), layout.tabs.right());
+        // Split buttons reserve both ends.
+        let split = ButtonLayout::parse("close:maximize");
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, split),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + split.leading.width());
+        assert_eq!(strip.right(), layout.tabs.right() - split.trailing.width());
+        // No buttons keep the small lead and reserve nothing at the end.
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, ButtonLayout::parse("appmenu:")),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + TITLE_ROW_LEAD);
+        assert_eq!(strip.right(), layout.tabs.right());
+        // A window without the drawn row carries no buttons at all.
+        let fallback = framed_with(FrameState::default(), left);
+        assert_eq!(fallback, WindowFrame::default());
     }
 
     #[test]
@@ -9861,6 +10030,7 @@ mod tests {
                 maximized: false,
                 fullscreen: true,
             },
+            ButtonLayout::standard(),
         );
         assert_eq!(fullscreen, WindowFrame::default());
         assert_eq!(title_row_height(true, fullscreen), px(0.0));

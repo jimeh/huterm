@@ -301,8 +301,14 @@ usual double-click action, and ends with the menu button. The terminal gains
 the height a top bar would take. A single tab with `always_show = false` shows
 the strip with the active tab's title, as the other positions do. On Linux,
 Huterm asks for client-side decorations and draws the whole row itself: the
-tabs and `+` from the left edge, draggable empty space, the menu button, then
-round minimize, maximize, and close controls on the right. Dragging the empty
+tabs and `+`, draggable empty space, the menu button, and round minimize,
+maximize, and close controls. The controls follow the desktop's button layout,
+as GTK applications do: GNOME's `button-layout` setting (for example through
+GNOME Tweaks) or KDE's GTK settings choose which buttons appear and whether
+they sit at the left or right end, and a change applies to open windows
+immediately. Huterm reads the layout from the XSettings `Gtk/DecorationLayout`
+value and draws minimize, maximize, and close on the right when the desktop
+publishes none. Dragging the empty
 space moves the window, double-clicking it maximizes, and a right-click opens
 the window manager's menu; the close control takes the same assessed close
 path as the `close_window` command. A windowed, untiled window also gets a

@@ -1238,6 +1238,11 @@ otherwise, so read `window.window_decorations()` instead of trusting the
 request; decoration changes arrive through the window appearance callback.
 The client-frame smoke appends `_GTK_FRAME_EXTENTS` to Openbox's
 `_NET_SUPPORTED` under `xcompmgr` to stand in for such a window manager.
+The drawn window buttons follow XSettings `Gtk/DecorationLayout`, read on a
+dedicated x11rb thread. GPUI is built without Wayland, so XWayland's XSettings
+also covers Wayland sessions; do not add a GSettings or portal reader unless
+that changes. Smoke state publishes the new layout order before the next paint
+moves `window_buttons` rects, so poll for settled geometry.
 Start a title-row move on the first drag motion, not the press: the window
 manager's move grab otherwise swallows the second click of a double-click.
 GPUI's X11 setters such as `set_title` and `set_client_inset` wait for a

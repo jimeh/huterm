@@ -51,8 +51,9 @@ order, row geometry, and bindings stay as they are. The menu only opens it.
 
 Out of scope: a right-click menu inside the terminal, a tab and terminal
 switcher, persisting notices across restarts, prompt-aware close checks
-through shell integration, GPUI's Wayland backend, detecting a Linux user's
-window-button layout, and a Linux updater.
+through shell integration, GPUI's Wayland backend, and a Linux updater.
+Following the Linux desktop's window-button layout was added after the first
+Linux review.
 
 ## Behaviour today
 
@@ -324,7 +325,8 @@ A centred panel on both platforms:
   trailing empty space draggable; double-clicking that space calls
   `titlebar_double_click`. On Linux Huterm draws the whole row through
   client-side decorations: tabs, `+`, draggable empty space, the `⋯` button,
-  then minimize, maximize, and close controls on the right.
+  and the minimize, maximize, and close controls where the desktop's button
+  layout puts them, on the right by default.
 - `titlebar` resolves to `top` wherever no title bar exists: fullscreen, Quake
   windows, and Linux sessions where client-side decorations fell back.
 - With any other position on macOS, the title strip shows the active tab's
@@ -692,6 +694,17 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   from the drawn control, minimize, double-click maximize, drag, and exact
   fullscreen restoration, plus the fallback. The `vm:linux:dev` checks under
   real Mutter remain.
+- Button layout: a thread with its own x11rb connection follows the
+  XSettings manager (`_XSETTINGS_S<screen>`) and parses `Gtk/DecorationLayout`
+  with GTK's rules: names before the colon start the row, the rest end it,
+  and only `minimize`, `maximize`, and `close` are drawn. Each change reaches
+  every `WorkspaceView` through `WindowFrame::buttons`, so `ChromeLayout`
+  reserves a group at either end, or the 8-point lead when the start has
+  none. Without a manager the row uses `:minimize,maximize,close`. GPUI is
+  built without its Wayland backend, so XSettings, which GNOME also serves
+  to XWayland clients, is the only source needed. The client-frame smoke
+  owns `_XSETTINGS_S0` itself and checks a left layout, a close-only layout,
+  and the fallback after the manager exits.
 - Smoke slice: `scripts/check-overlays.ts` covers the close dialog keys,
   multi-tab close, the window and tab menus, notice focus, window titles, the
   scroll pill, and About; it found and fixed the `⋯` button drawn
