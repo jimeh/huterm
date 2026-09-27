@@ -43,6 +43,57 @@ export function summarize(intervals: Interval[]): Summary {
   };
 }
 
+const KEYS_PREFIX = "huterm-render keys ";
+
+export type KeyInterval = { keys: number; echoes: number; snapshots: number; appliedMedianUs: number; appliedMaxUs: number; paintedMedianUs: number; paintedMaxUs: number };
+
+export function parseKeyIntervals(log: string): KeyInterval[] {
+  return log.split(/\r?\n/).filter(line => line.startsWith(KEYS_PREFIX)).map(line => {
+    const field = (name: string) => {
+      const match = line.match(new RegExp(`(?:^| )${name}=([0-9]+)(?: |$)`));
+      if (!match) throw new Error(`key latency line is missing ${name}: ${line}`);
+      return Number(match[1]);
+    };
+    return { keys: field("keys"), echoes: field("echoes"), snapshots: field("snapshots"), appliedMedianUs: field("applied_us_median"), appliedMaxUs: field("applied_us_max"), paintedMedianUs: field("painted_us_median"), paintedMaxUs: field("painted_us_max") };
+  });
+}
+
+export type KeySummary = { intervals: number; keys: number; echoes: number; snapshotsPerKey: number; appliedMedianUs: number; appliedMaxUs: number; paintedMedianUs: number; paintedMaxUs: number };
+
+/** Like `summarize`, the first interval includes startup and is excluded. */
+export function summarizeKeys(intervals: KeyInterval[]): KeySummary {
+  const steady = intervals.slice(1);
+  if (steady.length === 0) throw new Error("Huterm printed no key latency intervals");
+  const keys = steady.reduce((total, interval) => total + interval.keys, 0);
+  const echoes = steady.reduce((total, interval) => total + interval.echoes, 0);
+  if (echoes === 0) throw new Error(`none of ${keys} keys produced an echo snapshot; key input is not reaching the terminal`);
+  const snapshots = steady.reduce((total, interval) => total + interval.snapshots, 0);
+  return {
+    intervals: steady.length,
+    keys,
+    echoes,
+    snapshotsPerKey: Math.round(snapshots / keys * 100) / 100,
+    appliedMedianUs: median(steady.map(interval => interval.appliedMedianUs)),
+    appliedMaxUs: Math.max(...steady.map(interval => interval.appliedMaxUs)),
+    paintedMedianUs: median(steady.map(interval => interval.paintedMedianUs)),
+    paintedMaxUs: Math.max(...steady.map(interval => interval.paintedMaxUs)),
+  };
+}
+
+export function formatKeys(summary: KeySummary): string {
+  return `key-latency intervals=${summary.intervals} keys=${summary.keys} echoes=${summary.echoes} snapshots_per_key=${summary.snapshotsPerKey} applied_us_median=${summary.appliedMedianUs} applied_us_max=${summary.appliedMaxUs} painted_us_median=${summary.paintedMedianUs} painted_us_max=${summary.paintedMaxUs}`;
+}
+
+/**
+ * Gates keystroke snapshot scheduling. Each echoed key needs one snapshot; a
+ * second, started before the echo exists, delays the echo to the next frame.
+ */
+export function checkSnapshotsPerKeyBudget(summary: KeySummary, budget: number): void {
+  if (summary.snapshotsPerKey > budget) {
+    throw new Error(`snapshots_per_key=${summary.snapshotsPerKey} exceeds the budget of ${budget}: key input is requesting snapshots that precede its echo`);
+  }
+}
+
 export function format(summary: Summary): string {
   return `output-latency intervals=${summary.intervals} snapshots_per_second=${summary.snapshotsPerSecond} applied_us_median=${summary.appliedMedianUs} applied_us_max=${summary.appliedMaxUs} painted_us_median=${summary.paintedMedianUs} painted_us_max=${summary.paintedMaxUs}`;
 }
@@ -60,13 +111,18 @@ export function checkAppliedBudget(summary: Summary, budgetUs: number): void {
 
 if (import.meta.main) {
   const [executable, workload, mode = "echo", seconds = "8"] = Bun.argv.slice(2);
-  if (!executable || !workload) throw new Error("usage: run-output-latency.ts <huterm> <render_workload> [echo|flood] [seconds]");
-  if (mode !== "echo" && mode !== "flood") throw new Error(`mode must be echo or flood, not ${mode}`);
+  if (!executable || !workload) throw new Error("usage: run-output-latency.ts <huterm> <render_workload> [echo|flood|keys] [seconds]");
+  if (mode !== "echo" && mode !== "flood" && mode !== "keys") throw new Error(`mode must be echo, flood, or keys, not ${mode}`);
   const timeoutMs = Number(seconds) * 1_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`seconds must be a positive number, not ${seconds}`);
   const budgetValue = process.env.HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US;
   const budgetUs = budgetValue === undefined ? undefined : Number(budgetValue);
   if (budgetUs !== undefined && (!Number.isFinite(budgetUs) || budgetUs <= 0)) throw new Error(`HUTERM_OUTPUT_LATENCY_APPLIED_BUDGET_US must be a positive number, not ${budgetValue}`);
+  const keyBudgetValue = process.env.HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET;
+  const keyBudget = keyBudgetValue === undefined ? undefined : Number(keyBudgetValue);
+  if (keyBudget !== undefined && (!Number.isFinite(keyBudget) || keyBudget <= 0)) throw new Error(`HUTERM_OUTPUT_LATENCY_SNAPSHOTS_PER_KEY_BUDGET must be a positive number, not ${keyBudgetValue}`);
+  if (budgetUs !== undefined && mode !== "echo") throw new Error("the applied latency budget applies to echo mode only");
+  if (keyBudget !== undefined && mode !== "keys") throw new Error("the snapshots-per-key budget applies to keys mode only");
   // The terminal starts its shell from another directory, so the path must be absolute.
   // An isolated configuration keeps the user's font, theme, and global shortcuts
   // out of the measurement; a running Huterm would otherwise own the shortcuts.
@@ -78,18 +134,27 @@ if (import.meta.main) {
   // "events" records the probe without requesting a frame per display tick;
   // continuous drawing would otherwise hold the main thread in present.
   // Always set the workload so an inherited value cannot change the mode.
-  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events", HUTERM_RENDER_WORKLOAD: mode };
+  // Only keys mode types into the window; an inherited driver must not add keys to other modes.
+  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events", HUTERM_RENDER_WORKLOAD: mode, HUTERM_KEY_BENCH: mode === "keys" ? "1" : "0" };
   try {
     // Huterm runs until stopped, so reaching the deadline is the expected outcome.
     const outcome = await runSmokeProcess([executable], { timeoutMs, env: environment, stream: false });
     if (!outcome.timedOut) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
     for (const line of outcome.stderr.split(/\r?\n/).filter(line => line.startsWith("HUTERM_BENCH "))) console.log(line);
-    const summary = summarize(parseIntervals(outcome.stderr));
-    console.log(`mode=${mode} ${format(summary)}`);
-    if (budgetUs !== undefined) {
-      if (mode !== "echo") throw new Error("the applied latency budget applies to echo mode only");
-      checkAppliedBudget(summary, budgetUs);
-      console.log(`mode=${mode} applied_budget_us=${budgetUs} passed`);
+    if (mode === "keys") {
+      const summary = summarizeKeys(parseKeyIntervals(outcome.stderr));
+      console.log(`mode=${mode} ${formatKeys(summary)}`);
+      if (keyBudget !== undefined) {
+        checkSnapshotsPerKeyBudget(summary, keyBudget);
+        console.log(`mode=${mode} snapshots_per_key_budget=${keyBudget} passed`);
+      }
+    } else {
+      const summary = summarize(parseIntervals(outcome.stderr));
+      console.log(`mode=${mode} ${format(summary)}`);
+      if (budgetUs !== undefined) {
+        checkAppliedBudget(summary, budgetUs);
+        console.log(`mode=${mode} applied_budget_us=${budgetUs} passed`);
+      }
     }
   } finally {
     await rm(configDirectory, { recursive: true, force: true });

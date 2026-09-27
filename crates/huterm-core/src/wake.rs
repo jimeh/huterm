@@ -38,6 +38,17 @@ impl Wake {
         *pending = false;
     }
 
+    /// Consumes a pending notification without waiting.
+    #[cfg(test)]
+    pub(crate) fn take_pending(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     pub(crate) fn wait(&self) {
         let pending = self
             .pending

@@ -194,7 +194,12 @@ async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 terminal.input_queue.enqueue(
                     TerminalInput::Text("PENDING_FIRST\n".into()),
                     false,
-                    |_| Err(huterm_core::RuntimeError::Busy),
+                    |input| {
+                        Err(huterm_core::RefusedInput {
+                            error: huterm_core::RuntimeError::Busy,
+                            input,
+                        })
+                    },
                 )?;
                 terminal.pending_resize = Some((
                     terminal.last_grid_size,
