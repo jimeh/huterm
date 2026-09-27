@@ -1361,7 +1361,7 @@ fn open_window_with_profile(
                 host.quake,
             )),
             titlebar: Some(TitlebarOptions {
-                title: Some("Huterm".into()),
+                title: Some(window_title(None).into()),
                 appears_transparent: cfg!(target_os = "macos"),
                 // GPUI centres the buttons in AppKit's 28-point title bar,
                 // two points above the 32-point strip's centre. A merged
@@ -1504,7 +1504,11 @@ fn open_window_with_profile(
                 title_row_moves: Rc::new(Cell::new(0)),
                 menu_contexts: Vec::new(),
                 about: None,
-                window_title: String::new(),
+                // The window opened with this title. Writing it again from
+                // the first render costs GPUI's X11 backend a blocking round
+                // trip that can queue the window's MapNotify where the event
+                // loop never sees it, so no later frame is ever requested.
+                window_title: window_title(None),
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);

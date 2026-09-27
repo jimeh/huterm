@@ -1210,3 +1210,13 @@ The client-frame smoke appends `_GTK_FRAME_EXTENTS` to Openbox's
 `_NET_SUPPORTED` under `xcompmgr` to stand in for such a window manager.
 Start a title-row move on the first drag motion, not the press: the window
 manager's move grab otherwise swallows the second click of a double-click.
+GPUI's X11 setters such as `set_title` and `set_client_inset` wait for a
+checked reply, which reads pending events into x11rb's queue. calloop watches
+only the socket, so an event queued this way, such as a new window's
+MapNotify, can wait forever: GPUI never starts that window's refresh loop and
+requests no further frame. The tracked `x11-drain-buffered-events` patch
+backports Zed's drain after each foreground task (zed#62081). Keep it until the
+GPUI upgrade includes that fix; `bench:scroll` under twm and the composited
+client-frame smoke both stall without it. Still seed cached platform values,
+such as the window title, with what the window opened with, and call these
+setters only when the value changes.
