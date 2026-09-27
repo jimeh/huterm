@@ -326,6 +326,19 @@ impl MenuModel {
     }
 }
 
+/// Where `selection` in `old` lands in `new`: on the same command, not the
+/// same row, since rows that appear or disappear above it would otherwise
+/// move it onto a different command. `None` once that command is gone or
+/// disabled.
+fn remap_selection(
+    old: &MenuModel,
+    selection: Option<MenuSelection>,
+    new: &MenuModel,
+) -> Option<MenuSelection> {
+    let id = old.id_at(selection?)?;
+    new.selection_of(id)
+}
+
 // ---- placement ------------------------------------------------------------
 
 /// Where a menu is opened from.
@@ -525,14 +538,8 @@ impl Menu {
         if self.model == model {
             return;
         }
-        // Keep the selected command, not the selected row: rows that appear
-        // or disappear above it would otherwise move the selection onto a
-        // different command.
-        let selected = self
-            .selection
-            .and_then(|selection| self.model.id_at(selection));
+        self.selection = remap_selection(&self.model, self.selection, &model);
         self.model = model;
-        self.selection = selected.and_then(|id| self.model.selection_of(id));
         cx.notify();
     }
 
@@ -1056,14 +1063,19 @@ mod tests {
         let mut rows = model.rows.clone();
         rows.remove(0);
         let shifted = MenuModel::new(rows);
-        assert_eq!(shifted.selection_of("fullscreen"), at(5));
+        assert_eq!(remap_selection(&model, at(6), &shifted), at(5));
         assert_eq!(
-            shifted.id_at(MenuSelection {
-                row: 6,
-                button: None
-            }),
-            None
+            remap_selection(&model, button(5, 1), &shifted),
+            button(4, 1),
+            "a selected button follows its row"
         );
+        // A selection whose command disappears or becomes disabled clears.
+        let mut rows = model.rows.clone();
+        rows.retain(|row| {
+            !matches!(row, MenuRow::Item(item) if item.id == "fullscreen")
+        });
+        assert_eq!(remap_selection(&model, at(6), &MenuModel::new(rows)), None);
+        assert_eq!(remap_selection(&model, None, &shifted), None);
     }
 
     #[test]

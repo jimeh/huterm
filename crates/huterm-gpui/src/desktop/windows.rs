@@ -7600,7 +7600,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.active_view().as_ref() == Some(terminal) {
+        // A right-click closes any open menu in the capture phase before
+        // the terminal sees it, so an open menu here was opened after the
+        // click; a lookup that finished late must not replace it.
+        if self.active_view().as_ref() == Some(terminal) && self.menu.is_none()
+        {
             self.open_terminal_menu(
                 request.position,
                 request.link.clone(),
