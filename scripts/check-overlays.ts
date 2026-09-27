@@ -39,6 +39,8 @@ type OverlayInput = {
   typeText(text: string): Promise<void>;
   moveTo(x: number, y: number): Promise<void>;
   click(x: number, y: number, button?: PointerButton): Promise<void>;
+  /** A left-button drag from one point to another, released at the end. */
+  drag(fromX: number, fromY: number, toX: number, toY: number): Promise<void>;
   /** Wheel steps up at the pointer; absent where no synthetic wheel exists. */
   wheelUp?: () => Promise<void>;
   windowName(): Promise<string>;
@@ -64,6 +66,13 @@ function x11Input(windowId: string, scale: number): OverlayInput {
       await moveTo(x, y);
       run(["xdotool", "click", buttons[button]]);
     },
+    drag: async (fromX, fromY, toX, toY) => {
+      await moveTo(fromX, fromY);
+      run(["xdotool", "mousedown", "1"]);
+      await moveTo((fromX + toX) / 2, (fromY + toY) / 2);
+      await moveTo(toX, toY);
+      run(["xdotool", "mouseup", "1"]);
+    },
     wheelUp: async () => { run(["xdotool", "click", "--repeat", "3", "4"]); },
     windowName: async () => run(["xdotool", "getwindowname", windowId]),
   };
@@ -84,7 +93,7 @@ const macKeys: Record<OverlayKey, [number, number, string]> = {
  * Synthetic scroll-wheel events are not posted, as in the palette smoke.
  */
 export function appKitInput(command: (value: string) => Promise<string>): OverlayInput {
-  // NSEvent types: left 1/2, right 3/4, other 25/26, moved 5.
+  // NSEvent types: left 1/2, right 3/4, other 25/26, moved 5, left dragged 6.
   const kinds: Record<PointerButton, [number, number]> = { left: [1, 2], middle: [25, 26], right: [3, 4] };
   const post = (fields: (string | number)[]) => command(["native", ...fields].join("\t"));
   const moveTo = async (x: number, y: number) => {
@@ -106,6 +115,13 @@ export function appKitInput(command: (value: string) => Promise<string>): Overla
       const [down, up] = kinds[button];
       await post(["mouse", down, x, y]);
       await post(["mouse", up, x, y]);
+    },
+    drag: async (fromX, fromY, toX, toY) => {
+      await moveTo(fromX, fromY);
+      await post(["mouse", 1, fromX, fromY]);
+      await post(["mouse", 6, (fromX + toX) / 2, (fromY + toY) / 2]);
+      await post(["mouse", 6, toX, toY]);
+      await post(["mouse", 2, toX, toY]);
     },
     windowName: () => command("native-title"),
   };
@@ -488,6 +504,11 @@ label = "title"
     await key("page-up");
     const scrolled = await stateWhere((text) => text.includes("w0.scroll_pill=true") && Number(field(text, "scrolled")) > 0, "scrolled-back pill");
     const pill = scrollPillCentre(parseRect(field(scrolled, "terminal_bounds")));
+    // A selection dragged from the terminal and released over the pill
+    // still finishes: the pill takes presses, not releases it did not start.
+    const scrolledGrid = parseRect(field(scrolled, "grid_bounds"));
+    await native().drag(scrolledGrid.x + 12, scrolledGrid.y + 12, pill.x, pill.y);
+    await state("w0.selecting=false", "w0.selection=true", "w0.scroll_pill=true");
     await click(pill.x, pill.y);
     await state("w0.scrolled=0", "w0.scroll_pill=false", "w0.terminal_focused=true");
     await ack("ackscrollx");

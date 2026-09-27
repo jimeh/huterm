@@ -975,6 +975,10 @@ if (import.meta.main) {
     // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|frame|titlebar narrows a
     // local run.
     const only = process.env.HUTERM_PALETTE_SMOKE_ONLY;
+    if (only && !["palette", "overlays", "frame", "titlebar"].includes(only)) {
+      // A typo would otherwise skip every check and still report success.
+      throw new Error(`unknown HUTERM_PALETTE_SMOKE_ONLY=${only}; expected palette, overlays, frame, or titlebar`);
+    }
     const checks = async (wm?: X11Process) => {
       if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
       if (!only || only === "overlays") await checkOverlays(executable, wm);

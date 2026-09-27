@@ -1054,6 +1054,9 @@ the GPUI 0.2.2 method requires a current view and panics from a timer callback.
 Terminal gestures retain move/release ownership beneath an overlay until the
 deferred pointer reconciliation hides it; overlay hit bounds alone must never
 discard that release.
+Non-modal overlays over the terminal, such as toasts and the scroll pill, stop
+presses but never releases: a drag that started in the terminal must still end
+there, and the terminal ignores releases it does not own.
 GPUI's macOS window-hover flag reports activation and can retain the last mouse
 position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
 display membership so leaving for another display dismisses the overlay. Keep a

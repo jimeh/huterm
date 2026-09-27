@@ -233,7 +233,7 @@ shortcut_hints = false # key hints on the scroll pill and dialog buttons
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
 directory = "name" # name, path, or short
-position = "titlebar" # top, bottom, left, right, or titlebar; Linux default: "top"
+# position = "titlebar" # or top, bottom, left, right; Linux default: "top"
 always_show = false
 auto_hide_in_fullscreen = false
 style = "pill" # pill or strip

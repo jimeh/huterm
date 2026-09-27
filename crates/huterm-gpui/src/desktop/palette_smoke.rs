@@ -447,7 +447,8 @@ fn read_state(cx: &mut App) -> String {
 /// offset (distinct from the palette's `scroll_offset`), `scroll_pill`
 /// whether the pill is drawn, `grid` the last PTY size as `columns,rows`,
 /// `grid_bounds` the painted grid in window points, `cell` its cell size,
-/// `selection` whether text is selected, and `history` the scrollback rows.
+/// `selection` whether text is selected, `selecting` whether a selection
+/// drag is still in progress, and `history` the scrollback rows.
 fn ui_state(
     entity: &gpui::Entity<WorkspaceView>,
     index: usize,
@@ -459,7 +460,7 @@ fn ui_state(
         let terminal_line = view.active_view().map_or_else(
             || {
                 format!(
-                    "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0 {prefix}grid_bounds=none {prefix}cell=0,0 {prefix}selection=false {prefix}history=0"
+                    "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0 {prefix}grid_bounds=none {prefix}cell=0,0 {prefix}selection=false {prefix}selecting=false {prefix}history=0"
                 )
             },
             |terminal| {
@@ -467,7 +468,7 @@ fn ui_state(
                 let content = terminal.content_bounds(window);
                 let grid = terminal.terminal_layout(window).bounds;
                 format!(
-                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}history={}",
+                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}selecting={} {prefix}history={}",
                     rect(content),
                     terminal.scroll.displayed(),
                     terminal.scroll_pill_visible(),
@@ -477,6 +478,7 @@ fn ui_state(
                     f32::from(terminal.metrics.cell_width),
                     f32::from(terminal.metrics.cell_height),
                     terminal.command_availability(ids::COPY).is_ok(),
+                    terminal.selecting,
                     terminal
                         .snapshot
                         .as_ref()

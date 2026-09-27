@@ -13,9 +13,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClickEvent, Div, FocusHandle, MouseButton, MouseDownEvent,
-    MouseUpEvent, Pixels, SharedString, Window, div, prelude::*, px, relative,
-    svg,
+    App, ClickEvent, Div, FocusHandle, MouseButton, MouseDownEvent, Pixels,
+    SharedString, Window, div, prelude::*, px, relative, svg,
 };
 use huterm_protocol::{CommandInvocation, TabId};
 
@@ -601,11 +600,10 @@ fn render_toast(
     let dismiss = Rc::clone(&handlers.dismiss);
     let hover = Rc::clone(&handlers.hover);
     // Presses stay on the toast: a click must not start a terminal selection
-    // or application mouse input beneath it.
+    // or application mouse input beneath it. Releases pass through, so a
+    // terminal gesture that ends over the toast still finishes; the terminal
+    // ignores releases it does not own.
     let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-        cx.stop_propagation();
-    };
-    let release = |_: &MouseUpEvent, _: &mut Window, cx: &mut App| {
         cx.stop_propagation();
     };
     let mut toast = raised_panel(swatch, 9.0)
@@ -623,9 +621,6 @@ fn render_toast(
         .on_mouse_down(MouseButton::Left, stop)
         .on_mouse_down(MouseButton::Right, stop)
         .on_mouse_down(MouseButton::Middle, stop)
-        .on_mouse_up(MouseButton::Left, release)
-        .on_mouse_up(MouseButton::Right, release)
-        .on_mouse_up(MouseButton::Middle, release)
         .on_hover(move |hovering: &bool, window, cx| {
             hover(id, *hovering, window, cx);
         })

@@ -177,6 +177,25 @@ impl MenuModel {
         }
     }
 
+    /// Where the enabled item or button `id` sits, if it does.
+    pub(crate) fn selection_of(&self, id: MenuItemId) -> Option<MenuSelection> {
+        self.rows.iter().enumerate().find_map(|(row, model_row)| {
+            let selection = match model_row {
+                MenuRow::Item(item) if item.id == id => {
+                    MenuSelection { row, button: None }
+                }
+                MenuRow::Buttons { buttons, .. } => MenuSelection {
+                    row,
+                    button: Some(
+                        buttons.iter().position(|button| button.id == id)?,
+                    ),
+                },
+                MenuRow::Item(_) | MenuRow::Separator => return None,
+            };
+            self.id_at(selection).map(|_| selection)
+        })
+    }
+
     pub(crate) fn first(&self) -> Option<MenuSelection> {
         self.selectable_rows()
             .first()
@@ -506,10 +525,14 @@ impl Menu {
         if self.model == model {
             return;
         }
-        self.model = model;
-        self.selection = self
+        // Keep the selected command, not the selected row: rows that appear
+        // or disappear above it would otherwise move the selection onto a
+        // different command.
+        let selected = self
             .selection
-            .filter(|selection| self.model.id_at(*selection).is_some());
+            .and_then(|selection| self.model.id_at(selection));
+        self.model = model;
+        self.selection = selected.and_then(|id| self.model.selection_of(id));
         cx.notify();
     }
 
@@ -1018,6 +1041,29 @@ mod tests {
             row,
             button: Some(button),
         })
+    }
+
+    #[test]
+    fn selections_follow_their_command_when_rows_move() {
+        let model = model();
+        // Rows 5 and 6 hold the Edit buttons and Toggle Fullscreen.
+        assert_eq!(model.selection_of("fullscreen"), at(6));
+        assert_eq!(model.selection_of("paste"), button(5, 1));
+        assert_eq!(model.selection_of("copy"), None, "disabled button");
+        assert_eq!(model.selection_of("copy_dir"), None, "disabled item");
+        assert_eq!(model.selection_of("missing"), None);
+        // Removing a row above moves the command, not the selection's row.
+        let mut rows = model.rows.clone();
+        rows.remove(0);
+        let shifted = MenuModel::new(rows);
+        assert_eq!(shifted.selection_of("fullscreen"), at(5));
+        assert_eq!(
+            shifted.id_at(MenuSelection {
+                row: 6,
+                button: None
+            }),
+            None
+        );
     }
 
     #[test]

@@ -132,7 +132,7 @@ fn dialog_copy(
         CloseDialogTarget::Tabs { count } => {
             if busy >= *count {
                 sentences.push(format!("All {count} have running processes."));
-            } else {
+            } else if busy > 0 {
                 sentences.push(format!(
                     "{busy} of them {} running processes.",
                     if busy == 1 { "has" } else { "have" }
@@ -678,6 +678,24 @@ mod tests {
              tab's process state is unavailable, so it may have running jobs."
         );
         assert_eq!(mixed.mark, DialogMark::Question);
+        // Only unknown-state tabs: no "0 of them" sentence, just the reason
+        // the dialog shows.
+        let unknown_only = build(
+            CloseDialogTarget::Tabs { count: 2 },
+            vec![unknown(Some("ssh")), unknown(Some("mosh"))],
+        );
+        assert!(
+            !unknown_only.subtitle.contains("of them"),
+            "{}",
+            unknown_only.subtitle
+        );
+        assert!(
+            unknown_only
+                .subtitle
+                .contains("process state is unavailable"),
+            "{}",
+            unknown_only.subtitle
+        );
     }
 
     #[test]

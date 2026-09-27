@@ -1610,6 +1610,9 @@ impl TerminalView {
             return;
         }
         self.external_drag = false;
+        // Any later press supersedes a right-click still waiting for its
+        // link lookup; a new right-click starts its own below.
+        self.context_lookup = None;
         self.focus.focus(window);
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
@@ -2358,6 +2361,9 @@ impl TerminalView {
     }
 
     fn blur_mouse(&mut self, cx: &mut Context<'_, Self>) {
+        // A right-click still waiting for its link lookup must not open its
+        // menu once focus or visibility has moved on.
+        self.context_lookup = None;
         self.links.disable();
         self.cancel_mouse();
         self.finish_selection(cx);
@@ -2662,10 +2668,10 @@ impl TerminalView {
         let bottom = viewport_height
             - (terminal_bounds.origin.y + terminal_bounds.size.height)
             + px(12.0);
+        // Presses stay on the pill. Releases pass through: a selection or
+        // application gesture that started in the terminal must still end
+        // there, and the terminal ignores releases it does not own.
         let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-            cx.stop_propagation();
-        };
-        let release = |_: &MouseUpEvent, _: &mut Window, cx: &mut App| {
             cx.stop_propagation();
         };
         div()
@@ -2697,9 +2703,6 @@ impl TerminalView {
                     .on_mouse_down(MouseButton::Left, stop)
                     .on_mouse_down(MouseButton::Right, stop)
                     .on_mouse_down(MouseButton::Middle, stop)
-                    .on_mouse_up(MouseButton::Left, release)
-                    .on_mouse_up(MouseButton::Right, release)
-                    .on_mouse_up(MouseButton::Middle, release)
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.scroll_command(cx, |scroll, _| scroll.bottom());
                     }))
