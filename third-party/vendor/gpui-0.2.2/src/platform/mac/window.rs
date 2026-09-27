@@ -471,6 +471,11 @@ impl MacWindowState {
                     self.native_window,
                     standardWindowButton: NSWindowButton::NSWindowZoomButton
                 ];
+                // A borderless window has no standard buttons, and the Rust
+                // message macro dereferences a nil receiver.
+                if close_button.is_null() || min_button.is_null() || zoom_button.is_null() {
+                    return;
+                }
 
                 let mut close_button_frame: CGRect = msg_send![close_button, frame];
                 let mut min_button_frame: CGRect = msg_send![min_button, frame];

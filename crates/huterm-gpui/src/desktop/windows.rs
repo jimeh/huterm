@@ -1374,9 +1374,10 @@ fn open_window_with_profile(
                 // placement: 12-point buttons at a 10-point top inset, at
                 // AppKit's own 7-point left edge. Other positions keep the
                 // platform default until the same alignment is checked
-                // for them.
+                // for them. Borderless Quake windows have no buttons.
                 traffic_light_position: (cfg!(target_os = "macos")
-                    && config.tabs.position == TabPosition::Titlebar)
+                    && config.tabs.position == TabPosition::Titlebar
+                    && !host.quake)
                     .then_some(point(px(7.0), px(10.0))),
             }),
             window_min_size: Some(size(px(280.0), px(180.0))),

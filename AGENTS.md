@@ -1213,7 +1213,11 @@ Windows. Huterm owns macOS title-bar drags: windows set
 Otherwise the window server takes a press on a tab in the title strip as a
 window drag, and AppKit and Huterm could both act on a double-click. The
 `macos-app-owned-titlebar-drag` vendor patch backports both GPUI pieces
-(zed#41839, zed#60620). X11 moves also need `start_window_move`. GPUI grants
+(zed#41839, zed#60620). GPUI repositions traffic lights for any window given
+`traffic_light_position`, including after regular-to-Quake conversion, and a
+borderless window has no buttons: the `macos-borderless-traffic-lights` patch
+skips it instead of messaging nil, and Quake windows never request a position.
+X11 moves also need `start_window_move`. GPUI grants
 X11 client-side decorations only when, at client start, the window manager
 lists `_GTK_FRAME_EXTENTS` in the root
 `_NET_SUPPORTED` (Mutter and KWin do, Openbox does not); its compositor probe
