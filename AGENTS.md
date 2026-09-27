@@ -114,7 +114,9 @@ Run `mise tasks` to discover the full task set.
   each key to its painted echo; `ci:benchmarks` fails it above 1.5 snapshots
   per key. Input must not request a snapshot unless it leaves history: one
   started before the echo exists spends the frame's allowance and delays the
-  echo by a frame.
+  echo by a frame. On macOS its keys reach the terminal only while the window
+  stays active; the driver skips keys and prints `window_active=false` when
+  another application takes focus.
 - `mise run bench:scroll` drives production scroll inputs against 10,000 rows
   and enforces snapshot elapsed-time, wakeup, offset, and bounded-queue budgets.
   Linux runs it under Xvfb; macOS runs it natively and also enforces paint

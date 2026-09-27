@@ -1457,11 +1457,80 @@ feature, with painted medians of 7.3-9.0 ms and 7.3-8.4 ms. One `flood` run
 each held 61 and 62 snapshots per second.
 
 The same change removes re-renders that changed nothing visible: modifier key
-presses without a link hover change, wheel events that do not reveal the
-scrollbar (their rows arrive with the next snapshot), selection drags within
-one cell, and
-snapshot replies whose rows, cursor, modes, viewport, history size, and link
-hover are unchanged. The PTY writer also wakes the runtime only after the
-runtime has recorded spilled writes, instead of once per dequeued keystroke.
-No benchmark isolates these; `mise run test` and the Linux input smoke cover
-their behavior.
+presses without a link hover change, wheel events that neither reveal the
+scrollbar nor clear a link hover (their rows arrive with the next snapshot),
+selection drags within one cell, and snapshot replies whose rows, cursor,
+modes, viewport, history size, and link hover are unchanged. The PTY writer
+also wakes the runtime only after the runtime has recorded spilled writes,
+instead of once per dequeued keystroke. No benchmark isolates these;
+`mise run test` and the Linux input smoke cover their behavior.
+
+### Native macOS keystroke echo (2026-09-27)
+
+The same comparison ran natively on an Apple M3 Max (Mac15,8) with macOS 27.0.
+The baseline is `ef3bfb7`, the feature's parent on `main`, with only the
+benchmark added; the two arms used separate Cargo target directories and
+alternated. `HUTERM_BENCH_DISPLAY_ID` pinned the window to either the built-in
+panel (display 1, 120 Hz) or the primary 8K external display (display 4,
+60 Hz). GPUI delivered frame callbacks every 8.33 ms and 16.67 ms respectively.
+Each run lasted 10 seconds. The 120 Hz runs were taken while the host was in
+interactive use; the 60 Hz runs on an otherwise idle host.
+
+| Display, arm and run | Snapshots per key | Echoes / keys | Applied µs | Painted µs |
+| --- | ---: | ---: | ---: | ---: |
+| 120 Hz baseline 1 | 2.00 | 54 / 60 | 7,929 (9,345) | 12,118 (12,759) |
+| 120 Hz baseline 2 | 2.00 | 72 / 79 | 15,640 (20,499) | 15,962 (20,858) |
+| 120 Hz baseline 3 | 2.00 | 63 / 70 | 8,379 (17,720) | 12,486 (17,817) |
+| 120 Hz feature 1 | 1.00 | 70 / 70 | 4,520 (21,000) | 7,811 (21,422) |
+| 120 Hz feature 2 | 1.00 | 80 / 80 | 447 (31,461) | 4,332 (31,676) |
+| 120 Hz feature 3 | 1.00 | 70 / 70 | 143 (21,620) | 4,369 (21,745) |
+| 60 Hz baseline 1 | 2.00 | 72 / 80 | 8,834 (17,297) | 25,464 (33,873) |
+| 60 Hz baseline 2 | 2.00 | 72 / 80 | 8,969 (17,089) | 25,294 (33,623) |
+| 60 Hz baseline 3 | 2.00 | 72 / 80 | 8,560 (17,733) | 25,535 (34,259) |
+| 60 Hz feature 1 | 1.00 | 80 / 80 | 146 (215) | 8,949 (17,321) |
+| 60 Hz feature 2 | 1.00 | 80 / 80 | 145 (194) | 7,990 (16,722) |
+| 60 Hz feature 3 | 1.00 | 80 / 80 | 146 (4,361) | 10,611 (16,939) |
+
+At 60 Hz the feature saves about one frame, 16 ms, of painted latency per key,
+and its applied latency stays below 4.4 ms. At 120 Hz the saving is smaller
+and noisier because of an older stall that this change does not address.
+
+On the 120 Hz panel, some one-second intervals apply every echo about 16.6 ms,
+two frames, after the key. The key reaches the runtime's invalidation in 120 to
+300 µs in both arms; the whole delay falls between that invalidation and the
+applied snapshot, while frame callbacks continue every 8.33 ms, so the
+snapshot allowance is not the cause. `echo` mode, which sends no input, never
+shows it. GPUI 0.2.2 presents every frame for one second after the last input
+to an active window, even when nothing changed, to keep the display from
+lowering its refresh rate (`window.rs`, `on_request_frame`). A probe build of
+the feature with only that input condition removed alternated with the
+feature for three 15-second runs:
+
+| Arm | Stalled intervals | Applied medians µs | Painted medians µs |
+| --- | ---: | ---: | ---: |
+| Feature | 16 of 36 | 16,658 / 152 / 158 | 16,792 / 3,965 / 4,126 |
+| Probe without post-input presents | 0 of 38 | 138 / 139 / 483 | 5,423 / 4,343 / 5,525 |
+
+The probe's unstalled painted medians are about 1 ms higher than the
+feature's unstalled intervals, which fits GPUI's reason for the extra
+presents. Removing them is therefore a trade-off for a separate change,
+[#178](https://github.com/jimeh/huterm/issues/178), not part of this one.
+The baseline shows the same stall more often: 6 of 12 intervals in one
+15-second run.
+
+The same binaries showed no change for output without input on the 120 Hz
+panel. `echo` applied medians were 52-115 µs for the baseline and 86-185 µs
+for the feature, with painted medians of 5.0-5.3 ms and 5.1-6.1 ms. `flood`
+held 112-117 and 103-112 snapshots per second, with painted medians of
+14.7-15.0 ms and 15.2-15.8 ms. `mise run bench:scroll` on the 60 Hz display
+passed five of six feature runs and three of four baseline runs. The failures
+were one feature run with a 16.2 ms median wakeup and one baseline run whose
+p95 input-to-paint of 33,447 µs exceeded the 33,400 µs budget; both arms
+otherwise reported median wakeups of 11-23 µs, apart from one baseline run at
+4.5 ms.
+
+On macOS the benchmark's key text arrives through the platform input handler,
+which accepts text only while the window is active. The driver skips keys
+while another application is active and prints
+`HUTERM_BENCH key_bench window_active=false`, so a run that loses focus
+reports fewer keys instead of keys without echoes.

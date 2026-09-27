@@ -1052,7 +1052,13 @@ impl TerminalView {
         {
             return;
         }
+        let hovered = self.links.hover().is_some();
         self.links.invalidate();
+        if hovered {
+            // A wheel event that moves no rows brings no snapshot, so the
+            // cleared hover's underline and pointer need their own render.
+            cx.notify();
+        }
         let (application, cell) =
             self.application_mouse(event.position, event.modifiers, window);
         if self.mouse.wheel_route(application) {

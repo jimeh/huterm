@@ -23,30 +23,44 @@ pub(super) fn start(
     }
     cx.spawn(async move |view, cx| {
         let keystroke = Keystroke::parse("a").expect("static keystroke parses");
+        let mut paused = false;
         for index in 0_u64.. {
             // An uneven period keeps keys from locking phase with a frame timer.
             cx.background_executor()
                 .timer(Duration::from_millis(90 + index * 7 % 23))
                 .await;
-            let Ok(ready) = view.update(cx, |view, _| {
-                let ready = view.visible && view.snapshot.is_some();
+            let Ok(Some(active)) = window.update(cx, |_, window, cx| {
+                // macOS delivers printable keys through the platform input
+                // handler, which accepts text only in the active window. A
+                // key sent while another application is active never echoes,
+                // so it is skipped rather than counted.
+                let active =
+                    !cfg!(target_os = "macos") || window.is_window_active();
+                let ready = view
+                    .update(cx, |view, _| {
+                        let ready =
+                            active && view.visible && view.snapshot.is_some();
+                        if ready {
+                            view.renderer
+                                .borrow_mut()
+                                .record_key_sent(Instant::now());
+                        }
+                        ready
+                    })
+                    .ok()?;
+                // Dispatch after the view update: the keystroke observer
+                // updates this view through the window's root.
                 if ready {
-                    view.renderer.borrow_mut().record_key_sent(Instant::now());
+                    window.dispatch_keystroke(keystroke.clone(), cx);
                 }
-                ready
+                Some(active)
             }) else {
                 return;
             };
-            // Dispatch outside the view update: the keystroke observer updates
-            // this view through the window's root.
-            if ready
-                && window
-                    .update(cx, |_, window, cx| {
-                        window.dispatch_keystroke(keystroke.clone(), cx);
-                    })
-                    .is_err()
-            {
-                return;
+            let was_paused = paused;
+            paused = !active;
+            if paused != was_paused {
+                eprintln!("HUTERM_BENCH key_bench window_active={active}");
             }
         }
     })
