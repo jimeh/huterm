@@ -1,4 +1,4 @@
-//! The `⋯` window menu: where its button goes, how a vertical column's
+//! The window menu: where its button goes, how a vertical column's
 //! new-tab row shares its width with it, the rows it lists, and the
 //! platform shortcut text beside them. Everything here is pure so the
 //! placement and model can be tested without a window.
@@ -11,7 +11,7 @@ use super::super::menu::{MenuButton, MenuItem, MenuModel, MenuRow};
 use super::{CONTROL_SIZE, TabPosition};
 use crate::keymap::{InstalledKeymap, Origin, Platform};
 
-/// Where the `⋯` button is drawn.
+/// Where the menu button is drawn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MenuButtonPlacement {
     /// `window.menu_button = false`, or the tab bar that would hold it is
@@ -53,7 +53,7 @@ pub(super) fn menu_button_placement(
     }
 }
 
-/// Gap between the narrowed `+` target and the square `⋯` control.
+/// Gap between the narrowed `+` target and the square menu control.
 const ROW_GAP: Pixels = px(4.0);
 
 /// How a vertical column's new-tab row divides its width.
@@ -61,7 +61,7 @@ const ROW_GAP: Pixels = px(4.0);
 pub(super) struct NewTabRow {
     /// Width of the `+` target from the row's left edge.
     pub(super) plus_width: Pixels,
-    /// Left offset of the square `⋯` control within the row, when present.
+    /// Left offset of the square menu control within the row, when present.
     pub(super) menu_x: Option<Pixels>,
 }
 

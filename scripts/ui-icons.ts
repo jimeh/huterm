@@ -12,7 +12,7 @@ export const iconNames = [
   "chevron-right",
   "circle-alert",
   "bell",
-  "ellipsis",
+  "menu",
   "minus",
   "square",
   "copy",

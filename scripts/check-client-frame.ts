@@ -255,7 +255,7 @@ done
   function windowState(): string {
     return property(windowId, "_NET_WM_STATE");
   }
-  /** Empty title-row space: between the `+` control after the last tab and the `⋯` button. */
+  /** Empty title-row space: between the `+` control after the last tab and the menu button. */
   function emptyRowSpace(text: string): { x: number; y: number } {
     const tabs = field(text, "tabs_rects").split(";").map(parseRect);
     const last = tabs[tabs.length - 1];
@@ -263,7 +263,7 @@ done
     const controls = parseRect(field(text, "window_controls"));
     const content = parseRect(field(text, "content"));
     if (!last) throw new Error(`${engine} ${label}: no tab rects: ${text}`);
-    // The `⋯` button ends the strip area just before the controls.
+    // The menu button ends the strip area just before the controls.
     if (button.x + button.w > controls.x || button.x < last.x + last.w + 32) {
       throw new Error(`${engine} ${label}: the menu button ${field(text, "menu_button")} is not between the + slot after ${field(text, "tabs_rects")} and the controls ${field(text, "window_controls")}`);
     }

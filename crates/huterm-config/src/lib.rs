@@ -210,7 +210,7 @@ pub struct WindowConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub padding_balance: bool,
-    /// Show the `⋯` window menu button in the title bar, or in the tab bar
+    /// Show the window menu button in the title bar, or in the tab bar
     /// when the window has no title bar. Every item stays reachable through
     /// shortcuts or the command palette.
     pub menu_button: bool,

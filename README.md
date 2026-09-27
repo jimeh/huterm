@@ -250,9 +250,10 @@ left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
 
-`menu_button` shows a `⋯` button that opens the window menu: the command
-palette, tab and window commands, Copy and Paste, fullscreen, settings, reload,
-waiting notices, About, and Quit, with each item's current shortcut. On macOS
+`menu_button` shows a three-line menu button that opens the window menu: the
+command palette, tab and window commands, Copy and Paste, fullscreen, settings,
+reload, waiting notices, About, and Quit, with each item's current shortcut.
+On macOS
 it sits at the right end of the title bar. Without a title bar (fullscreen on
 either platform, or Linux without client-side decorations, where the window
 manager draws it) it joins the tab bar: the far right of a top or bottom bar,
@@ -296,11 +297,11 @@ Enter, or Escape closes it, and terminal input is blocked while it is showing.
 macOS default, and Linux defaults to `top`. On macOS
 the 32-point title strip becomes the tab row: it starts after the traffic
 lights, holds the tabs and `+`, keeps its trailing space draggable with the
-usual double-click action, and ends with the `⋯` button. The terminal gains
+usual double-click action, and ends with the menu button. The terminal gains
 the height a top bar would take. A single tab with `always_show = false` shows
 the strip with the active tab's title, as the other positions do. On Linux,
 Huterm asks for client-side decorations and draws the whole row itself: the
-tabs and `+` from the left edge, draggable empty space, the `⋯` button, then
+tabs and `+` from the left edge, draggable empty space, the menu button, then
 round minimize, maximize, and close controls on the right. Dragging the empty
 space moves the window, double-clicking it maximizes, and a right-click opens
 the window manager's menu; the close control takes the same assessed close
@@ -896,7 +897,7 @@ focus commands do nothing.
 #### Menu
 
 These bind only while the window menu has focus (`menu`), so they take
-nothing from terminal input. `open_menu` has no default binding; the `⋯`
+nothing from terminal input. `open_menu` has no default binding; the menu
 button opens the menu with no selection, and `open_menu` selects the first
 item. Typing a letter jumps to the next item starting with it. Escape, Tab,
 running an item, or clicking elsewhere closes the menu and returns focus to

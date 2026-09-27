@@ -5020,7 +5020,7 @@
         },
         "menu_button": {
           "default": true,
-          "description": "Show the `⋯` window menu button in the title bar, or in the tab bar\nwhen the window has no title bar. Every item stays reachable through\nshortcuts or the command palette.",
+          "description": "Show the window menu button in the title bar, or in the tab bar\nwhen the window has no title bar. Every item stays reachable through\nshortcuts or the command palette.",
           "type": "boolean"
         },
         "padding_balance": {

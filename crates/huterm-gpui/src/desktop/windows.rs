@@ -1360,7 +1360,7 @@ fn open_window_with_profile(
                 host.platform,
                 host.quake,
             )),
-            // A macOS title strip holds tabs, `+`, and `⋯`. When AppKit
+            // A macOS title strip holds tabs, `+`, and the menu button. When AppKit
             // owns the strip, the window server takes a press there as a
             // window drag, so Huterm moves the window from empty strip
             // space itself (`title_row_gestures`).
@@ -2250,7 +2250,7 @@ struct WorkspaceView {
     /// Where a tab menu was opened, in window coordinates; `None` for the
     /// window menu, which anchors to its button.
     menu_pointer: Option<gpui::Point<Pixels>>,
-    /// Where the `⋯` button was last painted, for anchoring the menu and
+    /// Where the menu button was last painted, for anchoring the menu and
     /// letting a press on it toggle rather than dismiss; `None` while the
     /// button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -2277,7 +2277,7 @@ struct WorkspaceView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MenuFocusReturn {
     /// The active terminal, after Escape, a pick, an outside press, or a
-    /// command. Returning to the `⋯` button would leave terminal bindings
+    /// command. Returning to the menu button would leave terminal bindings
     /// inactive until the user clicked back into the terminal.
     Terminal,
     /// Whatever takes focus next, such as a close confirmation.
@@ -6450,7 +6450,7 @@ impl Render for WorkspaceView {
         let title_menu_button = (menu_placement
             == MenuButtonPlacement::TitleStrip)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
-        // The strip's trailing group: the `⋯` button when the strip holds
+        // The strip's trailing group: the menu button when the strip holds
         // it, then the window controls in the row Huterm draws.
         let title_trailing = div()
             .ml_auto()
@@ -6491,7 +6491,7 @@ impl Render for WorkspaceView {
                         },
                     )
                     .when(titlebar > px(0.0), |bar| {
-                        // The strip stays draggable and keeps the `⋯`
+                        // The strip stays draggable and keeps the menu
                         // button at its right end.
                         bar.flex()
                             .items_center()
@@ -6508,7 +6508,7 @@ impl Render for WorkspaceView {
                     .when(titlebar > px(0.0) && !merged_row, |bar| {
                         // The active tab's title, centred across the strip
                         // and kept clear of the traffic lights and the
-                        // `⋯` button. A merged row shows the tabs instead.
+                        // menu button. A merged row shows the tabs instead.
                         let strip_title = self
                             .tabs
                             .iter()
@@ -6589,7 +6589,7 @@ impl Render for WorkspaceView {
                     .when(merged_row, |row| {
                         // The space after the tabs is still the title bar:
                         // it moves the window and takes the title-bar
-                        // double-click. Tabs, `+`, and `⋯` sit above this
+                        // double-click. Tabs, `+`, and the menu button sit above this
                         // background and keep their presses.
                         self.title_row_gestures(
                             row.window_control_area(WindowControlArea::Drag),
@@ -6787,7 +6787,7 @@ impl Render for WorkspaceView {
                     );
                 }
             }
-            // A vertical column shares the new-tab row with the `⋯` control.
+            // A vertical column shares the new-tab row with the menu control.
             let row = split_new_tab_row(
                 (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
                     .max(px(0.0)),
@@ -7233,7 +7233,7 @@ impl WorkspaceView {
         )
     }
 
-    /// Where the `⋯` button is drawn this frame.
+    /// Where the menu button is drawn this frame.
     fn menu_button_placement(&self) -> MenuButtonPlacement {
         let presentation = self.presentation();
         let bar_shown = presentation == Presentation::Reserved
@@ -7402,7 +7402,7 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// The `⋯` button: closes an open menu, otherwise opens one with no
+    /// The menu button: closes an open menu, otherwise opens one with no
     /// selection.
     fn toggle_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.close_menu(MenuFocusReturn::Terminal, window, cx) {
@@ -7561,7 +7561,7 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
-    /// The menu's anchor: the painted `⋯` button, or the terminal's top
+    /// The menu's anchor: the painted menu button, or the terminal's top
     /// right corner when the button is hidden and `open_menu` ran.
     fn menu_anchor(&self, layout: &ChromeLayout) -> Bounds<Pixels> {
         self.menu_button_bounds.get().unwrap_or_else(|| {
@@ -7575,7 +7575,7 @@ impl WorkspaceView {
         })
     }
 
-    /// The `⋯` control: a 14-point icon in the 26-point control with the
+    /// The menu control: a 14-point icon in the 26-point control with the
     /// tab-bar hover style, a "Menu" tooltip, and a yellow dot while notices
     /// wait. It never holds keyboard focus: Escape returns focus to the
     /// terminal. The caller positions it. It records its painted bounds for
@@ -7601,7 +7601,6 @@ impl WorkspaceView {
             .rounded_md()
             .hover(|style| style.bg(colors.control_hover))
             .when(open, |button| button.bg(colors.control_hover))
-            .tooltip(move |_, cx| TextTooltip::view("Menu", swatch, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
@@ -7610,7 +7609,7 @@ impl WorkspaceView {
                 cx.stop_propagation();
             }))
             .child(
-                icon_element(Icon::Ellipsis, colors.inactive)
+                icon_element(Icon::Menu, colors.inactive)
                     .w(px(14.0))
                     .h(px(14.0))
                     .group_hover("window-menu", |style| {
@@ -7822,7 +7821,7 @@ impl WorkspaceView {
     /// the menu (open, focused, selected item, targeted tab index), the
     /// About panel, the close confirmation (showing, focused button,
     /// Debug-quoted title), notice focus, the Debug-quoted native window
-    /// title, the painted `⋯` button and window-controls bounds in logical
+    /// title, the painted menu button and window-controls bounds in logical
     /// points, the window scale, the sampled frame (granted client decorations, applied inset,
     /// maximized, observed fullscreen mode), and the content bounds inside
     /// the frame. Quoted values may contain spaces.
@@ -9668,7 +9667,7 @@ mod tests {
             merged.strip_bounds(tabs(TabStyle::Pill)).origin.x,
             TRAFFIC_LIGHT_INSET + PILL_INSET - PILL_MARGIN_LEFT
         );
-        // The `⋯` button keeps the plain strip's spot at the row's right
+        // The menu button keeps the plain strip's spot at the row's right
         // end, and the strip reserves that slot beside `+`.
         let bar_inset = (merged.tabs.size.height - CONTROL_SIZE) / 2.0;
         assert_eq!(
@@ -9771,7 +9770,7 @@ mod tests {
         );
         assert_eq!(layout.tabs.bottom(), layout.terminal.top());
         // Tabs start after the small lead and stop before the window
-        // controls; the `⋯` slot sits just before them.
+        // controls; the menu button slot sits just before them.
         let tabs = TabsConfig {
             position: TabPosition::Titlebar,
             style: TabStyle::Strip,

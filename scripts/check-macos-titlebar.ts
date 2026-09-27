@@ -3,7 +3,7 @@
  * server decides whether a title-bar press moves the window, so NSEvents
  * posted inside the application cannot show it. Huterm owns the strip's
  * drags: in the merged row (`tabs.position = "titlebar"`) tab clicks,
- * drags, right-clicks, `+`, and `⋯` stay with Huterm; in every position,
+ * drags, right-clicks, `+`, and the menu button stay with Huterm; in every position,
  * empty strip space drags the window and a double-click there runs the
  * title-bar action exactly once.
  */
@@ -157,7 +157,7 @@ label = "title"
     await state("w0.tabs=2", "w0.active_index=1", "w0.terminal_focused=true", "READY");
     await title("beta");
 
-    // 1. The merged row shares the strip with the traffic lights and `⋯`;
+    // 1. The merged row shares the strip with the traffic lights and the menu button;
     // a top bar sits below the strip. The terminal starts below both.
     const laid = await current();
     const tabs = field(laid, "tabs_rects").split(";").map(parseRect);
@@ -216,7 +216,7 @@ label = "title"
     );
     await state("w0.tabs=2", "w0.active_index=1", "w0.active=true");
 
-    // 6. `⋯` opens the window menu.
+    // 6. The menu button opens the window menu.
     click(centre(button));
     await state("w0.menu=true", "w0.menu_target=none");
     await input.key("escape");

@@ -129,9 +129,10 @@ impl Swatch {
     }
 
     /// A 2-point ring around a keyboard-focused control.
+    /// A soft accent ring around a focused control.
     pub(crate) fn focus_ring(&self) -> Vec<BoxShadow> {
         vec![BoxShadow {
-            color: self.accent,
+            color: self.accent.opacity(0.45),
             offset: point(px(0.0), px(0.0)),
             blur_radius: px(0.0),
             spread_radius: px(2.0),

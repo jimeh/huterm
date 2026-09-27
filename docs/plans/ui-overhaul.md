@@ -209,9 +209,11 @@ light and dark themes.
 
 ### Window menu button
 
-- A Lucide `ellipsis` icon at 14 points in the standard 26-point control, with
-  a "Menu" tooltip. `window.menu_button = false` removes it; every item stays
-  reachable through shortcuts or the palette.
+- A Lucide `menu` icon (three lines) at 14 points in the standard 26-point
+  control. This plan still calls it the `⋯` button, after the `ellipsis` icon
+  it first drew. It has no tooltip, which appeared while users aimed to click.
+  `window.menu_button = false` removes it; every item stays reachable through
+  shortcuts or the palette.
 - With a title bar, it takes the title bar's rightmost slot:
   - macOS windowed: the title strip, in every tab position.
   - Linux with tabs in the title bar: the drawn title bar, left of the window
@@ -616,7 +618,7 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
 | Toasts, stripes, "+N more", expiry line, stack above the pill, dot, badge | Notices; commit 5 |
 | "↑ 1,284 of 9,870 lines" pill with Jump to live | Scroll pill; commit 6 |
 | Centred `columns × rows` panel while resizing | Size panel; commit 6 |
-| `⋯` placement for each platform and position, tooltip, config toggle | Window menu button; commit 8 |
+| `⋯` placement for each platform and position, config toggle | Window menu button; commit 8 |
 | Placement mockup option B: `⋯` beside `+` for side bars without a title bar | Window menu button; commit 8 |
 | Top and bottom bars in fullscreen with `⋯` at the far right, menu opening upward from the bottom | Window menu button and Menu behaviour; commits 7 and 8 |
 | Window menu items, Edit row, conditional Show Notices and Check for Updates | Window menu; commit 8 |

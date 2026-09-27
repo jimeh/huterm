@@ -1,4 +1,4 @@
-//! The shared menu behind the window `⋯` button and the tab context menu.
+//! The shared menu behind the window menu button and the tab context menu.
 //!
 //! [`MenuModel`] holds the rows, and its selection and [`place_menu`]
 //! placement logic are pure so they can be tested without a window. [`Menu`]
@@ -659,20 +659,9 @@ impl Menu {
         cx: &mut Context<'_, Self>,
     ) -> gpui::AnyElement {
         let swatch = self.swatch;
-        let mut line = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(6.0))
-            .h(px(30.0))
-            .pl(px(10.0))
-            .pr(px(4.0))
-            .child(
-                div()
-                    .mr_auto()
-                    .text_color(swatch.muted)
-                    .child(label.to_owned()),
-            );
+        // The buttons sit in their own group: the gap between them does not
+        // survive beside an auto margin in GPUI's layout.
+        let mut group = div().flex().flex_none().items_center().gap(px(6.0));
         for (index, button) in buttons.iter().enumerate() {
             let selected = self.selection
                 == Some(MenuSelection {
@@ -682,7 +671,7 @@ impl Menu {
             let id = button.id;
             let enabled = button.enabled;
             let tooltip = button.tooltip.clone();
-            line = line.child(
+            group = group.child(
                 div()
                     .id(SharedString::from(format!(
                         "menu-button-{row}-{index}"
@@ -727,7 +716,22 @@ impl Menu {
                     .child(button.label.clone()),
             );
         }
-        line.into_any_element()
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(30.0))
+            .pl(px(10.0))
+            .pr(px(4.0))
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(swatch.muted)
+                    .child(label.to_owned()),
+            )
+            .child(group)
+            .into_any_element()
     }
 }
 
