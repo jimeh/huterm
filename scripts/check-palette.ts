@@ -4,68 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
 import { checkClientFrame, withCompositor } from "./check-client-frame";
+import { checkMacTitlebar } from "./check-macos-titlebar";
 import { checkOverlays } from "./check-overlays";
+import { commandFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
-const commandFlag = 1 << 20;
-const optionFlag = 1 << 19;
-const shiftFlag = 1 << 17;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
-type MacKeyEvent = {
-  code: number;
-  flags: number;
-  text: string;
-  plain: string;
-};
-
-const macKeyCodes: Record<string, number> = {
-  a: 0,
-  b: 11,
-  c: 8,
-  d: 2,
-  e: 14,
-  f: 3,
-  g: 5,
-  h: 4,
-  i: 34,
-  j: 38,
-  k: 40,
-  l: 37,
-  m: 46,
-  n: 45,
-  o: 31,
-  p: 35,
-  q: 12,
-  r: 15,
-  s: 1,
-  t: 17,
-  u: 32,
-  v: 9,
-  w: 13,
-  x: 7,
-  y: 16,
-  z: 6,
-  " ": 49,
-};
-
-export function macKeyEvents(text: string): MacKeyEvent[] {
-  return [...text].map((character) => {
-    const plain = character.toLowerCase();
-    const code = macKeyCodes[plain];
-    if (code === undefined) {
-      throw new Error(
-        `unsupported macOS palette smoke character ${JSON.stringify(character)}`,
-      );
-    }
-    return {
-      code,
-      flags: character === plain ? 0 : shiftFlag,
-      text: character,
-      plain,
-    };
-  });
-}
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, {
@@ -1027,16 +972,20 @@ if (import.meta.main) {
   if (!(["darwin", "linux"] as string[]).includes(process.platform)) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
-    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|frame narrows a local run.
+    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|frame|titlebar narrows a
+    // local run.
     const only = process.env.HUTERM_PALETTE_SMOKE_ONLY;
     const checks = async (wm?: X11Process) => {
       if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
-      // The overlay fixtures drive X11 input; macOS needs native events.
-      if (process.platform === "linux" && wm && (!only || only === "overlays")) {
-        await checkOverlays(executable, wm);
-      }
+      if (!only || only === "overlays") await checkOverlays(executable, wm);
     };
-    if (process.platform === "darwin") await checks();
+    if (process.platform === "darwin") {
+      await checks();
+      if (!only || only === "titlebar") {
+        const pointer = resolve(Bun.argv[3] ?? "target/debug/hid-pointer");
+        for (const position of ["titlebar", "top"] as const) await checkMacTitlebar(executable, pointer, position);
+      }
+    }
     else {
       await withOpenbox(checks);
       if (!only || only === "frame") {

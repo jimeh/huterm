@@ -286,31 +286,58 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
             clickCount: 1_isize pressure: 1.0_f32];
         ensure!(!event.is_null(), "mouse NSEvent construction failed");
-        let event = if matches!(kind, 3 | 4 | 7) {
+        let button = match kind {
+            3 | 4 | 7 => Some(1),
+            25..=27 => Some(2),
+            _ => None,
+        };
+        let event = if let Some(button) = button {
             // The convenience constructor leaves buttonNumber at zero even
-            // for Right events. GPUI routes by that number, not the event type.
+            // for Right and Other events. GPUI routes by that number, not
+            // the event type.
             let cg_event: *mut c_void = msg_send![event, CGEvent];
             ensure!(!cg_event.is_null(), "mouse CGEvent construction failed");
             CGEventSetIntegerValueField(
                 cg_event,
                 CG_MOUSE_EVENT_BUTTON_NUMBER,
-                1,
+                button,
             );
-            let right_event: *mut Object = msg_send![
+            let button_event: *mut Object = msg_send![
                 Class::get("NSEvent").context("NSEvent")?,
                 eventWithCGEvent: cg_event
             ];
             ensure!(
-                !right_event.is_null(),
-                "right NSEvent construction failed"
+                !button_event.is_null(),
+                "button NSEvent construction failed"
             );
-            right_event
+            button_event
         } else {
             event
         };
         let _: () = msg_send![app, postEvent: event atStart: NO];
     }
     Ok(())
+}
+
+/// The key window's native title, as `AppKit` shows it.
+pub(super) fn key_window_title() -> anyhow::Result<String> {
+    // SAFETY: Main-thread AppKit reads; the title string is autoreleased
+    // and copied before this returns.
+    unsafe {
+        let app: *mut Object = msg_send![
+            Class::get("NSApplication").context("NSApplication")?,
+            sharedApplication
+        ];
+        let window: *mut Object = msg_send![app, keyWindow];
+        ensure!(!window.is_null(), "no key window");
+        let title: *mut Object = msg_send![window, title];
+        ensure!(!title.is_null(), "key window has no title");
+        let text: *const std::ffi::c_char = msg_send![title, UTF8String];
+        ensure!(!text.is_null(), "key window title is not UTF-8");
+        Ok(std::ffi::CStr::from_ptr(text)
+            .to_string_lossy()
+            .into_owned())
+    }
 }
 
 pub(super) fn validate_layout() -> anyhow::Result<()> {

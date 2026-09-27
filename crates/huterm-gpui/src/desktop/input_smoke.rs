@@ -6,6 +6,10 @@ pub(super) fn post_event(command: &str) -> anyhow::Result<()> {
     native::post(command)
 }
 
+pub(super) fn key_window_title() -> anyhow::Result<String> {
+    native::key_window_title()
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     if let Some(mode) = std::env::args().nth(1) {
         return native::clipboard_file(

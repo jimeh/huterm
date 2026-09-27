@@ -314,6 +314,26 @@ done
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden" && s["w0.retained"] === "true" && s["w0.grid"] === baseline["w0.grid"] && s["w0.terminal"] === baseline["w0.terminal"]; }, "original config restored");
     console.log(`TAB_VISIBILITY_SMOKE ${engine} reserved-one-two-one all-positions`);
   };
+  // `titlebar` merges the tabs into the macOS title strip and resolves to
+  // `top` in fullscreen, as on X11 without client decorations. Each
+  // transition must leave the PTY sized to the published grid.
+  const checkTitlebar = async () => {
+    const [toggle, full] = macos ? ["toggle_non_native_fullscreen", "NonNative"] : ["toggle_fullscreen", "Native"];
+    await writeFile(config, initialConfig.replace("[tabs]\n", '[tabs]\nposition = "titlebar"\nalways_show = true\n'));
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Reserved"; }, "titlebar config");
+    await pty("titlebarwindowed");
+    await accepted(`0 ${toggle}`);
+    await stable(full);
+    await pty("titlebarfullscreen");
+    await accepted(`0 ${toggle}`);
+    await stable("Windowed");
+    await pty("titlebarrestored");
+    await writeFile(config, initialConfig);
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden"; }, "titlebar config restored");
+    console.log(`FULLSCREEN_SMOKE ${engine} titlebar-windowed-${full.toLowerCase()}-restored`);
+  };
   const move = async (x: number, y: number) => {
     if (macos) await accepted(`native\tmouse\t5\t${x}\t${y}\t0`);
     else run(["xdotool", "mousemove", String(Math.round(x)), String(Math.round(y))]);
@@ -435,7 +455,10 @@ done
       windowId = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/)[0]!;
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
-    if (!noWm && !frameProbe && !fallback && !schedulerOnly) await checkReserved();
+    if (!noWm && !frameProbe && !fallback && !schedulerOnly) {
+      await checkReserved();
+      await checkTitlebar();
+    }
     const original = await stable("Windowed");
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);

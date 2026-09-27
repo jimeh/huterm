@@ -1,14 +1,15 @@
 /**
  * Drive the close dialog, window and tab menus, notices, About panel, scroll
- * pill, and native window title through X11 input against the palette smoke
- * binary. Every shell fixture is a real `sh` loop so tabs can be made busy
- * with a live child and prove they survive a cancelled close with a unique
- * acknowledgement.
+ * pill, and native window title through X11 or AppKit input against the
+ * palette smoke binary. Every shell fixture is a real `sh` loop so tabs can
+ * be made busy with a live child and prove they survive a cancelled close
+ * with a unique acknowledgement.
  */
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverX11Window } from "./check-desktop-integration";
+import { commandFlag, macKeyEvents, shiftFlag } from "./macos-keys";
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -25,6 +26,89 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
     if (performance.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
     await Bun.sleep(20);
   }
+}
+
+type OverlayKey =
+  | "enter" | "escape" | "tab" | "shift-tab" | "left" | "right" | "down" | "end" | "page-up"
+  | "new-tab" | "close-tab" | "select-1" | "select-2" | "select-3";
+type PointerButton = "left" | "middle" | "right";
+
+/** Native input for one platform, positioned in the window's logical points. */
+type OverlayInput = {
+  key(name: OverlayKey): Promise<void>;
+  typeText(text: string): Promise<void>;
+  moveTo(x: number, y: number): Promise<void>;
+  click(x: number, y: number, button?: PointerButton): Promise<void>;
+  /** Wheel steps up at the pointer; absent where no synthetic wheel exists. */
+  wheelUp?: () => Promise<void>;
+  windowName(): Promise<string>;
+};
+
+const x11Keys: Record<OverlayKey, string> = {
+  enter: "Return", escape: "Escape", tab: "Tab", "shift-tab": "shift+Tab", left: "Left", right: "Right",
+  down: "Down", end: "End", "page-up": "shift+Prior", "new-tab": "ctrl+shift+t", "close-tab": "ctrl+shift+w",
+  "select-1": "alt+1", "select-2": "alt+2", "select-3": "alt+3",
+};
+
+/** xdotool input; X11 positions are physical pixels. */
+function x11Input(windowId: string, scale: number): OverlayInput {
+  const buttons: Record<PointerButton, string> = { left: "1", middle: "2", right: "3" };
+  const moveTo = async (x: number, y: number) => {
+    run(["xdotool", "mousemove", "--window", windowId, String(Math.round(x * scale)), String(Math.round(y * scale))]);
+  };
+  return {
+    key: async (name) => { run(["xdotool", "key", "--clearmodifiers", x11Keys[name]]); },
+    typeText: async (text) => { run(["xdotool", "type", "--clearmodifiers", "--delay", "8", text]); },
+    moveTo,
+    click: async (x, y, button = "left") => {
+      await moveTo(x, y);
+      run(["xdotool", "click", buttons[button]]);
+    },
+    wheelUp: async () => { run(["xdotool", "click", "--repeat", "3", "4"]); },
+    windowName: async () => run(["xdotool", "getwindowname", windowId]),
+  };
+}
+
+// AppKit key codes, modifier flags, and characters. GPUI names keys from
+// the characters, so arrows and End carry their function-key characters.
+const macKeys: Record<OverlayKey, [number, number, string]> = {
+  enter: [36, 0, "\r"], escape: [53, 0, "\x1b"], tab: [48, 0, "\\t"], "shift-tab": [48, shiftFlag, "\\t"],
+  left: [123, 0, "\uF702"], right: [124, 0, "\uF703"], down: [125, 0, "\uF701"], end: [119, 0, "\uF72B"],
+  "page-up": [116, shiftFlag, "\uF72C"], "new-tab": [17, commandFlag, "t"], "close-tab": [13, commandFlag, "w"],
+  "select-1": [18, commandFlag, "1"], "select-2": [19, commandFlag, "2"], "select-3": [20, commandFlag, "3"],
+};
+
+/**
+ * NSEvents the palette smoke posts to its own application, which dispatches
+ * them after the command returns; the following state waits order them.
+ * Synthetic scroll-wheel events are not posted, as in the palette smoke.
+ */
+export function appKitInput(command: (value: string) => Promise<string>): OverlayInput {
+  // NSEvent types: left 1/2, right 3/4, other 25/26, moved 5.
+  const kinds: Record<PointerButton, [number, number]> = { left: [1, 2], middle: [25, 26], right: [3, 4] };
+  const post = (fields: (string | number)[]) => command(["native", ...fields].join("\t"));
+  const moveTo = async (x: number, y: number) => {
+    // The smoke treats x below 1 as a fraction of the width.
+    if (x < 1) throw new Error(`pointer x ${x} is inside the fractional range`);
+    await post(["mouse", 5, x, y]);
+  };
+  return {
+    key: async (name) => {
+      const [code, flags, text] = macKeys[name];
+      await post([code, flags, text, text]);
+    },
+    typeText: async (text) => {
+      for (const event of macKeyEvents(text)) await post([event.code, event.flags, event.text, event.plain]);
+    },
+    moveTo,
+    click: async (x, y, button = "left") => {
+      await moveTo(x, y);
+      const [down, up] = kinds[button];
+      await post(["mouse", down, x, y]);
+      await post(["mouse", up, x, y]);
+    },
+    windowName: () => command("native-title"),
+  };
 }
 
 /** A `x,y,w,h` state field in logical points. */
@@ -49,7 +133,8 @@ export function scrollPillCentre(terminal: { x: number; y: number; w: number; h:
   return { x: terminal.x + terminal.w / 2, y: terminal.y + terminal.h - 12 - 15 };
 }
 
-export async function checkOverlays(executable: string, wm: X11Process): Promise<void> {
+/** `wm` is the X11 window manager; macOS runs without one. */
+export async function checkOverlays(executable: string, wm?: X11Process): Promise<void> {
   const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-overlays-"));
   const shell = join(directory, "shell");
@@ -88,7 +173,11 @@ label = "title"
   });
   const diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);
   let sequence = 0;
-  let windowId = "";
+  let input: OverlayInput | undefined;
+  const native = () => {
+    if (!input) throw new Error("native input is not ready");
+    return input;
+  };
 
   async function current(): Promise<string> {
     return readFile(join(directory, "state"), "utf8").catch(() => "");
@@ -120,43 +209,33 @@ label = "title"
   async function invoke(id: string): Promise<string> {
     return command(`invoke\t${id}`);
   }
-  function key(name: string): void {
-    run(["xdotool", "key", "--clearmodifiers", name]);
-  }
-  function typeText(text: string): void {
-    run(["xdotool", "type", "--clearmodifiers", "--delay", "8", text]);
-  }
+  const key = (name: OverlayKey) => native().key(name);
+  const typeText = (text: string) => native().typeText(text);
+  const click = (x: number, y: number, button?: PointerButton) => native().click(x, y, button);
   /** Types a line the fixture answers with `ACK:<token>` and waits for it. */
   async function ack(token: string): Promise<void> {
-    typeText(token);
-    key("Return");
+    await typeText(token);
+    await key("enter");
     await state(`ACK:${token}`);
   }
-  function moveTo(x: number, y: number): void {
-    run(["xdotool", "mousemove", "--window", windowId, String(Math.round(x)), String(Math.round(y))]);
-  }
-  function click(x: number, y: number, button = 1): void {
-    moveTo(x, y);
-    run(["xdotool", "click", String(button)]);
-  }
-  function rectCentre(value: string, scale: number): { x: number; y: number } {
+  function rectCentre(value: string): { x: number; y: number } {
     const rect = parseRect(value);
-    return { x: (rect.x + rect.w / 2) * scale, y: (rect.y + rect.h / 2) * scale };
+    return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
   }
   async function newTab(expectedTabs: number): Promise<void> {
-    key("ctrl+shift+t");
+    await key("new-tab");
     await state(`w0.tabs=${expectedTabs}`, `w0.active_index=${expectedTabs - 1}`, "w0.terminal_focused=true");
     await state("READY");
   }
   async function busy(): Promise<void> {
-    typeText("busy");
-    key("Return");
+    await typeText("busy");
+    await key("enter");
     await state("BUSY");
   }
   /** The bytes typed while an overlay was open must never reach the shell:
    * the ordering of acknowledgements over one PTY proves it. */
   async function assertBlocked(blockedToken: string, afterToken: string): Promise<void> {
-    key("Return");
+    await key("enter");
     await ack(afterToken);
     const text = await current();
     if (text.includes(`ACK:${blockedToken}`)) throw new Error(`${engine}: input reached the terminal through an overlay: ${text}`);
@@ -164,55 +243,62 @@ label = "title"
 
   try {
     await state("w0.tabs=1", "w0.terminal_focused=true", "READY");
-    windowId = await discoverX11Window(app, wm);
-    run(["xdotool", "windowfocus", "--sync", windowId]);
-    const scale = Number(field(await current(), "scale"));
-    if (!(scale > 0)) throw new Error(`invalid window scale ${scale}`);
+    if (process.platform === "darwin") {
+      input = appKitInput(command);
+    } else {
+      if (!wm) throw new Error("the X11 overlay smoke requires a window manager");
+      const windowId = await discoverX11Window(app, wm);
+      run(["xdotool", "windowfocus", "--sync", windowId]);
+      const scale = Number(field(await current(), "scale"));
+      if (!(scale > 0)) throw new Error(`invalid window scale ${scale}`);
+      input = x11Input(windowId, scale);
+    }
 
     // 1. Close dialog: pointer input on its scrim never reaches the covered
     // terminal, the keyboard operates it, a repeated close shortcut never
     // confirms, and cancelling leaves the job's shell alive.
     await newTab(2);
-    typeText("fill");
-    key("Return");
+    await typeText("fill");
+    await key("enter");
     await state("FILLED");
     await busy();
-    key("ctrl+shift+w");
+    await key("close-tab");
     const opened = await state("w0.confirming=true", "w0.dialog_focus=primary", "w0.terminal_focused=false");
     if (!field(opened, "dialog_title").startsWith('"Close')) throw new Error(`${engine}: single-tab dialog title: ${opened}`);
-    // A middle press and wheel over the scrim beside the panel: the terminal
-    // must neither take focus nor scroll its history. The Tab afterwards is
+    // A middle press and, where synthetic wheel input exists, a wheel over
+    // the scrim beside the panel: the terminal must neither take focus nor
+    // scroll its history. The Tab afterwards is
     // processed after the pointer events, so the state it produces shows
     // their effect; the text typed next must never reach the PTY.
     const covered = parseRect(field(opened, "terminal_bounds"));
-    click((covered.x + 24) * scale, (covered.y + covered.h - 24) * scale, 2);
-    run(["xdotool", "click", "--repeat", "3", "4"]);
-    key("Tab");
+    await click(covered.x + 24, covered.y + covered.h - 24, "middle");
+    await native().wheelUp?.();
+    await key("tab");
     const pointed = await state("w0.confirming=true", "w0.dialog_focus=cancel");
     if (field(pointed, "terminal_focused") !== "false") throw new Error(`${engine}: a middle press on the scrim focused the terminal: ${pointed}`);
     if (field(pointed, "scrolled") !== "0") throw new Error(`${engine}: a wheel over the scrim scrolled the terminal: ${pointed}`);
-    typeText("ackscrimx");
-    key("ctrl+shift+w");
+    await typeText("ackscrimx");
+    await key("close-tab");
     await state("w0.confirming=true", "w0.dialog_focus=cancel", 'w0.notice0="error|command|command unavailable: close confirmation pending"');
-    key("Right");
+    await key("right");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
-    key("Left");
+    await key("left");
     await state("w0.confirming=true", "w0.dialog_focus=cancel");
-    key("shift+Tab");
+    await key("shift-tab");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
-    key("Tab");
+    await key("tab");
     await state("w0.confirming=true", "w0.dialog_focus=cancel");
-    key("Return");
+    await key("enter");
     await state("w0.confirming=false", "w0.tabs=2", "w0.terminal_focused=true");
     await assertBlocked("ackscrimx", "ackcancelx");
-    key("ctrl+shift+w");
+    await key("close-tab");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
-    key("Escape");
+    await key("escape");
     await state("w0.confirming=false", "w0.tabs=2", "w0.terminal_focused=true");
     await ack("ackescapex");
-    key("ctrl+shift+w");
+    await key("close-tab");
     await state("w0.confirming=true", "w0.dialog_focus=primary");
-    key("Return");
+    await key("enter");
     await state("w0.confirming=false", "w0.tabs=1", "w0.active_index=0", "w0.terminal_focused=true");
     await command("dismiss-notices");
     await state("w0.notices=0");
@@ -227,34 +313,35 @@ label = "title"
     await state("w0.confirming=false", "w0.tabs=3");
     await invoke("close_other_tabs");
     await state("w0.confirming=true", 'w0.dialog_title="Close 2 tabs?"', "w0.dialog_focus=primary");
-    key("Escape");
+    await key("escape");
     await state("w0.confirming=false", "w0.tabs=3", "w0.active_index=2", "w0.terminal_focused=true");
-    key("alt+1");
+    await key("select-1");
     await state("w0.active_index=0", "w0.terminal_focused=true");
     await ack("ackfirstx");
-    key("alt+2");
+    await key("select-2");
     await state("w0.active_index=1", "w0.terminal_focused=true");
     await ack("acksecondx");
-    key("alt+3");
+    await key("select-3");
     await state("w0.active_index=2", "w0.terminal_focused=true");
     await invoke("close_other_tabs");
     await state("w0.confirming=true", 'w0.dialog_title="Close 2 tabs?"');
-    key("Return");
+    await key("enter");
     await state("w0.confirming=false", "w0.tabs=1", "w0.active_index=0", "w0.terminal_focused=true");
 
     // 6. The native window title follows the active tab's title.
-    typeText("title alpha");
-    key("Return");
+    await typeText("title alpha");
+    await key("enter");
     await state("TITLED", 'w0.window_title="alpha — Huterm"');
     await newTab(2);
-    typeText("title beta");
-    key("Return");
+    await typeText("title beta");
+    await key("enter");
     await state("TITLED", 'w0.window_title="beta — Huterm"');
-    if (run(["xdotool", "getwindowname", windowId]) !== "beta — Huterm") throw new Error(`${engine}: X11 window name after a title: ${run(["xdotool", "getwindowname", windowId])}`);
+    const titledName = await native().windowName();
+    if (titledName !== "beta — Huterm") throw new Error(`${engine}: native window name after a title: ${titledName}`);
     await invoke("next_tab");
     await state("w0.active_index=0", 'w0.window_title="alpha — Huterm"');
-    const nativeName = run(["xdotool", "getwindowname", windowId]);
-    if (nativeName !== "alpha — Huterm") throw new Error(`${engine}: X11 window name after next_tab: ${nativeName}`);
+    const nativeName = await native().windowName();
+    if (nativeName !== "alpha — Huterm") throw new Error(`${engine}: native window name after next_tab: ${nativeName}`);
 
     // 4. Right-clicking an inactive tab opens its menu without activating it;
     // Close Tabs to the Right closes the idle tabs after it at once.
@@ -262,69 +349,71 @@ label = "title"
     const tabbed = await state("w0.tabs=3", "w0.active_index=2");
     const rects = field(tabbed, "tabs_rects").split(";");
     if (rects.length !== 3) throw new Error(`${engine}: expected three tab rects: ${tabbed}`);
-    const firstTab = rectCentre(rects[0]!, scale);
-    click(firstTab.x, firstTab.y, 3);
+    const firstTab = rectCentre(rects[0]!);
+    await click(firstTab.x, firstTab.y, "right");
     await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=0", "w0.active_index=2");
-    key("End");
+    await key("end");
     await state("w0.menu=true", "w0.menu_selection=close_tabs_after");
-    key("Return");
+    await key("enter");
     await state("w0.menu=false", "w0.tabs=1", "w0.active_index=0", "w0.confirming=false", "w0.terminal_focused=true", 'w0.window_title="alpha — Huterm"');
 
     // 3. Window menu: pointer open, keyboard navigation, type-ahead, blocked
-    // terminal input, Escape focus return, and the unchanged palette. The
-    // button ends the bar after the `+` slot that follows the last tab.
+    // terminal input, Escape focus return, and the unchanged palette. On
+    // X11 the button ends the bar after the `+` slot that follows the last
+    // tab; a macOS window has a title strip, whose right end holds it.
     const barState = await current();
     const buttonRect = parseRect(field(barState, "menu_button"));
     const lastTab = parseRect(field(barState, "tabs_rects").split(";").pop()!);
     const terminalRect = parseRect(field(barState, "terminal_bounds"));
-    if (buttonRect.x < lastTab.x + lastTab.w + 32 || buttonRect.x + buttonRect.w > terminalRect.x + terminalRect.w) {
-      throw new Error(`${engine}: menu button ${field(barState, "menu_button")} is not at the bar's end after tab ${field(barState, "tabs_rects")}`);
+    const content = parseRect(field(barState, "content"));
+    const misplaced = process.platform === "darwin"
+      ? buttonRect.y + buttonRect.h > lastTab.y || buttonRect.x + buttonRect.w > content.x + content.w || buttonRect.x < content.x + content.w - 48
+      : buttonRect.x < lastTab.x + lastTab.w + 32 || buttonRect.x + buttonRect.w > terminalRect.x + terminalRect.w;
+    if (misplaced) {
+      throw new Error(`${engine}: menu button ${field(barState, "menu_button")} is misplaced for tabs ${field(barState, "tabs_rects")} in ${field(barState, "content")}`);
     }
-    const button = rectCentre(field(barState, "menu_button"), scale);
-    click(button.x, button.y);
+    const button = rectCentre(field(barState, "menu_button"));
+    await click(button.x, button.y);
     await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none");
-    typeText("a");
+    await typeText("a");
     await state("w0.menu=true", "w0.menu_selection=about");
-    typeText("ckmenux");
+    await typeText("ckmenux");
     await state("w0.menu=true");
-    key("Escape");
+    await key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
     await assertBlocked("ackmenux", "ackaftermenux");
     await invoke("open_menu");
     await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=open_command_palette");
-    key("Escape");
+    await key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
-    click(button.x, button.y);
+    await click(button.x, button.y);
     await state("w0.menu=true", "w0.menu_selection=none");
-    key("Down");
+    await key("down");
     await state("w0.menu=true", "w0.menu_selection=open_command_palette");
-    key("Return");
+    await key("enter");
     await state("w0.menu=false", "w0.palette=true", "w0.palette_focused=true", 'query=""');
     // Result rows are 54 points tall with the first centred near 117.
-    const geometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
-    const width = Number(geometry.match(/^WIDTH=(\d+)$/m)?.[1]);
-    if (!(width > 0)) throw new Error(`cannot read window width: ${geometry}`);
     for (const row of [0, 1]) {
-      moveTo(width / 2, 117 + row * 54);
+      await native().moveTo(content.x + content.w / 2, 117 + row * 54);
       await state("w0.palette=true", `hover=Some(${row})`);
     }
-    key("Escape");
+    await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
 
     // 8. About blocks terminal input; Escape and Enter close it.
     await invoke("about");
     await state("w0.about=true", "w0.terminal_focused=false");
-    typeText("ackaboutx");
-    key("Escape");
+    await typeText("ackaboutx");
+    await key("escape");
     await state("w0.about=false", "w0.terminal_focused=true");
     await assertBlocked("ackaboutx", "ackafteraboutx");
-    click(button.x, button.y);
+    await click(button.x, button.y);
     await state("w0.menu=true", "w0.menu_selection=none");
-    typeText("a");
+    await typeText("a");
     await state("w0.menu_selection=about");
-    key("Return");
+    await key("enter");
     await state("w0.menu=false", "w0.about=true");
-    key("Return");
+    await key("enter");
     await state("w0.about=false", "w0.terminal_focused=true");
 
     // 5. Notices: a failed reload raises one; focus, Escape dismisses it.
@@ -333,7 +422,7 @@ label = "title"
     await state("w0.notices=1", 'w0.notice0="error|config|Config reload failed:');
     await invoke("focus_notices");
     await state("w0.notice_focus=true", "w0.terminal_focused=false");
-    key("Escape");
+    await key("escape");
     await state("w0.notices=0", "w0.notice_focus=false", "w0.terminal_focused=true");
     await writeFile(config, configDocument);
     await command("invoke-reload");
@@ -354,22 +443,22 @@ label = "title"
     }
     await invoke("focus_notices");
     await state("w0.notice_focus=true", "w0.terminal_focused=false");
-    key("Return");
+    await key("enter");
     await state("w0.notices=0", "w0.notice_focus=false", "w0.terminal_focused=true");
     await ack("acknoticex");
 
     // 7. Scrolled back, clicking the pill returns to live output.
-    typeText("fill");
-    key("Return");
+    await typeText("fill");
+    await key("enter");
     await state("FILLED");
-    key("shift+Prior");
+    await key("page-up");
     const scrolled = await stateWhere((text) => text.includes("w0.scroll_pill=true") && Number(field(text, "scrolled")) > 0, "scrolled-back pill");
     const pill = scrollPillCentre(parseRect(field(scrolled, "terminal_bounds")));
-    click(pill.x * scale, pill.y * scale);
+    await click(pill.x, pill.y);
     await state("w0.scrolled=0", "w0.scroll_pill=false", "w0.terminal_focused=true");
     await ack("ackscrollx");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

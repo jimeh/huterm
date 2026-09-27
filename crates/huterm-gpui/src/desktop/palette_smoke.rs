@@ -55,6 +55,10 @@ async fn execute(
         super::input_smoke::post_event(event)?;
         return Ok("posted".to_owned());
     }
+    #[cfg(target_os = "macos")]
+    if command == "native-title" {
+        return super::input_smoke::key_window_title();
+    }
 
     if command == "core-state" {
         let (runtime, workspace, tab) = cx.update(|cx| {

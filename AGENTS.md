@@ -871,6 +871,14 @@ the packaged resources independently of the Ghostty VT engine notice.
 Use Bun's process timeout and output checks for portable smoke runners. CI's
 macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
 
+`smoke:macos-palette` drives the title strip with real HID events from
+`target/debug/hid-pointer`: the window server decides title-bar drags and
+double-clicks, which NSEvents posted inside the app never reach. The Tart
+guest's display is 1024x768, and a login-time "App Background Activity" banner
+takes presses in its top-right corner, so the check first places the window
+through Accessibility. The window server can drop part of an app-started
+synthetic drag, so assert direction and a lower bound, not the exact delta.
+Stage new host-built helpers in `scripts/macos-vm/guest.sh`.
 Tart macOS VMs run host-built binaries; the guest never compiles. Stage the
 read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
 for extended attributes on symlinks, so `ditto` and `cp` fail on
