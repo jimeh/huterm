@@ -574,6 +574,7 @@ fn toast_body(
                 .cursor_pointer()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(swatch.accent)
+                .active(|action| action.opacity(0.6))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     run(id, command.clone(), window, cx);
                 })
@@ -643,6 +644,7 @@ fn render_toast(
                 .justify_center()
                 .cursor_pointer()
                 .hover(|button| button.bg(swatch.hover))
+                .active(|button| button.bg(swatch.pressed()))
                 .on_click(move |_: &ClickEvent, window, cx| {
                     dismiss(id, window, cx);
                 })

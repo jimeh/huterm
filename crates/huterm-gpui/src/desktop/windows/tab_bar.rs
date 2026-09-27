@@ -64,6 +64,8 @@ pub(super) struct TabColors {
     pub(super) hover: Hsla,
     /// Overlay on a hovered control, twice as strong as a tab's.
     pub(super) control_hover: Hsla,
+    /// Overlay on a control held down, three times a tab's hover.
+    pub(super) control_pressed: Hsla,
     pub(super) scrollbar: ScrollbarColors,
 }
 
@@ -73,6 +75,10 @@ impl TabColors {
         let hover = ui.tab_hover_background;
         let control_hover = Rgba {
             alpha: hover.alpha.saturating_mul(2),
+            ..hover
+        };
+        let control_pressed = Rgba {
+            alpha: hover.alpha.saturating_mul(3),
             ..hover
         };
         Self {
@@ -87,6 +93,7 @@ impl TabColors {
             running: color(theme.ansi[3]),
             hover: rgba_color(hover),
             control_hover: rgba_color(control_hover),
+            control_pressed: rgba_color(control_pressed),
             scrollbar: scrollbar_colors(theme),
         }
     }
@@ -400,6 +407,7 @@ impl WorkspaceView {
                     .group_hover("tab", |style| style.opacity(1.0))
             })
             .hover(|style| style.bg(colors.control_hover))
+            .active(|style| style.bg(colors.control_pressed))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })

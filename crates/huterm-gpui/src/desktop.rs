@@ -2690,6 +2690,9 @@ impl TerminalView {
                     .whitespace_nowrap()
                     .cursor_pointer()
                     .hover(|pill| pill.bg(swatch.surface.blend(swatch.hover)))
+                    .active(|pill| {
+                        pill.bg(swatch.surface.blend(swatch.pressed()))
+                    })
                     .opacity(self.scrollbars.opacity(Axis::Vertical))
                     .on_mouse_down(MouseButton::Left, stop)
                     .on_mouse_down(MouseButton::Right, stop)

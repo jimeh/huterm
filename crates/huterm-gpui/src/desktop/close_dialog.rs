@@ -405,6 +405,7 @@ fn dialog_footer(
     on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     let danger = mix(swatch.danger, swatch.bg, 0.16);
+    let danger_pressed = mix(swatch.danger, swatch.bg, 0.32);
     div()
         .flex()
         .flex_none()
@@ -424,6 +425,7 @@ fn dialog_footer(
                 .border_color(swatch.line_strong)
                 .text_color(swatch.fg)
                 .hover(move |button| button.bg(swatch.hover))
+                .active(move |button| button.bg(swatch.pressed()))
                 .on_click(on_cancel)
                 .child("Cancel")
                 .when(hints, |button| {
@@ -439,6 +441,7 @@ fn dialog_footer(
                 .bg(danger)
                 .text_color(swatch.bg)
                 .hover(move |button| button.bg(swatch.danger))
+                .active(move |button| button.bg(danger_pressed))
                 .on_click(on_confirm)
                 .child(model.primary_label.clone())
                 .when(hints, |button| {

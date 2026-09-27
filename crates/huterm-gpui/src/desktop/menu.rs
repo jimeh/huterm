@@ -670,6 +670,9 @@ impl Menu {
             .rounded(px(6.0))
             .text_color(text)
             .when(selected, |item| item.bg(swatch.accent))
+            .when(enabled, |item| {
+                item.active(|style| style.bg(swatch.accent_pressed()))
+            })
             .on_hover(cx.listener(move |menu, hovering: &bool, _, cx| {
                 if *hovering {
                     menu.hover(row, None, cx);
@@ -735,6 +738,13 @@ impl Menu {
                         swatch.dim
                     })
                     .when(selected, |button| button.bg(swatch.accent))
+                    .when(enabled, |button| {
+                        button.active(|style| {
+                            style
+                                .bg(swatch.accent_pressed())
+                                .text_color(swatch.bg)
+                        })
+                    })
                     .on_hover(cx.listener(
                         move |menu, hovering: &bool, _, cx| {
                             if *hovering {

@@ -88,6 +88,27 @@ impl Swatch {
         Self::new(OverlayColors::from_theme(theme))
     }
 
+    /// Buttons while the pointer holds them down: twice the hover overlay.
+    pub(crate) fn pressed(&self) -> Hsla {
+        Hsla {
+            a: (self.hover.a * 2.0).min(1.0),
+            ..self.hover
+        }
+    }
+
+    /// A selected row while the pointer holds it down.
+    pub(crate) fn selection_pressed(&self) -> Hsla {
+        Hsla {
+            a: (self.selection.a * 1.6).min(1.0),
+            ..self.selection
+        }
+    }
+
+    /// Accent-filled buttons and rows while held down.
+    pub(crate) fn accent_pressed(&self) -> Hsla {
+        mix(self.accent, self.bg, 0.22)
+    }
+
     /// Whether the terminal background is light, for shadow strength.
     fn light(&self) -> bool {
         self.bg.l > 0.5

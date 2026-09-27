@@ -1486,6 +1486,7 @@ impl CommandPalette {
                 .when(hovered && !selected, |item| {
                     item.bg(swatch.fg.opacity(0.05))
                 })
+                .active(|item| item.bg(swatch.selection_pressed()))
                 .when(unavailable.is_some(), |item| item.opacity(0.55))
                 .on_hover(cx.listener(
                     move |palette, hovering: &bool, _, cx| {
@@ -1608,7 +1609,10 @@ impl CommandPalette {
                     .text_color(swatch.muted)
             })
             .when(!dashed, |chip| chip.bg(swatch.chip))
-            .when(editable, gpui::Styled::cursor_pointer)
+            .when(editable, |chip| {
+                chip.cursor_pointer()
+                    .active(|chip| chip.bg(swatch.pressed()))
+            })
             .on_click(cx.listener(move |palette, _: &ClickEvent, _, cx| {
                 palette.edit_slot(index, cx);
             }))
@@ -1659,7 +1663,10 @@ impl CommandPalette {
                 .border_color(swatch.accent.opacity(0.4))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(px(12.5))
-                .when(!requested, gpui::Styled::cursor_pointer)
+                .when(!requested, |chip| {
+                    chip.cursor_pointer()
+                        .active(|chip| chip.bg(swatch.selection_pressed()))
+                })
                 .on_click(cx.listener(move |palette, _: &ClickEvent, _, cx| {
                     if !requested {
                         palette.leave_slots(Exit::Search, cx);
@@ -1779,6 +1786,7 @@ impl CommandPalette {
                     .when(hovered && !selected, |item| {
                         item.bg(swatch.fg.opacity(0.05))
                     })
+                    .active(|item| item.bg(swatch.selection_pressed()))
                     .on_hover(cx.listener(
                         move |palette, hovering: &bool, _, cx| {
                             palette.set_hover(row, *hovering, cx);

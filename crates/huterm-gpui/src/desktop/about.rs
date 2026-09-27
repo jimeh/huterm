@@ -336,12 +336,14 @@ fn footer_button(
                 .bg(swatch.accent)
                 .border_color(gpui::transparent_black())
                 .text_color(swatch.bg)
+                .active(|style| style.bg(swatch.accent_pressed()))
         })
         .when(!primary, |button| {
             button
                 .border_color(swatch.line_strong)
                 .text_color(swatch.fg)
                 .hover(|style| style.bg(swatch.hover))
+                .active(|style| style.bg(swatch.pressed()))
         })
 }
 

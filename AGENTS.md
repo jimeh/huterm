@@ -1201,6 +1201,11 @@ gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
 read from its continuation tracker. `EscapeHint` ignores UTF-8 state and must
 not gate injected bytes. Ghostty's full reset, like its RIS, keeps OSC color
 overrides.
+Clickable controls pair their hover style with an `.active` pressed style:
+`Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays and
+`TabColors::control_pressed` in the tab bar and title row. `Swatch` is passed
+by value and must stay under Clippy's 256-byte limit, so derive further shades
+through methods rather than fields.
 Every drawn shortcut goes through `key_hint::KeyHint`: macOS modifier
 symbols, Linux modifier words, and Lucide icons for Return, Tab, Backspace,
 and the arrows on both. Add icons through `scripts/ui-icons.ts`, never as

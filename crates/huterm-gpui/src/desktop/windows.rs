@@ -6934,6 +6934,7 @@ impl Render for WorkspaceView {
                             .group("scroll-tabs")
                             .bg(colors.bar)
                             .hover(|style| style.bg(colors.control_hover))
+                            .active(|style| style.bg(colors.control_pressed))
                             .rounded_md()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
@@ -6987,6 +6988,7 @@ impl Render for WorkspaceView {
                     .group("new-tab")
                     .occlude()
                     .hover(|style| style.bg(colors.control_hover))
+                    .active(|style| style.bg(colors.control_pressed))
                     .rounded(px(7.0))
                     .absolute()
                     .left(
@@ -7963,6 +7965,7 @@ impl WorkspaceView {
             .rounded_md()
             .hover(|style| style.bg(colors.control_hover))
             .when(open, |button| button.bg(colors.control_hover))
+            .active(|style| style.bg(colors.control_pressed))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
@@ -8101,6 +8104,7 @@ impl WorkspaceView {
                 .rounded_full()
                 .bg(colors.hover)
                 .hover(|style| style.bg(colors.control_hover))
+                .active(|style| style.bg(colors.control_pressed))
                 .tooltip(move |_, cx| TextTooltip::view(label, swatch, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
