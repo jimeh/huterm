@@ -497,10 +497,10 @@ impl TerminalView {
             &focus,
             window,
             |view: &mut TerminalView, window, cx| {
-                // GPUI dispatches a press against the last drawn frame, so a
-                // press that lands before the frame showing a dialog's scrim
-                // can still run the terminal's focus-on-click. The dialog
-                // keeps keyboard focus; the program is told nothing.
+                // Focus that reaches the terminal while a dialog shows goes
+                // back to the dialog; the program is told nothing. GPUI runs
+                // this only at the next draw, so terminal presses suppress
+                // their own focus-on-click instead of relying on it.
                 if let Some(dialog) = windows::modal_focus(window, cx) {
                     dialog.focus(window);
                     return;
@@ -1612,11 +1612,18 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if windows::modal_showing(window, cx) {
+            // A press dispatched against a frame drawn before the dialog's
+            // scrim reaches this hitbox. Bubble listeners run in reverse
+            // registration order, so this suppresses the `track_focus`
+            // focus-on-click registered before it.
+            window.prevent_default();
+            return;
+        }
         if !self.visible
             || self
                 .tab_overlay
                 .is_some_and(|bounds| bounds.contains(&event.position))
-            || windows::modal_showing(window, cx)
         {
             return;
         }
