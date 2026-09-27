@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/jimeh/huterm/compare/v0.13.1...v0.13.2) (2026-09-27)
+
+
+### Performance Improvements
+
+* make terminal link lookup cost independent of scrollback length ([#172](https://github.com/jimeh/huterm/issues/172)) ([8e38546](https://github.com/jimeh/huterm/commit/8e38546e8a8cfabc91c256244696461fdc6b9093))
+* remove the pre-echo snapshot and no-op re-renders from terminal input ([#175](https://github.com/jimeh/huterm/issues/175)) ([b48283a](https://github.com/jimeh/huterm/commit/b48283a7d7f6f1fb699d9929b78fc1da4ce0851c))
+
 ## [0.13.1](https://github.com/jimeh/huterm/compare/v0.13.0...v0.13.1) (2026-09-26)
 
 
