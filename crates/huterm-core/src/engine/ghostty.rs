@@ -26,6 +26,13 @@ use libghostty_vt::terminal::{
 };
 use libghostty_vt::{RenderState, Terminal};
 
+/// ED 3, which Ghostty applies by erasing the scrollback alone.
+const CLEAR_HISTORY: &[u8] = b"\x1b[3J";
+/// The unfinished-sequence bytes the native stream retains, which tell the
+/// engine when it sits at ground. A longer unfinished sequence reads as not
+/// at ground until it ends.
+const CONTINUATION_BYTES: usize = 256;
+
 impl From<libghostty_vt::Error> for RuntimeError {
     fn from(error: libghostty_vt::Error) -> Self {
         Self::Engine(error.to_string())
@@ -59,6 +66,8 @@ pub(crate) struct TerminalEngine {
     colors_dirty: bool,
     default_overrides: DefaultOverrides,
     escape_hint: EscapeHint,
+    /// A requested history clear waiting for the stream to reach ground.
+    clear_history_pending: bool,
     /// Modes change only when `process` or `resize` advances the
     /// generation, or when presentation is reapplied.
     modes: SharedCell<Option<(u64, TerminalModes)>>,
@@ -100,6 +109,7 @@ impl TerminalEngine {
         terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
         terminal.set_glyph_protocol_enabled(false)?;
         terminal.set_apc_max_bytes(Some(0))?;
+        terminal.set_continuation_max_bytes(CONTINUATION_BYTES)?;
         let host_effect_sink = Rc::new(OnceCell::new());
         let clipboard_sink = Rc::clone(&host_effect_sink);
         terminal.on_clipboard_write(move |_, write| {
@@ -223,6 +233,7 @@ impl TerminalEngine {
             colors_dirty: false,
             default_overrides: DefaultOverrides::default(),
             escape_hint: EscapeHint::Ground,
+            clear_history_pending: false,
             modes: SharedCell::new(None),
             grapheme: String::with_capacity(32),
             mouse_probe: RefCell::new((
@@ -245,6 +256,46 @@ impl TerminalEngine {
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         self.colors_dirty |= self.escape_hint.observe(bytes);
         self.terminal.vt_write(bytes);
+        self.apply_pending_clear();
+        self.generation = self.generation.saturating_add(1);
+        self.drain_effects()
+    }
+
+    /// Erases the scrollback, leaving the screen. Output that stopped inside
+    /// an escape sequence or UTF-8 codepoint defers the erase until a later
+    /// write reaches ground, so the injected sequence never joins it.
+    pub(super) fn clear_history(
+        &mut self,
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.clear_history_pending = true;
+        self.apply_pending_clear();
+        self.generation = self.generation.saturating_add(1);
+        self.drain_effects()
+    }
+
+    fn apply_pending_clear(&mut self) {
+        if self.clear_history_pending && self.stream_at_ground() {
+            self.clear_history_pending = false;
+            self.escape_hint.observe(CLEAR_HISTORY);
+            self.terminal.vt_write(CLEAR_HISTORY);
+        }
+    }
+
+    /// Whether the native parser and UTF-8 decoder are both idle: the
+    /// stream then needs no continuation bytes to resume.
+    fn stream_at_ground(&self) -> bool {
+        matches!(
+            self.terminal.continuation_buf(&mut []),
+            Err(libghostty_vt::Error::OutOfSpace { required: 0 })
+        )
+    }
+
+    /// Resets the emulator as RIS does: screens, scrollback, modes, and
+    /// the alternate screen. Like RIS in Ghostty, it keeps color overrides,
+    /// and the parser keeps any unfinished sequence.
+    pub(super) fn reset(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.terminal.reset();
+        self.clear_history_pending = false;
         self.generation = self.generation.saturating_add(1);
         self.drain_effects()
     }
@@ -1579,6 +1630,70 @@ mod tests {
             assert_eq!(text(&after.rows[3]), "C       ", "{budget:?}");
             assert_eq!(engine.last_snapshot_stats().allocated, 1, "{budget:?}");
         }
+    }
+
+    fn screen_text(snapshot: &TerminalSnapshot) -> String {
+        snapshot
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    #[test]
+    fn clearing_history_keeps_the_screen() {
+        let mut engine = engine();
+        engine.process(b"1\r\n2\r\n3\r\n4\r\n5").unwrap();
+        assert_eq!(engine.snapshot().unwrap().history_size, 2);
+        engine.clear_history().unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(snapshot.history_size, 0);
+        assert_eq!(screen_text(&snapshot), "3|4|5");
+    }
+
+    #[test]
+    fn clearing_history_waits_for_an_unfinished_sequence_or_codepoint() {
+        for (partial, rest, shown) in [
+            (&b"\x1b[3"[..], &b"1mX"[..], "X"),
+            (&b"\x1b]2;title"[..], &b"\x07X"[..], "X"),
+            // The first two bytes of U+2603.
+            (&b"\xe2\x98"[..], &b"\x83"[..], "\u{2603}"),
+        ] {
+            let mut engine = engine();
+            engine.process(b"1\r\n2\r\n3\r\n4\r\n").unwrap();
+            engine.process(partial).unwrap();
+            engine.clear_history().unwrap();
+            assert_eq!(
+                engine.snapshot().unwrap().history_size,
+                2,
+                "{partial:?}"
+            );
+            engine.process(rest).unwrap();
+            let snapshot = engine.snapshot().unwrap();
+            assert_eq!(snapshot.history_size, 0, "{partial:?}");
+            // The interrupted sequence still completed as sent.
+            assert_eq!(screen_text(&snapshot), format!("3|4|{shown}"));
+        }
+    }
+
+    #[test]
+    fn reset_clears_the_screen_history_and_modes() {
+        let mut engine = engine();
+        engine.process(b"\x1b[?2004h1\r\n2\r\n3\r\n4").unwrap();
+        assert!(engine.modes().unwrap().bracketed_paste);
+        engine.reset().unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(snapshot.history_size, 0);
+        assert_eq!(screen_text(&snapshot), "||");
+        assert!(!engine.modes().unwrap().bracketed_paste);
     }
 
     #[test]
