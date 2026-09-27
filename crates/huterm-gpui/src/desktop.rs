@@ -345,6 +345,11 @@ struct TerminalView {
     link_max_latency: Duration,
     pending_resize: Option<(GridSize, CellSize)>,
     resize_requests: u64,
+    /// Times the size panel was raised; smoke state reports it.
+    resize_indicators: u64,
+    /// Layout changes keep the size panel hidden while a Quake window is
+    /// still presenting: showing, settling, or entering fullscreen.
+    quiet_resize: bool,
     snapshot: Option<Arc<TerminalSnapshot>>,
     renderer: Rc<RefCell<TerminalRenderer>>,
     focus: FocusHandle,
@@ -551,6 +556,8 @@ impl TerminalView {
             link_max_latency: Duration::ZERO,
             pending_resize: None,
             resize_requests: 0,
+            resize_indicators: 0,
+            quiet_resize: false,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
                 font_family.clone(),
@@ -1944,6 +1951,13 @@ impl TerminalView {
     }
 
     fn resize_if_needed(&mut self, window: &Window) {
+        self.resize_to_layout(window, false);
+    }
+
+    /// Resizes to the current layout. A `quiet` change keeps the size panel
+    /// hidden: the tab bar appeared or hid, which is not a resize the user
+    /// made.
+    fn resize_to_layout(&mut self, window: &Window, quiet: bool) {
         let metrics = self.metrics.at_scale(window.scale_factor());
         if metrics != self.metrics {
             self.metrics = metrics;
@@ -1960,7 +1974,10 @@ impl TerminalView {
             .is_some_and(|previous| previous != viewport)
         {
             self.links.invalidate();
-            self.resize_visibility.activate(Instant::now());
+            if !quiet && !self.quiet_resize {
+                self.resize_visibility.activate(Instant::now());
+                self.resize_indicators += 1;
+            }
         }
         let size = self.terminal_layout(window).grid;
         let cell = self.physical_cell_size();

@@ -2728,6 +2728,7 @@ impl WorkspaceView {
         let notch_shelf = self.notch_shelf();
         let tabs_config = self.layout_tabs();
         let window_frame = self.window_frame();
+        let quake_presenting = self.quake_presenting();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
             .then(|| {
@@ -2742,7 +2743,9 @@ impl WorkspaceView {
                         != terminal.metrics;
                 let cell_changed = terminal.last_cell_size
                     != Some(terminal.physical_cell_size());
-                let changed = terminal.tab_presentation != presentation
+                // The tab bar appearing or hiding is not a resize to report.
+                let bar_toggled = terminal.tab_presentation != presentation;
+                let changed = bar_toggled
                     || terminal.tabs_config != tabs_config
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
@@ -2761,9 +2764,10 @@ impl WorkspaceView {
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 terminal.notch_shelf = notch_shelf;
                 terminal.window_frame = window_frame;
+                terminal.quiet_resize = quake_presenting;
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
-                    terminal.resize_if_needed(window);
+                    terminal.resize_to_layout(window, bar_toggled);
                     cx.notify();
                 }
             });
@@ -2771,6 +2775,14 @@ impl WorkspaceView {
         if changed_any {
             cx.notify();
         }
+    }
+
+    /// A Quake window is still showing, settling, or hiding; its layout
+    /// changes are presentation, not resizes to report.
+    fn quake_presenting(&self) -> bool {
+        self.quake
+            .as_ref()
+            .is_some_and(quake_windows::Presentation::presenting)
     }
 
     fn defer_pointer_refresh(
@@ -4986,8 +4998,10 @@ impl WorkspaceView {
             self.sync_frame(window);
             let window_frame = self.window_frame();
             let notch_shelf = self.notch_shelf();
+            let quake_presenting = self.quake_presenting();
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
+                    terminal.quiet_resize = quake_presenting;
                     terminal.chrome_hidden = self.fullscreen.chrome_hidden;
                     terminal.fullscreen_insets = self.fullscreen_insets;
                     terminal.notch_shelf = notch_shelf;

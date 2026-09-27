@@ -232,6 +232,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await checkLayout(false);
     await checkIdle("visible");
     const first = (await current())!;
+    // Presenting a Quake window is not a resize: the size panel stays hidden.
+    if (first.resize_indicators !== "0") throw new Error(`first quake summon showed the size panel: ${JSON.stringify(first)}`);
     await checkStackingState(first, false);
     if (first.decorated !== "false" || first.chrome !== "true") throw new Error(`quake is decorated: ${JSON.stringify(first)}`);
     let identity = first.text!.match(/READY:(\d+)/)?.[1];
@@ -291,6 +293,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     await hotkey();
     await waitFor(async () => (await current())?.active === "true" && (await current())?.stage === "Idle", "second summon");
     const second = (await current())!;
+    if (second.resize_indicators !== "0") throw new Error(`quake resummon showed the size panel: ${JSON.stringify(second)}`);
     await checkStackingState(second, false);
     if (second.native_id !== first.native_id || !second.text?.includes(`READY:${identity}`)) throw new Error("summon replaced the window or shell");
     await input("second-summon");
@@ -717,6 +720,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await command("app show_quake");await settled(true);
         const beforeRefit = (await current())!.frame;
         await command("app show_quake scratch");await settled(true, "scratch");
+        if (profile(await state(), "scratch")?.resize_indicators !== "0") throw new Error("first fullscreen quake summon showed the size panel");
         // AppKit changes the work area with its fullscreen presentation lease.
         // Openbox keeps it unchanged; supply the same native property change.
         const workAreas = macos ? undefined : run(["xprop", "-root", "-notype", "_NET_WORKAREA"]).split("=")[1]!.trim();

@@ -240,6 +240,10 @@ impl Presentation {
     pub fn visible(&self) -> bool {
         self.transition.visible()
     }
+    /// A show or hide has not settled yet.
+    pub(super) fn presenting(&self) -> bool {
+        self.stage != Stage::Idle
+    }
     pub(super) fn cleanup(self) {
         self.generation.set(self.generation.get() + 1);
         if let Err(error) = self

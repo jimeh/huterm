@@ -288,6 +288,7 @@ done
       if (position === "left") {
         const [barX, barY, barWidth] = (await state())["w0.tab_bounds"]!.split(",").map(Number) as [number, number, number];
         const grabX = barX + barWidth - 3; const grabY = barY + 100;
+        const beforeDrag = (await state())["w0.resize_indicators"];
         if (macos) {
           await accepted(`native\tmouse\t5\t${grabX}\t${grabY}\t0`);
           await accepted(`native\tmouse\t1\t${grabX}\t${grabY}\t0`);
@@ -298,6 +299,8 @@ done
           run(["xdotool", "mousemove", "--window", focused, String(grabX), String(grabY), "mousedown", "1", "mousemove", "--window", focused, "260", String(grabY), "mouseup", "1"]);
         }
         await waitFor(async () => Math.abs(Number((await state())["w0.tab_bounds"]!.split(",")[2]) - 260) < 1, "preferred sidebar width");
+        // Dragging the sidebar is a resize the user made.
+        await waitFor(async () => Number((await state())["w0.resize_indicators"]) > Number(beforeDrag), "sidebar drag raises the size panel");
         await accepted("0 new_tab");
         await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "3" && s["w0.ready"] === "true"; }, "new tab with resized sidebar");
         if ((await state())["w0.resize_requests"] !== "1") throw new Error("new tab resized against a stale sidebar width");
@@ -305,6 +308,10 @@ done
       }
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
+      // The sidebar drag above also resized the first tab.
+      if (position !== "left" && (await state())["w0.resize_indicators"] !== one["w0.resize_indicators"]) {
+        throw new Error(`${position} tab bar showing or hiding raised the size panel`);
+      }
     }
     await writeFile(config, initialConfig.replace("[tabs]\n", "[tabs]\nalways_show = true\n"));
     await accepted("0 reload_config");
@@ -333,6 +340,29 @@ done
     await accepted("0 reload_config");
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden"; }, "titlebar config restored");
     console.log(`FULLSCREEN_SMOKE ${engine} titlebar-windowed-${full.toLowerCase()}-restored`);
+  };
+  // The tab bar appearing or hiding with the tab count is not a resize: the
+  // size panel stays hidden, including in fullscreen with a bar that does
+  // not auto-hide. Entering fullscreen is a resize and raises it.
+  const checkQuietChrome = async () => {
+    const [toggle, full] = macos ? ["toggle_non_native_fullscreen", "NonNative"] : ["toggle_fullscreen", "Native"];
+    const before = await state();
+    await accepted(`0 ${toggle}`);
+    await stable(full);
+    await waitFor(async () => Number((await state())["w0.resize_indicators"]) > Number(before["w0.resize_indicators"]), "fullscreen entry raises the size panel");
+    const entered = await state();
+    await accepted("0 new_tab");
+    await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "2" && s["w0.ready"] === "true" && s["w0.tab_presentation"] === "Reserved"; }, "second tab shows the fullscreen bar");
+    await closeTab();
+    await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === entered["w0.terminal"]; }, "last tab reclaims the fullscreen bar");
+    const reclaimed = await state();
+    if (reclaimed["w0.resize_indicators"] !== entered["w0.resize_indicators"]) {
+      throw new Error(`the tab bar hiding showed the size panel: ${entered["w0.resize_indicators"]} -> ${reclaimed["w0.resize_indicators"]}`);
+    }
+    await accepted(`0 ${toggle}`);
+    await stable("Windowed");
+    await pty("quietchrome");
+    console.log(`FULLSCREEN_SMOKE ${engine} quiet-tab-bar resize-panel-on-${full.toLowerCase()}`);
   };
   const move = async (x: number, y: number) => {
     if (macos) await accepted(`native\tmouse\t5\t${x}\t${y}\t0`);
@@ -460,6 +490,7 @@ done
     if (!noWm && !frameProbe && !fallback && !schedulerOnly) {
       await checkReserved();
       await checkTitlebar();
+      await checkQuietChrome();
     }
     const original = await stable("Windowed");
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }

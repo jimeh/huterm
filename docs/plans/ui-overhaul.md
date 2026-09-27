@@ -203,6 +203,9 @@ light and dark themes.
   indicator hold and fade.
 - While the grid size changes, a centred panel shows `columns × rows` in large
   monospace with a "columns × rows" caption, reusing `resize_visibility`.
+  Presentation changes stay quiet: the tab bar appearing or hiding with the
+  tab count, and a Quake window showing, settling, or entering fullscreen.
+  Window resizes, fullscreen toggles, and sidebar drags still show it.
 
 ### Window menu button
 
