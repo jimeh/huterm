@@ -4974,12 +4974,18 @@ impl WorkspaceView {
                 self.notch_shelves,
             )
         {
+            // Leaving fullscreen can restore a Linux client frame. Apply it
+            // before the terminals resize, so no PTY is sized for the
+            // windowed chrome inside the fullscreen frame.
+            self.sync_frame(window);
+            let window_frame = self.window_frame();
             let notch_shelf = self.notch_shelf();
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
                     terminal.chrome_hidden = self.fullscreen.chrome_hidden;
                     terminal.fullscreen_insets = self.fullscreen_insets;
                     terminal.notch_shelf = notch_shelf;
+                    terminal.window_frame = window_frame;
                     terminal.resize_if_needed(window);
                     cx.notify();
                 });

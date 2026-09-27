@@ -233,9 +233,18 @@ done
       throw new Error(`${engine} ${label}: PTY size ${reported?.[1]}x${reported?.[2]} differs from grid ${columns},${rows}`);
     }
   }
-  function assertExtents(expected: number[] | undefined, step: string): void {
-    const actual = frameExtents(property(windowId, "_GTK_FRAME_EXTENTS"));
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  /**
+   * The app flushes its X11 requests after publishing smoke state, so the
+   * property can trail the reported inset briefly.
+   */
+  async function assertExtents(expected: number[] | undefined, step: string): Promise<void> {
+    let actual: number[] | undefined;
+    try {
+      await waitFor(async () => {
+        actual = frameExtents(property(windowId, "_GTK_FRAME_EXTENTS"));
+        return JSON.stringify(actual) === JSON.stringify(expected);
+      }, `${step} _GTK_FRAME_EXTENTS`);
+    } catch {
       throw new Error(`${engine} ${label}: ${step} _GTK_FRAME_EXTENTS ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
     }
   }
@@ -277,7 +286,7 @@ done
       // request, and the title row resolves to a top tab bar.
       const fallback = await state("w0.client_decorations=false", "w0.frame_inset=0");
       assertMotif(1, "fallback");
-      assertExtents(undefined, "fallback");
+      await assertExtents(undefined, "fallback");
       const outer = geometry(windowId);
       if (field(fallback, "content") !== `0,0,${outer.width / scale},${outer.height / scale}`) {
         throw new Error(`${engine} ${label}: content is inset without a frame: ${field(fallback, "content")} for ${outer.width}x${outer.height}`);
@@ -293,7 +302,7 @@ done
     // 1. Client decorations were granted: no server frame, a 10-point inset.
     const framed = await state("w0.client_decorations=true", "w0.frame_inset=10", "w0.maximized=false", "w0.fullscreen=Windowed");
     assertMotif(0, "framed");
-    assertExtents([inset, inset, inset, inset], "framed");
+    await assertExtents([inset, inset, inset, inset], "framed");
     const outer = geometry(windowId);
     const content = parseRect(field(framed, "content"));
     if (content.x !== 10 || content.y !== 10 || content.w !== outer.width / scale - 20 || content.h !== outer.height / scale - 20) {
@@ -342,13 +351,13 @@ done
       const value = windowState();
       return value.includes("_NET_WM_STATE_MAXIMIZED_VERT") && value.includes("_NET_WM_STATE_MAXIMIZED_HORZ");
     }, "maximized window state");
-    assertExtents([0, 0, 0, 0], "maximized");
+    await assertExtents([0, 0, 0, 0], "maximized");
     await assertPtyMatchesGrid();
     const maximizedSpace = emptyRowSpace(await current());
     click(maximizedSpace.x * scale, maximizedSpace.y * scale, 2);
     await state("w0.maximized=false", "w0.frame_inset=10");
     await waitFor(async () => !windowState().includes("_NET_WM_STATE_MAXIMIZED_VERT"), "restored maximize state");
-    assertExtents([inset, inset, inset, inset], "restored");
+    await assertExtents([inset, inset, inset, inset], "restored");
     await ack("ackmaximizex");
 
     // 5. Dragging empty row space asks the window manager to move the
@@ -378,12 +387,12 @@ done
       const full = geometry(windowId);
       return full.x === 0 && full.y === 0 && full.width === 1280 && full.height === 800;
     }, "fullscreen root geometry");
-    assertExtents([0, 0, 0, 0], "fullscreen");
+    await assertExtents([0, 0, 0, 0], "fullscreen");
     await assertPtyMatchesGrid();
     await command("invoke\ttoggle_fullscreen");
     await state("w0.fullscreen=Windowed", "w0.frame_inset=10");
     await waitFor(async () => JSON.stringify(geometry(windowId)) === JSON.stringify(before), `exact root geometry ${JSON.stringify(before)} after fullscreen`);
-    assertExtents([inset, inset, inset, inset], "after fullscreen");
+    await assertExtents([inset, inset, inset, inset], "after fullscreen");
     await assertPtyMatchesGrid();
     await ack("ackfullscreenx");
 
