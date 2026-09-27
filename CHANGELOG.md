@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/jimeh/huterm/compare/v0.13.2...v0.14.0) (2026-09-27)
+
+
+### Features
+
+* overhaul dialogs, notices, and window chrome ([#176](https://github.com/jimeh/huterm/issues/176)) ([81262f1](https://github.com/jimeh/huterm/commit/81262f1d66e53b8f73c16a7194db252fc473583b))
+
 ## [0.13.2](https://github.com/jimeh/huterm/compare/v0.13.1...v0.13.2) (2026-09-27)
 
 
