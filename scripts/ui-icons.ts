@@ -16,6 +16,17 @@ export const iconNames = [
   "minus",
   "square",
   "copy",
+  "corner-down-left",
+  "arrow-big-up",
+  "command",
+  "option",
+  "chevron-up",
+  "arrow-up",
+  "arrow-down",
+  "arrow-left",
+  "arrow-right",
+  "arrow-right-to-line",
+  "delete",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

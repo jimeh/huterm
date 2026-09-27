@@ -2,7 +2,10 @@ use std::borrow::Cow;
 
 use gpui::{Application, AssetSource, SharedString};
 
-const ASSETS: [(&str, &[u8]); 10] = [
+/// The application icon, shown by the About panel.
+pub(crate) const APP_ICON: &str = "images/huterm.png";
+
+const ASSETS: [(&str, &[u8]); 22] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -31,6 +34,51 @@ const ASSETS: [(&str, &[u8]); 10] = [
         include_bytes!("../assets/icons/square.svg"),
     ),
     ("icons/copy.svg", include_bytes!("../assets/icons/copy.svg")),
+    (
+        "icons/corner-down-left.svg",
+        include_bytes!("../assets/icons/corner-down-left.svg"),
+    ),
+    (
+        "icons/arrow-big-up.svg",
+        include_bytes!("../assets/icons/arrow-big-up.svg"),
+    ),
+    (
+        "icons/command.svg",
+        include_bytes!("../assets/icons/command.svg"),
+    ),
+    (
+        "icons/option.svg",
+        include_bytes!("../assets/icons/option.svg"),
+    ),
+    (
+        "icons/chevron-up.svg",
+        include_bytes!("../assets/icons/chevron-up.svg"),
+    ),
+    (
+        "icons/arrow-up.svg",
+        include_bytes!("../assets/icons/arrow-up.svg"),
+    ),
+    (
+        "icons/arrow-down.svg",
+        include_bytes!("../assets/icons/arrow-down.svg"),
+    ),
+    (
+        "icons/arrow-left.svg",
+        include_bytes!("../assets/icons/arrow-left.svg"),
+    ),
+    (
+        "icons/arrow-right.svg",
+        include_bytes!("../assets/icons/arrow-right.svg"),
+    ),
+    (
+        "icons/arrow-right-to-line.svg",
+        include_bytes!("../assets/icons/arrow-right-to-line.svg"),
+    ),
+    (
+        "icons/delete.svg",
+        include_bytes!("../assets/icons/delete.svg"),
+    ),
+    (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,11 +93,22 @@ pub(crate) enum Icon {
     Minus,
     Square,
     Copy,
+    CornerDownLeft,
+    ArrowBigUp,
+    Command,
+    Option,
+    ChevronUp,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    ArrowRightToLine,
+    Delete,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 21] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -60,6 +119,17 @@ impl Icon {
         Self::Minus,
         Self::Square,
         Self::Copy,
+        Self::CornerDownLeft,
+        Self::ArrowBigUp,
+        Self::Command,
+        Self::Option,
+        Self::ChevronUp,
+        Self::ArrowUp,
+        Self::ArrowDown,
+        Self::ArrowLeft,
+        Self::ArrowRight,
+        Self::ArrowRightToLine,
+        Self::Delete,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -74,6 +144,17 @@ impl Icon {
             Self::Minus => "icons/minus.svg",
             Self::Square => "icons/square.svg",
             Self::Copy => "icons/copy.svg",
+            Self::CornerDownLeft => "icons/corner-down-left.svg",
+            Self::ArrowBigUp => "icons/arrow-big-up.svg",
+            Self::Command => "icons/command.svg",
+            Self::Option => "icons/option.svg",
+            Self::ChevronUp => "icons/chevron-up.svg",
+            Self::ArrowUp => "icons/arrow-up.svg",
+            Self::ArrowDown => "icons/arrow-down.svg",
+            Self::ArrowLeft => "icons/arrow-left.svg",
+            Self::ArrowRight => "icons/arrow-right.svg",
+            Self::ArrowRightToLine => "icons/arrow-right-to-line.svg",
+            Self::Delete => "icons/delete.svg",
         }
     }
 }
@@ -132,5 +213,11 @@ mod tests {
             expected
         );
         assert!(source.list("fonts/").expect("list").is_empty());
+        assert!(
+            source
+                .load(APP_ICON)
+                .expect("load the app icon")
+                .is_some_and(|bytes| bytes.starts_with(b"\x89PNG"))
+        );
     }
 }

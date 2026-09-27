@@ -3,9 +3,10 @@
 //! platform shortcut text beside them. Everything here is pure so the
 //! placement and model can be tested without a window.
 
-use gpui::{KeyContext, Keystroke, Pixels, px};
+use gpui::{KeyContext, Pixels, px};
 use huterm_protocol::{CommandId, ids, lookup};
 
+use super::super::key_hint::KeyHint;
 use super::super::menu::{MenuButton, MenuItem, MenuModel, MenuRow};
 use super::{CONTROL_SIZE, TabPosition};
 use crate::keymap::{InstalledKeymap, Origin, Platform};
@@ -85,112 +86,6 @@ pub(super) fn split_new_tab_row(
     }
 }
 
-/// A binding key in the platform's shortcut spelling: `⇧⌘P` on macOS,
-/// `Ctrl+Shift+P` on Linux. Chord strokes are separated by spaces, and a
-/// key that does not parse is shown as written.
-pub(super) fn format_shortcut(key: &str, platform: Platform) -> String {
-    key.split_whitespace()
-        .map(|stroke| format_keystroke(stroke, platform))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn format_keystroke(source: &str, platform: Platform) -> String {
-    let Ok(keystroke) = Keystroke::parse(source) else {
-        return source.to_owned();
-    };
-    let modifiers = keystroke.modifiers;
-    let key = key_name(&keystroke.key, platform);
-    match platform {
-        Platform::MacOs => {
-            let mut text = String::new();
-            if modifiers.function {
-                text.push_str("fn");
-            }
-            if modifiers.control {
-                text.push('⌃');
-            }
-            if modifiers.alt {
-                text.push('⌥');
-            }
-            if modifiers.shift {
-                text.push('⇧');
-            }
-            if modifiers.platform {
-                text.push('⌘');
-            }
-            text.push_str(&key);
-            text
-        }
-        Platform::Linux => {
-            let mut parts = Vec::new();
-            if modifiers.function {
-                parts.push("Fn".to_owned());
-            }
-            if modifiers.control {
-                parts.push("Ctrl".to_owned());
-            }
-            if modifiers.alt {
-                parts.push("Alt".to_owned());
-            }
-            if modifiers.shift {
-                parts.push("Shift".to_owned());
-            }
-            if modifiers.platform {
-                parts.push("Super".to_owned());
-            }
-            parts.push(key);
-            parts.join("+")
-        }
-    }
-}
-
-fn key_name(key: &str, platform: Platform) -> String {
-    let mac = platform == Platform::MacOs;
-    let named = match key {
-        "enter" if mac => "↩",
-        "enter" => "Enter",
-        "escape" if mac => "esc",
-        "escape" => "Esc",
-        "tab" if mac => "⇥",
-        "tab" => "Tab",
-        "space" => "Space",
-        "backspace" if mac => "⌫",
-        "backspace" => "Backspace",
-        "delete" if mac => "⌦",
-        "delete" => "Delete",
-        "up" if mac => "↑",
-        "up" => "Up",
-        "down" if mac => "↓",
-        "down" => "Down",
-        "left" if mac => "←",
-        "left" => "Left",
-        "right" if mac => "→",
-        "right" => "Right",
-        "pageup" if mac => "⇞",
-        "pageup" => "PageUp",
-        "pagedown" if mac => "⇟",
-        "pagedown" => "PageDown",
-        "home" => "Home",
-        "end" => "End",
-        _ => "",
-    };
-    if !named.is_empty() {
-        return named.to_owned();
-    }
-    let mut chars = key.chars();
-    match (chars.next(), chars.next()) {
-        (Some(letter), None) => letter.to_uppercase().collect(),
-        (Some('f'), Some(digit))
-            if digit.is_ascii_digit()
-                && key[1..].bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            format!("F{}", &key[1..])
-        }
-        _ => key.to_owned(),
-    }
-}
-
 /// The state the window menu's rows depend on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WindowMenuInput {
@@ -248,7 +143,7 @@ pub(super) fn window_menu_model(
             .into_iter()
             .filter(|binding| binding.args.is_empty())
             .min_by_key(|binding| binding.origin != Origin::User)
-            .map(|binding| format_shortcut(&binding.key, input.platform))
+            .map(|binding| KeyHint::parse(&binding.key, input.platform))
     };
     let item = |id: CommandId| {
         MenuRow::Item(
@@ -404,30 +299,6 @@ mod tests {
         assert_eq!(tiny.plus_width, px(0.0));
     }
 
-    #[test]
-    fn shortcuts_use_platform_symbols_and_names() {
-        let mac = Platform::MacOs;
-        let linux = Platform::Linux;
-        assert_eq!(format_shortcut("cmd-shift-p", mac), "⇧⌘P");
-        assert_eq!(format_shortcut("ctrl-shift-p", linux), "Ctrl+Shift+P");
-        assert_eq!(format_shortcut("cmd-enter", mac), "⌘↩");
-        assert_eq!(format_shortcut("f11", linux), "F11");
-        assert_eq!(format_shortcut("shift-end", mac), "⇧End");
-        assert_eq!(format_shortcut("shift-end", linux), "Shift+End");
-        assert_eq!(format_shortcut("cmd-,", mac), "⌘,");
-        assert_eq!(format_shortcut("ctrl-,", linux), "Ctrl+,");
-        assert_eq!(format_shortcut("cmd-<", mac), "⌘<");
-        assert_eq!(
-            format_shortcut("ctrl-alt-delete", linux),
-            "Ctrl+Alt+Delete"
-        );
-        assert_eq!(format_shortcut("alt-backspace", mac), "⌥⌫");
-        assert_eq!(format_shortcut("ctrl-k ctrl-t", linux), "Ctrl+K Ctrl+T");
-        assert_eq!(format_shortcut("escape", mac), "esc");
-        assert_eq!(format_shortcut("escape", linux), "Esc");
-        assert_eq!(format_shortcut("", linux), "");
-    }
-
     fn keymap(platform: Platform, user: &[KeybindingEntry]) -> InstalledKeymap {
         let (bindings, installed) =
             compile(platform, user).unwrap().install_parts();
@@ -442,13 +313,13 @@ mod tests {
         ]
     }
 
-    fn items(model: &MenuModel) -> Vec<(&str, Option<&str>)> {
+    fn items(model: &MenuModel) -> Vec<(&str, Option<String>)> {
         model
             .rows
             .iter()
             .filter_map(|row| match row {
                 MenuRow::Item(item) => {
-                    Some((item.id, item.shortcut.as_deref()))
+                    Some((item.id, item.shortcut.as_ref().map(KeyHint::text)))
                 }
                 _ => None,
             })
@@ -471,17 +342,17 @@ mod tests {
         assert_eq!(
             items(&model),
             vec![
-                ("open_command_palette", Some("⇧⌘P")),
-                ("new_tab", Some("⌘T")),
-                ("new_window", Some("⌘N")),
+                ("open_command_palette", Some("⇧⌘P".to_owned())),
+                ("new_tab", Some("⌘T".to_owned())),
+                ("new_window", Some("⌘N".to_owned())),
                 ("rename_tab", None),
-                ("close_tab", Some("⌘W")),
-                ("close_window", Some("⇧⌘W")),
-                ("toggle_fullscreen", Some("⌘↩")),
-                ("open_settings", Some("⌘,")),
-                ("reload_config", Some("⌘<")),
+                ("close_tab", Some("⌘W".to_owned())),
+                ("close_window", Some("⇧⌘W".to_owned())),
+                ("toggle_fullscreen", Some("⌘↩".to_owned())),
+                ("open_settings", Some("⌘,".to_owned())),
+                ("reload_config", Some("⌘<".to_owned())),
                 ("about", None),
-                ("quit", Some("⌘Q")),
+                ("quit", Some("⌘Q".to_owned())),
             ]
         );
         let labels: Vec<&str> = model
@@ -514,10 +385,16 @@ mod tests {
         let linux_items = items(&model);
         assert_eq!(
             linux_items[0],
-            ("open_command_palette", Some("Ctrl+Shift+P"))
+            ("open_command_palette", Some("Ctrl+Shift+P".to_owned()))
         );
-        assert_eq!(linux_items[6], ("toggle_fullscreen", Some("F11")));
-        assert_eq!(linux_items[7], ("open_settings", Some("Ctrl+,")));
+        assert_eq!(
+            linux_items[6],
+            ("toggle_fullscreen", Some("F11".to_owned()))
+        );
+        assert_eq!(
+            linux_items[7],
+            ("open_settings", Some("Ctrl+,".to_owned()))
+        );
         assert_eq!(
             linux_items[10],
             ("quit", None),
@@ -628,7 +505,7 @@ mod tests {
             &contexts(),
         );
         let shortcuts = items(&model);
-        assert_eq!(shortcuts[1], ("new_tab", Some("⌃⌥T")));
+        assert_eq!(shortcuts[1], ("new_tab", Some("⌃⌥T".to_owned())));
         assert_eq!(shortcuts[5], ("close_window", None), "unbound shows none");
     }
 }

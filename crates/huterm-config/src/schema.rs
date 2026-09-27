@@ -231,12 +231,7 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
         "Active, pointer, primary, or id:<platform display identifier>. Display availability is checked at runtime."
     );
     definitions["RawFont"]["properties"]["family"]["pattern"] = json!("\\S");
-    definitions["RawFont"]["properties"]["family"]["description"] = json!(
-        "Font family. Defaults to Menlo on macOS and monospace on Linux."
-    );
-    definitions["RawFont"]["properties"]["family"]
-        .as_object_mut()
-        .map(|field| field.remove("default"));
+    describe_platform_defaults(definitions);
     definitions["RawFont"]["properties"]["size"]["minimum"] = json!(6);
     definitions["RawFont"]["properties"]["size"]["maximum"] = json!(96);
     definitions["UpdateConfig"]["properties"]["automatic_checks"]["description"] = json!(
@@ -248,9 +243,6 @@ pub fn documents() -> Result<[(&'static str, String); 2], serde_json::Error> {
         "Scheduled update-check interval in whole hours. Omit to preserve Sparkle's stored interval; a fresh profile uses 24 hours."
     );
     constrain_ranges(definitions);
-    definitions["RawTerminal"]["properties"]["link_modifiers"]
-        .as_object_mut()
-        .map(|field| field.remove("default"));
     definitions["RawTerminal"]["properties"]["engine"] = json!({
         "type": "string",
         "enum": ["alacritty", "ghostty"],
@@ -318,6 +310,26 @@ fn constrain_theme(schema: &mut Value) {
         }
     }
 }
+/// Replaces defaults that differ by platform with descriptions of both, so
+/// the committed schema does not depend on where it was generated.
+fn describe_platform_defaults(definitions: &mut Value) {
+    definitions["RawFont"]["properties"]["family"]["description"] = json!(
+        "Font family. Defaults to Menlo on macOS and monospace on Linux."
+    );
+    definitions["TabsConfig"]["properties"]["position"]["description"] = json!(
+        "Where tabs sit: top, bottom, left, right, or titlebar. Defaults to titlebar on macOS and top on Linux."
+    );
+    for (definition, field) in [
+        ("RawFont", "family"),
+        ("TabsConfig", "position"),
+        ("RawTerminal", "link_modifiers"),
+    ] {
+        definitions[definition]["properties"][field]
+            .as_object_mut()
+            .map(|field| field.remove("default"));
+    }
+}
+
 // TOML has no null. Container defaults can contain host-specific values.
 fn clean(value: &mut Value) {
     match value {

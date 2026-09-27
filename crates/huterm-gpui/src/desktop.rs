@@ -53,6 +53,7 @@ use crate::ui::scrollbar::{
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
+use key_hint::KeyHint;
 use notices::Severity;
 use overlay::{Swatch, key_cap, mono_font_family, raised_panel};
 
@@ -91,6 +92,7 @@ mod about;
 mod close_dialog;
 mod composition;
 mod key_bench;
+mod key_hint;
 mod keyboard;
 mod links;
 mod menu;
@@ -2295,6 +2297,7 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let swatch = Swatch::from_theme(&self.theme);
+        let hints = self.window_config.shortcut_hints;
         let bottom = viewport_height
             - (terminal_bounds.origin.y + terminal_bounds.size.height)
             + px(12.0);
@@ -2320,7 +2323,7 @@ impl TerminalView {
                     .gap(px(10.0))
                     .h(px(30.0))
                     .pl(px(12.0))
-                    .pr(px(6.0))
+                    .pr(px(if hints { 6.0 } else { 12.0 }))
                     .text_size(px(12.0))
                     .text_color(swatch.fg)
                     .whitespace_nowrap()
@@ -2357,12 +2360,20 @@ impl TerminalView {
                             .gap(px(6.0))
                             .h(px(18.0))
                             .pl(px(10.0))
-                            .pr(px(4.0))
+                            .when(hints, |jump| jump.pr(px(4.0)))
                             .border_l_1()
                             .border_color(swatch.line)
                             .text_color(swatch.muted)
                             .child("Jump to live")
-                            .child(key_cap(&self.scroll_to_bottom_key, swatch)),
+                            .when(hints, |jump| {
+                                jump.child(key_cap(
+                                    &KeyHint::parse(
+                                        &self.scroll_to_bottom_key,
+                                        keymap::Platform::current(),
+                                    ),
+                                    swatch,
+                                ))
+                            }),
                     ),
             )
     }

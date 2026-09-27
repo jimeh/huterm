@@ -34,8 +34,9 @@ use slots::{
 };
 
 use super::TerminalView;
+use super::key_hint::KeyHint;
 use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
-use crate::keymap::InstalledKeymap;
+use crate::keymap::{InstalledKeymap, Platform};
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarGeometries,
     ScrollbarGeometry, ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins,
@@ -1401,8 +1402,12 @@ impl EventEmitter<PaletteEvent> for CommandPalette {}
 
 // ---- presentation ---------------------------------------------------------
 
-fn tag(text: String, swatch: Swatch, dashed: bool) -> impl IntoElement {
+/// A small label beside a row: `recent`, or an argument badge such as
+/// `⇥ options`, whose key draws as an icon.
+fn tag(hint: &KeyHint, swatch: Swatch, dashed: bool) -> impl IntoElement {
     div()
+        .flex()
+        .items_center()
         .px(px(6.0))
         .py(px(1.0))
         .rounded(px(4.0))
@@ -1412,7 +1417,7 @@ fn tag(text: String, swatch: Swatch, dashed: bool) -> impl IntoElement {
         .when(!dashed, |tag| tag.bg(swatch.chip))
         .text_size(px(10.0))
         .text_color(swatch.muted)
-        .child(text)
+        .child(hint.element(px(9.5), swatch.muted))
 }
 
 fn band(message: String, swatch: Swatch, error: bool) -> gpui::AnyElement {
@@ -1491,7 +1496,7 @@ type SlotRender = (
     Vec<gpui::AnyElement>,
     gpui::Stateful<gpui::Div>,
     Vec<gpui::AnyElement>,
-    Vec<(String, String)>,
+    Vec<(KeyHint, String)>,
 );
 
 impl CommandPalette {
@@ -1509,7 +1514,7 @@ impl CommandPalette {
     ) -> (
         gpui::Stateful<gpui::Div>,
         Vec<gpui::AnyElement>,
-        Vec<(String, String)>,
+        Vec<(KeyHint, String)>,
     ) {
         let mut list = div()
             .id("palette-results")
@@ -1543,21 +1548,37 @@ impl CommandPalette {
             } else if slots::runs_without_prompt(spec, &self.domain_for(spec))
                 == Some(true)
             {
-                Some(("⇥ options".to_owned(), true))
+                Some((
+                    KeyHint::keys(&["tab"], Platform::current())
+                        .with_suffix(" options"),
+                    true,
+                ))
             } else {
-                Some(("↩ prompts".to_owned(), false))
+                Some((
+                    KeyHint::keys(&["enter"], Platform::current())
+                        .with_suffix(" prompts"),
+                    false,
+                ))
             };
             let recent = search.query.is_empty()
                 && self.history.recency(spec.id).is_some();
             let mut meta = div().flex().flex_none().items_center().gap(px(6.0));
             if recent {
-                meta = meta.child(tag("recent".to_owned(), swatch, false));
+                meta = meta.child(tag(
+                    &KeyHint::keys(&[], Platform::current())
+                        .with_suffix("recent"),
+                    swatch,
+                    false,
+                ));
             }
-            if let Some((text, dashed)) = badge {
-                meta = meta.child(tag(text, swatch, dashed));
+            if let Some((hint, dashed)) = badge {
+                meta = meta.child(tag(&hint, swatch, dashed));
             }
             for key in self.shortcut_keys(spec, None) {
-                meta = meta.child(key_cap(&key, swatch));
+                meta = meta.child(key_cap(
+                    &KeyHint::parse(&key, Platform::current()),
+                    swatch,
+                ));
             }
             meta = meta.child(
                 div()
@@ -1637,17 +1658,24 @@ impl CommandPalette {
                 || slots::runs_without_prompt(spec, &self.domain_for(spec))
                     == Some(true)
         });
+        let platform = Platform::current();
         let mut hints = vec![
-            ("↑↓".to_owned(), "navigate".to_owned()),
-            ("↩".to_owned(), if runs { "run" } else { "next" }.to_owned()),
+            (
+                KeyHint::keys(&["up", "down"], platform),
+                "navigate".to_owned(),
+            ),
+            (
+                KeyHint::keys(&["enter"], platform),
+                if runs { "run" } else { "next" }.to_owned(),
+            ),
         ];
         if has_args {
             hints.push((
-                "⇥".to_owned(),
+                KeyHint::keys(&["tab"], platform),
                 if runs { "set arguments" } else { "arguments" }.to_owned(),
             ));
         }
-        hints.push(("esc".to_owned(), "close".to_owned()));
+        hints.push((KeyHint::keys(&["escape"], platform), "close".to_owned()));
         (list, below, hints)
     }
 
@@ -1713,7 +1741,10 @@ impl CommandPalette {
                         .border_1()
                         .border_color(swatch.dim)
                         .text_color(swatch.dim)
-                        .child("⇥"),
+                        .child(
+                            KeyHint::keys(&["tab"], Platform::current())
+                                .element(px(9.0), swatch.dim),
+                        ),
                 )
             });
         Some(chip.into_any_element())
@@ -1847,7 +1878,10 @@ impl CommandPalette {
                 let mut meta =
                     div().flex().flex_none().items_center().gap(px(6.0));
                 if let Some(key) = key {
-                    meta = meta.child(key_cap(&key, swatch));
+                    meta = meta.child(key_cap(
+                        &KeyHint::parse(&key, Platform::current()),
+                        swatch,
+                    ));
                 }
                 let element = div()
                     .id(("palette-picker", row))
@@ -1924,22 +1958,26 @@ impl CommandPalette {
         let runs = editor.complete()
             || !editor.text().trim().is_empty()
             || editor.remaining_required_satisfied();
+        let platform = Platform::current();
         let mut hints = vec![(
-            "↩".to_owned(),
+            KeyHint::keys(&["enter"], platform),
             if runs { "run" } else { "next" }.to_owned(),
         )];
         if editor.slots().len() > 1 {
-            hints.push(("⇥".to_owned(), "next argument".to_owned()));
+            hints.push((
+                KeyHint::keys(&["tab"], platform),
+                "next argument".to_owned(),
+            ));
         }
         let can_pop = editor.slots()[..active].iter().any(|slot| {
             matches!(slot.state, SlotState::Committed | SlotState::Prefilled)
         });
         let leave = if requested { "close" } else { "back" };
         hints.push((
-            "⌫ on empty".to_owned(),
+            KeyHint::keys(&["backspace"], platform).with_suffix(" on empty"),
             if can_pop { "previous" } else { leave }.to_owned(),
         ));
-        hints.push(("esc".to_owned(), leave.to_owned()));
+        hints.push((KeyHint::keys(&["escape"], platform), leave.to_owned()));
         (line, list, below, hints)
     }
 }

@@ -52,8 +52,8 @@ types.
 Huterm runs on macOS Apple Silicon and Linux x86_64/aarch64. Each native window
 has a private session and backing workspace with ordered tabs, one pane per tab,
 and independent terminal processes. Tabs can appear at the top, bottom, left,
-or right. Hidden tabs keep processing output without preparing viewport
-snapshots or painting.
+or right, or in the title bar (the macOS default). Hidden tabs keep
+processing output without preparing viewport snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
 even when the pointer leaves the window; releasing commits the clamped insertion
 position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
@@ -228,11 +228,12 @@ padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
+shortcut_hints = false # key hints on the scroll pill and dialog buttons
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
 directory = "name" # name, path, or short
-position = "top" # top, bottom, left, right, or titlebar
+position = "titlebar" # top, bottom, left, right, or titlebar; Linux default: "top"
 always_show = false
 auto_hide_in_fullscreen = false
 style = "pill" # pill or strip
@@ -258,6 +259,15 @@ manager draws it) it joins the tab bar: the far right of a top or bottom bar,
 or beside `+` under a left or right column, and it hides with an auto-hidden
 bar. A yellow dot marks waiting notices. `menu_button = false` removes it;
 `open_menu` and every item stay available through the palette and shortcuts.
+Right-clicking empty tab-bar space also opens the window menu at the pointer,
+except in Huterm's own Linux title row, where it opens the window manager's
+menu.
+
+Menus and the command palette show each command's shortcut: macOS in its
+symbols (`⇧⌘P`), Linux in words (`Ctrl+Shift+P`), with Return, Tab,
+Backspace, and the arrows drawn as icons on both. The scroll pill, the close
+confirmation's buttons, and the About panel show key hints only with
+`shortcut_hints = true`.
 
 Right-clicking any tab, active or not, opens its context menu at the pointer
 without activating it; the targeted tab is outlined while the menu is open.
@@ -279,10 +289,11 @@ the title bar shows the active tab's title in place of the application name.
 About Huterm (`about`) opens a themed panel on both platforms with the version,
 identifier, platform (OS version, architecture, and the display backend on
 Linux), terminal engine, and build profile plus the short source revision
-when the build embedded one. Copy Details copies those lines as text; Enter
-or Escape closes it, and terminal input is blocked while it is showing.
+when the build embedded one. Copy Details copies those lines as text; Close,
+Enter, or Escape closes it, and terminal input is blocked while it is showing.
 
-`position = "titlebar"` merges the tabs into the window's title bar. On macOS
+`position = "titlebar"` merges the tabs into the window's title bar; it is the
+macOS default, and Linux defaults to `top`. On macOS
 the 32-point title strip becomes the tab row: it starts after the traffic
 lights, holds the tabs and `+`, keeps its trailing space draggable with the
 usual double-click action, and ends with the `⋯` button. The terminal gains

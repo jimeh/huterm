@@ -214,6 +214,9 @@ pub struct WindowConfig {
     /// when the window has no title bar. Every item stays reachable through
     /// shortcuts or the command palette.
     pub menu_button: bool,
+    /// Show key hints on the scroll pill and on dialog and panel buttons.
+    /// The command palette and menus always show their shortcuts.
+    pub shortcut_hints: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -263,6 +266,7 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             menu_button: true,
+            shortcut_hints: false,
         }
     }
 }
@@ -270,7 +274,13 @@ impl Default for WindowConfig {
 impl Default for TabsConfig {
     fn default() -> Self {
         Self {
-            position: TabPosition::Top,
+            // The macOS title bar holds the tabs; Linux keeps the window
+            // manager's title bar unless configured otherwise.
+            position: if cfg!(target_os = "macos") {
+                TabPosition::Titlebar
+            } else {
+                TabPosition::Top
+            },
             always_show: false,
             auto_hide_in_fullscreen: false,
             style: TabStyle::Pill,
@@ -1176,6 +1186,16 @@ mod tabs_tests {
     fn tab_settings_use_settled_defaults() {
         let configured: RawConfig = toml::from_str("").expect("default config");
         assert_eq!(configured.tabs, TabsConfig::default());
+        assert_eq!(
+            configured.tabs.position,
+            if cfg!(target_os = "macos") {
+                TabPosition::Titlebar
+            } else {
+                TabPosition::Top
+            },
+            "macOS holds tabs in the title bar; Linux keeps the WM's"
+        );
+        assert!(!configured.window.shortcut_hints);
     }
 
     #[test]

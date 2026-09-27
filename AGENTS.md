@@ -1191,6 +1191,14 @@ conditional, so it reserves no terminal key. A repeated close shortcut while
 `confirming` must not confirm. Menus and dialogs return focus to the terminal
 when they close; the `⋯` button never keeps it, or terminal bindings stop
 matching until the user clicks back in.
+Every drawn shortcut goes through `key_hint::KeyHint`: macOS modifier
+symbols, Linux modifier words, and Lucide icons for Return, Tab, Backspace,
+and the arrows on both. Add icons through `scripts/ui-icons.ts`, never as
+hand-drawn glyph boxes. `window.shortcut_hints` gates key caps on the scroll
+pill, dialog buttons, and the About panel; the palette and menus always show
+theirs. The tab position default differs by platform, so the schema describes
+it instead of stating a default, and the config template leaves it commented.
+Pin `position` in smoke fixtures whose geometry assumes one.
 Palette ranking ties fall back to catalog order. A new command whose title
 shares a prefix with an existing one, such as Copy Tab Directory beside Copy,
 must come after it in the catalog, or the palette smoke's `copy` query selects

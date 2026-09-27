@@ -159,10 +159,13 @@ done
 `, { mode: 0o700 });
   // Titles name tabs so the native window title follows OSC 0; the bar is
   // always shown so the window menu button sits at its end from the start.
+  // The geometry below is a top bar's; macOS defaults to the title-bar row,
+  // which check-macos-titlebar.ts covers.
   const configDocument = `[terminal]
 close_on_exit = false
 
 [tabs]
+position = "top"
 always_show = true
 label = "title"
 `;
@@ -400,6 +403,13 @@ label = "title"
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
 
+    // A right press on empty bar space opens the window menu, not a tab's.
+    const bar = parseRect(field(await current(), "tabs_rects").split(";").pop()!);
+    await click(bar.x + bar.w + 32 + 24, bar.y + bar.h / 2, "right");
+    await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none");
+    await key("escape");
+    await state("w0.menu=false", "w0.terminal_focused=true");
+
     // 8. About blocks terminal input; Escape and Enter close it.
     await invoke("about");
     await state("w0.about=true", "w0.terminal_focused=false");
@@ -458,7 +468,7 @@ label = "title"
     await state("w0.scrolled=0", "w0.scroll_pill=false", "w0.terminal_focused=true");
     await ack("ackscrollx");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

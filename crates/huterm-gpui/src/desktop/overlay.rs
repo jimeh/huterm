@@ -3,10 +3,11 @@
 //! raised panels, and the scrim.
 
 use gpui::{
-    AnyView, App, BoxShadow, Context, Div, Hsla, Render, Rgba, SharedString,
-    Window, div, hsla, point, prelude::*, px,
+    AnyView, App, BoxShadow, Context, Div, Hsla, Pixels, Render, Rgba,
+    SharedString, Window, div, hsla, point, prelude::*, px,
 };
 
+use super::key_hint::KeyHint;
 use super::scrollbar_colors;
 use crate::config::Theme;
 use crate::renderer::rgb_color as color;
@@ -161,23 +162,55 @@ pub(crate) fn mono_font_family() -> SharedString {
     }
 }
 
-/// A keystroke chip, as the palette shows shortcuts and footer hints.
-pub(crate) fn key_cap(key: &str, swatch: Swatch) -> impl IntoElement {
+/// A 3-point accent bar with rounded ends, inset from the left edge of a
+/// rounded surface so it never crosses its border or corners: the active
+/// tab, a foreground process, and a notice's severity use it.
+pub(crate) fn accent_bar(color: Hsla, left: Pixels, inset: Pixels) -> Div {
     div()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(4.0))
+        .absolute()
+        .left(left)
+        .top(inset)
+        .bottom(inset)
+        .w(px(3.0))
+        .rounded_full()
+        .bg(color)
+}
+
+/// A keystroke chip, as the palette shows shortcuts and footer hints. Its
+/// own line height keeps it compact inside taller buttons.
+pub(crate) fn key_cap(hint: &KeyHint, swatch: Swatch) -> Div {
+    chip(hint, swatch.fg)
         .bg(swatch.chip)
         .border_1()
         .border_color(swatch.line)
+}
+
+/// A keystroke chip on a filled button, drawn in the button's text colour
+/// `on`.
+pub(crate) fn key_cap_on(hint: &KeyHint, on: Hsla) -> Div {
+    chip(hint, on)
+        .bg(on.opacity(0.18))
+        .border_1()
+        .border_color(on.opacity(0.35))
+}
+
+fn chip(hint: &KeyHint, color: Hsla) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(4.0))
         .text_size(px(10.5))
-        .text_color(swatch.fg)
-        .child(key.to_owned())
+        .line_height(px(14.0))
+        .text_color(color)
+        .child(hint.element(px(10.0), color))
 }
 
 /// The footer strip listing `(key, label)` hints.
 pub(crate) fn footer_hints(
-    hints: impl IntoIterator<Item = (String, String)>,
+    hints: impl IntoIterator<Item = (KeyHint, String)>,
     swatch: Swatch,
 ) -> Div {
     let mut footer = div()

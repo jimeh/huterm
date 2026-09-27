@@ -338,10 +338,12 @@ done
     if (macos) await accepted(`native\tmouse\t5\t${x}\t${y}\t0`);
     else run(["xdotool", "mousemove", String(Math.round(x)), String(Math.round(y))]);
   };
+  // A middle press, as on X11: a right press on empty tab-bar space opens
+  // the window menu, which would take the barrier key.
   const pointerInput = async (x: number, y: number) => {
     if (macos) {
-      await accepted(`native\tmouse\t3\t${x}\t${y}\t0`);
-      await accepted(`native\tmouse\t4\t${x}\t${y}\t0`);
+      await accepted(`native\tmouse\t25\t${x}\t${y}\t0`);
+      await accepted(`native\tmouse\t26\t${x}\t${y}\t0`);
     } else run(["xdotool", "click", "2", "click", "4"]);
   };
   const checkOverlay = async () => {

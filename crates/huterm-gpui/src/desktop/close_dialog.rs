@@ -8,9 +8,12 @@
 
 use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
 
+use super::key_hint::KeyHint;
 use super::overlay::{
-    Swatch, key_cap, mix, mono_font_family, raised_panel, scrim, severity_mark,
+    Swatch, accent_bar, key_cap, key_cap_on, mix, mono_font_family,
+    raised_panel, scrim, severity_mark,
 };
+use crate::keymap::Platform;
 
 /// What the confirmation closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,16 +296,7 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
         .pl(px(14.0))
         .pr(px(10.0))
         .rounded(px(6.0));
-    let bar = |color| {
-        div()
-            .absolute()
-            .left(px(3.0))
-            .top(px(10.0))
-            .bottom(px(10.0))
-            .w(px(3.0))
-            .rounded(px(2.0))
-            .bg(color)
-    };
+    let bar = |color| accent_bar(color, px(3.0), px(10.0));
     let main = || div().flex_basis(px(0.0)).flex_grow().min_w_0();
     let detail = |text: String| {
         div()
@@ -383,7 +377,8 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
     }
 }
 
-fn button(swatch: Swatch, focused: bool) -> Div {
+/// A footer button; `hint` leaves room for its trailing key cap.
+fn button(swatch: Swatch, focused: bool, hint: bool) -> Div {
     div()
         .flex()
         .flex_none()
@@ -391,7 +386,7 @@ fn button(swatch: Swatch, focused: bool) -> Div {
         .gap(px(8.0))
         .h(px(28.0))
         .pl(px(12.0))
-        .pr(px(8.0))
+        .pr(px(if hint { 8.0 } else { 12.0 }))
         .rounded(px(6.0))
         .text_size(px(12.5))
         .font_weight(gpui::FontWeight::MEDIUM)
@@ -399,11 +394,13 @@ fn button(swatch: Swatch, focused: bool) -> Div {
         .when(focused, |button| button.shadow(swatch.focus_ring()))
 }
 
-/// `Cancel esc` and the destructive primary button, nothing else.
+/// Cancel and the destructive primary button, nothing else. With `hints`,
+/// each carries its key: `esc` and Return.
 fn dialog_footer(
     model: &CloseDialogModel,
     focus: DialogFocus,
     swatch: Swatch,
+    hints: bool,
     on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
@@ -421,7 +418,7 @@ fn dialog_footer(
         .border_color(swatch.line)
         .bg(swatch.fg.opacity(0.03))
         .child(
-            button(swatch, focus == DialogFocus::Cancel)
+            button(swatch, focus == DialogFocus::Cancel, hints)
                 .id("cancel-close")
                 .border_1()
                 .border_color(swatch.line_strong)
@@ -429,39 +426,41 @@ fn dialog_footer(
                 .hover(move |button| button.bg(swatch.hover))
                 .on_click(on_cancel)
                 .child("Cancel")
-                .child(key_cap("esc", swatch)),
+                .when(hints, |button| {
+                    button.child(key_cap(
+                        &KeyHint::keys(&["escape"], Platform::current()),
+                        swatch,
+                    ))
+                }),
         )
         .child(
-            button(swatch, focus == DialogFocus::Primary)
+            button(swatch, focus == DialogFocus::Primary, hints)
                 .id("confirm-close")
                 .bg(danger)
                 .text_color(swatch.bg)
                 .hover(move |button| button.bg(swatch.danger))
                 .on_click(on_confirm)
                 .child(model.primary_label.clone())
-                .child(
-                    div()
-                        .px(px(5.0))
-                        .py(px(1.0))
-                        .rounded(px(4.0))
-                        .bg(swatch.bg.opacity(0.18))
-                        .border_1()
-                        .border_color(swatch.bg.opacity(0.35))
-                        .text_size(px(10.5))
-                        .child("↩"),
-                ),
+                .when(hints, |button| {
+                    button.child(key_cap_on(
+                        &KeyHint::keys(&["enter"], Platform::current()),
+                        swatch.bg,
+                    ))
+                }),
         )
 }
 
 /// The dialog over its scrim, filling the parent. The panel has an explicit
 /// viewport-clamped width, and its text and button containers do not
 /// shrink, so wrapped text measures correctly. `on_cancel` and
-/// `on_confirm` receive the clicks on `cancel-close` and `confirm-close`.
+/// `on_confirm` receive the clicks on `cancel-close` and `confirm-close`;
+/// `hints` shows the buttons' keys.
 pub(crate) fn render_close_dialog(
     model: &CloseDialogModel,
     focus: DialogFocus,
     viewport: Size<Pixels>,
     swatch: Swatch,
+    hints: bool,
     on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
@@ -531,7 +530,7 @@ pub(crate) fn render_close_dialog(
                 .child(header)
                 .child(list)
                 .child(dialog_footer(
-                    model, focus, swatch, on_cancel, on_confirm,
+                    model, focus, swatch, hints, on_cancel, on_confirm,
                 )),
         )
 }

@@ -19,6 +19,7 @@ use gpui::{
     prelude::*, px,
 };
 
+use super::key_hint::KeyHint;
 use super::overlay::{Swatch, TextTooltip, raised_panel};
 
 /// Identifies a menu item or button to its owner.
@@ -29,8 +30,8 @@ pub(crate) type MenuItemId = &'static str;
 pub(crate) struct MenuItem {
     pub(crate) id: MenuItemId,
     pub(crate) label: String,
-    /// Right-aligned shortcut text in the platform's format.
-    pub(crate) shortcut: Option<String>,
+    /// The right-aligned shortcut in the platform's spelling.
+    pub(crate) shortcut: Option<KeyHint>,
     pub(crate) enabled: bool,
     /// Shown in place of the shortcut while disabled.
     pub(crate) disabled_hint: Option<String>,
@@ -50,7 +51,7 @@ impl MenuItem {
         }
     }
 
-    pub(crate) fn shortcut(mut self, shortcut: Option<String>) -> Self {
+    pub(crate) fn shortcut(mut self, shortcut: Option<KeyHint>) -> Self {
         self.shortcut = shortcut;
         self
     }
@@ -603,20 +604,24 @@ impl Menu {
                     .child(count.to_string()),
             )
         } else {
-            let text = if item.enabled {
-                item.shortcut.clone()
-            } else {
-                item.disabled_hint.clone()
-            };
-            text.map(|text| {
+            let side = |content: gpui::Div| {
                 div()
                     .ml_auto()
                     .pl(px(24.0))
                     .text_size(px(11.5))
                     .text_color(side_text)
                     .whitespace_nowrap()
-                    .child(text)
-            })
+                    .child(content)
+            };
+            if item.enabled {
+                item.shortcut
+                    .as_ref()
+                    .map(|hint| side(hint.element(px(11.0), side_text)))
+            } else {
+                item.disabled_hint
+                    .clone()
+                    .map(|hint| side(div().child(hint)))
+            }
         };
         let id = item.id;
         let enabled = item.enabled;

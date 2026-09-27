@@ -5,8 +5,9 @@
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
 
+use super::super::key_hint::KeyHint;
 use super::super::menu::{MenuItem, MenuModel, MenuRow};
-use super::window_menu::{format_shortcut, label};
+use super::window_menu::label;
 use crate::keymap::{InstalledKeymap, Origin, Platform};
 
 /// The state the tab menu's rows depend on.
@@ -39,7 +40,7 @@ pub(super) fn tab_menu_model(
             .into_iter()
             .filter(|binding| binding.args.is_empty())
             .min_by_key(|binding| binding.origin != Origin::User)
-            .map(|binding| format_shortcut(&binding.key, input.platform))
+            .map(|binding| KeyHint::parse(&binding.key, input.platform))
     };
     let item = |id: CommandId| MenuItem::new(id.as_str(), label(id));
     let last = input.count == 0 || input.index + 1 >= input.count;
@@ -207,14 +208,25 @@ mod tests {
             active: true,
             ..input(0, 2)
         };
-        assert_eq!(items(&model(&active))[2].shortcut.as_deref(), Some("⌘W"));
+        assert_eq!(
+            items(&model(&active))[2]
+                .shortcut
+                .as_ref()
+                .map(KeyHint::text)
+                .as_deref(),
+            Some("⌘W")
+        );
         assert_eq!(items(&model(&input(0, 2)))[2].shortcut, None);
         let linux = TabMenuInput {
             platform: Platform::Linux,
             ..active
         };
         assert_eq!(
-            items(&model(&linux))[2].shortcut.as_deref(),
+            items(&model(&linux))[2]
+                .shortcut
+                .as_ref()
+                .map(KeyHint::text)
+                .as_deref(),
             Some("Ctrl+Shift+W")
         );
         let user = [KeybindingEntry {
@@ -229,6 +241,13 @@ mod tests {
             &keymap(Platform::MacOs, &user),
             &contexts(),
         );
-        assert_eq!(items(&model)[2].shortcut.as_deref(), Some("⌃⌥W"));
+        assert_eq!(
+            items(&model)[2]
+                .shortcut
+                .as_ref()
+                .map(KeyHint::text)
+                .as_deref(),
+            Some("⌃⌥W")
+        );
     }
 }

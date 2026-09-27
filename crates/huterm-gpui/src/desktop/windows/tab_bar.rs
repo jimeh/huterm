@@ -4,6 +4,7 @@ use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
+use crate::desktop::overlay::accent_bar;
 use crate::renderer::rgba_color;
 use crate::ui::scrollbar::ScrollbarColors;
 
@@ -424,16 +425,9 @@ fn close_button_shown(mode: TabCloseButton, active: bool) -> bool {
     }
 }
 
-/// A 3-point accent bar inset along the left edge of an active row or pill.
-fn accent_bar(colors: TabColors, inset: Pixels) -> Div {
-    div()
-        .absolute()
-        .left(px(5.0))
-        .top(inset)
-        .bottom(inset)
-        .w(px(3.0))
-        .rounded(px(3.0))
-        .bg(colors.accent)
+/// The accent bar inset along the left edge of an active row or pill.
+fn tab_accent_bar(colors: TabColors, inset: Pixels) -> Div {
+    accent_bar(colors.accent, px(5.0), inset)
 }
 
 /// The running dot: a small yellow circle before the title.
@@ -486,7 +480,7 @@ fn vertical_pill_tab(
             .pr(PILL_PADDING_RIGHT)
             .when(active, |row| row.bg(colors.active))
             .when(active && accent, |row| {
-                row.child(accent_bar(colors, px(8.0)))
+                row.child(tab_accent_bar(colors, px(8.0)))
             })
             .when(!active, |row| {
                 row.group_hover("tab", |style| {
@@ -602,7 +596,7 @@ fn pill_tab(
                 .pr(PILL_PADDING_RIGHT)
                 .when(active, |pill| pill.bg(colors.active))
                 .when(active && accent, |pill| {
-                    pill.child(accent_bar(colors, px(7.0)))
+                    pill.child(tab_accent_bar(colors, px(7.0)))
                 })
                 .when(!active, |pill| {
                     pill.group_hover("tab", |style| {
@@ -954,6 +948,7 @@ mod tests {
         let shelf =
             Bounds::new(point(px(0.0), px(0.0)), size(px(790.0), px(38.0)));
         let pill = TabsConfig {
+            position: TabPosition::Top,
             style: TabStyle::Pill,
             ..TabsConfig::default()
         };

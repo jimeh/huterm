@@ -161,8 +161,9 @@ light and dark themes.
   processes. Dialogs covering more than one tab group rows under tab headings,
   unknown-state tabs first, with a yellow "unknown" tag.
 - At most six process rows show, then an "and N more" row.
-- The footer holds only two buttons: `Cancel esc` and a destructive primary
-  button with `↩`. It has no other hints.
+- The footer holds only two buttons: Cancel and a destructive primary
+  button. With `window.shortcut_hints`, they carry `esc` and Return key caps;
+  the footer has no other hints.
 - The primary button has focus when the dialog opens, so Enter confirms and
   Escape cancels. Tab, Shift-Tab, Left, and Right move focus between the
   buttons, with a visible focus ring. Pressing the close shortcut again does
@@ -174,8 +175,9 @@ light and dark themes.
 - Up to three toasts stack at the bottom right of the terminal bounds, newest
   nearest the corner, with a "+N more" chip above them. When the scroll pill is
   visible, the stack sits above it.
-- Each toast has a severity mark and stripe (error red, warning yellow, info
-  accent), a bold title, the message, an optional source location in
+- Each toast has a severity mark and an inset, rounded severity bar (error
+  red, warning yellow, info accent), shared with active tabs and foreground
+  processes, a bold title, the message, an optional source location in
   monospace, action links, and a dismiss button.
 - Config and keymap notices persist and are keyed by source. A reload replaces
   every notice from its source: a fixed file clears them, and a file that still
@@ -193,11 +195,12 @@ light and dark themes.
 ### Scroll pill and size panel
 
 - Scrolled back, a pill at the bottom centre of the terminal bounds reads
-  "↑ 1,284 of 9,870 lines", then a divider and "Jump to live" with the
-  `scroll_to_bottom` binding. Both numbers come from the displayed snapshot:
-  its offset and its retained history rows. Clicking runs `scroll_to_bottom`;
-  the pill consumes the press so it cannot start a selection or application
-  mouse input. It uses the existing indicator hold and fade.
+  "↑ 1,284 of 9,870 lines", then a divider and "Jump to live", plus the
+  `scroll_to_bottom` binding with `window.shortcut_hints`. Both numbers come
+  from the displayed snapshot: its offset and its retained history rows.
+  Clicking runs `scroll_to_bottom`; the pill consumes the press so it cannot
+  start a selection or application mouse input. It uses the existing
+  indicator hold and fade.
 - While the grid size changes, a centred panel shows `columns × rows` in large
   monospace with a "columns × rows" caption, reusing `resize_visibility`.
 
@@ -245,6 +248,12 @@ Items, top to bottom, with separators between groups:
 
 Shortcuts appear right-aligned in each platform's format, derived from the
 compiled keymap so user bindings show. Items with no binding show none.
+macOS uses modifier symbols and Linux modifier words; Return, Tab,
+Backspace, and the arrows draw as Lucide icons on both, as in the palette.
+
+Right-clicking empty tab-bar space opens the window menu at the pointer,
+except in Huterm's drawn Linux title row, where it opens the window manager's
+menu.
 
 Rename Tab… runs `rename_tab` for the active tab, which collects the name in
 the palette's existing argument prompt, prefilled with the current name.
@@ -300,8 +309,8 @@ A centred panel on both platforms:
   and on Linux the display backend and whether client-side decorations are
   active), Terminal engine (`libghostty-vt` version), and Build (profile and
   short source revision). Omit the Build revision when none is embedded.
-- Buttons `Copy Details`, which copies the list as text, and `OK ↩`. Escape
-  and Enter close it.
+- Buttons `Copy Details`, which copies the list as text, and Close, with a
+  Return key cap under `window.shortcut_hints`. Escape and Enter close it.
 
 ### Title bar
 
@@ -355,7 +364,11 @@ or notice focus is unaffected. The new `tab` arguments are not prompted.
 Configuration:
 
 - `window.menu_button` (bool, default `true`).
-- `tabs.position` gains `"titlebar"`.
+- `window.shortcut_hints` (bool, default `false`): key caps on the scroll
+  pill and on dialog and About buttons. The palette and menus always show
+  shortcuts.
+- `tabs.position` gains `"titlebar"`, the macOS default; Linux defaults to
+  `top`.
 
 Regenerate both schemas and extend `schemas/fixtures.json` with every new
 command and option.
@@ -690,5 +703,11 @@ controls, such as the prototype toolbar, "Label parts", "Many tabs", and the
   stranding the window's MapNotify so it never drew again. The
   `x11-drain-buffered-events` vendor patch backports zed#62081, and the
   window title now starts as the creation title.
+- Review refinements from macOS testing (2026-09-27): `titlebar` became the
+  macOS default; `window.shortcut_hints` hides key caps outside the palette
+  and menus; one `KeyHint` renders every shortcut with Lucide icons; the
+  About panel shows the app icon and Copy Details and Close; toasts use the
+  shared inset accent bar; and right-clicking empty tab-bar space opens the
+  window menu.
 - Still open: `bench:idle` on macOS and exporting `HUTERM_SOURCE_REVISION`
   in macOS packaging and release builds.

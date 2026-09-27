@@ -190,12 +190,18 @@ label = "title"
       assertUnmoved(windowed, "a tab drag");
       await ack("acktabdragx");
 
-      // 4. A right-click opens the tab menu without activating the tab.
+      // 4. A right-click opens the tab menu without activating the tab;
+      // one on empty row space opens the window menu.
       const reordered = parseRect(field(await current(), "tabs_rects").split(";")[0]!);
       click(centre(reordered), 1, "right");
       await state("w0.menu=true", "w0.menu_target=0", "w0.active_index=1");
       await input.key("escape");
       await state("w0.menu=false", "w0.terminal_focused=true");
+      click(emptyRowSpace(await current()), 1, "right");
+      await state("w0.menu=true", "w0.menu_target=none", "w0.active_index=1");
+      await input.key("escape");
+      await state("w0.menu=false", "w0.terminal_focused=true");
+      assertUnmoved(windowed, "a right-click on the row");
     }
 
     // 5. Dragging empty row space moves the window. The window server
@@ -240,7 +246,7 @@ label = "title"
       const last = parseRect(field(row, "tabs_rects").split(";").pop()!);
       click({ x: last.x + last.w + 16, y: ROW / 2 });
       await state("w0.tabs=3", "w0.active_index=2", "w0.terminal_focused=true");
-      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=titlebar layout=row tab-click=activates tab-drag=reorders right-click=tab-menu menu-button=opens empty-drag=moves double-click=once plus=new-tab`);
+      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=titlebar layout=row tab-click=activates tab-drag=reorders right-click=tab-menu,window-menu menu-button=opens empty-drag=moves double-click=once plus=new-tab`);
     } else {
       console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=top layout=strip menu-button=opens empty-drag=moves double-click=once`);
     }

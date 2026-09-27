@@ -4810,7 +4810,7 @@
               "$ref": "#/definitions/TabPosition"
             }
           ],
-          "default": "top"
+          "description": "Where tabs sit: top, bottom, left, right, or titlebar. Defaults to titlebar on macOS and top on Linux."
         },
         "style": {
           "allOf": [
@@ -5040,6 +5040,11 @@
           "maximum": 256,
           "minimum": 0,
           "type": "number"
+        },
+        "shortcut_hints": {
+          "default": false,
+          "description": "Show key hints on the scroll pill and on dialog and panel buttons.\nThe command palette and menus always show their shortcuts.",
+          "type": "boolean"
         }
       },
       "type": "object"

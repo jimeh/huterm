@@ -3,10 +3,17 @@
 //! [`about_details`]; the panel renders them and the owner handles its
 //! buttons and keys.
 
-use gpui::{App, ClickEvent, Div, Pixels, Size, Window, div, prelude::*, px};
+use gpui::{
+    App, ClickEvent, Div, Pixels, Size, Window, div, img, prelude::*, px,
+};
 
-use super::overlay::{Swatch, key_cap, mono_font_family, raised_panel, scrim};
+use super::key_hint::KeyHint;
+use super::overlay::{
+    Swatch, key_cap_on, mono_font_family, raised_panel, scrim,
+};
 use crate::APP_ID;
+use crate::assets::APP_ICON;
+use crate::keymap::Platform;
 
 /// The pinned terminal engine and version. The test below ties it to
 /// `huterm-core`'s dependency declaration.
@@ -159,11 +166,13 @@ fn product_version(plist: &str) -> Option<String> {
 }
 
 /// The panel over its scrim, filling the parent. `on_copy` and `on_close`
-/// receive the clicks on `about-copy` and `about-close`.
+/// receive the clicks on `about-copy` and `about-close`; `hints` shows the
+/// Close button's key.
 pub(crate) fn render_about(
     details: &AboutDetails,
     viewport: Size<Pixels>,
     swatch: Swatch,
+    hints: bool,
     on_copy: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
@@ -191,7 +200,7 @@ pub(crate) fn render_about(
                 .text_color(swatch.fg)
                 .child(hero(&details.version, swatch))
                 .child(details_list(details, swatch))
-                .child(footer(swatch, on_copy, on_close)),
+                .child(footer(swatch, hints, on_copy, on_close)),
         )
 }
 
@@ -205,7 +214,7 @@ fn hero(version: &str, swatch: Swatch) -> Div {
         .pt(px(22.0))
         .pb(px(14.0))
         .px(px(20.0))
-        .child(app_glyph(swatch))
+        .child(img(APP_ICON).flex_none().size(px(72.0)))
         .child(
             div()
                 .mt(px(12.0))
@@ -260,17 +269,18 @@ fn details_list(details: &AboutDetails, swatch: Swatch) -> Div {
     list
 }
 
-/// The Escape hint and the Copy Details and OK buttons.
+/// The Copy Details and Close buttons at the right. Enter and Escape also
+/// close the panel.
 fn footer(
     swatch: Swatch,
+    hints: bool,
     on_copy: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     div()
         .flex()
         .flex_none()
-        .items_center()
-        .gap(px(8.0))
+        .justify_end()
         .px(px(12.0))
         .py(px(10.0))
         .border_t_1()
@@ -279,63 +289,34 @@ fn footer(
         .child(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
-                .gap(px(5.0))
-                .mr_auto()
-                .text_size(px(11.5))
-                .text_color(swatch.muted)
-                .child(key_cap("esc", swatch))
-                .child("close"),
-        )
-        .child(
-            footer_button("about-copy", swatch, false)
-                .on_click(on_copy)
-                .child("Copy Details"),
-        )
-        .child(
-            footer_button("about-close", swatch, true)
-                .on_click(on_close)
-                .child("OK")
+                .gap(px(8.0))
                 .child(
-                    div()
-                        .px(px(5.0))
-                        .py(px(1.0))
-                        .rounded(px(4.0))
-                        .bg(swatch.bg.opacity(0.18))
-                        .border_1()
-                        .border_color(swatch.bg.opacity(0.35))
-                        .text_size(px(10.5))
-                        .child("↩"),
+                    footer_button("about-copy", swatch, false, false)
+                        .on_click(on_copy)
+                        .child("Copy Details"),
+                )
+                .child(
+                    footer_button("about-close", swatch, true, hints)
+                        .on_click(on_close)
+                        .child("Close")
+                        .when(hints, |button| {
+                            button.child(key_cap_on(
+                                &KeyHint::keys(&["enter"], Platform::current()),
+                                swatch.bg,
+                            ))
+                        }),
                 ),
         )
 }
 
-/// The `>_` glyph block standing in for the application icon, which is not
-/// among the embedded assets.
-fn app_glyph(swatch: Swatch) -> Div {
-    div()
-        .flex_none()
-        .w(px(64.0))
-        .h(px(64.0))
-        .rounded(px(15.0))
-        .bg(swatch.bg)
-        .border_1()
-        .border_color(swatch.line_strong)
-        .shadow(swatch.shadow())
-        .flex()
-        .items_center()
-        .justify_center()
-        .font_family(mono_font_family())
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_size(px(22.0))
-        .text_color(swatch.warning)
-        .child(">_")
-}
-
+/// A footer button; `hint` leaves room for its trailing key cap.
 fn footer_button(
     id: &'static str,
     swatch: Swatch,
     primary: bool,
+    hint: bool,
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
@@ -344,7 +325,8 @@ fn footer_button(
         .items_center()
         .gap(px(6.0))
         .h(px(26.0))
-        .px(px(12.0))
+        .pl(px(12.0))
+        .pr(px(if hint { 7.0 } else { 12.0 }))
         .rounded(px(6.0))
         .border_1()
         .text_size(px(12.0))

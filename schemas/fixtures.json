@@ -138,6 +138,18 @@
     "theme": false
   },
   {
+    "name": "window shortcut hints on",
+    "toml": "[window]\nshortcut_hints = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window shortcut hints string",
+    "toml": "[window]\nshortcut_hints = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "selected theme name",
     "toml": "[theme]\nname = \"huterm-dark\"",
     "valid": true,

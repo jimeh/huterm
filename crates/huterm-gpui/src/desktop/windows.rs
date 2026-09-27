@@ -6580,6 +6580,24 @@ impl Render for WorkspaceView {
                         self.title_row_gestures(
                             row.window_control_area(WindowControlArea::Drag),
                         )
+                    })
+                    .when(!(merged_row && frame.controls), |bar| {
+                        // A right press on empty bar space opens the window
+                        // menu there. Huterm's Linux title row keeps the
+                        // window manager's menu instead.
+                        bar.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(
+                                |view, event: &MouseDownEvent, window, cx| {
+                                    view.open_menu_at(
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                },
+                            ),
+                        )
                     }),
             );
             if shelf_bar {
@@ -7077,6 +7095,7 @@ impl Render for WorkspaceView {
                 details,
                 content.size,
                 Swatch::from_theme(&self.config.theme),
+                self.config.window.shortcut_hints,
                 cx.listener(|view, _, _, cx| {
                     view.copy_about_details(cx);
                 }),
@@ -7094,6 +7113,7 @@ impl Render for WorkspaceView {
                 self.close.dialog_focus,
                 content.size,
                 Swatch::from_theme(&self.config.theme),
+                self.config.window.shortcut_hints,
                 cx.listener(|view, _, window, cx| {
                     view.cancel_close(window, cx);
                 }),
@@ -7260,6 +7280,26 @@ impl WorkspaceView {
         );
         self.mount_menu(model, from_keyboard, window, cx);
         Ok(CommandOutcome::Completed)
+    }
+
+    /// Opens the window menu at `pointer`, as a right press on empty tab-bar
+    /// space does, replacing any open menu. It refuses where the tab menu
+    /// does.
+    fn open_menu_at(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.check_available(true).is_err() || self.palette.is_some() {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Err(error) = self.open_menu(false, window, cx) {
+            self.report_failure("Open Menu", error.to_string(), cx);
+            return;
+        }
+        self.menu_pointer = Some(pointer);
     }
 
     /// Opens the context menu for `tab` at `pointer`, replacing any open
@@ -7601,28 +7641,34 @@ impl WorkspaceView {
         let dragged = Rc::clone(&self.title_row_press);
         let released = Rc::clone(&self.title_row_press);
         let moves = Rc::clone(&self.title_row_moves);
-        row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            if event.click_count == 2 {
-                pressed.set(false);
-                // macOS follows the user's double-click preference.
-                if cfg!(target_os = "macos") {
-                    window.titlebar_double_click();
+        let row = row
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                if event.click_count == 2 {
+                    pressed.set(false);
+                    // macOS follows the user's double-click preference.
+                    if cfg!(target_os = "macos") {
+                        window.titlebar_double_click();
+                    } else {
+                        window.zoom_window();
+                    }
                 } else {
-                    window.zoom_window();
+                    pressed.set(true);
                 }
-            } else {
-                pressed.set(true);
-            }
-            cx.stop_propagation();
-        })
-        .on_mouse_move(move |event, window, _| {
-            if event.dragging() && dragged.replace(false) {
-                moves.set(moves.get() + 1);
-                window.start_window_move();
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_, _, _| released.set(false))
-        .on_mouse_down(MouseButton::Right, |event, window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_move(move |event, window, _| {
+                if event.dragging() && dragged.replace(false) {
+                    moves.set(moves.get() + 1);
+                    window.start_window_move();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, _| released.set(false));
+        // macOS has no window menu to show; a right press on its title row
+        // reaches the tab bar's own menu instead.
+        if cfg!(target_os = "macos") {
+            return row;
+        }
+        row.on_mouse_down(MouseButton::Right, |event, window, cx| {
             window.show_window_menu(event.position);
             cx.stop_propagation();
         })

@@ -19,7 +19,9 @@ use gpui::{
 };
 use huterm_protocol::{CommandInvocation, TabId};
 
-use super::overlay::{Swatch, mono_font_family, raised_panel, severity_mark};
+use super::overlay::{
+    Swatch, accent_bar, mono_font_family, raised_panel, severity_mark,
+};
 use crate::assets::Icon;
 use crate::ui::animation::AnimationSchedule;
 
@@ -613,7 +615,7 @@ fn render_toast(
         .flex_none()
         .items_start()
         .gap(px(10.0))
-        .pl(px(12.0))
+        .pl(px(16.0))
         .pr(px(8.0))
         .py(px(10.0))
         .shadow(shadow)
@@ -626,15 +628,7 @@ fn render_toast(
         .on_hover(move |hovering: &bool, window, cx| {
             hover(id, *hovering, window, cx);
         })
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(3.0))
-                .bg(stripe),
-        )
+        .child(accent_bar(stripe, px(6.0), px(10.0)))
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
         .child(toast_body(id, content, swatch, handlers))
         .child(
