@@ -2,15 +2,17 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle, Focusable,
-    KeyContext, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Subscription,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, EventEmitter,
+    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
+    Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, ScrollDelta, ScrollWheelEvent, Subscription,
     SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
+    svg,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,
@@ -24,6 +26,7 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
+use crate::assets::Icon;
 use crate::commands::{
     InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
 };
@@ -52,6 +55,9 @@ use crate::ui::scrollbar::{
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
+use key_hint::KeyHint;
+use notices::Severity;
+use overlay::{Swatch, key_cap, mono_font_family, raised_panel};
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 32;
@@ -79,12 +85,21 @@ const TERMINAL_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
     hold: INDICATOR_HOLD,
 };
 const TITLEBAR_HEIGHT: Pixels = px(32.0);
+/// The `scroll_to_bottom` default on every platform, shown by the scroll
+/// pill until the window supplies the compiled keymap's binding.
+const DEFAULT_SCROLL_TO_BOTTOM_KEY: &str = "shift-end";
 const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
+mod about;
+mod close_dialog;
 mod composition;
 mod key_bench;
+mod key_hint;
 mod keyboard;
 mod links;
+mod menu;
+mod notices;
+mod overlay;
 pub(crate) mod palette;
 mod refresh;
 pub(crate) use windows::{
@@ -159,7 +174,14 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "Edit".into(),
-            items: vec![item(ids::COPY), item(ids::PASTE)],
+            items: vec![
+                item(ids::COPY),
+                item(ids::PASTE),
+                item(ids::SELECT_ALL),
+                MenuItem::separator(),
+                item(ids::CLEAR_SCROLLBACK),
+                item(ids::RESET_TERMINAL),
+            ],
         },
         Menu {
             name: "View".into(),
@@ -231,6 +253,29 @@ impl Selection {
             .then(|| BufferRange::ordered(self.anchor, self.head))
     }
 }
+
+/// How long a right-click waits for the link under the pointer before its
+/// context menu opens without link rows.
+const CONTEXT_LINK_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A right-click's link lookup, riding on the next snapshot request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContextLookup {
+    epoch: u64,
+    cell: huterm_protocol::MousePosition,
+    /// Where the menu opens, in window coordinates.
+    position: gpui::Point<Pixels>,
+}
+
+/// Asks the window to open the terminal's context menu at `position`, in
+/// window coordinates, with the destination of the link under it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ContextMenuRequest {
+    pub(super) position: gpui::Point<Pixels>,
+    pub(super) link: Option<String>,
+}
+
+impl EventEmitter<ContextMenuRequest> for TerminalView {}
 
 fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
     if selection.and_then(Selection::range).is_none() {
@@ -304,6 +349,8 @@ struct TerminalView {
     bell_flash_count: u64,
     visual_bell: bool,
     exited: bool,
+    /// The root process's exit status, once it has exited with one.
+    exit_code: Option<u32>,
     failed: bool,
     visible: bool,
     input_queue: InputQueue,
@@ -324,12 +371,21 @@ struct TerminalView {
     link_modifiers: config::LinkModifiers,
     link_diagnostic_at: Option<Instant>,
     open_link: fn(&str, &mut App),
+    right_click: config::RightClickAction,
+    /// A right-click waiting for its link lookup before its menu opens.
+    context_lookup: Option<ContextLookup>,
+    context_lookup_epoch: u64,
     link_requests: u64,
     link_completions: u64,
     link_max_lookup: Duration,
     link_max_latency: Duration,
     pending_resize: Option<(GridSize, CellSize)>,
     resize_requests: u64,
+    /// Times the size panel was raised; smoke state reports it.
+    resize_indicators: u64,
+    /// Layout changes keep the size panel hidden while a Quake window is
+    /// still presenting: showing, settling, or entering fullscreen.
+    quiet_resize: bool,
     snapshot: Option<Arc<TerminalSnapshot>>,
     renderer: Rc<RefCell<TerminalRenderer>>,
     focus: FocusHandle,
@@ -341,6 +397,9 @@ struct TerminalView {
     font_family: String,
     font_size: Pixels,
     window_config: WindowConfig,
+    /// The tab configuration with its position resolved for the window;
+    /// the workspace keeps it current, so `titlebar` never reaches layout
+    /// without a title bar.
     tabs_config: TabsConfig,
     sidebar_width: Pixels,
     tab_presentation: windows::tab_visibility::Presentation,
@@ -349,13 +408,23 @@ struct TerminalView {
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Shelf beside a display notch that holds the top tab bar, if any.
     notch_shelf: Option<Bounds<Pixels>>,
+    /// The window frame the chrome sits in; the workspace keeps it current
+    /// with the Linux client-side decorations GPUI reports.
+    window_frame: windows::WindowFrame,
     theme: Theme,
-    status: Option<String>,
+    /// Failures waiting for the window's notice stack, oldest first. The
+    /// tab's activity drain collects them with [`TerminalView::refresh`].
+    failures: Vec<TerminalFailure>,
+    /// Wakes the tab's activity drain when a failure is queued outside it.
+    failure_wake: async_channel::Sender<()>,
+    failure_wakes: async_channel::Receiver<()>,
     selection: Option<Selection>,
     selected_text: Option<String>,
     selecting: bool,
     scrollbars: Scrollbars,
     resize_visibility: IndicatorVisibility,
+    /// Key cap shown beside "Jump to live" in the scroll pill.
+    scroll_to_bottom_key: String,
     last_viewport: Option<gpui::Size<Pixels>>,
     selection_edge_direction: i64,
     scroll_benchmark: Option<ScrollBenchmark>,
@@ -369,7 +438,23 @@ struct TerminalView {
 struct RefreshResult {
     changed: bool,
     exited: bool,
+    /// The exit status when `exited` is set and the OS reported one.
+    exit_code: Option<u32>,
     more: bool,
+    /// Failures queued since the last drain, oldest first.
+    failures: Vec<TerminalFailure>,
+}
+
+/// Failures the terminal queues at most: later ones are dropped so a stuck
+/// runtime cannot grow the queue without bound.
+const FAILURE_CAPACITY: usize = 8;
+
+/// A terminal failure on its way to the window's notices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TerminalFailure {
+    pub(super) severity: Severity,
+    pub(super) title: &'static str,
+    pub(super) message: String,
 }
 
 struct TerminalViewAuthority {
@@ -401,21 +486,33 @@ impl TerminalView {
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
         let initial_presentation = terminal_presentation(&theme);
-        let (pending_presentation, presentation_status) =
+        let (pending_presentation, presentation_failure) =
             match presentation.update(initial_presentation.clone()) {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
                 Err(error) => (None, Some(error.to_string())),
             };
-        let focus_subscription =
-            cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
+        let (failure_wake, failure_wakes) = async_channel::bounded(1);
+        let focus_subscription = cx.on_focus(
+            &focus,
+            window,
+            |view: &mut TerminalView, window, cx| {
+                // GPUI dispatches a press against the last drawn frame, so a
+                // press that lands before the frame showing a dialog's scrim
+                // can still run the terminal's focus-on-click. The dialog
+                // keeps keyboard focus; the program is told nothing.
+                if let Some(dialog) = windows::modal_focus(window, cx) {
+                    dialog.focus(window);
+                    return;
+                }
                 view.host_effects.note_focus();
                 if view.visible
                     && view.enqueue_input(TerminalInput::Focus(true))
                 {
                     cx.notify();
                 }
-            });
+            },
+        );
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
                 // GPUI cancels pending shortcuts when focus changes. Window
@@ -476,7 +573,7 @@ impl TerminalView {
                 }
             }
         });
-        let view = TerminalView {
+        let mut view = TerminalView {
             client,
             presentation,
             pending_presentation,
@@ -500,12 +597,17 @@ impl TerminalView {
             link_modifiers: config.terminal.link_modifiers,
             link_diagnostic_at: None,
             open_link: |destination, cx| cx.open_url(destination),
+            right_click: config.terminal.right_click,
+            context_lookup: None,
+            context_lookup_epoch: 0,
             link_requests: 0,
             link_completions: 0,
             link_max_lookup: Duration::ZERO,
             link_max_latency: Duration::ZERO,
             pending_resize: None,
             resize_requests: 0,
+            resize_indicators: 0,
+            quiet_resize: false,
             snapshot: None,
             renderer: Rc::new(RefCell::new(TerminalRenderer::new(
                 font_family.clone(),
@@ -535,8 +637,11 @@ impl TerminalView {
             chrome_hidden: false,
             fullscreen_insets: gpui::Edges::default(),
             notch_shelf: None,
+            window_frame: windows::WindowFrame::default(),
             theme,
-            status: presentation_status,
+            failures: Vec::new(),
+            failure_wake,
+            failure_wakes,
             title: String::new(),
             metadata: TerminalMetadata::default(),
             metadata_revision: 0,
@@ -544,6 +649,7 @@ impl TerminalView {
             bell_flash_count: 0,
             visual_bell: config.terminal.bell.visual,
             exited: false,
+            exit_code: None,
             failed: false,
             visible: false,
             selection: None,
@@ -551,6 +657,7 @@ impl TerminalView {
             selecting: false,
             scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
             resize_visibility: IndicatorVisibility::default(),
+            scroll_to_bottom_key: DEFAULT_SCROLL_TO_BOTTOM_KEY.to_owned(),
             last_viewport: None,
             selection_edge_direction: 0,
             scroll_benchmark: ScrollBenchmark::from_environment(
@@ -561,6 +668,9 @@ impl TerminalView {
             refresh_mode: config.terminal.refresh,
             frame_clock,
         };
+        if let Some(message) = presentation_failure {
+            view.report_failure(Severity::Error, "Terminal error", message);
+        }
         view.wake_pending_work();
         key_bench::start(window.window_handle(), cx);
         view
@@ -580,6 +690,10 @@ impl TerminalView {
         self.start_snapshot_if_needed(cx);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "admission, link lookups, and benchmark samples share one request"
+    )]
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
@@ -593,17 +707,22 @@ impl TerminalView {
         };
         self.frame_clock.schedule(cx.entity().downgrade(), cx);
         let link_intent = self.links.intent();
+        let (context_lookup, link_point) = self.link_lookup_point(link_intent);
         let link_started = Instant::now();
         self.link_requests += u64::from(link_intent.is_some());
         let requested = self.client.request_snapshot_with_link(
             self.scroll.submitted_scroll(),
-            link_intent.map(|intent| intent.point),
+            link_point,
         );
         let request = match requested {
             Ok(request) => request,
             Err(error) => {
                 self.scroll.fail();
-                self.set_status(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
                 return;
             }
         };
@@ -656,6 +775,7 @@ impl TerminalView {
                             view.link_diagnostic_at = Some(Instant::now());
                             eprintln!("Link lookup unavailable or exceeded its bounded scan; terminal remains usable");
                         }
+                        view.complete_context_lookup(context_lookup, reply.link.as_ref(), cx);
                         let hover = view.links.hover().cloned();
                         view.links.publish(link_intent, reply.link);
                         let hover_changed = view.links.hover() != hover.as_ref();
@@ -668,7 +788,14 @@ impl TerminalView {
                     }
                     Err(error) => {
                         view.scroll.fail();
-                        view.set_status(error.to_string())
+                        // The window's notice stack draws the failure; the
+                        // terminal itself has nothing new to render.
+                        view.report_failure(
+                            Severity::Error,
+                            "Terminal error",
+                            error.to_string(),
+                        );
+                        false
                     }
                 };
                 view.start_snapshot_if_needed(cx);
@@ -794,20 +921,18 @@ impl TerminalView {
                     );
                 }
                 Ok(Some(TerminalEvent::Exited { status, .. })) => {
-                    self.exited = true;
-                    self.clear_composition(cx);
-                    self.input_queue.close();
-                    self.mouse = MouseState::default();
-                    changed |= self.set_status(status.code.map_or_else(
-                        || "Process exited".into(),
-                        |code| format!("Process exited with status {code}"),
-                    ));
-                    self.scroll.invalidate();
+                    self.observe_exit(status.code, cx);
+                    changed = true;
                 }
                 Ok(Some(TerminalEvent::Failed { message, .. })) => {
                     self.failed = true;
-                    changed |= self.set_status(message);
+                    self.report_failure(
+                        Severity::Error,
+                        "Terminal failed",
+                        message,
+                    );
                     self.scroll.invalidate();
+                    changed = true;
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
@@ -820,8 +945,76 @@ impl TerminalView {
         RefreshResult {
             changed,
             exited: !previously_exited && self.exited,
+            exit_code: self.exit_code,
             more: host_count == 8 || event_count == 64,
+            failures: std::mem::take(&mut self.failures),
         }
+    }
+
+    /// Root-shell exit: input closes and mouse ownership resets. Exit is
+    /// not a failure; the window announces it only for a tab it keeps.
+    fn observe_exit(&mut self, code: Option<u32>, cx: &mut Context<'_, Self>) {
+        self.exited = true;
+        self.exit_code = code;
+        self.clear_composition(cx);
+        self.input_queue.close();
+        self.mouse = MouseState::default();
+        self.scroll.invalidate();
+    }
+
+    /// Queues a failure for the window's notices and wakes the tab's
+    /// activity drain. Returns whether it was queued: repeats of a waiting
+    /// message and failures beyond [`FAILURE_CAPACITY`] are dropped.
+    fn report_failure(
+        &mut self,
+        severity: Severity,
+        title: &'static str,
+        message: String,
+    ) -> bool {
+        if self.failures.len() >= FAILURE_CAPACITY
+            || self
+                .failures
+                .iter()
+                .any(|failure| failure.message == message)
+        {
+            return false;
+        }
+        self.failures.push(TerminalFailure {
+            severity,
+            title,
+            message,
+        });
+        let _ = self.failure_wake.try_send(());
+        true
+    }
+
+    /// Completes on runtime activity or a queued failure. `Err` means the
+    /// runtime stopped; the failure channel outlives the view's drain, so it
+    /// never closes first.
+    pub(super) async fn wait_for_activity(
+        client: &RuntimeClient,
+        failure_wakes: &async_channel::Receiver<()>,
+    ) -> Result<(), RuntimeError> {
+        let mut activity = std::pin::pin!(client.wait_for_activity());
+        let mut failure = std::pin::pin!(failure_wakes.recv());
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(result) = activity.as_mut().poll(context) {
+                return Poll::Ready(result);
+            }
+            match failure.as_mut().poll(context) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+                Poll::Ready(Err(_)) => Poll::Ready(Err(RuntimeError::Stopped)),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await
+    }
+
+    /// Whether the scroll pill is drawn, so the window can raise its
+    /// notices above it.
+    pub(super) fn scroll_pill_visible(&self) -> bool {
+        self.scroll.displayed() > 0
+            && self.scrollbars.opacity(Axis::Vertical) > 0.0
     }
 
     fn has_pending_work(&self) -> bool {
@@ -865,6 +1058,7 @@ impl TerminalView {
         self.links.disable();
         self.links_enabled = terminal.links;
         self.link_modifiers = terminal.link_modifiers;
+        self.right_click = terminal.right_click;
         self.visual_bell = terminal.bell.visual;
         if !self.visual_bell && self.bell.clear() {
             cx.notify();
@@ -882,7 +1076,11 @@ impl TerminalView {
             Err(RuntimeError::Busy) => self.pending_presentation = Some(state),
             Err(error) => {
                 self.pending_presentation = None;
-                self.status = Some(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
             }
         }
         self.wake_pending_work();
@@ -977,9 +1175,11 @@ impl TerminalView {
         #[cfg(target_os = "macos")]
         if let Err(error) = self.option_composition.refresh_source() {
             self.clear_option_composition();
-            if self.set_status(format!("Option text input failed: {error}")) {
-                cx.notify();
-            }
+            self.report_failure(
+                Severity::Error,
+                "Option input",
+                format!("Option text input failed: {error}"),
+            );
         }
         #[cfg(target_os = "macos")]
         if self.option_composition.is_pending()
@@ -1012,11 +1212,11 @@ impl TerminalView {
                     Ok(None) => None,
                     Err(error) => {
                         self.clear_option_composition();
-                        if self.set_status(format!(
-                            "Option text input failed: {error}"
-                        )) {
-                            cx.notify();
-                        }
+                        self.report_failure(
+                            Severity::Error,
+                            "Option input",
+                            format!("Option text input failed: {error}"),
+                        );
                         return true;
                     }
                 }
@@ -1049,6 +1249,7 @@ impl TerminalView {
             || self
                 .tab_overlay
                 .is_some_and(|bounds| bounds.contains(&event.position))
+            || windows::modal_showing(window, cx)
         {
             return;
         }
@@ -1127,10 +1328,12 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         cx.stop_propagation();
-        if let Err(error) = self.run_command(&action.0, window, cx)
-            && self.set_status(error.to_string())
-        {
-            cx.notify();
+        if let Err(error) = self.run_command(&action.0, window, cx) {
+            self.report_failure(
+                Severity::Error,
+                "Command failed",
+                error.to_string(),
+            );
         }
     }
 
@@ -1151,9 +1354,35 @@ impl TerminalView {
             ids::PASTE
             | ids::SCROLL_PAGE_UP
             | ids::SCROLL_PAGE_DOWN
-            | ids::SCROLL_TO_BOTTOM => Ok(()),
+            | ids::SCROLL_TO_BOTTOM
+            | ids::SELECT_ALL
+            | ids::CLEAR_SCROLLBACK
+            | ids::RESET_TERMINAL => Ok(()),
             other => Err(CommandError::UnknownCommand(other)),
         }
+    }
+
+    /// Whether the view shows history rather than live output.
+    fn scrolled_back(&self) -> bool {
+        self.scroll.displayed() > 0
+    }
+
+    /// Where a keyboard-opened context menu anchors, in window
+    /// coordinates: below the cursor cell, or the grid's top-left corner
+    /// when the cursor is out of view.
+    fn context_menu_anchor(&self, window: &Window) -> gpui::Point<Pixels> {
+        let origin = self.content_bounds(window).origin
+            + self.terminal_layout(window).bounds.origin;
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.cursor)
+            .map_or(origin, |cursor| {
+                origin
+                    + point(
+                        self.metrics.cell_width * f32::from(cursor.column),
+                        self.metrics.cell_height * f32::from(cursor.row + 1),
+                    )
+            })
     }
 
     fn run_command(
@@ -1165,12 +1394,38 @@ impl TerminalView {
         self.clear_option_composition();
         self.command_availability(invocation.id)?;
         match invocation.id {
-            ids::COPY => {
-                if let Some(text) = &self.selected_text {
+            ids::COPY => match (&self.selected_text, self.selection) {
+                (Some(text), _) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         text.clone(),
                     ));
                 }
+                // The selection's text is still being extracted: copy it
+                // when it arrives rather than dropping the request.
+                (None, Some(selection)) => {
+                    if let Some(range) = selection.range() {
+                        self.extract_selection(selection, range, true, cx);
+                    }
+                }
+                (None, None) => {}
+            },
+            ids::SELECT_ALL => self.select_all(cx),
+            ids::CLEAR_SCROLLBACK | ids::RESET_TERMINAL => {
+                let edited = if invocation.id == ids::CLEAR_SCROLLBACK {
+                    self.client.clear_history()
+                } else {
+                    self.client.reset()
+                };
+                edited.map_err(|error| {
+                    CommandError::Runtime(error.to_string())
+                })?;
+                // Both move history, so the selection's cells are gone. The
+                // runtime invalidates the view once it applies the edit; a
+                // snapshot requested now could run first and spend the
+                // frame's allowance on the old content.
+                self.clear_selection();
+                self.links.invalidate();
+                cx.notify();
             }
             ids::PASTE => {
                 if let Some(text) =
@@ -1312,7 +1567,11 @@ impl TerminalView {
                 }
             }
             Err(error) => {
-                self.set_status(error.to_owned());
+                self.report_failure(
+                    Severity::Error,
+                    "File drop",
+                    error.to_owned(),
+                );
             }
         }
         cx.notify();
@@ -1357,10 +1616,14 @@ impl TerminalView {
             || self
                 .tab_overlay
                 .is_some_and(|bounds| bounds.contains(&event.position))
+            || windows::modal_showing(window, cx)
         {
             return;
         }
         self.external_drag = false;
+        // Any later press supersedes a right-click still waiting for its
+        // link lookup; a new right-click starts its own below.
+        self.context_lookup = None;
         self.focus.focus(window);
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
@@ -1387,6 +1650,9 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        // A right press during another gesture, such as a held link press
+        // or a selection drag, opens nothing.
+        let gesture = self.owns_pointer_gesture();
         self.input_queue.boundary();
         if self.mouse.down(button, application) {
             let (accepted, _) = self.admit_input(
@@ -1402,6 +1668,12 @@ impl TerminalView {
                 self.mouse.accepted(button, cell);
             }
             cx.notify();
+            return;
+        }
+        if !application && event.button == MouseButton::Right {
+            if !gesture {
+                self.right_click(event.position, window, cx);
+            }
             return;
         }
         if application || event.button != MouseButton::Left {
@@ -1440,6 +1712,146 @@ impl TerminalView {
         self.selecting = true;
         self.update_renderer_selection();
         cx.notify();
+    }
+
+    /// The cell a snapshot request looks up, and the right-click it answers.
+    /// A held link chord owns the lookup; a right-click that finds one
+    /// pending has already opened its menu without waiting.
+    fn link_lookup_point(
+        &self,
+        link_intent: Option<links::Intent>,
+    ) -> (
+        Option<ContextLookup>,
+        Option<huterm_protocol::MousePosition>,
+    ) {
+        let context_lookup =
+            self.context_lookup.filter(|_| link_intent.is_none());
+        let point = link_intent
+            .map(|intent| intent.point)
+            .or(context_lookup.map(|lookup| lookup.cell));
+        (context_lookup, point)
+    }
+
+    /// Opens the menu of a right-click whose lookup `outcome` answers, unless
+    /// a newer right-click or the timeout replaced it.
+    fn complete_context_lookup(
+        &mut self,
+        lookup: Option<ContextLookup>,
+        outcome: Option<&huterm_protocol::LinkLookup>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(lookup) =
+            lookup.filter(|lookup| self.context_lookup == Some(*lookup))
+        else {
+            return;
+        };
+        self.context_lookup = None;
+        let link = match outcome {
+            Some(huterm_protocol::LinkLookup::Match(link)) => {
+                Some(link.destination.clone())
+            }
+            _ => None,
+        };
+        cx.emit(ContextMenuRequest {
+            position: lookup.position,
+            link,
+        });
+    }
+
+    /// A right press no application took: the configured action.
+    fn right_click(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let command = match self.right_click {
+            config::RightClickAction::Menu => {
+                let cell = self.link_cell(position, window);
+                self.request_context_menu(position, cell, cx);
+                return;
+            }
+            config::RightClickAction::Ignore => return,
+            config::RightClickAction::Paste => ids::PASTE,
+            config::RightClickAction::CopyOrPaste => {
+                if copy_availability(self.selection).is_ok() {
+                    ids::COPY
+                } else {
+                    ids::PASTE
+                }
+            }
+        };
+        let result = self.run_command(
+            &CommandInvocation::new(command, Vec::new()),
+            window,
+            cx,
+        );
+        if let Err(error) = result {
+            self.report_failure(
+                Severity::Error,
+                "Command failed",
+                error.to_string(),
+            );
+        } else if command == ids::COPY {
+            self.clear_selection();
+            cx.notify();
+        }
+    }
+
+    /// Asks the window for the context menu at `position`, first looking
+    /// up the link at `cell` unless its result is already known. The
+    /// lookup rides on a snapshot request and is bounded by
+    /// [`CONTEXT_LINK_TIMEOUT`], after which the menu opens without it.
+    fn request_context_menu(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cell: Option<huterm_protocol::MousePosition>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.context_lookup = None;
+        let hovered = self
+            .links
+            .hover()
+            .filter(|link| {
+                cell.is_some_and(|cell| {
+                    link.cells.iter().any(|linked| linked.position == cell)
+                })
+            })
+            .map(|link| link.destination.clone());
+        let cell = cell.filter(|_| {
+            hovered.is_none()
+                && self.links_enabled
+                && self.links.intent().is_none()
+        });
+        let Some(cell) = cell else {
+            cx.emit(ContextMenuRequest {
+                position,
+                link: hovered,
+            });
+            return;
+        };
+        self.context_lookup_epoch = self.context_lookup_epoch.wrapping_add(1);
+        let lookup = ContextLookup {
+            epoch: self.context_lookup_epoch,
+            cell,
+            position,
+        };
+        self.context_lookup = Some(lookup);
+        self.scroll.invalidate();
+        self.start_snapshot_if_needed(cx);
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(CONTEXT_LINK_TIMEOUT).await;
+            let _ = view.update(cx, |view, cx| {
+                if view.context_lookup == Some(lookup) {
+                    view.context_lookup = None;
+                    cx.emit(ContextMenuRequest {
+                        position: lookup.position,
+                        link: None,
+                    });
+                }
+            });
+        })
+        .detach();
     }
 
     fn mouse_move(
@@ -1622,11 +2034,59 @@ impl TerminalView {
             cx.notify();
             return;
         };
+        self.extract_selection(selection, range, false, cx);
+    }
+
+    /// Selects every row of history and the screen.
+    fn select_all(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let rows = usize::from(snapshot.size.rows);
+        let columns = snapshot.size.columns;
+        if rows == 0 || columns == 0 {
+            return;
+        }
+        let selection = Selection {
+            generation: snapshot.generation,
+            anchor: BufferPoint {
+                rows_from_live_bottom: snapshot.history_size + rows - 1,
+                column: 0,
+            },
+            head: BufferPoint {
+                rows_from_live_bottom: 0,
+                column: columns - 1,
+            },
+        };
+        self.selection = Some(selection);
+        self.selected_text = None;
+        self.selecting = false;
+        self.update_renderer_selection();
+        if let Some(range) = selection.range() {
+            self.extract_selection(selection, range, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Asks the runtime for `selection`'s text and keeps it while the
+    /// selection stays current. With `copy`, the text also goes to the
+    /// clipboard when it arrives.
+    fn extract_selection(
+        &mut self,
+        selection: Selection,
+        range: BufferRange,
+        copy: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         let request =
             match self.client.request_selection(selection.generation, range) {
                 Ok(request) => request,
                 Err(error) => {
-                    self.set_status(error.to_string());
+                    self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                     return;
                 }
             };
@@ -1639,13 +2099,27 @@ impl TerminalView {
                     range,
                 );
                 match result {
-                    Ok(Some(text)) if current => {
-                        view.selected_text = Some(text);
+                    // A requested copy writes the text it asked for even if
+                    // the selection changed since; only caching needs it
+                    // current.
+                    Ok(Some(text)) => {
+                        if copy {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                text.clone(),
+                            ));
+                        }
+                        if current {
+                            view.selected_text = Some(text);
+                        }
                     }
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}
                     Err(error) => {
-                        view.set_status(error.to_string());
+                        view.report_failure(
+                            Severity::Error,
+                            "Terminal error",
+                            error.to_string(),
+                        );
                     }
                 }
                 cx.notify();
@@ -1691,7 +2165,10 @@ impl TerminalView {
             margins: terminal_track_margins(
                 self.tab_presentation,
                 self.tabs_config.position,
-                terminal_top(self.chrome_hidden),
+                windows::title_row_height(
+                    self.chrome_hidden,
+                    self.window_frame,
+                ),
                 self.window_config,
             ),
             ..TERMINAL_SCROLLBAR
@@ -1755,11 +2232,12 @@ impl TerminalView {
     fn content_bounds(&self, window: &Window) -> Bounds<Pixels> {
         windows::ChromeLayout::for_tabs(
             window.viewport_size(),
-            terminal_top(self.chrome_hidden),
+            windows::title_row_height(self.chrome_hidden, self.window_frame),
             self.tabs_config,
             self.sidebar_width,
             self.fullscreen_insets,
             self.notch_shelf,
+            self.window_frame,
         )
         .present(self.tab_presentation, self.tabs_config.position, 0.0)
         .terminal
@@ -1788,6 +2266,13 @@ impl TerminalView {
     }
 
     fn resize_if_needed(&mut self, window: &Window) {
+        self.resize_to_layout(window, false);
+    }
+
+    /// Resizes to the current layout. A `quiet` change keeps the size panel
+    /// hidden: the tab bar appeared or hid, which is not a resize the user
+    /// made.
+    fn resize_to_layout(&mut self, window: &Window, quiet: bool) {
         let metrics = self.metrics.at_scale(window.scale_factor());
         if metrics != self.metrics {
             self.metrics = metrics;
@@ -1804,7 +2289,10 @@ impl TerminalView {
             .is_some_and(|previous| previous != viewport)
         {
             self.links.invalidate();
-            self.resize_visibility.activate(Instant::now());
+            if !quiet && !self.quiet_resize {
+                self.resize_visibility.activate(Instant::now());
+                self.resize_indicators += 1;
+            }
         }
         let size = self.terminal_layout(window).grid;
         let cell = self.physical_cell_size();
@@ -1820,7 +2308,11 @@ impl TerminalView {
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
             Err(error) => {
                 self.pending_resize = None;
-                self.status = Some(error.to_string());
+                self.report_failure(
+                    Severity::Error,
+                    "Terminal error",
+                    error.to_string(),
+                );
             }
         }
         self.wake_pending_work();
@@ -1853,10 +2345,10 @@ impl TerminalView {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
-            Ok(Admission::Full) => (false, self.set_status(format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
+            Ok(Admission::Full) => (false, self.report_failure(Severity::Warning, "Input rejected", format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
             Err(error) => {
                 self.mouse = MouseState::default();
-                (false, self.set_status(error.to_string()))
+                (false, self.report_failure(Severity::Error, "Terminal error", error.to_string()))
             }
         };
         self.wake_pending_work();
@@ -1880,6 +2372,9 @@ impl TerminalView {
     }
 
     fn blur_mouse(&mut self, cx: &mut Context<'_, Self>) {
+        // A right-click still waiting for its link lookup must not open its
+        // menu once focus or visibility has moved on.
+        self.context_lookup = None;
         self.links.disable();
         self.cancel_mouse();
         self.finish_selection(cx);
@@ -1897,7 +2392,11 @@ impl TerminalView {
             .retry(|input| self.client.offer_input(input))
         {
             self.mouse = MouseState::default();
-            return self.set_status(error.to_string());
+            return self.report_failure(
+                Severity::Error,
+                "Terminal error",
+                error.to_string(),
+            );
         }
         if let Some((grid, cell)) = self.pending_resize {
             match self.client.resize(grid, cell) {
@@ -1905,7 +2404,11 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_resize = None;
-                    return self.set_status(error.to_string());
+                    return self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1915,7 +2418,11 @@ impl TerminalView {
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_presentation = None;
-                    return self.set_status(error.to_string());
+                    return self.report_failure(
+                        Severity::Error,
+                        "Terminal error",
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1937,12 +2444,19 @@ impl TerminalView {
         context
     }
 
-    fn set_status(&mut self, status: String) -> bool {
-        if self.status.as_ref() == Some(&status) {
-            false
-        } else {
-            self.status = Some(status);
-            true
+    /// Shows `key` (the compiled keymap's first `scroll_to_bottom` binding
+    /// in the Terminal context) in the scroll pill; `None` restores the
+    /// platform default.
+    pub(super) fn set_scroll_to_bottom_key(
+        &mut self,
+        key: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let key =
+            key.unwrap_or_else(|| DEFAULT_SCROLL_TO_BOTTOM_KEY.to_owned());
+        if self.scroll_to_bottom_key != key {
+            self.scroll_to_bottom_key = key;
+            cx.notify();
         }
     }
 }
@@ -2106,6 +2620,191 @@ impl Focusable for TerminalView {
     }
 }
 
+impl TerminalView {
+    /// The hovered link's destination on a small raised panel at the
+    /// terminal's bottom-left corner, truncated to the terminal's width.
+    fn render_link_status(
+        &self,
+        destination: String,
+        terminal_bounds: Bounds<Pixels>,
+        viewport_height: Pixels,
+    ) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        let inset = px(8.0);
+        div()
+            .absolute()
+            .left(terminal_bounds.origin.x + inset)
+            .bottom(viewport_height - terminal_bounds.bottom() + inset)
+            .max_w((terminal_bounds.size.width - inset * 2.0).max(px(0.0)))
+            .flex()
+            .child(
+                raised_panel(swatch, 8.0)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(swatch.fg)
+                    .child(
+                        svg()
+                            .path(Icon::Link.asset_path())
+                            .size(px(13.0))
+                            .flex_none()
+                            .text_color(swatch.muted),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(destination),
+                    ),
+            )
+    }
+
+    /// The pill at the bottom centre of the terminal bounds while scrolled
+    /// back. It consumes presses and releases so a click cannot start a
+    /// selection or application mouse input, and fades with the indicator.
+    fn render_scroll_pill(
+        &self,
+        pill: ScrollPill,
+        terminal_bounds: Bounds<Pixels>,
+        viewport_height: Pixels,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        let hints = self.window_config.shortcut_hints;
+        let bottom = viewport_height
+            - (terminal_bounds.origin.y + terminal_bounds.size.height)
+            + px(12.0);
+        // Presses stay on the pill. Releases pass through: a selection or
+        // application gesture that started in the terminal must still end
+        // there, and the terminal ignores releases it does not own.
+        let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+        };
+        div()
+            .absolute()
+            .left(terminal_bounds.origin.x)
+            .w(terminal_bounds.size.width)
+            .bottom(bottom)
+            .flex()
+            .justify_center()
+            .child(
+                raised_panel(swatch, 15.0)
+                    .id("scroll-pill")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(10.0))
+                    .h(px(30.0))
+                    .pl(px(12.0))
+                    .pr(px(if hints { 6.0 } else { 12.0 }))
+                    .text_size(px(12.0))
+                    .text_color(swatch.fg)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .hover(|pill| pill.bg(swatch.surface.blend(swatch.hover)))
+                    .active(|pill| {
+                        pill.bg(swatch.surface.blend(swatch.pressed()))
+                    })
+                    .opacity(self.scrollbars.opacity(Axis::Vertical))
+                    .on_mouse_down(MouseButton::Left, stop)
+                    .on_mouse_down(MouseButton::Right, stop)
+                    .on_mouse_down(MouseButton::Middle, stop)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.scroll_command(cx, |scroll, _| scroll.bottom());
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child("↑")
+                            .child(
+                                div()
+                                    .font_family(mono_font_family())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(pill.offset),
+                            )
+                            .child(format!("of {} lines", pill.total)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .h(px(18.0))
+                            .pl(px(10.0))
+                            .when(hints, |jump| jump.pr(px(4.0)))
+                            .border_l_1()
+                            .border_color(swatch.line)
+                            .text_color(swatch.muted)
+                            .child("Jump to live")
+                            .when(hints, |jump| {
+                                jump.child(key_cap(
+                                    &KeyHint::parse(
+                                        &self.scroll_to_bottom_key,
+                                        keymap::Platform::current(),
+                                    ),
+                                    swatch,
+                                ))
+                            }),
+                    ),
+            )
+    }
+
+    /// The centred `columns × rows` panel while the grid size changes. The
+    /// surface stays opaque; the fade applies to the whole panel.
+    fn render_size_panel(&self) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                raised_panel(swatch, 12.0)
+                    .opacity(self.resize_visibility.opacity)
+                    .pt(px(14.0))
+                    .pb(px(12.0))
+                    .px(px(22.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .font_family(mono_font_family())
+                            .text_size(px(26.0))
+                            .line_height(px(26.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(swatch.fg)
+                            .child(self.last_grid_size.columns.to_string())
+                            .child(
+                                div()
+                                    .mx(px(6.0))
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .text_color(swatch.dim)
+                                    .child("×"),
+                            )
+                            .child(self.last_grid_size.rows.to_string()),
+                    )
+                    .child(
+                        div()
+                            .mt(px(6.0))
+                            .text_size(px(11.0))
+                            .text_color(swatch.muted)
+                            .child("columns × rows"),
+                    ),
+            )
+    }
+}
+
 impl Render for TerminalView {
     #[expect(
         clippy::too_many_lines,
@@ -2137,7 +2836,6 @@ impl Render for TerminalView {
             window.request_animation_frame();
         }
         let snapshot = self.snapshot.clone();
-        let status = self.status.clone();
         let bell_flash = self.bell.flashing(Instant::now());
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
@@ -2149,6 +2847,7 @@ impl Render for TerminalView {
         self.scrollbars
             .set_axis(Axis::Vertical, Some(self.scrollbar_options()));
         let layout = self.terminal_layout(window);
+        let terminal_bounds = layout.bounds;
         let hovered_link = self.links.hover().cloned();
         let link_metrics = self.metrics;
         let underline = color(self.theme.foreground);
@@ -2335,17 +3034,11 @@ impl Render for TerminalView {
         }
         if let Some(link) = hovered_link {
             root = root.cursor(gpui::CursorStyle::PointingHand).child(
-                div()
-                    .absolute()
-                    .left(px(4.0))
-                    .bottom(px(4.0))
-                    .w((self.viewport(window).width - px(8.0)).max(px(0.0)))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .bg(color(self.theme.background))
-                    .text_color(color(self.theme.foreground))
-                    .child(link.destination),
+                self.render_link_status(
+                    link.destination,
+                    terminal_bounds,
+                    self.viewport(window).height,
+                ),
             );
         }
         let displayed_offset = self.scroll.displayed();
@@ -2358,60 +3051,21 @@ impl Render for TerminalView {
                     .layers(&geometries, scrollbar_colors(&self.theme))
                     .collect::<Vec<_>>(),
             );
-            if let Some(label) = scroll_position_label(displayed_offset) {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .right(px(self.scrollbars.strip_inset(Axis::Vertical)))
-                        .bottom(px(12.0))
-                        .px_2()
-                        .py_1()
-                        .rounded(px(3.0))
-                        .bg(color(self.theme.background))
-                        .text_color(color(self.theme.foreground))
-                        .opacity(self.scrollbars.opacity(Axis::Vertical))
-                        .child(label),
-                );
+            if let Some(pill) =
+                ScrollPill::new(displayed_offset, self.scroll.history())
+            {
+                root = root.child(self.render_scroll_pill(
+                    pill,
+                    terminal_bounds,
+                    self.viewport(window).height,
+                    cx,
+                ));
             }
         }
         if self.resize_visibility.opacity > 0.0 {
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(3.0))
-                            .bg(color(self.theme.background))
-                            .text_color(color(self.theme.foreground))
-                            .opacity(self.resize_visibility.opacity)
-                            .child(format!(
-                                "{} x {}",
-                                self.last_grid_size.columns,
-                                self.last_grid_size.rows
-                            )),
-                    ),
-            );
+            root = root.child(self.render_size_panel());
         }
-        root.when_some(status, |view, status| {
-            view.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .px_2()
-                    .py_1()
-                    .bg(color(self.theme.background))
-                    .text_color(color(self.theme.foreground))
-                    .child(status),
-            )
-        })
+        root
     }
 }
 
@@ -2738,9 +3392,28 @@ fn format_line_count(value: usize) -> String {
     }
     formatted
 }
-fn scroll_position_label(displayed_offset: usize) -> Option<String> {
-    (displayed_offset > 0)
-        .then(|| format!("{} lines up", format_line_count(displayed_offset)))
+
+/// Text for the scroll pill: the displayed snapshot's offset within its
+/// retained history, both with thousands separators.
+struct ScrollPill {
+    offset: String,
+    total: String,
+}
+
+impl ScrollPill {
+    /// `None` at the live bottom, where the pill hides while the indicator
+    /// fades.
+    fn new(displayed_offset: usize, history: usize) -> Option<Self> {
+        (displayed_offset > 0).then(|| Self {
+            offset: format_line_count(displayed_offset),
+            total: format_line_count(history.max(displayed_offset)),
+        })
+    }
+
+    #[cfg(test)]
+    fn text(&self) -> String {
+        format!("↑ {} of {} lines", self.offset, self.total)
+    }
 }
 
 fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
@@ -3121,15 +3794,24 @@ mod tests {
         assert!(candidate.range().is_some(), "vertical dragging must select");
     }
     #[test]
-    fn live_bottom_hides_its_label_while_the_indicator_fades() {
-        assert_eq!(scroll_position_label(0), None);
+    fn live_bottom_hides_the_scroll_pill_while_the_indicator_fades() {
+        assert!(ScrollPill::new(0, 9_870).is_none());
     }
 
     #[test]
-    fn scroll_position_label_uses_the_displayed_snapshot_offset() {
+    fn scroll_pill_uses_the_displayed_snapshot_offset_and_history() {
         assert_eq!(
-            scroll_position_label(1_284).as_deref(),
-            Some("1,284 lines up")
+            ScrollPill::new(1_284, 9_870).map(|pill| pill.text()),
+            Some("↑ 1,284 of 9,870 lines".to_owned())
+        );
+        assert_eq!(
+            ScrollPill::new(12, 12).map(|pill| pill.text()),
+            Some("↑ 12 of 12 lines".to_owned())
+        );
+        // A snapshot from before history shrank can exceed the new total.
+        assert_eq!(
+            ScrollPill::new(5, 3).map(|pill| pill.text()),
+            Some("↑ 5 of 5 lines".to_owned())
         );
     }
     #[test]

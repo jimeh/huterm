@@ -42,6 +42,37 @@ pub struct JobProcess {
     pub foreground: bool,
     /// OS command name and creation time, used to detect changed evidence.
     pub identity: String,
+    /// Display command: the kernel name, or the program a non-shell root
+    /// runs, named from its arguments.
+    pub command: String,
+    /// Space-joined arguments, at most [`COMMAND_LINE_MAX_CHARS`] characters.
+    /// `None` when the OS withholds them, such as other users' processes.
+    pub command_line: Option<String>,
+}
+
+/// Longest `command_line`, including its trailing ellipsis when truncated.
+pub const COMMAND_LINE_MAX_CHARS: usize = 200;
+
+/// Joins arguments for display, truncating at a character boundary.
+fn command_line(arguments: &[String]) -> String {
+    let line = arguments.join(" ");
+    let mut chars = line.char_indices();
+    match chars.nth(COMMAND_LINE_MAX_CHARS - 1) {
+        Some((cut, _)) if chars.next().is_some() => {
+            format!("{}…", &line[..cut])
+        }
+        _ => line,
+    }
+}
+
+/// Reads argument vectors for running jobs on the assessment worker.
+fn read_command_lines(state: &mut JobState) {
+    if let JobState::Running(jobs) = state {
+        for job in jobs {
+            job.command_line = huterm_procinfo::arguments(job.pid)
+                .map(|arguments| command_line(&arguments));
+        }
+    }
 }
 
 /// Whether current evidence stays within previously assessed job groups.
@@ -184,7 +215,7 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
     let Some(context) = context else {
         return JobState::Unknown;
     };
-    context.lifecycle.assess(|| {
+    let mut state = context.lifecycle.assess(|| {
         let Some(shell) = context.shell else {
             return JobState::Unknown;
         };
@@ -195,7 +226,9 @@ fn inspect(context: Option<JobContext>, table: Option<&[Process]>) -> JobState {
             return JobState::Unknown;
         };
         classify(table, shell, foreground)
-    })
+    });
+    read_command_lines(&mut state);
+    state
 }
 
 fn classify(table: &[Process], shell: u32, foreground: i32) -> JobState {
@@ -232,6 +265,8 @@ fn classify(table: &[Process], shell: u32, foreground: i32) -> JobState {
                 .map(|leader| leader.started.clone()),
             foreground: p.group == foreground,
             identity: p.identity.clone(),
+            command: p.command.clone(),
+            command_line: None,
         })
         .collect();
     jobs.sort_by_key(|p| p.pid);
@@ -442,5 +477,43 @@ mod tests {
     fn root_program_and_exec_replacement_are_jobs() {
         let table = vec![process(10, 1, 10, true, "vim")];
         assert!(matches!(classify(&table, 10, 10), JobState::Running(_)));
+    }
+
+    #[test]
+    fn jobs_display_the_evidence_command_but_keep_the_kernel_identity() {
+        // A script root is displayed by its argv-derived command while its
+        // identity still carries the kernel name that consent compares.
+        let mut root = process(10, 1, 10, true, "python3");
+        root.command = "deploy".into();
+        let table = vec![root, process(11, 10, 11, true, "sleep")];
+        let JobState::Running(jobs) = classify(&table, 10, 11) else {
+            panic!("missing jobs");
+        };
+        assert_eq!(jobs[0].command, "deploy");
+        assert_eq!(jobs[0].identity, "start python3");
+        assert_eq!(jobs[1].command, "sleep");
+        assert_eq!(jobs[1].identity, "start sleep");
+        assert!(
+            jobs.iter().all(|job| job.command_line.is_none()),
+            "classification must not read argument vectors"
+        );
+    }
+
+    #[test]
+    fn command_lines_join_arguments_and_truncate_on_a_char_boundary() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            command_line(&arguments(&["cargo", "build", "--release"])),
+            "cargo build --release"
+        );
+        let exact = "é".repeat(COMMAND_LINE_MAX_CHARS);
+        assert_eq!(command_line(&arguments(&[&exact])), exact);
+        let long = "é".repeat(COMMAND_LINE_MAX_CHARS + 1);
+        let truncated = command_line(&arguments(&[&long]));
+        assert_eq!(truncated.chars().count(), COMMAND_LINE_MAX_CHARS);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.starts_with(&"é".repeat(COMMAND_LINE_MAX_CHARS - 1)));
     }
 }

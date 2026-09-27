@@ -7,8 +7,8 @@ use crate::themes;
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
     LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt,
-    RawConfig, TabPosition, TabsConfig, TerminalConfig, Theme, UpdateConfig,
-    WindowConfig, keybinding_diagnostic,
+    RawConfig, RightClickAction, TabPosition, TabsConfig, TerminalConfig,
+    Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
 };
 
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
@@ -36,6 +36,9 @@ macos_option_as_alt = "off"
 # Also hold Shift when terminal applications request mouse reporting.
 links = true
 # link_modifiers = "cmd" # Linux default: "ctrl"
+# Right-click: "menu", "paste", "copy_or_paste", or "ignore". While a
+# terminal application takes the mouse, Shift+right-click applies it.
+right_click = "menu"
 
 # Flash active terminals and mark inactive tabs when a bell rings.
 [terminal.bell]
@@ -53,6 +56,10 @@ padding_x = 4.0
 padding_y = 4.0
 # Split unused column space between left and right instead of only the right.
 padding_balance = false
+# Show the window menu button in the title bar, or in the tab bar without one.
+menu_button = true
+# Show key hints on the scroll pill and on dialog and panel buttons.
+shortcut_hints = false
 
 [tabs]
 # Automatic label: smart, title, process, directory, or process_and_directory.
@@ -62,8 +69,12 @@ label = "smart"
 # How labels show directories: name (huterm), path (~/Projects/huterm), or
 # short (~/P/huterm).
 directory = "name"
-# Tab placement: top, bottom, left, or right.
-position = "top"
+# Tab placement: top, bottom, left, right, or titlebar. Titlebar merges the
+# tabs into the title bar: on macOS, or on Linux when the window manager
+# grants client-side decorations (GNOME, KDE). Without a title bar
+# (fullscreen, Quake windows, or a Linux window manager that draws its own)
+# it acts as top. Defaults to titlebar on macOS and top on Linux.
+# position = "titlebar"
 always_show = false
 auto_hide_in_fullscreen = false
 # Tab style: pill or strip.
@@ -361,6 +372,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
+            right_click: raw.terminal.right_click,
         },
         font: FontConfig {
             family: raw.font.family,
@@ -436,7 +448,7 @@ mod tests {
         ))
         .unwrap();
         let fixtures = fixtures.as_array().unwrap();
-        assert_eq!(fixtures.len(), 175);
+        assert_eq!(fixtures.len(), 194);
         for fixture in fixtures {
             let source = fixture["toml"].as_str().unwrap();
             let expected = fixture["valid"].as_bool().unwrap();
@@ -488,7 +500,7 @@ mod tests {
         assert_eq!(config.tabs, TabsConfig::default());
         let config = parse(
             &DEFAULT_CONFIG
-                .replace("position = \"top\"", "position = \"bottom\"")
+                .replace("# position = \"titlebar\"", "position = \"bottom\"")
                 .replace("always_show = false", "always_show = true")
                 .replace(
                     "auto_hide_in_fullscreen = false",
@@ -841,9 +853,10 @@ mod tests {
             ("bottom", TabPosition::Bottom),
             ("left", TabPosition::Left),
             ("right", TabPosition::Right),
+            ("titlebar", TabPosition::Titlebar),
         ] {
             let config = parse(&DEFAULT_CONFIG.replace(
-                "position = \"top\"",
+                "# position = \"titlebar\"",
                 &format!("position = \"{name}\""),
             ))
             .unwrap();
@@ -851,8 +864,10 @@ mod tests {
         }
         assert!(
             parse(
-                &DEFAULT_CONFIG
-                    .replace("position = \"top\"", "position = \"middle\"")
+                &DEFAULT_CONFIG.replace(
+                    "# position = \"titlebar\"",
+                    "position = \"middle\""
+                )
             )
             .is_err()
         );
@@ -1101,6 +1116,8 @@ background = "#040506"
                 padding_y: 0.0,
                 padding_balance: false,
                 macos_fullscreen_mode: MacosFullscreenMode::NonNative,
+                menu_button: true,
+                shortcut_hints: false,
             }
         );
     }

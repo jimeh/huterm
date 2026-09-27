@@ -36,6 +36,7 @@ pub struct TerminalConfig {
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
+    pub right_click: RightClickAction,
 }
 
 impl Default for TerminalConfig {
@@ -50,8 +51,28 @@ impl Default for TerminalConfig {
             links: true,
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
+            right_click: RightClickAction::Menu,
         }
     }
+}
+
+/// What a right-click on the terminal does when no application has taken
+/// the mouse, or with Shift held when one has.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RightClickAction {
+    /// Open the terminal's context menu at the pointer.
+    #[default]
+    Menu,
+    /// Paste the clipboard.
+    Paste,
+    /// Copy and clear the selection, or paste when nothing is selected.
+    CopyOrPaste,
+    /// Do nothing.
+    Ignore,
 }
 
 /// Client-side terminal snapshot admission policy.
@@ -210,6 +231,13 @@ pub struct WindowConfig {
     pub padding_x: f32,
     pub padding_y: f32,
     pub padding_balance: bool,
+    /// Show the window menu button in the title bar, or in the tab bar
+    /// when the window has no title bar. Every item stays reachable through
+    /// shortcuts or the command palette.
+    pub menu_button: bool,
+    /// Show key hints on the scroll pill and on dialog and panel buttons.
+    /// The command palette and menus always show their shortcuts.
+    pub shortcut_hints: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -258,6 +286,8 @@ impl Default for WindowConfig {
             padding_x: 4.0,
             padding_y: 4.0,
             padding_balance: false,
+            menu_button: true,
+            shortcut_hints: false,
         }
     }
 }
@@ -265,7 +295,13 @@ impl Default for WindowConfig {
 impl Default for TabsConfig {
     fn default() -> Self {
         Self {
-            position: TabPosition::Top,
+            // The macOS title bar holds the tabs; Linux keeps the window
+            // manager's title bar unless configured otherwise.
+            position: if cfg!(target_os = "macos") {
+                TabPosition::Titlebar
+            } else {
+                TabPosition::Top
+            },
             always_show: false,
             auto_hide_in_fullscreen: false,
             style: TabStyle::Pill,
@@ -384,6 +420,10 @@ pub enum TabPosition {
     Bottom,
     Left,
     Right,
+    /// Tabs share the window's title-bar row. Where no title bar exists
+    /// (fullscreen, Quake windows, or a window manager drawing the title
+    /// bar) the tabs take a top bar instead.
+    Titlebar,
 }
 
 #[derive(
@@ -850,6 +890,10 @@ pub struct RawTerminal {
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
     pub macos_option_as_alt: MacosOptionAsAlt,
+    /// What a right-click on the terminal does: open the context menu,
+    /// paste, copy the selection or else paste, or nothing. While an
+    /// application takes the mouse, Shift+right-click applies it.
+    pub right_click: RightClickAction,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -864,6 +908,7 @@ impl Default for RawTerminal {
             new_tab_directory: NewTabDirectory::Inherit,
             bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
+            right_click: RightClickAction::Menu,
         }
     }
 }
@@ -1167,6 +1212,16 @@ mod tabs_tests {
     fn tab_settings_use_settled_defaults() {
         let configured: RawConfig = toml::from_str("").expect("default config");
         assert_eq!(configured.tabs, TabsConfig::default());
+        assert_eq!(
+            configured.tabs.position,
+            if cfg!(target_os = "macos") {
+                TabPosition::Titlebar
+            } else {
+                TabPosition::Top
+            },
+            "macOS holds tabs in the title bar; Linux keeps the WM's"
+        );
+        assert!(!configured.window.shortcut_hints);
     }
 
     #[test]

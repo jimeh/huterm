@@ -16,10 +16,10 @@ use std::time::Instant;
 
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
-    FontWeight, HighlightStyle, Hsla, KeyBindingContextPredicate, KeyContext,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ScrollHandle, ScrollWheelEvent, Subscription, WeakEntity, Window, canvas,
-    div, hsla, point, prelude::*, px,
+    FontWeight, HighlightStyle, KeyBindingContextPredicate, KeyContext,
+    MouseButton, MouseDownEvent, MouseUpEvent, Render, ScrollHandle,
+    ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
+    prelude::*, px,
 };
 use huterm_config::PalettePlacement;
 use huterm_core::HierarchySnapshot;
@@ -34,12 +34,10 @@ use slots::{
 };
 
 use super::TerminalView;
-use crate::keymap::InstalledKeymap;
-use crate::ui::scrollbar::{
-    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarColors,
-    ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions, Scrollbars,
-    ThumbSize, TrackMargins, TrackPress,
-};
+use super::key_hint::KeyHint;
+use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
+use crate::keymap::{InstalledKeymap, Platform};
+use crate::ui::list_scrollbar::ListScrollbar;
 use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
@@ -86,33 +84,6 @@ const PANEL_CHROME_HEIGHT: f32 = PANEL_MAX_HEIGHT - LIST_MAX_HEIGHT;
 /// Distance from the window's top edge for top placement, and the minimum
 /// for centred placement in short windows.
 const PANEL_TOP_INSET: f32 = 36.0;
-/// The list's overlay scrollbar: a jump-to-pointer track that widens on
-/// hover, scrolled in pixels from the top.
-const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
-    edge: Edge::Right,
-    origin: Origin::Start,
-    expand_on_hover: true,
-    track_press: TrackPress::Jump,
-    margins: TrackMargins::EVEN,
-    thumb: ThumbSize::Slim,
-    edge_inset: 2.0,
-    hit: HitBand {
-        outward: 2.0,
-        inward: 6.0,
-    },
-    reveal_on_hover: true,
-    hold: INDICATOR_HOLD,
-};
-
-/// Theme colours the palette derives its presentation from.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PaletteColors {
-    pub(super) foreground: Hsla,
-    pub(super) background: Hsla,
-    pub(super) selection: Hsla,
-    pub(super) accent: Hsla,
-    pub(super) scrollbar: ScrollbarColors,
-}
 
 /// One configured quake profile for the profile picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,7 +129,7 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) target: PaletteTarget,
     pub(super) keymap: InstalledKeymap,
     pub(super) availability: HashMap<CommandId, String>,
-    pub(super) colors: PaletteColors,
+    pub(super) colors: OverlayColors,
     pub(super) placement: PalettePlacement,
     pub(super) history: OwnedHistory,
     pub(super) profiles: Vec<QuakeProfileRow>,
@@ -438,7 +409,7 @@ pub(super) struct CommandPalette {
     tab_order: Vec<TabId>,
     availability: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
-    colors: PaletteColors,
+    colors: OverlayColors,
     placement: PalettePlacement,
     diagnostic: Option<String>,
     pending: Option<Pending>,
@@ -451,7 +422,7 @@ pub(super) struct CommandPalette {
     scroll: ScrollHandle,
     /// Fading overlay scrollbar on the list; shown after list changes and
     /// scrolling so it also signals rows beyond the visible six.
-    scrollbars: Scrollbars,
+    scrollbar: ListScrollbar,
     /// Monotonic acknowledgement for native smoke-test wheel input.
     wheel_events: u64,
     _subscriptions: Vec<Subscription>,
@@ -493,6 +464,7 @@ impl CommandPalette {
             .iter()
             .filter(|spec| context_matches(spec.context, &target.contexts))
             .collect();
+        let scroll = ScrollHandle::new();
         let mut palette = Self {
             target,
             stage: Stage::Search(SearchState {
@@ -518,8 +490,8 @@ impl CommandPalette {
             picker: Vec::new(),
             picker_selected: None,
             hover: None,
-            scroll: ScrollHandle::new(),
-            scrollbars: Scrollbars::vertical(LIST_SCROLLBAR),
+            scroll: scroll.clone(),
+            scrollbar: ListScrollbar::new(scroll),
             wheel_events: 0,
             _subscriptions: vec![subscription],
         };
@@ -578,7 +550,7 @@ impl CommandPalette {
     /// palette.
     pub(super) fn set_presentation(
         &mut self,
-        colors: PaletteColors,
+        colors: OverlayColors,
         placement: PalettePlacement,
         profiles: Vec<QuakeProfileRow>,
         cx: &mut Context<'_, Self>,
@@ -691,7 +663,7 @@ impl CommandPalette {
 
     /// Reveals the list scrollbar; the animation clock fades it out.
     fn show_scrollbar(&mut self) {
-        self.scrollbars.show(Axis::Vertical, Instant::now());
+        self.scrollbar.show();
     }
 
     fn observe_scroll_wheel(&mut self, cx: &mut Context<'_, Self>) {
@@ -702,107 +674,9 @@ impl CommandPalette {
 
     /// Advances the scrollbar fade and expansion from the window animation clock.
     pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.advance(now) {
+        if self.scrollbar.advance(now) {
             cx.notify();
         }
-    }
-
-    /// Scrollbar geometry for the list's current overflow, if any.
-    fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
-        let viewport = f32::from(self.scroll.bounds().size.height);
-        let overflow = f32::from(self.scroll.max_offset().height);
-        ScrollbarGeometry::new(
-            viewport,
-            viewport + overflow,
-            viewport,
-            -f32::from(self.scroll.offset().y),
-            LIST_SCROLLBAR.origin,
-            LIST_SCROLLBAR.margins,
-        )
-    }
-
-    fn scrollbar_geometries(&self) -> ScrollbarGeometries {
-        ScrollbarGeometries::vertical(self.scrollbar_geometry())
-    }
-
-    fn scrollbar_pointer_moved(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let geometries = self.scrollbar_geometries();
-        if self.scrollbars.pointer_moved(
-            &geometries,
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) {
-            cx.notify();
-        }
-    }
-
-    fn scrollbar_pointer_left(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.pointer_left(Instant::now()) {
-            cx.notify();
-        }
-    }
-
-    /// Mouse down on the strip: grab the thumb, or jump it under the pointer
-    /// and grab it there.
-    fn scrollbar_press(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let geometries = self.scrollbar_geometries();
-        let Some((_, press)) = self.scrollbars.press(
-            &geometries,
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) else {
-            return false;
-        };
-        match press {
-            Press::Grabbed | Press::Page { .. } => {}
-            Press::Jump(thumb_start) => {
-                if let Some(geometry) = geometries.vertical {
-                    self.scrollbar_seek(geometry, thumb_start);
-                }
-            }
-        }
-        cx.notify();
-        true
-    }
-
-    fn scrollbar_drag_to(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return;
-        };
-        let Some((_, thumb_start)) = self.scrollbars.drag_to(
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) else {
-            return;
-        };
-        self.scrollbar_seek(geometry, thumb_start);
-        cx.notify();
-    }
-
-    fn scrollbar_release(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.release(Instant::now()) {
-            cx.notify();
-        }
-    }
-
-    fn scrollbar_seek(&self, geometry: ScrollbarGeometry, thumb_start: f32) {
-        let offset = geometry.offset_for_thumb_start(thumb_start);
-        self.scroll.set_offset(point(px(0.0), px(-offset)));
     }
 
     fn input_changed(&mut self, text: &str) {
@@ -1278,7 +1152,7 @@ impl CommandPalette {
         };
         let scroll_offset = -f32::from(self.scroll.offset().y);
         let (scrollbar_x, scrollbar_thumb_y) =
-            self.scrollbar_geometry().map_or((-1.0, -1.0), |geometry| {
+            self.scrollbar.geometry().map_or((-1.0, -1.0), |geometry| {
                 (
                     f32::from(self.scroll.bounds().right()) - 4.0,
                     f32::from(self.scroll.bounds().top())
@@ -1290,7 +1164,7 @@ impl CommandPalette {
             "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={}",
             self.input.read(cx).text(),
             self.diagnostic,
-            self.scrollbars.dragging(),
+            self.scrollbar.dragging(),
             self.wheel_events,
         )
     }
@@ -1410,50 +1284,12 @@ impl EventEmitter<PaletteEvent> for CommandPalette {}
 
 // ---- presentation ---------------------------------------------------------
 
-#[derive(Clone, Copy)]
-struct Swatch {
-    fg: Hsla,
-    bg: Hsla,
-    muted: Hsla,
-    dim: Hsla,
-    line: Hsla,
-    selection: Hsla,
-    accent: Hsla,
-    chip: Hsla,
-    scrollbar: ScrollbarColors,
-}
-
-impl Swatch {
-    fn new(colors: PaletteColors) -> Self {
-        Self {
-            fg: colors.foreground,
-            bg: colors.background,
-            muted: colors.foreground.opacity(0.62),
-            dim: colors.foreground.opacity(0.38),
-            line: colors.foreground.opacity(0.1),
-            selection: colors.selection.opacity(0.35),
-            accent: colors.accent,
-            chip: colors.foreground.opacity(0.1),
-            scrollbar: colors.scrollbar,
-        }
-    }
-}
-
-fn key_cap(key: &str, swatch: Swatch) -> impl IntoElement {
+/// A small label beside a row: `recent`, or an argument badge such as
+/// `⇥ options`, whose key draws as an icon.
+fn tag(hint: &KeyHint, swatch: Swatch, dashed: bool) -> impl IntoElement {
     div()
-        .px(px(5.0))
-        .py(px(1.0))
-        .rounded(px(4.0))
-        .bg(swatch.chip)
-        .border_1()
-        .border_color(swatch.line)
-        .text_size(px(10.5))
-        .text_color(swatch.fg)
-        .child(key.to_owned())
-}
-
-fn tag(text: String, swatch: Swatch, dashed: bool) -> impl IntoElement {
-    div()
+        .flex()
+        .items_center()
         .px(px(6.0))
         .py(px(1.0))
         .rounded(px(4.0))
@@ -1463,7 +1299,7 @@ fn tag(text: String, swatch: Swatch, dashed: bool) -> impl IntoElement {
         .when(!dashed, |tag| tag.bg(swatch.chip))
         .text_size(px(10.0))
         .text_color(swatch.muted)
-        .child(text)
+        .child(hint.element(px(9.5), swatch.muted))
 }
 
 fn band(message: String, swatch: Swatch, error: bool) -> gpui::AnyElement {
@@ -1542,7 +1378,7 @@ type SlotRender = (
     Vec<gpui::AnyElement>,
     gpui::Stateful<gpui::Div>,
     Vec<gpui::AnyElement>,
-    Vec<(String, String)>,
+    Vec<(KeyHint, String)>,
 );
 
 impl CommandPalette {
@@ -1560,7 +1396,7 @@ impl CommandPalette {
     ) -> (
         gpui::Stateful<gpui::Div>,
         Vec<gpui::AnyElement>,
-        Vec<(String, String)>,
+        Vec<(KeyHint, String)>,
     ) {
         let mut list = div()
             .id("palette-results")
@@ -1594,21 +1430,37 @@ impl CommandPalette {
             } else if slots::runs_without_prompt(spec, &self.domain_for(spec))
                 == Some(true)
             {
-                Some(("⇥ options".to_owned(), true))
+                Some((
+                    KeyHint::keys(&["tab"], Platform::current())
+                        .with_suffix(" options"),
+                    true,
+                ))
             } else {
-                Some(("↩ prompts".to_owned(), false))
+                Some((
+                    KeyHint::keys(&["enter"], Platform::current())
+                        .with_suffix(" prompts"),
+                    false,
+                ))
             };
             let recent = search.query.is_empty()
                 && self.history.recency(spec.id).is_some();
             let mut meta = div().flex().flex_none().items_center().gap(px(6.0));
             if recent {
-                meta = meta.child(tag("recent".to_owned(), swatch, false));
+                meta = meta.child(tag(
+                    &KeyHint::keys(&[], Platform::current())
+                        .with_suffix("recent"),
+                    swatch,
+                    false,
+                ));
             }
-            if let Some((text, dashed)) = badge {
-                meta = meta.child(tag(text, swatch, dashed));
+            if let Some((hint, dashed)) = badge {
+                meta = meta.child(tag(&hint, swatch, dashed));
             }
             for key in self.shortcut_keys(spec, None) {
-                meta = meta.child(key_cap(&key, swatch));
+                meta = meta.child(key_cap(
+                    &KeyHint::parse(&key, Platform::current()),
+                    swatch,
+                ));
             }
             meta = meta.child(
                 div()
@@ -1634,6 +1486,7 @@ impl CommandPalette {
                 .when(hovered && !selected, |item| {
                     item.bg(swatch.fg.opacity(0.05))
                 })
+                .active(|item| item.bg(swatch.selection_pressed()))
                 .when(unavailable.is_some(), |item| item.opacity(0.55))
                 .on_hover(cx.listener(
                     move |palette, hovering: &bool, _, cx| {
@@ -1688,17 +1541,24 @@ impl CommandPalette {
                 || slots::runs_without_prompt(spec, &self.domain_for(spec))
                     == Some(true)
         });
+        let platform = Platform::current();
         let mut hints = vec![
-            ("↑↓".to_owned(), "navigate".to_owned()),
-            ("↩".to_owned(), if runs { "run" } else { "next" }.to_owned()),
+            (
+                KeyHint::keys(&["up", "down"], platform),
+                "navigate".to_owned(),
+            ),
+            (
+                KeyHint::keys(&["enter"], platform),
+                if runs { "run" } else { "next" }.to_owned(),
+            ),
         ];
         if has_args {
             hints.push((
-                "⇥".to_owned(),
+                KeyHint::keys(&["tab"], platform),
                 if runs { "set arguments" } else { "arguments" }.to_owned(),
             ));
         }
-        hints.push(("esc".to_owned(), "close".to_owned()));
+        hints.push((KeyHint::keys(&["escape"], platform), "close".to_owned()));
         (list, below, hints)
     }
 
@@ -1749,7 +1609,10 @@ impl CommandPalette {
                     .text_color(swatch.muted)
             })
             .when(!dashed, |chip| chip.bg(swatch.chip))
-            .when(editable, gpui::Styled::cursor_pointer)
+            .when(editable, |chip| {
+                chip.cursor_pointer()
+                    .active(|chip| chip.bg(swatch.pressed()))
+            })
             .on_click(cx.listener(move |palette, _: &ClickEvent, _, cx| {
                 palette.edit_slot(index, cx);
             }))
@@ -1764,7 +1627,10 @@ impl CommandPalette {
                         .border_1()
                         .border_color(swatch.dim)
                         .text_color(swatch.dim)
-                        .child("⇥"),
+                        .child(
+                            KeyHint::keys(&["tab"], Platform::current())
+                                .element(px(9.0), swatch.dim),
+                        ),
                 )
             });
         Some(chip.into_any_element())
@@ -1797,7 +1663,10 @@ impl CommandPalette {
                 .border_color(swatch.accent.opacity(0.4))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(px(12.5))
-                .when(!requested, gpui::Styled::cursor_pointer)
+                .when(!requested, |chip| {
+                    chip.cursor_pointer()
+                        .active(|chip| chip.bg(swatch.selection_pressed()))
+                })
                 .on_click(cx.listener(move |palette, _: &ClickEvent, _, cx| {
                     if !requested {
                         palette.leave_slots(Exit::Search, cx);
@@ -1898,7 +1767,10 @@ impl CommandPalette {
                 let mut meta =
                     div().flex().flex_none().items_center().gap(px(6.0));
                 if let Some(key) = key {
-                    meta = meta.child(key_cap(&key, swatch));
+                    meta = meta.child(key_cap(
+                        &KeyHint::parse(&key, Platform::current()),
+                        swatch,
+                    ));
                 }
                 let element = div()
                     .id(("palette-picker", row))
@@ -1914,6 +1786,7 @@ impl CommandPalette {
                     .when(hovered && !selected, |item| {
                         item.bg(swatch.fg.opacity(0.05))
                     })
+                    .active(|item| item.bg(swatch.selection_pressed()))
                     .on_hover(cx.listener(
                         move |palette, hovering: &bool, _, cx| {
                             palette.set_hover(row, *hovering, cx);
@@ -1975,22 +1848,26 @@ impl CommandPalette {
         let runs = editor.complete()
             || !editor.text().trim().is_empty()
             || editor.remaining_required_satisfied();
+        let platform = Platform::current();
         let mut hints = vec![(
-            "↩".to_owned(),
+            KeyHint::keys(&["enter"], platform),
             if runs { "run" } else { "next" }.to_owned(),
         )];
         if editor.slots().len() > 1 {
-            hints.push(("⇥".to_owned(), "next argument".to_owned()));
+            hints.push((
+                KeyHint::keys(&["tab"], platform),
+                "next argument".to_owned(),
+            ));
         }
         let can_pop = editor.slots()[..active].iter().any(|slot| {
             matches!(slot.state, SlotState::Committed | SlotState::Prefilled)
         });
         let leave = if requested { "close" } else { "back" };
         hints.push((
-            "⌫ on empty".to_owned(),
+            KeyHint::keys(&["backspace"], platform).with_suffix(" on empty"),
             if can_pop { "previous" } else { leave }.to_owned(),
         ));
-        hints.push(("esc".to_owned(), leave.to_owned()));
+        hints.push((KeyHint::keys(&["escape"], platform), leave.to_owned()));
         (line, list, below, hints)
     }
 }
@@ -2000,7 +1877,7 @@ impl super::refresh::Animated for CommandPalette {
         &self,
         now: Instant,
     ) -> crate::ui::animation::AnimationSchedule {
-        self.scrollbars.schedule(now)
+        self.scrollbar.schedule(now)
     }
 
     fn advance_animation(
@@ -2074,110 +1951,15 @@ impl Render for CommandPalette {
             }
         };
 
-        let mut footer = div()
-            .flex()
-            .items_center()
-            .gap(px(14.0))
-            .px(px(12.0))
-            .py(px(6.0))
-            .border_t_1()
-            .border_color(swatch.line)
-            .bg(swatch.fg.opacity(0.03))
-            .text_size(px(11.5))
-            .text_color(swatch.muted);
-        for (key, label) in hints {
-            footer = footer.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .child(key_cap(&key, swatch))
-                    .child(label),
-            );
-        }
+        let footer = footer_hints(hints, swatch);
 
-        let geometries = self.scrollbar_geometries();
-        // Before the list's first layout its scroll bounds are empty, so
-        // geometry cannot say whether it overflows; mount the strip then
-        // too, because nothing else repaints before the pointer arrives on
-        // a headless X server. Once laid out, a list that fits keeps its
-        // right edge free for row clicks.
-        let unmeasured = self.scroll.bounds().size.height <= px(0.0);
-        let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
-            && (geometries.vertical.is_some() || unmeasured);
-        if !show_strip {
-            // No strip remains to paint its leave animation.
-            if self.scrollbars.unmount(Axis::Vertical) {
-                cx.notify();
-            }
-        }
-        let scrollbar = show_strip.then(|| {
-            let width = self.scrollbars.strip_extent(Axis::Vertical);
-            div()
-                .id("palette-scrollbar")
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right_0()
-                .w(px(width))
-                .block_mouse_except_scroll()
-                .on_mouse_move(cx.listener(
-                    |palette, event: &MouseMoveEvent, _, cx| {
-                        palette.scrollbar_pointer_moved(event.position, cx);
-                    },
-                ))
-                .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
-                    if !hovering {
-                        palette.scrollbar_pointer_left(cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|palette, event: &MouseDownEvent, _, cx| {
-                        if palette.scrollbar_press(event.position, cx) {
-                            cx.stop_propagation();
-                        }
-                    }),
-                )
-                // A press and release within one frame ends before the
-                // window-level release listener below exists.
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|palette, _: &MouseUpEvent, _, cx| {
-                        palette.scrollbar_release(cx);
-                    }),
-                )
-                .children(
-                    self.scrollbars
-                        .layers(&geometries, swatch.scrollbar)
-                        .collect::<Vec<_>>(),
-                )
-        });
-        let scrollbar_capture = canvas(
-            |_, _, _| {},
-            move |_, (), window, _cx| {
-                let mover = palette.clone();
-                window.on_mouse_event(
-                    move |event: &MouseMoveEvent, phase, _, cx| {
-                        if phase.bubble() {
-                            mover.update(cx, |palette, cx| {
-                                palette.scrollbar_drag_to(event.position, cx);
-                            });
-                        }
-                    },
-                );
-                let releaser = palette.clone();
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                    if phase.bubble() {
-                        releaser.update(cx, |palette, cx| {
-                            palette.scrollbar_release(cx);
-                        });
-                    }
-                });
-            },
-        )
-        .absolute()
-        .inset_0();
+        let scrollbar = self.scrollbar.elements(
+            "palette-scrollbar",
+            swatch.scrollbar,
+            &palette,
+            |palette| &mut palette.scrollbar,
+            cx,
+        );
 
         let input_focus = self.focus_handle(cx);
         let panel = div()
@@ -2218,8 +2000,7 @@ impl Render for CommandPalette {
                     .flex()
                     .flex_col()
                     .child(list)
-                    .children(scrollbar)
-                    .child(scrollbar_capture),
+                    .children(scrollbar),
             )
             .child(footer);
 

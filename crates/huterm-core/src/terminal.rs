@@ -144,6 +144,35 @@ impl RuntimeClient {
         }
     }
 
+    /// Erases the scrollback and keeps the screen, after earlier input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal has stopped or its client queue
+    /// is full.
+    pub fn clear_history(&self) -> Result<(), RuntimeError> {
+        self.send_edit(BufferEdit::ClearHistory)
+    }
+
+    /// Resets the emulator as RIS does, after earlier input. The PTY and
+    /// its processes are unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal has stopped or its client queue
+    /// is full.
+    pub fn reset(&self) -> Result<(), RuntimeError> {
+        self.send_edit(BufferEdit::Reset)
+    }
+
+    fn send_edit(&self, edit: BufferEdit) -> Result<(), RuntimeError> {
+        match self.messages.try_send(RuntimeMessage::Edit(edit)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
+            Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
+        }
+    }
+
     /// Requests an immutable snapshot without waiting for the runtime owner.
     ///
     /// # Errors
@@ -665,6 +694,14 @@ enum RuntimeMessage {
         cell: CellSize,
     },
     Presentation(Box<PresentationUpdate>),
+    Edit(BufferEdit),
+}
+
+/// Client changes to emulator state that bypass the PTY.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BufferEdit {
+    ClearHistory,
+    Reset,
 }
 
 #[derive(Debug)]
@@ -1192,6 +1229,47 @@ fn run_terminal(
                             &events,
                             terminal_id,
                             "PTY writer stopped during resize".into(),
+                        );
+                        closing.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+                publish_invalidation(
+                    &events,
+                    &invalidation_pending,
+                    &mut invalidated_at,
+                    terminal_id,
+                    engine.generation(),
+                );
+            }
+            NextMessage::Client(RuntimeMessage::Edit(edit)) => {
+                let effects = match edit {
+                    BufferEdit::ClearHistory => engine.clear_history(),
+                    BufferEdit::Reset => engine.reset(),
+                };
+                let effects = match effects {
+                    Ok(effects) => effects,
+                    Err(error) => {
+                        report_failure(&events, terminal_id, error.to_string());
+                        closing.store(true, Ordering::Release);
+                        continue;
+                    }
+                };
+                for effect in effects {
+                    if handle_effect(
+                        effect,
+                        terminal_id,
+                        &writer_sender,
+                        &mut pending_writes,
+                        &events,
+                        &mut metadata,
+                        master.as_ref(),
+                    ) == WriterQueueState::Disconnected
+                    {
+                        report_failure(
+                            &events,
+                            terminal_id,
+                            "PTY writer stopped during a buffer edit".into(),
                         );
                         closing.store(true, Ordering::Release);
                         break;

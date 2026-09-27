@@ -24,9 +24,23 @@ pub(crate) mod refresh_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
+use super::about::{AboutDetails, BuildFacts, about_details, render_about};
+use super::close_dialog::{
+    CloseDialogInput, CloseDialogTarget, DialogFocus, ProcessGroup,
+    ProcessGroupState, ProcessRow, build_close_dialog, render_close_dialog,
+};
+use super::menu::{
+    MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
+    MenuRow, place_menu,
+};
+use super::notices::{
+    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
+    ToastHandlers, render_notice_stack,
+};
+use super::overlay::{OverlayColors, Swatch, TextTooltip};
 use super::palette::{
-    CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteColors,
-    PaletteEvent, PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
+    CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
+    PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
 };
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
@@ -43,30 +57,51 @@ use huterm_core::{
     HostEffectRecipientOptions, MuxError, OpenedTab,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, CommandScope, SessionId, WorkspaceId,
-    catalog, validate, validate_supplied,
+    AttachmentId, CommandArgument, CommandScope, SessionId, TerminalId,
+    WorkspaceId, catalog, validate, validate_supplied,
 };
-use std::collections::HashMap;
-use std::path::Path;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
+mod button_layout;
+mod client_frame;
 mod tab_bar;
+mod tab_menu;
+mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
+mod terminal_menu;
+mod window_menu;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
     ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
+use button_layout::{
+    ButtonGroup, ButtonLayout, WINDOW_CONTROL_GAP, WINDOW_CONTROL_SIZE,
+    WINDOW_CONTROLS_PADDING_INNER, WINDOW_CONTROLS_PADDING_OUTER, WindowButton,
+};
+use client_frame::{
+    ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
+};
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
-    TabColors, TabItem, VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y,
-    icon_element, tab_bar_height, top_chrome_uses_bar,
+    TabColors, TabItem, TabStatus, VERTICAL_ROW_MARGIN_X,
+    VERTICAL_ROW_MARGIN_Y, icon_element, tab_bar_height, top_chrome_uses_bar,
 };
+use tab_menu::{TabMenuInput, tab_menu_model};
+use tab_position::{TabHost, resolve_tab_position};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
+use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu_model};
+use window_menu::{
+    MenuButtonPlacement, WindowMenuInput, menu_button_placement,
+    split_new_tab_row, window_menu_model,
+};
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// Visible size of the new-tab and scroll controls. Along the strip they sit
@@ -74,6 +109,12 @@ const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// gives them the pill's inset.
 const CONTROL_SIZE: Pixels = PILL_HEIGHT;
 const CONTROL_INSET: Pixels = px(3.0);
+/// Width the macOS traffic lights take at the start of the title strip; the
+/// strip's title and a merged tab row start after it.
+const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
+/// Where the tabs start in the title row Huterm draws on Linux, which has
+/// no traffic lights.
+const TITLE_ROW_LEAD: Pixels = px(8.0);
 /// Space kept below a vertical column's new-tab button when tabs overflow,
 /// matching the rows' horizontal inset.
 const VERTICAL_END_MARGIN: Pixels = px(5.0);
@@ -480,7 +521,12 @@ struct Desktop {
     runtime: Arc<DesktopRuntime>,
     config: Config,
     config_path: PathBuf,
-    config_error: Option<String>,
+    /// Persistent Config and Keymap notices for the active configuration.
+    /// New windows raise them; every reload replaces them.
+    diagnostics: Vec<NoticeContent>,
+    /// Failures reported while no window could show them, such as a startup
+    /// hotkey conflict. New windows raise them until a reload clears them.
+    latched: Vec<NoticeContent>,
     windows: Vec<WeakEntity<WorkspaceView>>,
     keymap: InstalledKeymap,
     frequency: CommandFrequency,
@@ -489,6 +535,8 @@ struct Desktop {
     pending_spawns: usize,
     quit_pending: bool,
     external_drag_window: Option<gpui::WindowId>,
+    /// The window buttons the desktop asks title rows to draw.
+    button_layout: ButtonLayout,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
@@ -565,19 +613,28 @@ impl Desktop {
     }
 }
 
-/// Shows `message` in the active window's status line, if there is one.
-fn show_active_window_status(cx: &mut App, message: String) {
+/// Raises `message` as a command failure in the active window, if there is
+/// one.
+fn show_active_window_failure(cx: &mut App, message: String) {
     let Some(window) = cx.active_window() else {
         return;
     };
     let _ = window.update(cx, |root, _, cx| {
         if let Ok(view) = root.downcast::<WorkspaceView>() {
             view.update(cx, |view, cx| {
-                view.status = Some(message);
-                cx.notify();
+                view.report_failure("Command failed", message, cx);
             });
         }
     });
+}
+
+/// Records a failure for windows that do not exist yet. Repeats of a waiting
+/// message collapse.
+fn latch_failure(cx: &mut App, message: &str) {
+    let latched = &mut cx.global_mut::<Desktop>().latched;
+    if !latched.iter().any(|content| content.message == message) {
+        latched.push(NoticeContent::command_failure("Command failed", message));
+    }
 }
 
 fn report_deferred_failure(
@@ -595,7 +652,7 @@ fn report_deferred_failure_with_global_latch(
 ) {
     let latch_if_dead = reporter.is_some();
     if reporter.is_none() {
-        cx.global_mut::<Desktop>().config_error = Some(message.clone());
+        latch_failure(cx, &message);
     }
     report_deferred_failure_inner(cx, reporter, message, latch_if_dead);
 }
@@ -611,15 +668,14 @@ fn report_deferred_failure_inner(
         if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade())
         {
             reporter.update(cx, |view, cx| {
-                view.status = Some(message);
-                cx.notify();
+                view.report_failure("Command failed", message, cx);
             });
             return;
         }
         if latch_if_dead {
-            cx.global_mut::<Desktop>().config_error = Some(message.clone());
+            latch_failure(cx, &message);
         }
-        show_active_window_status(cx, message);
+        show_active_window_failure(cx, message);
     });
 }
 
@@ -773,67 +829,135 @@ fn quake_profile_rows(
         .collect()
 }
 
-fn set_dispatch_error<T>(
-    palette: &mut Option<T>,
-    status: &mut Option<String>,
-    error: &CommandError,
-) {
-    *palette = None;
-    *status = Some(error.to_string());
-}
-
-/// Binds the startup keymap and returns its reserved keys with all diagnostics
-/// in precedence order: config error, keymap error, conflicts, then warning.
+/// Binds the startup keymap and returns its reserved keys with the
+/// persistent diagnostics in precedence order: config error, keymap error,
+/// conflicts, then warning.
 ///
 /// A broken binding never blocks startup: defaults apply and the diagnostic
 /// shows like any other non-fatal configuration error.
 pub(super) fn install_startup_keymap(
     cx: &mut App,
     loaded: &config::LoadedConfig,
-) -> (InstalledKeymap, Option<String>) {
+) -> (InstalledKeymap, Vec<NoticeContent>) {
     let (compiled, keymap_error) = compile_keymap(&loaded.config);
-    let conflicts =
-        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; "));
+    let diagnostics = config_diagnostics(
+        &loaded.path,
+        loaded.error.as_deref(),
+        keymap_error.as_deref(),
+        &compiled.conflicts,
+        loaded.warning.as_deref(),
+    );
     let keymap = bind_keymap(cx, compiled);
-    let diagnostic = combine_config_diagnostics([
-        loaded.error.clone(),
-        keymap_error.map(|error| format!("{}: {error}", loaded.path.display())),
-        conflicts,
-        loaded.warning.clone(),
-    ]);
-    (keymap, diagnostic)
+    (keymap, diagnostics)
 }
 
-fn combine_config_diagnostics(
-    diagnostics: [Option<String>; 4],
-) -> Option<String> {
+/// A notice action that runs `id` without arguments.
+fn bare(id: huterm_protocol::CommandId) -> CommandInvocation {
+    CommandInvocation::new(id, Vec::new())
+}
+
+/// The persistent notices for a loaded configuration, one per diagnostic,
+/// in precedence order. Each offers Open Settings; the config error also
+/// offers Reload.
+fn config_diagnostics(
+    path: &Path,
+    error: Option<&str>,
+    keymap_error: Option<&str>,
+    conflicts: &[String],
+    warning: Option<&str>,
+) -> Vec<NoticeContent> {
+    let location = path.display().to_string();
+    let open_settings = || bare(ids::OPEN_SETTINGS);
+    let mut diagnostics = Vec::new();
+    if let Some(error) = error {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Error,
+                NoticeSource::Config,
+                "Configuration error",
+                error,
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings())
+            .action("Reload", bare(ids::RELOAD_CONFIG)),
+        );
+    }
+    if let Some(error) = keymap_error {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Error,
+                NoticeSource::Keymap,
+                "Keybinding error",
+                error,
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings()),
+        );
+    }
+    if !conflicts.is_empty() {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Warning,
+                NoticeSource::Keymap,
+                "Keybinding conflicts",
+                conflicts.join("; "),
+            )
+            .location(location.clone())
+            .action("Open Settings", open_settings()),
+        );
+    }
+    if let Some(warning) = warning {
+        diagnostics.push(
+            NoticeContent::diagnostic(
+                Severity::Warning,
+                NoticeSource::Config,
+                "Configuration warning",
+                warning,
+            )
+            .location(location)
+            .action("Open Settings", open_settings()),
+        );
+    }
     diagnostics
-        .into_iter()
-        .flatten()
-        .reduce(|mut combined, diagnostic| {
-            combined.push_str("; ");
-            combined.push_str(&diagnostic);
-            combined
-        })
 }
 
-fn reload_diagnostic(
-    cx: &mut App,
+/// The persistent notices after a successful reload: binding conflicts and
+/// the config warning. A reload that failed never reaches this.
+fn reload_diagnostics(
+    path: &Path,
     config: &Config,
     compiled: &CompiledKeymap,
-) -> Option<String> {
-    cx.global_mut::<Desktop>()
-        .config_error
-        .clone_from(&config.warning);
+) -> Vec<NoticeContent> {
     if let Some(warning) = &config.warning {
         eprintln!("Huterm configuration warning: {warning}");
     }
-    combine_config_diagnostics([
+    config_diagnostics(
+        path,
         None,
         None,
-        (!compiled.conflicts.is_empty()).then(|| compiled.conflicts.join("; ")),
-        config.warning.clone(),
-    ])
+        &compiled.conflicts,
+        config.warning.as_deref(),
+    )
+}
+
+/// The configuration notices after a failed reload: the failure, then the
+/// active configuration's own diagnostics, which still apply.
+fn failed_reload_diagnostics(
+    error: &str,
+    retained: &[NoticeContent],
+) -> Vec<NoticeContent> {
+    let mut diagnostics = vec![
+        NoticeContent::diagnostic(
+            Severity::Error,
+            NoticeSource::Config,
+            "Configuration reload failed",
+            format!("Config reload failed: {error}"),
+        )
+        .action("Open Settings", bare(ids::OPEN_SETTINGS))
+        .action("Reload", bare(ids::RELOAD_CONFIG)),
+    ];
+    diagnostics.extend(retained.iter().cloned());
+    diagnostics
 }
 
 pub(super) fn run() -> anyhow::Result<()> {
@@ -873,7 +997,7 @@ pub(super) fn run_with_startup(
         cx.activate(true);
     });
     application.run(move |cx| {
-        let (keymap, config_error) = install_startup_keymap(cx, &loaded);
+        let (keymap, diagnostics) = install_startup_keymap(cx, &loaded);
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         let updater =
             native_updater::Updater::initialize(loaded.config.updates);
@@ -881,7 +1005,8 @@ pub(super) fn run_with_startup(
             quake: quake_windows::Registry::default(),
             runtime: Arc::clone(&app_runtime),
             config: loaded.config,
-            config_error,
+            diagnostics,
+            latched: Vec::new(),
             config_path: loaded.path,
             windows: Vec::new(),
             keymap,
@@ -891,9 +1016,12 @@ pub(super) fn run_with_startup(
             pending_spawns: 0,
             quit_pending: false,
             external_drag_window: None,
+            button_layout: ButtonLayout::standard(),
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
+        #[cfg(target_os = "linux")]
+        follow_button_layout(cx);
         install_native_quit(cx);
         quake_windows::install(cx);
         cx.on_app_quit(move |cx| {
@@ -915,8 +1043,8 @@ pub(super) fn run_with_startup(
                     format!("Command `{}` failed: {error}", action.0.id);
                 eprintln!("Huterm {message}");
                 // Global action callbacks run while the dispatching window
-                // is borrowed, so update its status after it is returned.
-                cx.defer(move |cx| show_active_window_status(cx, message));
+                // is borrowed, so raise the notice after it is returned.
+                cx.defer(move |cx| show_active_window_failure(cx, message));
             }
         });
         cx.on_window_closed(|cx| {
@@ -936,6 +1064,31 @@ pub(super) fn run_with_startup(
     Ok(())
 }
 
+/// Follows the desktop's window-button layout, relaying each change to
+/// every window.
+#[cfg(target_os = "linux")]
+fn follow_button_layout(cx: &mut App) {
+    let (sender, receiver) = async_channel::bounded(1);
+    button_layout::watch(sender);
+    cx.spawn(async move |cx| {
+        while let Ok(layout) = receiver.recv().await {
+            let updated = cx.update(|cx| {
+                cx.global_mut::<Desktop>().button_layout = layout;
+                for view in cx.global::<Desktop>().windows.clone() {
+                    let _ = view.update(cx, |view, cx| {
+                        view.button_layout = layout;
+                        cx.notify();
+                    });
+                }
+            });
+            if updated.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 fn observe_keystroke(
     event: &gpui::KeystrokeEvent,
     window: &mut Window,
@@ -947,9 +1100,10 @@ fn observe_keystroke(
     if let Some(root) = window.root::<WorkspaceView>().flatten() {
         root.update(cx, |view, cx| {
             let input_blocked = view.busy
-                || view.close.confirmation.is_some()
+                || view.dialog_showing()
                 || view.reorder.is_some()
-                || view.palette.is_some();
+                || view.palette.is_some()
+                || view.menu.is_some();
             if let Some(tab) = view.active_view() {
                 tab.update(cx, |tab, cx| {
                     #[cfg(target_os = "macos")]
@@ -1108,27 +1262,53 @@ fn install_native_quit(cx: &mut App) {
 #[cfg(not(target_os = "macos"))]
 fn install_native_quit(_: &mut App) {}
 
+/// The window's tab configuration with `titlebar` resolved for `host`.
+fn layout_tabs(tabs: TabsConfig, host: TabHost) -> TabsConfig {
+    TabsConfig {
+        position: resolve_tab_position(tabs.position, host),
+        ..tabs
+    }
+}
+
+/// The window size that gives the initial grid its columns and rows
+/// beside the chrome: the tab bar, the title row above the terminal, and
+/// the frame's border on every side.
 fn initial_window_size(
     config: &Config,
     metrics: GridMetrics,
+    host: TabHost,
+    frame: WindowFrame,
 ) -> gpui::Size<Pixels> {
+    let reserved = if config.tabs.always_show {
+        ChromeLayout::bar_reservation(
+            layout_tabs(config.tabs, host),
+            SIDEBAR_WIDTH,
+        )
+    } else {
+        size(px(0.0), px(0.0))
+    };
     size(
         metrics.cell_width * f32::from(INITIAL_COLUMNS)
             + px(config.window.padding_x * 2.0)
-            + if config.tabs.always_show && config.tabs.position.vertical() {
-                SIDEBAR_WIDTH
-            } else {
-                px(0.0)
-            },
+            + reserved.width
+            + frame.inset.left
+            + frame.inset.right,
         metrics.cell_height * f32::from(INITIAL_ROWS)
             + px(config.window.padding_y * 2.0)
-            + titlebar_inset(cfg!(target_os = "macos"), false)
-            + if !config.tabs.always_show || config.tabs.position.vertical() {
-                px(0.0)
-            } else {
-                tab_bar_height(config.tabs)
-            },
+            + title_row_height(false, frame)
+            + reserved.height
+            + frame.inset.top
+            + frame.inset.bottom,
     )
+}
+
+/// The decoration facts GPUI reports for `window`, sampled together.
+fn frame_state(window: &Window) -> FrameState {
+    FrameState {
+        decorations: window.window_decorations(),
+        maximized: window.is_maximized(),
+        fullscreen: window.is_fullscreen(),
+    }
 }
 
 fn can_open_window(
@@ -1185,18 +1365,50 @@ fn open_window_with_profile(
             return;
         }
     };
-    let bounds =
-        Bounds::centered(display_id, initial_window_size(&config, metrics), cx);
+    // A new window is never fullscreen; its host is fixed by the profile.
+    // Whether it draws its own title bar is known once GPUI has created
+    // it, so the centred bounds assume the window manager's.
+    let host = TabHost {
+        platform: Platform::current(),
+        fullscreen: false,
+        quake: profile.is_some(),
+        client_decorations: false,
+    };
+    let bounds = Bounds::centered(
+        display_id,
+        initial_window_size(&config, metrics, host, WindowFrame::default()),
+        cx,
+    );
     let result = cx.open_window(
         WindowOptions {
             display_id,
             show: profile.is_none(),
             focus: profile.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_decorations: Some(requested_decorations(
+                config.tabs.position,
+                host.platform,
+                host.quake,
+            )),
+            // A macOS title strip holds tabs, `+`, and the menu button. When AppKit
+            // owns the strip, the window server takes a press there as a
+            // window drag, so Huterm moves the window from empty strip
+            // space itself (`title_row_gestures`).
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             titlebar: Some(TitlebarOptions {
-                title: Some("Huterm".into()),
+                title: Some(window_title(None).into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                ..TitlebarOptions::default()
+                // GPUI centres the buttons in AppKit's 28-point title bar,
+                // two points above the 32-point strip's centre. A merged
+                // tab row makes that visible, so it takes the centred
+                // placement: 12-point buttons at a 10-point top inset, at
+                // AppKit's own 7-point left edge. Other positions keep the
+                // platform default until the same alignment is checked
+                // for them. Borderless Quake windows have no buttons.
+                traffic_light_position: (cfg!(target_os = "macos")
+                    && config.tabs.position == TabPosition::Titlebar
+                    && !host.quake)
+                    .then_some(point(px(7.0), px(10.0))),
             }),
             window_min_size: Some(size(px(280.0), px(180.0))),
             app_id: Some(APP_ID.into()),
@@ -1207,8 +1419,27 @@ fn open_window_with_profile(
                 crate::benchmark_display::observe(window, cx, display);
             }
             let scaled_metrics = metrics.at_scale(window.scale_factor());
-            if scaled_metrics != metrics {
-                window.resize(initial_window_size(&config, scaled_metrics));
+            // GPUI has applied the requested decorations, or fallen back
+            // without a compositor: the window now knows whether it draws
+            // its title row and border, which take their own room.
+            let state = frame_state(window);
+            let host = TabHost {
+                client_decorations: state.client_decorations(),
+                ..host
+            };
+            let button_layout = cx.global::<Desktop>().button_layout;
+            let frame = WindowFrame::resolve(
+                resolve_tab_position(config.tabs.position, host),
+                state,
+                button_layout,
+            );
+            if scaled_metrics != metrics || frame != WindowFrame::default() {
+                window.resize(initial_window_size(
+                    &config,
+                    scaled_metrics,
+                    host,
+                    frame,
+                ));
             }
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
@@ -1265,6 +1496,9 @@ fn open_window_with_profile(
                 #[cfg(target_os = "macos")]
                 native_fullscreen,
                 fullscreen_work,
+                frame_state: state,
+                applied_frame: None,
+                button_layout,
                 workspace: None,
                 tabs: Vec::new(),
                 active: None,
@@ -1289,16 +1523,42 @@ fn open_window_with_profile(
                 busy: false,
                 close: CloseState::default(),
                 exited_tabs: ExitQueue::default(),
-                status: cx.global::<Desktop>().config_error.clone(),
+                notices: NoticeStack::default(),
+                notice_focus: cx.focus_handle(),
+                focused_notice: None,
+                hovered_notices: HashSet::new(),
                 palette: None,
                 palette_generation: 0,
                 palette_refresh_state: None,
                 retained_query: None,
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
+                menu: None,
+                menu_button_bounds: Rc::new(Cell::new(None)),
+                menu_bounds: Rc::new(Cell::new(None)),
+                window_button_bounds: Rc::default(),
+                title_row_press: Rc::new(Cell::new(false)),
+                title_row_moves: Rc::new(Cell::new(0)),
+                about: None,
+                // The window opened with this title. Writing it again from
+                // the first render costs GPUI's X11 backend a blocking round
+                // trip that can queue the window's MapNotify where the event
+                // loop never sees it, so no later frame is ever requested.
+                window_title: window_title(None),
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
+                view.raise_desktop_notices(cx);
+                let notice_focus = view.notice_focus.clone();
+                cx.on_focus_out(
+                    &notice_focus,
+                    window,
+                    |view, _, window, cx| {
+                        view.focused_notice = None;
+                        view.reconcile_notices(window, cx);
+                    },
+                )
+                .detach();
                 quake_windows::start(view, window, cx);
                 cx.observe_in(&cx.entity(), window, |view, _, window, cx| {
                     view.refresh_tab_visibility(window, cx);
@@ -1310,6 +1570,7 @@ fn open_window_with_profile(
                     }
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
+                    view.refresh_menu(window, cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -1324,9 +1585,22 @@ fn open_window_with_profile(
                     if let Some(state) = &view.quake {
                         state.native_wake();
                     }
+                    // Tiling, maximizing, and fullscreen arrive with new
+                    // bounds; the frame follows them before the layout.
+                    view.sync_frame(window);
                     view.layout_pending = true;
                     view.refresh_tab_visibility(window, cx);
                     view.sync_tab_layout(window, cx);
+                })
+                .detach();
+                // GPUI reports a decoration change, including the
+                // no-compositor fallback, as an appearance change.
+                cx.observe_window_appearance(window, |view, window, cx| {
+                    if view.sync_frame(window) {
+                        view.refresh_tab_visibility(window, cx);
+                        view.sync_tab_layout(window, cx);
+                        cx.notify();
+                    }
                 })
                 .detach();
             });
@@ -1344,7 +1618,11 @@ fn open_window_with_profile(
                     && (!profile_requested || view.quake.is_some())
                     && let Err(error) = view.new_tab(window, cx)
                 {
-                    view.status = Some(error.to_string());
+                    view.report_failure(
+                        "Cannot open tab",
+                        error.to_string(),
+                        cx,
+                    );
                 }
             });
             if profile_requested && view.read(cx).quake.is_none() {
@@ -1425,7 +1703,7 @@ impl refresh::Animated for WorkspaceView {
         if let Some(state) = &self.quake {
             next = next.merge(state.frame_schedule());
         }
-        next
+        next.merge(self.notices.schedule())
     }
 
     fn advance_animation(
@@ -1437,6 +1715,9 @@ impl refresh::Animated for WorkspaceView {
     ) {
         if frame && let Some(state) = &mut self.quake {
             state.window_frame(now);
+        }
+        if self.notices.expire(now) {
+            self.reconcile_notices(window, cx);
         }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
@@ -1452,6 +1733,279 @@ impl refresh::Animated for WorkspaceView {
     }
 }
 
+impl WorkspaceView {
+    /// Raises an expiring command failure notice.
+    fn report_failure(
+        &mut self,
+        title: &str,
+        message: impl Into<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.notify(NoticeContent::command_failure(title, message), cx);
+    }
+
+    /// Raises `content` and repaints.
+    fn notify(&mut self, content: NoticeContent, cx: &mut Context<'_, Self>) {
+        self.notices.push(content, Instant::now());
+        cx.notify();
+    }
+
+    /// Raises the desktop's configuration diagnostics and any failures
+    /// latched while no window could show them.
+    fn raise_desktop_notices(&mut self, cx: &mut Context<'_, Self>) {
+        let desktop = cx.global::<Desktop>();
+        let diagnostics = desktop.diagnostics.clone();
+        let latched = desktop.latched.clone();
+        let now = Instant::now();
+        self.notices.replace_diagnostics(&diagnostics, now);
+        for content in latched {
+            self.notices.push(content, now);
+        }
+        cx.notify();
+    }
+
+    /// Replaces the configuration notices after a reload attempt.
+    fn replace_diagnostics(
+        &mut self,
+        diagnostics: &[NoticeContent],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.notices
+            .replace_diagnostics(diagnostics, Instant::now());
+        self.reconcile_notices(window, cx);
+    }
+
+    /// Drops focus and hover state for notices that no longer exist, returns
+    /// focus to the terminal when the focused toast went away, and repaints.
+    /// Every change to the stack or to focus and hover state ends here.
+    fn reconcile_notices(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.heal_notice_state(window, cx);
+        cx.notify();
+    }
+
+    /// The bookkeeping behind [`Self::reconcile_notices`] without a repaint.
+    /// Render runs it too: a stack change that skipped reconciling would
+    /// otherwise keep keyboard focus on a dead toast, where every `notice_*`
+    /// key fails and the paused stack never expires.
+    fn heal_notice_state(&mut self, window: &mut Window, cx: &App) {
+        if reconcile_notice_state(
+            &mut self.notices,
+            &mut self.focused_notice,
+            &mut self.hovered_notices,
+            Instant::now(),
+        ) {
+            self.restore_tab_focus(window, cx);
+        }
+    }
+
+    fn focus_notice(
+        &mut self,
+        id: NoticeId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.focused_notice = Some(id);
+        self.notice_focus.focus(window);
+        self.reconcile_notices(window, cx);
+    }
+
+    /// The focused toast, for the `notice_*` commands.
+    fn focused_notice(&self) -> Result<NoticeId, CommandError> {
+        self.focused_notice
+            .filter(|id| self.notices.get(*id).is_some())
+            .ok_or_else(|| {
+                CommandError::Unavailable("no notice is focused".to_owned())
+            })
+    }
+
+    fn notice_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+    ) -> Result<(), CommandError> {
+        match command {
+            ids::FOCUS_NOTICES | ids::DISMISS_ALL_NOTICES => {
+                if self.notices.is_empty() {
+                    Err(CommandError::Unavailable("no notices".to_owned()))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => self.focused_notice().map(|_| ()),
+        }
+    }
+
+    fn run_notice_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        match command {
+            ids::FOCUS_NOTICES => {
+                let newest = self.notices.newest().ok_or_else(|| {
+                    CommandError::Unavailable("no notices".to_owned())
+                })?;
+                self.focus_notice(newest, window, cx);
+            }
+            ids::DISMISS_ALL_NOTICES => {
+                if !self.notices.dismiss_all() {
+                    return Err(CommandError::Unavailable(
+                        "no notices".to_owned(),
+                    ));
+                }
+                self.reconcile_notices(window, cx);
+            }
+            ids::NOTICE_NEXT | ids::NOTICE_PREVIOUS => {
+                let id = self.focused_notice()?;
+                let forward = command == ids::NOTICE_NEXT;
+                if let Some(neighbour) = self.notices.neighbour(id, forward) {
+                    self.focus_notice(neighbour, window, cx);
+                }
+            }
+            ids::NOTICE_RUN_ACTION => {
+                let id = self.focused_notice()?;
+                self.run_notice_action(id, None, window, cx)?;
+            }
+            ids::NOTICE_DISMISS => {
+                let id = self.focused_notice()?;
+                self.dismiss_notice(id, window, cx);
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Dismisses `id`, moving keyboard focus to the toast that takes its
+    /// slot or back to the terminal when none remain.
+    fn dismiss_notice(
+        &mut self,
+        id: NoticeId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let focused = self.focused_notice == Some(id);
+        let next = self.notices.dismiss_focused(id);
+        match (focused, next) {
+            (true, Some(next)) => self.focus_notice(next, window, cx),
+            (true, None) => {
+                self.focused_notice = None;
+                self.restore_tab_focus(window, cx);
+            }
+            (false, _) => {}
+        }
+        self.reconcile_notices(window, cx);
+    }
+
+    /// Runs `command` from notice `id`, or its first action when `None`.
+    /// An expiring notice is dismissed first; a persistent one stays until
+    /// its source replaces it. Enter on a toast without actions dismisses
+    /// it, as most terminal failure and exit toasts have none.
+    fn run_notice_action(
+        &mut self,
+        id: NoticeId,
+        command: Option<CommandInvocation>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let notice = self.notices.get(id).ok_or(CommandError::StaleTarget)?;
+        let lifetime = notice.content.lifetime;
+        let first_action = notice
+            .content
+            .actions
+            .first()
+            .map(|action| action.command.clone());
+        let Some(command) = command.or(first_action) else {
+            self.dismiss_notice(id, window, cx);
+            return Ok(CommandOutcome::Completed);
+        };
+        if lifetime == Lifetime::Expiring {
+            self.dismiss_notice(id, window, cx);
+        } else if self.focused_notice == Some(id) {
+            self.focused_notice = None;
+            self.restore_tab_focus(window, cx);
+            self.reconcile_notices(window, cx);
+        }
+        self.invoke_interactive(&command, window, cx)
+    }
+
+    /// Whether the active terminal draws its scroll pill, which the toast
+    /// column must clear.
+    fn scroll_pill_visible(&self, cx: &App) -> bool {
+        self.active_view()
+            .is_some_and(|view| view.read(cx).scroll_pill_visible())
+    }
+
+    fn render_notices(
+        &self,
+        terminal: Bounds<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::Div> {
+        if self.notices.is_empty() {
+            return None;
+        }
+        let bottom = if self.scroll_pill_visible(cx) {
+            px(52.0)
+        } else {
+            px(12.0)
+        };
+        let dismiss = cx.entity().downgrade();
+        let run_action = cx.entity().downgrade();
+        let hover = cx.entity().downgrade();
+        let handlers = ToastHandlers {
+            dismiss: Rc::new(move |id, window, cx| {
+                let _ = dismiss.update(cx, |view, cx| {
+                    view.dismiss_notice(id, window, cx);
+                });
+            }),
+            run_action: Rc::new(move |id, command, window, cx| {
+                let _ = run_action.update(cx, |view, cx| {
+                    if let Err(error) =
+                        view.run_notice_action(id, Some(command), window, cx)
+                    {
+                        view.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
+                });
+            }),
+            hover: Rc::new(move |id, hovering, window, cx| {
+                let _ = hover.update(cx, |view, cx| {
+                    if hovering {
+                        view.hovered_notices.insert(id);
+                    } else {
+                        view.hovered_notices.remove(&id);
+                    }
+                    view.reconcile_notices(window, cx);
+                });
+            }),
+        };
+        Some(
+            div()
+                .absolute()
+                .left(terminal.origin.x)
+                .top(terminal.origin.y)
+                .w(terminal.size.width)
+                .h(terminal.size.height)
+                .child(render_notice_stack(
+                    &self.notices,
+                    Instant::now(),
+                    self.focused_notice,
+                    &self.notice_focus,
+                    bottom,
+                    Swatch::from_theme(&self.config.theme),
+                    &handlers,
+                )),
+        )
+    }
+}
+
 struct TabView {
     id: TabId,
     record: huterm_core::Tab,
@@ -1460,22 +2014,24 @@ struct TabView {
 }
 
 impl TabView {
-    /// The tab's label with status text, for previews and dialogs.
+    /// The tab's label with status text, for previews, dialogs, and the
+    /// window title.
     fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
-        let (title, exited, _, _) = self.label(tabs, cx);
-        if exited {
+        let (title, status) = self.label(tabs, cx);
+        if status.exited() {
             format!("{title} · exited")
         } else {
             title
         }
     }
 
-    /// Returns the display name without status text, and whether it exited.
+    /// Returns the display name without status text, and the status its
+    /// indicator reports.
     fn label(
         &self,
         tabs: huterm_config::TabsConfig,
         cx: &App,
-    ) -> (String, bool, bool, bool) {
+    ) -> (String, TabStatus) {
         let terminal = self.view.read(cx);
         let fallback = self.record.display_name(&terminal.title);
         let label = if self.record.custom_name().is_some() {
@@ -1491,11 +2047,50 @@ impl TabView {
         };
         (
             label,
-            terminal.exited,
-            terminal.failed,
-            terminal.bell.unseen,
+            TabStatus::new(
+                terminal.exited,
+                terminal.failed,
+                terminal.bell.unseen,
+                terminal.metadata.foreground_process(),
+            ),
         )
     }
+}
+
+/// The native window title: the active tab's title before the application
+/// name, or the name alone without a tab.
+fn window_title(active_tab: Option<&str>) -> String {
+    match active_tab {
+        Some(title) => format!("{title} — Huterm"),
+        None => "Huterm".to_owned(),
+    }
+}
+
+/// The directory `copy_tab_directory` copies: the tab's latest reported
+/// path, local or remote, when it has one.
+fn tab_directory_path(
+    metadata: &huterm_protocol::TerminalMetadata,
+) -> Option<String> {
+    metadata
+        .directory()
+        .map(|directory| directory.path().to_owned())
+        .filter(|path| !path.is_empty())
+}
+
+/// The display backend named in the About panel's platform row.
+#[cfg(target_os = "linux")]
+fn display_backend(window: &Window) -> Option<&'static str> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_) => Some("X11"),
+        RawWindowHandle::Wayland(_) => Some("Wayland"),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn display_backend(_: &Window) -> Option<&'static str> {
+    None
 }
 
 /// `$HOME` as written and resolved, read once. Shells report the logical
@@ -1626,6 +2221,14 @@ struct WorkspaceView {
     bounds: WindowBounds,
     fullscreen: FullscreenController,
     fullscreen_work: crate::fullscreen_work::Work,
+    /// The decorations, maximized, and fullscreen facts GPUI last
+    /// reported; `sync_frame` samples them.
+    frame_state: FrameState,
+    /// The frame last pushed to GPUI as the client inset and background
+    /// appearance; `None` before the first sample.
+    applied_frame: Option<WindowFrame>,
+    /// The window buttons the desktop last published.
+    button_layout: ButtonLayout,
     fullscreen_insets: gpui::Edges<Pixels>,
     /// Areas beside a display notch while custom fullscreen covers it.
     notch_shelves: Option<crate::fullscreen::NotchShelves>,
@@ -1658,7 +2261,13 @@ struct WorkspaceView {
     busy: bool,
     close: CloseState,
     exited_tabs: ExitQueue,
-    status: Option<String>,
+    notices: NoticeStack,
+    /// Focus for the toast column; `notices` bindings match while it holds
+    /// focus.
+    notice_focus: FocusHandle,
+    focused_notice: Option<NoticeId>,
+    /// Toasts under the pointer; ids of dismissed toasts are ignored.
+    hovered_notices: HashSet<NoticeId>,
     palette: Option<Entity<CommandPalette>>,
     palette_generation: u64,
     palette_refresh_state: Option<PaletteRefreshState>,
@@ -1666,6 +2275,71 @@ struct WorkspaceView {
     retained_query: Option<(String, Instant)>,
     recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
+    /// The open window, tab, or terminal menu.
+    menu: Option<OpenMenu>,
+    /// Where the menu button was last painted, for anchoring the menu and
+    /// letting a press on it toggle rather than dismiss; `None` while the
+    /// button is not drawn.
+    menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The window controls' painted bounds in Huterm's own title row, for
+    /// smoke pointer fixtures; `None` while the row is not drawn.
+    /// The painted window buttons, by [`WindowButton::index`].
+    window_button_bounds: Rc<[Cell<Option<Bounds<Pixels>>>; 3]>,
+    /// A primary press on the drawn title row's empty space that has not
+    /// yet moved: the first drag motion turns it into a window move. Any
+    /// press elsewhere clears it.
+    title_row_press: Rc<Cell<bool>>,
+    /// How many window moves the title row has started, for smokes.
+    title_row_moves: Rc<Cell<u32>>,
+    /// Where the open menu was last painted, for outside-press dismissal.
+    menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The About panel's details while it is showing.
+    about: Option<AboutDetails>,
+    /// The native window title last set, so unchanged titles are not reset.
+    window_title: String,
+}
+
+/// Which menu is open, and what its picks act on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MenuKind {
+    /// The window menu, from its button, `open_menu`, or empty bar space.
+    Window,
+    /// A tab's context menu.
+    Tab(TabId),
+    /// The context menu of the terminal in `tab`, with the destination of
+    /// the link under the pointer when it opened.
+    Terminal { tab: TabId, link: Option<String> },
+}
+
+impl MenuKind {
+    /// The tab the menu's tab-targeted picks act on.
+    fn tab(&self) -> Option<TabId> {
+        match self {
+            Self::Window => None,
+            Self::Tab(tab) | Self::Terminal { tab, .. } => Some(*tab),
+        }
+    }
+}
+
+struct OpenMenu {
+    view: Entity<MenuView>,
+    kind: MenuKind,
+    /// Where a context menu opened, in window coordinates; `None` anchors
+    /// the menu to its button.
+    pointer: Option<gpui::Point<Pixels>>,
+    /// The key contexts captured when the menu opened, for shortcut text.
+    contexts: Vec<KeyContext>,
+}
+
+/// Where focus goes when the window menu closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MenuFocusReturn {
+    /// The active terminal, after Escape, a pick, an outside press, or a
+    /// command. Returning to the menu button would leave terminal bindings
+    /// inactive until the user clicked back into the terminal.
+    Terminal,
+    /// Whatever takes focus next, such as a close confirmation.
+    Keep,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1731,13 +2405,59 @@ struct TabReorder {
     strip: TabStrip,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum CloseTarget {
     Tab(TabId),
+    /// Several tabs of this window, distinct and in window order. Always
+    /// two or more: [`tabs_target`] normalizes shorter lists.
+    Tabs(Vec<TabId>),
     Window,
     Application,
 }
 
+impl CloseTarget {
+    fn tabs(&self) -> Option<Vec<TabId>> {
+        match self {
+            Self::Tab(id) => Some(vec![*id]),
+            Self::Tabs(ids) => Some(ids.clone()),
+            Self::Window | Self::Application => None,
+        }
+    }
+}
+
+/// The owner-side bookkeeping after the notice stack changed: focus and
+/// hover state for notices that no longer exist are dropped, and expiry
+/// pauses only while a live toast is hovered or focused. Returns whether the
+/// focused toast went away, so the caller returns focus to the terminal.
+fn reconcile_notice_state(
+    notices: &mut NoticeStack,
+    focused: &mut Option<NoticeId>,
+    hovered: &mut HashSet<NoticeId>,
+    now: Instant,
+) -> bool {
+    let focus_lost = focused.take_if(|id| notices.get(*id).is_none()).is_some();
+    hovered.retain(|id| notices.get(*id).is_some());
+    if focused.is_some() || !hovered.is_empty() {
+        notices.pause(now);
+    } else {
+        notices.resume(now);
+    }
+    focus_lost
+}
+
+/// The tab target for `tabs`: none when empty, a single tab for one, and a
+/// set otherwise.
+fn tabs_target(tabs: Vec<TabId>) -> Option<CloseTarget> {
+    match tabs.as_slice() {
+        [] => None,
+        [tab] => Some(CloseTarget::Tab(*tab)),
+        _ => Some(CloseTarget::Tabs(tabs)),
+    }
+}
+
+/// Window or application scope wins over tabs. A tab set unions with any
+/// other tab target; a single tab replaces a single tab, so repeated closes
+/// of one tab coalesce and [`CloseState::checked`] can requeue a second.
 fn merge_close(
     pending: Option<CloseTarget>,
     requested: CloseTarget,
@@ -1749,8 +2469,32 @@ fn merge_close(
         (Some(CloseTarget::Window), _) | (_, CloseTarget::Window) => {
             CloseTarget::Window
         }
-        (_, requested) => requested,
+        (Some(CloseTarget::Tab(_)), requested @ CloseTarget::Tab(_))
+        | (None, requested) => requested,
+        (Some(pending), requested) => {
+            let mut union = pending.tabs().unwrap_or_default();
+            for tab in requested.tabs().unwrap_or_default() {
+                if !union.contains(&tab) {
+                    union.push(tab);
+                }
+            }
+            tabs_target(union).unwrap_or(requested)
+        }
     }
+}
+
+/// Tabs in `order` other than `tab`.
+fn other_tabs(order: &[TabId], tab: TabId) -> Vec<TabId> {
+    order.iter().copied().filter(|id| *id != tab).collect()
+}
+
+/// Tabs in `order` after `tab`; empty when `tab` is last or absent.
+fn tabs_after(order: &[TabId], tab: TabId) -> Vec<TabId> {
+    order
+        .iter()
+        .position(|id| *id == tab)
+        .map(|index| order[index + 1..].to_vec())
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -1759,6 +2503,9 @@ struct CloseState {
     pending: Option<CloseTarget>,
     confirmation: Option<CloseTarget>,
     assessment: Option<CloseAssessment>,
+    /// The confirmation button holding keyboard focus; reset to the primary
+    /// button whenever a confirmation opens.
+    dialog_focus: DialogFocus,
     generation: u64,
 }
 
@@ -1787,28 +2534,31 @@ impl CloseState {
         self.generation += 1;
         self.assessment = None;
         let target = merge_close(self.confirmation.take(), target);
-        self.current = Some(target);
+        self.current = Some(target.clone());
         target
     }
     fn queue(&mut self, target: CloseTarget) {
-        self.pending =
-            Some(merge_close(self.pending, merge_close(self.current, target)));
+        self.pending = Some(merge_close(
+            self.pending.take(),
+            merge_close(self.current.clone(), target),
+        ));
     }
     fn checked(&mut self, foreground: bool) -> Option<CloseDecision> {
         let target = self.current.take()?;
         let pending = self.pending.take();
-        let effective = merge_close(pending, target);
+        let effective = merge_close(pending.clone(), target.clone());
         if effective != target {
             return Some(CloseDecision::Check(effective));
         }
         // A second, different tab close follows the first; wider requests
         // subsume narrower requests and repeated closes of one tab coalesce.
-        if matches!((target, pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
+        if matches!((&target, &pending), (CloseTarget::Tab(first), Some(CloseTarget::Tab(second))) if first != second)
         {
             self.pending = pending;
         }
         if foreground {
-            self.confirmation = Some(target);
+            self.confirmation = Some(target.clone());
+            self.dialog_focus = DialogFocus::Primary;
             Some(CloseDecision::Confirm(target))
         } else {
             Some(CloseDecision::Close(target))
@@ -1826,14 +2576,50 @@ impl CloseState {
         }
         target
     }
+    /// Refuses tab closes while a confirmation is showing, so a repeated
+    /// close shortcut can neither confirm nor replace the dialog.
+    fn check_tab_close_available(&self) -> Result<(), CommandError> {
+        if self.confirmation.is_some() {
+            Err(Self::confirmation_pending())
+        } else {
+            Ok(())
+        }
+    }
+    /// Refuses `target` while the showing confirmation already covers it:
+    /// a repeated close-window shortcut would otherwise re-assess the same
+    /// target and reset the dialog's focused button. A wider target, such
+    /// as closing the window while a tab confirmation shows, still merges.
+    fn check_close_available(
+        &self,
+        target: &CloseTarget,
+    ) -> Result<(), CommandError> {
+        match &self.confirmation {
+            Some(showing)
+                if merge_close(Some(showing.clone()), target.clone())
+                    == *showing =>
+            {
+                Err(Self::confirmation_pending())
+            }
+            _ => Ok(()),
+        }
+    }
+    fn confirmation_pending() -> CommandError {
+        CommandError::Unavailable("close confirmation pending".to_owned())
+    }
+    /// Takes the queued request, dropping tabs that no longer exist.
     fn take_pending(
         &mut self,
-        contains: impl FnOnce(TabId) -> bool,
+        contains: impl Fn(TabId) -> bool,
     ) -> Option<CloseTarget> {
-        self.pending.take().filter(|target| match target {
-            CloseTarget::Tab(id) => contains(*id),
-            _ => true,
-        })
+        match self.pending.take()? {
+            CloseTarget::Tab(id) => {
+                contains(id).then_some(CloseTarget::Tab(id))
+            }
+            CloseTarget::Tabs(ids) => tabs_target(
+                ids.into_iter().filter(|id| contains(*id)).collect(),
+            ),
+            target => Some(target),
+        }
     }
 }
 
@@ -1898,6 +2684,68 @@ fn recent_tab(
 }
 
 impl WorkspaceView {
+    /// The facts that decide whether this window has a title-bar row.
+    fn tab_host(&self) -> TabHost {
+        TabHost {
+            platform: Platform::current(),
+            fullscreen: self.fullscreen.chrome_hidden,
+            quake: self.quake.is_some(),
+            client_decorations: self.frame_state.client_decorations(),
+        }
+    }
+
+    /// The frame this window's chrome sits in, for its resolved position
+    /// and the decorations GPUI last reported.
+    fn window_frame(&self) -> WindowFrame {
+        WindowFrame::resolve(
+            self.layout_tabs().position,
+            self.frame_state,
+            self.button_layout,
+        )
+    }
+
+    /// The title row above the terminal, if the window has one.
+    fn title_row(&self) -> Pixels {
+        title_row_height(self.chrome_hidden(), self.window_frame())
+    }
+
+    /// Samples the decorations GPUI reports and pushes the frame they
+    /// imply: the client inset the compositor keeps clear for resizing
+    /// and the shadow, and a transparent background while that inset is
+    /// drawn around. Returns whether the sample or the frame changed, so
+    /// the caller relays out.
+    fn sync_frame(&mut self, window: &mut Window) -> bool {
+        let state = frame_state(window);
+        let state_changed = self.frame_state != state;
+        self.frame_state = state;
+        let frame = self.window_frame();
+        if self.applied_frame == Some(frame) {
+            return state_changed;
+        }
+        if self.applied_frame.is_some_and(WindowFrame::decorated)
+            != frame.decorated()
+        {
+            window.set_background_appearance(if frame.decorated() {
+                gpui::WindowBackgroundAppearance::Transparent
+            } else {
+                gpui::WindowBackgroundAppearance::Opaque
+            });
+        }
+        // GPUI writes `_GTK_FRAME_EXTENTS` only when the inset changes,
+        // so a zero inset on a server-decorated window sets no property.
+        window.set_client_inset(frame.inset.top.max(px(0.0)));
+        self.applied_frame = Some(frame);
+        self.layout_pending = true;
+        true
+    }
+
+    /// The tab configuration with its position resolved for this window.
+    /// Layout, visibility, placement, and the terminals all read this;
+    /// `self.config.tabs.position` is only the configured value.
+    fn layout_tabs(&self) -> TabsConfig {
+        layout_tabs(self.config.tabs, self.tab_host())
+    }
+
     fn presentation(&self) -> Presentation {
         Presentation::resolve(
             self.tabs.len(),
@@ -1912,21 +2760,23 @@ impl WorkspaceView {
     /// The shelf beside the notch a top bar should occupy, when configured
     /// and available.
     fn notch_shelf(&self) -> Option<Bounds<Pixels>> {
-        select_notch_shelf(self.config.tabs, self.notch_shelves)
+        select_notch_shelf(self.layout_tabs(), self.notch_shelves)
     }
 
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
+        let tabs = self.layout_tabs();
         ChromeLayout::for_tabs(
             window.viewport_size(),
-            terminal_top(self.chrome_hidden()),
-            self.config.tabs,
+            self.title_row(),
+            tabs,
             self.sidebar_width,
             self.fullscreen_insets,
             self.notch_shelf(),
+            self.window_frame(),
         )
         .present(
             self.presentation(),
-            self.config.tabs.position,
+            tabs.position,
             self.reveal.progress,
         )
     }
@@ -1938,6 +2788,9 @@ impl WorkspaceView {
         let presentation = self.presentation();
         let chrome_hidden = self.chrome_hidden();
         let notch_shelf = self.notch_shelf();
+        let tabs_config = self.layout_tabs();
+        let window_frame = self.window_frame();
+        let quake_presenting = self.quake_presenting();
         let overlay = (presentation == Presentation::Overlay
             && self.reveal.progress > 0.0)
             .then(|| {
@@ -1952,24 +2805,31 @@ impl WorkspaceView {
                         != terminal.metrics;
                 let cell_changed = terminal.last_cell_size
                     != Some(terminal.physical_cell_size());
-                let changed = terminal.tab_presentation != presentation
+                // The tab bar appearing or hiding is not a resize to report.
+                let bar_toggled = terminal.tab_presentation != presentation;
+                let changed = bar_toggled
+                    || terminal.tabs_config != tabs_config
                     || terminal.sidebar_width != self.sidebar_width
                     || terminal.chrome_hidden != chrome_hidden
                     || terminal.fullscreen_insets != self.fullscreen_insets
-                    || terminal.notch_shelf != notch_shelf;
+                    || terminal.notch_shelf != notch_shelf
+                    || terminal.window_frame != window_frame;
                 changed_any |= geometry_changed
                     || changed
                     || scale_changed
                     || cell_changed;
                 terminal.tab_overlay = overlay;
                 terminal.tab_presentation = presentation;
+                terminal.tabs_config = tabs_config;
                 terminal.sidebar_width = self.sidebar_width;
                 terminal.chrome_hidden = chrome_hidden;
                 terminal.fullscreen_insets = self.fullscreen_insets;
                 terminal.notch_shelf = notch_shelf;
+                terminal.window_frame = window_frame;
+                terminal.quiet_resize = quake_presenting;
                 if geometry_changed || changed || scale_changed || cell_changed
                 {
-                    terminal.resize_if_needed(window);
+                    terminal.resize_to_layout(window, bar_toggled);
                     cx.notify();
                 }
             });
@@ -1977,6 +2837,14 @@ impl WorkspaceView {
         if changed_any {
             cx.notify();
         }
+    }
+
+    /// A Quake window is still showing, settling, or hiding; its layout
+    /// changes are presentation, not resizes to report.
+    fn quake_presenting(&self) -> bool {
+        self.quake
+            .as_ref()
+            .is_some_and(quake_windows::Presentation::presenting)
     }
 
     fn defer_pointer_refresh(
@@ -2005,7 +2873,7 @@ impl WorkspaceView {
             && (self.reveal.progress > 0.0
                 // AppKit's native fullscreen top edge can be outside the
                 // content view and never deliver a window mouse event.
-                || (self.config.tabs.position == TabPosition::Top
+                || (self.layout_tabs().position == TabPosition::Top
                     && window.is_fullscreen()));
         self.pointer_reveal.probe_at = tab_visibility::pointer_probe_deadline(
             self.pointer_reveal.probe_at,
@@ -2019,7 +2887,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let position = self.config.tabs.position;
+        let position = self.layout_tabs().position;
         let context = (
             position,
             self.tab_fullscreen_context(),
@@ -2050,7 +2918,9 @@ impl WorkspaceView {
         let inside = hovered && bounds.contains(&pointer);
         let edge = inside
             && match position {
-                TabPosition::Top => pointer.y <= bounds.origin.y + px(2.0),
+                TabPosition::Top | TabPosition::Titlebar => {
+                    pointer.y <= bounds.origin.y + px(2.0)
+                }
                 TabPosition::Bottom => pointer.y >= bounds.bottom() - px(2.0),
                 TabPosition::Left => pointer.x <= bounds.origin.x + px(2.0),
                 TabPosition::Right => pointer.x >= bounds.right() - px(2.0),
@@ -2061,13 +2931,15 @@ impl WorkspaceView {
                 && self.native_fullscreen.as_ref().is_some_and(
                     crate::native_fullscreen::Adapter::pointer_in_top_edge,
                 ));
+        // An open window menu holds the bar that anchors its button.
         let hover = !gesture
             && (edge
                 || (self.reveal.progress > 0.0
                     && hovered
                     && layout.tabs.contains(&pointer))
                 || self.reorder.is_some()
-                || self.resizing_sidebar);
+                || self.resizing_sidebar
+                || self.menu.is_some());
         if self
             .reveal
             .set_input(Instant::now(), hover, enabled && !gesture)
@@ -2083,7 +2955,7 @@ impl WorkspaceView {
     }
 
     fn tab_strip(&self, window: &Window) -> TabStrip {
-        let tabs = self.config.tabs;
+        let tabs = self.layout_tabs();
         let layout = self.chrome_layout(window);
         let extents = if tabs.width == TabWidth::Fit {
             // Render measures titles; tabs added since then use the minimum.
@@ -2105,6 +2977,7 @@ impl WorkspaceView {
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
+            self.bar_menu_placement() == MenuButtonPlacement::BarEnd,
         )
     }
 
@@ -2147,10 +3020,11 @@ impl WorkspaceView {
     /// Enables the scrollbar axis matching the tab placement. Idempotent, so
     /// render calls it each frame and reload needs no extra hook.
     fn sync_tab_scrollbars(&mut self) {
-        let vertical = self.config.tabs.position.vertical();
+        let tabs = self.layout_tabs();
+        let vertical = tabs.position.vertical();
         self.tab_scrollbars.set_axis(
             Axis::Vertical,
-            vertical.then(|| tab_column_scrollbar(self.config.tabs.position)),
+            vertical.then(|| tab_column_scrollbar(tabs.position)),
         );
         self.tab_scrollbars.set_axis(
             Axis::Horizontal,
@@ -2213,7 +3087,7 @@ impl WorkspaceView {
     ) {
         let strip = self.tab_strip(window);
         if self.tab_scrollbars.pointer_moved(
-            &Self::tab_scrollbar_geometries(&strip, self.config.tabs),
+            &Self::tab_scrollbar_geometries(&strip, self.layout_tabs()),
             Self::tab_scrollbar_bounds(&strip),
             position,
             Instant::now(),
@@ -2231,7 +3105,7 @@ impl WorkspaceView {
     ) -> bool {
         let strip = self.tab_strip(window);
         let geometries =
-            Self::tab_scrollbar_geometries(&strip, self.config.tabs);
+            Self::tab_scrollbar_geometries(&strip, self.layout_tabs());
         let Some((axis, press)) = self.tab_scrollbars.press(
             &geometries,
             Self::tab_scrollbar_bounds(&strip),
@@ -2255,7 +3129,7 @@ impl WorkspaceView {
     ) {
         let strip = self.tab_strip(window);
         let geometries =
-            Self::tab_scrollbar_geometries(&strip, self.config.tabs);
+            Self::tab_scrollbar_geometries(&strip, self.layout_tabs());
         if let Some((axis, thumb_start)) = self.tab_scrollbars.drag_to(
             Self::tab_scrollbar_bounds(&strip),
             position,
@@ -2295,7 +3169,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let desired = if self.config.tabs.position == TabPosition::Left {
+        let desired = if self.layout_tabs().position == TabPosition::Left {
             pointer.x
         } else {
             window.viewport_size().width - pointer.x
@@ -2472,15 +3346,22 @@ impl WorkspaceView {
                         if !apply_tab_order(&mut view.tabs, &order, |tab| {
                             tab.id
                         }) {
-                            view.status = Some(
-                                "Tab order changed before reorder completed"
-                                    .into(),
+                            view.notify(
+                                NoticeContent::command_failure(
+                                    "Reorder tab",
+                                    "Tab order changed before reorder completed",
+                                )
+                                .severity(Severity::Warning),
+                                cx,
                             );
                         }
                     }
                     Err(error) => {
-                        view.status =
-                            Some(format!("Cannot reorder tab: {error}"));
+                        view.report_failure(
+                            "Reorder tab",
+                            format!("Cannot reorder tab: {error}"),
+                            cx,
+                        );
                     }
                 }
                 view.restore_tab_focus(window, cx);
@@ -2509,6 +3390,31 @@ impl WorkspaceView {
         let result = tab
             .view
             .update(cx, |terminal, cx| terminal.refresh(window, cx));
+        let title = tab.label(self.config.tabs, cx).0;
+        if !result.failures.is_empty() {
+            // A tab is one keyed source: its latest failures replace the
+            // earlier ones, so a flooding tab cannot fill the stack. The
+            // replaced toast may have been the focused one.
+            let source = NoticeSource::Terminal {
+                tab: tab_id,
+                title: title.clone(),
+            };
+            let replacements = result
+                .failures
+                .into_iter()
+                .map(|failure| terminal_notice(tab_id, &title, failure))
+                .collect();
+            self.notices
+                .replace_source(&source, replacements, Instant::now());
+            self.reconcile_notices(window, cx);
+        }
+        if result.exited && !self.config.terminal.close_on_exit {
+            self.notices.push(
+                exit_notice(tab_id, &title, result.exit_code),
+                Instant::now(),
+            );
+            cx.notify();
+        }
         if result.exited {
             self.exited_tabs.observe(
                 tab_id,
@@ -2604,8 +3510,11 @@ impl WorkspaceView {
                                     .is_allowed(),
                             );
                             let activity_client = opened.client.clone();
+                            let scroll_key = scroll_to_bottom_key(
+                                &cx.global::<Desktop>().keymap,
+                            );
                             let terminal = cx.new(|cx| {
-                                TerminalView::new(
+                                let mut terminal = TerminalView::new(
                                     opened.client,
                                     authority,
                                     Rc::clone(&view.frame_clock),
@@ -2615,9 +3524,23 @@ impl WorkspaceView {
                                         .at_scale(window.scale_factor()),
                                     window,
                                     cx,
-                                )
+                                );
+                                terminal.set_scroll_to_bottom_key(
+                                    scroll_key, cx,
+                                );
+                                terminal.tabs_config = view.layout_tabs();
+                                terminal.window_frame = view.window_frame();
+                                terminal
                             });
+                            cx.subscribe_in(
+                                &terminal,
+                                window,
+                                Self::handle_context_menu_request,
+                            )
+                            .detach();
                             let tab_id = opened.tab.id;
+                            let failure_wakes =
+                                terminal.read(cx).failure_wakes.clone();
                             let activity_probe =
                                 refresh_smoke::ActivityProbe::new(tab_id, cx);
                             let activity_task =
@@ -2626,8 +3549,11 @@ impl WorkspaceView {
                                         if let Some(probe) = &activity_probe {
                                             probe.waiting(true);
                                         }
-                                        let stopped = activity_client
-                                            .wait_for_activity()
+                                        let stopped =
+                                            TerminalView::wait_for_activity(
+                                                &activity_client,
+                                                &failure_wakes,
+                                            )
                                             .await
                                             .is_err();
                                         if let Some(probe) = &activity_probe {
@@ -2670,6 +3596,8 @@ impl WorkspaceView {
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
                             if let Some(state) = &view.quake {
+                                // This profile's earlier failed spawn no
+                                // longer applies; drop its latched notice.
                                 let desktop = cx.global_mut::<Desktop>();
                                 if desktop
                                     .quake
@@ -2680,37 +3608,43 @@ impl WorkspaceView {
                                     })
                                     && let Some((_, message)) =
                                         desktop.quake.failed_spawn.take()
-                                    && desktop.config_error.as_deref()
-                                        == Some(message.as_str())
                                 {
-                                    desktop.config_error = None;
+                                    desktop.latched.retain(|content| {
+                                        content.message != message
+                                    });
+                                    if view.notices.dismiss_where(|content| {
+                                        content.message == message
+                                    }) {
+                                        view.reconcile_notices(window, cx);
+                                    }
                                 }
                             }
-                            view.status =
-                                cx.global::<Desktop>().config_error.clone();
                         }
                         Err(error) => {
-                            view.status =
-                                Some(format!("Cannot open tab: {error}"));
+                            let message = format!("Cannot open tab: {error}");
+                            view.notify(
+                                NoticeContent::command_failure(
+                                    "Cannot open tab",
+                                    message.clone(),
+                                )
+                                .action("Try Again", bare(ids::NEW_TAB)),
+                                cx,
+                            );
                             if let Some(reporter) = view.startup_reporter.take()
                             {
                                 report_deferred_failure(
                                     cx,
                                     Some(reporter),
-                                    view.status.clone().unwrap_or_default(),
+                                    message.clone(),
                                 );
                             }
                             if view.quake.is_some() && view.tabs.is_empty() {
-                                cx.global_mut::<Desktop>()
-                                    .config_error
-                                    .clone_from(&view.status);
+                                latch_failure(cx, &message);
                                 if let Some(state) = &view.quake {
                                     cx.global_mut::<Desktop>()
                                         .quake
-                                        .failed_spawn = Some((
-                                        state.name.clone(),
-                                        view.status.clone().unwrap_or_default(),
-                                    ));
+                                        .failed_spawn =
+                                        Some((state.name.clone(), message));
                                 }
                                 eprintln!("Cannot start quake shell: {error}");
                                 view.remove_window(window, cx, false);
@@ -3007,11 +3941,14 @@ impl WorkspaceView {
                             .frequency
                             .record(invocation.id);
                     }
-                    Err(error) => set_dispatch_error(
-                        &mut self.palette,
-                        &mut self.status,
-                        &error,
-                    ),
+                    Err(error) => {
+                        self.palette = None;
+                        self.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             }
@@ -3079,7 +4016,7 @@ impl WorkspaceView {
             tabs: self.tabs.len(),
             active: self.active,
             busy: self.busy,
-            confirming: self.close.confirmation.is_some(),
+            confirming: self.dialog_showing(),
             reordering: self.reorder.is_some(),
             quake: self
                 .quake
@@ -3142,17 +4079,14 @@ impl WorkspaceView {
         order
     }
 
-    fn palette_colors(&self) -> PaletteColors {
-        let theme = &self.config.theme;
-        PaletteColors {
-            foreground: color(theme.foreground),
-            background: color(theme.background),
-            selection: color(theme.selection),
-            accent: color(theme.ansi[4]),
-            scrollbar: super::scrollbar_colors(theme),
-        }
+    fn palette_colors(&self) -> OverlayColors {
+        OverlayColors::from_theme(&self.config.theme)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match routes the availability of every command scope"
+    )]
     fn command_availability(
         &self,
         command: huterm_protocol::CommandId,
@@ -3165,7 +4099,46 @@ impl WorkspaceView {
             CommandScope::Application => app_command_availability(cx, command),
             CommandScope::Window => match command {
                 ids::NEW_TAB => self.check_new_tab_available(cx),
-                ids::CLOSE_TAB => self.active_tab_id().map(|_| ()),
+                ids::CLOSE_TAB
+                | ids::CLOSE_OTHER_TABS
+                | ids::CLOSE_TABS_AFTER
+                | ids::COPY_TAB_DIRECTORY
+                | ids::OPEN_TAB_DIRECTORY => {
+                    self.tab_command_availability(command, target.tab, cx)
+                }
+                ids::OPEN_CONTEXT_MENU => {
+                    self.check_available(true)?;
+                    self.active_view().map(|_| ()).ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "window has no active terminal".to_owned(),
+                        )
+                    })
+                }
+                ids::DIALOG_CONFIRM
+                | ids::DIALOG_CANCEL
+                | ids::DIALOG_FOCUS_NEXT
+                | ids::DIALOG_FOCUS_PREVIOUS => {
+                    if self.about.is_some() {
+                        Ok(())
+                    } else {
+                        self.confirming_target().map(|_| ())
+                    }
+                }
+                ids::FOCUS_NOTICES
+                | ids::DISMISS_ALL_NOTICES
+                | ids::NOTICE_NEXT
+                | ids::NOTICE_PREVIOUS
+                | ids::NOTICE_RUN_ACTION
+                | ids::NOTICE_DISMISS => self.notice_availability(command),
+                ids::OPEN_MENU => self.check_available(false),
+                ids::MENU_SELECT_NEXT
+                | ids::MENU_SELECT_PREVIOUS
+                | ids::MENU_SELECT_FIRST
+                | ids::MENU_SELECT_LAST
+                | ids::MENU_SELECT_RIGHT
+                | ids::MENU_SELECT_LEFT
+                | ids::MENU_CONFIRM
+                | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available()
                 }
@@ -3189,7 +4162,8 @@ impl WorkspaceView {
                 | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
                     self.check_fullscreen_available(command)
                 }
-                ids::CLOSE_WINDOW | ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
+                ids::CLOSE_WINDOW => self.check_close_window_available(),
+                ids::ABOUT | ids::OPEN_SETTINGS => Ok(()),
                 other => Err(CommandError::UnknownCommand(other)),
             },
             CommandScope::Runtime => {
@@ -3229,6 +4203,33 @@ impl WorkspaceView {
         }
     }
 
+    /// Availability of the commands that take an optional `tab` target:
+    /// the named tab must exist, or the window must have an active one.
+    fn tab_command_availability(
+        &self,
+        command: huterm_protocol::CommandId,
+        tab: Option<TabId>,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        if command != ids::COPY_TAB_DIRECTORY
+            && command != ids::OPEN_TAB_DIRECTORY
+        {
+            self.check_tab_close_available()?;
+        }
+        let tab = tab.map_or_else(
+            || self.active_tab_id(),
+            |tab| self.existing_tab(tab),
+        )?;
+        match command {
+            ids::CLOSE_TAB => Ok(()),
+            ids::COPY_TAB_DIRECTORY => self.tab_directory(tab, cx).map(|_| ()),
+            ids::OPEN_TAB_DIRECTORY => {
+                self.local_tab_directory(tab, cx).map(|_| ())
+            }
+            other => self.tab_set_target(other, tab).map(|_| ()),
+        }
+    }
+
     fn reload_palette(&mut self, cx: &mut Context<'_, Self>) {
         self.palette_refresh_state = None;
         self.refresh_palette(cx);
@@ -3248,11 +4249,12 @@ impl WorkspaceView {
     }
 
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
-    /// `reordering`, and `fullscreen` while those states hold.
+    /// `reordering`, and `fullscreen` while those states hold. The About
+    /// panel sets `confirming` too, so the `dialog_*` bindings close it.
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
-        if self.close.confirmation.is_some() {
+        if self.dialog_showing() {
             context.add("confirming");
         }
         if self.reorder.is_some() {
@@ -3274,6 +4276,8 @@ impl WorkspaceView {
             "structural operation in progress"
         } else if self.close.confirmation.is_some() {
             "close confirmation pending"
+        } else if self.about.is_some() {
+            "About panel is showing"
         } else if reordering && self.reorder.is_some() {
             "tab reorder in progress"
         } else {
@@ -3282,9 +4286,220 @@ impl WorkspaceView {
         Err(CommandError::Unavailable(reason.to_owned()))
     }
 
+    /// A modal panel that takes the `confirming` context and blocks
+    /// terminal input: a close confirmation or the About panel.
+    fn dialog_showing(&self) -> bool {
+        self.close.confirmation.is_some() || self.about.is_some()
+    }
+
     fn active_tab_id(&self) -> Result<TabId, CommandError> {
         self.active.ok_or_else(|| {
             CommandError::Unavailable("window has no tab".to_owned())
+        })
+    }
+
+    /// The directory `copy_tab_directory` copies for `tab`, refused while
+    /// the tab has reported none.
+    fn tab_directory(
+        &self,
+        tab: TabId,
+        cx: &App,
+    ) -> Result<String, CommandError> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|record| record.id == tab)
+            .ok_or(CommandError::StaleTarget)?;
+        tab_directory_path(&tab.view.read(cx).metadata).ok_or_else(|| {
+            CommandError::Unavailable("directory unknown".to_owned())
+        })
+    }
+
+    /// The tab's working directory when it is on this machine, so the file
+    /// manager can open it.
+    fn local_tab_directory(
+        &self,
+        tab: TabId,
+        cx: &App,
+    ) -> Result<PathBuf, CommandError> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|record| record.id == tab)
+            .ok_or(CommandError::StaleTarget)?;
+        match tab.view.read(cx).metadata.directory() {
+            Some(directory) if directory.is_local() => {
+                Ok(PathBuf::from(directory.path()))
+            }
+            Some(_) => Err(CommandError::Unavailable(
+                "directory is on another host".to_owned(),
+            )),
+            None => {
+                Err(CommandError::Unavailable("directory unknown".to_owned()))
+            }
+        }
+    }
+
+    /// Opens the named or active tab's working directory in the file
+    /// manager.
+    fn open_tab_directory(
+        &self,
+        invocation: &CommandInvocation,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let tab = self.target_tab(invocation)?;
+        let path = self.local_tab_directory(tab, cx)?;
+        cx.open_with_system(&path);
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Opens the active terminal's context menu at its cursor.
+    fn open_context_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(true)?;
+        let terminal = self.active_view().ok_or_else(|| {
+            CommandError::Unavailable(
+                "window has no active terminal".to_owned(),
+            )
+        })?;
+        let anchor = terminal.read(cx).context_menu_anchor(window);
+        self.open_terminal_menu(anchor, None, window, cx);
+        if let Some(menu) = &self.menu {
+            menu.view.update(cx, MenuView::select_first);
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Copies the named or active tab's working directory through the
+    /// application clipboard write path.
+    fn copy_tab_directory(
+        &self,
+        invocation: &CommandInvocation,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let tab = self.target_tab(invocation)?;
+        let path = self.tab_directory(tab, cx)?;
+        cx.write_to_clipboard(ClipboardItem::new_string(path));
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn existing_tab(&self, tab: TabId) -> Result<TabId, CommandError> {
+        if self.tabs.iter().any(|record| record.id == tab) {
+            Ok(tab)
+        } else {
+            Err(CommandError::StaleTarget)
+        }
+    }
+
+    /// The tab a tab-targeted command names, or the active tab.
+    fn target_tab(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Result<TabId, CommandError> {
+        match invocation.tab("tab") {
+            Some(tab) => self.existing_tab(tab),
+            None => self.active_tab_id(),
+        }
+    }
+
+    /// The tabs `close_other_tabs` or `close_tabs_after` closes relative to
+    /// `tab`, refused when there are none.
+    fn tab_set_target(
+        &self,
+        command: huterm_protocol::CommandId,
+        tab: TabId,
+    ) -> Result<CloseTarget, CommandError> {
+        let order: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        let (tabs, reason) = match command {
+            ids::CLOSE_OTHER_TABS => {
+                (other_tabs(&order, tab), "window has one tab")
+            }
+            ids::CLOSE_TABS_AFTER => {
+                (tabs_after(&order, tab), "no tabs after this one")
+            }
+            other => return Err(CommandError::UnknownCommand(other)),
+        };
+        tabs_target(tabs)
+            .ok_or_else(|| CommandError::Unavailable(reason.to_owned()))
+    }
+
+    /// Tab closes are refused while a confirmation or the About panel is
+    /// showing. Unlike [`Self::check_available`], a structural operation in
+    /// progress does not refuse them: the close queues behind it.
+    fn check_tab_close_available(&self) -> Result<(), CommandError> {
+        tab_close_availability(&self.close, self.about.is_some())
+    }
+
+    /// `close_window` is refused only while its own confirmation shows; it
+    /// widens a tab confirmation and queues behind structural work.
+    fn check_close_window_available(&self) -> Result<(), CommandError> {
+        self.close.check_close_available(&CloseTarget::Window)
+    }
+
+    /// Closes the named or active tab, or the tabs around it, unless a
+    /// confirmation or the About panel is already showing.
+    fn run_tab_close(
+        &mut self,
+        invocation: &CommandInvocation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_tab_close_available()?;
+        let tab = self.target_tab(invocation)?;
+        let target = if invocation.id == ids::CLOSE_TAB {
+            CloseTarget::Tab(tab)
+        } else {
+            self.tab_set_target(invocation.id, tab)?
+        };
+        self.request_close(target, window, cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
+    /// Runs a `dialog_*` command against the showing confirmation. Confirm
+    /// presses the focused button, so Enter on Cancel cancels. The About
+    /// panel shares these bindings: Enter and Escape close it, and its
+    /// buttons are not keyboard-focusable.
+    fn run_dialog_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if self.about.is_some() {
+            match command {
+                ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL => {
+                    self.close_about(window, cx);
+                }
+                ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS => {}
+                other => return Err(CommandError::UnknownCommand(other)),
+            }
+            return Ok(CommandOutcome::Completed);
+        }
+        let target = self.confirming_target()?;
+        match (command, self.close.dialog_focus) {
+            (ids::DIALOG_CONFIRM, DialogFocus::Primary) => {
+                self.finish_close(target, window, cx);
+            }
+            (ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL, _) => {
+                self.cancel_close(window, cx);
+            }
+            (ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS, focus) => {
+                self.close.dialog_focus = focus.toggled();
+                cx.notify();
+            }
+            (other, _) => return Err(CommandError::UnknownCommand(other)),
+        }
+        Ok(CommandOutcome::Completed)
+    }
+
+    fn confirming_target(&self) -> Result<CloseTarget, CommandError> {
+        self.close.confirmation.clone().ok_or_else(|| {
+            CommandError::Unavailable(
+                "no close confirmation is showing".to_owned(),
+            )
         })
     }
 
@@ -3370,6 +4585,34 @@ impl WorkspaceView {
     /// # Errors
     /// Reports refused commands as [`CommandError::Unavailable`] and commands
     /// this window does not own as [`CommandError::UnknownCommand`].
+    fn run_fullscreen_toggle(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if self.quake.is_some() {
+            self.check_fullscreen_available(command)?;
+            return quake_windows::toggle(self, window, cx);
+        }
+        self.observe_fullscreen(window, cx, true);
+        self.fullscreen_work.wake.signal();
+        let intent = match command {
+            ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
+            ids::TOGGLE_NON_NATIVE_FULLSCREEN => ToggleIntent::NonNative,
+            _ => ToggleIntent::Default,
+        };
+        self.check_fullscreen_available(command)?;
+        self.fullscreen
+            .toggle_checked(intent, || Ok(()))
+            .map_err(CommandError::Unavailable)?;
+        if self.advance_fullscreen(window, cx) {
+            self.fullscreen_work.wake.signal();
+        }
+        self.arm_fullscreen(cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -3386,14 +4629,44 @@ impl WorkspaceView {
         if let Some(tab) = self.active_view() {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
+        // A shortcut pressed while the menu is open runs its command in
+        // place of the menu.
+        if !is_menu_command(invocation.id) {
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
+        }
         match invocation.id {
             ids::NEW_TAB => self.new_tab(window, cx),
-            ids::CLOSE_TAB => {
-                let id = self.active_tab_id()?;
-                self.request_close(CloseTarget::Tab(id), window, cx);
-                Ok(CommandOutcome::Accepted)
+            ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::MENU_SELECT_NEXT
+            | ids::MENU_SELECT_PREVIOUS
+            | ids::MENU_SELECT_FIRST
+            | ids::MENU_SELECT_LAST
+            | ids::MENU_SELECT_RIGHT
+            | ids::MENU_SELECT_LEFT
+            | ids::MENU_CONFIRM
+            | ids::MENU_CLOSE => self.run_menu_command(invocation.id, cx),
+            ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
+                self.run_tab_close(invocation, window, cx)
+            }
+            ids::COPY_TAB_DIRECTORY => self.copy_tab_directory(invocation, cx),
+            ids::OPEN_TAB_DIRECTORY => self.open_tab_directory(invocation, cx),
+            ids::OPEN_CONTEXT_MENU => self.open_context_menu(window, cx),
+            ids::DIALOG_CONFIRM
+            | ids::DIALOG_CANCEL
+            | ids::DIALOG_FOCUS_NEXT
+            | ids::DIALOG_FOCUS_PREVIOUS => {
+                self.run_dialog_command(invocation.id, window, cx)
+            }
+            ids::FOCUS_NOTICES
+            | ids::DISMISS_ALL_NOTICES
+            | ids::NOTICE_NEXT
+            | ids::NOTICE_PREVIOUS
+            | ids::NOTICE_RUN_ACTION
+            | ids::NOTICE_DISMISS => {
+                self.run_notice_command(invocation.id, window, cx)
             }
             ids::CLOSE_WINDOW => {
+                self.check_close_window_available()?;
                 self.request_close(CloseTarget::Window, window, cx);
                 Ok(CommandOutcome::Accepted)
             }
@@ -3404,28 +4677,7 @@ impl WorkspaceView {
             ids::TOGGLE_FULLSCREEN
             | ids::TOGGLE_NATIVE_FULLSCREEN
             | ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
-                if self.quake.is_some() {
-                    self.check_fullscreen_available(invocation.id)?;
-                    return quake_windows::toggle(self, window, cx);
-                }
-                self.observe_fullscreen(window, cx, true);
-                self.fullscreen_work.wake.signal();
-                let intent = match invocation.id {
-                    ids::TOGGLE_NATIVE_FULLSCREEN => ToggleIntent::Native,
-                    ids::TOGGLE_NON_NATIVE_FULLSCREEN => {
-                        ToggleIntent::NonNative
-                    }
-                    _ => ToggleIntent::Default,
-                };
-                self.check_fullscreen_available(invocation.id)?;
-                self.fullscreen
-                    .toggle_checked(intent, || Ok(()))
-                    .map_err(CommandError::Unavailable)?;
-                if self.advance_fullscreen(window, cx) {
-                    self.fullscreen_work.wake.signal();
-                }
-                self.arm_fullscreen(cx);
-                Ok(CommandOutcome::Accepted)
+                self.run_fullscreen_toggle(invocation.id, window, cx)
             }
             ids::MINIMIZE => {
                 self.check_presentation_available()?;
@@ -3437,22 +4689,7 @@ impl WorkspaceView {
                 window.zoom_window();
                 Ok(CommandOutcome::Completed)
             }
-            ids::ABOUT => {
-                let detail =
-                    format!("Version {}\n{APP_ID}", env!("CARGO_PKG_VERSION"));
-                let answer = window.prompt(
-                    PromptLevel::Info,
-                    "Huterm",
-                    Some(&detail),
-                    &["OK"],
-                    cx,
-                );
-                cx.spawn(async move |_, _| {
-                    let _ = answer.await;
-                })
-                .detach();
-                Ok(CommandOutcome::Completed)
-            }
+            ids::ABOUT => self.show_about(window, cx),
             ids::OPEN_SETTINGS => {
                 let config_path = cx.global::<Desktop>().config_path.clone();
                 config::create_default(&config_path).map_err(|error| {
@@ -3477,6 +4714,195 @@ impl WorkspaceView {
     }
 }
 
+impl WorkspaceView {
+    /// The busy terminals of a pending confirmation, mapped to tab titles.
+    /// Quit covers other windows' tabs too; those are read through their
+    /// view entities.
+    fn close_dialog_input(
+        &self,
+        target: &CloseTarget,
+        cx: &Context<'_, Self>,
+    ) -> CloseDialogInput {
+        let mut titles = self.tab_titles(self.config.tabs, cx);
+        if matches!(target, CloseTarget::Application) {
+            for view in cx
+                .global::<Desktop>()
+                .windows
+                .iter()
+                .filter_map(WeakEntity::upgrade)
+                .filter(|view| view.entity_id() != cx.entity_id())
+            {
+                let view = view.read(cx);
+                titles.extend(view.tab_titles(view.config.tabs, cx));
+            }
+        }
+        let jobs = self
+            .close
+            .assessment
+            .iter()
+            .flat_map(CloseAssessment::terminal_jobs);
+        close_dialog_input(target, jobs, &titles)
+    }
+
+    fn tab_titles(&self, tabs: TabsConfig, cx: &App) -> Vec<TabTitle> {
+        self.tabs
+            .iter()
+            .map(|tab| TabTitle {
+                tab: tab.id,
+                terminal: tab.record.terminal_id,
+                title: tab.title(tabs, cx),
+            })
+            .collect()
+    }
+}
+
+/// A tab's display title with the identities the close evidence uses.
+#[derive(Clone, Debug)]
+struct TabTitle {
+    tab: TabId,
+    terminal: TerminalId,
+    title: String,
+}
+
+/// Tab closes are refused while a confirmation is showing, or while the
+/// About panel is up and would otherwise stay over a closing tab.
+fn tab_close_availability(
+    close: &CloseState,
+    about_showing: bool,
+) -> Result<(), CommandError> {
+    close.check_tab_close_available()?;
+    if about_showing {
+        return Err(CommandError::Unavailable(
+            "About panel is showing".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Maps assessed job evidence onto the dialog's busy groups. `titles` lists
+/// the tabs the dialog may cover, in window order; idle terminals are
+/// omitted, and headings are set when the dialog covers more than one tab:
+/// a tab set, the application, or a window with more than one tab.
+fn close_dialog_input<'a>(
+    target: &CloseTarget,
+    jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
+    titles: &[TabTitle],
+) -> CloseDialogInput {
+    let dialog_target = match target {
+        CloseTarget::Tab(id) => CloseDialogTarget::Tab {
+            title: titles
+                .iter()
+                .find(|entry| entry.tab == *id)
+                .map(|entry| entry.title.clone())
+                .unwrap_or_default(),
+        },
+        CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
+        CloseTarget::Window => CloseDialogTarget::Window,
+        CloseTarget::Application => CloseDialogTarget::Application,
+    };
+    let headings = match dialog_target {
+        CloseDialogTarget::Tab { .. } => false,
+        CloseDialogTarget::Window => titles.len() > 1,
+        CloseDialogTarget::Tabs { .. } | CloseDialogTarget::Application => true,
+    };
+    let groups = jobs
+        .into_iter()
+        .filter_map(|(terminal, state)| {
+            let state = match state {
+                huterm_core::JobState::Idle => return None,
+                huterm_core::JobState::Unknown => ProcessGroupState::Unknown,
+                huterm_core::JobState::Running(processes) => {
+                    ProcessGroupState::Known(
+                        processes
+                            .iter()
+                            .map(|process| ProcessRow {
+                                command: process.command.clone(),
+                                pid: process.pid,
+                                foreground: process.foreground,
+                                command_line: process.command_line.clone(),
+                            })
+                            .collect(),
+                    )
+                }
+            };
+            let tab_title = headings.then(|| {
+                titles
+                    .iter()
+                    .find(|entry| entry.terminal == terminal)
+                    .map_or_else(
+                        || "Detached terminal".to_owned(),
+                        |entry| entry.title.clone(),
+                    )
+            });
+            Some(ProcessGroup { tab_title, state })
+        })
+        .collect();
+    CloseDialogInput {
+        target: dialog_target,
+        groups,
+    }
+}
+
+impl WorkspaceView {
+    /// Shows the About panel, or refocuses it when it is already showing.
+    /// It takes the root focus so the `confirming` bindings close it, and
+    /// blocks terminal input while it is up.
+    fn show_about(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        if self.about.is_some() {
+            self.focus.focus(window);
+            cx.notify();
+            return Ok(CommandOutcome::Completed);
+        }
+        self.check_available(false)?;
+        self.cancel_reorder(window, cx);
+        self.resizing_sidebar = false;
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let facts = BuildFacts::current(display_backend(window));
+        self.about = Some(about_details(&facts));
+        self.focus.focus(window);
+        cx.notify();
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Closes the About panel and returns focus to the terminal.
+    fn close_about(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.about.take().is_none() {
+            return;
+        }
+        self.focus_terminal(window, cx);
+        cx.notify();
+    }
+
+    /// Copies the About panel's details as plain text.
+    fn copy_about_details(&self, cx: &mut Context<'_, Self>) {
+        if let Some(details) = &self.about {
+            cx.write_to_clipboard(ClipboardItem::new_string(details.text()));
+        }
+    }
+
+    /// Sets the native window title from the active tab, only when it
+    /// changes, so tab switches and title changes reach window managers and
+    /// switchers without resetting an unchanged title every frame.
+    fn sync_window_title(&mut self, window: &mut Window, cx: &App) {
+        let active = self
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == self.active)
+            .map(|tab| tab.title(self.config.tabs, cx));
+        let title = window_title(active.as_deref());
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+    }
+}
+
 fn usable_launch_directory(directory: &Path) -> bool {
     std::fs::metadata(directory).is_ok_and(|metadata| metadata.is_dir())
         && nix::unistd::access(directory, nix::unistd::AccessFlags::X_OK)
@@ -3496,21 +4922,69 @@ fn inherited_directory(
         .map(|directory| PathBuf::from(directory.path()))
 }
 
+/// An expiring notice for a terminal failure, keyed by its tab and naming
+/// the tab in its location line.
+fn terminal_notice(
+    tab: TabId,
+    title: &str,
+    failure: TerminalFailure,
+) -> NoticeContent {
+    NoticeContent {
+        severity: failure.severity,
+        source: NoticeSource::Terminal {
+            tab,
+            title: title.to_owned(),
+        },
+        title: failure.title.to_owned(),
+        message: failure.message,
+        location: Some(title.to_owned()),
+        actions: Vec::new(),
+        lifetime: Lifetime::Expiring,
+    }
+}
+
+/// Announces a kept tab's root exit. Exit is not a failure, so it is
+/// informational and expires like other terminal notices.
+fn exit_notice(tab: TabId, title: &str, code: Option<u32>) -> NoticeContent {
+    NoticeContent {
+        severity: Severity::Info,
+        source: NoticeSource::Terminal {
+            tab,
+            title: title.to_owned(),
+        },
+        title: "Process exited".to_owned(),
+        message: code.map_or_else(
+            || "Process exited".into(),
+            |code| format!("Process exited with status {code}"),
+        ),
+        location: Some(title.to_owned()),
+        actions: Vec::new(),
+        lifetime: Lifetime::Expiring,
+    }
+}
+
 /// Executes a filled runtime command on the structural worker and reports a
-/// later failure through the window status.
+/// later failure as a notice offering to run the same invocation again.
 fn run_on_runtime(
     invocation: CommandInvocation,
     cx: &mut Context<'_, WorkspaceView>,
 ) -> CommandOutcome {
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    let retry = invocation.clone();
     let task = cx
         .background_executor()
         .spawn(async move { runtime.execute(&invocation) });
     cx.spawn(async move |view, cx| {
         if let Err(error) = task.await {
             let _ = view.update(cx, |view, cx| {
-                view.status = Some(format!("Command failed: {error}"));
-                cx.notify();
+                view.notify(
+                    NoticeContent::command_failure(
+                        "Command failed",
+                        format!("Command failed: {error}"),
+                    )
+                    .action("Try Again", retry),
+                    cx,
+                );
             });
         }
     })
@@ -3602,9 +5076,7 @@ impl WorkspaceView {
                     }
                     Event::NativeExitFailed(error) => {
                         self.fullscreen.recover();
-                        self.status =
-                            Some(format!("Fullscreen failed: {error}"));
-                        cx.notify();
+                        self.fullscreen_failed(&error, cx);
                     }
                     Event::State(recovery, chrome) => {
                         self.fullscreen.non_native_state(recovery, chrome);
@@ -3614,9 +5086,7 @@ impl WorkspaceView {
                     }
                     Event::Failed(generation, error) => {
                         if self.fullscreen.fail(generation) {
-                            self.status =
-                                Some(format!("Fullscreen failed: {error}"));
-                            cx.notify();
+                            self.fullscreen_failed(&error, cx);
                         }
                     }
                     Event::Recover => self.fullscreen.recover(),
@@ -3630,9 +5100,12 @@ impl WorkspaceView {
         if let Some(generation) = self.fullscreen.expired(now) {
             #[cfg(not(target_os = "macos"))]
             let _ = generation;
-            self.status = Some("Fullscreen transition timed out".to_owned());
+            self.report_failure(
+                "Fullscreen",
+                "Fullscreen transition timed out",
+                cx,
+            );
             eprintln!("Fullscreen transition timed out");
-            cx.notify();
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &self.native_fullscreen {
                 adapter.cancel(generation);
@@ -3665,18 +5138,39 @@ impl WorkspaceView {
                 self.notch_shelves,
             )
         {
+            // Leaving fullscreen can restore a Linux client frame. Apply it
+            // before the terminals resize, so no PTY is sized for the
+            // windowed chrome inside the fullscreen frame.
+            self.sync_frame(window);
+            let window_frame = self.window_frame();
             let notch_shelf = self.notch_shelf();
+            let quake_presenting = self.quake_presenting();
             for tab in &self.tabs {
                 tab.view.update(cx, |terminal, cx| {
+                    terminal.quiet_resize = quake_presenting;
                     terminal.chrome_hidden = self.fullscreen.chrome_hidden;
                     terminal.fullscreen_insets = self.fullscreen_insets;
                     terminal.notch_shelf = notch_shelf;
+                    terminal.window_frame = window_frame;
                     terminal.resize_if_needed(window);
                     cx.notify();
                 });
             }
             cx.notify();
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fullscreen_failed(
+        &mut self,
+        error: &dyn std::fmt::Display,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.report_failure(
+            "Fullscreen",
+            format!("Fullscreen failed: {error}"),
+            cx,
+        );
     }
 
     fn advance_fullscreen(
@@ -3699,9 +5193,7 @@ impl WorkspaceView {
                         && let Err(error) = adapter.check_native_transition()
                     {
                         self.fullscreen.fail(operation.generation);
-                        self.status =
-                            Some(format!("Fullscreen failed: {error}"));
-                        cx.notify();
+                        self.fullscreen_failed(&error, cx);
                         self.fullscreen_work.wake.signal();
                         return false;
                     }
@@ -3721,9 +5213,10 @@ impl WorkspaceView {
                         .detach();
                     } else {
                         self.fullscreen.fail(operation.generation);
-                        self.status = Some(
-                            "Fullscreen native adapter is unavailable"
-                                .to_owned(),
+                        self.report_failure(
+                            "Fullscreen",
+                            "Fullscreen native adapter is unavailable",
+                            cx,
                         );
                     }
                 }
@@ -3940,11 +5433,9 @@ impl WorkspaceView {
     ) {
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
-        if let CloseTarget::Tab(id) = target
-            && !self.tabs.iter().any(|tab| tab.id == id)
-        {
+        let Some(target) = self.current_close_target(target) else {
             return;
-        }
+        };
         if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
         }
@@ -3953,7 +5444,7 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
-        let request = match target {
+        let request = match &target {
             CloseTarget::Application => CloseRequest::Application,
             CloseTarget::Window => {
                 let Some(attachment) = self.attachment else {
@@ -3966,7 +5457,19 @@ impl WorkspaceView {
                 let Some(workspace) = self.workspace else {
                     return;
                 };
-                CloseRequest::Tab { workspace, tab }
+                CloseRequest::Tab {
+                    workspace,
+                    tab: *tab,
+                }
+            }
+            CloseTarget::Tabs(tabs) => {
+                let Some(workspace) = self.workspace else {
+                    return;
+                };
+                CloseRequest::Tabs {
+                    workspace,
+                    tabs: tabs.clone(),
+                }
             }
         };
         let generation = self.close.generation;
@@ -3985,8 +5488,11 @@ impl WorkspaceView {
                 let assessment = match result {
                     Ok(assessment) => assessment,
                     Err(error) => {
-                        view.status =
-                            Some(format!("Cannot assess close: {error}"));
+                        view.report_failure(
+                            "Close",
+                            format!("Cannot assess close: {error}"),
+                            cx,
+                        );
                         view.cancel_close(window, cx);
                         return;
                     }
@@ -3999,6 +5505,8 @@ impl WorkspaceView {
                     }
                     Some(CloseDecision::Confirm(_)) => {
                         view.dismiss_palette_for_confirmation(cx);
+                        view.close_menu(MenuFocusReturn::Keep, window, cx);
+                        view.about = None;
                         view.focus.focus(window);
                         cx.notify();
                     }
@@ -4012,6 +5520,26 @@ impl WorkspaceView {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Restricts tab targets to current tabs, in window order; `None` when
+    /// nothing remains to close.
+    fn current_close_target(&self, target: CloseTarget) -> Option<CloseTarget> {
+        match target {
+            CloseTarget::Tab(id) => self
+                .tabs
+                .iter()
+                .any(|tab| tab.id == id)
+                .then_some(CloseTarget::Tab(id)),
+            CloseTarget::Tabs(ids) => tabs_target(
+                self.tabs
+                    .iter()
+                    .map(|tab| tab.id)
+                    .filter(|id| ids.contains(id))
+                    .collect(),
+            ),
+            target => Some(target),
+        }
     }
 
     fn cancel_close(
@@ -4055,13 +5583,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let confirmed = self.close.confirmation == Some(target);
+        let confirmed = self.close.confirmation.as_ref() == Some(&target);
         let Some(assessment) = self.close.assessment.take() else {
             self.request_close(target, window, cx);
             return;
         };
         self.close.confirmation = None;
-        self.close.current = Some(target);
+        self.close.current = Some(target.clone());
         self.busy = true;
         let generation = self.close.generation;
         if self.quake.is_none() {
@@ -4099,11 +5627,9 @@ impl WorkspaceView {
                     return;
                 }
                 if let Err(error) = result {
-                    view.status = Some(format!("Close failed: {error}"));
-                    eprintln!(
-                        "{}",
-                        view.status.as_deref().unwrap_or("Close failed")
-                    );
+                    let message = format!("Close failed: {error}");
+                    eprintln!("{message}");
+                    view.report_failure("Close", message, cx);
                 }
                 match target {
                     CloseTarget::Application => approved_quit(cx),
@@ -4115,32 +5641,43 @@ impl WorkspaceView {
                         view.remove_window(window, cx, quit_after);
                     }
                     CloseTarget::Tab(id) => {
-                        remove_tab(
-                            &mut view.tabs,
-                            &mut view.active,
-                            id,
-                            |tab| tab.id,
-                        );
-                        prune_tab_history(&mut view.history, id);
-                        // Fit widths are index-based; refresh them before
-                        // the reveal below reads them.
-                        view.measure_tab_widths(window, cx);
-                        if let Some(active) = view.active {
-                            view.select(active, window, cx);
-                            view.reveal_tab_activity(window, cx);
-                        }
-                        if view.resume_close(window, cx) {
-                            return;
-                        }
-                        if view.tabs.is_empty() {
-                            view.request_close(CloseTarget::Window, window, cx);
-                        }
-                        cx.notify();
+                        view.remove_closed_tabs(&[id], window, cx);
+                    }
+                    CloseTarget::Tabs(ids) => {
+                        view.remove_closed_tabs(&ids, window, cx);
                     }
                 }
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Drops the records of committed tab closes, then resumes queued
+    /// closes or closes the emptied window.
+    fn remove_closed_tabs(
+        &mut self,
+        ids: &[TabId],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        for &id in ids {
+            remove_tab(&mut self.tabs, &mut self.active, id, |tab| tab.id);
+            prune_tab_history(&mut self.history, id);
+        }
+        // Fit widths are index-based; refresh them before the reveal below
+        // reads them.
+        self.measure_tab_widths(window, cx);
+        if let Some(active) = self.active {
+            self.select(active, window, cx);
+            self.reveal_tab_activity(window, cx);
+        }
+        if self.resume_close(window, cx) {
+            return;
+        }
+        if self.tabs.is_empty() {
+            self.request_close(CloseTarget::Window, window, cx);
+        }
         cx.notify();
     }
 }
@@ -4153,9 +5690,10 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
     }
     cx.global_mut::<Desktop>().reloading = true;
     let path = cx.global::<Desktop>().config_path.clone();
+    let reload_path = path.clone();
     let task = cx
         .background_executor()
-        .spawn(async move { config::reload(&path) });
+        .spawn(async move { config::reload(&reload_path) });
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {
@@ -4171,13 +5709,14 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 quake_windows::replace_registrations(cx, &config, &compiled)?;
                 Ok((config, family, metrics, compiled))
             });
-            let mut keymap_status = None;
             let result = result.map(|(config, family, metrics, compiled)| {
                 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
                 apply_update_config(cx, &config);
                 let desktop = cx.global_mut::<Desktop>();
                 desktop.config = config.clone();
-                keymap_status = reload_diagnostic(cx, &config, &compiled);
+                desktop.diagnostics =
+                    reload_diagnostics(&path, &config, &compiled);
+                desktop.latched.clear();
                 quake_windows::reconcile(cx);
                 let keymap = bind_keymap(cx, compiled);
                 cx.global_mut::<Desktop>().keymap = keymap;
@@ -4185,63 +5724,105 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                 (config, family, metrics)
             });
             report_config_reload_error(&result);
-            let windows = cx.global::<Desktop>().windows.clone();
-            for window in windows {
-                let _ = window.update(cx, |view, cx| {
-                    if let Some(tab) = view.active_view() {
-                        tab.update(cx, |tab, _| tab.clear_option_composition());
-                    }
-                    match &result {
-                        Ok((config, family, metrics)) => {
-                            view.resizing_sidebar = false;
-                            view.scroll_target = None;
-                            view.config = config.clone();
-                            view.layout_pending = true;
-                            view.title_widths.clear();
-                            view.fullscreen_work.wake.signal();
-                            view.fullscreen.set_default(
-                                config.window.macos_fullscreen_mode,
+            let diagnostics = match &result {
+                Ok(_) => cx.global::<Desktop>().diagnostics.clone(),
+                Err(error) => failed_reload_diagnostics(
+                    error,
+                    &cx.global::<Desktop>().diagnostics,
+                ),
+            };
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |root, window, cx| {
+                    if let Ok(view) = root.downcast::<WorkspaceView>() {
+                        view.update(cx, |view, cx| {
+                            view.apply_reload(
+                                result.as_ref().ok(),
+                                &diagnostics,
+                                window,
+                                cx,
                             );
-                            view.family.clone_from(family);
-                            view.metrics = *metrics;
-                            view.status = None;
-                            for tab in &view.tabs {
-                                tab.view.update(cx, |view, cx| {
-                                    let metrics = metrics
-                                        .at_scale(view.metrics.scale_factor);
-                                    view.renderer.borrow_mut().reconfigure(
-                                        family.clone(),
-                                        config.theme.clone(),
-                                        metrics,
-                                    );
-                                    view.font_family.clone_from(family);
-                                    view.font_size = metrics.font_size;
-                                    view.metrics = metrics;
-                                    view.window_config = config.window;
-                                    view.tabs_config = config.tabs;
-                                    view.reload_terminal_config(
-                                        config.terminal,
-                                        cx,
-                                    );
-                                    view.publish_presentation(&config.theme);
-                                    view.theme = config.theme.clone();
-                                    cx.notify();
-                                });
-                            }
-                            view.status.clone_from(&keymap_status);
-                        }
-                        Err(error) => {
-                            view.status =
-                                Some(format!("Config reload failed: {error}"));
-                        }
+                        });
                     }
-                    view.reload_palette(cx);
                 });
             }
         });
     })
     .detach();
     Ok(CommandOutcome::Accepted)
+}
+
+impl WorkspaceView {
+    /// Applies a reload's outcome: a new configuration when it loaded, and
+    /// the replacement configuration notices either way.
+    fn apply_reload(
+        &mut self,
+        loaded: Option<&(Config, String, GridMetrics)>,
+        diagnostics: &[NoticeContent],
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(tab) = self.active_view() {
+            tab.update(cx, |tab, _| tab.clear_option_composition());
+        }
+        let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
+        if let Some((config, family, metrics)) = loaded {
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
+            self.resizing_sidebar = false;
+            self.scroll_target = None;
+            // A position change to or from `titlebar` changes who draws
+            // the Linux title bar. GPUI applies the request at once, and
+            // its appearance callback cannot reach this view while it is
+            // updating, so the frame is sampled here.
+            let quake = self.quake.is_some();
+            let previous = requested_decorations(
+                self.config.tabs.position,
+                Platform::current(),
+                quake,
+            );
+            let requested = requested_decorations(
+                config.tabs.position,
+                Platform::current(),
+                quake,
+            );
+            if previous != requested {
+                window.request_decorations(requested);
+            }
+            self.config = config.clone();
+            self.sync_frame(window);
+            self.layout_pending = true;
+            self.title_widths.clear();
+            self.fullscreen_work.wake.signal();
+            self.fullscreen
+                .set_default(config.window.macos_fullscreen_mode);
+            self.family.clone_from(family);
+            self.metrics = *metrics;
+            let tabs_config = self.layout_tabs();
+            let window_frame = self.window_frame();
+            for tab in &self.tabs {
+                tab.view.update(cx, |view, cx| {
+                    let metrics = metrics.at_scale(view.metrics.scale_factor);
+                    view.renderer.borrow_mut().reconfigure(
+                        family.clone(),
+                        config.theme.clone(),
+                        metrics,
+                    );
+                    view.font_family.clone_from(family);
+                    view.font_size = metrics.font_size;
+                    view.metrics = metrics;
+                    view.window_config = config.window;
+                    view.tabs_config = tabs_config;
+                    view.window_frame = window_frame;
+                    view.reload_terminal_config(config.terminal, cx);
+                    view.publish_presentation(&config.theme);
+                    view.theme = config.theme.clone();
+                    view.set_scroll_to_bottom_key(scroll_key.clone(), cx);
+                    cx.notify();
+                });
+            }
+        }
+        self.replace_diagnostics(diagnostics, window, cx);
+        self.reload_palette(cx);
+    }
 }
 
 fn report_config_reload_error<T>(result: &Result<T, String>) {
@@ -4290,38 +5871,130 @@ pub(super) fn terminal_corner_radius(
 /// The strip's bounds inside the tab bar. Horizontal Pill bars start with a
 /// leading margin so the first pill's visible edge matches the vertical
 /// inset; every other placement and style fills the bar.
-/// Vertical columns also keep their rows below `top_inset`, the display
-/// safe area the column's background spans but its rows avoid.
+/// The strip also starts after `inset` along its axis: the display safe
+/// area a vertical column's background spans but its rows avoid, or the
+/// traffic lights at the start of the title-bar row. A horizontal strip
+/// also ends `trailing` before the bar's end: the window controls at the
+/// end of the title row Huterm draws.
 fn strip_bounds(
     tabs: Bounds<Pixels>,
-    top_inset: Pixels,
+    inset: Pixels,
+    trailing: Pixels,
     config: huterm_config::TabsConfig,
 ) -> Bounds<Pixels> {
     if config.position.vertical() {
-        let inset = top_inset.min(tabs.size.height);
+        let inset = inset.min(tabs.size.height);
         return Bounds::new(
             point(tabs.origin.x, tabs.origin.y + inset),
             size(tabs.size.width, tabs.size.height - inset),
         );
     }
-    if config.style != TabStyle::Pill {
-        return tabs;
+    let mut lead = inset.min(tabs.size.width);
+    if config.style == TabStyle::Pill {
+        lead = (lead + PILL_INSET - PILL_MARGIN_LEFT).min(tabs.size.width);
     }
-    let lead = (PILL_INSET - PILL_MARGIN_LEFT).min(tabs.size.width);
+    let trailing = trailing.max(px(0.0)).min(tabs.size.width - lead);
     Bounds::new(
         point(tabs.origin.x + lead, tabs.origin.y),
-        size(tabs.size.width - lead, tabs.size.height),
+        size(tabs.size.width - lead - trailing, tabs.size.height),
     )
+}
+
+/// The window frame the chrome sits in, from Linux client-side
+/// decorations: the border Huterm owns on each side of the content,
+/// whether the title row is Huterm's own, and the window buttons it draws
+/// at the row's ends. They are zero, false, and none on macOS, in
+/// fullscreen, in Quake windows, and wherever the window manager draws the
+/// title bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct WindowFrame {
+    pub(super) inset: gpui::Edges<Pixels>,
+    pub(super) controls: bool,
+    pub(super) buttons: ButtonLayout,
+}
+
+impl WindowFrame {
+    /// The frame for a window whose tabs resolved to `position`. Only a
+    /// Linux window drawing the merged row owns a border; its inset follows
+    /// the tiling, maximized, and fullscreen state GPUI reports, and its
+    /// row draws the desktop's `buttons`.
+    fn resolve(
+        position: TabPosition,
+        state: FrameState,
+        buttons: ButtonLayout,
+    ) -> Self {
+        let controls = Platform::current() == Platform::Linux
+            && position == TabPosition::Titlebar;
+        if !controls {
+            return Self::default();
+        }
+        Self {
+            inset: state.frame().edges(),
+            controls,
+            buttons,
+        }
+    }
+
+    /// The shadow and rounded corners are drawn only around a border.
+    pub(super) fn decorated(self) -> bool {
+        self.client_frame().decorated()
+    }
+
+    fn client_frame(self) -> ClientFrame {
+        ClientFrame {
+            inset: self.inset.top.max(px(0.0)),
+        }
+    }
+}
+
+/// The window's content inside `frame`: the border is clamped to the window
+/// so a tiny window keeps nonnegative content.
+fn content_inside(
+    window: gpui::Size<Pixels>,
+    frame: WindowFrame,
+) -> Bounds<Pixels> {
+    let window = size(window.width.max(px(0.0)), window.height.max(px(0.0)));
+    let left = frame.inset.left.max(px(0.0)).min(window.width);
+    let top = frame.inset.top.max(px(0.0)).min(window.height);
+    let right = frame.inset.right.max(px(0.0)).min(window.width - left);
+    let bottom = frame.inset.bottom.max(px(0.0)).min(window.height - top);
+    Bounds::new(
+        point(left, top),
+        size(window.width - left - right, window.height - top - bottom),
+    )
+}
+
+/// The height of the title row above the terminal: `AppKit`'s strip on
+/// macOS, or the row Huterm draws inside its own frame on Linux, which is
+/// the tab bar's height.
+pub(super) fn title_row_height(
+    chrome_hidden: bool,
+    frame: WindowFrame,
+) -> Pixels {
+    if frame.controls {
+        TAB_HEIGHT
+    } else {
+        terminal_top(chrome_hidden)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChromeLayout {
     pub(super) terminal: Bounds<Pixels>,
     tabs: Bounds<Pixels>,
-    /// Safe-area height a vertical column spans above its rows.
-    column_top_inset: Pixels,
-    /// The bar sits on a notch shelf, so hiding it frees no terminal space.
-    on_shelf: bool,
+    /// The window inside its frame: the whole viewport without one.
+    pub(super) content: Bounds<Pixels>,
+    pub(super) frame: WindowFrame,
+    /// Bar length the strip avoids at its start: the safe-area height a
+    /// vertical column spans above its rows, or the traffic lights or
+    /// window buttons at the start of the title-bar row.
+    strip_inset: Pixels,
+    /// Bar length the strip leaves free at its end: the window buttons at
+    /// the end of the title row Huterm draws.
+    strip_trailing: Pixels,
+    /// The bar sits on chrome that exists anyway, a notch shelf or the
+    /// title bar, so hiding it frees no terminal space.
+    outside_terminal: bool,
 }
 impl ChromeLayout {
     #[cfg(test)]
@@ -4338,7 +6011,7 @@ impl ChromeLayout {
         position: TabPosition,
         progress: f32,
     ) -> Self {
-        if presentation != Presentation::Reserved && !self.on_shelf {
+        if presentation != Presentation::Reserved && !self.outside_terminal {
             if position.vertical() {
                 self.terminal.size.width += self.tabs.size.width;
                 if position == TabPosition::Left {
@@ -4354,7 +6027,7 @@ impl ChromeLayout {
         if presentation == Presentation::Overlay {
             let hidden = 1.0 - progress.clamp(0.0, 1.0);
             match position {
-                TabPosition::Top => {
+                TabPosition::Top | TabPosition::Titlebar => {
                     self.tabs.origin.y -= self.tabs.size.height * hidden;
                 }
                 TabPosition::Bottom => {
@@ -4376,7 +6049,7 @@ impl ChromeLayout {
         let tabs = self.tabs;
         let line = px(1.0);
         match position {
-            TabPosition::Top => Bounds::new(
+            TabPosition::Top | TabPosition::Titlebar => Bounds::new(
                 point(tabs.origin.x, tabs.bottom() - line),
                 size(tabs.size.width, line),
             ),
@@ -4496,11 +6169,52 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             None,
+            WindowFrame::default(),
         )
     }
 
+    /// Lays out with a 32-point bar inside `frame`, with the title row
+    /// Huterm draws when the frame carries its controls.
+    #[cfg(test)]
+    pub(super) fn with_frame(
+        viewport: gpui::Size<Pixels>,
+        position: TabPosition,
+        frame: WindowFrame,
+    ) -> Self {
+        Self::build(
+            viewport,
+            title_row_height(false, frame),
+            position,
+            TAB_HEIGHT,
+            SIDEBAR_WIDTH,
+            gpui::Edges::default(),
+            None,
+            frame,
+        )
+    }
+
+    /// The size a Reserved bar takes from the terminal in a window without
+    /// a safe area: a vertical column's width, a horizontal bar's height,
+    /// and nothing for the merged title-bar row, which shares the titlebar
+    /// inset.
+    fn bar_reservation(
+        tabs: huterm_config::TabsConfig,
+        sidebar_width: Pixels,
+    ) -> gpui::Size<Pixels> {
+        match tabs.position {
+            TabPosition::Left | TabPosition::Right => {
+                size(sidebar_width, px(0.0))
+            }
+            TabPosition::Top | TabPosition::Bottom => {
+                size(px(0.0), tab_bar_height(tabs))
+            }
+            TabPosition::Titlebar => size(px(0.0), px(0.0)),
+        }
+    }
+
     /// `notch_shelf` places a top bar in that window-relative area beside a
-    /// display notch instead of below the safe area.
+    /// display notch instead of below the safe area. Everything lies
+    /// inside `frame`, whose inset is the resize border Huterm owns.
     pub(super) fn for_tabs(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
@@ -4508,6 +6222,7 @@ impl ChromeLayout {
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
         notch_shelf: Option<Bounds<Pixels>>,
+        frame: WindowFrame,
     ) -> Self {
         Self::build(
             viewport,
@@ -4517,18 +6232,33 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             notch_shelf,
+            frame,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every input is one fact about the window the layout partitions"
+    )]
     fn build(
-        viewport: gpui::Size<Pixels>,
+        window: gpui::Size<Pixels>,
         titlebar: Pixels,
         position: TabPosition,
         bar_height: Pixels,
         sidebar_width: Pixels,
         safe_area: gpui::Edges<Pixels>,
         notch_shelf: Option<Bounds<Pixels>>,
+        frame: WindowFrame,
     ) -> Self {
+        // The layout partitions the content inside the frame; the frame's
+        // origin is added back at the end. A notch shelf is already
+        // window-relative and never coexists with a frame, so it is
+        // brought into content coordinates like everything else.
+        let content = content_inside(window, frame);
+        let viewport = content.size;
+        let notch_shelf = notch_shelf.map(|shelf| {
+            Bounds::new(shelf.origin - content.origin, shelf.size)
+        });
         let left = safe_area.left.max(px(0.0)).min(viewport.width.max(px(0.0)));
         let top = (titlebar + safe_area.top)
             .max(px(0.0))
@@ -4540,9 +6270,32 @@ impl ChromeLayout {
         );
         let mut terminal = Bounds::new(point(left, top), available);
         let mut tabs = terminal;
-        let mut column_top_inset = px(0.0);
-        let mut on_shelf = false;
-        if position.vertical() {
+        let mut strip_inset = px(0.0);
+        let mut strip_trailing = px(0.0);
+        let mut outside_terminal = false;
+        if position == TabPosition::Titlebar {
+            // The merged row is the title strip itself: the full window
+            // width above the terminal, at the strip's height. Its tabs
+            // start after the traffic lights, or after a small lead in the
+            // row Huterm draws, whose window controls end the row; the
+            // terminal keeps the whole area below the strip.
+            let row = titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
+            tabs = Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(viewport.width.max(px(0.0)), row),
+            );
+            if frame.controls {
+                strip_inset = if frame.buttons.leading.is_empty() {
+                    TITLE_ROW_LEAD
+                } else {
+                    frame.buttons.leading.width()
+                };
+                strip_trailing = frame.buttons.trailing.width();
+            } else {
+                strip_inset = TRAFFIC_LIGHT_INSET;
+            }
+            outside_terminal = true;
+        } else if position.vertical() {
             tabs.size.width = sidebar_width
                 .clamp(px(140.0), px(400.0))
                 .min(available.width * 0.5);
@@ -4558,7 +6311,7 @@ impl ChromeLayout {
             // notch; only its rows stay below the safe area.
             let column_top =
                 titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
-            column_top_inset = top - column_top;
+            strip_inset = top - column_top;
             tabs.origin.y = column_top;
             tabs.size.height =
                 (viewport.height - column_top - safe_area.bottom.max(px(0.0)))
@@ -4579,7 +6332,7 @@ impl ChromeLayout {
             let line = px(1.0).min(available.height);
             terminal.origin.y += line;
             terminal.size.height -= line;
-            on_shelf = true;
+            outside_terminal = true;
         } else {
             tabs.size.height = bar_height.min(available.height);
             terminal.size.height =
@@ -4590,11 +6343,16 @@ impl ChromeLayout {
                 tabs.origin.y += terminal.size.height;
             }
         }
+        terminal.origin += content.origin;
+        tabs.origin += content.origin;
         Self {
             terminal,
             tabs,
-            column_top_inset,
-            on_shelf,
+            content,
+            frame,
+            strip_inset,
+            strip_trailing,
+            outside_terminal,
         }
     }
 
@@ -4603,14 +6361,24 @@ impl ChromeLayout {
         &self,
         config: huterm_config::TabsConfig,
     ) -> Bounds<Pixels> {
-        strip_bounds(self.tabs, self.column_top_inset, config)
+        strip_bounds(self.tabs, self.strip_inset, self.strip_trailing, config)
+    }
+
+    /// The one-point line under the title row Huterm draws, across the
+    /// whole content width so it also runs under the window controls.
+    fn title_row_border(&self) -> Bounds<Pixels> {
+        let line = px(1.0);
+        Bounds::new(
+            point(self.content.origin.x, self.tabs.bottom() - line),
+            size(self.content.size.width, line),
+        )
     }
 }
 
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
-        reason = "window chrome composes tab controls and close confirmation"
+        reason = "window chrome composes tab controls, the window menu, and close confirmation"
     )]
     fn render(
         &mut self,
@@ -4618,17 +6386,37 @@ impl Render for WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.measure_tab_widths(window, cx);
+        self.sync_frame(window);
         self.refresh_tab_visibility(window, cx);
         self.sync_tab_layout(window, cx);
-        let position = self.config.tabs.position;
+        self.sync_window_title(window, cx);
+        self.heal_notice_state(window, cx);
+        let tabs = self.layout_tabs();
+        let position = tabs.position;
         let layout = self.chrome_layout(window);
+        let frame = layout.frame;
+        let content = layout.content;
+        // Inside a drawn border the window is transparent around a rounded,
+        // shadowed panel; otherwise the root fills the window.
+        let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
         let background = color(self.config.theme.background);
         let colors = TabColors::new(&self.config.theme);
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let menu_placement = self.menu_button_placement();
+        if menu_placement == MenuButtonPlacement::Hidden {
+            // A hidden button anchors nothing; `open_menu` falls back.
+            self.menu_button_bounds.set(None);
+        }
+        for button in WindowButton::ALL {
+            if !frame.buttons.contains(button) {
+                self.window_button_bounds[button.index()].set(None);
+            }
+        }
         let mut root = div()
             .size_full()
             .relative()
-            .bg(background)
+            .when(!decorated, |root| root.bg(background))
             .text_color(foreground)
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .key_context(self.key_context(window))
@@ -4647,13 +6435,6 @@ impl Render for WorkspaceView {
                         // GPUI skips raw keystroke observers after propagation
                         // stops, so this Escape cannot also reach the terminal.
                         cx.stop_propagation();
-                        return;
-                    }
-                    if view.close.confirmation.is_some()
-                        && event.keystroke.key == "escape"
-                    {
-                        view.cancel_close(window, cx);
-                        cx.stop_propagation();
                     }
                 },
             ))
@@ -4662,12 +6443,29 @@ impl Render for WorkspaceView {
                     if let Err(error) =
                         view.invoke_interactive(&action.0, window, cx)
                     {
-                        view.status = Some(error.to_string());
-                        cx.notify();
+                        view.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
                     }
                 },
             ))
             .on_action(cx.listener(Self::invoke_palette));
+        if decorated {
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(content.origin.x)
+                    .top(content.origin.y)
+                    .w(content.size.width)
+                    .h(content.size.height)
+                    .bg(background)
+                    .rounded_tl(FRAME_RADIUS)
+                    .rounded_tr(FRAME_RADIUS)
+                    .shadow(swatch.frame_shadow()),
+            );
+        }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
         let press_view = move_view.clone();
@@ -4712,11 +6510,36 @@ impl Render for WorkspaceView {
                         },
                     );
                     window.on_mouse_event(
-                        move |_: &gpui::MouseDownEvent, phase, window, cx| {
+                        move |event: &gpui::MouseDownEvent,
+                              phase,
+                              window,
+                              cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = press_view.update(cx, |view, cx| {
                                     view.pointer_reveal.outside = false;
+                                    // Only a press the title row itself
+                                    // accepts (in its bubble handler) may
+                                    // become a window move.
+                                    view.title_row_press.set(false);
                                     view.defer_pointer_refresh(window, cx);
+                                    // A press outside the menu closes it and
+                                    // then proceeds; the button toggles it.
+                                    let inside = [
+                                        view.menu_bounds.get(),
+                                        view.menu_button_bounds.get(),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|bounds| {
+                                        bounds.contains(&event.position)
+                                    });
+                                    if view.menu.is_some() && !inside {
+                                        view.close_menu(
+                                            MenuFocusReturn::Terminal,
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                 });
                             }
                         },
@@ -4772,19 +6595,60 @@ impl Render for WorkspaceView {
             .absolute()
             .inset_0(),
         );
-        let titlebar = terminal_top(self.chrome_hidden());
+        let titlebar = self.title_row();
         let top_chrome = titlebar + self.fullscreen_insets.top.max(px(0.0));
+        let bar_drawn = self.presentation() == Presentation::Reserved
+            || self.presentation() == Presentation::Overlay
+                && self.reveal.progress > 0.0;
+        // The tab bar and the title strip are one row: the tabs cover the
+        // strip, whose trailing space keeps the title bar's gestures.
+        let merged_row = position == TabPosition::Titlebar && bar_drawn;
         // A top bar on the notch shelf, currently shown.
         let shelf_bar = self.notch_shelf().is_some()
             && self.presentation() == Presentation::Reserved;
+        let title_menu_button = (menu_placement
+            == MenuButtonPlacement::TitleStrip)
+            .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
+        // The window buttons that start the row Huterm draws.
+        let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
+            self.window_controls_element(
+                frame.buttons.leading,
+                true,
+                colors,
+                window,
+                cx,
+            )
+        });
+        // The strip's trailing group: the menu button when the strip holds
+        // it, then the window buttons that end the row Huterm draws.
+        let title_trailing = div()
+            .ml_auto()
+            .flex()
+            .items_center()
+            .children(title_menu_button)
+            .when(!frame.buttons.trailing.is_empty(), |trailing| {
+                trailing.child(self.window_controls_element(
+                    frame.buttons.trailing,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
+            });
+        // The title centres between the space its ends reserve.
+        let title_padding =
+            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT);
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
                     .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
+                    .top(content.origin.y)
+                    .left(content.origin.x)
+                    .w(content.size.width)
                     .h(top_chrome)
+                    .when(decorated, |bar| {
+                        bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
+                    })
                     .bg(
                         // A shelf bar fills the whole safe-area strip, so
                         // the bar reads as one band across the notch.
@@ -4802,11 +6666,43 @@ impl Render for WorkspaceView {
                         },
                     )
                     .when(titlebar > px(0.0), |bar| {
-                        bar.pl(px(84.0))
-                            .flex()
+                        // The strip stays draggable and keeps the menu
+                        // button at its right end.
+                        bar.flex()
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
-                            .child("Huterm")
+                            .children(title_leading)
+                            .child(title_trailing)
+                    })
+                    .when(titlebar > px(0.0) || frame.controls, |bar| {
+                        // The macOS strip or Huterm's own Linux title row:
+                        // its empty space moves the window, a double-click
+                        // runs the title-bar action, and a secondary press
+                        // opens the window manager's menu.
+                        self.title_row_gestures(bar)
+                    })
+                    .when(titlebar > px(0.0) && !merged_row, |bar| {
+                        // The active tab's title, centred across the strip
+                        // and kept clear of the traffic lights and the
+                        // menu button. A merged row shows the tabs instead.
+                        let strip_title = self
+                            .tabs
+                            .iter()
+                            .find(|tab| Some(tab.id) == self.active)
+                            .map_or_else(
+                                || "Huterm".to_owned(),
+                                |tab| tab.title(self.config.tabs, cx),
+                            );
+                        bar.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .px(title_padding)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().truncate().child(strip_title)),
+                        )
                     }),
             );
         }
@@ -4837,10 +6733,7 @@ impl Render for WorkspaceView {
                 self.last_scroll = Instant::now();
             }
         }
-        if self.presentation() == Presentation::Reserved
-            || self.presentation() == Presentation::Overlay
-                && self.reveal.progress > 0.0
-        {
+        if bar_drawn {
             let clip = if self.presentation() == Presentation::Overlay {
                 layout.terminal
             } else {
@@ -4853,15 +6746,58 @@ impl Render for WorkspaceView {
                 .w(clip.size.width)
                 .h(clip.size.height)
                 .overflow_hidden();
+            // The bar occludes the title strip beneath it, so it leaves out
+            // the ends where the strip draws the window buttons.
+            let bar_lead = frame.buttons.leading.width();
             chrome = chrome.child(
                 div()
+                    .id("tab-bar")
                     .absolute()
-                    .left(layout.tabs.origin.x - clip.origin.x)
+                    .left(layout.tabs.origin.x + bar_lead - clip.origin.x)
                     .top(layout.tabs.origin.y - clip.origin.y)
-                    .w(layout.tabs.size.width)
+                    .w(layout.tabs.size.width
+                        - bar_lead
+                        - layout.strip_trailing)
                     .h(layout.tabs.size.height)
                     .bg(colors.bar)
-                    .occlude(),
+                    .occlude()
+                    .when(merged_row && decorated, |row| {
+                        // Where the bar reaches a top corner of the frame,
+                        // it takes the frame's rounding.
+                        row.when(bar_lead == px(0.0), |row| {
+                            row.rounded_tl(FRAME_RADIUS)
+                        })
+                        .when(layout.strip_trailing == px(0.0), |row| {
+                            row.rounded_tr(FRAME_RADIUS)
+                        })
+                    })
+                    .when(merged_row, |row| {
+                        // The space after the tabs is still the title bar:
+                        // it moves the window and takes the title-bar
+                        // double-click. Tabs, `+`, and the menu button sit above this
+                        // background and keep their presses.
+                        self.title_row_gestures(
+                            row.window_control_area(WindowControlArea::Drag),
+                        )
+                    })
+                    .when(!(merged_row && frame.controls), |bar| {
+                        // A right press on empty bar space opens the window
+                        // menu there. Huterm's Linux title row keeps the
+                        // window manager's menu instead.
+                        bar.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(
+                                |view, event: &MouseDownEvent, window, cx| {
+                                    view.open_menu_at(
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                },
+                            ),
+                        )
+                    }),
             );
             if shelf_bar {
                 // One point below the safe area so the notch never hides
@@ -4877,7 +6813,13 @@ impl Render for WorkspaceView {
                         .bg(colors.border),
                 );
             } else {
-                let edge = layout.tab_border(position);
+                // Huterm's own row also runs its line under the window
+                // controls, which lie beyond the tab bar.
+                let edge = if merged_row && frame.controls {
+                    layout.title_row_border()
+                } else {
+                    layout.tab_border(position)
+                };
                 chrome = chrome.child(
                     div()
                         .absolute()
@@ -4897,6 +6839,12 @@ impl Render for WorkspaceView {
                 .w(strip.bounds.size.width)
                 .h(strip.bounds.size.height)
                 .overflow_hidden()
+                // The strip occludes the row beneath it, so its own empty
+                // space after the last tab carries the row's gestures too;
+                // tabs stop their presses before they reach it.
+                .when(merged_row && frame.controls, |bar| {
+                    self.title_row_gestures(bar)
+                })
                 .on_scroll_wheel(cx.listener(
                     move |view, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(px(32.0));
@@ -4911,14 +6859,12 @@ impl Render for WorkspaceView {
                         cx.stop_propagation();
                     },
                 ));
-            let tabs = self.config.tabs;
             // Centers 26-point controls across a horizontal bar.
             let bar_inset =
                 ((layout.tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0));
             for index in 0..self.tabs.len() {
                 let tab = &self.tabs[index];
-                let (title, exited, failed, bell) =
-                    tab.label(self.config.tabs, cx);
+                let (title, status) = tab.label(self.config.tabs, cx);
                 let offset = strip.start(index) - strip.offset;
                 let bounds = if vertical {
                     Bounds::new(
@@ -4935,7 +6881,7 @@ impl Render for WorkspaceView {
                     id: tab.id,
                     index,
                     title,
-                    status: tab_bar::TabStatus::new(exited, failed, bell),
+                    status,
                     activity: if Some(tab.id) == self.active {
                         Activity::Active
                     } else if index > 0
@@ -4946,6 +6892,10 @@ impl Render for WorkspaceView {
                         Activity::Inactive
                     },
                     flush_start: index == 0 && strip.offset == px(0.0),
+                    targeted: self
+                        .menu
+                        .as_ref()
+                        .is_some_and(|menu| menu.kind == MenuKind::Tab(tab.id)),
                 };
                 bar = bar
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
@@ -4984,6 +6934,7 @@ impl Render for WorkspaceView {
                             .group("scroll-tabs")
                             .bg(colors.bar)
                             .hover(|style| style.bg(colors.control_hover))
+                            .active(|style| style.bg(colors.control_pressed))
                             .rounded_md()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
@@ -5025,12 +6976,19 @@ impl Render for WorkspaceView {
                     );
                 }
             }
+            // A vertical column shares the new-tab row with the menu control.
+            let row = split_new_tab_row(
+                (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
+                    .max(px(0.0)),
+                menu_placement == MenuButtonPlacement::SplitRow,
+            );
             chrome = chrome.child(bar).child(
                 div()
                     .id("new-tab")
                     .group("new-tab")
                     .occlude()
                     .hover(|style| style.bg(colors.control_hover))
+                    .active(|style| style.bg(colors.control_pressed))
                     .rounded(px(7.0))
                     .absolute()
                     .left(
@@ -5050,8 +7008,7 @@ impl Render for WorkspaceView {
                             },
                     )
                     .w(if vertical {
-                        (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
-                            .max(px(0.0))
+                        row.plus_width
                     } else {
                         CONTROL_SIZE
                     })
@@ -5065,8 +7022,11 @@ impl Render for WorkspaceView {
                     .justify_center()
                     .on_click(cx.listener(|view, _, window, cx| {
                         if let Err(error) = view.new_tab(window, cx) {
-                            view.status = Some(error.to_string());
-                            cx.notify();
+                            view.report_failure(
+                                "Cannot open tab",
+                                error.to_string(),
+                                cx,
+                            );
                         }
                     }))
                     .child(
@@ -5076,6 +7036,41 @@ impl Render for WorkspaceView {
                             }),
                     ),
             );
+            let bar_menu_button = match menu_placement {
+                // The strip area ends where the bar does, or before the
+                // window controls in Huterm's own title row. `TabStrip`
+                // shrinks its own bounds to Fit tabs' total width, so the
+                // layout's strip area anchors the button, not `strip`.
+                MenuButtonPlacement::BarEnd => Some(point(
+                    layout.strip_bounds(tabs).right()
+                        - clip.origin.x
+                        - CONTROL_SLOT
+                        + CONTROL_INSET,
+                    strip.bounds.origin.y - clip.origin.y + bar_inset,
+                )),
+                MenuButtonPlacement::SplitRow => row.menu_x.map(|menu_x| {
+                    let row_height = CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0;
+                    point(
+                        strip.bounds.origin.x - clip.origin.x
+                            + VERTICAL_ROW_MARGIN_X
+                            + menu_x,
+                        strip.bounds.origin.y - clip.origin.y
+                            + strip.available()
+                            + VERTICAL_ROW_MARGIN_Y
+                            + (row_height - CONTROL_SIZE) / 2.0,
+                    )
+                }),
+                MenuButtonPlacement::TitleStrip
+                | MenuButtonPlacement::Hidden => None,
+            };
+            if let Some(origin) = bar_menu_button {
+                chrome = chrome.child(
+                    self.menu_button_element(colors, cx)
+                        .absolute()
+                        .left(origin.x)
+                        .top(origin.y),
+                );
+            }
             if vertical {
                 let handle = layout.sidebar_resize_handle(position);
                 chrome = chrome.child(
@@ -5102,7 +7097,7 @@ impl Render for WorkspaceView {
             {
                 let axis = Self::tab_scrollbar_axis(&strip);
                 let geometries =
-                    Self::tab_scrollbar_geometries(&strip, self.config.tabs);
+                    Self::tab_scrollbar_geometries(&strip, self.layout_tabs());
                 // Covers the strip and its edge inset so the layers inside
                 // line up with the hit test; misses fall through.
                 let extent = px(self.tab_scrollbars.strip_extent(axis));
@@ -5293,127 +7288,71 @@ impl Render for WorkspaceView {
                     .bg(colors.accent),
             );
         }
-        if let Some(status) = &self.status {
-            root = root.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .px_2()
-                    .py_1()
-                    .bg(background)
-                    .child(status.clone()),
-            );
+        if let Some(notices) = self.render_notices(layout.terminal, cx) {
+            root = root.child(notices);
         }
-        if let Some(target) = self.close.confirmation {
-            let unknown =
-                self.close.assessment.as_ref().is_some_and(|assessment| {
-                    assessment.jobs().contains(&huterm_core::JobState::Unknown)
-                });
-            let tab_title = match target {
-                CloseTarget::Tab(id) => self
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == id)
-                    .map(|tab| tab.title(self.config.tabs, cx))
-                    .unwrap_or_default(),
-                _ => String::new(),
-            };
-            let message = match (target, unknown) {
-                (CloseTarget::Application, true) => {
-                    "Some process state is unavailable. Quit Huterm and terminate all sessions?".to_owned()
-                }
-                (CloseTarget::Application, false) => {
-                    "Quit Huterm and terminate running jobs in all sessions?".to_owned()
-                }
-                (CloseTarget::Window, true) => {
-                    "Some process state is unavailable. Close this final view and terminate its session?".to_owned()
-                }
-                (CloseTarget::Window, false) => {
-                    "Close this final view and terminate running jobs in its session?".to_owned()
-                }
-                (CloseTarget::Tab(_), true) => {
-                    format!("Process state is unavailable. Close tab \"{tab_title}\" and terminate its terminal?")
-                }
-                (CloseTarget::Tab(_), false) => {
-                    format!("Close tab \"{tab_title}\" and terminate its running jobs?")
-                }
-            };
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(background.opacity(0.9))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .w((window.viewport_size().width - px(32.0))
-                                .clamp(px(0.0), px(460.0)))
-                            .flex_none()
-                            .p_4()
-                            .bg(background)
-                            .border_1()
-                            .border_color(foreground.opacity(0.3))
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(div().w_full().flex_none().child(message))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_end()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .id("cancel-close")
-                                            .px_3()
-                                            .py_1()
-                                            .on_click(cx.listener(
-                                                |view, _, window, cx| {
-                                                    view.cancel_close(
-                                                        window, cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child("Cancel"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("confirm-close")
-                                            .px_3()
-                                            .py_1()
-                                            .bg(foreground.opacity(0.15))
-                                            .on_click(cx.listener(
-                                                move |view, _, window, cx| {
-                                                    view.finish_close(
-                                                        target, window, cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child(
-                                                if target
-                                                    == CloseTarget::Application
-                                                {
-                                                    "Quit"
-                                                } else {
-                                                    "Close"
-                                                },
-                                            ),
-                                    ),
-                            ),
-                    ),
+        if let Some(menu) = self.render_menu(&layout, window, cx) {
+            root = root.child(menu);
+        }
+        if let Some(details) = &self.about {
+            let about = render_about(
+                details,
+                content.size,
+                Swatch::from_theme(&self.config.theme),
+                self.config.window.shortcut_hints,
+                cx.listener(|view, _, _, cx| {
+                    view.copy_about_details(cx);
+                }),
+                cx.listener(|view, _, window, cx| {
+                    view.close_about(window, cx);
+                }),
             );
+            root = root.child(modal_layer(about, &layout));
+        }
+        if let Some(target) = self.close.confirmation.clone() {
+            let model =
+                build_close_dialog(&self.close_dialog_input(&target, cx));
+            let dialog = render_close_dialog(
+                &model,
+                self.close.dialog_focus,
+                content.size,
+                Swatch::from_theme(&self.config.theme),
+                self.config.window.shortcut_hints,
+                cx.listener(|view, _, window, cx| {
+                    view.cancel_close(window, cx);
+                }),
+                cx.listener(move |view, _, window, cx| {
+                    view.finish_close(target.clone(), window, cx);
+                }),
+            );
+            root = root.child(modal_layer(dialog, &layout));
         }
         if let Some(palette) = &self.palette {
             root = root.child(palette.clone());
+        }
+        if decorated {
+            // The border around the content: a press on it asks the window
+            // manager to resize from that edge or corner.
+            for (edge, zone) in
+                frame.client_frame().resize_zones(window.viewport_size())
+            {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(zone.origin.x)
+                        .top(zone.origin.y)
+                        .w(zone.size.width)
+                        .h(zone.size.height)
+                        .cursor(resize_cursor(edge))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, window, cx| {
+                                window.start_window_resize(edge);
+                                cx.stop_propagation();
+                            },
+                        ),
+                );
+            }
         }
         // Layout may change drag geometry or clear hover without an input event.
         self.frame_clock.animate(
@@ -5425,6 +7364,1063 @@ impl Render for WorkspaceView {
     }
 }
 
+/// Hosts a modal `overlay` that fills its parent: the whole window, or the
+/// content inside a drawn client frame, so the transparent border around
+/// the frame's shadow stays untinted and its rounded top corners hold.
+fn modal_layer(overlay: gpui::Div, layout: &ChromeLayout) -> gpui::Div {
+    if !layout.frame.decorated() {
+        return overlay;
+    }
+    let content = layout.content;
+    div()
+        .absolute()
+        .left(content.origin.x)
+        .top(content.origin.y)
+        .w(content.size.width)
+        .h(content.size.height)
+        .child(overlay.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS))
+}
+
+/// The `menu_*` commands act on the open menu instead of replacing it.
+fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
+    matches!(
+        command,
+        ids::OPEN_MENU
+            | ids::MENU_SELECT_NEXT
+            | ids::MENU_SELECT_PREVIOUS
+            | ids::MENU_SELECT_FIRST
+            | ids::MENU_SELECT_LAST
+            | ids::MENU_SELECT_RIGHT
+            | ids::MENU_SELECT_LEFT
+            | ids::MENU_CONFIRM
+            | ids::MENU_CLOSE
+    )
+}
+
+/// The compiled keymap's first `scroll_to_bottom` binding as a terminal
+/// sees it, for the scroll pill's key cap.
+fn scroll_to_bottom_key(keymap: &InstalledKeymap) -> Option<String> {
+    let contexts = [
+        KeyContext::parse("Workspace").unwrap_or_default(),
+        KeyContext::parse("Terminal").unwrap_or_default(),
+    ];
+    keymap
+        .shortcuts(ids::SCROLL_TO_BOTTOM, &contexts, None)
+        .first()
+        .map(|binding| binding.key.clone())
+}
+
+impl WorkspaceView {
+    /// The button's placement when the tab bar is drawn. Bar geometry
+    /// reserves the slot whether or not an overlay bar is revealed, so
+    /// scrolling and drop mapping do not shift with the reveal.
+    fn bar_menu_placement(&self) -> MenuButtonPlacement {
+        menu_button_placement(
+            self.config.window.menu_button,
+            self.title_row() > px(0.0),
+            self.layout_tabs().position,
+            true,
+        )
+    }
+
+    /// Where the menu button is drawn this frame.
+    fn menu_button_placement(&self) -> MenuButtonPlacement {
+        let presentation = self.presentation();
+        let bar_shown = presentation == Presentation::Reserved
+            || presentation == Presentation::Overlay
+                && self.reveal.progress > 0.0;
+        menu_button_placement(
+            self.config.window.menu_button,
+            self.title_row() > px(0.0),
+            self.layout_tabs().position,
+            bar_shown,
+        )
+    }
+
+    fn open_menu_entity(&self) -> Result<Entity<MenuView>, CommandError> {
+        self.menu
+            .as_ref()
+            .map(|menu| menu.view.clone())
+            .ok_or_else(|| {
+                CommandError::Unavailable("no menu is open".to_owned())
+            })
+    }
+
+    fn window_menu_input(&self, cx: &App) -> WindowMenuInput {
+        let selection = self.active_view().is_some_and(|terminal| {
+            terminal.read(cx).command_availability(ids::COPY).is_ok()
+        });
+        WindowMenuInput::for_build(selection, self.notices.contents().len())
+    }
+
+    /// Opens the window menu, or focuses it when it is already open; an
+    /// open tab menu is replaced. `from_keyboard` selects the first item,
+    /// as `open_menu` does; the button opens with no selection.
+    fn open_menu(
+        &mut self,
+        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(false)?;
+        if let Some(menu) = &self.menu
+            && menu.kind == MenuKind::Window
+        {
+            menu.view.read(cx).focus_handle(cx).focus(window);
+            cx.notify();
+            return Ok(CommandOutcome::Completed);
+        }
+        if self.palette.is_some() {
+            return Err(CommandError::Unavailable(
+                "command palette is open".to_owned(),
+            ));
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let contexts = window.context_stack();
+        let model = window_menu_model(
+            &self.window_menu_input(cx),
+            &cx.global::<Desktop>().keymap,
+            &contexts,
+        );
+        self.mount_menu(
+            model,
+            MenuKind::Window,
+            None,
+            contexts,
+            from_keyboard,
+            window,
+            cx,
+        );
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Opens the window menu at `pointer`, as a right press on empty tab-bar
+    /// space does, replacing any open menu. It refuses where the tab menu
+    /// does.
+    fn open_menu_at(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.check_available(true).is_err() || self.palette.is_some() {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Err(error) = self.open_menu(false, window, cx) {
+            self.report_failure("Open Menu", error.to_string(), cx);
+            return;
+        }
+        if let Some(menu) = &mut self.menu {
+            menu.pointer = Some(pointer);
+        }
+    }
+
+    /// Opens the context menu for `tab` at `pointer`, replacing any open
+    /// menu, without activating the tab. It refuses while structural work,
+    /// a close confirmation, the About panel, the palette, or a tab drag
+    /// is in progress, so a right press never disturbs reorder capture.
+    fn open_tab_menu(
+        &mut self,
+        tab: TabId,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.check_available(true).is_err()
+            || self.palette.is_some()
+            || !self.tabs.iter().any(|record| record.id == tab)
+        {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let contexts = window.context_stack();
+        let Some(model) = self.tab_menu_model(tab, &contexts, cx) else {
+            return;
+        };
+        self.mount_menu(
+            model,
+            MenuKind::Tab(tab),
+            Some(pointer),
+            contexts,
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// Opens the active terminal's context menu at `pointer`, replacing any
+    /// open menu, with rows for the link under the pointer when there is
+    /// one. It refuses where the tab menu does.
+    fn open_terminal_menu(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        link: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(tab) = self.active else {
+            return;
+        };
+        if self.check_available(true).is_err() || self.palette.is_some() {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let contexts = window.context_stack();
+        let kind = MenuKind::Terminal { tab, link };
+        let Some(model) = self.terminal_menu_model(&kind, &contexts, cx) else {
+            return;
+        };
+        self.mount_menu(
+            model,
+            kind,
+            Some(pointer),
+            contexts,
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// A terminal's right-click. Only the active terminal's menu opens: a
+    /// lookup can finish after its tab was switched away.
+    fn handle_context_menu_request(
+        &mut self,
+        terminal: &Entity<TerminalView>,
+        request: &ContextMenuRequest,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // A right-click closes any open menu in the capture phase before
+        // the terminal sees it, so an open menu here was opened after the
+        // click; a lookup that finished late must not replace it.
+        if self.active_view().as_ref() == Some(terminal) && self.menu.is_none()
+        {
+            self.open_terminal_menu(
+                request.position,
+                request.link.clone(),
+                window,
+                cx,
+            );
+        }
+    }
+
+    /// The terminal menu's rows, or `None` once its tab is no longer the
+    /// active one.
+    fn terminal_menu_model(
+        &self,
+        kind: &MenuKind,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuModel> {
+        let MenuKind::Terminal { tab, link } = kind else {
+            return None;
+        };
+        if self.active != Some(*tab) {
+            return None;
+        }
+        let terminal = self.active_view()?.read(cx);
+        let directory = match terminal.metadata.directory() {
+            None => DirectoryState::Unknown,
+            Some(directory) if directory.is_local() => DirectoryState::Local,
+            Some(_) => DirectoryState::Remote,
+        };
+        let input = TerminalMenuInput {
+            platform: Platform::current(),
+            link: link.is_some(),
+            selection: terminal.command_availability(ids::COPY).is_ok(),
+            exited: terminal.command_availability(ids::PASTE).is_err(),
+            scrolled_back: terminal.scrolled_back(),
+            directory,
+        };
+        Some(terminal_menu_model(
+            input,
+            &cx.global::<Desktop>().keymap,
+            contexts,
+        ))
+    }
+
+    /// The tab menu's rows for `tab`, or `None` once the tab is gone.
+    fn tab_menu_model(
+        &self,
+        tab: TabId,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuModel> {
+        let index = self.tabs.iter().position(|record| record.id == tab)?;
+        let directory_known =
+            tab_directory_path(&self.tabs[index].view.read(cx).metadata)
+                .is_some();
+        let input = TabMenuInput {
+            platform: Platform::current(),
+            index,
+            count: self.tabs.len(),
+            active: self.active == Some(tab),
+            vertical: self.layout_tabs().position.vertical(),
+            directory_known,
+        };
+        Some(tab_menu_model(
+            &input,
+            &cx.global::<Desktop>().keymap,
+            contexts,
+        ))
+    }
+
+    /// The rows for whichever menu is open, or `None` once its target is
+    /// gone.
+    fn current_menu_model(&self, cx: &App) -> Option<MenuModel> {
+        let menu = self.menu.as_ref()?;
+        match &menu.kind {
+            MenuKind::Window => Some(window_menu_model(
+                &self.window_menu_input(cx),
+                &cx.global::<Desktop>().keymap,
+                &menu.contexts,
+            )),
+            MenuKind::Tab(tab) => self.tab_menu_model(*tab, &menu.contexts, cx),
+            kind @ MenuKind::Terminal { .. } => {
+                self.terminal_menu_model(kind, &menu.contexts, cx)
+            }
+        }
+    }
+
+    /// Creates the menu entity over `model`, subscribes to its events, and
+    /// focuses it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every menu kind supplies its own anchor and context stack"
+    )]
+    fn mount_menu(
+        &mut self,
+        model: MenuModel,
+        kind: MenuKind,
+        pointer: Option<gpui::Point<Pixels>>,
+        contexts: Vec<KeyContext>,
+        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let clock = Rc::clone(&self.frame_clock);
+        let view = cx.new(|cx| {
+            clock.observe(cx);
+            MenuView::new(model, swatch, from_keyboard, cx)
+        });
+        cx.subscribe_in(&view, window, Self::handle_menu_event)
+            .detach();
+        view.read(cx).focus_handle(cx).focus(window);
+        self.menu = Some(OpenMenu {
+            view,
+            kind,
+            pointer,
+            contexts,
+        });
+        self.menu_bounds.set(None);
+        cx.notify();
+    }
+
+    /// The menu button: closes an open menu, otherwise opens one with no
+    /// selection.
+    fn toggle_menu(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.close_menu(MenuFocusReturn::Terminal, window, cx) {
+            return;
+        }
+        if let Err(error) = self.open_menu(false, window, cx) {
+            self.report_failure("Open Menu", error.to_string(), cx);
+        }
+    }
+
+    /// Closes the menu and moves focus; `false` when none was open.
+    fn close_menu(
+        &mut self,
+        focus: MenuFocusReturn,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.menu.take().is_none() {
+            return false;
+        }
+        self.menu_bounds.set(None);
+        match focus {
+            MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
+            MenuFocusReturn::Keep => {}
+        }
+        cx.notify();
+        true
+    }
+
+    fn focus_terminal(&self, window: &mut Window, cx: &App) {
+        if let Some(terminal) = self.active_view() {
+            terminal.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+        }
+    }
+
+    /// Rebuilds the open menu's rows so Show Notices, Copy, and a tab
+    /// menu's enablement follow the window's state; an unchanged model
+    /// leaves the menu alone, and a tab menu closes with its tab.
+    fn refresh_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(menu) = self.menu.as_ref().map(|menu| menu.view.clone())
+        else {
+            return;
+        };
+        match self.current_menu_model(cx) {
+            Some(model) => {
+                menu.update(cx, |menu, cx| menu.set_model(model, cx));
+            }
+            None => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+            }
+        }
+    }
+
+    fn handle_menu_event(
+        &mut self,
+        menu: &Entity<MenuView>,
+        event: &MenuEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(kind) = self
+            .menu
+            .as_ref()
+            .filter(|current| current.view.entity_id() == menu.entity_id())
+            .map(|current| current.kind.clone())
+        else {
+            return;
+        };
+        match event {
+            MenuEvent::Dismissed => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+            }
+            MenuEvent::Picked(id) => {
+                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+                if let MenuKind::Terminal {
+                    link: Some(link), ..
+                } = &kind
+                    && self.run_link_pick(id, link, cx)
+                {
+                    return;
+                }
+                let Some(spec) = huterm_protocol::lookup(id) else {
+                    self.report_failure(
+                        "Command failed",
+                        format!("unknown command `{id}`"),
+                        cx,
+                    );
+                    return;
+                };
+                // Context menu picks that take a tab act on the menu's tab.
+                let args = kind
+                    .tab()
+                    .filter(|_| spec.args.iter().any(|arg| arg.name == "tab"))
+                    .map(|tab| {
+                        vec![CommandArgument::new(
+                            "tab",
+                            CommandValue::Tab(tab),
+                        )]
+                    })
+                    .unwrap_or_default();
+                let invocation = CommandInvocation::new(spec.id, args);
+                let result = match spec.scope {
+                    CommandScope::Terminal => self
+                        .active_view()
+                        .ok_or_else(|| {
+                            CommandError::Unavailable(
+                                "window has no active terminal".to_owned(),
+                            )
+                        })
+                        .and_then(|terminal| {
+                            terminal.update(cx, |terminal, cx| {
+                                terminal.run_command(&invocation, window, cx)
+                            })
+                        }),
+                    _ => self.invoke_interactive(&invocation, window, cx),
+                };
+                match result {
+                    Ok(_) => {
+                        self.recent.record(spec.id);
+                        cx.global_mut::<Desktop>().frequency.record(spec.id);
+                    }
+                    Err(error) => {
+                        self.report_failure(
+                            "Command failed",
+                            error.to_string(),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens or copies the link a terminal menu opened over; `false` when
+    /// `id` is not a link row.
+    fn run_link_pick(
+        &mut self,
+        id: &str,
+        link: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        match id {
+            terminal_menu::OPEN_LINK => {
+                if let Some(terminal) = self.active_view() {
+                    terminal.update(cx, |terminal, cx| {
+                        (terminal.open_link)(link, cx);
+                    });
+                }
+            }
+            terminal_menu::COPY_LINK => {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    link.to_owned(),
+                ));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Runs a `menu_*` command against the open menu. Confirm and close
+    /// report through [`MenuEvent`], so the keyboard and pointer share one
+    /// path.
+    fn run_menu_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let menu = self.open_menu_entity()?;
+        menu.update(cx, |menu, cx| {
+            match command {
+                ids::MENU_SELECT_NEXT => menu.select_next(cx),
+                ids::MENU_SELECT_PREVIOUS => menu.select_previous(cx),
+                ids::MENU_SELECT_FIRST => menu.select_first(cx),
+                ids::MENU_SELECT_LAST => menu.select_last(cx),
+                ids::MENU_SELECT_RIGHT => menu.select_right(cx),
+                ids::MENU_SELECT_LEFT => menu.select_left(cx),
+                ids::MENU_CONFIRM => menu.confirm(cx),
+                ids::MENU_CLOSE => MenuView::dismiss(cx),
+                other => return Err(CommandError::UnknownCommand(other)),
+            }
+            Ok(())
+        })?;
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// The menu's anchor: the painted menu button, or the terminal's top
+    /// right corner when the button is hidden and `open_menu` ran.
+    fn menu_anchor(&self, layout: &ChromeLayout) -> Bounds<Pixels> {
+        self.menu_button_bounds.get().unwrap_or_else(|| {
+            Bounds::new(
+                point(
+                    layout.terminal.right() - CONTROL_SLOT + CONTROL_INSET,
+                    layout.terminal.origin.y + CONTROL_INSET,
+                ),
+                size(CONTROL_SIZE, CONTROL_SIZE),
+            )
+        })
+    }
+
+    /// Whether the menu the button anchors is open. Context menus opened at
+    /// the pointer, including the window menu from empty bar space, leave
+    /// the button alone.
+    fn menu_button_open(&self) -> bool {
+        self.menu.as_ref().is_some_and(|menu| {
+            menu.kind == MenuKind::Window && menu.pointer.is_none()
+        })
+    }
+
+    /// The menu control: a 14-point icon in the 26-point control with the
+    /// tab-bar hover style, a "Menu" tooltip, and a yellow dot while notices
+    /// wait. It never holds keyboard focus: Escape returns focus to the
+    /// terminal. The caller positions it. It records its painted bounds for
+    /// the menu's anchor.
+    fn menu_button_element(
+        &self,
+        colors: TabColors,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let bounds_cell = Rc::clone(&self.menu_button_bounds);
+        let open = self.menu_button_open();
+        let dot = !open && !self.notices.is_empty();
+        let swatch = Swatch::from_theme(&self.config.theme);
+        div()
+            .id("window-menu")
+            .group("window-menu")
+            .occlude()
+            .w(CONTROL_SIZE)
+            .h(CONTROL_SIZE)
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .hover(|style| style.bg(colors.control_hover))
+            .when(open, |button| button.bg(colors.control_hover))
+            .active(|style| style.bg(colors.control_pressed))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.toggle_menu(window, cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                icon_element(Icon::Menu, colors.inactive)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .group_hover("window-menu", |style| {
+                        style.text_color(colors.foreground)
+                    }),
+            )
+            .when(dot, |button| {
+                button.child(
+                    div()
+                        .absolute()
+                        .top(px(2.0))
+                        .right(px(2.0))
+                        .w(px(9.0))
+                        .h(px(9.0))
+                        .rounded_full()
+                        .bg(swatch.warning)
+                        .border_1()
+                        .border_color(colors.bar),
+                )
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+
+    /// The gestures of a title row Huterm owns, on its empty space: a
+    /// primary drag starts the platform's window move, a double-click
+    /// runs the title-bar action, and a secondary press opens the window
+    /// manager's menu on Linux.
+    ///
+    /// The move starts on the first drag motion after the press, not on
+    /// the press itself: `_NET_WM_MOVERESIZE` and `AppKit`'s window drag
+    /// take over the pointer, which would swallow the release and keep a
+    /// second press from counting as the double-click.
+    fn title_row_gestures<E: InteractiveElement>(&self, row: E) -> E {
+        let pressed = Rc::clone(&self.title_row_press);
+        let dragged = Rc::clone(&self.title_row_press);
+        let released = Rc::clone(&self.title_row_press);
+        let moves = Rc::clone(&self.title_row_moves);
+        let row = row
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                if event.click_count == 2 {
+                    pressed.set(false);
+                    // macOS follows the user's double-click preference.
+                    if cfg!(target_os = "macos") {
+                        window.titlebar_double_click();
+                    } else {
+                        window.zoom_window();
+                    }
+                } else {
+                    pressed.set(true);
+                }
+                cx.stop_propagation();
+            })
+            .on_mouse_move(move |event, window, _| {
+                if event.dragging() && dragged.replace(false) {
+                    moves.set(moves.get() + 1);
+                    window.start_window_move();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, _| released.set(false));
+        // macOS has no window menu to show; a right press on its title row
+        // reaches the tab bar's own menu instead.
+        if cfg!(target_os = "macos") {
+            return row;
+        }
+        row.on_mouse_down(MouseButton::Right, |event, window, cx| {
+            window.show_window_menu(event.position);
+            cx.stop_propagation();
+        })
+    }
+
+    /// One side's window buttons in the title row Huterm draws: round
+    /// 22-point buttons with a subtle fill, in the desktop's order, padded
+    /// more at the window edge. Close takes the assessed window-close path,
+    /// like the `close_window` command, so live jobs still get their
+    /// confirmation.
+    fn window_controls_element(
+        &self,
+        group: ButtonGroup,
+        leading: bool,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Div {
+        let maximized = window.is_maximized();
+        let swatch = Swatch::from_theme(&self.config.theme);
+        let (outer, inner) =
+            (WINDOW_CONTROLS_PADDING_OUTER, WINDOW_CONTROLS_PADDING_INNER);
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap(WINDOW_CONTROL_GAP)
+            .pl(if leading { outer } else { inner })
+            .pr(if leading { inner } else { outer });
+        for button in group.iter() {
+            let (id, icon, label) = match button {
+                WindowButton::Minimize => {
+                    ("window-minimize", Icon::Minus, "Minimize")
+                }
+                WindowButton::Maximize if maximized => {
+                    ("window-maximize", Icon::Copy, "Restore")
+                }
+                WindowButton::Maximize => {
+                    ("window-maximize", Icon::Square, "Maximize")
+                }
+                WindowButton::Close => {
+                    ("window-close", Icon::X, "Close window")
+                }
+            };
+            let bounds = Rc::clone(&self.window_button_bounds);
+            let element = div()
+                .id(id)
+                .group(id)
+                .occlude()
+                .relative()
+                .w(WINDOW_CONTROL_SIZE)
+                .h(WINDOW_CONTROL_SIZE)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(colors.hover)
+                .hover(|style| style.bg(colors.control_hover))
+                .active(|style| style.bg(colors.control_pressed))
+                .tooltip(move |_, cx| TextTooltip::view(label, swatch, cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    icon_element(icon, colors.inactive)
+                        .group_hover(id, |style| {
+                            style.text_color(colors.foreground)
+                        }),
+                )
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |painted, (), _, _| {
+                            bounds[button.index()].set(Some(painted));
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
+            controls = controls.child(match button {
+                WindowButton::Minimize => element.on_click(|_, window, cx| {
+                    window.minimize_window();
+                    cx.stop_propagation();
+                }),
+                WindowButton::Maximize => element.on_click(|_, window, cx| {
+                    window.zoom_window();
+                    cx.stop_propagation();
+                }),
+                WindowButton::Close => {
+                    element.on_click(cx.listener(|view, _, window, cx| {
+                        view.request_close(CloseTarget::Window, window, cx);
+                        cx.stop_propagation();
+                    }))
+                }
+            });
+        }
+        controls
+    }
+
+    /// The open menu mounted at its placement: below the anchor, or above
+    /// it from the lower half; right-aligned from the right half; scrolling
+    /// within the space left. Edges facing the anchor stay flush even if
+    /// the panel measures wider or shorter than expected.
+    fn render_menu(
+        &self,
+        layout: &ChromeLayout,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::Div> {
+        let open = self.menu.as_ref()?;
+        let menu = open.view.clone();
+        let viewport = window.viewport_size();
+        let height = menu.read(cx).model().height();
+        let anchor = match open.pointer {
+            Some(pointer) => MenuAnchor::Pointer(pointer),
+            None => MenuAnchor::Button(self.menu_anchor(layout)),
+        };
+        let placement =
+            place_menu(anchor, size(MENU_MIN_WIDTH, height), viewport);
+        menu.update(cx, |menu, cx| {
+            menu.set_max_height(Some(placement.max_height), cx);
+        });
+        let bounds_cell = Rc::clone(&self.menu_bounds);
+        let shown_height = height.min(placement.max_height);
+        let wrapper = div()
+            .absolute()
+            .when(placement.align_right, |wrapper| {
+                wrapper.right(
+                    viewport.width - (placement.origin.x + MENU_MIN_WIDTH),
+                )
+            })
+            .when(!placement.align_right, |wrapper| {
+                wrapper.left(placement.origin.x)
+            })
+            .when(placement.opens_up, |wrapper| {
+                wrapper.bottom(
+                    viewport.height - (placement.origin.y + shown_height),
+                )
+            })
+            .when(!placement.opens_up, |wrapper| {
+                wrapper.top(placement.origin.y)
+            })
+            .child(menu)
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), _, _| bounds_cell.set(Some(bounds)),
+                )
+                .absolute()
+                .inset_0(),
+            );
+        Some(wrapper)
+    }
+
+    /// The open menu's smoke fields: kind, focus, selection, items with
+    /// disabled ones marked, overflow and indicator, whether the button
+    /// shows it open, and its painted bounds.
+    fn menu_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> String {
+        let menu = match &self.menu {
+            Some(open) => {
+                let menu = open.view.read(cx);
+                let selection = menu
+                    .selection()
+                    .and_then(|selection| menu.model().id_at(selection))
+                    .unwrap_or("none");
+                let kind = match open.kind {
+                    MenuKind::Window => "window",
+                    MenuKind::Tab(_) => "tab",
+                    MenuKind::Terminal { .. } => "terminal",
+                };
+                let (overflow, indicator) = menu.scroll_state();
+                format!(
+                    "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={} {prefix}menu_overflow={overflow} {prefix}menu_indicator={indicator}",
+                    menu.focus_handle(cx).is_focused(window),
+                    menu_items_state(menu.model()),
+                )
+            }
+            None => format!(
+                "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none {prefix}menu_overflow=false {prefix}menu_indicator=false"
+            ),
+        };
+        format!(
+            "{menu} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            self.menu_button_open(),
+            self.menu_bounds.get().map_or_else(
+                || "none".to_owned(),
+                |bounds| format!(
+                    "{},{},{},{}",
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height)
+                )
+            )
+        )
+    }
+
+    /// Smoke output for the transient UI, each field named after `prefix`:
+    /// the menu (open, focused, selected item, targeted tab index), the
+    /// About panel, the close confirmation (showing, focused button,
+    /// Debug-quoted title), notice focus, the Debug-quoted native window
+    /// title, the painted menu button and window-controls bounds in logical
+    /// points, the window scale, the sampled frame (granted client decorations, applied inset,
+    /// maximized, observed fullscreen mode), and the content bounds inside
+    /// the frame. Quoted values may contain spaces.
+    pub(super) fn ui_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> String {
+        let target = self
+            .menu
+            .as_ref()
+            .and_then(|menu| match menu.kind {
+                MenuKind::Tab(tab) => Some(tab),
+                MenuKind::Window | MenuKind::Terminal { .. } => None,
+            })
+            .and_then(|tab| {
+                self.tabs.iter().position(|record| record.id == tab)
+            })
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+        let about = self.about.is_some();
+        let menu = self.menu_smoke_state(prefix, window, cx);
+        let dialog_focus = match self.close.dialog_focus {
+            DialogFocus::Primary => "primary",
+            DialogFocus::Cancel => "cancel",
+        };
+        let dialog_title = self.close.confirmation.as_ref().map_or_else(
+            || "none".to_owned(),
+            |target| {
+                format!(
+                    "{:?}",
+                    build_close_dialog(&self.close_dialog_input(target, cx))
+                        .title
+                )
+            },
+        );
+        let painted = |cell: &Cell<Option<Bounds<Pixels>>>| {
+            cell.get().map_or_else(
+                || "none".to_owned(),
+                |bounds| {
+                    format!(
+                        "{},{},{},{}",
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.y),
+                        f32::from(bounds.size.width),
+                        f32::from(bounds.size.height)
+                    )
+                },
+            )
+        };
+        let button = painted(&self.menu_button_bounds);
+        let window_buttons = self
+            .window_frame()
+            .buttons
+            .buttons()
+            .map(|button| (button, &self.window_button_bounds[button.index()]))
+            .filter(|(_, bounds)| bounds.get().is_some())
+            .map(|(button, bounds)| {
+                format!("{}@{}", button.name(), painted(bounds))
+            })
+            .collect::<Vec<_>>();
+        let controls = if window_buttons.is_empty() {
+            "none".to_owned()
+        } else {
+            window_buttons.join(";")
+        };
+        let content = self.chrome_layout(window).content;
+        format!(
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            self.close.confirmation.is_some(),
+            self.notice_focus.is_focused(window),
+            self.window_title,
+            self.title_row_moves.get(),
+            window.scale_factor(),
+            self.frame_state.client_decorations(),
+            f32::from(self.window_frame().inset.top),
+            self.frame_state.maximized,
+            self.fullscreen.observed,
+            f32::from(content.origin.x),
+            f32::from(content.origin.y),
+            f32::from(content.size.width),
+            f32::from(content.size.height),
+        )
+    }
+
+    /// Smoke output for tab geometry: each tab's painted bounds in logical
+    /// points as `x,y,w,h`, joined by `;`, from the strip's current layout.
+    pub(super) fn tab_smoke_rects(&self, window: &Window) -> String {
+        let strip = self.tab_strip(window);
+        let vertical = self.layout_tabs().position.vertical();
+        (0..self.tabs.len())
+            .map(|index| {
+                let offset = strip.start(index) - strip.offset;
+                let extent = strip.tab_extent(index);
+                let bounds = if vertical {
+                    Bounds::new(
+                        strip.bounds.origin + point(px(0.0), offset),
+                        size(strip.bounds.size.width, extent),
+                    )
+                } else {
+                    Bounds::new(
+                        strip.bounds.origin + point(offset, px(0.0)),
+                        size(extent, strip.bounds.size.height),
+                    )
+                };
+                format!(
+                    "{},{},{},{}",
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+}
+
+/// Whether the window's root shows a close confirmation or the About panel.
+/// The scrim occludes the terminal beneath; this keeps pointer input out
+/// even if a modal is ever mounted without one.
+/// The model's item and button ids in order for smoke state, a trailing
+/// `!` marking disabled ones.
+fn menu_items_state(model: &MenuModel) -> String {
+    let mut ids = Vec::new();
+    for row in &model.rows {
+        match row {
+            MenuRow::Item(item) => {
+                ids.push(format!(
+                    "{}{}",
+                    item.id,
+                    if item.enabled { "" } else { "!" }
+                ));
+            }
+            MenuRow::Buttons { buttons, .. } => {
+                ids.extend(buttons.iter().map(|button| {
+                    format!(
+                        "{}{}",
+                        button.id,
+                        if button.enabled { "" } else { "!" }
+                    )
+                }));
+            }
+            MenuRow::Separator => {}
+        }
+    }
+    ids.join(",")
+}
+
+/// The focus a showing dialog or About panel holds, for handing it back
+/// when something else takes it; `None` while neither shows.
+pub(super) fn modal_focus(window: &Window, cx: &App) -> Option<FocusHandle> {
+    let root = window.root::<WorkspaceView>().flatten()?;
+    let view = root.read(cx);
+    view.dialog_showing().then(|| view.focus.clone())
+}
+
+pub(super) fn modal_showing(window: &Window, cx: &App) -> bool {
+    window
+        .root::<WorkspaceView>()
+        .flatten()
+        .is_some_and(|root| root.read(cx).dialog_showing())
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
     window
@@ -5433,9 +8429,10 @@ pub(super) fn terminal_input_allowed(window: &Window, cx: &App) -> bool {
         .is_some_and(|root| {
             let view = root.read(cx);
             !view.busy
-                && view.close.confirmation.is_none()
+                && !view.dialog_showing()
                 && view.reorder.is_none()
                 && view.palette.is_none()
+                && view.menu.is_none()
         })
 }
 
@@ -5454,6 +8451,53 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_title_names_the_active_tab_before_huterm() {
+        assert_eq!(window_title(Some("cargo build")), "cargo build — Huterm");
+        assert_eq!(window_title(Some("zsh · exited")), "zsh · exited — Huterm");
+        assert_eq!(window_title(None), "Huterm");
+        // Unchanged text must not reach `set_window_title` again; the sync
+        // compares against the last title it set.
+        let mut last = String::new();
+        let mut sets = 0;
+        for active in [Some("zsh"), Some("zsh"), Some("vim"), None, None] {
+            let title = window_title(active);
+            if title != last {
+                sets += 1;
+                last = title;
+            }
+        }
+        assert_eq!(sets, 3);
+    }
+
+    #[test]
+    fn copy_tab_directory_uses_the_reported_path_local_or_remote() {
+        use huterm_protocol::{TerminalDirectory, TerminalMetadata};
+        let local = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, "/home/jim/src".into(), true)),
+            None,
+        );
+        assert_eq!(
+            tab_directory_path(&local).as_deref(),
+            Some("/home/jim/src")
+        );
+        let remote = TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("build-host".into()),
+                "/srv/build".into(),
+                false,
+            )),
+            Some("ssh".into()),
+        );
+        assert_eq!(tab_directory_path(&remote).as_deref(), Some("/srv/build"));
+        assert_eq!(tab_directory_path(&TerminalMetadata::default()), None);
+        let blank = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, String::new(), true)),
+            None,
+        );
+        assert_eq!(tab_directory_path(&blank), None, "a blank path is unknown");
+    }
 
     #[cfg(not(all(target_os = "macos", feature = "macos-updater")))]
     #[test]
@@ -5489,33 +8533,172 @@ mod tests {
         );
     }
 
-    #[test]
-    fn synchronous_dispatch_failure_lands_in_status_not_palette() {
-        let mut status = None;
-        let mut palette = Some(());
-        set_dispatch_error(
-            &mut palette,
-            &mut status,
-            &CommandError::StaleTarget,
-        );
-        assert!(palette.is_none());
-        assert_eq!(status.as_deref(), Some("command target no longer exists"));
+    fn messages(stack: &NoticeStack) -> Vec<String> {
+        stack
+            .contents()
+            .map(|content| content.message.clone())
+            .collect()
     }
 
     #[test]
-    fn startup_diagnostics_keep_errors_conflicts_and_legacy_warning() {
-        assert_eq!(
-            combine_config_diagnostics([
-                Some("config error".to_owned()),
-                Some("keymap error".to_owned()),
-                Some("binding conflict".to_owned()),
-                Some(config::LEGACY_ALACRITTY_WARNING.to_owned()),
-            ])
-            .as_deref(),
-            Some(
-                "config error; keymap error; binding conflict; terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration."
-            )
+    fn startup_diagnostics_become_separate_notices_that_reloads_replace() {
+        let path = Path::new("/home/me/.config/huterm/huterm.toml");
+        let diagnostics = config_diagnostics(
+            path,
+            Some("config error"),
+            Some("keymap error"),
+            &["binding conflict".to_owned()],
+            Some(config::LEGACY_ALACRITTY_WARNING),
         );
+        let sources: Vec<_> = diagnostics
+            .iter()
+            .map(|content| (content.severity, content.source.clone()))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                (Severity::Error, NoticeSource::Config),
+                (Severity::Error, NoticeSource::Keymap),
+                (Severity::Warning, NoticeSource::Keymap),
+                (Severity::Warning, NoticeSource::Config),
+            ]
+        );
+        assert!(diagnostics.iter().all(|content| content.lifetime
+            == Lifetime::Persistent
+            && content.location.as_deref() == Some(path.to_str().unwrap())));
+        let actions = |index: usize| {
+            diagnostics[index]
+                .actions
+                .iter()
+                .map(|action| (action.label.as_str(), action.command.id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actions(0),
+            [
+                ("Open Settings", ids::OPEN_SETTINGS),
+                ("Reload", ids::RELOAD_CONFIG)
+            ]
+        );
+        assert_eq!(actions(3), [("Open Settings", ids::OPEN_SETTINGS)]);
+
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.push(
+            NoticeContent::command_failure("Close", "Close failed: busy"),
+            now,
+        );
+        assert!(stack.replace_diagnostics(&diagnostics, now));
+        assert_eq!(
+            messages(&stack),
+            [
+                "config error",
+                "keymap error",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING,
+                "Close failed: busy",
+            ]
+        );
+        // Dismissing a diagnostic hides it until the next reload.
+        let newest = stack.newest().unwrap();
+        assert!(stack.dismiss(newest));
+        assert_eq!(messages(&stack)[0], "keymap error");
+        // A reload that still fails raises every diagnostic again.
+        assert!(stack.replace_diagnostics(&diagnostics, now));
+        assert_eq!(messages(&stack)[0], "config error");
+        assert_eq!(stack.contents().len(), 5);
+        // A fixed file clears them but leaves the command notice alone.
+        let fixed = config_diagnostics(path, None, None, &[], None);
+        assert!(fixed.is_empty());
+        assert!(stack.replace_diagnostics(&fixed, now));
+        assert_eq!(messages(&stack), ["Close failed: busy"]);
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_active_configs_own_diagnostics() {
+        let path = Path::new("/tmp/huterm.toml");
+        let active = config_diagnostics(
+            path,
+            None,
+            None,
+            &["binding conflict".to_owned()],
+            Some(config::LEGACY_ALACRITTY_WARNING),
+        );
+        let failed = failed_reload_diagnostics("bad toml", &active);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|content| content.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Config reload failed: bad toml",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING
+            ]
+        );
+        assert_eq!(failed[0].source, NoticeSource::Config);
+        assert_eq!(failed[0].severity, Severity::Error);
+        assert_eq!(failed[0].actions.len(), 2);
+
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.replace_diagnostics(&active, now);
+        stack.replace_diagnostics(&failed, now);
+        assert_eq!(
+            messages(&stack),
+            [
+                "Config reload failed: bad toml",
+                "binding conflict",
+                config::LEGACY_ALACRITTY_WARNING,
+            ],
+            "the keymap conflict from the active config stays"
+        );
+    }
+
+    #[test]
+    fn terminal_failures_are_routed_with_their_tab() {
+        let tab = TabId::new(7);
+        let notice = terminal_notice(
+            tab,
+            "~/project",
+            TerminalFailure {
+                severity: Severity::Warning,
+                title: "Input rejected",
+                message: "Input buffer full".to_owned(),
+            },
+        );
+        assert_eq!(
+            notice.source,
+            NoticeSource::Terminal {
+                tab,
+                title: "~/project".to_owned()
+            }
+        );
+        assert_eq!(notice.severity, Severity::Warning);
+        assert_eq!(notice.title, "Input rejected");
+        assert_eq!(notice.location.as_deref(), Some("~/project"));
+        assert_eq!(notice.lifetime, Lifetime::Expiring);
+        assert_eq!(
+            notice.smoke_line(),
+            "warning|terminal:~/project|Input buffer full"
+        );
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        stack.push(notice.clone(), now);
+        stack.push(
+            terminal_notice(
+                TabId::new(8),
+                "other",
+                TerminalFailure {
+                    severity: Severity::Error,
+                    title: "Terminal error",
+                    message: "runtime stopped".to_owned(),
+                },
+            ),
+            now,
+        );
+        assert!(stack.replace_source(&notice.source, Vec::new(), now));
+        assert_eq!(messages(&stack), ["runtime stopped"], "keyed by tab");
     }
 
     #[test]
@@ -5610,8 +8793,11 @@ mod tests {
         close.cancel();
         let target = close.next_request(&mut queue, false, |_| true).unwrap();
         assert_eq!(target, CloseTarget::Tab(first));
-        close.begin_check(target);
-        assert_eq!(close.checked(true), Some(CloseDecision::Confirm(target)));
+        close.begin_check(target.clone());
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(target.clone()))
+        );
         assert_eq!(close.next_request(&mut queue, false, |_| true), None);
         assert_eq!(close.cancel(), Some(target));
         queue.observe(first, true, true, true);
@@ -5653,6 +8839,7 @@ mod tests {
                 position.vertical(),
                 TabExtents::Uniform(8),
                 px(0.0),
+                false,
             );
             let extent = strip.tab_extent(0);
             let pointer = if strip.vertical {
@@ -6399,11 +9586,11 @@ mod tests {
             (CloseTarget::Window, CloseTarget::Tab(TabId::new(1))),
         ] {
             let mut close = CloseState::default();
-            close.begin_check(current);
+            close.begin_check(current.clone());
             close.queue(later);
             assert_eq!(
                 close.checked(true),
-                Some(CloseDecision::Confirm(current))
+                Some(CloseDecision::Confirm(current.clone()))
             );
             assert_eq!(
                 close.cancel(),
@@ -6494,13 +9681,13 @@ mod tests {
     #[test]
     fn queued_close_preserves_the_widest_requested_scope() {
         let tab = CloseTarget::Tab(TabId::new(1));
-        assert_eq!(merge_close(None, tab), tab);
+        assert_eq!(merge_close(None, tab.clone()), tab);
         assert_eq!(
-            merge_close(Some(tab), CloseTarget::Window),
+            merge_close(Some(tab.clone()), CloseTarget::Window),
             CloseTarget::Window
         );
         assert_eq!(
-            merge_close(Some(CloseTarget::Window), tab),
+            merge_close(Some(CloseTarget::Window), tab.clone()),
             CloseTarget::Window
         );
         assert_eq!(
@@ -6514,12 +9701,370 @@ mod tests {
     }
 
     #[test]
+    fn tab_sets_union_with_tab_targets_and_lose_to_wider_scopes() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let set = CloseTarget::Tabs(vec![first, second]);
+        // A single tab still replaces a single tab.
+        assert_eq!(
+            merge_close(
+                Some(CloseTarget::Tab(first)),
+                CloseTarget::Tab(second)
+            ),
+            CloseTarget::Tab(second)
+        );
+        // Unions keep first-occurrence order; `request_close` restores
+        // window order before assessing.
+        assert_eq!(
+            merge_close(Some(CloseTarget::Tab(third)), set.clone()),
+            CloseTarget::Tabs(vec![third, first, second])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Tab(third)),
+            CloseTarget::Tabs(vec![first, second, third])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Tab(second)),
+            set
+        );
+        assert_eq!(
+            merge_close(
+                Some(set.clone()),
+                CloseTarget::Tabs(vec![second, third])
+            ),
+            CloseTarget::Tabs(vec![first, second, third])
+        );
+        assert_eq!(
+            merge_close(Some(set.clone()), CloseTarget::Window),
+            CloseTarget::Window
+        );
+        assert_eq!(
+            merge_close(Some(CloseTarget::Application), set.clone()),
+            CloseTarget::Application
+        );
+        // A queued set drops removed tabs and collapses to a single tab.
+        let mut close = CloseState::default();
+        close.queue(set);
+        assert_eq!(
+            close.take_pending(|id| id == second),
+            Some(CloseTarget::Tab(second))
+        );
+        close.queue(CloseTarget::Tabs(vec![first, second]));
+        assert_eq!(close.take_pending(|_| false), None);
+    }
+
+    #[test]
+    fn tab_closes_are_refused_while_a_confirmation_is_pending() {
+        let mut close = CloseState::default();
+        assert_eq!(close.check_tab_close_available(), Ok(()));
+        close.begin_check(CloseTarget::Tab(TabId::new(1)));
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Tab(TabId::new(1))))
+        );
+        assert_eq!(close.dialog_focus, DialogFocus::Primary);
+        assert_eq!(
+            close.check_tab_close_available(),
+            Err(CommandError::Unavailable(
+                "close confirmation pending".to_owned()
+            ))
+        );
+        close.cancel();
+        assert_eq!(close.check_tab_close_available(), Ok(()));
+    }
+
+    #[test]
+    fn tab_closes_are_refused_while_the_about_panel_shows() {
+        let close = CloseState::default();
+        assert_eq!(tab_close_availability(&close, false), Ok(()));
+        assert_eq!(
+            tab_close_availability(&close, true),
+            Err(CommandError::Unavailable(
+                "About panel is showing".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_repeated_close_window_is_refused_while_its_confirmation_shows() {
+        let pending = Err(CommandError::Unavailable(
+            "close confirmation pending".to_owned(),
+        ));
+        let mut close = CloseState::default();
+        assert_eq!(close.check_close_available(&CloseTarget::Window), Ok(()));
+        close.begin_check(CloseTarget::Tab(TabId::new(1)));
+        close.checked(true);
+        assert_eq!(
+            close.check_close_available(&CloseTarget::Window),
+            Ok(()),
+            "closing the window widens a tab confirmation"
+        );
+        close.cancel();
+        close.begin_check(CloseTarget::Window);
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(CloseTarget::Window))
+        );
+        close.dialog_focus = DialogFocus::Cancel;
+        assert_eq!(close.check_close_available(&CloseTarget::Window), pending);
+        assert_eq!(
+            close.check_close_available(&CloseTarget::Application),
+            Ok(()),
+            "Quit still widens a window confirmation"
+        );
+        assert_eq!(
+            close.dialog_focus,
+            DialogFocus::Cancel,
+            "the refused repeat leaves the focused button alone"
+        );
+        close.cancel();
+        close.begin_check(CloseTarget::Application);
+        close.checked(true);
+        assert_eq!(close.check_close_available(&CloseTarget::Window), pending);
+    }
+
+    #[test]
+    fn a_replaced_focused_toast_releases_focus_and_resumes_expiry() {
+        let now = Instant::now();
+        let tab = TabId::new(1);
+        let failure = |message: &str| {
+            terminal_notice(
+                tab,
+                "shell",
+                TerminalFailure {
+                    severity: Severity::Error,
+                    title: "Terminal error",
+                    message: message.to_owned(),
+                },
+            )
+        };
+        let mut stack = NoticeStack::default();
+        let first = stack.push(failure("first"), now);
+        let mut focused = Some(first);
+        let mut hovered = HashSet::from([first]);
+        assert!(
+            !reconcile_notice_state(
+                &mut stack,
+                &mut focused,
+                &mut hovered,
+                now
+            ),
+            "a live focused toast keeps focus"
+        );
+        assert_eq!(focused, Some(first));
+        assert_eq!(stack.next_deadline(), None, "focus pauses expiry");
+
+        // The tab's next failure replaces its toast, including the focused one.
+        let source = NoticeSource::Terminal {
+            tab,
+            title: "shell".to_owned(),
+        };
+        assert!(stack.replace_source(&source, vec![failure("second")], now));
+        assert!(
+            reconcile_notice_state(&mut stack, &mut focused, &mut hovered, now),
+            "the focused toast went away, so focus returns to the terminal"
+        );
+        assert_eq!(focused, None);
+        assert!(
+            hovered.is_empty(),
+            "the hover id of the replaced toast goes"
+        );
+        assert!(
+            stack.next_deadline().is_some(),
+            "nothing live is focused or hovered, so expiry resumes"
+        );
+    }
+
+    #[test]
+    fn a_set_check_widens_to_a_tab_queued_during_the_assessment() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let mut close = CloseState::default();
+        close.begin_check(CloseTarget::Tabs(vec![first, second]));
+        close.queue(CloseTarget::Tab(third));
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Check(CloseTarget::Tabs(vec![
+                first, second, third
+            ])))
+        );
+        assert!(close.pending.is_none());
+    }
+
+    #[test]
+    fn tab_set_resolution_follows_window_order() {
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let order = [first, second, third];
+        assert_eq!(other_tabs(&order, first), vec![second, third]);
+        assert_eq!(other_tabs(&order, second), vec![first, third]);
+        assert_eq!(other_tabs(&order, third), vec![first, second]);
+        assert_eq!(other_tabs(&[first], first), Vec::<TabId>::new());
+        assert_eq!(tabs_after(&order, first), vec![second, third]);
+        assert_eq!(tabs_after(&order, second), vec![third]);
+        assert_eq!(tabs_after(&order, third), Vec::<TabId>::new());
+        assert_eq!(tabs_after(&order, TabId::new(9)), Vec::<TabId>::new());
+        assert_eq!(tabs_target(Vec::new()), None);
+        assert_eq!(tabs_target(vec![third]), Some(CloseTarget::Tab(third)));
+        assert_eq!(
+            tabs_target(vec![second, third]),
+            Some(CloseTarget::Tabs(vec![second, third]))
+        );
+    }
+
+    #[test]
+    fn close_dialog_input_maps_busy_terminals_to_tabs() {
+        use huterm_core::{JobProcess, JobState};
+        let (first, second, third) =
+            (TabId::new(1), TabId::new(2), TabId::new(3));
+        let titles = vec![
+            TabTitle {
+                tab: first,
+                terminal: TerminalId::new(10),
+                title: "build".to_owned(),
+            },
+            TabTitle {
+                tab: second,
+                terminal: TerminalId::new(20),
+                title: "shell".to_owned(),
+            },
+            TabTitle {
+                tab: third,
+                terminal: TerminalId::new(30),
+                title: "editor".to_owned(),
+            },
+        ];
+        let cargo = JobProcess {
+            pid: 41,
+            group: 41,
+            group_started: None,
+            foreground: true,
+            identity: "cargo".to_owned(),
+            command: "cargo".to_owned(),
+            command_line: Some("cargo build".to_owned()),
+        };
+        let jobs = [
+            (TerminalId::new(10), JobState::Running(vec![cargo.clone()])),
+            (TerminalId::new(20), JobState::Idle),
+            (TerminalId::new(30), JobState::Unknown),
+        ];
+        let jobs = || jobs.iter().map(|(terminal, state)| (*terminal, state));
+        let row = ProcessRow {
+            command: "cargo".to_owned(),
+            pid: 41,
+            foreground: true,
+            command_line: Some("cargo build".to_owned()),
+        };
+
+        let single =
+            close_dialog_input(&CloseTarget::Tab(first), jobs(), &titles);
+        assert_eq!(
+            single.target,
+            CloseDialogTarget::Tab {
+                title: "build".to_owned()
+            }
+        );
+        assert_eq!(
+            single.groups,
+            vec![
+                ProcessGroup {
+                    tab_title: None,
+                    state: ProcessGroupState::Known(vec![row.clone()]),
+                },
+                ProcessGroup {
+                    tab_title: None,
+                    state: ProcessGroupState::Unknown,
+                },
+            ],
+            "idle tabs are omitted and single-tab dialogs have no headings"
+        );
+
+        let several = close_dialog_input(
+            &CloseTarget::Tabs(vec![first, second, third]),
+            jobs(),
+            &titles,
+        );
+        assert_eq!(several.target, CloseDialogTarget::Tabs { count: 3 });
+        assert_eq!(
+            several.groups,
+            vec![
+                ProcessGroup {
+                    tab_title: Some("build".to_owned()),
+                    state: ProcessGroupState::Known(vec![row.clone()]),
+                },
+                ProcessGroup {
+                    tab_title: Some("editor".to_owned()),
+                    state: ProcessGroupState::Unknown,
+                },
+            ]
+        );
+
+        let window = close_dialog_input(&CloseTarget::Window, jobs(), &titles);
+        assert_eq!(window.target, CloseDialogTarget::Window);
+        assert_eq!(window.groups, several.groups);
+
+        let unviewed =
+            [(TerminalId::new(99), JobState::Running(vec![cargo.clone()]))];
+        let quit = close_dialog_input(
+            &CloseTarget::Application,
+            unviewed.iter().map(|(terminal, state)| (*terminal, state)),
+            &titles,
+        );
+        assert_eq!(quit.target, CloseDialogTarget::Application);
+        assert_eq!(
+            quit.groups,
+            vec![ProcessGroup {
+                tab_title: Some("Detached terminal".to_owned()),
+                state: ProcessGroupState::Known(vec![row]),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_one_tab_window_dialog_has_no_headings() {
+        use huterm_core::{JobProcess, JobState};
+        let titles = [TabTitle {
+            tab: TabId::new(1),
+            terminal: TerminalId::new(10),
+            title: "build".to_owned(),
+        }];
+        let cargo = JobProcess {
+            pid: 41,
+            group: 41,
+            group_started: None,
+            foreground: true,
+            identity: "cargo".to_owned(),
+            command: "cargo".to_owned(),
+            command_line: None,
+        };
+        let running = JobState::Running(vec![cargo]);
+        let jobs = [(TerminalId::new(10), &running)];
+        let window = close_dialog_input(&CloseTarget::Window, jobs, &titles);
+        assert_eq!(
+            window
+                .groups
+                .iter()
+                .map(|group| &group.tab_title)
+                .collect::<Vec<_>>(),
+            [&None],
+            "the dialog covers one tab, so its rows need no heading"
+        );
+        let quit = close_dialog_input(&CloseTarget::Application, jobs, &titles);
+        assert_eq!(
+            quit.groups[0].tab_title.as_deref(),
+            Some("build"),
+            "Quit may cover other windows, so it keeps headings"
+        );
+    }
+
+    #[test]
     fn all_placements_share_nonoverlapping_terminal_and_tab_bounds() {
         for position in [
             TabPosition::Top,
             TabPosition::Bottom,
             TabPosition::Left,
             TabPosition::Right,
+            TabPosition::Titlebar,
         ] {
             for titlebar in [px(0.0), px(32.0)] {
                 let layout = ChromeLayout::new(
@@ -6527,15 +10072,22 @@ mod tests {
                     titlebar,
                     position,
                 );
+                // The merged row lives in the titlebar, so it and the
+                // terminal partition the whole window instead.
+                let shared = if position == TabPosition::Titlebar {
+                    px(600.0)
+                } else {
+                    px(600.0) - titlebar
+                };
                 assert_eq!(
                     layout.terminal.size.width
                         * f32::from(layout.terminal.size.height)
                         + layout.tabs.size.width
                             * f32::from(layout.tabs.size.height),
-                    px(800.0) * f32::from(px(600.0) - titlebar)
+                    px(800.0) * f32::from(shared)
                 );
                 match position {
-                    TabPosition::Top => {
+                    TabPosition::Top | TabPosition::Titlebar => {
                         assert_eq!(layout.tabs.bottom(), layout.terminal.top());
                     }
                     TabPosition::Bottom => {
@@ -6551,6 +10103,362 @@ mod tests {
                 assert!(layout.terminal.top() >= titlebar);
             }
         }
+    }
+
+    #[test]
+    fn the_title_bar_row_holds_tabs_after_the_traffic_lights() {
+        let viewport = size(px(800.0), px(600.0));
+        let strip = px(32.0);
+        let top = ChromeLayout::new(viewport, strip, TabPosition::Top);
+        let merged = ChromeLayout::new(viewport, strip, TabPosition::Titlebar);
+        // The terminal gains the bar's height: it starts under the strip.
+        assert_eq!(
+            merged.terminal,
+            Bounds::new(point(px(0.0), strip), size(px(800.0), px(568.0)))
+        );
+        assert_eq!(
+            merged.terminal.size.height,
+            top.terminal.size.height + top.tabs.size.height
+        );
+        // The row is the strip itself: full width at the strip's height.
+        assert_eq!(
+            merged.tabs,
+            Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), strip))
+        );
+        // Tabs start after the traffic lights; Pill adds its usual lead.
+        let tabs = |style| TabsConfig {
+            position: TabPosition::Titlebar,
+            style,
+            ..TabsConfig::default()
+        };
+        assert_eq!(
+            merged.strip_bounds(tabs(TabStyle::Strip)),
+            Bounds::new(
+                point(TRAFFIC_LIGHT_INSET, px(0.0)),
+                size(px(800.0) - TRAFFIC_LIGHT_INSET, strip)
+            )
+        );
+        assert_eq!(
+            merged.strip_bounds(tabs(TabStyle::Pill)).origin.x,
+            TRAFFIC_LIGHT_INSET + PILL_INSET - PILL_MARGIN_LEFT
+        );
+        // The menu button keeps the plain strip's spot at the row's right
+        // end, and the strip reserves that slot beside `+`.
+        let bar_inset = (merged.tabs.size.height - CONTROL_SIZE) / 2.0;
+        assert_eq!(
+            point(
+                merged.tabs.right() - CONTROL_SLOT + CONTROL_INSET,
+                merged.tabs.origin.y + bar_inset
+            ),
+            point(px(800.0) - CONTROL_INSET - CONTROL_SIZE, CONTROL_INSET)
+        );
+        let strip_geometry = TabStrip::new(
+            merged.strip_bounds(tabs(TabStyle::Strip)),
+            false,
+            TabExtents::Uniform(3),
+            px(0.0),
+            true,
+        );
+        assert_eq!(
+            strip_geometry.available(),
+            px(800.0) - TRAFFIC_LIGHT_INSET - CONTROL_SLOT * 2.0
+        );
+        // Hiding the bar frees no terminal space: the strip stays.
+        let hidden = ChromeLayout::new(viewport, strip, TabPosition::Titlebar)
+            .present(Presentation::Hidden, TabPosition::Titlebar, 0.0);
+        assert_eq!(hidden.terminal, merged.terminal);
+        // A tiny window clamps the row to the viewport.
+        let tiny = ChromeLayout::new(
+            size(px(20.0), px(10.0)),
+            strip,
+            TabPosition::Titlebar,
+        );
+        assert_eq!(tiny.tabs.size, size(px(20.0), px(10.0)));
+        assert_eq!(tiny.terminal.size.height, px(0.0));
+        assert_eq!(
+            tiny.strip_bounds(tabs(TabStyle::Strip)).size.width,
+            px(0.0)
+        );
+    }
+
+    fn framed(state: FrameState) -> WindowFrame {
+        framed_with(state, ButtonLayout::standard())
+    }
+
+    fn framed_with(state: FrameState, buttons: ButtonLayout) -> WindowFrame {
+        WindowFrame::resolve(
+            resolve_tab_position(
+                TabPosition::Titlebar,
+                TabHost {
+                    platform: Platform::Linux,
+                    fullscreen: false,
+                    quake: false,
+                    client_decorations: state.client_decorations(),
+                },
+            ),
+            state,
+            buttons,
+        )
+    }
+
+    #[test]
+    fn the_drawn_title_row_and_terminal_sit_inside_the_frame() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let state = FrameState {
+            decorations: gpui::Decorations::Client {
+                tiling: gpui::Tiling::default(),
+            },
+            maximized: false,
+            fullscreen: false,
+        };
+        let frame = framed(state);
+        assert!(frame.controls);
+        assert!(frame.decorated());
+        let inset = client_frame::CLIENT_INSET;
+        assert_eq!(frame.inset, gpui::Edges::all(inset));
+        let layout =
+            ChromeLayout::with_frame(viewport, TabPosition::Titlebar, frame);
+        // The content is the viewport less the border on every side.
+        assert_eq!(
+            layout.content,
+            Bounds::new(
+                point(inset, inset),
+                size(px(800.0) - inset * 2.0, px(600.0) - inset * 2.0)
+            )
+        );
+        // The row spans the content's top at the bar's height; the
+        // terminal takes the rest, shrunk by the inset on every side.
+        assert_eq!(
+            layout.tabs,
+            Bounds::new(
+                point(inset, inset),
+                size(px(800.0) - inset * 2.0, TAB_HEIGHT)
+            )
+        );
+        assert_eq!(
+            layout.terminal,
+            Bounds::new(
+                point(inset, inset + TAB_HEIGHT),
+                size(
+                    px(800.0) - inset * 2.0,
+                    px(600.0) - inset * 2.0 - TAB_HEIGHT
+                )
+            )
+        );
+        assert_eq!(layout.tabs.bottom(), layout.terminal.top());
+        // Tabs start after the small lead and stop before the window
+        // controls; the menu button slot sits just before them.
+        let tabs = TabsConfig {
+            position: TabPosition::Titlebar,
+            style: TabStyle::Strip,
+            ..TabsConfig::default()
+        };
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.origin, point(inset + TITLE_ROW_LEAD, inset));
+        assert_eq!(
+            strip.right(),
+            layout.tabs.right() - ButtonLayout::standard().trailing.width()
+        );
+        assert_eq!(
+            layout.title_row_border(),
+            Bounds::new(
+                point(inset, inset + TAB_HEIGHT - px(1.0)),
+                size(px(800.0) - inset * 2.0, px(1.0))
+            )
+        );
+        // Hiding the bar frees nothing: the row is the title bar.
+        let hidden =
+            layout.present(Presentation::Hidden, TabPosition::Titlebar, 0.0);
+        assert_eq!(hidden.terminal, layout.terminal);
+        // The row is the title bar: it takes its height from the content
+        // like AppKit's strip, not a reservation on top of it.
+        assert_eq!(title_row_height(false, frame), TAB_HEIGHT);
+        assert_eq!(
+            ChromeLayout::bar_reservation(tabs, SIDEBAR_WIDTH),
+            size(px(0.0), px(0.0))
+        );
+    }
+
+    #[test]
+    fn the_title_row_follows_the_desktop_button_layout() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let state = FrameState {
+            decorations: gpui::Decorations::Client {
+                tiling: gpui::Tiling::default(),
+            },
+            maximized: false,
+            fullscreen: false,
+        };
+        let inset = client_frame::CLIENT_INSET;
+        let tabs = TabsConfig {
+            position: TabPosition::Titlebar,
+            style: TabStyle::Strip,
+            ..TabsConfig::default()
+        };
+        // Buttons at the start push the tabs after them; with none at the
+        // end the strip runs to the row's end, as beside macOS's lights.
+        let left = ButtonLayout::parse("close,minimize,maximize:");
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, left),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + left.leading.width());
+        assert_eq!(strip.right(), layout.tabs.right());
+        // Split buttons reserve both ends.
+        let split = ButtonLayout::parse("close:maximize");
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, split),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + split.leading.width());
+        assert_eq!(strip.right(), layout.tabs.right() - split.trailing.width());
+        // No buttons keep the small lead and reserve nothing at the end.
+        let layout = ChromeLayout::with_frame(
+            viewport,
+            TabPosition::Titlebar,
+            framed_with(state, ButtonLayout::parse("appmenu:")),
+        );
+        let strip = layout.strip_bounds(tabs);
+        assert_eq!(strip.left(), inset + TITLE_ROW_LEAD);
+        assert_eq!(strip.right(), layout.tabs.right());
+        // A window without the drawn row carries no buttons at all.
+        let fallback = framed_with(FrameState::default(), left);
+        assert_eq!(fallback, WindowFrame::default());
+    }
+
+    #[test]
+    fn tiled_maximized_and_fullscreen_frames_keep_the_row_but_no_border() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let viewport = size(px(800.0), px(600.0));
+        let client = |tiling| gpui::Decorations::Client { tiling };
+        for state in [
+            FrameState {
+                decorations: client(gpui::Tiling {
+                    left: true,
+                    ..gpui::Tiling::default()
+                }),
+                maximized: false,
+                fullscreen: false,
+            },
+            FrameState {
+                decorations: client(gpui::Tiling::default()),
+                maximized: true,
+                fullscreen: false,
+            },
+        ] {
+            let frame = framed(state);
+            assert!(frame.controls, "{state:?}");
+            assert!(!frame.decorated(), "{state:?}");
+            assert_eq!(frame.inset, gpui::Edges::default(), "{state:?}");
+            let layout = ChromeLayout::with_frame(
+                viewport,
+                TabPosition::Titlebar,
+                frame,
+            );
+            assert_eq!(
+                layout.content,
+                Bounds::new(point(px(0.0), px(0.0)), viewport)
+            );
+            assert_eq!(
+                layout.tabs,
+                Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(800.0), TAB_HEIGHT)
+                )
+            );
+            assert_eq!(layout.terminal.origin, point(px(0.0), TAB_HEIGHT));
+            assert_eq!(layout.terminal.right(), px(800.0));
+            assert_eq!(layout.terminal.bottom(), px(600.0));
+        }
+        // Fullscreen hides the row: the tabs become a top bar with no frame.
+        let fullscreen = WindowFrame::resolve(
+            resolve_tab_position(
+                TabPosition::Titlebar,
+                TabHost {
+                    platform: Platform::Linux,
+                    fullscreen: true,
+                    quake: false,
+                    client_decorations: true,
+                },
+            ),
+            FrameState {
+                decorations: client(gpui::Tiling::tiled()),
+                maximized: false,
+                fullscreen: true,
+            },
+            ButtonLayout::standard(),
+        );
+        assert_eq!(fullscreen, WindowFrame::default());
+        assert_eq!(title_row_height(true, fullscreen), px(0.0));
+        // Without a compositor the row is the window manager's.
+        let fallback = framed(FrameState::default());
+        assert_eq!(fallback, WindowFrame::default());
+        assert_eq!(title_row_height(false, fallback), px(0.0));
+        let layout =
+            ChromeLayout::with_frame(viewport, TabPosition::Top, fallback);
+        assert_eq!(layout.terminal.origin, point(px(0.0), TAB_HEIGHT));
+    }
+
+    #[test]
+    fn initial_windows_reserve_no_height_for_the_merged_row() {
+        let tabs = |position| TabsConfig {
+            position,
+            always_show: true,
+            ..TabsConfig::default()
+        };
+        assert_eq!(
+            ChromeLayout::bar_reservation(
+                tabs(TabPosition::Titlebar),
+                SIDEBAR_WIDTH
+            ),
+            size(px(0.0), px(0.0))
+        );
+        assert_eq!(
+            ChromeLayout::bar_reservation(
+                tabs(TabPosition::Top),
+                SIDEBAR_WIDTH
+            ),
+            size(px(0.0), tab_bar_height(tabs(TabPosition::Top)))
+        );
+        assert_eq!(
+            ChromeLayout::bar_reservation(
+                tabs(TabPosition::Bottom),
+                SIDEBAR_WIDTH
+            ),
+            size(px(0.0), tab_bar_height(tabs(TabPosition::Bottom)))
+        );
+        for column in [TabPosition::Left, TabPosition::Right] {
+            assert_eq!(
+                ChromeLayout::bar_reservation(tabs(column), SIDEBAR_WIDTH),
+                size(SIDEBAR_WIDTH, px(0.0))
+            );
+        }
+        // Without a title bar the configured row becomes a top bar and
+        // takes its height again.
+        let host = TabHost {
+            platform: Platform::Linux,
+            fullscreen: false,
+            quake: false,
+            client_decorations: false,
+        };
+        let resolved = layout_tabs(tabs(TabPosition::Titlebar), host);
+        assert_eq!(resolved.position, TabPosition::Top);
+        assert_eq!(
+            ChromeLayout::bar_reservation(resolved, SIDEBAR_WIDTH).height,
+            tab_bar_height(resolved)
+        );
     }
 
     #[test]

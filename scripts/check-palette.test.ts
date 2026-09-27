@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { macKeyEvents } from "./check-palette";
+import { macKeyEvents } from "./macos-keys";
 
 test("macOS palette text uses one correctly keyed event per character", () => {
   expect(macKeyEvents("Ab z")).toEqual([

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 export type State = Record<string, string>;
+/** One window notice from the smoke state: `notice<i>=<severity>|<source>|<message>`. */
+export type Notice = { severity: string; source: string; message: string };
 export function parseState(text: string): State {
   return Object.fromEntries(text.trim().split("\n").map(line => {
     const split = line.indexOf("=");
@@ -58,9 +60,26 @@ export function windowedBoundsOnDisplay(state: State): boolean {
     && x >= 0 && y >= 0 && x + width <= displayWidth && y + height <= displayHeight;
 }
 
+/** The notices of `prefix` (`w0.` by default), newest first. */
+export function notices(state: State, prefix = "w0."): Notice[] {
+  const count = Number(state[`${prefix}notices`] ?? "0");
+  return Array.from({ length: count }, (_, index) => {
+    const line = state[`${prefix}notice${index}`];
+    if (line === undefined) throw new Error(`missing ${prefix}notice${index}`);
+    const [severity, source, ...message] = line.split("|");
+    return { severity: severity ?? "", source: source ?? "", message: message.join("|") };
+  });
+}
+
+/** Whether the newest notice is an error command notice with exactly `message`. */
+export function newestFailureIs(state: State, message: string, prefix = "w0."): boolean {
+  const newest = notices(state, prefix)[0];
+  return newest?.severity === "error" && newest.source === "command" && newest.message === message;
+}
+
 export function assertTimeout(state: State, diagnostics: string): void {
   if (state["w0.pending"] !== "false" || state["w0.mode"] !== "Windowed") throw new Error("ignored request remains pending");
-  if (state["w0.status"] !== "Fullscreen transition timed out") throw new Error("missing window timeout status");
+  if (!newestFailureIs(state, "Fullscreen transition timed out")) throw new Error("missing window timeout notice");
   if (diagnostics.split("Fullscreen transition timed out").length - 1 !== 1) throw new Error("expected exactly one timeout diagnostic");
 }
 
@@ -269,6 +288,7 @@ done
       if (position === "left") {
         const [barX, barY, barWidth] = (await state())["w0.tab_bounds"]!.split(",").map(Number) as [number, number, number];
         const grabX = barX + barWidth - 3; const grabY = barY + 100;
+        const beforeDrag = (await state())["w0.resize_indicators"];
         if (macos) {
           await accepted(`native\tmouse\t5\t${grabX}\t${grabY}\t0`);
           await accepted(`native\tmouse\t1\t${grabX}\t${grabY}\t0`);
@@ -279,6 +299,8 @@ done
           run(["xdotool", "mousemove", "--window", focused, String(grabX), String(grabY), "mousedown", "1", "mousemove", "--window", focused, "260", String(grabY), "mouseup", "1"]);
         }
         await waitFor(async () => Math.abs(Number((await state())["w0.tab_bounds"]!.split(",")[2]) - 260) < 1, "preferred sidebar width");
+        // Dragging the sidebar is a resize the user made.
+        await waitFor(async () => Number((await state())["w0.resize_indicators"]) > Number(beforeDrag), "sidebar drag raises the size panel");
         await accepted("0 new_tab");
         await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "3" && s["w0.ready"] === "true"; }, "new tab with resized sidebar");
         if ((await state())["w0.resize_requests"] !== "1") throw new Error("new tab resized against a stale sidebar width");
@@ -286,6 +308,10 @@ done
       }
       await closeTab();
       await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === one["w0.terminal"] && s["w0.grid"] === one["w0.grid"]; }, "single tab reclaims chrome");
+      // The sidebar drag above also resized the first tab.
+      if (position !== "left" && (await state())["w0.resize_indicators"] !== one["w0.resize_indicators"]) {
+        throw new Error(`${position} tab bar showing or hiding raised the size panel`);
+      }
     }
     await writeFile(config, initialConfig.replace("[tabs]\n", "[tabs]\nalways_show = true\n"));
     await accepted("0 reload_config");
@@ -295,14 +321,59 @@ done
     await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden" && s["w0.retained"] === "true" && s["w0.grid"] === baseline["w0.grid"] && s["w0.terminal"] === baseline["w0.terminal"]; }, "original config restored");
     console.log(`TAB_VISIBILITY_SMOKE ${engine} reserved-one-two-one all-positions`);
   };
+  // `titlebar` merges the tabs into the macOS title strip and resolves to
+  // `top` in fullscreen, as on X11 without client decorations. Each
+  // transition must leave the PTY sized to the published grid.
+  const checkTitlebar = async () => {
+    const [toggle, full] = macos ? ["toggle_non_native_fullscreen", "NonNative"] : ["toggle_fullscreen", "Native"];
+    await writeFile(config, initialConfig.replace("[tabs]\n", '[tabs]\nposition = "titlebar"\nalways_show = true\n'));
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Reserved"; }, "titlebar config");
+    await pty("titlebarwindowed");
+    await accepted(`0 ${toggle}`);
+    await stable(full);
+    await pty("titlebarfullscreen");
+    await accepted(`0 ${toggle}`);
+    await stable("Windowed");
+    await pty("titlebarrestored");
+    await writeFile(config, initialConfig);
+    await accepted("0 reload_config");
+    await waitFor(async () => { const s = await state(); return Number(s.command_sequence) >= sequence && s.reloading === "false" && s["w0.tab_presentation"] === "Hidden"; }, "titlebar config restored");
+    console.log(`FULLSCREEN_SMOKE ${engine} titlebar-windowed-${full.toLowerCase()}-restored`);
+  };
+  // The tab bar appearing or hiding with the tab count is not a resize: the
+  // size panel stays hidden, including in fullscreen with a bar that does
+  // not auto-hide. Entering fullscreen is a resize and raises it.
+  const checkQuietChrome = async () => {
+    const [toggle, full] = macos ? ["toggle_non_native_fullscreen", "NonNative"] : ["toggle_fullscreen", "Native"];
+    const before = await state();
+    await accepted(`0 ${toggle}`);
+    await stable(full);
+    await waitFor(async () => Number((await state())["w0.resize_indicators"]) > Number(before["w0.resize_indicators"]), "fullscreen entry raises the size panel");
+    const entered = await state();
+    await accepted("0 new_tab");
+    await waitFor(async () => { const s = await state(); return s["w0.tabs"] === "2" && s["w0.ready"] === "true" && s["w0.tab_presentation"] === "Reserved"; }, "second tab shows the fullscreen bar");
+    await closeTab();
+    await waitFor(async () => { const s = await state(); return s["w0.tab_presentation"] === "Hidden" && s["w0.terminal"] === entered["w0.terminal"]; }, "last tab reclaims the fullscreen bar");
+    const reclaimed = await state();
+    if (reclaimed["w0.resize_indicators"] !== entered["w0.resize_indicators"]) {
+      throw new Error(`the tab bar hiding showed the size panel: ${entered["w0.resize_indicators"]} -> ${reclaimed["w0.resize_indicators"]}`);
+    }
+    await accepted(`0 ${toggle}`);
+    await stable("Windowed");
+    await pty("quietchrome");
+    console.log(`FULLSCREEN_SMOKE ${engine} quiet-tab-bar resize-panel-on-${full.toLowerCase()}`);
+  };
   const move = async (x: number, y: number) => {
     if (macos) await accepted(`native\tmouse\t5\t${x}\t${y}\t0`);
     else run(["xdotool", "mousemove", String(Math.round(x)), String(Math.round(y))]);
   };
+  // A middle press, as on X11: a right press on empty tab-bar space opens
+  // the window menu, which would take the barrier key.
   const pointerInput = async (x: number, y: number) => {
     if (macos) {
-      await accepted(`native\tmouse\t3\t${x}\t${y}\t0`);
-      await accepted(`native\tmouse\t4\t${x}\t${y}\t0`);
+      await accepted(`native\tmouse\t25\t${x}\t${y}\t0`);
+      await accepted(`native\tmouse\t26\t${x}\t${y}\t0`);
     } else run(["xdotool", "click", "2", "click", "4"]);
   };
   const checkOverlay = async () => {
@@ -416,7 +487,11 @@ done
       windowId = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/)[0]!;
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
-    if (!noWm && !frameProbe && !fallback && !schedulerOnly) await checkReserved();
+    if (!noWm && !frameProbe && !fallback && !schedulerOnly) {
+      await checkReserved();
+      await checkTitlebar();
+      await checkQuietChrome();
+    }
     const original = await stable("Windowed");
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
     const originalGeometry = macos ? "" : run(["xdotool", "getwindowgeometry", "--shell", windowId]);
@@ -489,7 +564,7 @@ done
       await stable("Windowed");
       console.log("FULLSCREEN_SMOKE property-only unchanged-bounds both-event-orders unrelated-property-idle");
       run(["xdotool", "key", "F11"]);
-      await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "ignored EWMH timeout");
+      await waitFor(async () => newestFailureIs(await state(), "Fullscreen transition timed out"), "ignored EWMH timeout");
       await waitFor(async () => stderr.includes("Fullscreen transition timed out"), "fullscreen timeout diagnostic");
       assertTimeout(await state(), stderr);
       console.log("FULLSCREEN_SMOKE no-ewmh one-status-error pending-cleared");
@@ -514,7 +589,7 @@ done
         await accepted("0 reload_config");
         await waitFor(async () => (await state())["w0.default"] === "Native" && (await state()).reloading === "false", "explicit native fullscreen config");
         await accepted("probe-native-pending");
-        await waitFor(async () => (await state())["w0.status"] === "Fullscreen transition timed out", "missing native completion timeout");
+        await waitFor(async () => newestFailureIs(await state(), "Fullscreen transition timed out"), "missing native completion timeout");
         assertTimeout(await state(), stderr);
         for (const action of ["toggle_native_fullscreen", "toggle_fullscreen"]) {
           await accepted(`0 ${action}`);
@@ -522,13 +597,13 @@ done
           const rejected = await state();
           if (rejected["w0.pending"] !== "false") throw new Error(`${action} dispatched during an unresolved native transition`);
           assertRestored(original, rejected, true);
-          if (rejected["w0.status"] !== "Fullscreen failed: native fullscreen transition has not completed") throw new Error(`${action} did not report unresolved native transition`);
+          if (!newestFailureIs(rejected, "Fullscreen failed: native fullscreen transition has not completed")) throw new Error(`${action} did not report unresolved native transition`);
         }
         await accepted("0 toggle_non_native_fullscreen");
         await waitFor(async () => {
           const rejected = await state();
           return Number(rejected.command_sequence) >= sequence && rejected["w0.pending"] === "false"
-            && rejected["w0.status"] === "Fullscreen failed: native fullscreen transition has not completed";
+            && newestFailureIs(rejected, "Fullscreen failed: native fullscreen transition has not completed");
         }, "unresolved native transition rejection");
         assertRestored(original, await state(), true);
         await pty("timeout");

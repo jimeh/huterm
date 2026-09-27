@@ -14,6 +14,7 @@ case "${1:-}" in
     rsync -a --delete --prune-empty-dirs \
       --include=/target/ --include=/target/debug/ --include=/target/debug/examples/ \
       --include='/target/debug/examples/*_smoke' --include='/target/debug/*-witness' \
+      --include=/target/debug/hid-pointer \
       --include=/target/debug/huterm --include=/target/terminfo/ --include='/target/terminfo/**' \
       --exclude='/target/**' \
       --include=/.native/ --include=/.native/sparkle/ --include=/.native/sparkle/distribution/ \

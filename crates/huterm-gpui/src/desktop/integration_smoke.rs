@@ -153,6 +153,10 @@ fn read_state(cx: &mut gpui::App) -> String {
                 .filter(|tab| tab.view.read(cx).bell.unseen)
                 .count();
             let label = workspace.tabs.iter().find(|tab| Some(tab.id) == workspace.active).map_or_else(String::new, |tab| tab.label(workspace.config.tabs, cx).0);
+            // Window notices, newest first: `notices=<n>` then
+            // `notice<i>=<severity>|<source>|<message>` (see
+            // `NoticeContent::smoke_line`).
+            state.push_str(&super::notices::smoke_lines("", workspace.notices.contents()));
             let Some(terminal) = workspace.active_view() else { return; };
             terminal.update(cx, |view, _| {
                 view.open_link = record_open;
@@ -160,7 +164,7 @@ fn read_state(cx: &mut gpui::App) -> String {
                 let layout = view.terminal_layout(window);
                 let origin = bounds.origin + layout.bounds.origin;
                 let queue = view.scroll.diagnostics();
-                writeln!(state,"x={}\ny={}\ncell_width={}\ncell_height={}\ncolumns={}\nrows={}\nexited={}\nconfirming={}\ntabs={}\nunseen_bells={}\nlabel={}\ndirectory={}\ndirectory_local={}\nprocess={}\nbell_unseen={}\nbell_flashing={}\nbell_flashes={}\nfocused={}\nhover={}\nowned={}\nheld_right={}\nrequests={}\ncompletions={}\nlookup_us={}\nlatency_us={}\nconcurrent={}\npending={}\nexternal_drag={}\nselection={}\nstatus={}", f32::from(origin.x),f32::from(origin.y),f32::from(view.metrics.cell_width),f32::from(view.metrics.cell_height),view.last_grid_size.columns,view.last_grid_size.rows,view.exited,confirming,tabs,unseen_bells,label,view.metadata.directory().map_or("", huterm_protocol::TerminalDirectory::path),view.metadata.directory().is_some_and(huterm_protocol::TerminalDirectory::is_local),view.metadata.foreground_process().unwrap_or(""),view.bell.unseen,view.bell.flashing(std::time::Instant::now()),view.bell_flash_count,view.focus.is_focused(window),view.links.hover().map_or("",|link| link.destination.as_str()),view.links.owns_press(),view.mouse.held(huterm_protocol::MouseButton::Right),view.link_requests,view.link_completions,view.link_max_lookup.as_micros(),view.link_max_latency.as_micros(),queue.maximum_concurrent,queue.maximum_queued,view.external_drag,view.selecting,view.status.as_deref().unwrap_or("")).unwrap();
+                writeln!(state,"x={}\ny={}\ncell_width={}\ncell_height={}\ncolumns={}\nrows={}\nexited={}\nconfirming={}\ntabs={}\nunseen_bells={}\nlabel={}\ndirectory={}\ndirectory_local={}\nprocess={}\nbell_unseen={}\nbell_flashing={}\nbell_flashes={}\nfocused={}\nhover={}\nowned={}\nheld_right={}\nrequests={}\ncompletions={}\nlookup_us={}\nlatency_us={}\nconcurrent={}\npending={}\nexternal_drag={}\nselection={}", f32::from(origin.x),f32::from(origin.y),f32::from(view.metrics.cell_width),f32::from(view.metrics.cell_height),view.last_grid_size.columns,view.last_grid_size.rows,view.exited,confirming,tabs,unseen_bells,label,view.metadata.directory().map_or("", huterm_protocol::TerminalDirectory::path),view.metadata.directory().is_some_and(huterm_protocol::TerminalDirectory::is_local),view.metadata.foreground_process().unwrap_or(""),view.bell.unseen,view.bell.flashing(std::time::Instant::now()),view.bell_flash_count,view.focus.is_focused(window),view.links.hover().map_or("",|link| link.destination.as_str()),view.links.owns_press(),view.mouse.held(huterm_protocol::MouseButton::Right),view.link_requests,view.link_completions,view.link_max_lookup.as_micros(),view.link_max_latency.as_micros(),queue.maximum_concurrent,queue.maximum_queued,view.external_drag,view.selecting).unwrap();
                 if let Some(snapshot) = &view.snapshot {
                     writeln!(state,"generation={}\nsnapshot_columns={}\nmouse={:?}\ntext={}",snapshot.generation,snapshot.size.columns,snapshot.modes.mouse_tracking,snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap();
                 }

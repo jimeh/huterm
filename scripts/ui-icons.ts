@@ -12,6 +12,22 @@ export const iconNames = [
   "chevron-right",
   "circle-alert",
   "bell",
+  "menu",
+  "minus",
+  "square",
+  "copy",
+  "corner-down-left",
+  "arrow-big-up",
+  "command",
+  "option",
+  "chevron-up",
+  "arrow-up",
+  "arrow-down",
+  "arrow-left",
+  "arrow-right",
+  "arrow-right-to-line",
+  "delete",
+  "link",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

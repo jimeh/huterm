@@ -802,8 +802,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await drop("exit");
     await waitFor(
       async () =>
-        (await state()).status?.includes("control characters") ?? false,
-      "whole invalid-path status",
+        Object.entries(await state()).some(
+          ([key, value]) =>
+            /^notice\d+$/.test(key) &&
+            value.startsWith("error|terminal:") &&
+            value.includes("control characters"),
+        ),
+      "whole invalid-path error notice",
     );
     await raw("native-invalid-path-whole-drop-refused");
     paths.pop();

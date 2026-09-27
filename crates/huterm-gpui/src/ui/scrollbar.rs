@@ -20,8 +20,6 @@ const SCROLLBAR_EXPAND: Duration = Duration::from_millis(180);
 const SCROLLBAR_EXPANDED_HOLD: Duration = Duration::from_secs(4);
 /// Resting thumb thickness of a full-size scrollbar.
 const THUMB_THICKNESS: f32 = 6.0;
-/// Gap kept between the thumb and a label beside it.
-const LABEL_GAP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Axis {
@@ -712,15 +710,6 @@ impl Scrollbars {
             .map_or(0.0, |scrollbar| scrollbar.visibility.opacity)
     }
 
-    /// Space to keep clear of the strip on `axis` as its expansion animates,
-    /// for labels beside the thumb.
-    pub(crate) fn strip_inset(&self, axis: Axis) -> f32 {
-        self.slot(axis).map_or(0.0, |scrollbar| {
-            let (inset, thick) = scrollbar.thumb_cross();
-            scrollbar.options.edge_inset + inset + thick + LABEL_GAP
-        })
-    }
-
     /// Distance from the edge to the inner end of the pointer target on
     /// `axis`: the size across the axis of an element that covers the
     /// target and the edge inset, so `layers` inside it line up with `hit`.
@@ -1153,7 +1142,6 @@ mod tests {
         ));
         growing.advance(now + SCROLLBAR_EXPAND);
         assert!((growing.strip_extent(Axis::Vertical) - 18.0).abs() < 0.001);
-        assert!((growing.strip_inset(Axis::Vertical) - 18.0).abs() < 0.001);
         assert_eq!(
             growing
                 .layers(
@@ -1249,7 +1237,6 @@ mod tests {
                 .hit(&geometries, bounds, point(px(81.0), px(200.0)))
                 .is_none()
         );
-        assert!((inset.strip_inset(Axis::Vertical) - 18.0).abs() < 0.001);
     }
 
     #[test]

@@ -52,8 +52,8 @@ types.
 Huterm runs on macOS Apple Silicon and Linux x86_64/aarch64. Each native window
 has a private session and backing workspace with ordered tabs, one pane per tab,
 and independent terminal processes. Tabs can appear at the top, bottom, left,
-or right. Hidden tabs keep processing output without preparing viewport
-snapshots or painting.
+or right, or in the title bar (the macOS default). Hidden tabs keep
+processing output without preparing viewport snapshots or painting.
 Drag tabs to reorder them within a window. The preview stays in the tab bar
 even when the pointer leaves the window; releasing commits the clamped insertion
 position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
@@ -227,11 +227,13 @@ padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
+menu_button = true # the window menu button in the title bar or tab bar
+shortcut_hints = false # key hints on the scroll pill and dialog buttons
 
 [tabs]
 label = "smart" # smart, title, process, directory, or process_and_directory
 directory = "name" # name, path, or short
-position = "top" # top, bottom, left, or right
+# position = "titlebar" # or top, bottom, left, right; Linux default: "top"
 always_show = false
 auto_hide_in_fullscreen = false
 style = "pill" # pill or strip
@@ -247,6 +249,94 @@ Set `padding_balance = true` to split leftover horizontal space evenly between
 left and right when the window width does not fit whole columns. With it off,
 the remainder stays on the right. Vertical remainder always stays at the
 bottom. Padding accepts values from 0 to 256 points.
+
+`menu_button` shows a three-line menu button that opens the window menu: the
+command palette, tab and window commands, Copy and Paste, fullscreen, settings,
+reload, waiting notices, About, and Quit, with each item's current shortcut.
+On macOS
+it sits at the right end of the title bar. Without a title bar (fullscreen on
+either platform, or Linux without client-side decorations, where the window
+manager draws it) it joins the tab bar: the far right of a top or bottom bar,
+or beside `+` under a left or right column, and it hides with an auto-hidden
+bar. A yellow dot marks waiting notices. `menu_button = false` removes it;
+`open_menu` and every item stay available through the palette and shortcuts.
+Right-clicking empty tab-bar space also opens the window menu at the pointer,
+except in Huterm's own Linux title row, where it opens the window manager's
+menu.
+
+Menus and the command palette show each command's shortcut: macOS in its
+symbols (`⇧⌘P`), Linux in words (`Ctrl+Shift+P`), with Return, Tab,
+Backspace, and the arrows drawn as icons on both. The scroll pill, the close
+confirmation's buttons, and the About panel show key hints only with
+`shortcut_hints = true`.
+
+Right-clicking any tab, active or not, opens its context menu at the pointer
+without activating it; the targeted tab is outlined while the menu is open.
+The menu lists Rename Tab…, Copy Directory Path (disabled with "Directory
+unknown" until the tab reports a working directory; `copy_tab_directory`
+copies the local or remote path), Close Tab (its shortcut shows only on the
+active tab), Close Other Tabs (disabled with one tab), and Close Tabs to the
+Right, worded Close Tabs Below under a left or right column (disabled on the
+last tab). It does not open during a tab drag or while a close confirmation is
+showing, and it uses the same keys, dismissal, and focus return as the window
+menu.
+
+Right-clicking the terminal opens its context menu at the pointer; on macOS a
+Control-click does the same. Open Link and Copy Link Address lead the menu
+when the pointer is over a link. Copy is disabled until text is selected, and
+Paste stays enabled while the shell runs. Select All selects the scrollback
+and screen, Clear Scrollback erases history and keeps the screen, and Reset
+Terminal clears the screen, history, and modes a program left behind, as RIS
+does, without touching running programs. Scroll to Bottom appears while the
+view shows history. The menu also offers Copy Directory Path, Show in Finder
+or Open in File Manager for a local working directory, and New Tab, Rename
+Tab…, and Close Tab for the terminal's tab. `open_context_menu` opens it at the
+text cursor from the keyboard. When a program such as vim or tmux takes the
+mouse, a plain right-click goes to it and Shift+right-click opens the menu.
+`terminal.right_click` chooses the action instead: `"menu"` (default),
+`"paste"`, `"copy_or_paste"` (copy and clear a selection, otherwise paste), or
+`"ignore"`. Menus opened at the pointer shift up or down to fit the window
+and scroll only when taller than it, with a thin indicator on the right.
+
+Tabs show a small yellow dot before their title while a program holds the
+foreground; the exit, error, and bell indicators take its place. The native
+window title is `<active tab title> — Huterm` and follows tab switches and
+title changes, so window managers and switchers show the active tab. On macOS
+the title bar shows the active tab's title in place of the application name.
+
+About Huterm (`about`) opens a themed panel on both platforms with the version,
+identifier, platform (OS version, architecture, and the display backend on
+Linux), terminal engine, and build profile plus the short source revision
+when the build embedded one. Copy Details copies those lines as text; Close,
+Enter, or Escape closes it, and terminal input is blocked while it is showing.
+
+`position = "titlebar"` merges the tabs into the window's title bar; it is the
+macOS default, and Linux defaults to `top`. On macOS
+the 32-point title strip becomes the tab row: it starts after the traffic
+lights, holds the tabs and `+`, keeps its trailing space draggable with the
+usual double-click action, and ends with the menu button. The terminal gains
+the height a top bar would take. A single tab with `always_show = false` shows
+the strip with the active tab's title, as the other positions do. On Linux,
+Huterm asks for client-side decorations and draws the whole row itself: the
+tabs and `+`, draggable empty space, the menu button, and round minimize,
+maximize, and close controls. The controls follow the desktop's button layout,
+as GTK applications do: GNOME's `button-layout` setting (for example through
+GNOME Tweaks) or KDE's GTK settings choose which buttons appear and whether
+they sit at the left or right end, and a change applies to open windows
+immediately. Huterm reads the layout from the XSettings `Gtk/DecorationLayout`
+value and draws minimize, maximize, and close on the right when the desktop
+publishes none. Dragging the empty
+space moves the window, double-clicking it maximizes, and a right-click opens
+the window manager's menu; the close control takes the same assessed close
+path as the `close_window` command. A windowed, untiled window also gets a
+thin invisible border for resizing, a shadow, and rounded top corners, which
+disappear while it is maximized, tiled, or fullscreen. This needs a window
+manager that supports client-side decorations by advertising
+`_GTK_FRAME_EXTENTS`, such as GNOME's Mutter or KDE's KWin; GNOME on Wayland
+runs Huterm through XWayland, which Mutter manages. Other window managers,
+such as Openbox or i3, keep their own title bar, and `titlebar` behaves as
+`top` there. Wherever no title bar exists the tabs take a top bar
+instead: fullscreen on either platform and Quake windows.
 
 `style` selects Pill (the default) or Strip tabs for every placement. Left and
 right Strip tabs put the accent line on the window edge; left and right Pill
@@ -334,7 +424,8 @@ the request; the explicit non-native command is unavailable there.
 ### Links and file drops
 
 Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
-it with the system handler. Hover shows the destination. OSC 8 labels use their
+it with the system handler. Hover shows the destination on a small panel in
+the terminal's bottom-left corner. OSC 8 labels use their
 explicit destination; plain URLs can cross soft-wrapped rows. When a terminal
 application captures the mouse, add Shift to the configured modifier chord.
 Moving away, scrolling, changing the target, or pressing Escape cancels a click.
@@ -667,6 +758,8 @@ descendant context (`Workspace > Terminal`). Available contexts:
 | `exited` | That terminal's root shell has exited. |
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation is open. |
+| `menu` | The window menu has keyboard focus. |
+| `notices` | A notice toast has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has completed entry into native or non-native fullscreen. Pending entry alone does not match. |
 | `palette` | The window owns an open command palette. |
@@ -690,7 +783,10 @@ Commands, their scope, and arguments:
 | `about` | Window | |
 | `open_command_palette` | Window | |
 | `new_tab` | Window | |
-| `close_tab` | Window | |
+| `close_tab` | Window | optional `tab`; defaults to the active tab. |
+| `close_other_tabs` | Window | optional `tab`; defaults to the active tab. |
+| `close_tabs_after` | Window | optional `tab`; defaults to the active tab. |
+| `copy_tab_directory` | Window | optional `tab`; defaults to the active tab. |
 | `close_window` | Window | |
 | `next_tab` | Window | |
 | `previous_tab` | Window | |
@@ -709,6 +805,30 @@ Commands, their scope, and arguments:
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session |
 | `select_recent_tab` | Window | Activate the most recently used tab; repeat to toggle between two tabs. |
+| `open_menu` | Window | |
+| `focus_notices` | Window | Focus the newest notice toast; unavailable without notices. |
+| `dismiss_all_notices` | Window | Dismiss every notice; unavailable without notices. |
+| `select_all` | Terminal | Select the scrollback and screen. |
+| `clear_scrollback` | Terminal | Erase the scrollback and keep the screen. |
+| `reset_terminal` | Terminal | Reset the screen, scrollback, and modes, as RIS does. |
+| `open_tab_directory` | Window | optional `tab`; defaults to the active tab. Requires a local directory. |
+| `open_context_menu` | Window | Open the active terminal's context menu at its cursor. |
+| `dialog_confirm` | Window | Bound only while `confirming`. |
+| `dialog_cancel` | Window | Bound only while `confirming`. |
+| `dialog_focus_next` | Window | Bound only while `confirming`. |
+| `dialog_focus_previous` | Window | Bound only while `confirming`. |
+| `menu_select_next` | Window | Bound only while `menu`. |
+| `menu_select_previous` | Window | Bound only while `menu`. |
+| `menu_select_first` | Window | Bound only while `menu`. |
+| `menu_select_last` | Window | Bound only while `menu`. |
+| `menu_select_right` | Window | Bound only while `menu`. |
+| `menu_select_left` | Window | Bound only while `menu`. |
+| `menu_confirm` | Window | Bound only while `menu`. |
+| `menu_close` | Window | Bound only while `menu`. |
+| `notice_next` | Window | Bound only while `notices`. |
+| `notice_previous` | Window | Bound only while `notices`. |
+| `notice_run_action` | Window | Bound only while `notices`. |
+| `notice_dismiss` | Window | Bound only while `notices`. |
 | `palette_select_next` | Palette | |
 | `palette_select_previous` | Palette | |
 | `palette_page_down` | Palette | |
@@ -736,8 +856,9 @@ Commands, their scope, and arguments:
 
 Runtime commands execute in the core against canonical structure; the ID
 arguments cannot be written in config and are filled from the invoking window.
-Palette-scope commands imply the `Palette` context. User bindings for them need
-no `when`; the keymap adds the context predicate.
+Palette-scope commands imply the `Palette` context, and dialog, menu, and
+notice commands imply `confirming`, `menu`, and `notices`. User bindings for
+them need no `when`; the keymap adds the context predicate.
 
 Default bindings differ per platform:
 
@@ -753,11 +874,13 @@ Default bindings differ per platform:
 | `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
+| `select_all` | `cmd-a` | `ctrl-shift-a` |
+| `clear_scrollback` | `cmd-k` | |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
 | `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
 | `reload_config` | `cmd-<` | `ctrl-<` |
-| `open_settings` | `cmd-,` | |
+| `open_settings` | `cmd-,` | `ctrl-,` |
 | `quit` | `cmd-q` | |
 | `minimize` | `cmd-m` | |
 | `hide` / `hide_others` | `cmd-h` / `cmd-alt-h` | |
@@ -787,6 +910,57 @@ Default bindings differ per platform:
 | `text_copy` | `cmd-c` | `ctrl-c`, `ctrl-shift-c` |
 | `text_paste` | `cmd-v` | `ctrl-v`, `ctrl-shift-v` |
 
+#### Dialog
+
+These bind only while a close confirmation or the About panel is showing
+(`confirming`), so they take nothing from terminal input. The primary button
+has focus when the dialog opens; a repeated close shortcut never confirms. In
+the About panel, `dialog_confirm` and `dialog_cancel` both close it and the
+focus commands do nothing.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `dialog_confirm` | `enter` | `enter` |
+| `dialog_cancel` | `escape` | `escape` |
+| `dialog_focus_next` | `tab`, `right` | `tab`, `right` |
+| `dialog_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
+
+#### Menu
+
+These bind only while the window menu has focus (`menu`), so they take
+nothing from terminal input. `open_menu` has no default binding; the menu
+button opens the menu with no selection, and `open_menu` selects the first
+item. Typing a letter jumps to the next item starting with it. Escape, Tab,
+running an item, or clicking elsewhere closes the menu and returns focus to
+the terminal.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `menu_select_next` | `down` | `down` |
+| `menu_select_previous` | `up` | `up` |
+| `menu_select_first` | `home` | `home` |
+| `menu_select_last` | `end` | `end` |
+| `menu_select_right` | `right` | `right` |
+| `menu_select_left` | `left` | `left` |
+| `menu_confirm` | `enter`, `space` | `enter`, `space` |
+| `menu_close` | `escape`, `tab` | `escape`, `tab` |
+
+#### Notices
+
+Errors and warnings appear as toasts in the bottom-right corner of the
+terminal. Configuration and keybinding diagnostics stay until a reload fixes
+them; command and terminal failures expire after six seconds unless hovered or
+focused. These bind only while a toast has focus (`notices`), which
+`focus_notices` gives the newest toast, so they take nothing from terminal
+input. Dismissing the last focused toast returns focus to the terminal.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `notice_next` | `down` | `down` |
+| `notice_previous` | `up` | `up` |
+| `notice_run_action` | `enter` | `enter` |
+| `notice_dismiss` | `escape`, `delete` | `escape`, `delete` |
+
 Commands without a default binding are available through menus or config.
 
 On macOS, build a universal application bundle with:
@@ -808,6 +982,10 @@ gate, while `mise run verify` also runs tests, the dependency-license policy,
 and GitHub Actions checks. See the
 [development guide](docs/agents/development.md) for platform prerequisites,
 limits, and the validation ladder.
+
+Set `HUTERM_SOURCE_REVISION` to the source commit when building to embed its
+short form in the About panel's Build row; the container-based Linux runner
+passes the host `HEAD`, and builds without it omit the revision.
 
 Release Please creates draft GitHub releases. The release workflow signs,
 notarizes, staples, verifies, and publishes the universal app only after its

@@ -240,6 +240,10 @@ impl Presentation {
     pub fn visible(&self) -> bool {
         self.transition.visible()
     }
+    /// A show or hide has not settled yet.
+    pub(super) fn presenting(&self) -> bool {
+        self.stage != Stage::Idle
+    }
     pub(super) fn cleanup(self) {
         self.generation.set(self.generation.get() + 1);
         if let Err(error) = self
@@ -756,7 +760,7 @@ fn recover(
         .update(cx, |root, window, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
             view.update(cx, |view, cx| {
-                view.status = Some(format!("Quake: {message}"));
+                view.report_failure("Quake", format!("Quake: {message}"), cx);
                 let state = view.quake.as_mut()?;
                 state.model.revision = state.model.revision.wrapping_add(1);
                 state.generation.set(state.model.revision);

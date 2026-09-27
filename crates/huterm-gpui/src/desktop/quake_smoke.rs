@@ -193,8 +193,11 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 let view =
                     root.downcast::<WorkspaceView>().ok().context("root")?;
                 view.update(cx, |view, cx| {
-                    let target =
-                        view.close.confirmation.context("no confirmation")?;
+                    let target = view
+                        .close
+                        .confirmation
+                        .clone()
+                        .context("no confirmation")?;
                     if name == "confirm_close" {
                         view.finish_close(target, window, cx);
                     } else {
@@ -275,12 +278,19 @@ fn setup_dead_reporter(
 
 fn read_state(cx: &mut App) -> String {
     let mut output = format!(
-        "windows={}\nreloading={}\nkeepalive={}\nconfig_error={}\n",
+        "windows={}\nreloading={}\nkeepalive={}\n",
         cx.windows().len(),
         cx.global::<Desktop>().reloading,
         quake_windows::keep_alive(cx),
-        cx.global::<Desktop>().config_error.as_deref().unwrap_or("")
     );
+    // Desktop-wide notices new windows raise: configuration diagnostics,
+    // then failures latched while no window could show them, as
+    // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
+    let desktop = cx.global::<Desktop>();
+    let global: Vec<_> =
+        desktop.diagnostics.iter().chain(&desktop.latched).collect();
+    output
+        .push_str(&super::notices::smoke_lines("desktop.", global.into_iter()));
     match quake_windows::inspect_return_focus(cx) {
         Ok(focus) => writeln!(output, "{focus}").unwrap(),
         Err(error) => writeln!(
@@ -295,7 +305,9 @@ fn read_state(cx: &mut App) -> String {
             let Ok(root)=root.downcast::<WorkspaceView>() else {return;};
             let view=root.read(cx);
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
-            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}\nw{index}.status={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden(),view.status.as_deref().unwrap_or("")).unwrap();
+            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden()).unwrap();
+            // Window notices, newest first, in the same form as `desktop.`.
+            output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.ordinary_fullscreen={:?}\nw{index}.ordinary_pending={}", view.fullscreen.observed, view.fullscreen.is_pending()).unwrap();
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &view.native_fullscreen {
@@ -314,7 +326,7 @@ fn read_state(cx: &mut App) -> String {
                 let bounds = terminal.content_bounds(window);
                 writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}\nw{index}.tab_height={}\nw{index}.terminal_top={}\nw{index}.safe_top={}", terminal.tab_presentation, view.reveal.progress, f32::from(view.tab_strip(window).bounds.size.height), f32::from(bounds.origin.y), f32::from(view.fullscreen_insets.top)).unwrap();
                 let text=terminal.snapshot.as_ref().map(|snapshot|snapshot.cells().map(|cell|cell.text.as_str()).collect::<String>()).unwrap_or_default();
-                writeln!(output,"w{index}.text={}\nw{index}.grid={},{}\nw{index}.resize_requests={}\nw{index}.terminal_visible={}\nw{index}.focused={}",text.replace('\n'," ").trim(),terminal.last_grid_size.columns,terminal.last_grid_size.rows,terminal.resize_requests,terminal.visible,terminal.focus.is_focused(window)).unwrap();
+                writeln!(output,"w{index}.text={}\nw{index}.grid={},{}\nw{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.terminal_visible={}\nw{index}.focused={}",text.replace('\n'," ").trim(),terminal.last_grid_size.columns,terminal.last_grid_size.rows,terminal.resize_requests,terminal.resize_indicators,terminal.visible,terminal.focus.is_focused(window)).unwrap();
             }
         });
     }

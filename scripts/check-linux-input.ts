@@ -27,11 +27,17 @@ function signal(pid: number, signal: NodeJS.Signals): void {
 }
 
 async function waitFor(check: () => Promise<boolean>, label: string): Promise<void> {
-  const deadline = performance.now() + 10_000;
+  if (!await waitWithin(check, 10_000)) throw new Error(`timed out waiting for ${label}`);
+}
+
+/** Polls `check` until it holds or `milliseconds` pass; false on timeout. */
+async function waitWithin(check: () => Promise<boolean>, milliseconds: number): Promise<boolean> {
+  const deadline = performance.now() + milliseconds;
   while (!await check()) {
-    if (performance.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    if (performance.now() >= deadline) return false;
     await Bun.sleep(20);
   }
+  return true;
 }
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -40,6 +46,7 @@ async function checkInput(executable: string): Promise<void> {
   const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-x11-input-"));
   const ready = join(directory, "ready");
+  const probed = join(directory, "probed");
   const complete = join(directory, "complete");
   const bytes = join(directory, "bytes");
   const shell = join(directory, "shell");
@@ -48,6 +55,12 @@ async function checkInput(executable: string): Promise<void> {
   await writeFile(shell, `#!/bin/sh
 stty raw -echo
 printf READY > ${quote(ready)}
+# Readiness handshake: the first probe byte proves the terminal accepts
+# input. Probes the smoke repeated meanwhile arrive before its "g" and are
+# discarded, so the exact-byte read below sees only the real sequence.
+dd bs=1 count=1 of=/dev/null 2>/dev/null
+printf PROBED > ${quote(probed)}
+while :; do c=$(dd bs=1 count=1 2>/dev/null); [ "$c" = g ] && break; done
 timeout --foreground 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/dev/null
 printf COMPLETE > ${quote(complete)}
 `, { mode: 0o700 });
@@ -91,6 +104,15 @@ command = "quit"
       await writeFile(join(mapsDirectory, `${engine}.maps`), await readFile(`/proc/${applicationPid}/maps`));
     }
     run(["xdotool", "windowfocus", "--sync", windowId]);
+    // Keys that reach the window before its terminal is drawn and focused are
+    // dropped, so repeat a probe until the fixture reads one, then release it.
+    let probedInput = false;
+    for (let attempt = 0; attempt < 40 && !probedInput; attempt++) {
+      run(["xdotool", "key", "--clearmodifiers", "z"]);
+      probedInput = await waitWithin(() => Bun.file(probed).exists(), 250);
+    }
+    if (!probedInput) throw new Error(`${engine}: the terminal never accepted input`);
+    run(["xdotool", "key", "--clearmodifiers", "g"]);
     // XTest updates the server's XKB modifier state; --window would instead
     // send XSendEvent events and bypass the conversion this smoke must prove.
     run(["xdotool", "key", "--clearmodifiers", "--delay", "40",

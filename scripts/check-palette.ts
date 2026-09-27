@@ -3,67 +3,14 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
+import { checkClientFrame, withCompositor } from "./check-client-frame";
+import { checkMacTitlebar } from "./check-macos-titlebar";
+import { checkOverlays } from "./check-overlays";
+import { commandFlag, macKeyEvents, optionFlag, shiftFlag } from "./macos-keys";
 
-const commandFlag = 1 << 20;
-const optionFlag = 1 << 19;
-const shiftFlag = 1 << 17;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
-type MacKeyEvent = {
-  code: number;
-  flags: number;
-  text: string;
-  plain: string;
-};
-
-const macKeyCodes: Record<string, number> = {
-  a: 0,
-  b: 11,
-  c: 8,
-  d: 2,
-  e: 14,
-  f: 3,
-  g: 5,
-  h: 4,
-  i: 34,
-  j: 38,
-  k: 40,
-  l: 37,
-  m: 46,
-  n: 45,
-  o: 31,
-  p: 35,
-  q: 12,
-  r: 15,
-  s: 1,
-  t: 17,
-  u: 32,
-  v: 9,
-  w: 13,
-  x: 7,
-  y: 16,
-  z: 6,
-  " ": 49,
-};
-
-export function macKeyEvents(text: string): MacKeyEvent[] {
-  return [...text].map((character) => {
-    const plain = character.toLowerCase();
-    const code = macKeyCodes[plain];
-    if (code === undefined) {
-      throw new Error(
-        `unsupported macOS palette smoke character ${JSON.stringify(character)}`,
-      );
-    }
-    return {
-      code,
-      flags: character === plain ? 0 : shiftFlag,
-      text: character,
-      plain,
-    };
-  });
-}
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, {
@@ -543,8 +490,8 @@ command = "select_tab"
     await command("invoke-reload");
     await state(
       'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'w0.status=Some("terminal.engine = \\"alacritty\\" is deprecated',
+      'desktop.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
     );
     await writeFile(
       config,
@@ -553,12 +500,13 @@ command = "select_tab"
     await command("invoke-reload");
     await state(
       'config.warning=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'config.error=Some("terminal.engine = \\"alacritty\\" is deprecated',
-      'w0.status=Some("Config reload failed:',
+      'desktop.notice0="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
+      'w0.notice0="error|config|Config reload failed:',
+      'w0.notice1="warning|config|terminal.engine = \\"alacritty\\" is deprecated',
     );
     await writeFile(config, configDocument);
     await command("invoke-reload");
-    await state("config.warning=None", "config.error=None", "w0.status=None");
+    await state("config.warning=None", "desktop.notices=0", "w0.notices=0");
 
     // Existing modal routing, pointer isolation, and macOS composition coverage.
     await typeText("A");
@@ -946,7 +894,7 @@ command = "select_tab"
     );
     await coreState(2, [], ['name=Some("gone")']);
 
-    // 11. A post-dispatch failure stays in the originating status line.
+    // 11. A post-dispatch failure lands in the originating window's notices.
     await command("open-second");
     await state("windows=3", "w2.tabs=1");
     await coreState(3, [], ['name=Some("gone")']);
@@ -959,8 +907,8 @@ command = "select_tab"
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     const reported = await state(
-      "w0.status=Some(\"Cannot open tab:",
-      "w1.status=None",
+      'w0.notice0="error|command|Cannot open tab:',
+      "w1.notices=0",
     );
     if (!reported.includes("windows=4")) {
       throw new Error("failed window was not published");
@@ -969,7 +917,7 @@ command = "select_tab"
     await command("activate-first");
     await state("w0.terminal_focused=true", "w0.palette=false");
 
-    await command("clear-status");
+    await command("dismiss-notices");
     await shortcut("palette");
     await typeText("show quake");
     await state("w0.palette_state=commands selected=show_quake");
@@ -981,8 +929,8 @@ command = "select_tab"
     await state(
       "w0.palette=false",
       "w0.terminal_focused=true",
-      "w0.status=Some(\"Cannot open tab:",
-      "w1.status=None",
+      'w0.notice0="error|command|Cannot open tab:',
+      "w1.notices=0",
     );
     await coreState(3, [], ['name=Some("gone")']);
     await command("activate-first");
@@ -1024,11 +972,34 @@ if (import.meta.main) {
   if (!(["darwin", "linux"] as string[]).includes(process.platform)) {
     console.log("Palette smoke requires macOS or Linux");
   } else {
+    // HUTERM_PALETTE_SMOKE_ONLY=palette|overlays|frame|titlebar narrows a
+    // local run.
+    const only = process.env.HUTERM_PALETTE_SMOKE_ONLY;
+    if (only && !["palette", "overlays", "frame", "titlebar"].includes(only)) {
+      // A typo would otherwise skip every check and still report success.
+      throw new Error(`unknown HUTERM_PALETTE_SMOKE_ONLY=${only}; expected palette, overlays, frame, or titlebar`);
+    }
     const checks = async (wm?: X11Process) => {
-      await checkPalette(executable, "ghostty", wm);
-      console.log("PALETTE_SMOKE_ALL engine=ghostty");
+      if (!only || only === "palette") await checkPalette(executable, "ghostty", wm);
+      if (!only || only === "overlays") await checkOverlays(executable, wm);
     };
-    if (process.platform === "darwin") await checks();
-    else await withOpenbox(checks);
+    if (process.platform === "darwin") {
+      await checks();
+      if (!only || only === "titlebar") {
+        const pointer = resolve(Bun.argv[3] ?? "target/debug/hid-pointer");
+        for (const position of ["titlebar", "top"] as const) await checkMacTitlebar(executable, pointer, position);
+      }
+    }
+    else {
+      await withOpenbox(checks);
+      if (!only || only === "frame") {
+        // Client-side decorations need the compositor and the advertised
+        // frame extents before Huterm starts; the fallback run needs a
+        // fresh Openbox whose root properties never saw them.
+        await withOpenbox((wm) => withCompositor(() => checkClientFrame(executable, wm, true)));
+        await withOpenbox((wm) => checkClientFrame(executable, wm, false));
+      }
+    }
+    console.log("PALETTE_SMOKE_ALL engine=ghostty");
   }
 }

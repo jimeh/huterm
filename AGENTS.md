@@ -718,6 +718,12 @@ GPUI's native menu matcher uses a fixed Workspace/Pane/Editor context. Menu
 ordering fixtures need a predicate true there, such as `!confirming`; `Terminal`
 never participates and cannot detect conditional bindings moving ahead of defaults.
 
+GPUI dispatches input against the last drawn frame. A press that lands before
+the frame showing a dialog's scrim still runs the covered terminal's
+focus-on-click, so the terminal hands focus back to an open dialog. Keys that
+arrive before the terminal is in a drawn frame are dropped: after focusing a
+window, input smokes repeat a probe key until the fixture reads one, then send
+a release byte, instead of typing immediately or sleeping.
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
@@ -871,6 +877,14 @@ the packaged resources independently of the Ghostty VT engine notice.
 Use Bun's process timeout and output checks for portable smoke runners. CI's
 macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
 
+`smoke:macos-palette` drives the title strip with real HID events from
+`target/debug/hid-pointer`: the window server decides title-bar drags and
+double-clicks, which NSEvents posted inside the app never reach. The Tart
+guest's display is 1024x768, and a login-time "App Background Activity" banner
+takes presses in its top-right corner, so the check first places the window
+through Accessibility. The window server can drop part of an app-started
+synthetic drag, so assert direction and a lower bound, not the exact delta.
+Stage new host-built helpers in `scripts/macos-vm/guest.sh`.
 Tart macOS VMs run host-built binaries; the guest never compiles. Stage the
 read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
 for extended attributes on symlinks, so `ditto` and `cp` fail on
@@ -1046,6 +1060,9 @@ the GPUI 0.2.2 method requires a current view and panics from a timer callback.
 Terminal gestures retain move/release ownership beneath an overlay until the
 deferred pointer reconciliation hides it; overlay hit bounds alone must never
 discard that release.
+Non-modal overlays over the terminal, such as toasts and the scroll pill, stop
+presses but never releases: a drag that started in the terminal must still end
+there, and the terminal ignores releases it does not own.
 GPUI's macOS window-hover flag reports activation and can retain the last mouse
 position after exit. Gate fullscreen tab reveal with the current AppKit pointer's
 display membership so leaving for another display dismisses the overlay. Keep a
@@ -1175,3 +1192,90 @@ GPUI's launch callback, which cannot unwind and aborts with a crash dialog.
 Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.
+
+Overlays share the palette's grammar: every keyboard action is a catalog
+command bound under a key context. The close dialog and the About panel use
+`confirming`, menus `menu`, and focused toasts `notices`; each binding is
+conditional, so it reserves no terminal key. A repeated close shortcut while
+`confirming` must not confirm. Menus and dialogs return focus to the terminal
+when they close; the menu button never keeps it, or terminal bindings stop
+matching until the user clicks back in.
+Each open menu carries a `MenuKind` and pointer anchor; derive button state
+and pick targets from them, not from whether any menu is open. A terminal
+right-click's link rides on the next snapshot request and opens the menu when
+it answers or after a bounded wait. `MouseState::down` records a local press as
+held, so sample `owns_pointer_gesture` before it; a right press during another
+gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
+`CSI 3 J` go through `vt_write` only while the native stream is at ground,
+read from its continuation tracker. `EscapeHint` ignores UTF-8 state and must
+not gate injected bytes. Ghostty's full reset, like its RIS, keeps OSC color
+overrides.
+Clickable controls pair their hover style with an `.active` pressed style:
+`Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays and
+`TabColors::control_pressed` in the tab bar and title row. `Swatch` is passed
+by value and must stay under Clippy's 256-byte limit, so derive further shades
+through methods rather than fields.
+Every drawn shortcut goes through `key_hint::KeyHint`: macOS modifier
+symbols, Linux modifier words, and Lucide icons for Return, Tab, Backspace,
+and the arrows on both. Add icons through `scripts/ui-icons.ts`, never as
+hand-drawn glyph boxes. `window.shortcut_hints` gates key caps on the scroll
+pill, dialog buttons, and the About panel; the palette and menus always show
+theirs. The tab position default differs by platform, so the schema describes
+it instead of stating a default, and the config template leaves it commented.
+Pin `position` in smoke fixtures whose geometry assumes one.
+GPUI 0.2.2's Linux shadow shader divides by the blur radius, so a zero-blur
+shadow such as the focus ring drew nothing there while Metal drew it sharp. The
+`linux-sharp-shadows` patch backports Metal's sharp branch (zed#57685). Xvfb
+captures of GPUI windows are black, so check Linux visuals in `vm:linux:dev`.
+Palette ranking ties fall back to catalog order. A new command whose title
+shares a prefix with an existing one, such as Copy Tab Directory beside Copy,
+must come after it in the catalog, or the palette smoke's `copy` query selects
+the new command.
+Notices replace both status strings. Configuration and keymap diagnostics are
+persistent notices keyed by source, and every reload replaces that source, so
+a still-failing file raises them again after dismissal. Command and terminal
+failures expire on the window's single earliest-deadline timer; persistent
+notices schedule nothing. Terminal failures reach the window through the tab's
+activity drain, including hidden tabs. Root-shell exit is not a failure: only a
+tab kept by `close_on_exit = false` announces it. Smoke state serializes the
+stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
+`tabs.position = "titlebar"` resolves through
+`tab_position::resolve_tab_position`: `top` in fullscreen, Quake windows, and
+Linux windows without granted client-side decorations. Only drawing code
+matches `Titlebar`. GPUI 0.2.2's `WindowControlArea` hit testing exists only on
+Windows. Huterm owns macOS title-bar drags: windows set
+`app_owns_titlebar_drag`, and `title_row_gestures` moves them through
+`start_window_move` on the first drag motion and runs `titlebar_double_click`.
+Otherwise the window server takes a press on a tab in the title strip as a
+window drag, and AppKit and Huterm could both act on a double-click. The
+`macos-app-owned-titlebar-drag` vendor patch backports both GPUI pieces
+(zed#41839, zed#60620). GPUI repositions traffic lights for any window given
+`traffic_light_position`, including after regular-to-Quake conversion, and a
+borderless window has no buttons: the `macos-borderless-traffic-lights` patch
+skips it instead of messaging nil, and Quake windows never request a position.
+X11 moves also need `start_window_move`. GPUI grants
+X11 client-side decorations only when, at client start, the window manager
+lists `_GTK_FRAME_EXTENTS` in the root
+`_NET_SUPPORTED` (Mutter and KWin do, Openbox does not); its compositor probe
+accepts any EWMH window manager. It silently falls back to server decorations
+otherwise, so read `window.window_decorations()` instead of trusting the
+request; decoration changes arrive through the window appearance callback.
+The client-frame smoke appends `_GTK_FRAME_EXTENTS` to Openbox's
+`_NET_SUPPORTED` under `xcompmgr` to stand in for such a window manager.
+The drawn window buttons follow XSettings `Gtk/DecorationLayout`, read on a
+dedicated x11rb thread. GPUI is built without Wayland, so XWayland's XSettings
+also covers Wayland sessions; do not add a GSettings or portal reader unless
+that changes. Smoke state publishes the new layout order before the next paint
+moves `window_buttons` rects, so poll for settled geometry.
+Start a title-row move on the first drag motion, not the press: the window
+manager's move grab otherwise swallows the second click of a double-click.
+GPUI's X11 setters such as `set_title` and `set_client_inset` wait for a
+checked reply, which reads pending events into x11rb's queue. calloop watches
+only the socket, so an event queued this way, such as a new window's
+MapNotify, can wait forever: GPUI never starts that window's refresh loop and
+requests no further frame. The tracked `x11-drain-buffered-events` patch
+backports Zed's drain after each foreground task (zed#62081). Keep it until the
+GPUI upgrade includes that fix; `bench:scroll` under twm and the composited
+client-frame smoke both stall without it. Still seed cached platform values,
+such as the window title, with what the window opened with, and call these
+setters only when the value changes.

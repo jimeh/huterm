@@ -664,6 +664,7 @@ fi
 mkdir -p target/debug
 xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
 xcrun swiftc scripts/clipboard-witness.swift -o target/debug/clipboard-witness
+xcrun swiftc scripts/hid-pointer.swift -o target/debug/hid-pointer
 '''
 
 [tasks."smoke:macos-quake"]
@@ -744,7 +745,8 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 0
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
-bun scripts/check-palette.ts target/debug/examples/palette_smoke
+mise run build:swift
+bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
 '''
 
 [tasks."smoke:linux-palette"]
@@ -861,7 +863,7 @@ case "$(uname -s)" in
       bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
     fi
     if run_smoke_step macos-palette; then
-      bun scripts/check-palette.ts target/debug/examples/palette_smoke
+      bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
     if run_smoke_step macos-integration; then
       bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke

@@ -167,6 +167,14 @@ impl TerminalEngine {
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         self.inner.process(bytes)
     }
+    pub(crate) fn clear_history(
+        &mut self,
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.inner.clear_history()
+    }
+    pub(crate) fn reset(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.inner.reset()
+    }
     pub(crate) fn resize(
         &mut self,
         size: GridSize,

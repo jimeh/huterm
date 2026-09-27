@@ -120,6 +120,36 @@
     "theme": false
   },
   {
+    "name": "window menu button off",
+    "toml": "[window]\nmenu_button = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window menu button on",
+    "toml": "[window]\nmenu_button = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window menu button string",
+    "toml": "[window]\nmenu_button = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window shortcut hints on",
+    "toml": "[window]\nshortcut_hints = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window shortcut hints string",
+    "toml": "[window]\nshortcut_hints = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "selected theme name",
     "toml": "[theme]\nname = \"huterm-dark\"",
     "valid": true,
@@ -594,6 +624,12 @@
     "theme": false
   },
   {
+    "name": "tab position titlebar",
+    "toml": "[tabs]\nposition = \"titlebar\"",
+    "valid": true,
+    "theme": false
+  },
+  {
     "name": "tab label process and directory",
     "toml": "[tabs]\nlabel = \"process_and_directory\"",
     "valid": true,
@@ -1006,6 +1042,84 @@
   {
     "name": "global palette command",
     "toml": "[[global_keybinding]]\nkey = \"ctrl-alt-n\"\ncommand = \"palette_select_next\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "close_other_tabs args omitted",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-w\"\ncommand = \"close_other_tabs\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "close_other_tabs {}",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-w\"\ncommand = \"close_other_tabs\"\nargs = {}",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "close_other_tabs { tab = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-w\"\ncommand = \"close_other_tabs\"\nargs = { tab = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "close_tabs_after args omitted",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-w\"\ncommand = \"close_tabs_after\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "copy_tab_directory args omitted",
+    "toml": "[[keybinding]]\nkey = \"cmd-alt-c\"\ncommand = \"copy_tab_directory\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "close_tab { tab = 1 }",
+    "toml": "[[keybinding]]\nkey = \"cmd-w\"\ncommand = \"close_tab\"\nargs = { tab = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "open_menu binding",
+    "toml": "[[keybinding]]\nkey = \"f10\"\ncommand = \"open_menu\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "focus_notices and dismiss_all_notices bindings",
+    "toml": "[[keybinding]]\nkey = \"ctrl-shift-i\"\ncommand = \"focus_notices\"\n\n[[keybinding]]\nkey = \"ctrl-shift-d\"\ncommand = \"dismiss_all_notices\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "dialog command binding",
+    "toml": "[[keybinding]]\nkey = \"enter\"\ncommand = \"dialog_confirm\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "menu command with when",
+    "toml": "[[keybinding]]\nkey = \"down\"\ncommand = \"menu_select_next\"\nwhen = \"!confirming\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "notice command binding",
+    "toml": "[[keybinding]]\nkey = \"delete\"\ncommand = \"notice_dismiss\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "notice command rejects arguments",
+    "toml": "[[keybinding]]\nkey = \"delete\"\ncommand = \"notice_dismiss\"\nargs = { typo = 1 }",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "global dialog command",
+    "toml": "[[global_keybinding]]\nkey = \"ctrl-alt-enter\"\ncommand = \"dialog_confirm\"",
     "valid": false,
     "theme": false
   }

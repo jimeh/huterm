@@ -176,6 +176,7 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
                     let target = view
                         .close
                         .confirmation
+                        .clone()
                         .context("no close confirmation")?;
                     if name == "confirm_close" {
                         view.finish_close(target, window, cx);
@@ -242,10 +243,13 @@ fn read_state(cx: &mut App) -> String {
                 let size = display.bounds().size;
                 writeln!(output, "w{index}.display={},{}", f32::from(size.width), f32::from(size.height)).unwrap();
             }
-            writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.status={}\nw{index}.confirming={}",
+            writeln!(output, "w{index}.mode={:?}\nw{index}.pending={}\nw{index}.chrome={}\nw{index}.restore={}\nw{index}.viewport={},{}\nw{index}.tabs={}\nw{index}.confirming={}",
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
-                view.tabs.len(), view.status.as_deref().unwrap_or(""), view.close.confirmation.is_some()).unwrap();
+                view.tabs.len(), view.close.confirmation.is_some()).unwrap();
+            // Window notices, newest first: `w<i>.notices=<n>` then
+            // `w<i>.notice<j>=<severity>|<source>|<message>`.
+            output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}", view.presentation(), view.reveal.progress).unwrap();
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
@@ -262,7 +266,7 @@ fn read_state(cx: &mut App) -> String {
             writeln!(output, "w{index}.retained={consistent}").unwrap();
             if let Some(terminal) = view.active_view() {
                 let terminal = terminal.read(cx);
-                writeln!(output, "w{index}.resize_requests={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.owns_pointer_gesture()).unwrap();
+                writeln!(output, "w{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.resize_indicators, terminal.owns_pointer_gesture()).unwrap();
                 let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();
                 writeln!(output, "w{index}.ready={}\nw{index}.focused={}\nw{index}.grid={},{}\nw{index}.terminal={}\nw{index}.text={}", text.contains("READY"), terminal.focus.is_focused(window), terminal.last_grid_size.columns, terminal.last_grid_size.rows, rect(terminal.content_bounds(window)), text.replace('\n', " ")).unwrap();
             }

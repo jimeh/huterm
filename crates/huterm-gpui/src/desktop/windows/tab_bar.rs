@@ -4,15 +4,16 @@ use gpui::{Div, Hsla, Stateful, Svg, TextRun, svg};
 use huterm_config::{Rgba, TabCloseButton, TabStyle, TabWidth, TabsConfig};
 
 use crate::assets::Icon;
+use crate::desktop::overlay::accent_bar;
 use crate::renderer::rgba_color;
 use crate::ui::scrollbar::ScrollbarColors;
 
 use super::super::scrollbar_colors;
 use super::{
     App, Bounds, CloseTarget, Context, FluentBuilder, InteractiveElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Presentation,
-    StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId, TabPosition, Theme,
-    Window, WorkspaceView, color, div, px,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    Presentation, StatefulInteractiveElement, Styled, TAB_HEIGHT, TabId,
+    TabPosition, Theme, Window, WorkspaceView, color, div, px,
 };
 
 /// Bounds the title width cache so long-lived windows with changing titles
@@ -24,6 +25,8 @@ const TITLE_WIDTH_CACHE_LIMIT: usize = 512;
 pub(super) const PILL_HEIGHT: Pixels = px(26.0);
 pub(super) const PILL_INSET: Pixels = px(4.0);
 const ICON_SIZE: Pixels = px(12.0);
+/// The running dot shown while a program holds the foreground.
+const DOT_SIZE: Pixels = px(6.0);
 const CLOSE_SIZE: Pixels = px(18.0);
 const STRIP_GAP: Pixels = px(7.0);
 const STRIP_PADDING_LEFT: Pixels = px(12.0);
@@ -55,10 +58,14 @@ pub(super) struct TabColors {
     pub(super) accent: Hsla,
     pub(super) terminal: Hsla,
     pub(super) error: Hsla,
+    /// The running dot: the theme's ANSI yellow.
+    pub(super) running: Hsla,
     /// Overlay on a hovered tab.
     pub(super) hover: Hsla,
     /// Overlay on a hovered control, twice as strong as a tab's.
     pub(super) control_hover: Hsla,
+    /// Overlay on a control held down, three times a tab's hover.
+    pub(super) control_pressed: Hsla,
     pub(super) scrollbar: ScrollbarColors,
 }
 
@@ -70,6 +77,10 @@ impl TabColors {
             alpha: hover.alpha.saturating_mul(2),
             ..hover
         };
+        let control_pressed = Rgba {
+            alpha: hover.alpha.saturating_mul(3),
+            ..hover
+        };
         Self {
             bar: color(ui.tab_bar_background),
             active: color(ui.tab_active_background),
@@ -79,8 +90,10 @@ impl TabColors {
             accent: color(ui.tab_accent),
             terminal: color(theme.background),
             error: color(theme.ansi[1]),
+            running: color(theme.ansi[3]),
             hover: rgba_color(hover),
             control_hover: rgba_color(control_hover),
+            control_pressed: rgba_color(control_pressed),
             scrollbar: scrollbar_colors(theme),
         }
     }
@@ -143,24 +156,52 @@ pub(super) enum Activity {
     Inactive,
 }
 
+/// What a tab's leading indicator reports, in precedence order from the
+/// least to the most urgent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TabStatus {
-    Running,
+    /// A shell waiting at its prompt; no indicator.
+    Idle,
+    /// A program holds the foreground; the running dot.
+    Busy,
     Bell,
     Exited,
     Failed,
 }
 
 impl TabStatus {
-    pub(super) fn new(exited: bool, failed: bool, bell: bool) -> Self {
+    /// `foreground` is the metadata's foreground process, published only
+    /// while a program holds the foreground; a name there means Busy.
+    pub(super) fn new(
+        exited: bool,
+        failed: bool,
+        bell: bool,
+        foreground: Option<&str>,
+    ) -> Self {
         if failed {
             Self::Failed
         } else if exited {
             Self::Exited
         } else if bell {
             Self::Bell
+        } else if foreground.is_some_and(|process| !process.is_empty()) {
+            Self::Busy
         } else {
-            Self::Running
+            Self::Idle
+        }
+    }
+
+    /// Whether the root process has exited, with or without failure.
+    pub(super) fn exited(self) -> bool {
+        matches!(self, Self::Exited | Self::Failed)
+    }
+
+    /// The width the indicator takes before the title, without its gap.
+    fn indicator_width(self) -> Pixels {
+        match self {
+            Self::Idle => px(0.0),
+            Self::Busy => DOT_SIZE,
+            Self::Bell | Self::Exited | Self::Failed => ICON_SIZE,
         }
     }
 }
@@ -174,6 +215,8 @@ pub(super) struct TabItem {
     /// The first tab while the strip is scrolled to its start, so its edge
     /// meets the bar's own edge.
     pub(super) flush_start: bool,
+    /// The tab whose context menu is open, outlined while it stays open.
+    pub(super) targeted: bool,
 }
 
 impl TabItem {
@@ -190,7 +233,7 @@ impl TabItem {
 
 /// Content shared by every tab style: status, title, and close button.
 struct TabParts {
-    status: Option<Svg>,
+    status: Option<gpui::AnyElement>,
     title: Div,
     close: Stateful<Div>,
 }
@@ -204,7 +247,12 @@ impl WorkspaceView {
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Stateful<Div> {
-        let position = tabs.position;
+        // The merged title-bar row draws its tabs as a top bar.
+        let position = if tabs.position == TabPosition::Titlebar {
+            TabPosition::Top
+        } else {
+            tabs.position
+        };
         let id = item.id;
         let shell = div()
             .id(("tab", id.get()))
@@ -229,17 +277,37 @@ impl WorkspaceView {
                     view.begin_reorder(id, event.position, window, cx);
                     cx.stop_propagation();
                 }),
-            );
+            )
+            // A right press opens the tab's menu at the pointer without
+            // activating the tab; it never reaches the reorder listener.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.open_tab_menu(id, event.position, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .when(item.targeted, |shell| {
+                shell.child(
+                    div()
+                        .absolute()
+                        .inset(px(1.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(colors.accent),
+                )
+            });
         let parts = TabParts {
-            status: if matches!(
-                item.status,
-                TabStatus::Exited | TabStatus::Failed
-            ) {
-                Some(icon_element(Icon::CircleAlert, colors.error))
-            } else if item.status == TabStatus::Bell {
-                Some(icon_element(Icon::Bell, colors.accent))
-            } else {
-                None
+            status: match item.status {
+                TabStatus::Exited | TabStatus::Failed => Some(
+                    icon_element(Icon::CircleAlert, colors.error)
+                        .into_any_element(),
+                ),
+                TabStatus::Bell => Some(
+                    icon_element(Icon::Bell, colors.accent).into_any_element(),
+                ),
+                TabStatus::Busy => Some(running_dot(colors).into_any_element()),
+                TabStatus::Idle => None,
             },
             // GPUI caches nowrap text at its first measured width, which
             // skips truncation; a one-line clamp truncates at the final width.
@@ -290,7 +358,7 @@ impl WorkspaceView {
         let font = window.text_style().font();
         let mut widths = Vec::with_capacity(self.tabs.len());
         for tab in &self.tabs {
-            let (title, exited, failed, bell) = tab.label(self.config.tabs, cx);
+            let (title, status) = tab.label(self.config.tabs, cx);
             let text = if let Some(width) = self.title_widths.get(&title) {
                 *width
             } else {
@@ -309,7 +377,7 @@ impl WorkspaceView {
                 self.title_widths.insert(title, width);
                 width
             };
-            widths.push(fit_tab_width(text, tabs, exited || failed || bell));
+            widths.push(fit_tab_width(text, tabs, status));
         }
         self.tab_widths = widths;
     }
@@ -339,6 +407,7 @@ impl WorkspaceView {
                     .group_hover("tab", |style| style.opacity(1.0))
             })
             .hover(|style| style.bg(colors.control_hover))
+            .active(|style| style.bg(colors.control_pressed))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
@@ -364,16 +433,19 @@ fn close_button_shown(mode: TabCloseButton, active: bool) -> bool {
     }
 }
 
-/// A 3-point accent bar inset along the left edge of an active row or pill.
-fn accent_bar(colors: TabColors, inset: Pixels) -> Div {
+/// The accent bar inset along the left edge of an active row or pill.
+fn tab_accent_bar(colors: TabColors, inset: Pixels) -> Div {
+    accent_bar(colors.accent, px(5.0), inset)
+}
+
+/// The running dot: a small yellow circle before the title.
+fn running_dot(colors: TabColors) -> Div {
     div()
-        .absolute()
-        .left(px(5.0))
-        .top(inset)
-        .bottom(inset)
-        .w(px(3.0))
-        .rounded(px(3.0))
-        .bg(colors.accent)
+        .flex_shrink_0()
+        .w(DOT_SIZE)
+        .h(DOT_SIZE)
+        .rounded_full()
+        .bg(colors.running)
 }
 
 /// A short vertical line on a horizontal tab's leading edge.
@@ -416,7 +488,7 @@ fn vertical_pill_tab(
             .pr(PILL_PADDING_RIGHT)
             .when(active, |row| row.bg(colors.active))
             .when(active && accent, |row| {
-                row.child(accent_bar(colors, px(8.0)))
+                row.child(tab_accent_bar(colors, px(8.0)))
             })
             .when(!active, |row| {
                 row.group_hover("tab", |style| {
@@ -532,7 +604,7 @@ fn pill_tab(
                 .pr(PILL_PADDING_RIGHT)
                 .when(active, |pill| pill.bg(colors.active))
                 .when(active && accent, |pill| {
-                    pill.child(accent_bar(colors, px(7.0)))
+                    pill.child(tab_accent_bar(colors, px(7.0)))
                 })
                 .when(!active, |pill| {
                     pill.group_hover("tab", |style| {
@@ -555,17 +627,17 @@ fn pill_padding_left(accent: bool) -> Pixels {
 
 /// The width a horizontal Fit tab needs around `title_width` of text, clamped
 /// to the configured bounds. It mirrors the padding, gaps, and slots rendered
-/// by `strip_tab` and `pill_tab`.
+/// by `strip_tab` and `pill_tab`, including the indicator `status` draws.
 pub(super) fn fit_tab_width(
     title_width: Pixels,
     tabs: TabsConfig,
-    exited: bool,
+    status: TabStatus,
 ) -> Pixels {
     let style = tabs.style;
-    let status = if exited {
-        ICON_SIZE + gap(style)
-    } else {
+    let status = if status == TabStatus::Idle {
         px(0.0)
+    } else {
+        status.indicator_width() + gap(style)
     };
     // Every tab has a title and a close button separated by one gap.
     let chrome = match style {
@@ -596,7 +668,8 @@ mod tests {
     use gpui::{point, size};
 
     use super::super::{
-        ChromeLayout, select_notch_shelf, strip_bounds, terminal_corner_radius,
+        ChromeLayout, WindowFrame, select_notch_shelf, strip_bounds,
+        terminal_corner_radius,
     };
     use super::*;
 
@@ -618,34 +691,47 @@ mod tests {
 
     #[test]
     fn fit_widths_add_style_chrome_and_clamp_to_bounds() {
+        let idle = TabStatus::Idle;
         let strip_tabs = tabs(TabStyle::Strip, false, 48.0, 600.0);
-        let strip = fit_tab_width(px(20.0), strip_tabs, false);
+        let strip = fit_tab_width(px(20.0), strip_tabs, idle);
         assert_eq!(strip, px(20.0 + 12.0 + 6.0 + 7.0 + 18.0));
+        for status in [TabStatus::Exited, TabStatus::Failed, TabStatus::Bell] {
+            assert_eq!(
+                fit_tab_width(px(20.0), strip_tabs, status),
+                strip + ICON_SIZE + STRIP_GAP,
+                "{status:?}"
+            );
+        }
         assert_eq!(
-            fit_tab_width(px(20.0), strip_tabs, true),
-            strip + ICON_SIZE + STRIP_GAP
+            fit_tab_width(px(20.0), strip_tabs, TabStatus::Busy),
+            strip + DOT_SIZE + STRIP_GAP,
+            "the running dot takes its own width"
         );
         let pill_tabs = tabs(TabStyle::Pill, false, 48.0, 600.0);
-        let pill = fit_tab_width(px(20.0), pill_tabs, false);
+        let pill = fit_tab_width(px(20.0), pill_tabs, idle);
         assert_eq!(pill, px(20.0 + 3.0 + 2.0 + 9.0 + 5.0 + 6.0 + 18.0));
         assert_eq!(
-            fit_tab_width(px(20.0), pill_tabs, true),
+            fit_tab_width(px(20.0), pill_tabs, TabStatus::Exited),
             pill + ICON_SIZE + PILL_GAP
+        );
+        assert_eq!(
+            fit_tab_width(px(20.0), pill_tabs, TabStatus::Busy),
+            pill + DOT_SIZE + PILL_GAP
         );
         assert_eq!(
             fit_tab_width(
                 px(20.0),
                 tabs(TabStyle::Pill, true, 48.0, 600.0),
-                false
+                idle
             ),
             pill + PILL_ACCENT_PADDING_LEFT - PILL_PADDING_LEFT
         );
-        assert_eq!(fit_tab_width(px(20.4), strip_tabs, false), px(64.0));
+        assert_eq!(fit_tab_width(px(20.4), strip_tabs, idle), px(64.0));
         assert_eq!(
             fit_tab_width(
                 px(1.0),
                 tabs(TabStyle::Strip, false, 96.0, 240.0),
-                false
+                idle
             ),
             px(96.0)
         );
@@ -653,7 +739,7 @@ mod tests {
             fit_tab_width(
                 px(900.0),
                 tabs(TabStyle::Pill, false, 96.0, 240.0),
-                false
+                idle
             ),
             px(240.0)
         );
@@ -665,9 +751,10 @@ mod tests {
             id: TabId::new(1),
             index,
             title: String::new(),
-            status: TabStatus::Running,
+            status: TabStatus::Idle,
             activity,
             flush_start: false,
+            targeted: false,
         };
         assert!(item(1, Activity::Inactive).divided());
         assert!(!item(0, Activity::Inactive).divided());
@@ -676,10 +763,22 @@ mod tests {
     }
 
     #[test]
-    fn error_and_exit_status_take_precedence_over_bell_attention() {
-        assert_eq!(TabStatus::new(false, false, true), TabStatus::Bell);
-        assert_eq!(TabStatus::new(true, false, true), TabStatus::Exited);
-        assert_eq!(TabStatus::new(true, true, true), TabStatus::Failed);
+    fn error_exit_and_bell_take_precedence_over_the_running_dot() {
+        let job = Some("cargo");
+        assert_eq!(TabStatus::new(false, false, false, None), TabStatus::Idle);
+        assert_eq!(
+            TabStatus::new(false, false, false, Some("")),
+            TabStatus::Idle,
+            "an empty name is no foreground program"
+        );
+        assert_eq!(TabStatus::new(false, false, false, job), TabStatus::Busy);
+        assert_eq!(TabStatus::new(false, false, true, job), TabStatus::Bell);
+        assert_eq!(TabStatus::new(false, false, true, None), TabStatus::Bell);
+        assert_eq!(TabStatus::new(true, false, true, job), TabStatus::Exited);
+        assert_eq!(TabStatus::new(true, true, true, job), TabStatus::Failed);
+        assert!(TabStatus::Exited.exited());
+        assert!(TabStatus::Failed.exited());
+        assert!(!TabStatus::Busy.exited());
     }
 
     #[test]
@@ -778,7 +877,8 @@ mod tests {
             style: TabStyle::Pill,
             ..TabsConfig::default()
         };
-        let strip = strip_bounds(tabs, px(0.0), pill(TabPosition::Top));
+        let strip =
+            strip_bounds(tabs, px(0.0), px(0.0), pill(TabPosition::Top));
         // The first pill's own margin plus the lead equals the vertical inset.
         assert_eq!(
             strip.origin.x + PILL_MARGIN_LEFT,
@@ -786,19 +886,23 @@ mod tests {
         );
         assert_eq!(strip.right(), tabs.right());
         assert_eq!(strip.size.height, tabs.size.height);
-        assert_eq!(strip_bounds(tabs, px(0.0), pill(TabPosition::Left)), tabs);
+        assert_eq!(
+            strip_bounds(tabs, px(0.0), px(0.0), pill(TabPosition::Left)),
+            tabs
+        );
         // A column keeps its rows below the safe area it spans.
-        let inset = strip_bounds(tabs, px(10.0), pill(TabPosition::Left));
+        let inset =
+            strip_bounds(tabs, px(10.0), px(0.0), pill(TabPosition::Left));
         assert_eq!(inset.origin.y, tabs.origin.y + px(10.0));
         assert_eq!(inset.bottom(), tabs.bottom());
         let strip_style = TabsConfig {
             style: TabStyle::Strip,
             ..TabsConfig::default()
         };
-        assert_eq!(strip_bounds(tabs, px(0.0), strip_style), tabs);
+        assert_eq!(strip_bounds(tabs, px(0.0), px(0.0), strip_style), tabs);
         let tiny = Bounds::new(tabs.origin, size(px(1.0), px(32.0)));
         assert_eq!(
-            strip_bounds(tiny, px(0.0), pill(TabPosition::Bottom))
+            strip_bounds(tiny, px(0.0), px(0.0), pill(TabPosition::Bottom))
                 .size
                 .width,
             px(0.0)
@@ -836,6 +940,7 @@ mod tests {
             px(220.0),
             gpui::Edges::default(),
             None,
+            WindowFrame::default(),
         );
         assert_eq!(layout.tabs.size.height, px(34.0));
         assert_eq!(layout.terminal.origin.y, px(28.0 + 34.0));
@@ -851,6 +956,7 @@ mod tests {
         let shelf =
             Bounds::new(point(px(0.0), px(0.0)), size(px(790.0), px(38.0)));
         let pill = TabsConfig {
+            position: TabPosition::Top,
             style: TabStyle::Pill,
             ..TabsConfig::default()
         };
@@ -861,6 +967,7 @@ mod tests {
             px(220.0),
             safe_area,
             Some(shelf),
+            WindowFrame::default(),
         );
         // Bottom-aligned in the shelf at the Pill bar's own height.
         assert_eq!(layout.tabs.size, size(px(790.0), px(34.0)));
@@ -882,6 +989,7 @@ mod tests {
                 point(px(0.0), px(0.0)),
                 size(px(790.0), px(30.0)),
             )),
+            WindowFrame::default(),
         );
         assert_eq!(short.tabs.size.height, px(34.0));
         assert_eq!(short.tabs.origin.y, px(38.0));
@@ -902,6 +1010,7 @@ mod tests {
             px(220.0),
             safe_area,
             Some(shelf),
+            WindowFrame::default(),
         );
         assert_eq!(column.tabs.origin.y, px(0.0));
         assert!(column.tabs.size.height > px(1000.0));
@@ -1011,6 +1120,7 @@ mod tests {
             px(220.0),
             safe_area,
             None,
+            WindowFrame::default(),
         );
         let overlay =
             reserved.present(Presentation::Overlay, TabPosition::Left, 0.5);
@@ -1092,12 +1202,15 @@ mod tests {
             TabPosition::Bottom,
             TabPosition::Left,
             TabPosition::Right,
+            TabPosition::Titlebar,
         ] {
             let layout = ChromeLayout::new(viewport, px(28.0), position);
             let border = layout.tab_border(position);
             let terminal = layout.terminal;
             let touches = match position {
-                TabPosition::Top => border.bottom() == terminal.origin.y,
+                TabPosition::Top | TabPosition::Titlebar => {
+                    border.bottom() == terminal.origin.y
+                }
                 TabPosition::Bottom => border.origin.y == terminal.bottom(),
                 TabPosition::Left => border.right() == terminal.origin.x,
                 TabPosition::Right => border.origin.x == terminal.right(),

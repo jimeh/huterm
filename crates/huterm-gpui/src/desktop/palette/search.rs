@@ -350,6 +350,25 @@ mod tests {
     }
 
     #[test]
+    fn copy_ranks_the_terminal_copy_before_the_tab_directory_copy() {
+        // Both titles start with "Copy" and score equally, so catalog order
+        // decides; the palette smoke relies on "copy" selecting Copy.
+        let recent = RecentCommands::default();
+        let frequency = CommandFrequency::default();
+        let mut search = CommandSearch::new();
+
+        let matches =
+            search.rank("copy", catalog(), &history_view(&recent, &frequency));
+
+        assert_eq!(matches[0].spec.id, ids::COPY);
+        assert!(
+            matches
+                .iter()
+                .any(|matched| { matched.spec.id == ids::COPY_TAB_DIRECTORY })
+        );
+    }
+
+    #[test]
     fn field_priority_beats_score() {
         let recent = RecentCommands::default();
         let frequency = CommandFrequency::default();

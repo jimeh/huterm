@@ -646,8 +646,15 @@ pub mod ids {
     pub const ABOUT: CommandId = CommandId::new("about");
     /// Opens a new tab in the window.
     pub const NEW_TAB: CommandId = CommandId::new("new_tab");
-    /// Closes the active tab after assessment.
+    /// Closes a tab after assessment, defaulting to the active tab.
     pub const CLOSE_TAB: CommandId = CommandId::new("close_tab");
+    /// Closes every other tab in the window after assessment.
+    pub const CLOSE_OTHER_TABS: CommandId = CommandId::new("close_other_tabs");
+    /// Closes the tabs after a tab after assessment.
+    pub const CLOSE_TABS_AFTER: CommandId = CommandId::new("close_tabs_after");
+    /// Copies a tab's working directory to the clipboard.
+    pub const COPY_TAB_DIRECTORY: CommandId =
+        CommandId::new("copy_tab_directory");
     /// Closes the window after assessment.
     pub const CLOSE_WINDOW: CommandId = CommandId::new("close_window");
     /// Activates the next tab.
@@ -688,6 +695,63 @@ pub mod ids {
     /// Activates the most recently used tab.
     pub const SELECT_RECENT_TAB: CommandId =
         CommandId::new("select_recent_tab");
+    /// Opens the window's application menu.
+    pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
+    /// Focuses the window's notice list.
+    pub const FOCUS_NOTICES: CommandId = CommandId::new("focus_notices");
+    /// Dismisses every notice in the window.
+    pub const DISMISS_ALL_NOTICES: CommandId =
+        CommandId::new("dismiss_all_notices");
+    /// Selects the terminal's whole scrollback and screen.
+    pub const SELECT_ALL: CommandId = CommandId::new("select_all");
+    /// Erases the terminal's scrollback, keeping the screen.
+    pub const CLEAR_SCROLLBACK: CommandId = CommandId::new("clear_scrollback");
+    /// Resets the terminal emulator's state.
+    pub const RESET_TERMINAL: CommandId = CommandId::new("reset_terminal");
+    /// Opens a tab's working directory in the file manager.
+    pub const OPEN_TAB_DIRECTORY: CommandId =
+        CommandId::new("open_tab_directory");
+    /// Opens the active terminal's context menu at its cursor.
+    pub const OPEN_CONTEXT_MENU: CommandId =
+        CommandId::new("open_context_menu");
+    /// Activates the focused dialog button.
+    pub const DIALOG_CONFIRM: CommandId = CommandId::new("dialog_confirm");
+    /// Cancels the open dialog.
+    pub const DIALOG_CANCEL: CommandId = CommandId::new("dialog_cancel");
+    /// Moves dialog focus to the next button.
+    pub const DIALOG_FOCUS_NEXT: CommandId =
+        CommandId::new("dialog_focus_next");
+    /// Moves dialog focus to the previous button.
+    pub const DIALOG_FOCUS_PREVIOUS: CommandId =
+        CommandId::new("dialog_focus_previous");
+    /// Moves the menu selection down.
+    pub const MENU_SELECT_NEXT: CommandId = CommandId::new("menu_select_next");
+    /// Moves the menu selection up.
+    pub const MENU_SELECT_PREVIOUS: CommandId =
+        CommandId::new("menu_select_previous");
+    /// Moves the menu selection to the first item.
+    pub const MENU_SELECT_FIRST: CommandId =
+        CommandId::new("menu_select_first");
+    /// Moves the menu selection to the last item.
+    pub const MENU_SELECT_LAST: CommandId = CommandId::new("menu_select_last");
+    /// Opens the next menu button.
+    pub const MENU_SELECT_RIGHT: CommandId =
+        CommandId::new("menu_select_right");
+    /// Opens the previous menu button.
+    pub const MENU_SELECT_LEFT: CommandId = CommandId::new("menu_select_left");
+    /// Runs the selected menu item.
+    pub const MENU_CONFIRM: CommandId = CommandId::new("menu_confirm");
+    /// Closes the open menu.
+    pub const MENU_CLOSE: CommandId = CommandId::new("menu_close");
+    /// Moves the notice selection down.
+    pub const NOTICE_NEXT: CommandId = CommandId::new("notice_next");
+    /// Moves the notice selection up.
+    pub const NOTICE_PREVIOUS: CommandId = CommandId::new("notice_previous");
+    /// Runs the selected notice's action.
+    pub const NOTICE_RUN_ACTION: CommandId =
+        CommandId::new("notice_run_action");
+    /// Dismisses the selected notice.
+    pub const NOTICE_DISMISS: CommandId = CommandId::new("notice_dismiss");
     /// Moves the palette selection down.
     pub const PALETTE_SELECT_NEXT: CommandId =
         CommandId::new("palette_select_next");
@@ -807,6 +871,16 @@ const PROFILE: &[ArgumentSpec] = &[ArgumentSpec {
     prompt: true,
 }];
 
+/// Tab-targeted commands default to the active tab. The argument is not
+/// prompted so the palette runs them immediately; tab-strip menus and
+/// programmatic callers supply another target.
+const TAB: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "tab",
+    kind: ArgumentKind::Tab,
+    required: Requirement::Optional,
+    prompt: false,
+}];
+
 const CATALOG: &[CommandSpec] = &[
     spec(
         ids::SHOW_QUAKE,
@@ -911,8 +985,24 @@ const CATALOG: &[CommandSpec] = &[
         ids::CLOSE_TAB,
         CommandScope::Window,
         "Close Tab",
-        "Close the active tab after assessing its processes.",
-        &[],
+        "Close a tab after assessing its processes; defaults to the active tab.",
+        TAB,
+    ),
+    spec(
+        ids::CLOSE_OTHER_TABS,
+        CommandScope::Window,
+        "Close Other Tabs",
+        "Close every tab except one after assessing their processes; defaults \
+         to the active tab.",
+        TAB,
+    ),
+    spec(
+        ids::CLOSE_TABS_AFTER,
+        CommandScope::Window,
+        "Close Tabs After",
+        "Close every tab after one after assessing their processes; defaults \
+         to the active tab.",
+        TAB,
     ),
     spec(
         ids::CLOSE_WINDOW,
@@ -1005,6 +1095,14 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec(
+        ids::COPY_TAB_DIRECTORY,
+        CommandScope::Window,
+        "Copy Tab Directory",
+        "Copy a tab's working directory to the clipboard; defaults to the \
+         active tab.",
+        TAB,
+    ),
+    spec(
         ids::SCROLL_PAGE_UP,
         CommandScope::Terminal,
         "Scroll Page Up",
@@ -1075,6 +1173,192 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Switch to Last Tab",
         "Activate the most recently used tab; repeat to toggle between two tabs.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_MENU,
+        CommandScope::Window,
+        "Open Menu",
+        "Open this window's application menu.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_NOTICES,
+        CommandScope::Window,
+        "Focus Notices",
+        "Move keyboard focus to this window's notices.",
+        &[],
+    ),
+    spec(
+        ids::DISMISS_ALL_NOTICES,
+        CommandScope::Window,
+        "Dismiss All Notices",
+        "Dismiss every notice in this window.",
+        &[],
+    ),
+    spec(
+        ids::SELECT_ALL,
+        CommandScope::Terminal,
+        "Select All",
+        "Select the terminal's scrollback and screen.",
+        &[],
+    ),
+    spec(
+        ids::CLEAR_SCROLLBACK,
+        CommandScope::Terminal,
+        "Clear Scrollback",
+        "Erase the terminal's scrollback, keeping the screen.",
+        &[],
+    ),
+    spec(
+        ids::RESET_TERMINAL,
+        CommandScope::Terminal,
+        "Reset Terminal",
+        "Reset the terminal's modes, screen, and scrollback, as after a \
+         garbled program exits. Running programs are unaffected.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_TAB_DIRECTORY,
+        CommandScope::Window,
+        "Open Tab Directory",
+        "Open a tab's working directory in the file manager; defaults to \
+         the active tab.",
+        TAB,
+    ),
+    spec(
+        ids::OPEN_CONTEXT_MENU,
+        CommandScope::Window,
+        "Open Context Menu",
+        "Open the active terminal's context menu at its cursor.",
+        &[],
+    ),
+    spec_in(
+        "confirming",
+        ids::DIALOG_CONFIRM,
+        CommandScope::Window,
+        "Dialog: Confirm",
+        "Activate the focused dialog button.",
+        &[],
+    ),
+    spec_in(
+        "confirming",
+        ids::DIALOG_CANCEL,
+        CommandScope::Window,
+        "Dialog: Cancel",
+        "Close the dialog without confirming.",
+        &[],
+    ),
+    spec_in(
+        "confirming",
+        ids::DIALOG_FOCUS_NEXT,
+        CommandScope::Window,
+        "Dialog: Next Button",
+        "Move dialog focus to the next button.",
+        &[],
+    ),
+    spec_in(
+        "confirming",
+        ids::DIALOG_FOCUS_PREVIOUS,
+        CommandScope::Window,
+        "Dialog: Previous Button",
+        "Move dialog focus to the previous button.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_NEXT,
+        CommandScope::Window,
+        "Menu: Next Item",
+        "Move the menu selection down.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_PREVIOUS,
+        CommandScope::Window,
+        "Menu: Previous Item",
+        "Move the menu selection up.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_FIRST,
+        CommandScope::Window,
+        "Menu: First Item",
+        "Move the menu selection to the first item.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_LAST,
+        CommandScope::Window,
+        "Menu: Last Item",
+        "Move the menu selection to the last item.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_RIGHT,
+        CommandScope::Window,
+        "Menu: Next Button",
+        "Open the menu to the right of the open one.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_SELECT_LEFT,
+        CommandScope::Window,
+        "Menu: Previous Button",
+        "Open the menu to the left of the open one.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_CONFIRM,
+        CommandScope::Window,
+        "Menu: Run Item",
+        "Run the selected menu item.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_CLOSE,
+        CommandScope::Window,
+        "Menu: Close",
+        "Close the open menu.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_NEXT,
+        CommandScope::Window,
+        "Notices: Next",
+        "Move the notice selection down.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_PREVIOUS,
+        CommandScope::Window,
+        "Notices: Previous",
+        "Move the notice selection up.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_RUN_ACTION,
+        CommandScope::Window,
+        "Notices: Run Action",
+        "Run the selected notice's action.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_DISMISS,
+        CommandScope::Window,
+        "Notices: Dismiss",
+        "Dismiss the selected notice.",
         &[],
     ),
     spec_in(
@@ -1293,7 +1577,10 @@ mod tests {
             );
             assert_eq!(lookup(spec.id.as_str()), Some(spec));
             assert!(
-                matches!(spec.context, None | Some("Palette")),
+                matches!(
+                    spec.context,
+                    None | Some("Palette" | "confirming" | "menu" | "notices")
+                ),
                 "{} has unknown context {:?}",
                 spec.id,
                 spec.context
@@ -1657,15 +1944,120 @@ mod tests {
         })
     }
 
+    /// A command that cannot run bare needs a prompted argument so the palette
+    /// can collect it. Commands whose arguments are all optional run
+    /// immediately on their defaults and may leave every argument unprompted.
     #[test]
-    fn non_palette_commands_with_arguments_offer_a_prompted_argument() {
+    fn non_palette_commands_needing_arguments_offer_a_prompted_argument() {
         for spec in catalog().iter().filter(|spec| {
-            spec.scope != CommandScope::Palette && !spec.args.is_empty()
+            spec.scope != CommandScope::Palette
+                && spec
+                    .args
+                    .iter()
+                    .any(|argument| argument.required != Requirement::Optional)
         }) {
             assert!(
                 spec.args.iter().any(|argument| argument.prompt),
-                "command `{}` has arguments but no prompted argument",
+                "command `{}` needs arguments but prompts for none",
                 spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
+        let expected = [
+            ("confirming", ids::DIALOG_CONFIRM),
+            ("confirming", ids::DIALOG_CANCEL),
+            ("confirming", ids::DIALOG_FOCUS_NEXT),
+            ("confirming", ids::DIALOG_FOCUS_PREVIOUS),
+            ("menu", ids::MENU_SELECT_NEXT),
+            ("menu", ids::MENU_SELECT_PREVIOUS),
+            ("menu", ids::MENU_SELECT_FIRST),
+            ("menu", ids::MENU_SELECT_LAST),
+            ("menu", ids::MENU_SELECT_RIGHT),
+            ("menu", ids::MENU_SELECT_LEFT),
+            ("menu", ids::MENU_CONFIRM),
+            ("menu", ids::MENU_CLOSE),
+            ("notices", ids::NOTICE_NEXT),
+            ("notices", ids::NOTICE_PREVIOUS),
+            ("notices", ids::NOTICE_RUN_ACTION),
+            ("notices", ids::NOTICE_DISMISS),
+        ];
+        for (context, id) in expected {
+            let spec = lookup(id.as_str()).unwrap();
+            assert_eq!(spec.scope, CommandScope::Window, "{id}");
+            assert_eq!(spec.context, Some(context), "{id}");
+            assert!(spec.args.is_empty(), "{id}");
+            assert!(validate(&CommandInvocation::new(id, Vec::new())).is_ok());
+        }
+        for spec in catalog().iter().filter(|spec| {
+            spec.id.as_str().starts_with("dialog_")
+                || spec.id.as_str().starts_with("menu_")
+                || spec.id.as_str().starts_with("notice_")
+        }) {
+            assert!(
+                expected.iter().any(|(_, id)| *id == spec.id),
+                "{} is not covered above",
+                spec.id
+            );
+        }
+        // Entry points into those contexts are unconditional so they can be
+        // bound and listed anywhere.
+        for id in [ids::OPEN_MENU, ids::FOCUS_NOTICES, ids::DISMISS_ALL_NOTICES]
+        {
+            let spec =
+                validate(&CommandInvocation::new(id, Vec::new())).unwrap();
+            assert_eq!(spec.scope, CommandScope::Window, "{id}");
+            assert_eq!(spec.context, None, "{id}");
+            assert!(spec.args.is_empty(), "{id}");
+        }
+    }
+
+    #[test]
+    fn tab_targeted_commands_take_an_unprompted_optional_tab() {
+        let tab = TabId::new(4);
+        for id in [
+            ids::CLOSE_TAB,
+            ids::CLOSE_OTHER_TABS,
+            ids::CLOSE_TABS_AFTER,
+            ids::COPY_TAB_DIRECTORY,
+            ids::OPEN_TAB_DIRECTORY,
+        ] {
+            let bare = CommandInvocation::new(id, Vec::new());
+            let spec = validate(&bare).unwrap();
+            assert_eq!(spec.scope, CommandScope::Window, "{id}");
+            assert_eq!(spec.context, None, "{id}");
+            assert_eq!(
+                spec.args,
+                &[ArgumentSpec {
+                    name: "tab",
+                    kind: ArgumentKind::Tab,
+                    required: Requirement::Optional,
+                    prompt: false,
+                }],
+                "{id}"
+            );
+            // The palette runs these immediately on the active tab.
+            assert!(spec.missing_prompted(&bare).is_empty(), "{id}");
+
+            let targeted = CommandInvocation::new(
+                id,
+                vec![CommandArgument::new("tab", CommandValue::Tab(tab))],
+            );
+            assert!(validate(&targeted).is_ok(), "{id}");
+            assert_eq!(targeted.tab("tab"), Some(tab));
+            assert_eq!(
+                validate(&CommandInvocation::new(
+                    id,
+                    vec![CommandArgument::new("tab", CommandValue::Integer(1))]
+                )),
+                Err(CommandError::ArgumentType {
+                    command: id,
+                    name: "tab",
+                    expected: ArgumentKind::Tab,
+                }),
+                "{id}"
             );
         }
     }

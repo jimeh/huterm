@@ -58,6 +58,29 @@
           "name": "fullscreen-state-notification",
           "file": "patches/gpui/fullscreen-state-notification.patch",
           "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
+        },
+        {
+          "name": "x11-drain-buffered-events",
+          "file": "patches/gpui/x11-drain-buffered-events.patch",
+          "description": "Process X11 events that synchronous requests buffered during foreground work, so a stranded MapNotify cannot leave a window without frames.",
+          "upstream": "https://github.com/zed-industries/zed/pull/62081"
+        },
+        {
+          "name": "macos-app-owned-titlebar-drag",
+          "file": "patches/gpui/macos-app-owned-titlebar-drag.patch",
+          "description": "Let a macOS window claim its title bar from AppKit's window drag and move itself through start_window_move, so title-bar controls keep their presses.",
+          "upstream": "https://github.com/zed-industries/zed/pull/60620"
+        },
+        {
+          "name": "macos-borderless-traffic-lights",
+          "file": "patches/gpui/macos-borderless-traffic-lights.patch",
+          "description": "Skip traffic-light placement for macOS windows without standard buttons instead of messaging nil."
+        },
+        {
+          "name": "linux-sharp-shadows",
+          "file": "patches/gpui/linux-sharp-shadows.patch",
+          "description": "Draw zero-blur shadows on Linux as sharp shapes, as Metal does, instead of dividing by the zero blur and drawing nothing.",
+          "upstream": "https://github.com/zed-industries/zed/pull/57685"
         }
       ]
     },
