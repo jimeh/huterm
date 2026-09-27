@@ -21,6 +21,8 @@ use gpui::{
 
 use super::key_hint::KeyHint;
 use super::overlay::{Swatch, TextTooltip, raised_panel};
+use crate::ui::animation::AnimationSchedule;
+use crate::ui::list_scrollbar::ListScrollbar;
 
 /// Identifies a menu item or button to its owner.
 pub(crate) type MenuItemId = &'static str;
@@ -335,14 +337,18 @@ const ANCHOR_GAP: Pixels = px(4.0);
 
 /// Places a menu of `menu` size in a window of `window` size. Button
 /// anchors open below, or above from the lower half, and right-align from
-/// the right half. Pointer anchors open at the pointer, upward from the
-/// lower half, and clamp to the window margin. `max_height` is the space
-/// left in the opening direction.
+/// the right half; `max_height` is the space left in the opening direction.
+/// Pointer anchors open at the pointer, upward from the lower half, and
+/// slide along the window to show every row: they scroll only when taller
+/// than the window within its margins, which is then their `max_height`.
 pub(crate) fn place_menu(
     anchor: MenuAnchor,
     menu: Size<Pixels>,
     window: Size<Pixels>,
 ) -> MenuPlacement {
+    let clamp = |value: Pixels, extent: Pixels, limit: Pixels| {
+        value.min(limit - extent - MENU_MARGIN).max(MENU_MARGIN)
+    };
     let (opens_up, align_right, x, top_edge, bottom_edge) = match anchor {
         MenuAnchor::Button(bounds) => {
             let centre = bounds.center();
@@ -360,13 +366,25 @@ pub(crate) fn place_menu(
                 bounds.bottom() + ANCHOR_GAP,
             )
         }
-        MenuAnchor::Pointer(position) => (
-            position.y > window.height / 2.0,
-            false,
-            position.x,
-            position.y,
-            position.y,
-        ),
+        MenuAnchor::Pointer(position) => {
+            let opens_up = position.y > window.height / 2.0;
+            let max_height = (window.height - MENU_MARGIN * 2.0).max(px(0.0));
+            let height = menu.height.min(max_height);
+            let y = if opens_up {
+                position.y - height
+            } else {
+                position.y
+            };
+            return MenuPlacement {
+                origin: point(
+                    clamp(position.x, menu.width, window.width),
+                    clamp(y, height, window.height),
+                ),
+                opens_up,
+                align_right: false,
+                max_height,
+            };
+        }
     };
     let max_height = if opens_up {
         top_edge - MENU_MARGIN
@@ -379,9 +397,6 @@ pub(crate) fn place_menu(
         top_edge - height
     } else {
         bottom_edge
-    };
-    let clamp = |value: Pixels, extent: Pixels, limit: Pixels| {
-        value.min(limit - extent - MENU_MARGIN).max(MENU_MARGIN)
     };
     MenuPlacement {
         origin: point(
@@ -424,6 +439,8 @@ pub(crate) struct Menu {
     swatch: Swatch,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// The fading indicator shown while rows overflow `max_height`.
+    scrollbar: ListScrollbar,
     max_height: Option<Pixels>,
 }
 
@@ -445,18 +462,33 @@ impl Menu {
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let selection = from_keyboard.then(|| model.first()).flatten();
+        let scroll = ScrollHandle::new();
+        let mut scrollbar = ListScrollbar::new(scroll.clone());
+        // An overflowing menu shows its indicator on opening, so the rows
+        // beyond the edge are visible at a glance.
+        scrollbar.show();
         Self {
             model,
             selection,
             swatch,
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            scroll,
+            scrollbar,
             max_height: None,
         }
     }
 
     pub(crate) fn model(&self) -> &MenuModel {
         &self.model
+    }
+
+    /// Whether the rows overflow the menu's height and scroll, and whether
+    /// the scroll indicator is drawn, for smoke state.
+    pub(crate) fn scroll_state(&self) -> (bool, bool) {
+        (
+            self.scroll.max_offset().height > px(0.0),
+            self.scrollbar.indicator_visible(),
+        )
     }
 
     pub(crate) fn selection(&self) -> Option<MenuSelection> {
@@ -490,6 +522,7 @@ impl Menu {
     ) {
         if self.max_height != max_height {
             self.max_height = max_height;
+            self.scrollbar.show();
             cx.notify();
         }
     }
@@ -505,6 +538,7 @@ impl Menu {
         self.selection = selection;
         if let Some(selection) = selection {
             self.scroll.scroll_to_item(selection.row);
+            self.scrollbar.show();
         }
         cx.notify();
     }
@@ -810,6 +844,24 @@ impl EntityInputHandler for Menu {
     }
 }
 
+impl super::refresh::Animated for Menu {
+    fn animation_schedule(&self, now: std::time::Instant) -> AnimationSchedule {
+        self.scrollbar.schedule(now)
+    }
+
+    fn advance_animation(
+        &mut self,
+        now: std::time::Instant,
+        _frame: bool,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.scrollbar.advance(now) {
+            cx.notify();
+        }
+    }
+}
+
 impl Render for Menu {
     fn render(
         &mut self,
@@ -839,6 +891,13 @@ impl Render for Menu {
             .collect();
         let focus = self.focus.clone();
         let menu = cx.entity();
+        let scrollbar = self.scrollbar.elements(
+            "menu-scrollbar",
+            swatch.scrollbar,
+            &menu,
+            |menu| &mut menu.scrollbar,
+            cx,
+        );
         raised_panel(swatch, 9.0)
             .id("menu")
             .key_context("menu")
@@ -880,14 +939,25 @@ impl Render for Menu {
             })
             .child(
                 div()
-                    .id("menu-rows")
-                    .p(px(PANEL_PADDING))
+                    .relative()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .when_some(self.max_height, Styled::max_h)
-                    .children(rows),
+                    .child(
+                        div()
+                            .id("menu-rows")
+                            .p(px(PANEL_PADDING))
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .when_some(self.max_height, Styled::max_h)
+                            .on_scroll_wheel(cx.listener(|menu, _, _, cx| {
+                                menu.scrollbar.show();
+                                cx.notify();
+                            }))
+                            .children(rows),
+                    )
+                    .children(scrollbar),
             )
     }
 }
@@ -1103,6 +1173,37 @@ mod tests {
         );
         assert!(!top_left.opens_up);
         assert_eq!(top_left.origin, point(px(6.0), px(100.0)));
-        assert_eq!(top_left.max_height, px(494.0));
+        assert_eq!(top_left.max_height, px(588.0));
+    }
+
+    #[test]
+    fn a_pointer_menu_slides_to_fit_rather_than_scroll() {
+        // From the upper half it would pass the bottom margin, so it rises
+        // above the pointer just far enough to show every row.
+        let fitted = place_menu(
+            MenuAnchor::Pointer(point(px(300.0), px(250.0))),
+            size(px(264.0), px(400.0)),
+            window(),
+        );
+        assert!(!fitted.opens_up);
+        assert_eq!(fitted.origin.y, px(600.0 - 6.0 - 400.0));
+        assert!(fitted.max_height >= px(400.0), "{fitted:?}");
+        // From the lower half it would pass the top margin, so it drops.
+        let dropped = place_menu(
+            MenuAnchor::Pointer(point(px(300.0), px(350.0))),
+            size(px(264.0), px(400.0)),
+            window(),
+        );
+        assert!(dropped.opens_up);
+        assert_eq!(dropped.origin.y, px(6.0));
+        assert!(dropped.max_height >= px(400.0), "{dropped:?}");
+        // Only a menu taller than the window scrolls, filling it.
+        let tall = place_menu(
+            MenuAnchor::Pointer(point(px(300.0), px(250.0))),
+            size(px(264.0), px(900.0)),
+            window(),
+        );
+        assert_eq!(tall.origin.y, px(6.0));
+        assert_eq!(tall.max_height, px(588.0));
     }
 }

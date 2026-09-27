@@ -568,6 +568,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-c", ids::COPY, "Copy the selection"),
             default("cmd-v", ids::PASTE, "Paste from the clipboard"),
             default("cmd-a", ids::SELECT_ALL, "Select the whole terminal"),
+            default("cmd-k", ids::CLEAR_SCROLLBACK, "Clear the scrollback"),
             default("cmd-,", ids::OPEN_SETTINGS, "Open the configuration file"),
             // GPUI folds Shift+comma into '<' and clears Shift on both
             // backends, so the binding names the resulting symbol.

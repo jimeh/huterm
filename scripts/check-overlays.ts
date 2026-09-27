@@ -216,6 +216,29 @@ label = "title"
   const key = (name: OverlayKey) => native().key(name);
   const typeText = (text: string) => native().typeText(text);
   const click = (x: number, y: number, button?: PointerButton) => native().click(x, y, button);
+  /**
+   * Resizes the window's content and waits for it to settle near the
+   * requested size; macOS counts the title bar inside the content.
+   */
+  async function resizeContent(width: number, height: number): Promise<string> {
+    await command(`resize\t${width}\t${height}`);
+    return stateWhere((text) => Math.abs(parseRect(field(text, "content")).h - height) <= 40, `content height near ${height}`);
+  }
+  /**
+   * Opens the terminal menu with a right-click at `fraction` of the grid's
+   * height in a window resized to `height`, and returns the state once the
+   * menu has painted, so its overflow reflects a laid-out menu.
+   */
+  async function openInShortWindow(width: number, height: number, fraction: number): Promise<string> {
+    const resized = await resizeContent(width, height);
+    const bounds = parseRect(field(resized, "grid_bounds"));
+    await click(bounds.x + bounds.w / 2, bounds.y + bounds.h * fraction, "right");
+    const opened = await stateWhere((text) => text.includes("w0.menu_kind=terminal") && field(text, "menu_rect") !== "none", `painted terminal menu at height ${height}`);
+    const menu = parseRect(field(opened, "menu_rect"));
+    const content = parseRect(field(opened, "content"));
+    if (menu.y < content.y || menu.y + menu.h > content.y + content.h) throw new Error(`${engine}: the menu ${field(opened, "menu_rect")} leaves the window ${field(opened, "content")}`);
+    return opened;
+  }
   /** Types a line the fixture answers with `ACK:<token>` and waits for it. */
   async function ack(token: string): Promise<void> {
     await typeText(token);
@@ -518,6 +541,20 @@ label = "title"
     await key("enter");
     await state("w0.menu=false", "w0.terminal_focused=true");
     await waitFor(async () => (await command("clipboard")) === "https://example.test/huterm", "copied link address");
+    // Short windows: the menu slides to fit rather than scroll below the
+    // pointer, and only a window shorter than the menu scrolls it, with the
+    // indicator showing.
+    const original = parseRect(field(await current(), "content"));
+    const unscrolled = await openInShortWindow(original.w, 420, 0.45);
+    if (field(unscrolled, "menu_overflow") !== "false") throw new Error(`${engine}: a menu that fits the window scrolled: ${unscrolled}`);
+    await key("escape");
+    await state("w0.menu=false");
+    const overflowing = await openInShortWindow(original.w, 260, 0.45);
+    if (field(overflowing, "menu_overflow") !== "true") throw new Error(`${engine}: a menu taller than the window did not scroll: ${overflowing}`);
+    await state("w0.menu_indicator=true");
+    await key("escape");
+    await state("w0.menu=false");
+    await resizeContent(original.w, original.h);
     // The keyboard opens the menu at the cursor with its first item selected.
     await invoke("open_context_menu");
     await state("w0.menu=true", "w0.menu_kind=terminal", "w0.menu_focused=true", "w0.menu_selection=paste");
@@ -525,7 +562,7 @@ label = "title"
     await state("w0.menu=false", "w0.terminal_focused=true");
     await ack("ackcontextx");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-keyboard`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

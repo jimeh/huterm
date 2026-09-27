@@ -7703,7 +7703,11 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let swatch = Swatch::from_theme(&self.config.theme);
-        let view = cx.new(|cx| MenuView::new(model, swatch, from_keyboard, cx));
+        let clock = Rc::clone(&self.frame_clock);
+        let view = cx.new(|cx| {
+            clock.observe(cx);
+            MenuView::new(model, swatch, from_keyboard, cx)
+        });
         cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
         view.read(cx).focus_handle(cx).focus(window);
@@ -8192,6 +8196,54 @@ impl WorkspaceView {
         Some(wrapper)
     }
 
+    /// The open menu's smoke fields: kind, focus, selection, items with
+    /// disabled ones marked, overflow and indicator, whether the button
+    /// shows it open, and its painted bounds.
+    fn menu_smoke_state(
+        &self,
+        prefix: &str,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> String {
+        let menu = match &self.menu {
+            Some(open) => {
+                let menu = open.view.read(cx);
+                let selection = menu
+                    .selection()
+                    .and_then(|selection| menu.model().id_at(selection))
+                    .unwrap_or("none");
+                let kind = match open.kind {
+                    MenuKind::Window => "window",
+                    MenuKind::Tab(_) => "tab",
+                    MenuKind::Terminal { .. } => "terminal",
+                };
+                let (overflow, indicator) = menu.scroll_state();
+                format!(
+                    "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={} {prefix}menu_overflow={overflow} {prefix}menu_indicator={indicator}",
+                    menu.focus_handle(cx).is_focused(window),
+                    menu_items_state(menu.model()),
+                )
+            }
+            None => format!(
+                "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none {prefix}menu_overflow=false {prefix}menu_indicator=false"
+            ),
+        };
+        format!(
+            "{menu} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            self.menu_button_open(),
+            self.menu_bounds.get().map_or_else(
+                || "none".to_owned(),
+                |bounds| format!(
+                    "{},{},{},{}",
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height)
+                )
+            )
+        )
+    }
+
     /// Smoke output for the transient UI, each field named after `prefix`:
     /// the menu (open, focused, selected item, targeted tab index), the
     /// About panel, the close confirmation (showing, focused button,
@@ -8218,32 +8270,7 @@ impl WorkspaceView {
             })
             .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let about = self.about.is_some();
-        let menu = match &self.menu {
-            Some(open) => {
-                let menu = open.view.read(cx);
-                let selection = menu
-                    .selection()
-                    .and_then(|selection| menu.model().id_at(selection))
-                    .unwrap_or("none");
-                let kind = match open.kind {
-                    MenuKind::Window => "window",
-                    MenuKind::Tab(_) => "tab",
-                    MenuKind::Terminal { .. } => "terminal",
-                };
-                format!(
-                    "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={}",
-                    menu.focus_handle(cx).is_focused(window),
-                    menu_items_state(menu.model()),
-                )
-            }
-            None => format!(
-                "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none"
-            ),
-        };
-        let menu = format!(
-            "{menu} {prefix}menu_button_open={}",
-            self.menu_button_open()
-        );
+        let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = match self.close.dialog_focus {
             DialogFocus::Primary => "primary",
             DialogFocus::Cancel => "cancel",

@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 22] = [
+const ASSETS: [(&str, &[u8]); 23] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -75,6 +75,7 @@ const ASSETS: [(&str, &[u8]); 22] = [
         "icons/delete.svg",
         include_bytes!("../assets/icons/delete.svg"),
     ),
+    ("icons/link.svg", include_bytes!("../assets/icons/link.svg")),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -101,11 +102,12 @@ pub(crate) enum Icon {
     ArrowRight,
     ArrowRightToLine,
     Delete,
+    Link,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -127,6 +129,7 @@ impl Icon {
         Self::ArrowRight,
         Self::ArrowRightToLine,
         Self::Delete,
+        Self::Link,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -152,6 +155,7 @@ impl Icon {
             Self::ArrowRight => "icons/arrow-right.svg",
             Self::ArrowRightToLine => "icons/arrow-right-to-line.svg",
             Self::Delete => "icons/delete.svg",
+            Self::Link => "icons/link.svg",
         }
     }
 }

@@ -295,7 +295,8 @@ text cursor from the keyboard. When a program such as vim or tmux takes the
 mouse, a plain right-click goes to it and Shift+right-click opens the menu.
 `terminal.right_click` chooses the action instead: `"menu"` (default),
 `"paste"`, `"copy_or_paste"` (copy and clear a selection, otherwise paste), or
-`"ignore"`.
+`"ignore"`. Menus opened at the pointer shift up or down to fit the window
+and scroll only when taller than it, with a thin indicator on the right.
 
 Tabs show a small yellow dot before their title while a program holds the
 foreground; the exit, error, and bell indicators take its place. The native
@@ -423,7 +424,8 @@ the request; the explicit non-native command is unavailable there.
 ### Links and file drops
 
 Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
-it with the system handler. Hover shows the destination. OSC 8 labels use their
+it with the system handler. Hover shows the destination on a small panel in
+the terminal's bottom-left corner. OSC 8 labels use their
 explicit destination; plain URLs can cross soft-wrapped rows. When a terminal
 application captures the mouse, add Shift to the configured modifier chord.
 Moving away, scrolling, changing the target, or pressing Escape cancels a click.
@@ -873,6 +875,7 @@ Default bindings differ per platform:
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
 | `select_all` | `cmd-a` | `ctrl-shift-a` |
+| `clear_scrollback` | `cmd-k` | |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
 | `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |

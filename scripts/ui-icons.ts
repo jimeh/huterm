@@ -27,6 +27,7 @@ export const iconNames = [
   "arrow-right",
   "arrow-right-to-line",
   "delete",
+  "link",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

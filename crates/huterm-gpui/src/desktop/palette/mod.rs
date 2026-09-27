@@ -17,9 +17,9 @@ use std::time::Instant;
 use gpui::{
     App, BoxShadow, ClickEvent, Context, Entity, EventEmitter, Focusable,
     FontWeight, HighlightStyle, KeyBindingContextPredicate, KeyContext,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ScrollHandle, ScrollWheelEvent, Subscription, WeakEntity, Window, canvas,
-    div, hsla, point, prelude::*, px,
+    MouseButton, MouseDownEvent, MouseUpEvent, Render, ScrollHandle,
+    ScrollWheelEvent, Subscription, WeakEntity, Window, div, hsla, point,
+    prelude::*, px,
 };
 use huterm_config::PalettePlacement;
 use huterm_core::HierarchySnapshot;
@@ -37,11 +37,7 @@ use super::TerminalView;
 use super::key_hint::KeyHint;
 use super::overlay::{OverlayColors, Swatch, footer_hints, key_cap};
 use crate::keymap::{InstalledKeymap, Platform};
-use crate::ui::scrollbar::{
-    Axis, Edge, HitBand, INDICATOR_HOLD, Origin, Press, ScrollbarGeometries,
-    ScrollbarGeometry, ScrollbarOptions, Scrollbars, ThumbSize, TrackMargins,
-    TrackPress,
-};
+use crate::ui::list_scrollbar::ListScrollbar;
 use crate::ui::text_field::{Changed, TextField};
 
 const PAGE_STEP: isize = 8;
@@ -88,23 +84,6 @@ const PANEL_CHROME_HEIGHT: f32 = PANEL_MAX_HEIGHT - LIST_MAX_HEIGHT;
 /// Distance from the window's top edge for top placement, and the minimum
 /// for centred placement in short windows.
 const PANEL_TOP_INSET: f32 = 36.0;
-/// The list's overlay scrollbar: a jump-to-pointer track that widens on
-/// hover, scrolled in pixels from the top.
-const LIST_SCROLLBAR: ScrollbarOptions = ScrollbarOptions {
-    edge: Edge::Right,
-    origin: Origin::Start,
-    expand_on_hover: true,
-    track_press: TrackPress::Jump,
-    margins: TrackMargins::EVEN,
-    thumb: ThumbSize::Slim,
-    edge_inset: 2.0,
-    hit: HitBand {
-        outward: 2.0,
-        inward: 6.0,
-    },
-    reveal_on_hover: true,
-    hold: INDICATOR_HOLD,
-};
 
 /// One configured quake profile for the profile picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -443,7 +422,7 @@ pub(super) struct CommandPalette {
     scroll: ScrollHandle,
     /// Fading overlay scrollbar on the list; shown after list changes and
     /// scrolling so it also signals rows beyond the visible six.
-    scrollbars: Scrollbars,
+    scrollbar: ListScrollbar,
     /// Monotonic acknowledgement for native smoke-test wheel input.
     wheel_events: u64,
     _subscriptions: Vec<Subscription>,
@@ -485,6 +464,7 @@ impl CommandPalette {
             .iter()
             .filter(|spec| context_matches(spec.context, &target.contexts))
             .collect();
+        let scroll = ScrollHandle::new();
         let mut palette = Self {
             target,
             stage: Stage::Search(SearchState {
@@ -510,8 +490,8 @@ impl CommandPalette {
             picker: Vec::new(),
             picker_selected: None,
             hover: None,
-            scroll: ScrollHandle::new(),
-            scrollbars: Scrollbars::vertical(LIST_SCROLLBAR),
+            scroll: scroll.clone(),
+            scrollbar: ListScrollbar::new(scroll),
             wheel_events: 0,
             _subscriptions: vec![subscription],
         };
@@ -683,7 +663,7 @@ impl CommandPalette {
 
     /// Reveals the list scrollbar; the animation clock fades it out.
     fn show_scrollbar(&mut self) {
-        self.scrollbars.show(Axis::Vertical, Instant::now());
+        self.scrollbar.show();
     }
 
     fn observe_scroll_wheel(&mut self, cx: &mut Context<'_, Self>) {
@@ -694,107 +674,9 @@ impl CommandPalette {
 
     /// Advances the scrollbar fade and expansion from the window animation clock.
     pub(super) fn advance(&mut self, now: Instant, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.advance(now) {
+        if self.scrollbar.advance(now) {
             cx.notify();
         }
-    }
-
-    /// Scrollbar geometry for the list's current overflow, if any.
-    fn scrollbar_geometry(&self) -> Option<ScrollbarGeometry> {
-        let viewport = f32::from(self.scroll.bounds().size.height);
-        let overflow = f32::from(self.scroll.max_offset().height);
-        ScrollbarGeometry::new(
-            viewport,
-            viewport + overflow,
-            viewport,
-            -f32::from(self.scroll.offset().y),
-            LIST_SCROLLBAR.origin,
-            LIST_SCROLLBAR.margins,
-        )
-    }
-
-    fn scrollbar_geometries(&self) -> ScrollbarGeometries {
-        ScrollbarGeometries::vertical(self.scrollbar_geometry())
-    }
-
-    fn scrollbar_pointer_moved(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let geometries = self.scrollbar_geometries();
-        if self.scrollbars.pointer_moved(
-            &geometries,
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) {
-            cx.notify();
-        }
-    }
-
-    fn scrollbar_pointer_left(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.pointer_left(Instant::now()) {
-            cx.notify();
-        }
-    }
-
-    /// Mouse down on the strip: grab the thumb, or jump it under the pointer
-    /// and grab it there.
-    fn scrollbar_press(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let geometries = self.scrollbar_geometries();
-        let Some((_, press)) = self.scrollbars.press(
-            &geometries,
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) else {
-            return false;
-        };
-        match press {
-            Press::Grabbed | Press::Page { .. } => {}
-            Press::Jump(thumb_start) => {
-                if let Some(geometry) = geometries.vertical {
-                    self.scrollbar_seek(geometry, thumb_start);
-                }
-            }
-        }
-        cx.notify();
-        true
-    }
-
-    fn scrollbar_drag_to(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(geometry) = self.scrollbar_geometry() else {
-            return;
-        };
-        let Some((_, thumb_start)) = self.scrollbars.drag_to(
-            self.scroll.bounds(),
-            position,
-            Instant::now(),
-        ) else {
-            return;
-        };
-        self.scrollbar_seek(geometry, thumb_start);
-        cx.notify();
-    }
-
-    fn scrollbar_release(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.release(Instant::now()) {
-            cx.notify();
-        }
-    }
-
-    fn scrollbar_seek(&self, geometry: ScrollbarGeometry, thumb_start: f32) {
-        let offset = geometry.offset_for_thumb_start(thumb_start);
-        self.scroll.set_offset(point(px(0.0), px(-offset)));
     }
 
     fn input_changed(&mut self, text: &str) {
@@ -1270,7 +1152,7 @@ impl CommandPalette {
         };
         let scroll_offset = -f32::from(self.scroll.offset().y);
         let (scrollbar_x, scrollbar_thumb_y) =
-            self.scrollbar_geometry().map_or((-1.0, -1.0), |geometry| {
+            self.scrollbar.geometry().map_or((-1.0, -1.0), |geometry| {
                 (
                     f32::from(self.scroll.bounds().right()) - 4.0,
                     f32::from(self.scroll.bounds().top())
@@ -1282,7 +1164,7 @@ impl CommandPalette {
             "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={}",
             self.input.read(cx).text(),
             self.diagnostic,
-            self.scrollbars.dragging(),
+            self.scrollbar.dragging(),
             self.wheel_events,
         )
     }
@@ -1987,7 +1869,7 @@ impl super::refresh::Animated for CommandPalette {
         &self,
         now: Instant,
     ) -> crate::ui::animation::AnimationSchedule {
-        self.scrollbars.schedule(now)
+        self.scrollbar.schedule(now)
     }
 
     fn advance_animation(
@@ -2063,88 +1945,13 @@ impl Render for CommandPalette {
 
         let footer = footer_hints(hints, swatch);
 
-        let geometries = self.scrollbar_geometries();
-        // Before the list's first layout its scroll bounds are empty, so
-        // geometry cannot say whether it overflows; mount the strip then
-        // too, because nothing else repaints before the pointer arrives on
-        // a headless X server. Once laid out, a list that fits keeps its
-        // right edge free for row clicks.
-        let unmeasured = self.scroll.bounds().size.height <= px(0.0);
-        let show_strip = self.scrollbars.wants_strip(Axis::Vertical)
-            && (geometries.vertical.is_some() || unmeasured);
-        if !show_strip {
-            // No strip remains to paint its leave animation.
-            if self.scrollbars.unmount(Axis::Vertical) {
-                cx.notify();
-            }
-        }
-        let scrollbar = show_strip.then(|| {
-            let width = self.scrollbars.strip_extent(Axis::Vertical);
-            div()
-                .id("palette-scrollbar")
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right_0()
-                .w(px(width))
-                .block_mouse_except_scroll()
-                .on_mouse_move(cx.listener(
-                    |palette, event: &MouseMoveEvent, _, cx| {
-                        palette.scrollbar_pointer_moved(event.position, cx);
-                    },
-                ))
-                .on_hover(cx.listener(|palette, hovering: &bool, _, cx| {
-                    if !hovering {
-                        palette.scrollbar_pointer_left(cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|palette, event: &MouseDownEvent, _, cx| {
-                        if palette.scrollbar_press(event.position, cx) {
-                            cx.stop_propagation();
-                        }
-                    }),
-                )
-                // A press and release within one frame ends before the
-                // window-level release listener below exists.
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|palette, _: &MouseUpEvent, _, cx| {
-                        palette.scrollbar_release(cx);
-                    }),
-                )
-                .children(
-                    self.scrollbars
-                        .layers(&geometries, swatch.scrollbar)
-                        .collect::<Vec<_>>(),
-                )
-        });
-        let scrollbar_capture = canvas(
-            |_, _, _| {},
-            move |_, (), window, _cx| {
-                let mover = palette.clone();
-                window.on_mouse_event(
-                    move |event: &MouseMoveEvent, phase, _, cx| {
-                        if phase.bubble() {
-                            mover.update(cx, |palette, cx| {
-                                palette.scrollbar_drag_to(event.position, cx);
-                            });
-                        }
-                    },
-                );
-                let releaser = palette.clone();
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                    if phase.bubble() {
-                        releaser.update(cx, |palette, cx| {
-                            palette.scrollbar_release(cx);
-                        });
-                    }
-                });
-            },
-        )
-        .absolute()
-        .inset_0();
+        let scrollbar = self.scrollbar.elements(
+            "palette-scrollbar",
+            swatch.scrollbar,
+            &palette,
+            |palette| &mut palette.scrollbar,
+            cx,
+        );
 
         let input_focus = self.focus_handle(cx);
         let panel = div()
@@ -2185,8 +1992,7 @@ impl Render for CommandPalette {
                     .flex()
                     .flex_col()
                     .child(list)
-                    .children(scrollbar)
-                    .child(scrollbar_capture),
+                    .children(scrollbar),
             )
             .child(footer);
 

@@ -128,6 +128,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             .and_then(|item| item.text())
             .unwrap_or_default());
     }
+    if let Some(size) = command.strip_prefix("resize\t") {
+        return resize_window(cx, handle, size);
+    }
     if let Some(message) = command.strip_prefix("terminal-failure\t") {
         return report_terminal_failure(cx, handle, message);
     }
@@ -198,6 +201,25 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             }
         })
     })?
+}
+
+/// Resizes the first window's content to `size`, a tab-separated width
+/// and height in points.
+fn resize_window(
+    cx: &mut App,
+    handle: gpui::AnyWindowHandle,
+    size: &str,
+) -> anyhow::Result<String> {
+    let mut values = size.split('\t').map(str::parse::<f32>);
+    let (Some(Ok(width)), Some(Ok(height)), None) =
+        (values.next(), values.next(), values.next())
+    else {
+        anyhow::bail!("resize takes a width and a height");
+    };
+    handle.update(cx, |_, window, _| {
+        window.resize(gpui::size(gpui::px(width), gpui::px(height)));
+    })?;
+    Ok("resize requested".to_owned())
 }
 
 /// The `invoke-*` commands that run a fixed invocation through

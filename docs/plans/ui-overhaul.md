@@ -301,7 +301,12 @@ close at once; otherwise one "Close N tabs?" dialog confirms them together.
   same path as modifier hover. The menu opens when it answers, or after 250 ms
   without link rows. A held link chord already knows its link.
 - Picks that take a tab act on the terminal's tab. The menu closes if another
-  tab becomes active. `open_context_menu` opens it at the text cursor.
+  tab becomes active. `open_context_menu` opens it at the text cursor, and
+  Cmd-K runs Clear Scrollback on macOS.
+- Pointer-anchored menus open at the pointer when they fit, otherwise slide
+  up or down within the window margins; only a menu taller than the window
+  scrolls. Scrolled menus show the palette's thin overlay indicator, shared
+  through `ui::list_scrollbar`.
 - Every menu records its kind (window, tab, or terminal) and pointer anchor.
   The menu button shows its open state only for the window menu it anchors,
   not for pointer-anchored menus.

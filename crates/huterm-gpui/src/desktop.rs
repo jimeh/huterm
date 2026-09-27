@@ -12,6 +12,7 @@ use gpui::{
     MouseUpEvent, Pixels, Render, ScrollDelta, ScrollWheelEvent, Subscription,
     SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
+    svg,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,
@@ -25,6 +26,7 @@ use huterm_protocol::{
 };
 
 use crate::APP_ID;
+use crate::assets::Icon;
 use crate::commands::{
     InvokeApp, InvokePalette, InvokeTerminal, InvokeWindow, invoke,
 };
@@ -2602,6 +2604,49 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
+    /// The hovered link's destination on a small raised panel at the
+    /// terminal's bottom-left corner, truncated to the terminal's width.
+    fn render_link_status(
+        &self,
+        destination: String,
+        terminal_bounds: Bounds<Pixels>,
+        viewport_height: Pixels,
+    ) -> impl IntoElement {
+        let swatch = Swatch::from_theme(&self.theme);
+        let inset = px(8.0);
+        div()
+            .absolute()
+            .left(terminal_bounds.origin.x + inset)
+            .bottom(viewport_height - terminal_bounds.bottom() + inset)
+            .max_w((terminal_bounds.size.width - inset * 2.0).max(px(0.0)))
+            .flex()
+            .child(
+                raised_panel(swatch, 8.0)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(swatch.fg)
+                    .child(
+                        svg()
+                            .path(Icon::Link.asset_path())
+                            .size(px(13.0))
+                            .flex_none()
+                            .text_color(swatch.muted),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(destination),
+                    ),
+            )
+    }
+
     /// The pill at the bottom centre of the terminal bounds while scrolled
     /// back. It consumes presses and releases so a click cannot start a
     /// selection or application mouse input, and fades with the indicator.
@@ -2972,17 +3017,11 @@ impl Render for TerminalView {
         }
         if let Some(link) = hovered_link {
             root = root.cursor(gpui::CursorStyle::PointingHand).child(
-                div()
-                    .absolute()
-                    .left(px(4.0))
-                    .bottom(px(4.0))
-                    .w((self.viewport(window).width - px(8.0)).max(px(0.0)))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .bg(color(self.theme.background))
-                    .text_color(color(self.theme.foreground))
-                    .child(link.destination),
+                self.render_link_status(
+                    link.destination,
+                    terminal_bounds,
+                    self.viewport(window).height,
+                ),
             );
         }
         let displayed_offset = self.scroll.displayed();
