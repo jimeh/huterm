@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/jimeh/huterm/compare/v0.14.0...v0.14.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* stop a click behind a just-opened dialog from focusing the terminal ([#180](https://github.com/jimeh/huterm/issues/180)) ([fa5a419](https://github.com/jimeh/huterm/commit/fa5a4192c303a704416804a703ae40edd224c9e5))
+
 ## [0.14.0](https://github.com/jimeh/huterm/compare/v0.13.2...v0.14.0) (2026-09-27)
 
 
