@@ -493,15 +493,26 @@ impl TerminalView {
                 Err(error) => (None, Some(error.to_string())),
             };
         let (failure_wake, failure_wakes) = async_channel::bounded(1);
-        let focus_subscription =
-            cx.on_focus(&focus, window, |view: &mut TerminalView, _, cx| {
+        let focus_subscription = cx.on_focus(
+            &focus,
+            window,
+            |view: &mut TerminalView, window, cx| {
+                // GPUI dispatches a press against the last drawn frame, so a
+                // press that lands before the frame showing a dialog's scrim
+                // can still run the terminal's focus-on-click. The dialog
+                // keeps keyboard focus; the program is told nothing.
+                if let Some(dialog) = windows::modal_focus(window, cx) {
+                    dialog.focus(window);
+                    return;
+                }
                 view.host_effects.note_focus();
                 if view.visible
                     && view.enqueue_input(TerminalInput::Focus(true))
                 {
                     cx.notify();
                 }
-            });
+            },
+        );
         let blur_subscription =
             cx.on_blur(&focus, window, |view: &mut TerminalView, _, cx| {
                 // GPUI cancels pending shortcuts when focus changes. Window

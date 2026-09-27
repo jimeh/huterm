@@ -8406,6 +8406,14 @@ fn menu_items_state(model: &MenuModel) -> String {
     ids.join(",")
 }
 
+/// The focus a showing dialog or About panel holds, for handing it back
+/// when something else takes it; `None` while neither shows.
+pub(super) fn modal_focus(window: &Window, cx: &App) -> Option<FocusHandle> {
+    let root = window.root::<WorkspaceView>().flatten()?;
+    let view = root.read(cx);
+    view.dialog_showing().then(|| view.focus.clone())
+}
+
 pub(super) fn modal_showing(window: &Window, cx: &App) -> bool {
     window
         .root::<WorkspaceView>()
