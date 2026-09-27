@@ -6,12 +6,12 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle, Focusable,
-    KeyContext, Keystroke, Menu, MenuItem, Modifiers as GpuiModifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ScrollDelta, ScrollWheelEvent, Subscription, SystemMenuType, Task,
-    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
-    canvas, div, point, prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, EventEmitter,
+    FocusHandle, Focusable, KeyContext, Keystroke, Menu, MenuItem,
+    Modifiers as GpuiModifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, ScrollDelta, ScrollWheelEvent, Subscription,
+    SystemMenuType, Task, TitlebarOptions, Window, WindowBounds,
+    WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use huterm_core::{
     HostEffectRecipient, Mux, PresentationController, RuntimeClient,
@@ -172,7 +172,14 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "Edit".into(),
-            items: vec![item(ids::COPY), item(ids::PASTE)],
+            items: vec![
+                item(ids::COPY),
+                item(ids::PASTE),
+                item(ids::SELECT_ALL),
+                MenuItem::separator(),
+                item(ids::CLEAR_SCROLLBACK),
+                item(ids::RESET_TERMINAL),
+            ],
         },
         Menu {
             name: "View".into(),
@@ -244,6 +251,29 @@ impl Selection {
             .then(|| BufferRange::ordered(self.anchor, self.head))
     }
 }
+
+/// How long a right-click waits for the link under the pointer before its
+/// context menu opens without link rows.
+const CONTEXT_LINK_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// A right-click's link lookup, riding on the next snapshot request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContextLookup {
+    epoch: u64,
+    cell: huterm_protocol::MousePosition,
+    /// Where the menu opens, in window coordinates.
+    position: gpui::Point<Pixels>,
+}
+
+/// Asks the window to open the terminal's context menu at `position`, in
+/// window coordinates, with the destination of the link under it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ContextMenuRequest {
+    pub(super) position: gpui::Point<Pixels>,
+    pub(super) link: Option<String>,
+}
+
+impl EventEmitter<ContextMenuRequest> for TerminalView {}
 
 fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
     if selection.and_then(Selection::range).is_none() {
@@ -339,6 +369,10 @@ struct TerminalView {
     link_modifiers: config::LinkModifiers,
     link_diagnostic_at: Option<Instant>,
     open_link: fn(&str, &mut App),
+    right_click: config::RightClickAction,
+    /// A right-click waiting for its link lookup before its menu opens.
+    context_lookup: Option<ContextLookup>,
+    context_lookup_epoch: u64,
     link_requests: u64,
     link_completions: u64,
     link_max_lookup: Duration,
@@ -550,6 +584,9 @@ impl TerminalView {
             link_modifiers: config.terminal.link_modifiers,
             link_diagnostic_at: None,
             open_link: |destination, cx| cx.open_url(destination),
+            right_click: config.terminal.right_click,
+            context_lookup: None,
+            context_lookup_epoch: 0,
             link_requests: 0,
             link_completions: 0,
             link_max_lookup: Duration::ZERO,
@@ -640,6 +677,10 @@ impl TerminalView {
         self.start_snapshot_if_needed(cx);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "admission, link lookups, and benchmark samples share one request"
+    )]
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
@@ -653,11 +694,12 @@ impl TerminalView {
         };
         self.frame_clock.schedule(cx.entity().downgrade(), cx);
         let link_intent = self.links.intent();
+        let (context_lookup, link_point) = self.link_lookup_point(link_intent);
         let link_started = Instant::now();
         self.link_requests += u64::from(link_intent.is_some());
         let requested = self.client.request_snapshot_with_link(
             self.scroll.submitted_scroll(),
-            link_intent.map(|intent| intent.point),
+            link_point,
         );
         let request = match requested {
             Ok(request) => request,
@@ -720,6 +762,7 @@ impl TerminalView {
                             view.link_diagnostic_at = Some(Instant::now());
                             eprintln!("Link lookup unavailable or exceeded its bounded scan; terminal remains usable");
                         }
+                        view.complete_context_lookup(context_lookup, reply.link.as_ref(), cx);
                         let hover = view.links.hover().cloned();
                         view.links.publish(link_intent, reply.link);
                         let hover_changed = view.links.hover() != hover.as_ref();
@@ -1002,6 +1045,7 @@ impl TerminalView {
         self.links.disable();
         self.links_enabled = terminal.links;
         self.link_modifiers = terminal.link_modifiers;
+        self.right_click = terminal.right_click;
         self.visual_bell = terminal.bell.visual;
         if !self.visual_bell && self.bell.clear() {
             cx.notify();
@@ -1297,9 +1341,35 @@ impl TerminalView {
             ids::PASTE
             | ids::SCROLL_PAGE_UP
             | ids::SCROLL_PAGE_DOWN
-            | ids::SCROLL_TO_BOTTOM => Ok(()),
+            | ids::SCROLL_TO_BOTTOM
+            | ids::SELECT_ALL
+            | ids::CLEAR_SCROLLBACK
+            | ids::RESET_TERMINAL => Ok(()),
             other => Err(CommandError::UnknownCommand(other)),
         }
+    }
+
+    /// Whether the view shows history rather than live output.
+    fn scrolled_back(&self) -> bool {
+        self.scroll.displayed() > 0
+    }
+
+    /// Where a keyboard-opened context menu anchors, in window
+    /// coordinates: below the cursor cell, or the grid's top-left corner
+    /// when the cursor is out of view.
+    fn context_menu_anchor(&self, window: &Window) -> gpui::Point<Pixels> {
+        let origin = self.content_bounds(window).origin
+            + self.terminal_layout(window).bounds.origin;
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.cursor)
+            .map_or(origin, |cursor| {
+                origin
+                    + point(
+                        self.metrics.cell_width * f32::from(cursor.column),
+                        self.metrics.cell_height * f32::from(cursor.row + 1),
+                    )
+            })
     }
 
     fn run_command(
@@ -1311,12 +1381,38 @@ impl TerminalView {
         self.clear_option_composition();
         self.command_availability(invocation.id)?;
         match invocation.id {
-            ids::COPY => {
-                if let Some(text) = &self.selected_text {
+            ids::COPY => match (&self.selected_text, self.selection) {
+                (Some(text), _) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         text.clone(),
                     ));
                 }
+                // The selection's text is still being extracted: copy it
+                // when it arrives rather than dropping the request.
+                (None, Some(selection)) => {
+                    if let Some(range) = selection.range() {
+                        self.extract_selection(selection, range, true, cx);
+                    }
+                }
+                (None, None) => {}
+            },
+            ids::SELECT_ALL => self.select_all(cx),
+            ids::CLEAR_SCROLLBACK | ids::RESET_TERMINAL => {
+                let edited = if invocation.id == ids::CLEAR_SCROLLBACK {
+                    self.client.clear_history()
+                } else {
+                    self.client.reset()
+                };
+                edited.map_err(|error| {
+                    CommandError::Runtime(error.to_string())
+                })?;
+                // Both move history, so the selection's cells are gone. The
+                // runtime invalidates the view once it applies the edit; a
+                // snapshot requested now could run first and spend the
+                // frame's allowance on the old content.
+                self.clear_selection();
+                self.links.invalidate();
+                cx.notify();
             }
             ids::PASTE => {
                 if let Some(text) =
@@ -1538,6 +1634,9 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        // A right press during another gesture, such as a held link press
+        // or a selection drag, opens nothing.
+        let gesture = self.owns_pointer_gesture();
         self.input_queue.boundary();
         if self.mouse.down(button, application) {
             let (accepted, _) = self.admit_input(
@@ -1553,6 +1652,12 @@ impl TerminalView {
                 self.mouse.accepted(button, cell);
             }
             cx.notify();
+            return;
+        }
+        if !application && event.button == MouseButton::Right {
+            if !gesture {
+                self.right_click(event.position, window, cx);
+            }
             return;
         }
         if application || event.button != MouseButton::Left {
@@ -1591,6 +1696,146 @@ impl TerminalView {
         self.selecting = true;
         self.update_renderer_selection();
         cx.notify();
+    }
+
+    /// The cell a snapshot request looks up, and the right-click it answers.
+    /// A held link chord owns the lookup; a right-click that finds one
+    /// pending has already opened its menu without waiting.
+    fn link_lookup_point(
+        &self,
+        link_intent: Option<links::Intent>,
+    ) -> (
+        Option<ContextLookup>,
+        Option<huterm_protocol::MousePosition>,
+    ) {
+        let context_lookup =
+            self.context_lookup.filter(|_| link_intent.is_none());
+        let point = link_intent
+            .map(|intent| intent.point)
+            .or(context_lookup.map(|lookup| lookup.cell));
+        (context_lookup, point)
+    }
+
+    /// Opens the menu of a right-click whose lookup `outcome` answers, unless
+    /// a newer right-click or the timeout replaced it.
+    fn complete_context_lookup(
+        &mut self,
+        lookup: Option<ContextLookup>,
+        outcome: Option<&huterm_protocol::LinkLookup>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(lookup) =
+            lookup.filter(|lookup| self.context_lookup == Some(*lookup))
+        else {
+            return;
+        };
+        self.context_lookup = None;
+        let link = match outcome {
+            Some(huterm_protocol::LinkLookup::Match(link)) => {
+                Some(link.destination.clone())
+            }
+            _ => None,
+        };
+        cx.emit(ContextMenuRequest {
+            position: lookup.position,
+            link,
+        });
+    }
+
+    /// A right press no application took: the configured action.
+    fn right_click(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let command = match self.right_click {
+            config::RightClickAction::Menu => {
+                let cell = self.link_cell(position, window);
+                self.request_context_menu(position, cell, cx);
+                return;
+            }
+            config::RightClickAction::Ignore => return,
+            config::RightClickAction::Paste => ids::PASTE,
+            config::RightClickAction::CopyOrPaste => {
+                if copy_availability(self.selection).is_ok() {
+                    ids::COPY
+                } else {
+                    ids::PASTE
+                }
+            }
+        };
+        let result = self.run_command(
+            &CommandInvocation::new(command, Vec::new()),
+            window,
+            cx,
+        );
+        if let Err(error) = result {
+            self.report_failure(
+                Severity::Error,
+                "Command failed",
+                error.to_string(),
+            );
+        } else if command == ids::COPY {
+            self.clear_selection();
+            cx.notify();
+        }
+    }
+
+    /// Asks the window for the context menu at `position`, first looking
+    /// up the link at `cell` unless its result is already known. The
+    /// lookup rides on a snapshot request and is bounded by
+    /// [`CONTEXT_LINK_TIMEOUT`], after which the menu opens without it.
+    fn request_context_menu(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cell: Option<huterm_protocol::MousePosition>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.context_lookup = None;
+        let hovered = self
+            .links
+            .hover()
+            .filter(|link| {
+                cell.is_some_and(|cell| {
+                    link.cells.iter().any(|linked| linked.position == cell)
+                })
+            })
+            .map(|link| link.destination.clone());
+        let cell = cell.filter(|_| {
+            hovered.is_none()
+                && self.links_enabled
+                && self.links.intent().is_none()
+        });
+        let Some(cell) = cell else {
+            cx.emit(ContextMenuRequest {
+                position,
+                link: hovered,
+            });
+            return;
+        };
+        self.context_lookup_epoch = self.context_lookup_epoch.wrapping_add(1);
+        let lookup = ContextLookup {
+            epoch: self.context_lookup_epoch,
+            cell,
+            position,
+        };
+        self.context_lookup = Some(lookup);
+        self.scroll.invalidate();
+        self.start_snapshot_if_needed(cx);
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(CONTEXT_LINK_TIMEOUT).await;
+            let _ = view.update(cx, |view, cx| {
+                if view.context_lookup == Some(lookup) {
+                    view.context_lookup = None;
+                    cx.emit(ContextMenuRequest {
+                        position: lookup.position,
+                        link: None,
+                    });
+                }
+            });
+        })
+        .detach();
     }
 
     fn mouse_move(
@@ -1773,6 +2018,50 @@ impl TerminalView {
             cx.notify();
             return;
         };
+        self.extract_selection(selection, range, false, cx);
+    }
+
+    /// Selects every row of history and the screen.
+    fn select_all(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let rows = usize::from(snapshot.size.rows);
+        let columns = snapshot.size.columns;
+        if rows == 0 || columns == 0 {
+            return;
+        }
+        let selection = Selection {
+            generation: snapshot.generation,
+            anchor: BufferPoint {
+                rows_from_live_bottom: snapshot.history_size + rows - 1,
+                column: 0,
+            },
+            head: BufferPoint {
+                rows_from_live_bottom: 0,
+                column: columns - 1,
+            },
+        };
+        self.selection = Some(selection);
+        self.selected_text = None;
+        self.selecting = false;
+        self.update_renderer_selection();
+        if let Some(range) = selection.range() {
+            self.extract_selection(selection, range, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Asks the runtime for `selection`'s text and keeps it while the
+    /// selection stays current. With `copy`, the text also goes to the
+    /// clipboard when it arrives.
+    fn extract_selection(
+        &mut self,
+        selection: Selection,
+        range: BufferRange,
+        copy: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         let request =
             match self.client.request_selection(selection.generation, range) {
                 Ok(request) => request,
@@ -1794,8 +2083,18 @@ impl TerminalView {
                     range,
                 );
                 match result {
-                    Ok(Some(text)) if current => {
-                        view.selected_text = Some(text);
+                    // A requested copy writes the text it asked for even if
+                    // the selection changed since; only caching needs it
+                    // current.
+                    Ok(Some(text)) => {
+                        if copy {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                text.clone(),
+                            ));
+                        }
+                        if current {
+                            view.selected_text = Some(text);
+                        }
                     }
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}

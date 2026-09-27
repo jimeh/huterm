@@ -7,8 +7,8 @@ use crate::themes;
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, KeybindingEntry,
     LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode, MacosOptionAsAlt,
-    RawConfig, TabPosition, TabsConfig, TerminalConfig, Theme, UpdateConfig,
-    WindowConfig, keybinding_diagnostic,
+    RawConfig, RightClickAction, TabPosition, TabsConfig, TerminalConfig,
+    Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
 };
 
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
@@ -36,6 +36,9 @@ macos_option_as_alt = "off"
 # Also hold Shift when terminal applications request mouse reporting.
 links = true
 # link_modifiers = "cmd" # Linux default: "ctrl"
+# Right-click: "menu", "paste", "copy_or_paste", or "ignore". While a
+# terminal application takes the mouse, Shift+right-click applies it.
+right_click = "menu"
 
 # Flash active terminals and mark inactive tabs when a bell rings.
 [terminal.bell]
@@ -369,6 +372,7 @@ fn parse_at(source: &str, path: &Path) -> Result<Config, ConfigError> {
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
+            right_click: raw.terminal.right_click,
         },
         font: FontConfig {
             family: raw.font.family,

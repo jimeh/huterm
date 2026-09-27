@@ -31,7 +31,7 @@ use super::close_dialog::{
 };
 use super::menu::{
     MENU_MIN_WIDTH, Menu as MenuView, MenuAnchor, MenuEvent, MenuModel,
-    place_menu,
+    MenuRow, place_menu,
 };
 use super::notices::{
     Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
@@ -62,7 +62,7 @@ use huterm_protocol::{
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
@@ -74,6 +74,7 @@ mod tab_menu;
 mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
+mod terminal_menu;
 mod window_menu;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
@@ -96,6 +97,7 @@ use tab_menu::{TabMenuInput, tab_menu_model};
 use tab_position::{TabHost, resolve_tab_position};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
+use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu_model};
 use window_menu::{
     MenuButtonPlacement, WindowMenuInput, menu_button_placement,
     split_new_tab_row, window_menu_model,
@@ -1532,14 +1534,11 @@ fn open_window_with_profile(
                 recent: RecentCommands::default(),
                 startup_reporter: reporter.clone(),
                 menu: None,
-                menu_target: None,
-                menu_pointer: None,
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 menu_bounds: Rc::new(Cell::new(None)),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
                 title_row_moves: Rc::new(Cell::new(0)),
-                menu_contexts: Vec::new(),
                 about: None,
                 // The window opened with this title. Writing it again from
                 // the first render costs GPUI's X11 backend a blocking round
@@ -2276,13 +2275,8 @@ struct WorkspaceView {
     retained_query: Option<(String, Instant)>,
     recent: RecentCommands,
     startup_reporter: Option<WeakEntity<WorkspaceView>>,
-    /// The open window or tab menu.
-    menu: Option<Entity<MenuView>>,
-    /// The tab whose context menu is open; `None` for the window menu.
-    menu_target: Option<TabId>,
-    /// Where a tab menu was opened, in window coordinates; `None` for the
-    /// window menu, which anchors to its button.
-    menu_pointer: Option<gpui::Point<Pixels>>,
+    /// The open window, tab, or terminal menu.
+    menu: Option<OpenMenu>,
     /// Where the menu button was last painted, for anchoring the menu and
     /// letting a press on it toggle rather than dismiss; `None` while the
     /// button is not drawn.
@@ -2299,12 +2293,42 @@ struct WorkspaceView {
     title_row_moves: Rc<Cell<u32>>,
     /// Where the open menu was last painted, for outside-press dismissal.
     menu_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// The key contexts captured when the menu opened, for shortcut text.
-    menu_contexts: Vec<KeyContext>,
     /// The About panel's details while it is showing.
     about: Option<AboutDetails>,
     /// The native window title last set, so unchanged titles are not reset.
     window_title: String,
+}
+
+/// Which menu is open, and what its picks act on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MenuKind {
+    /// The window menu, from its button, `open_menu`, or empty bar space.
+    Window,
+    /// A tab's context menu.
+    Tab(TabId),
+    /// The context menu of the terminal in `tab`, with the destination of
+    /// the link under the pointer when it opened.
+    Terminal { tab: TabId, link: Option<String> },
+}
+
+impl MenuKind {
+    /// The tab the menu's tab-targeted picks act on.
+    fn tab(&self) -> Option<TabId> {
+        match self {
+            Self::Window => None,
+            Self::Tab(tab) | Self::Terminal { tab, .. } => Some(*tab),
+        }
+    }
+}
+
+struct OpenMenu {
+    view: Entity<MenuView>,
+    kind: MenuKind,
+    /// Where a context menu opened, in window coordinates; `None` anchors
+    /// the menu to its button.
+    pointer: Option<gpui::Point<Pixels>>,
+    /// The key contexts captured when the menu opened, for shortcut text.
+    contexts: Vec<KeyContext>,
 }
 
 /// Where focus goes when the window menu closes.
@@ -3508,6 +3532,12 @@ impl WorkspaceView {
                                 terminal.window_frame = view.window_frame();
                                 terminal
                             });
+                            cx.subscribe_in(
+                                &terminal,
+                                window,
+                                Self::handle_context_menu_request,
+                            )
+                            .detach();
                             let tab_id = opened.tab.id;
                             let failure_wakes =
                                 terminal.read(cx).failure_wakes.clone();
@@ -4053,6 +4083,10 @@ impl WorkspaceView {
         OverlayColors::from_theme(&self.config.theme)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match routes the availability of every command scope"
+    )]
     fn command_availability(
         &self,
         command: huterm_protocol::CommandId,
@@ -4068,8 +4102,17 @@ impl WorkspaceView {
                 ids::CLOSE_TAB
                 | ids::CLOSE_OTHER_TABS
                 | ids::CLOSE_TABS_AFTER
-                | ids::COPY_TAB_DIRECTORY => {
+                | ids::COPY_TAB_DIRECTORY
+                | ids::OPEN_TAB_DIRECTORY => {
                     self.tab_command_availability(command, target.tab, cx)
+                }
+                ids::OPEN_CONTEXT_MENU => {
+                    self.check_available(true)?;
+                    self.active_view().map(|_| ()).ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "window has no active terminal".to_owned(),
+                        )
+                    })
                 }
                 ids::DIALOG_CONFIRM
                 | ids::DIALOG_CANCEL
@@ -4168,7 +4211,9 @@ impl WorkspaceView {
         tab: Option<TabId>,
         cx: &App,
     ) -> Result<(), CommandError> {
-        if command != ids::COPY_TAB_DIRECTORY {
+        if command != ids::COPY_TAB_DIRECTORY
+            && command != ids::OPEN_TAB_DIRECTORY
+        {
             self.check_tab_close_available()?;
         }
         let tab = tab.map_or_else(
@@ -4178,6 +4223,9 @@ impl WorkspaceView {
         match command {
             ids::CLOSE_TAB => Ok(()),
             ids::COPY_TAB_DIRECTORY => self.tab_directory(tab, cx).map(|_| ()),
+            ids::OPEN_TAB_DIRECTORY => {
+                self.local_tab_directory(tab, cx).map(|_| ())
+            }
             other => self.tab_set_target(other, tab).map(|_| ()),
         }
     }
@@ -4265,6 +4313,64 @@ impl WorkspaceView {
         tab_directory_path(&tab.view.read(cx).metadata).ok_or_else(|| {
             CommandError::Unavailable("directory unknown".to_owned())
         })
+    }
+
+    /// The tab's working directory when it is on this machine, so the file
+    /// manager can open it.
+    fn local_tab_directory(
+        &self,
+        tab: TabId,
+        cx: &App,
+    ) -> Result<PathBuf, CommandError> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|record| record.id == tab)
+            .ok_or(CommandError::StaleTarget)?;
+        match tab.view.read(cx).metadata.directory() {
+            Some(directory) if directory.is_local() => {
+                Ok(PathBuf::from(directory.path()))
+            }
+            Some(_) => Err(CommandError::Unavailable(
+                "directory is on another host".to_owned(),
+            )),
+            None => {
+                Err(CommandError::Unavailable("directory unknown".to_owned()))
+            }
+        }
+    }
+
+    /// Opens the named or active tab's working directory in the file
+    /// manager.
+    fn open_tab_directory(
+        &self,
+        invocation: &CommandInvocation,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let tab = self.target_tab(invocation)?;
+        let path = self.local_tab_directory(tab, cx)?;
+        cx.open_with_system(&path);
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Opens the active terminal's context menu at its cursor.
+    fn open_context_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_available(true)?;
+        let terminal = self.active_view().ok_or_else(|| {
+            CommandError::Unavailable(
+                "window has no active terminal".to_owned(),
+            )
+        })?;
+        let anchor = terminal.read(cx).context_menu_anchor(window);
+        self.open_terminal_menu(anchor, None, window, cx);
+        if let Some(menu) = &self.menu {
+            menu.view.update(cx, MenuView::select_first);
+        }
+        Ok(CommandOutcome::Completed)
     }
 
     /// Copies the named or active tab's working directory through the
@@ -4543,6 +4649,8 @@ impl WorkspaceView {
                 self.run_tab_close(invocation, window, cx)
             }
             ids::COPY_TAB_DIRECTORY => self.copy_tab_directory(invocation, cx),
+            ids::OPEN_TAB_DIRECTORY => self.open_tab_directory(invocation, cx),
+            ids::OPEN_CONTEXT_MENU => self.open_context_menu(window, cx),
             ids::DIALOG_CONFIRM
             | ids::DIALOG_CANCEL
             | ids::DIALOG_FOCUS_NEXT
@@ -6784,7 +6892,10 @@ impl Render for WorkspaceView {
                         Activity::Inactive
                     },
                     flush_start: index == 0 && strip.offset == px(0.0),
-                    targeted: self.menu_target == Some(tab.id),
+                    targeted: self
+                        .menu
+                        .as_ref()
+                        .is_some_and(|menu| menu.kind == MenuKind::Tab(tab.id)),
                 };
                 bar = bar
                     .child(Self::tab_element(&item, bounds, tabs, colors, cx));
@@ -7325,9 +7436,12 @@ impl WorkspaceView {
     }
 
     fn open_menu_entity(&self) -> Result<Entity<MenuView>, CommandError> {
-        self.menu.clone().ok_or_else(|| {
-            CommandError::Unavailable("no menu is open".to_owned())
-        })
+        self.menu
+            .as_ref()
+            .map(|menu| menu.view.clone())
+            .ok_or_else(|| {
+                CommandError::Unavailable("no menu is open".to_owned())
+            })
     }
 
     fn window_menu_input(&self, cx: &App) -> WindowMenuInput {
@@ -7348,9 +7462,9 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         self.check_available(false)?;
         if let Some(menu) = &self.menu
-            && self.menu_target.is_none()
+            && menu.kind == MenuKind::Window
         {
-            menu.read(cx).focus_handle(cx).focus(window);
+            menu.view.read(cx).focus_handle(cx).focus(window);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -7363,13 +7477,21 @@ impl WorkspaceView {
         if let Some(terminal) = self.active_view() {
             terminal.update(cx, TerminalView::clear_composition);
         }
-        self.menu_contexts = window.context_stack();
+        let contexts = window.context_stack();
         let model = window_menu_model(
             &self.window_menu_input(cx),
             &cx.global::<Desktop>().keymap,
-            &self.menu_contexts,
+            &contexts,
         );
-        self.mount_menu(model, from_keyboard, window, cx);
+        self.mount_menu(
+            model,
+            MenuKind::Window,
+            None,
+            contexts,
+            from_keyboard,
+            window,
+            cx,
+        );
         Ok(CommandOutcome::Completed)
     }
 
@@ -7390,7 +7512,9 @@ impl WorkspaceView {
             self.report_failure("Open Menu", error.to_string(), cx);
             return;
         }
-        self.menu_pointer = Some(pointer);
+        if let Some(menu) = &mut self.menu {
+            menu.pointer = Some(pointer);
+        }
     }
 
     /// Opens the context menu for `tab` at `pointer`, replacing any open
@@ -7414,20 +7538,118 @@ impl WorkspaceView {
         if let Some(terminal) = self.active_view() {
             terminal.update(cx, TerminalView::clear_composition);
         }
-        self.menu_contexts = window.context_stack();
-        self.menu_target = Some(tab);
-        self.menu_pointer = Some(pointer);
-        let Some(model) = self.tab_menu_model(cx) else {
-            self.menu_target = None;
-            self.menu_pointer = None;
+        let contexts = window.context_stack();
+        let Some(model) = self.tab_menu_model(tab, &contexts, cx) else {
             return;
         };
-        self.mount_menu(model, false, window, cx);
+        self.mount_menu(
+            model,
+            MenuKind::Tab(tab),
+            Some(pointer),
+            contexts,
+            false,
+            window,
+            cx,
+        );
     }
 
-    /// The open tab menu's rows, or `None` once its tab is gone.
-    fn tab_menu_model(&self, cx: &App) -> Option<MenuModel> {
-        let tab = self.menu_target?;
+    /// Opens the active terminal's context menu at `pointer`, replacing any
+    /// open menu, with rows for the link under the pointer when there is
+    /// one. It refuses where the tab menu does.
+    fn open_terminal_menu(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        link: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(tab) = self.active else {
+            return;
+        };
+        if self.check_available(true).is_err() || self.palette.is_some() {
+            return;
+        }
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if let Some(terminal) = self.active_view() {
+            terminal.update(cx, TerminalView::clear_composition);
+        }
+        let contexts = window.context_stack();
+        let kind = MenuKind::Terminal { tab, link };
+        let Some(model) = self.terminal_menu_model(&kind, &contexts, cx) else {
+            return;
+        };
+        self.mount_menu(
+            model,
+            kind,
+            Some(pointer),
+            contexts,
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// A terminal's right-click. Only the active terminal's menu opens: a
+    /// lookup can finish after its tab was switched away.
+    fn handle_context_menu_request(
+        &mut self,
+        terminal: &Entity<TerminalView>,
+        request: &ContextMenuRequest,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.active_view().as_ref() == Some(terminal) {
+            self.open_terminal_menu(
+                request.position,
+                request.link.clone(),
+                window,
+                cx,
+            );
+        }
+    }
+
+    /// The terminal menu's rows, or `None` once its tab is no longer the
+    /// active one.
+    fn terminal_menu_model(
+        &self,
+        kind: &MenuKind,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuModel> {
+        let MenuKind::Terminal { tab, link } = kind else {
+            return None;
+        };
+        if self.active != Some(*tab) {
+            return None;
+        }
+        let terminal = self.active_view()?.read(cx);
+        let directory = match terminal.metadata.directory() {
+            None => DirectoryState::Unknown,
+            Some(directory) if directory.is_local() => DirectoryState::Local,
+            Some(_) => DirectoryState::Remote,
+        };
+        let input = TerminalMenuInput {
+            platform: Platform::current(),
+            link: link.is_some(),
+            selection: terminal.command_availability(ids::COPY).is_ok(),
+            exited: terminal.command_availability(ids::PASTE).is_err(),
+            scrolled_back: terminal.scrolled_back(),
+            directory,
+        };
+        Some(terminal_menu_model(
+            input,
+            &cx.global::<Desktop>().keymap,
+            contexts,
+        ))
+    }
+
+    /// The tab menu's rows for `tab`, or `None` once the tab is gone.
+    fn tab_menu_model(
+        &self,
+        tab: TabId,
+        contexts: &[KeyContext],
+        cx: &App,
+    ) -> Option<MenuModel> {
         let index = self.tabs.iter().position(|record| record.id == tab)?;
         let directory_known =
             tab_directory_path(&self.tabs[index].view.read(cx).metadata)
@@ -7443,38 +7665,54 @@ impl WorkspaceView {
         Some(tab_menu_model(
             &input,
             &cx.global::<Desktop>().keymap,
-            &self.menu_contexts,
+            contexts,
         ))
     }
 
-    /// The rows for whichever menu is open.
+    /// The rows for whichever menu is open, or `None` once its target is
+    /// gone.
     fn current_menu_model(&self, cx: &App) -> Option<MenuModel> {
-        if self.menu_target.is_some() {
-            self.tab_menu_model(cx)
-        } else {
-            Some(window_menu_model(
+        let menu = self.menu.as_ref()?;
+        match &menu.kind {
+            MenuKind::Window => Some(window_menu_model(
                 &self.window_menu_input(cx),
                 &cx.global::<Desktop>().keymap,
-                &self.menu_contexts,
-            ))
+                &menu.contexts,
+            )),
+            MenuKind::Tab(tab) => self.tab_menu_model(*tab, &menu.contexts, cx),
+            kind @ MenuKind::Terminal { .. } => {
+                self.terminal_menu_model(kind, &menu.contexts, cx)
+            }
         }
     }
 
     /// Creates the menu entity over `model`, subscribes to its events, and
     /// focuses it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every menu kind supplies its own anchor and context stack"
+    )]
     fn mount_menu(
         &mut self,
         model: MenuModel,
+        kind: MenuKind,
+        pointer: Option<gpui::Point<Pixels>>,
+        contexts: Vec<KeyContext>,
         from_keyboard: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let swatch = Swatch::from_theme(&self.config.theme);
-        let menu = cx.new(|cx| MenuView::new(model, swatch, from_keyboard, cx));
-        cx.subscribe_in(&menu, window, Self::handle_menu_event)
+        let view = cx.new(|cx| MenuView::new(model, swatch, from_keyboard, cx));
+        cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
-        menu.read(cx).focus_handle(cx).focus(window);
-        self.menu = Some(menu);
+        view.read(cx).focus_handle(cx).focus(window);
+        self.menu = Some(OpenMenu {
+            view,
+            kind,
+            pointer,
+            contexts,
+        });
         self.menu_bounds.set(None);
         cx.notify();
     }
@@ -7500,8 +7738,6 @@ impl WorkspaceView {
         if self.menu.take().is_none() {
             return false;
         }
-        self.menu_target = None;
-        self.menu_pointer = None;
         self.menu_bounds.set(None);
         match focus {
             MenuFocusReturn::Terminal => self.focus_terminal(window, cx),
@@ -7527,7 +7763,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(menu) = self.menu.clone() else {
+        let Some(menu) = self.menu.as_ref().map(|menu| menu.view.clone())
+        else {
             return;
         };
         match self.current_menu_model(cx) {
@@ -7547,29 +7784,27 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self
+        let Some(kind) = self
             .menu
             .as_ref()
-            .is_none_or(|current| current.entity_id() != menu.entity_id())
-        {
+            .filter(|current| current.view.entity_id() == menu.entity_id())
+            .map(|current| current.kind.clone())
+        else {
             return;
-        }
+        };
         match event {
             MenuEvent::Dismissed => {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
             }
             MenuEvent::Picked(id) => {
-                // A tab menu's picks carry their target tab.
-                let args = self
-                    .menu_target
-                    .map(|tab| {
-                        vec![CommandArgument::new(
-                            "tab",
-                            CommandValue::Tab(tab),
-                        )]
-                    })
-                    .unwrap_or_default();
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
+                if let MenuKind::Terminal {
+                    link: Some(link), ..
+                } = &kind
+                    && self.run_link_pick(id, link, cx)
+                {
+                    return;
+                }
                 let Some(spec) = huterm_protocol::lookup(id) else {
                     self.report_failure(
                         "Command failed",
@@ -7578,6 +7813,17 @@ impl WorkspaceView {
                     );
                     return;
                 };
+                // Context menu picks that take a tab act on the menu's tab.
+                let args = kind
+                    .tab()
+                    .filter(|_| spec.args.iter().any(|arg| arg.name == "tab"))
+                    .map(|tab| {
+                        vec![CommandArgument::new(
+                            "tab",
+                            CommandValue::Tab(tab),
+                        )]
+                    })
+                    .unwrap_or_default();
                 let invocation = CommandInvocation::new(spec.id, args);
                 let result = match spec.scope {
                     CommandScope::Terminal => self
@@ -7610,6 +7856,32 @@ impl WorkspaceView {
                 cx.notify();
             }
         }
+    }
+
+    /// Opens or copies the link a terminal menu opened over; `false` when
+    /// `id` is not a link row.
+    fn run_link_pick(
+        &mut self,
+        id: &str,
+        link: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        match id {
+            terminal_menu::OPEN_LINK => {
+                if let Some(terminal) = self.active_view() {
+                    terminal.update(cx, |terminal, cx| {
+                        (terminal.open_link)(link, cx);
+                    });
+                }
+            }
+            terminal_menu::COPY_LINK => {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    link.to_owned(),
+                ));
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Runs a `menu_*` command against the open menu. Confirm and close
@@ -7652,6 +7924,15 @@ impl WorkspaceView {
         })
     }
 
+    /// Whether the menu the button anchors is open. Context menus opened at
+    /// the pointer, including the window menu from empty bar space, leave
+    /// the button alone.
+    fn menu_button_open(&self) -> bool {
+        self.menu.as_ref().is_some_and(|menu| {
+            menu.kind == MenuKind::Window && menu.pointer.is_none()
+        })
+    }
+
     /// The menu control: a 14-point icon in the 26-point control with the
     /// tab-bar hover style, a "Menu" tooltip, and a yellow dot while notices
     /// wait. It never holds keyboard focus: Escape returns focus to the
@@ -7663,7 +7944,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let bounds_cell = Rc::clone(&self.menu_button_bounds);
-        let open = self.menu.is_some();
+        let open = self.menu_button_open();
         let dot = !open && !self.notices.is_empty();
         let swatch = Swatch::from_theme(&self.config.theme);
         div()
@@ -7866,10 +8147,11 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<gpui::Div> {
-        let menu = self.menu.clone()?;
+        let open = self.menu.as_ref()?;
+        let menu = open.view.clone();
         let viewport = window.viewport_size();
         let height = menu.read(cx).model().height();
-        let anchor = match self.menu_pointer {
+        let anchor = match open.pointer {
             Some(pointer) => MenuAnchor::Pointer(pointer),
             None => MenuAnchor::Button(self.menu_anchor(layout)),
         };
@@ -7925,28 +8207,43 @@ impl WorkspaceView {
         cx: &Context<'_, Self>,
     ) -> String {
         let target = self
-            .menu_target
+            .menu
+            .as_ref()
+            .and_then(|menu| match menu.kind {
+                MenuKind::Tab(tab) => Some(tab),
+                MenuKind::Window | MenuKind::Terminal { .. } => None,
+            })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)
             })
             .map_or_else(|| "none".to_owned(), |index| index.to_string());
         let about = self.about.is_some();
         let menu = match &self.menu {
-            Some(menu) => {
-                let menu = menu.read(cx);
+            Some(open) => {
+                let menu = open.view.read(cx);
                 let selection = menu
                     .selection()
                     .and_then(|selection| menu.model().id_at(selection))
                     .unwrap_or("none");
+                let kind = match open.kind {
+                    MenuKind::Window => "window",
+                    MenuKind::Tab(_) => "tab",
+                    MenuKind::Terminal { .. } => "terminal",
+                };
                 format!(
-                    "{prefix}menu=true {prefix}menu_focused={} {prefix}menu_selection={selection}",
-                    menu.focus_handle(cx).is_focused(window)
+                    "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={}",
+                    menu.focus_handle(cx).is_focused(window),
+                    menu_items_state(menu.model()),
                 )
             }
             None => format!(
-                "{prefix}menu=false {prefix}menu_focused=false {prefix}menu_selection=none"
+                "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none"
             ),
         };
+        let menu = format!(
+            "{menu} {prefix}menu_button_open={}",
+            self.menu_button_open()
+        );
         let dialog_focus = match self.close.dialog_focus {
             DialogFocus::Primary => "primary",
             DialogFocus::Cancel => "cancel",
@@ -8046,6 +8343,34 @@ impl WorkspaceView {
 /// Whether the window's root shows a close confirmation or the About panel.
 /// The scrim occludes the terminal beneath; this keeps pointer input out
 /// even if a modal is ever mounted without one.
+/// The model's item and button ids in order for smoke state, a trailing
+/// `!` marking disabled ones.
+fn menu_items_state(model: &MenuModel) -> String {
+    let mut ids = Vec::new();
+    for row in &model.rows {
+        match row {
+            MenuRow::Item(item) => {
+                ids.push(format!(
+                    "{}{}",
+                    item.id,
+                    if item.enabled { "" } else { "!" }
+                ));
+            }
+            MenuRow::Buttons { buttons, .. } => {
+                ids.extend(buttons.iter().map(|button| {
+                    format!(
+                        "{}{}",
+                        button.id,
+                        if button.enabled { "" } else { "!" }
+                    )
+                }));
+            }
+            MenuRow::Separator => {}
+        }
+    }
+    ids.join(",")
+}
+
 pub(super) fn modal_showing(window: &Window, cx: &App) -> bool {
     window
         .root::<WorkspaceView>()

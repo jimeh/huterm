@@ -110,6 +110,24 @@ impl WindowMenuInput {
     }
 }
 
+/// `id`'s shortcut as seen from `contexts`, the key-context stack captured
+/// when a menu opened. A user binding is shown ahead of a default for the
+/// same command, as the macOS menu bar shows it; bindings that carry
+/// arguments run something else and are skipped.
+pub(super) fn shortcut_hint(
+    keymap: &InstalledKeymap,
+    contexts: &[KeyContext],
+    platform: Platform,
+    id: CommandId,
+) -> Option<KeyHint> {
+    keymap
+        .shortcuts(id, contexts, None)
+        .into_iter()
+        .filter(|binding| binding.args.is_empty())
+        .min_by_key(|binding| binding.origin != Origin::User)
+        .map(|binding| KeyHint::parse(&binding.key, platform))
+}
+
 /// Labels the plan words differently from the catalog: prompting items end
 /// in an ellipsis, the application items name Huterm, and the tab menu's
 /// copy item names the path.
@@ -137,14 +155,8 @@ pub(super) fn window_menu_model(
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
 ) -> MenuModel {
-    let shortcut = |id: CommandId| {
-        keymap
-            .shortcuts(id, contexts, None)
-            .into_iter()
-            .filter(|binding| binding.args.is_empty())
-            .min_by_key(|binding| binding.origin != Origin::User)
-            .map(|binding| KeyHint::parse(&binding.key, input.platform))
-    };
+    let shortcut =
+        |id: CommandId| shortcut_hint(keymap, contexts, input.platform, id);
     let item = |id: CommandId| {
         MenuRow::Item(
             MenuItem::new(id.as_str(), label(id)).shortcut(shortcut(id)),

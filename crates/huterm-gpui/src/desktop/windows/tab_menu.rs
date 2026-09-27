@@ -5,10 +5,9 @@
 use gpui::KeyContext;
 use huterm_protocol::{CommandId, ids};
 
-use super::super::key_hint::KeyHint;
 use super::super::menu::{MenuItem, MenuModel, MenuRow};
-use super::window_menu::label;
-use crate::keymap::{InstalledKeymap, Origin, Platform};
+use super::window_menu::{label, shortcut_hint};
+use crate::keymap::{InstalledKeymap, Platform};
 
 /// The state the tab menu's rows depend on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,14 +33,8 @@ pub(super) fn tab_menu_model(
     keymap: &InstalledKeymap,
     contexts: &[KeyContext],
 ) -> MenuModel {
-    let shortcut = |id: CommandId| {
-        keymap
-            .shortcuts(id, contexts, None)
-            .into_iter()
-            .filter(|binding| binding.args.is_empty())
-            .min_by_key(|binding| binding.origin != Origin::User)
-            .map(|binding| KeyHint::parse(&binding.key, input.platform))
-    };
+    let shortcut =
+        |id: CommandId| shortcut_hint(keymap, contexts, input.platform, id);
     let item = |id: CommandId| MenuItem::new(id.as_str(), label(id));
     let last = input.count == 0 || input.index + 1 >= input.count;
     let copy_directory = item(ids::COPY_TAB_DIRECTORY);
@@ -83,6 +76,7 @@ pub(super) fn tab_menu_model(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::key_hint::KeyHint;
     use super::*;
     use crate::config::KeybindingEntry;
     use crate::keymap::compile;

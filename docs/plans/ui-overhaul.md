@@ -49,11 +49,11 @@ It adds these missing elements:
 The command palette itself does not change: its search, ranking, empty-query
 order, row geometry, and bindings stay as they are. The menu only opens it.
 
-Out of scope: a right-click menu inside the terminal, a tab and terminal
-switcher, persisting notices across restarts, prompt-aware close checks
-through shell integration, GPUI's Wayland backend, and a Linux updater.
-Following the Linux desktop's window-button layout was added after the first
-Linux review.
+Out of scope: a tab and terminal switcher, persisting notices across
+restarts, prompt-aware close checks through shell integration, GPUI's Wayland
+backend, native platform context menus, and a Linux updater. Following the
+Linux desktop's window-button layout and a terminal context menu were added
+after the first Linux review.
 
 ## Behaviour today
 
@@ -284,6 +284,32 @@ does not activate the tab, and it outlines the targeted tab while open.
 
 Closing several tabs runs one assessment across them. If none is busy they
 close at once; otherwise one "Close N tabs?" dialog confirms them together.
+
+### Terminal context menu
+
+- A right-click the terminal does not report to an application opens the menu
+  at the pointer, as does Shift+right-click while one takes the mouse. A right
+  press during another pointer gesture, such as a held link press, opens
+  nothing. `terminal.right_click` can paste, copy or paste, or ignore instead.
+- Rows: Open Link and Copy Link Address over a link; Copy (disabled "Nothing
+  selected"), Paste (disabled only after the shell exits), and Select All;
+  Clear Scrollback, Reset Terminal, and Scroll to Bottom while scrolled back;
+  Copy Directory Path and Show in Finder or Open in File Manager (disabled for
+  unknown or remote directories); New Tab, Rename Tab…, and Close Tab. Rows
+  that only apply in the moment appear and disappear; the rest disable.
+- The link comes from a lookup that rides on the next snapshot request, the
+  same path as modifier hover. The menu opens when it answers, or after 250 ms
+  without link rows. A held link chord already knows its link.
+- Picks that take a tab act on the terminal's tab. The menu closes if another
+  tab becomes active. `open_context_menu` opens it at the text cursor.
+- Every menu records its kind (window, tab, or terminal) and pointer anchor.
+  The menu button shows its open state only for the window menu it anchors,
+  not for pointer-anchored menus.
+- Clear Scrollback feeds `CSI 3 J` to the emulator, not the PTY. Output that
+  stopped inside an escape sequence or UTF-8 codepoint defers it until the
+  native stream reports ground through its continuation tracker. Reset
+  Terminal calls Ghostty's full reset, which keeps OSC color overrides as RIS
+  does in Ghostty.
 
 ### Menu behaviour
 

@@ -567,6 +567,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("cmd-c", ids::COPY, "Copy the selection"),
             default("cmd-v", ids::PASTE, "Paste from the clipboard"),
+            default("cmd-a", ids::SELECT_ALL, "Select the whole terminal"),
             default("cmd-,", ids::OPEN_SETTINGS, "Open the configuration file"),
             // GPUI folds Shift+comma into '<' and clears Shift on both
             // backends, so the binding names the resulting symbol.
@@ -585,6 +586,11 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("ctrl-shift-c", ids::COPY, "Copy the selection"),
             default("ctrl-shift-v", ids::PASTE, "Paste from the clipboard"),
+            default(
+                "ctrl-shift-a",
+                ids::SELECT_ALL,
+                "Select the whole terminal",
+            ),
             default(
                 "ctrl-,",
                 ids::OPEN_SETTINGS,

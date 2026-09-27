@@ -702,6 +702,18 @@ pub mod ids {
     /// Dismisses every notice in the window.
     pub const DISMISS_ALL_NOTICES: CommandId =
         CommandId::new("dismiss_all_notices");
+    /// Selects the terminal's whole scrollback and screen.
+    pub const SELECT_ALL: CommandId = CommandId::new("select_all");
+    /// Erases the terminal's scrollback, keeping the screen.
+    pub const CLEAR_SCROLLBACK: CommandId = CommandId::new("clear_scrollback");
+    /// Resets the terminal emulator's state.
+    pub const RESET_TERMINAL: CommandId = CommandId::new("reset_terminal");
+    /// Opens a tab's working directory in the file manager.
+    pub const OPEN_TAB_DIRECTORY: CommandId =
+        CommandId::new("open_tab_directory");
+    /// Opens the active terminal's context menu at its cursor.
+    pub const OPEN_CONTEXT_MENU: CommandId =
+        CommandId::new("open_context_menu");
     /// Activates the focused dialog button.
     pub const DIALOG_CONFIRM: CommandId = CommandId::new("dialog_confirm");
     /// Cancels the open dialog.
@@ -1182,6 +1194,43 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Dismiss All Notices",
         "Dismiss every notice in this window.",
+        &[],
+    ),
+    spec(
+        ids::SELECT_ALL,
+        CommandScope::Terminal,
+        "Select All",
+        "Select the terminal's scrollback and screen.",
+        &[],
+    ),
+    spec(
+        ids::CLEAR_SCROLLBACK,
+        CommandScope::Terminal,
+        "Clear Scrollback",
+        "Erase the terminal's scrollback, keeping the screen.",
+        &[],
+    ),
+    spec(
+        ids::RESET_TERMINAL,
+        CommandScope::Terminal,
+        "Reset Terminal",
+        "Reset the terminal's modes, screen, and scrollback, as after a \
+         garbled program exits. Running programs are unaffected.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_TAB_DIRECTORY,
+        CommandScope::Window,
+        "Open Tab Directory",
+        "Open a tab's working directory in the file manager; defaults to \
+         the active tab.",
+        TAB,
+    ),
+    spec(
+        ids::OPEN_CONTEXT_MENU,
+        CommandScope::Window,
+        "Open Context Menu",
+        "Open the active terminal's context menu at its cursor.",
         &[],
     ),
     spec_in(
@@ -1973,6 +2022,7 @@ mod tests {
             ids::CLOSE_OTHER_TABS,
             ids::CLOSE_TABS_AFTER,
             ids::COPY_TAB_DIRECTORY,
+            ids::OPEN_TAB_DIRECTORY,
         ] {
             let bare = CommandInvocation::new(id, Vec::new());
             let spec = validate(&bare).unwrap();

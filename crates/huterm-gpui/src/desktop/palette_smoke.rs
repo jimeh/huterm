@@ -122,6 +122,12 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     if let Some(id) = command.strip_prefix("invoke\t") {
         return invoke_catalog(cx, handle, id);
     }
+    if command == "clipboard" {
+        return Ok(cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default());
+    }
     if let Some(message) = command.strip_prefix("terminal-failure\t") {
         return report_terminal_failure(cx, handle, message);
     }
@@ -417,8 +423,9 @@ fn read_state(cx: &mut App) -> String {
 /// Transient UI, tab geometry, and the active terminal's scroll state for
 /// pointer fixtures, as `w<index>.` fields: `scrolled` is the displayed
 /// offset (distinct from the palette's `scroll_offset`), `scroll_pill`
-/// whether the pill is drawn, and `grid` the last PTY size as
-/// `columns,rows`.
+/// whether the pill is drawn, `grid` the last PTY size as `columns,rows`,
+/// `grid_bounds` the painted grid in window points, `cell` its cell size,
+/// `selection` whether text is selected, and `history` the scrollback rows.
 fn ui_state(
     entity: &gpui::Entity<WorkspaceView>,
     index: usize,
@@ -430,18 +437,28 @@ fn ui_state(
         let terminal_line = view.active_view().map_or_else(
             || {
                 format!(
-                    "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0"
+                    "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0 {prefix}grid_bounds=none {prefix}cell=0,0 {prefix}selection=false {prefix}history=0"
                 )
             },
             |terminal| {
                 let terminal = terminal.read(cx);
+                let content = terminal.content_bounds(window);
+                let grid = terminal.terminal_layout(window).bounds;
                 format!(
-                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{}",
-                    rect(terminal.content_bounds(window)),
+                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}history={}",
+                    rect(content),
                     terminal.scroll.displayed(),
                     terminal.scroll_pill_visible(),
                     terminal.last_grid_size.columns,
-                    terminal.last_grid_size.rows
+                    terminal.last_grid_size.rows,
+                    rect(gpui::Bounds::new(content.origin + grid.origin, grid.size)),
+                    f32::from(terminal.metrics.cell_width),
+                    f32::from(terminal.metrics.cell_height),
+                    terminal.command_availability(ids::COPY).is_ok(),
+                    terminal
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.history_size),
                 )
             },
         );

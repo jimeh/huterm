@@ -1191,6 +1191,16 @@ conditional, so it reserves no terminal key. A repeated close shortcut while
 `confirming` must not confirm. Menus and dialogs return focus to the terminal
 when they close; the menu button never keeps it, or terminal bindings stop
 matching until the user clicks back in.
+Each open menu carries a `MenuKind` and pointer anchor; derive button state
+and pick targets from them, not from whether any menu is open. A terminal
+right-click's link rides on the next snapshot request and opens the menu when
+it answers or after a bounded wait. `MouseState::down` records a local press as
+held, so sample `owns_pointer_gesture` before it; a right press during another
+gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
+`CSI 3 J` go through `vt_write` only while the native stream is at ground,
+read from its continuation tracker. `EscapeHint` ignores UTF-8 state and must
+not gate injected bytes. Ghostty's full reset, like its RIS, keeps OSC color
+overrides.
 Every drawn shortcut goes through `key_hint::KeyHint`: macOS modifier
 symbols, Linux modifier words, and Lucide icons for Return, Tab, Backspace,
 and the arrows on both. Add icons through `scripts/ui-icons.ts`, never as

@@ -522,6 +522,11 @@
                 "open_menu",
                 "focus_notices",
                 "dismiss_all_notices",
+                "select_all",
+                "clear_scrollback",
+                "reset_terminal",
+                "open_tab_directory",
+                "open_context_menu",
                 "dialog_confirm",
                 "dialog_cancel",
                 "dialog_focus_next",
@@ -2425,6 +2430,241 @@
               "command": {
                 "const": "dismiss_all_notices",
                 "description": "Dismiss every notice in this window.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "select_all"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Select the terminal's scrollback and screen.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "select_all",
+                "description": "Select the terminal's scrollback and screen.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "clear_scrollback"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Erase the terminal's scrollback, keeping the screen.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "clear_scrollback",
+                "description": "Erase the terminal's scrollback, keeping the screen.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "reset_terminal"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Reset the terminal's modes, screen, and scrollback, as after a garbled program exits. Running programs are unaffected.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "reset_terminal",
+                "description": "Reset the terminal's modes, screen, and scrollback, as after a garbled program exits. Running programs are unaffected.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_tab_directory"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open a tab's working directory in the file manager; defaults to the active tab.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_tab_directory",
+                "description": "Open a tab's working directory in the file manager; defaults to the active tab.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_context_menu"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open the active terminal's context menu at its cursor.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_context_menu",
+                "description": "Open the active terminal's context menu at its cursor.",
                 "type": "string"
               },
               "description": {
@@ -4462,6 +4702,15 @@
           ],
           "default": "display"
         },
+        "right_click": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RightClickAction"
+            }
+          ],
+          "default": "menu",
+          "description": "What a right-click on the terminal does: open the context menu,\npaste, copy the selection or else paste, or nothing. While an\napplication takes the mouse, Shift+right-click applies it."
+        },
         "term": {
           "allOf": [
             {
@@ -4485,6 +4734,31 @@
         {
           "const": "unlimited",
           "description": "Admit another dirty snapshot as soon as its predecessor completes.",
+          "type": "string"
+        }
+      ]
+    },
+    "RightClickAction": {
+      "description": "What a right-click on the terminal does when no application has taken\nthe mouse, or with Shift held when one has.",
+      "oneOf": [
+        {
+          "const": "menu",
+          "description": "Open the terminal's context menu at the pointer.",
+          "type": "string"
+        },
+        {
+          "const": "paste",
+          "description": "Paste the clipboard.",
+          "type": "string"
+        },
+        {
+          "const": "copy_or_paste",
+          "description": "Copy and clear the selection, or paste when nothing is selected.",
+          "type": "string"
+        },
+        {
+          "const": "ignore",
+          "description": "Do nothing.",
           "type": "string"
         }
       ]

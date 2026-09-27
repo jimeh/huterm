@@ -281,6 +281,22 @@ last tab). It does not open during a tab drag or while a close confirmation is
 showing, and it uses the same keys, dismissal, and focus return as the window
 menu.
 
+Right-clicking the terminal opens its context menu at the pointer; on macOS a
+Control-click does the same. Open Link and Copy Link Address lead the menu
+when the pointer is over a link. Copy is disabled until text is selected, and
+Paste stays enabled while the shell runs. Select All selects the scrollback
+and screen, Clear Scrollback erases history and keeps the screen, and Reset
+Terminal clears the screen, history, and modes a program left behind, as RIS
+does, without touching running programs. Scroll to Bottom appears while the
+view shows history. The menu also offers Copy Directory Path, Show in Finder
+or Open in File Manager for a local working directory, and New Tab, Rename
+Tab…, and Close Tab for the terminal's tab. `open_context_menu` opens it at the
+text cursor from the keyboard. When a program such as vim or tmux takes the
+mouse, a plain right-click goes to it and Shift+right-click opens the menu.
+`terminal.right_click` chooses the action instead: `"menu"` (default),
+`"paste"`, `"copy_or_paste"` (copy and clear a selection, otherwise paste), or
+`"ignore"`.
+
 Tabs show a small yellow dot before their title while a program holds the
 foreground; the exit, error, and bell indicators take its place. The native
 window title is `<active tab title> — Huterm` and follows tab switches and
@@ -790,6 +806,11 @@ Commands, their scope, and arguments:
 | `open_menu` | Window | |
 | `focus_notices` | Window | Focus the newest notice toast; unavailable without notices. |
 | `dismiss_all_notices` | Window | Dismiss every notice; unavailable without notices. |
+| `select_all` | Terminal | Select the scrollback and screen. |
+| `clear_scrollback` | Terminal | Erase the scrollback and keep the screen. |
+| `reset_terminal` | Terminal | Reset the screen, scrollback, and modes, as RIS does. |
+| `open_tab_directory` | Window | optional `tab`; defaults to the active tab. Requires a local directory. |
+| `open_context_menu` | Window | Open the active terminal's context menu at its cursor. |
 | `dialog_confirm` | Window | Bound only while `confirming`. |
 | `dialog_cancel` | Window | Bound only while `confirming`. |
 | `dialog_focus_next` | Window | Bound only while `confirming`. |
@@ -851,6 +872,7 @@ Default bindings differ per platform:
 | `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
+| `select_all` | `cmd-a` | `ctrl-shift-a` |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
 | `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |

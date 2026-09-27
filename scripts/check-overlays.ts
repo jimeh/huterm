@@ -152,6 +152,7 @@ while IFS= read -r line; do
     busy) sleep 600 & jobs="$jobs $!"; printf 'BUSY\\n';;
     title*) printf '\\033]0;%s\\007TITLED\\n' "\${line#title }";;
     fill) i=0; while [ "$i" -lt 300 ]; do echo "line $i"; i=$((i+1)); done; printf 'FILLED\\n';;
+    link) printf '\\033[2J\\033[Hhttps://example.test/huterm\\nLINKED\\n';;
     ack*) printf 'ACK:%s\\n' "$line";;
     exit) exit 0;;
   esac
@@ -354,7 +355,7 @@ label = "title"
     if (rects.length !== 3) throw new Error(`${engine}: expected three tab rects: ${tabbed}`);
     const firstTab = rectCentre(rects[0]!);
     await click(firstTab.x, firstTab.y, "right");
-    await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=0", "w0.active_index=2");
+    await state("w0.menu=true", "w0.menu_kind=tab", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=0", "w0.active_index=2", "w0.menu_button_open=false");
     await key("end");
     await state("w0.menu=true", "w0.menu_selection=close_tabs_after");
     await key("enter");
@@ -377,7 +378,7 @@ label = "title"
     }
     const button = rectCentre(field(barState, "menu_button"));
     await click(button.x, button.y);
-    await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none");
+    await state("w0.menu=true", "w0.menu_kind=window", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none", "w0.menu_button_open=true");
     await typeText("a");
     await state("w0.menu=true", "w0.menu_selection=about");
     await typeText("ckmenux");
@@ -406,7 +407,7 @@ label = "title"
     // A right press on empty bar space opens the window menu, not a tab's.
     const bar = parseRect(field(await current(), "tabs_rects").split(";").pop()!);
     await click(bar.x + bar.w + 32 + 24, bar.y + bar.h / 2, "right");
-    await state("w0.menu=true", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none");
+    await state("w0.menu=true", "w0.menu_kind=window", "w0.menu_focused=true", "w0.menu_selection=none", "w0.menu_target=none", "w0.menu_button_open=false");
     await key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
 
@@ -468,7 +469,63 @@ label = "title"
     await state("w0.scrolled=0", "w0.scroll_pill=false", "w0.terminal_focused=true");
     await ack("ackscrollx");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click`);
+    // 9. Terminal context menu: a right-click opens it at the pointer and
+    // leaves the menu button alone. Copy follows the selection, Paste stays
+    // enabled, Select All and Clear Scrollback act through it, and a link
+    // under the pointer adds its rows.
+    const grid = parseRect(field(await current(), "grid_bounds"));
+    const [cellWidth, cellHeight] = field(await current(), "cell").split(",").map(Number) as [number, number];
+    const cellCentre = (column: number, row: number) => ({ x: grid.x + (column + 0.5) * cellWidth, y: grid.y + (row + 0.5) * cellHeight });
+    const middle = cellCentre(10, 5);
+    const menuItems = async (prefix: string, label: string) => {
+      const opened = await state("w0.menu=true", "w0.menu_kind=terminal", "w0.menu_focused=true", "w0.menu_button_open=false");
+      if (!field(opened, "menu_items").startsWith(prefix)) throw new Error(`${engine}: ${label} terminal menu items: ${field(opened, "menu_items")}`);
+    };
+    await click(middle.x, middle.y, "right");
+    await menuItems("copy!,paste,select_all,clear_scrollback,reset_terminal,", "unselected");
+    // Type-ahead jumps to the next item starting with each typed letter.
+    await typeText("s");
+    await state("w0.menu_selection=select_all");
+    await key("enter");
+    await state("w0.menu=false", "w0.selection=true", "w0.terminal_focused=true");
+    await click(middle.x, middle.y, "right");
+    await menuItems("copy,paste,select_all,", "selected");
+    await typeText("c");
+    await state("w0.menu_selection=copy");
+    await key("enter");
+    await state("w0.menu=false", "w0.terminal_focused=true");
+    let copied = "";
+    await waitFor(async () => { copied = await command("clipboard"); return copied.includes("ACK:ackscrollx"); }, `Select All copy, last clipboard ${JSON.stringify(copied.slice(-80))}`);
+    if (!copied.includes("line 0")) throw new Error(`${engine}: Select All did not reach the start of history: ${JSON.stringify(copied.slice(0, 80))}`);
+    if (Number(field(await current(), "history")) === 0) throw new Error(`${engine}: the fixture left no history to clear`);
+    await click(middle.x, middle.y, "right");
+    await menuItems("copy", "before clearing");
+    await typeText("cc");
+    await state("w0.menu_selection=clear_scrollback");
+    await key("enter");
+    await state("w0.menu=false", "w0.history=0", "w0.selection=false", "w0.terminal_focused=true");
+    await ack("ackclearx");
+    await typeText("link");
+    await key("enter");
+    await state("LINKED");
+    const linkCell = cellCentre(3, 0);
+    await click(linkCell.x, linkCell.y, "right");
+    await menuItems("open_link,copy_link,copy!,paste,", "link");
+    await key("down");
+    await state("w0.menu_selection=open_link");
+    await key("down");
+    await state("w0.menu_selection=copy_link");
+    await key("enter");
+    await state("w0.menu=false", "w0.terminal_focused=true");
+    await waitFor(async () => (await command("clipboard")) === "https://example.test/huterm", "copied link address");
+    // The keyboard opens the menu at the cursor with its first item selected.
+    await invoke("open_context_menu");
+    await state("w0.menu=true", "w0.menu_kind=terminal", "w0.menu_focused=true", "w0.menu_selection=paste");
+    await key("escape");
+    await state("w0.menu=false", "w0.terminal_focused=true");
+    await ack("ackcontextx");
+
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-keyboard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

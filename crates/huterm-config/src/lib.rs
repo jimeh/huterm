@@ -36,6 +36,7 @@ pub struct TerminalConfig {
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
+    pub right_click: RightClickAction,
 }
 
 impl Default for TerminalConfig {
@@ -50,8 +51,28 @@ impl Default for TerminalConfig {
             links: true,
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
+            right_click: RightClickAction::Menu,
         }
     }
+}
+
+/// What a right-click on the terminal does when no application has taken
+/// the mouse, or with Shift held when one has.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RightClickAction {
+    /// Open the terminal's context menu at the pointer.
+    #[default]
+    Menu,
+    /// Paste the clipboard.
+    Paste,
+    /// Copy and clear the selection, or paste when nothing is selected.
+    CopyOrPaste,
+    /// Do nothing.
+    Ignore,
 }
 
 /// Client-side terminal snapshot admission policy.
@@ -869,6 +890,10 @@ pub struct RawTerminal {
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
     pub macos_option_as_alt: MacosOptionAsAlt,
+    /// What a right-click on the terminal does: open the context menu,
+    /// paste, copy the selection or else paste, or nothing. While an
+    /// application takes the mouse, Shift+right-click applies it.
+    pub right_click: RightClickAction,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -883,6 +908,7 @@ impl Default for RawTerminal {
             new_tab_directory: NewTabDirectory::Inherit,
             bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
+            right_click: RightClickAction::Menu,
         }
     }
 }
