@@ -260,7 +260,8 @@ without accepting releases inside the cooldown window.
 Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
 `.github/dependabot.yml`, `.github/workflows/ci.yml`, and `zizmor.yml` aligned
 when changing the policy.
-The published GPUI dependency graph needs Rust 1.88 or newer; project tooling
+The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.6 uses
+`std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.98.
 GPUI comes from `gpui-pre`, huacnlee's crates.io snapshots of Zed's main
 branch, because Zed has not published GPUI since 0.2.2. Depend on it as
