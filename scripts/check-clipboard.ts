@@ -1,4 +1,4 @@
-/** Verify OSC 52 writes through production Huterm and an independent OS clipboard client. */
+/** Verify OSC 52 and Kitty OSC 5522 writes through production Huterm and an independent OS clipboard client. */
 import { chmod, copyFile, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { constants, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,6 +155,23 @@ function osc52(value: Uint8Array, selector = "c"): Buffer {
 
 function osc1337(value: Uint8Array): Buffer {
   return Buffer.from(`\x1b]1337;Copy=:${Buffer.from(value).toString("base64")}\x1b\\`, "binary");
+}
+
+/** A complete Kitty clipboard (OSC 5522) write: open, one wdata packet per MIME type, commit. */
+export function kittyWrite(id: string, contents: [mime: string, data: Uint8Array][]): Buffer {
+  const base64 = (value: Uint8Array | string) => Buffer.from(value).toString("base64");
+  const packet = (metadata: string, payload = "") =>
+    `\x1b]5522;${metadata}${payload ? `;${payload}` : ""}\x1b\\`;
+  return Buffer.from([
+    packet(`type=write:id=${id}`),
+    ...contents.map(([mime, data]) => packet(`type=wdata:mime=${base64(mime)}`, base64(data))),
+    packet("type=wdata"),
+  ].join(""), "binary");
+}
+
+/** The status Ghostty sends a Kitty program when a write with this id completes. */
+export function kittyStatus(id: string, status: string): Buffer {
+  return Buffer.from(`\x1b]5522;type=write:status=${status}:id=${id}\x1b\\`, "binary");
 }
 
 async function sendControl(control: string, command: string): Promise<void> {
@@ -321,6 +338,24 @@ async function emitProcessed(terminal: Terminal, bytes: Uint8Array): Promise<voi
   assertClipboardBytes((await readFile(repliesFile)).subarray(before), expected, "terminal processing status reply");
 }
 
+/** Emits a Kitty write and requires exactly its expected status on the program's PTY. */
+async function expectKittyStatus(
+  terminal: Terminal,
+  id: string,
+  contents: [string, Uint8Array][],
+  status: string,
+  label: string,
+): Promise<void> {
+  const repliesFile = join(terminal.directory, "replies");
+  const before = (await readFile(repliesFile)).length;
+  const terminator = Buffer.from("\x1b\\", "binary");
+  await terminal.emit(kittyWrite(id, contents));
+  // Wait for any complete reply so a wrong status fails here, not by timeout.
+  await waitFor(async () => (await readFile(repliesFile)).subarray(before).includes(terminator), `${label} Kitty status`);
+  assertClipboardBytes((await readFile(repliesFile)).subarray(before), kittyStatus(id, status), `${label} Kitty status`);
+  console.log(`CLIPBOARD_SMOKE ${label} kitty-status=${status}`);
+}
+
 async function checkDirect(
   executable: string,
   witness: string | undefined,
@@ -366,6 +401,21 @@ async function checkDirect(
       const extension = Buffer.from("Ghostty OSC 1337: ✓");
       await terminal.emit(osc1337(extension));
       await expectClipboard(clipboard, extension, `${engine} osc1337`);
+    }
+
+    {
+      const text = Buffer.from("Huterm Kitty 5522: λ 日本語 🚀");
+      await expectKittyStatus(terminal, "k1", [["text/plain", text]], "DONE", `${engine} kitty-text`);
+      await expectClipboard(clipboard, text, `${engine} kitty-text`);
+      const plain = Buffer.from("Kitty plain only: ✓");
+      await expectKittyStatus(terminal, "k2", [
+        ["text/html", Buffer.from("<b>Kitty HTML must not win</b>")],
+        ["text/plain;charset=utf-8", plain],
+      ], "DONE", `${engine} kitty-multiple-mime`);
+      await expectClipboard(clipboard, plain, `${engine} kitty-multiple-mime`);
+      await expectKittyStatus(terminal, "k3", [["image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47])]],
+        "ENOSYS", `${engine} kitty-no-text`);
+      await stableClipboard(clipboard, plain, `${engine} kitty-no-text`);
     }
 
     const switchAway = Buffer.from(`${engine}-switch-away`);
