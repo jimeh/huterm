@@ -581,7 +581,15 @@ each opts out with `#![expect(unsafe_code)]`, denies undocumented and
 multi-operation unsafe blocks, and cites the header contract in every
 `// SAFETY:` comment. Callbacks reach host code only as plain values, contain
 panics by poisoning the terminal, drop panic payloads inside a second
-`catch_unwind`, and queue effects until the write returns. Keep the mouse
+`catch_unwind`, and queue effects until the write returns. Kitty OSC 5522
+writes reach the same host path as OSC 52: `disable_apc_protocols` turns off
+only Kitty graphics, the Glyph protocol, and APC buffering. The engine sets
+the Kitty write limit from `host_effects::TERMINAL_BYTE_LIMIT`, so larger
+writes get `EFBIG` from Ghostty instead of a misleading `EBUSY`. It admits
+the first `text/plain` representation whose charset, if any, is UTF-8, under
+`terminal.clipboard_write`, and ignores Kitty names, passwords, and grants;
+replies never set `remember`. Clipboard reads and Kitty paste events stay
+uninstalled. Keep the mouse
 encoder and events private to `MouseProbe`'s fixed geometry: Ghostty converts
 encoder geometry and positions with unchecked float-to-integer casts.
 `mise run ghostty:bindings` regenerates `src/ffi/{bindings,keys,layout}.rs` with

@@ -41,7 +41,9 @@ use crate::types::{
 /// Implementations receive plain values and must not block for long: the
 /// write waits for them.
 pub trait Host {
-    /// Answers a clipboard write. The default refuses it.
+    /// Answers a clipboard write. The default refuses it. The binding never
+    /// asks Ghostty to remember a Kitty session grant, so `granted` stays
+    /// false for every request.
     fn clipboard_write(
         &mut self,
         request: &ClipboardWrite<'_>,
@@ -360,6 +362,9 @@ unsafe extern "C" fn clipboard_write<H: Host>(
         let result = state.host.borrow_mut().clipboard_write(&view);
         let mut answer: ffi::GhosttyClipboardWriteReply = ffi::sized();
         answer.result = result.to_ffi();
+        // Hosts answer from policy without prompting, so there is no user
+        // decision for a Kitty session grant to remember.
+        answer.remember = false;
         // SAFETY: terminal.h `GhosttyClipboardWrite::reply` answers the
         // request during the callback; the reply is borrowed for the call.
         unsafe { reply(write, &raw const answer) };

@@ -26,7 +26,9 @@ use super::escape_hint::EscapeHint;
 use super::links::{LinkBuffer, MAX_LINK_BYTES};
 use super::row_matcher::{RowMatcher, viewport_shift};
 use super::{DirectoryUpdate, EngineEffect, normalize_directory};
-use crate::host_effects::{HostEffectAdmission, HostEffectSink};
+use crate::host_effects::{
+    HostEffectAdmission, HostEffectSink, TERMINAL_BYTE_LIMIT,
+};
 use crate::terminal::RuntimeError;
 
 /// History budget; Ghostty prunes whole pages, so retention is approximate.
@@ -53,22 +55,27 @@ impl Host for EngineHost {
         &mut self,
         request: &ClipboardWrite<'_>,
     ) -> ClipboardWriteResult {
+        // OSC 52, OSC 1337 Copy, and Kitty OSC 5522 writes share one
+        // policy. Kitty names, passwords, and grants change nothing: Huterm
+        // never prompts, so the policy alone answers.
         if request.location != ClipboardLocation::Standard {
             return ClipboardWriteResult::Unsupported;
         }
-        // Only the Kitty protocol (OSC 5522) carries names and passwords.
-        if !request.name.is_empty() || request.granted || request.can_remember {
-            return ClipboardWriteResult::Denied;
-        }
-        let text = match request.contents.as_slice() {
-            [] => "",
-            [content] if content.mime == b"text/plain" => {
-                match std::str::from_utf8(content.data) {
-                    Ok(text) => text,
-                    Err(_) => return ClipboardWriteResult::InvalidData,
-                }
+        let text = if request.contents.is_empty() {
+            // No representations: clear the clipboard.
+            ""
+        } else {
+            let Some(content) = request
+                .contents
+                .iter()
+                .find(|content| is_plain_text(content.mime))
+            else {
+                return ClipboardWriteResult::Unsupported;
+            };
+            match std::str::from_utf8(content.data) {
+                Ok(text) => text,
+                Err(_) => return ClipboardWriteResult::InvalidData,
             }
-            _ => return ClipboardWriteResult::Unsupported,
         };
         let Some(sink) = &self.sink else {
             // No client has attached yet; allow and drop the write.
@@ -94,6 +101,34 @@ impl Host for EngineHost {
             TerminalAppearance::Dark => ColorScheme::Dark,
         })
     }
+}
+
+/// Whether a clipboard representation is UTF-8 plain text: `text/plain`
+/// in any case, with any parameters, whose `charset`, if present, is
+/// `utf-8` or `utf8`, optionally quoted. Whitespace around `;` and `=` is
+/// ignored. Other representations in the same write are ignored.
+fn is_plain_text(mime: &[u8]) -> bool {
+    let Ok(mime) = std::str::from_utf8(mime) else {
+        return false;
+    };
+    let mut parts = mime.split(';');
+    let essence = parts.next().unwrap_or_default().trim();
+    essence.eq_ignore_ascii_case("text/plain")
+        && parts.all(|parameter| {
+            let Some((name, value)) = parameter.split_once('=') else {
+                return true;
+            };
+            if !name.trim().eq_ignore_ascii_case("charset") {
+                return true;
+            }
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .unwrap_or(value);
+            value.eq_ignore_ascii_case("utf-8")
+                || value.eq_ignore_ascii_case("utf8")
+        })
 }
 
 const fn rgb(color: ghostty::Rgb) -> Rgb {
@@ -174,7 +209,10 @@ impl TerminalEngine {
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
         terminal.set_scrollback_bytes(Some(SCROLLBACK_BYTES))?;
-        terminal.disable_extensions()?;
+        terminal.disable_apc_protocols()?;
+        // A larger Kitty write could never fit the terminal's host-effect
+        // budget, so Ghostty answers it with EFBIG before asking the host.
+        terminal.set_clipboard_write_limit(Some(TERMINAL_BYTE_LIMIT))?;
         apply_presentation(&mut terminal, &presentation)?;
         Ok(Self {
             terminal,
@@ -929,6 +967,39 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn kitty_clipboard_writes_are_capped_at_the_terminal_budget() {
+        assert_eq!(
+            engine().terminal.clipboard_write_limit().unwrap(),
+            crate::host_effects::TERMINAL_BYTE_LIMIT
+        );
+    }
+
+    #[test]
+    fn plain_text_mime_types_allow_parameters_but_only_utf8_charsets() {
+        for (mime, expected) in [
+            ("text/plain", true),
+            ("TEXT/PLAIN", true),
+            ("text/plain;charset=utf-8", true),
+            ("text/plain; charset=UTF-8", true),
+            ("text/plain ;charset = utf8", true),
+            ("text/plain;charset=\"utf-8\"", true),
+            ("text/plain; format=flowed", true),
+            ("text/plain; format=flowed; charset=UTF8", true),
+            ("text/plain;", true),
+            ("text/plain; charset=latin1", false),
+            ("text/plain; charset=\"\"", false),
+            ("text/plain; charset=utf-8; charset=latin1", false),
+            ("text/plainx", false),
+            ("text/html", false),
+            ("text / plain", false),
+            ("", false),
+        ] {
+            assert_eq!(is_plain_text(mime.as_bytes()), expected, "{mime:?}");
+        }
+        assert!(!is_plain_text(&[0xff, b'/', b'x']));
     }
 
     #[test]

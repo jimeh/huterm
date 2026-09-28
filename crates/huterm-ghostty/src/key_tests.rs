@@ -154,6 +154,7 @@ fn terminal_data_keys_write_exactly_their_output_type() {
         KittyImageStorageLimit: 0,
         ScrollbackMaxBytes: 0,
         VtGround: false,
+        ClipboardWriteMaxBytes: 0,
     );
     // The mode key reads the mode from its output and writes the value.
     let mode = ffi::GhosttyTerminalModeConfig {
@@ -440,6 +441,7 @@ fn terminal_option_keys_read_exactly_their_value_type() {
     key_probe::set_terminal::<option::ClipboardWriteMaxBytes>(native, &0, 0xFF)
         .unwrap();
     assert_eq!(replies(&mut terminal, kitty_write), [too_big.to_vec()]);
+    // A 32-bit read would see zero here.
     let native = terminal.native_parts().unwrap();
     key_probe::set_terminal::<option::ClipboardWriteMaxBytes>(
         native,
@@ -449,6 +451,7 @@ fn terminal_option_keys_read_exactly_their_value_type() {
     .unwrap();
     assert!(!replies(&mut terminal, kitty_write).contains(&too_big.to_vec()));
     probed.push("ClipboardWriteMaxBytes");
+
     covers(probed, option::KEYS);
 }
 

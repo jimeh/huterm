@@ -8,7 +8,9 @@ use huterm_protocol::{
 };
 
 const TERMINAL_EFFECT_LIMIT: usize = 8;
-const TERMINAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+/// Text bytes one terminal may have queued. The engine also caps Kitty
+/// clipboard writes at this size, so larger ones fail before admission.
+pub(crate) const TERMINAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 const PROCESS_EFFECT_LIMIT: usize = 32;
 const PROCESS_BYTE_LIMIT: usize = 32 * 1024 * 1024;
 const TERMINAL_RECIPIENT_LIMIT: usize = 32;
@@ -544,13 +546,23 @@ impl HostEffectSink {
 pub(crate) fn test_fixture(
     terminal_id: TerminalId,
 ) -> (HostEffectSink, HostEffectRecipient) {
+    test_fixture_with_clipboard(terminal_id, true)
+}
+
+/// A sink with one local desktop recipient whose `terminal.clipboard_write`
+/// policy is `allow` when `clipboard_allowed` is set and `deny` otherwise.
+#[cfg(test)]
+pub(crate) fn test_fixture_with_clipboard(
+    terminal_id: TerminalId,
+    clipboard_allowed: bool,
+) -> (HostEffectSink, HostEffectRecipient) {
     let sink = HostEffectSink::new(terminal_id);
     let process = DesktopHostEffectClient::new();
     let recipient = sink
         .register(
             AttachmentId::new(1),
             &process,
-            HostEffectRecipientOptions::local_desktop(true),
+            HostEffectRecipientOptions::local_desktop(clipboard_allowed),
         )
         .expect("fresh test fixture should accept its first recipient");
     (sink, recipient)

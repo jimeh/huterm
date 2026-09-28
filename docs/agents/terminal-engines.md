@@ -79,7 +79,8 @@ local drift. The `huterm-ghostty` build script copies it into a private Cargo
 build directory so Zig-generated state cannot modify the verified source. Build
 isolation also prevents enclosing Git tags from changing Ghostty's generated
 version data.
-The adapter disables Kitty graphics and scrollback compression, uses the
+The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
+scrollback compression, uses the
 portable CPU baseline, and retains a 16 MiB scrollback byte budget.
 
 ## Runtime behavior
@@ -148,10 +149,11 @@ capabilities remain unadvertised. SGR-pixel mouse mode 1016 remains unsupported;
 implementing it requires protocol and coordinate decisions outside this engine
 removal.
 
-OSC 52 and OSC 1337 clipboard parsing remains inside the adapter, but only the
-desktop host can authorize and deliver clipboard writes. Reloading clipboard
-policy applies to existing terminals. Hidden and background views cannot bypass
-that authority.
+OSC 52, OSC 1337, and Kitty OSC 5522 clipboard parsing remains inside the
+adapter, but only the desktop host can authorize and deliver clipboard writes.
+Kitty writes follow the same policy and answer the program with a status.
+Reloading clipboard policy applies to existing terminals. Hidden and background
+views cannot bypass that authority.
 
 ## Measurement and smoke coverage
 

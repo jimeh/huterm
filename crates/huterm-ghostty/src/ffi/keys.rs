@@ -33,6 +33,7 @@ pub(crate) mod terminal_data {
         "SCROLLBACK_MAX_BYTES",
         "MODE",
         "VT_GROUND",
+        "CLIPBOARD_WRITE_MAX_BYTES",
     ];
 
     /// `GHOSTTY_TERMINAL_DATA_COLS`.
@@ -238,6 +239,16 @@ pub(crate) mod terminal_data {
         const KEY: ffi::GhosttyTerminalData =
             ffi::GHOSTTY_TERMINAL_DATA_VT_GROUND;
         type Out = bool;
+    }
+
+    /// `GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES`.
+    #[derive(Debug)]
+    pub(crate) enum ClipboardWriteMaxBytes {}
+
+    impl super::super::TerminalData for ClipboardWriteMaxBytes {
+        const KEY: ffi::GhosttyTerminalData =
+            ffi::GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES;
+        type Out = usize;
     }
 }
 

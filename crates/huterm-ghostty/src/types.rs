@@ -214,13 +214,15 @@ pub struct ClipboardContent<'a> {
 pub struct ClipboardWrite<'a> {
     /// Destination clipboard.
     pub location: ClipboardLocation,
-    /// Representations of one value; empty requests clearing.
+    /// Representations of one value; empty requests clearing. Kitty
+    /// representations arrive in packet order, followed by aliases.
     pub contents: Vec<ClipboardContent<'a>>,
     /// Program name from the Kitty protocol; empty otherwise.
     pub name: &'a [u8],
     /// Whether a Kitty session grant already covers this request.
     pub granted: bool,
-    /// Whether the Kitty request carried a session password.
+    /// Whether the Kitty request carried a session password along with a
+    /// name; Ghostty ignores a password without a name.
     pub can_remember: bool,
 }
 

@@ -198,6 +198,7 @@ const KEY_SETS: &[KeySet] = &[
             "SCROLLBACK_MAX_BYTES",
             "MODE",
             "VT_GROUND",
+            "CLIPBOARD_WRITE_MAX_BYTES",
         ],
     },
     KeySet {

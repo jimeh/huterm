@@ -20,6 +20,8 @@ struct Recorder {
     clipboard_result: Option<ClipboardWriteResult>,
     backgrounds: Vec<Rgb>,
     panic_on_clipboard: bool,
+    /// `(granted, can_remember)` for each clipboard write.
+    clipboard_grants: Vec<(bool, bool)>,
 }
 
 impl Host for Recorder {
@@ -28,6 +30,8 @@ impl Host for Recorder {
         request: &ClipboardWrite<'_>,
     ) -> ClipboardWriteResult {
         assert!(!self.panic_on_clipboard, "host clipboard callback panicked");
+        self.clipboard_grants
+            .push((request.granted, request.can_remember));
         self.clipboard.push((
             request.location,
             request
@@ -304,24 +308,120 @@ fn oversized_osc52_is_dropped_and_the_parser_recovers() {
     assert_eq!(writes[0].1[0].1, b"a");
 }
 
-#[test]
-fn kitty_clipboard_writes_with_data_fail_before_the_callback() {
-    let mut terminal = terminal();
-    terminal.disable_extensions().unwrap();
-    assert_eq!(
-        written(
-            &mut terminal,
-            b"\x1b]5522;type=write:id=1\x1b\\\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;R2hvc3Q=\x1b\\\x1b]5522;type=wdata\x1b\\"
-        ),
-        [b"\x1b]5522;type=write:status=EFBIG:id=1\x1b\\".to_vec()]
-    );
-    assert!(terminal.host_mut().clipboard.is_empty());
+/// A Kitty write of plain text and HTML, opened with `metadata`.
+fn kitty_write(metadata: &str) -> Vec<u8> {
+    format!(
+        "\x1b]5522;type=write{metadata}\x1b\\\
+         \x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;R2hvc3Q=\x1b\\\
+         \x1b]5522;type=wdata:mime=dGV4dC9odG1s;PGI+RzwvYj4=\x1b\\\
+         \x1b]5522;type=wdata\x1b\\"
+    )
+    .into_bytes()
 }
 
 #[test]
-fn kitty_clipboard_commit_without_data_reaches_the_callback_like_osc52_clear() {
+fn kitty_clipboard_writes_deliver_every_representation_name_and_password() {
     let mut terminal = terminal();
-    terminal.disable_extensions().unwrap();
+    terminal.disable_apc_protocols().unwrap();
+    // Ghostty's default Kitty write limit, which Huterm keeps.
+    assert_eq!(terminal.clipboard_write_limit().unwrap(), 64 * 1024 * 1024);
+    let named = ":name=ZWRpdG9y:pw=cHc=";
+    assert_eq!(
+        written(&mut terminal, &kitty_write(&format!(":id=a1{named}"))),
+        [b"\x1b]5522;type=write:status=DONE:id=a1\x1b\\".to_vec()]
+    );
+    // A successful reply never records a grant, so the repeat is not granted.
+    written(&mut terminal, &kitty_write(named));
+    // A password without a name is dropped; `loc=primary` is the only other
+    // location.
+    written(&mut terminal, &kitty_write(":pw=cHc=:loc=primary"));
+    let contents = vec![
+        (b"text/plain".to_vec(), b"Ghost".to_vec()),
+        (b"text/html".to_vec(), b"<b>G</b>".to_vec()),
+    ];
+    let host = terminal.host_mut();
+    assert_eq!(
+        host.clipboard,
+        [
+            (
+                ClipboardLocation::Standard,
+                contents.clone(),
+                b"editor".to_vec()
+            ),
+            (
+                ClipboardLocation::Standard,
+                contents.clone(),
+                b"editor".to_vec()
+            ),
+            (ClipboardLocation::Primary, contents, Vec::new()),
+        ]
+    );
+    assert_eq!(
+        host.clipboard_grants,
+        [(false, true), (false, true), (false, false)]
+    );
+}
+
+#[test]
+fn kitty_clipboard_write_limit_counts_every_representation() {
+    let mut terminal = terminal();
+    let reply = |status: &str| {
+        vec![format!("\x1b]5522;type=write:status={status}\x1b\\").into_bytes()]
+    };
+    // `kitty_write` carries 5 bytes of text and 8 of HTML.
+    for (limit, effective, status) in [
+        (Some(13), 13, "DONE"),
+        (Some(12), 12, "EFBIG"),
+        (Some(0), 0, "EFBIG"),
+        (Some(usize::MAX), usize::MAX, "DONE"),
+        (None, 64 * 1024 * 1024, "DONE"),
+    ] {
+        terminal.set_clipboard_write_limit(limit).unwrap();
+        assert_eq!(terminal.clipboard_write_limit().unwrap(), effective);
+        assert_eq!(
+            written(&mut terminal, &kitty_write("")),
+            reply(status),
+            "{limit:?}"
+        );
+    }
+    // A zero limit still lets an empty commit clear.
+    terminal.set_clipboard_write_limit(Some(0)).unwrap();
+    assert_eq!(
+        written(
+            &mut terminal,
+            b"\x1b]5522;type=write\x1b\\\x1b]5522;type=wdata\x1b\\"
+        ),
+        reply("DONE")
+    );
+    assert_eq!(terminal.host_mut().clipboard.len(), 4);
+}
+
+#[test]
+fn kitty_clipboard_status_follows_the_host_answer() {
+    let mut terminal = terminal();
+    terminal.disable_apc_protocols().unwrap();
+    for (result, status) in [
+        (ClipboardWriteResult::Success, "DONE"),
+        (ClipboardWriteResult::Denied, "EPERM"),
+        (ClipboardWriteResult::Unsupported, "ENOSYS"),
+        (ClipboardWriteResult::Busy, "EBUSY"),
+        (ClipboardWriteResult::InvalidData, "EINVAL"),
+        (ClipboardWriteResult::IoError, "EIO"),
+    ] {
+        terminal.host_mut().clipboard_result = Some(result);
+        assert_eq!(
+            written(&mut terminal, &kitty_write(":id=s")),
+            [format!("\x1b]5522;type=write:status={status}:id=s\x1b\\")
+                .into_bytes()],
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn kitty_clipboard_commit_without_data_reaches_the_callback_as_a_clear() {
+    let mut terminal = terminal();
+    terminal.disable_apc_protocols().unwrap();
     terminal.host_mut().clipboard_result = Some(ClipboardWriteResult::Denied);
     assert_eq!(
         written(
@@ -355,7 +455,7 @@ fn image_and_glyph_protocols_can_be_disabled() {
     let mut terminal = terminal();
     assert!(!written(&mut terminal, GLYPH).is_empty());
     assert!(!written(&mut terminal, IMAGE).is_empty());
-    terminal.disable_extensions().unwrap();
+    terminal.disable_apc_protocols().unwrap();
     assert!(matches!(
         terminal.kitty_image_storage_limit().unwrap(),
         None | Some(0)
@@ -368,7 +468,7 @@ fn image_and_glyph_protocols_can_be_disabled() {
     let native = terminal.native_parts().unwrap();
     native.set::<option::ApcMaxBytes>(None).unwrap();
     assert!(silent(&mut terminal));
-    terminal.disable_extensions().unwrap();
+    terminal.disable_apc_protocols().unwrap();
     let native = terminal.native_parts().unwrap();
     native.set::<option::GlyphProtocol>(Some(&true)).unwrap();
     native
@@ -793,7 +893,7 @@ fn every_native_allocation_is_released() {
         let mut terminal =
             Terminal::new_in(options(), Recorder::default(), Some(allocator))
                 .unwrap();
-        terminal.disable_extensions().unwrap();
+        terminal.disable_apc_protocols().unwrap();
         terminal.set_scrollback_bytes(Some(1 << 20)).unwrap();
         let mut render = RenderState::new_in(Some(allocator)).unwrap();
         let mut probe = MouseProbe::new_in(Some(allocator)).unwrap();
