@@ -1392,6 +1392,10 @@ fn open_window_with_profile(
             // window drag, so Huterm moves the window from empty strip
             // space itself (`title_row_gestures`).
             app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            // GPUI caps unfocused windows at 30 frames per second by default.
+            // A terminal left unfocused still shows live output, and Huterm's
+            // own frame admission already stops idle redraws.
+            inactive_frame_interval: None,
             titlebar: Some(TitlebarOptions {
                 title: Some(window_title(None).into()),
                 appears_transparent: cfg!(target_os = "macos"),
