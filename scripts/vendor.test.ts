@@ -164,7 +164,7 @@ test("gpui-pre snapshots prove provenance through package metadata instead of a 
   await expect(extract({ ...source, upstream: { ...source.upstream, revision: "4".repeat(40) } }, archive, join(root, "revision"))).rejects.toThrow("VCS metadata differs");
   await expect(extract({ ...source, upstream: { ...source.upstream, path: "crates/gpui" } }, archive, join(root, "path"))).rejects.toThrow("VCS metadata differs");
   const { snapshot: _, ...unmarked } = source.upstream;
-  await expect(extract({ ...source, upstream: unmarked }, archive, join(root, "unmarked"))).rejects.toThrow();
+  await expect(extract({ ...source, upstream: unmarked }, archive, join(root, "unmarked"))).rejects.toThrow(".cargo_vcs_info.json");
 });
 
 test("invalid archive roots and traversal are rejected", async () => {

@@ -228,7 +228,7 @@ pub(crate) struct MenuShortcut {
     pub(crate) modifiers: usize,
 }
 
-/// Repairs GPUI 0.2.2's missing Enter/Tab conversions after menu installation.
+/// Repairs GPUI's missing Enter/Tab conversions after menu installation.
 /// `AppKit` uses the same key equivalent for display and keyboard activation.
 pub(crate) fn normalize_menu_key_equivalents() -> anyhow::Result<()> {
     ensure!(is_main_thread()?, "menu updates require the main thread");

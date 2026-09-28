@@ -2551,7 +2551,7 @@ impl ScrollBenchmark {
         if !self.started {
             self.started = true;
             eprintln!(
-                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=0.2.2 viewport={}x{} history={}",
+                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.6 viewport={}x{} history={}",
                 benchmark_environment("HUTERM_SCROLL_REVISION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,

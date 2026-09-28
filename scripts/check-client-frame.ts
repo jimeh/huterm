@@ -5,7 +5,7 @@
  * fullscreen, and falls back to server decorations when GPUI refuses the
  * request.
  *
- * GPUI 0.2.2 grants client decorations only when its compositor probe
+ * GPUI grants client decorations only when its compositor probe
  * passes (any EWMH window manager does, because the probe accepts
  * `_NET_SUPPORTING_WM_CHECK` and its `_NET_WM_CM_S{root}` selection name
  * uses the root window id, not the screen number) and the window manager
