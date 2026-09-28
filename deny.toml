@@ -22,11 +22,12 @@ allow = [
   "CC0-1.0",
   "ISC",
   "MIT",
-  "MIT-0",
   "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
 ]
+# GPUI's HTTP client decompresses bzip2 release assets; Huterm never calls it.
+exceptions = [{ name = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] }]
 
 [bans]
 multiple-versions = "allow"

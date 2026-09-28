@@ -23,9 +23,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 let Ok(command) = std::fs::read_to_string(command_path) else {
                     continue;
                 };
-                let result = cx
-                    .update(|cx| execute(cx, command.trim()))
-                    .and_then(std::convert::identity);
+                let result = cx.update(|cx| execute(cx, command.trim()));
                 publish(
                     &directory,
                     &format!("result-{sequence}"),

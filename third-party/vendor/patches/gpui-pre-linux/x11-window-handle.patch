@@ -1,0 +1,14 @@
+diff --git a/src/linux/x11/window.rs b/src/linux/x11/window.rs
+index 56b3d8a9063a886b8e25a7386c1b1267420e249f..2ffc3da2cd4745a9b6535ce8606e3769ddb462b5 100644
+--- a/src/linux/x11/window.rs
++++ b/src/linux/x11/window.rs
+@@ -331,6 +331,9 @@ impl rwh::HasDisplayHandle for RawWindow {
+ 
+ impl rwh::HasWindowHandle for X11Window {
+     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
++        if self.0.state.borrow().destroyed {
++            return Err(rwh::HandleError::Unavailable);
++        }
+         let Some(non_zero) = NonZeroU32::new(self.0.x_window) else {
+             return Err(rwh::HandleError::Unavailable);
+         };

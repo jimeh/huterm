@@ -2,85 +2,79 @@
   "schema": 2,
   "sources": [
     {
-      "name": "gpui",
-      "version": "0.2.2",
-      "url": "https://static.crates.io/crates/gpui/gpui-0.2.2.crate",
-      "sha256": "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707",
+      "name": "gpui-pre",
+      "version": "0.3.6",
+      "url": "https://static.crates.io/crates/gpui-pre/gpui-pre-0.3.6.crate",
+      "sha256": "a0437c0b83e636a92bd1a39fa1d05fb632ae671289537497b35871ffbe231b84",
       "upstream": {
         "repository": "https://github.com/zed-industries/zed",
-        "revision": "69e2130295c2649963eb639fc70b4f2ee8ea1624",
+        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
         "path": "crates/gpui",
-        "dirty": true
+        "snapshot": "gpui-pre"
+      },
+      "patches": [
+        {
+          "name": "hidden-window-creation",
+          "file": "patches/gpui-pre/hidden-window-creation.patch",
+          "description": "Honor WindowOptions.show before mapping a newly created native window."
+        },
+        {
+          "name": "file-drop-pointer-modality",
+          "file": "patches/gpui-pre/file-drop-pointer-modality.patch",
+          "description": "Treat external file drag movement and drops as pointer input, so a drop after typing still hit-tests its target."
+        }
+      ]
+    },
+    {
+      "name": "gpui-pre-linux",
+      "version": "0.3.6",
+      "url": "https://static.crates.io/crates/gpui-pre-linux/gpui-pre-linux-0.3.6.crate",
+      "sha256": "aab655cda1d6dcd549ac869e8678babc84cf573ab6794a1fe1a39c6c70c60b48",
+      "upstream": {
+        "repository": "https://github.com/zed-industries/zed",
+        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
+        "path": "crates/gpui_linux",
+        "snapshot": "gpui-pre"
       },
       "patches": [
         {
           "name": "x11-file-drop",
-          "file": "patches/gpui/x11-file-drop.patch",
+          "file": "patches/gpui-pre-linux/x11-file-drop.patch",
           "description": "Validate complete X11 URI lists, prefer URI offers, and isolate stale selection replies per drag."
         },
         {
-          "name": "explicit-f32-literals",
-          "file": "patches/gpui/explicit-f32-literals.patch",
-          "description": "Make grid track float types explicit instead of relying on deprecated f32 literal fallback."
-        },
-        {
-          "name": "hidden-window-creation",
-          "file": "patches/gpui/hidden-window-creation.patch",
-          "description": "Honor WindowOptions.show before mapping a newly created native window."
-        },
-        {
           "name": "x11-window-handle",
-          "file": "patches/gpui/x11-window-handle.patch",
-          "description": "Expose the live Xcb window handle instead of panicking in HasWindowHandle."
-        },
-        {
-          "name": "x11-application-lifetime",
-          "file": "patches/gpui/x11-application-lifetime.patch",
-          "description": "Keep the X11 loop alive after its last window closes so the application owns zero-window lifetime and explicit Quit."
-        },
-        {
-          "name": "macos-offscreen-display-link",
-          "file": "patches/gpui/macos-offscreen-display-link.patch",
-          "description": "Preserve the window backing scale while offscreen, stop its display link without NSScreen, and restart when a screen is assigned."
-        },
-        {
-          "name": "macos-offscreen-frame",
-          "file": "patches/gpui/macos-offscreen-frame.patch",
-          "description": "Expose per-window opt-in to unconstrained offscreen frames while preserving normal AppKit constraints by default."
-        },
-        {
-          "name": "taffy-grid-security-update",
-          "file": "patches/gpui/taffy-grid-security-update.patch",
-          "description": "Update Taffy to 0.9.2 so the workspace can resolve grid 1.0.1 with checked dimension growth.",
-          "upstream": "https://github.com/advisories/GHSA-38c5-483c-4qqp"
+          "file": "patches/gpui-pre-linux/x11-window-handle.patch",
+          "description": "Report a destroyed X11 window as unavailable instead of returning its stale Xcb handle."
         },
         {
           "name": "fullscreen-state-notification",
-          "file": "patches/gpui/fullscreen-state-notification.patch",
+          "file": "patches/gpui-pre-linux/fullscreen-state-notification.patch",
           "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
+        }
+      ]
+    },
+    {
+      "name": "gpui-pre-macos",
+      "version": "0.3.6",
+      "url": "https://static.crates.io/crates/gpui-pre-macos/gpui-pre-macos-0.3.6.crate",
+      "sha256": "951d17e41a72067ad2d35c60e08a62e8ad7fa9400b41c802e26cfb459f6c05da",
+      "upstream": {
+        "repository": "https://github.com/zed-industries/zed",
+        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
+        "path": "crates/gpui_macos",
+        "snapshot": "gpui-pre"
+      },
+      "patches": [
+        {
+          "name": "macos-offscreen-screen",
+          "file": "patches/gpui-pre-macos/macos-offscreen-screen.patch",
+          "description": "Treat a fully offscreen window as not maximized, and read its backing scale from NSWindow while it has no NSScreen."
         },
         {
-          "name": "x11-drain-buffered-events",
-          "file": "patches/gpui/x11-drain-buffered-events.patch",
-          "description": "Process X11 events that synchronous requests buffered during foreground work, so a stranded MapNotify cannot leave a window without frames.",
-          "upstream": "https://github.com/zed-industries/zed/pull/62081"
-        },
-        {
-          "name": "macos-app-owned-titlebar-drag",
-          "file": "patches/gpui/macos-app-owned-titlebar-drag.patch",
-          "description": "Let a macOS window claim its title bar from AppKit's window drag and move itself through start_window_move, so title-bar controls keep their presses.",
-          "upstream": "https://github.com/zed-industries/zed/pull/60620"
-        },
-        {
-          "name": "macos-borderless-traffic-lights",
-          "file": "patches/gpui/macos-borderless-traffic-lights.patch",
-          "description": "Skip traffic-light placement for macOS windows without standard buttons instead of messaging nil."
-        },
-        {
-          "name": "linux-sharp-shadows",
-          "file": "patches/gpui/linux-sharp-shadows.patch",
-          "description": "Draw zero-blur shadows on Linux as sharp shapes, as Metal does, instead of dividing by the zero blur and drawing nothing.",
-          "upstream": "https://github.com/zed-industries/zed/pull/57685"
+          "name": "macos-offscreen-frame",
+          "file": "patches/gpui-pre-macos/macos-offscreen-frame.patch",
+          "description": "Expose per-window opt-in to unconstrained offscreen frames while preserving normal AppKit constraints by default."
         }
       ]
     },

@@ -22,7 +22,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
                     .await;
-                let state = cx.update(read_state).expect("palette smoke state");
+                let state = cx.update(read_state);
                 publish(
                     &directory,
                     "state",
@@ -68,7 +68,7 @@ async fn execute(
                 workspace,
                 tab,
             ))
-        })??;
+        })?;
         return cx
             .background_executor()
             .spawn(async move { core_state(&runtime, workspace, tab) })
@@ -83,7 +83,7 @@ async fn execute(
                 workspace.context("workspace target")?,
                 tab.context("tab target")?,
             ))
-        })??;
+        })?;
         return cx
             .background_executor()
             .spawn(async move {
@@ -103,7 +103,7 @@ async fn execute(
         return Ok("shell removed".to_owned());
     }
 
-    cx.update(|cx| execute_ui(cx, command))?
+    cx.update(|cx| execute_ui(cx, command))
 }
 
 fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
@@ -166,11 +166,13 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 Ok("notices dismissed".to_owned())
             }
             "focus-terminal" => {
-                view.active_view()
+                let focus = view
+                    .active_view()
                     .context("active terminal")?
                     .read(cx)
                     .focus
-                    .focus(window);
+                    .clone();
+                focus.focus(window, cx);
                 Ok("terminal focused".to_owned())
             }
             "input-barrier" => {

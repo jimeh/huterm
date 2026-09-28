@@ -18,7 +18,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
                     .await;
-                let state = cx.update(read_state).expect("integration state");
+                let state = cx.update(read_state);
                 publish(&directory, "state", &state);
                 if let Ok(command) = std::fs::read_to_string(
                     directory.join(format!("command-{sequence}")),
@@ -71,7 +71,6 @@ pub(crate) fn run() -> anyhow::Result<()> {
                             );
                             Ok(())
                         })
-                        .and_then(std::convert::identity)
                     };
                     #[cfg(target_os = "macos")]
                     let result = native_result.unwrap_or_else(invoke);

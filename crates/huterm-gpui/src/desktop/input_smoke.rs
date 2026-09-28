@@ -29,13 +29,14 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(10))
                     .await;
-                let state = cx.update(read_state).expect("read smoke state");
+                let state = cx.update(read_state);
                 std::fs::write(directory.join("state"), state)
                     .expect("write smoke state");
                 let file = directory.join(format!("event-{sequence}"));
                 if let Ok(command) = std::fs::read_to_string(&file) {
                     let result = if command == "shutdown" {
-                        cx.update(|cx| cx.quit())
+                        cx.update(|cx| cx.quit());
+                        Ok(())
                     } else if let Some(text) =
                         command.strip_prefix("clipboard\t")
                     {
@@ -43,7 +44,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
                             cx.write_to_clipboard(
                                 gpui::ClipboardItem::new_string(text.into()),
                             );
-                        })
+                        });
+                        Ok(())
                     } else {
                         native::post(&command)
                     };
@@ -51,7 +53,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         eprintln!(
                             "NATIVE_INPUT_SMOKE event {sequence}: {error:#}"
                         );
-                        cx.update(|cx| cx.quit()).expect("quit failed probe");
+                        cx.update(|cx| cx.quit());
                         return;
                     }
                     std::fs::write(

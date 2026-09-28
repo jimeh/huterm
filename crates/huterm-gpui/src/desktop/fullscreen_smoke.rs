@@ -9,10 +9,6 @@ use huterm_protocol::{CommandInvocation, lookup};
 
 use super::{Desktop, WorkspaceView};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one smoke dispatch loop keeps command acknowledgements ordered"
-)]
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory =
         std::path::PathBuf::from(std::env::var("HUTERM_FULLSCREEN_SMOKE")?);
@@ -47,7 +43,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     .timer(std::time::Duration::from_millis(10))
                     .await;
                 let state =
-                    cx.update(read_state).expect("fullscreen smoke state");
+                    cx.update(read_state);
                 publish(
                     &directory,
                     "state",
@@ -67,7 +63,6 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         || command == "probe-native-settled"
                     {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| {
                                 adapter.probe_native_transition(
                                     command == "probe-native-settled",
@@ -76,36 +71,29 @@ pub(crate) fn run() -> anyhow::Result<()> {
 
                     } else if command == "probe-refit-retry" {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| adapter.probe_refit_retry())
                     } else if command == "probe-display-refit" {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| adapter.probe_display_refit())
                     } else if command == "probe-notched-display" {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| adapter.probe_notched_display())
                     } else if let Some(spec) =
                         command.strip_prefix("probe-window-frame\t")
                     {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| {
                                 adapter.probe_window_frame(spec)
                             })
                     } else if command == "probe-native-exit" {
                         cx.update(probe_adapter)
-                            .and_then(std::convert::identity)
                             .and_then(|adapter| adapter.probe_native_exit())
                     } else {
                         cx.update(|cx| execute(cx, &command))
-                            .and_then(std::convert::identity)
                     };
                     #[cfg(not(target_os = "macos"))]
                     let result = cx
-                        .update(|cx| execute(cx, &command))
-                        .and_then(std::convert::identity);
+                        .update(|cx| execute(cx, &command));
                     publish(
                         &directory,
                         &format!("result-{sequence}"),

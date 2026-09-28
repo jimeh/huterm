@@ -76,7 +76,7 @@ impl ListScrollbar {
     /// The indicator geometry for the list's current overflow, if any.
     pub(crate) fn geometry(&self) -> Option<ScrollbarGeometry> {
         let viewport = f32::from(self.scroll.bounds().size.height);
-        let overflow = f32::from(self.scroll.max_offset().height);
+        let overflow = f32::from(self.scroll.max_offset().y);
         ScrollbarGeometry::new(
             viewport,
             viewport + overflow,

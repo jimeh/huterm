@@ -297,7 +297,7 @@ fn dialog_row(row: &DialogRow, swatch: Swatch) -> Div {
         .pr(px(10.0))
         .rounded(px(6.0));
     let bar = |color| accent_bar(color, px(3.0), px(10.0));
-    let main = || div().flex_basis(px(0.0)).flex_grow().min_w_0();
+    let main = || div().flex_basis(px(0.0)).flex_grow_1().min_w_0();
     let detail = |text: String| {
         div()
             .text_size(px(11.5))
@@ -485,7 +485,7 @@ pub(crate) fn render_close_dialog(
         .child(
             div()
                 .flex_basis(px(0.0))
-                .flex_grow()
+                .flex_grow_1()
                 .min_w_0()
                 .child(
                     div()

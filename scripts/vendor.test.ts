@@ -148,6 +148,25 @@ test("checksum and crate identity must match before accepting a patch", async ()
   await expect(reproduce(f.source, f.root, f.archive)).rejects.toThrow("crate identity differs");
 });
 
+test("gpui-pre snapshots prove provenance through package metadata instead of a VCS file", async () => {
+  const root = temporary();
+  const revision = "3".repeat(40);
+  const files = { "Cargo.toml": `[package]\nname = "fixture"\nversion = "1.0.0"\n\n[package.metadata.gpui-pre]\nzed-crate = "gpui_linux"\nzed-rev = "${revision}"\n` };
+  const archive = join(root, "source.crate");
+  await Bun.write(archive, new Bun.Archive({ "fixture-1.0.0/Cargo.toml": files["Cargo.toml"] }, { compress: "gzip" }));
+  const source: Source = {
+    name: "fixture", version: "1.0.0", url: "https://static.crates.io/crates/fixture/fixture-1.0.0.crate",
+    sha256: digest(readFileSync(archive)), patches: [],
+    upstream: { repository: "https://example.com/upstream", revision, path: "crates/gpui_linux", snapshot: "gpui-pre" },
+  };
+  await extract(source, archive, join(root, "accepted"));
+  expect(readFileSync(join(root, "accepted/Cargo.toml"), "utf8")).toBe(files["Cargo.toml"]);
+  await expect(extract({ ...source, upstream: { ...source.upstream, revision: "4".repeat(40) } }, archive, join(root, "revision"))).rejects.toThrow("VCS metadata differs");
+  await expect(extract({ ...source, upstream: { ...source.upstream, path: "crates/gpui" } }, archive, join(root, "path"))).rejects.toThrow("VCS metadata differs");
+  const { snapshot: _, ...unmarked } = source.upstream;
+  await expect(extract({ ...source, upstream: unmarked }, archive, join(root, "unmarked"))).rejects.toThrow(".cargo_vcs_info.json");
+});
+
 test("invalid archive roots and traversal are rejected", async () => {
   const f = await fixture();
   for (const name of ["wrong-root/file", "../../escaped"]) {

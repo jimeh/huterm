@@ -538,7 +538,7 @@ fn toast_body(
 ) -> Div {
     let mut body = div()
         .flex_basis(px(0.0))
-        .flex_grow()
+        .flex_grow_1()
         .min_w_0()
         .text_size(px(12.5))
         .child(

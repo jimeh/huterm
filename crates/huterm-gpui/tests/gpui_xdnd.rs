@@ -1,7 +1,7 @@
 //! Compile the vendored production decoder directly, without copying behavior.
 #[cfg(unix)]
 #[rustfmt::skip]
-#[path = "../../../third-party/vendor/gpui-0.2.2/src/platform/linux/x11/xdnd_payload.rs"]
+#[path = "../../../third-party/vendor/gpui-pre-linux-0.3.6/src/linux/x11/xdnd_payload.rs"]
 mod payload;
 
 #[cfg(unix)]

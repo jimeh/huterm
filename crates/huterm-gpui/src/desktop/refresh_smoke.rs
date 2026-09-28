@@ -60,7 +60,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 Err(error) => eprintln!("REFRESH_SMOKE failed: {error:#}"),
             }
             // Use normal application cleanup, including the retained runtime.
-            cx.update(|cx| cx.quit()).expect("quit refresh smoke");
+            cx.update(|cx| cx.quit());
         })
         .detach();
     })
@@ -121,7 +121,7 @@ async fn wait(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let (done, observed) = cx.update(&mut condition)??;
+        let (done, observed) = cx.update(&mut condition)?;
         if done {
             return Ok(());
         }
@@ -175,7 +175,7 @@ fn scroll_to(cx: &mut App, offset: usize) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 async fn pause(cx: &mut AsyncApp) -> anyhow::Result<()> {
-    cx.update(|cx| workspace(cx, |_, window, _| window.minimize_window()))??;
+    cx.update(|cx| workspace(cx, |_, window, _| window.minimize_window()))?;
     wait(cx, "native window occluded", |cx| {
         let occluded = workspace(cx, |_, window, _| native::occluded(window))??;
         Ok((occluded, format!("occluded={occluded}")))
@@ -218,7 +218,7 @@ async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 Ok::<_, anyhow::Error>(())
             })
         })?
-    })??;
+    })?;
     wait(
         cx,
         "queued input and controls progress without frames",
@@ -247,7 +247,7 @@ async fn check_paused_scroll(
     cx: &mut AsyncApp,
     sequence: u64,
 ) -> anyhow::Result<()> {
-    cx.update(|cx| scroll_to(cx, 1))??;
+    cx.update(|cx| scroll_to(cx, 1))?;
     wait_state(cx, "one viewport snapshot while frames are paused", |s| {
         s.displayed_offset == 1 && s.snapshots == sequence + 1
     })
@@ -255,13 +255,13 @@ async fn check_paused_scroll(
     // Title delivery proves the event drain revisited snapshot admission after
     // each scroll request. Neither input nor completion replenishes allowance.
     for (offset, marker) in [(2, "SCROLL_SECOND"), (3, "SCROLL_FINAL")] {
-        cx.update(|cx| scroll_to(cx, offset))??;
-        cx.update(|cx| send(cx, marker))??;
+        cx.update(|cx| scroll_to(cx, offset))?;
+        cx.update(|cx| send(cx, marker))?;
         wait_state(cx, "title progressed with scroll pending", |s| {
             s.title == marker
         })
         .await?;
-        let observed = cx.update(state)??;
+        let observed = cx.update(state)?;
         ensure!(
             observed.snapshots == sequence + 1
                 && observed.displayed_offset == 1
@@ -292,7 +292,7 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 })
             })
         })
-    })??;
+    })?;
     cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             view.tabs[0].view.update(cx, |terminal, cx| {
@@ -305,7 +305,7 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 cx.notify();
             });
         })
-    })??;
+    })?;
     wait(cx, "indicator fades on delivered frames", |cx| {
         workspace(cx, |view, _, cx| {
             let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
@@ -365,7 +365,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
             ));
             (original, requests)
         })
-    })??;
+    })?;
     wait(
         cx,
         "one-pixel resize activates the indicator without resizing the grid",
@@ -405,7 +405,7 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
         },
     )
     .await?;
-    cx.update(|cx| workspace(cx, |_, window, _| window.resize(original)))??;
+    cx.update(|cx| workspace(cx, |_, window, _| window.resize(original)))?;
     wait(cx, "restored viewport and settled indicator", |cx| {
         workspace(cx, |view, window, cx| {
             let opacity = view.tabs[0].view.read(cx).resize_visibility.opacity;
@@ -430,7 +430,7 @@ async fn check_paused_animation(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 cx.notify();
             });
         })
-    })??;
+    })?;
     wait(cx, "bell deadline expires without display frames", |cx| {
         workspace(cx, |view, _, cx| {
             let flash = view.tabs[0].view.read(cx).bell.flash_until;
@@ -439,7 +439,7 @@ async fn check_paused_animation(cx: &mut AsyncApp) -> anyhow::Result<()> {
     })
     .await?;
     ensure!(
-        cx.update(state)??.callbacks == 1,
+        cx.update(state)?.callbacks == 1,
         "deadline duplicated the paused frame callback"
     );
     eprintln!("REFRESH_SMOKE animation_deadline_while_paused passed");
@@ -461,7 +461,7 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
     check_initial_presentation(cx).await?;
     #[cfg(target_os = "macos")]
     pause(cx).await?;
-    cx.update(|cx| send(cx, "PAUSED_FIRST"))??;
+    cx.update(|cx| send(cx, "PAUSED_FIRST"))?;
     wait_state(cx, "pending native callback while occluded", |s| {
         s.text.contains("PAUSED_FIRST")
             && s.title == "PAUSED_FIRST"
@@ -469,30 +469,30 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
             && s.stage == Stage::Waiting
     })
     .await?;
-    let sequence = cx.update(state)??.snapshots;
+    let sequence = cx.update(state)?.snapshots;
     // Title delivery is an ordering witness that the producer and event drain
     // ran while snapshots were blocked. No sleep stands in for that witness.
     for marker in ["PAUSED_SECOND", "PAUSED_FINAL"] {
-        cx.update(|cx| send(cx, marker))??;
+        cx.update(|cx| send(cx, marker))?;
         wait_state(cx, "title progressed without a frame", |s| {
             s.title == marker
         })
         .await?;
-        let observed = cx.update(state)??;
+        let observed = cx.update(state)?;
         ensure!(
             observed.snapshots == sequence && observed.callbacks == 1,
             "paused frames admitted a snapshot or duplicate callback: {observed:?}"
         );
     }
     check_pending_work(cx).await?;
-    let observed = cx.update(state)??;
+    let observed = cx.update(state)?;
     ensure!(
         observed.snapshots == sequence && observed.callbacks == 1,
         "pending work bypassed frame admission: {observed:?}"
     );
     check_paused_scroll(cx, sequence).await?;
     check_paused_animation(cx).await?;
-    cx.update(show)??;
+    cx.update(show)?;
     wait_state(cx, "resume catches up without new producer activity", |s| {
         s.text.contains("SCROLL_FINAL")
             && s.displayed_offset == 3
@@ -508,7 +508,7 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
 async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     pause(cx).await?;
-    cx.update(|cx| send(cx, "PENDING_DROP"))??;
+    cx.update(|cx| send(cx, "PENDING_DROP"))?;
     wait_state(
         cx,
         "silent waiter and pending callback before detach",
@@ -534,7 +534,7 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
             });
             (id, weak, client, pending_wake)
         })
-    })??;
+    })?;
     wait(cx, "idle task canceled without a runtime wake", |cx| {
         let stage = cx.global::<Probes>().0.borrow()[&id].get();
         Ok((
@@ -547,16 +547,16 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
     retained_client.request_snapshot()?.recv().await?;
     eprintln!("REFRESH_SMOKE silent_task_cancellation passed");
 
-    cx.update(|cx| workspace(cx, WorkspaceView::new_tab))???;
+    cx.update(|cx| workspace(cx, WorkspaceView::new_tab))??;
     wait_state(cx, "replacement activity while frames paused", |s| {
         s.title == "READY"
     })
     .await?;
     ensure!(
-        cx.update(state)??.callbacks == 1,
+        cx.update(state)?.callbacks == 1,
         "replacement registered a duplicate callback"
     );
-    cx.update(show)??;
+    cx.update(show)?;
     wait_state(cx, "stale callback releases after replacement", |s| {
         s.callbacks == 0 && s.title == "READY" && s.text.contains("READY")
     })

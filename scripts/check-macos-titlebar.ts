@@ -46,8 +46,11 @@ const near = (a: Rect, b: Rect, slack = 2) =>
 const ROW = 32;
 /** Where the window starts: clear of the menu bar and banner corner. */
 const PLACED = { x: 20, y: 250 };
-/** The traffic lights: three 12-point buttons from x = 7, 8 points apart. */
-const TRAFFIC_LIGHTS_END = 7 + 3 * 12 + 2 * 8;
+/** Where the traffic lights end, from the published button span. */
+const trafficLightsEnd = (text: string): number => {
+  const lights = parseRect(field(text, "traffic_lights"));
+  return lights.x + lights.w;
+};
 
 export async function checkMacTitlebar(executable: string, pointer: string, position: "titlebar" | "top"): Promise<void> {
   const merged = position === "titlebar";
@@ -136,7 +139,7 @@ label = "title"
    * in the merged row just after the `+` slot that follows the last tab.
    */
   function emptyRowSpace(text: string): Point {
-    if (!merged) return { x: TRAFFIC_LIGHTS_END + 24, y: ROW / 2 };
+    if (!merged) return { x: trafficLightsEnd(text) + 24, y: ROW / 2 };
     const last = field(text, "tabs_rects").split(";").map(parseRect).pop()!;
     const button = parseRect(field(text, "menu_button"));
     const left = last.x + last.w + 32 + 8;
@@ -164,11 +167,18 @@ label = "title"
     const button = parseRect(field(laid, "menu_button"));
     const terminal = parseRect(field(laid, "terminal_bounds"));
     const tabsPlaced = merged
-      ? tabs.every((tab) => tab.y >= 0 && tab.y + tab.h <= ROW) && tabs[0]!.x >= TRAFFIC_LIGHTS_END
+      ? tabs.every((tab) => tab.y >= 0 && tab.y + tab.h <= ROW) && tabs[0]!.x >= trafficLightsEnd(laid)
       : tabs.every((tab) => tab.y >= ROW && tab.y + tab.h <= terminal.y);
     if (tabs.length !== 2 || !tabsPlaced || button.y + button.h > ROW || terminal.y < ROW) {
       throw new Error(`${engine}: title row layout: tabs ${field(laid, "tabs_rects")} button ${field(laid, "menu_button")} terminal ${field(laid, "terminal_bounds")}`);
     }
+    // The merged row centres the traffic lights in the strip, whatever size
+    // AppKit gives them, and keeps AppKit's own left inset.
+    const lights = parseRect(field(laid, "traffic_lights"));
+    if (merged && (Math.abs(lights.y + lights.h / 2 - ROW / 2) > 0.5 || lights.x < 4 || lights.x > 16)) {
+      throw new Error(`${engine}: traffic lights ${field(laid, "traffic_lights")} are not centred in the ${ROW}-point strip`);
+    }
+    console.log(`MACOS_TITLEBAR_SMOKE ${engine} ${position} traffic-lights=${field(laid, "traffic_lights")}`);
 
     const windowed = frame();
     if (merged) {

@@ -263,7 +263,7 @@ impl Adapter {
             };
             let pointer: gpui::Point<f64> = msg_send![event, mouseLocation];
             let frame: Bounds<f64> = msg_send![screen, frame];
-            frame.contains(&pointer)
+            screen_contains(frame, pointer)
         }
     }
 
@@ -1144,6 +1144,17 @@ impl Adapter {
     }
 }
 
+/// `NSEvent.mouseLocation` rows run from just above the screen's bottom edge
+/// through its top edge, so a display contains its top boundary and not its
+/// bottom one, as `NSMouseInRect` treats unflipped rectangles. GPUI's
+/// half-open `Bounds::contains` would reject the top pixel row.
+fn screen_contains(frame: Bounds<f64>, pointer: Point<f64>) -> bool {
+    pointer.x >= frame.origin.x
+        && pointer.x < frame.right()
+        && pointer.y > frame.origin.y
+        && pointer.y <= frame.bottom()
+}
+
 fn native_rect(rect: Bounds<f64>) -> String {
     format!(
         "{},{},{},{}",
@@ -1368,6 +1379,20 @@ extern "C" fn screen_parameters(observer: &Object, _: Sel, _: *mut Object) {
 #[cfg(test)]
 mod retained_tests {
     use super::Retained;
+
+    #[test]
+    fn screen_containment_includes_the_top_row_and_excludes_the_bottom_edge() {
+        use gpui::{Bounds, point, size};
+
+        let frame = Bounds::new(point(0.0, 0.0), size(1440.0, 900.0));
+        let contains = |x, y| super::screen_contains(frame, point(x, y));
+        assert!(contains(720.0, 900.0), "top pixel row");
+        assert!(contains(720.0, 1.0), "bottom pixel row");
+        assert!(contains(0.0, 450.0), "left edge");
+        assert!(!contains(720.0, 0.0), "below the bottom row");
+        assert!(!contains(720.0, 900.5), "above the top row");
+        assert!(!contains(1440.0, 450.0), "adjacent display's left edge");
+    }
 
     #[test]
     fn lifecycle_batches_preserve_order_and_command_snapshot_drains_remaining()

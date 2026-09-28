@@ -376,8 +376,12 @@ export async function augmentSpdx(
   }
   const vendor = objectValue(JSON.parse(await readFile(join(repoRoot, "third-party/vendor/sources.json"), "utf8")), "vendor provenance");
   if (!Array.isArray(vendor.sources)) throw new Error("vendor provenance has no sources");
+  // Vendored crates can be platform-specific, such as GPUI's Linux backend;
+  // record only those the shipped binaries' Cargo evidence contains.
+  const shippedCargo = new Set(packages.filter(isCargoPackage).map(packageKey));
   for (const sourceValue of vendor.sources) {
     const source = objectValue(sourceValue, "vendored source");
+    if (!shippedCargo.has(`${stringValue(source.name, "vendor name")}\0${stringValue(source.version, "vendor version")}`)) continue;
     const patches = Array.isArray(source.patches) ? source.patches.map(patch => stringValue(objectValue(patch, "vendor patch").file, "vendor patch file")) : [];
     nativePackages.push(nativePackage(
       stringValue(source.name, "vendor name"),
@@ -427,7 +431,7 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
     ["ghostty", "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018"],
     ["uucode", "0.2.0"],
     ["highway", "66486a10623fa0d72fe91260f96c892e41aceb06"],
-    ["gpui", "0.2.2"],
+    ["gpui-pre", "0.3.6"],
     ["libghostty-vt-sys", "0.2.1"],
   ] as const) {
     if (!packages.some(pkg => pkg.name === name && pkg.versionInfo === expectedVersion)) {
@@ -435,7 +439,7 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
     }
   }
   if (!packages.some(isCargoPackage)) throw new Error("SBOM lacks cargo-auditable Rust package evidence");
-  for (const patched of ["gpui", "libghostty-vt-sys"]) {
+  for (const patched of ["gpui-pre", "gpui-pre-macos", "libghostty-vt-sys"]) {
     const pkg = packages.find(candidate => candidate.name === patched);
     if (typeof pkg?.sourceInfo !== "string" || !pkg.sourceInfo.startsWith("Locally patched runtime crate")) {
       throw new Error(`SBOM lacks patched-crate provenance for ${patched}`);

@@ -10,7 +10,7 @@ export type Source = {
   url: string;
   sha256: string;
   patches: { name: string; file: string; description: string; upstream?: string }[];
-  upstream: { repository: string; revision: string; path: string; dirty?: boolean };
+  upstream: { repository: string; revision: string; path: string; dirty?: boolean; snapshot?: "gpui-pre" };
 };
 const repository = resolve(import.meta.dir, "..");
 const vendorRoot = join(repository, "third-party/vendor");
@@ -30,6 +30,7 @@ export function readSources(file: string): Source[] {
         !source.upstream || typeof source.upstream.repository !== "string" || !source.upstream.repository.startsWith("https://") ||
         typeof source.upstream.revision !== "string" || !/^[0-9a-f]{40}$/.test(source.upstream.revision) ||
         typeof source.upstream.path !== "string" || (source.upstream.dirty !== undefined && typeof source.upstream.dirty !== "boolean") ||
+        (source.upstream.snapshot !== undefined && (source.upstream.snapshot !== "gpui-pre" || source.upstream.dirty !== undefined)) ||
         !Array.isArray(source.patches) || names.has(source.name)) throw new Error("invalid or duplicate vendor source");
     names.add(source.name);
     const patchNames = new Set<string>();
@@ -138,6 +139,21 @@ export function differences(expected: Map<string, string>, actual: Map<string, s
   return [...new Set([...expected.keys(), ...actual.keys()])].sort().filter((key) => expected.get(key) !== actual.get(key));
 }
 
+/**
+ * Reads where the archive says its source came from. `gpui-pre` republishes
+ * Zed workspace crates without Cargo's VCS file and records the Zed crate and
+ * revision in its package metadata instead.
+ */
+function archiveProvenance(source: Source, original: string): { revision?: string; path?: string; dirty: boolean } {
+  if (source.upstream.snapshot === "gpui-pre") {
+    const crate = Bun.TOML.parse(readFileSync(join(original, "Cargo.toml"), "utf8")) as { package?: { metadata?: { "gpui-pre"?: { "zed-crate"?: string; "zed-rev"?: string } } } };
+    const snapshot = crate.package?.metadata?.["gpui-pre"];
+    return { revision: snapshot?.["zed-rev"], path: snapshot?.["zed-crate"] && `crates/${snapshot["zed-crate"]}`, dirty: false };
+  }
+  const vcs = JSON.parse(readFileSync(join(original, ".cargo_vcs_info.json"), "utf8"));
+  return { revision: vcs.git?.sha1, path: vcs.path_in_vcs, dirty: Boolean(vcs.git?.dirty) };
+}
+
 export async function extract(source: Source, archive: string, destination: string): Promise<void> {
   const stage = mkdtempSync(join(tmpdir(), "huterm-vendor-unpack-"));
   try {
@@ -146,9 +162,9 @@ export async function extract(source: Source, archive: string, destination: stri
     if (children.length !== 1 || children[0] !== id(source)) throw new Error(`unexpected archive root for ${id(source)}`);
     const original = join(stage, id(source));
     treeEntries(original);
-    const vcs = JSON.parse(readFileSync(join(original, ".cargo_vcs_info.json"), "utf8"));
-    if (vcs.git?.sha1 !== source.upstream.revision || vcs.path_in_vcs !== source.upstream.path ||
-        Boolean(vcs.git?.dirty) !== Boolean(source.upstream.dirty)) throw new Error(`archive VCS metadata differs from manifest: ${id(source)}`);
+    const vcs = archiveProvenance(source, original);
+    if (vcs.revision !== source.upstream.revision || vcs.path !== source.upstream.path ||
+        vcs.dirty !== Boolean(source.upstream.dirty)) throw new Error(`archive VCS metadata differs from manifest: ${id(source)}`);
     cpSync(original, destination, { recursive: true, dereference: false, verbatimSymlinks: true });
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }

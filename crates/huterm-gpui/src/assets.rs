@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use gpui::{Application, AssetSource, SharedString};
+use gpui::{Application, AssetSource, QuitMode, SharedString};
 
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
@@ -181,7 +181,11 @@ impl AssetSource for UiAssets {
 }
 
 pub(crate) fn application() -> Application {
-    Application::new().with_assets(UiAssets)
+    // Huterm's close/quit coordinator owns zero-window lifetime: global
+    // shortcuts can keep a windowless process alive on every platform.
+    gpui_platform::application()
+        .with_assets(UiAssets)
+        .with_quit_mode(QuitMode::Explicit)
 }
 
 #[cfg(test)]

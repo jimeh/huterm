@@ -38,7 +38,7 @@ pub(crate) fn run() {
         )
         .expect("open renderer smoke window");
         if hold {
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
@@ -183,8 +183,7 @@ impl Render for Fixture {
                                         println!("RENDERER_SMOKE all-panels prepared=3 checked=3 painted=3");
                                         println!("RENDERER_SMOKE passed");
                                         cx.quit();
-                                    })
-                                    .expect("finish renderer smoke");
+                                    });
                                 })
                                 .detach();
                             });

@@ -21,6 +21,9 @@ unsafe impl objc::Encode for NativePoint {
 extern "C" fn pasteboard(this: &Object, _: Sel) -> *mut Object {
     unsafe { *this.get_ivar("pasteboard") }
 }
+extern "C" fn source(_: &Object, _: Sel) -> *mut Object {
+    std::ptr::null_mut()
+}
 extern "C" fn location(this: &Object, _: Sel) -> NativePoint {
     unsafe {
         NativePoint {
@@ -59,6 +62,11 @@ pub(super) fn drop_event(command: &str) -> anyhow::Result<()> {
             class.add_method(
                 sel!(draggingLocation),
                 location as extern "C" fn(&Object, Sel) -> NativePoint,
+            );
+            // AppKit reports no source for drags from other applications.
+            class.add_method(
+                sel!(draggingSource),
+                source as extern "C" fn(&Object, Sel) -> *mut Object,
             );
             class.register()
         });

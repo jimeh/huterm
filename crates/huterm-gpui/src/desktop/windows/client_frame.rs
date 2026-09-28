@@ -374,13 +374,14 @@ mod tests {
         assert_eq!(edge(795.0, 595.0), Some(ResizeEdge::BottomRight));
         assert_eq!(edge(770.0, 595.0), Some(ResizeEdge::BottomRight));
         // Past the corner reach the press is a plain edge. GPUI bounds
-        // include their far edge, so the shared boundary point stays a
-        // corner.
-        assert_eq!(edge(34.0, 5.0), Some(ResizeEdge::TopLeft));
-        assert_eq!(edge(35.0, 5.0), Some(ResizeEdge::Top));
-        assert_eq!(edge(5.0, 35.0), Some(ResizeEdge::Left));
+        // exclude their far edge, so the shared boundary point belongs to
+        // the edge.
+        assert_eq!(edge(33.9, 5.0), Some(ResizeEdge::TopLeft));
+        assert_eq!(edge(34.0, 5.0), Some(ResizeEdge::Top));
+        assert_eq!(edge(5.0, 34.0), Some(ResizeEdge::Left));
         // Content, including the corner squares inside the band, is not
-        // a resize. The band's far edge itself still counts, as above.
+        // a resize. The band's far edge itself is content.
+        assert_eq!(edge(10.0, 10.0), None);
         assert_eq!(edge(10.5, 10.5), None);
         assert_eq!(edge(20.0, 20.0), None);
         assert_eq!(edge(400.0, 300.0), None);

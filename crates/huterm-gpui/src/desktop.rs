@@ -161,10 +161,12 @@ fn install_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu {
             name: "Huterm".into(),
+            disabled: false,
             items: application_items,
         },
         Menu {
             name: "File".into(),
+            disabled: false,
             items: vec![
                 item(ids::NEW_WINDOW),
                 item(ids::NEW_TAB),
@@ -174,6 +176,7 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "Edit".into(),
+            disabled: false,
             items: vec![
                 item(ids::COPY),
                 item(ids::PASTE),
@@ -185,6 +188,7 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "View".into(),
+            disabled: false,
             items: vec![
                 item(ids::OPEN_COMMAND_PALETTE),
                 MenuItem::separator(),
@@ -197,6 +201,7 @@ fn install_menus(cx: &mut App) {
         },
         Menu {
             name: "Window".into(),
+            disabled: false,
             items: vec![
                 item(ids::MINIMIZE),
                 item(ids::ZOOM),
@@ -503,7 +508,7 @@ impl TerminalView {
                 // focus that returns to the terminal before the dialog's
                 // first frame. Terminal presses suppress that focus-on-click.
                 if let Some(dialog) = windows::modal_focus(window, cx) {
-                    dialog.focus(window);
+                    dialog.focus(window, cx);
                     return;
                 }
                 view.host_effects.note_focus();
@@ -1562,7 +1567,7 @@ impl TerminalView {
                 let (accepted, _) =
                     self.admit_input(TerminalInput::Paste(text), false, false);
                 if accepted {
-                    self.focus.focus(window);
+                    self.focus.focus(window, cx);
                     self.return_to_live_output();
                     self.start_snapshot_if_needed(cx);
                 }
@@ -1632,7 +1637,7 @@ impl TerminalView {
         // Any later press supersedes a right-click still waiting for its
         // link lookup; a new right-click starts its own below.
         self.context_lookup = None;
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         let Some(button) = protocol_mouse_button(event.button) else {
             return;
         };
@@ -2546,7 +2551,7 @@ impl ScrollBenchmark {
         if !self.started {
             self.started = true;
             eprintln!(
-                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=0.2.2 viewport={}x{} history={}",
+                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.6 viewport={}x{} history={}",
                 benchmark_environment("HUTERM_SCROLL_REVISION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,

@@ -7,6 +7,7 @@ use objc::{msg_send, sel, sel_impl};
 use std::ffi::{CString, c_void};
 
 const CG_MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
+const NS_EVENT_TYPE_MOUSE_MOVED: usize = 5;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -286,6 +287,16 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
             clickCount: 1_isize pressure: 1.0_f32];
         ensure!(!event.is_null(), "mouse NSEvent construction failed");
+        if kind == NS_EVENT_TYPE_MOUSE_MOVED {
+            // GPUI windows refuse window-level moved events and receive them
+            // from a tracking area, which AppKit feeds only from real pointer
+            // motion. Deliver the move as that tracking area would.
+            let location: gpui::Point<f64> = msg_send![event, locationInWindow];
+            let target: *mut Object = msg_send![view, hitTest: location];
+            ensure!(!target.is_null(), "no view under the mouse move");
+            let _: () = msg_send![target, mouseMoved: event];
+            return Ok(());
+        }
         let button = match kind {
             3 | 4 | 7 => Some(1),
             25..=27 => Some(2),
