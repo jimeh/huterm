@@ -6,9 +6,12 @@
 //! - `bindings.rs`: bindgen output limited to the functions and types that
 //!   Huterm uses.
 //! - `keys.rs`: one marker type per getter or option key, carrying the Rust
-//!   type named by the header's `Output type:`, `Input type:`, or
-//!   parenthesized annotation. A pin bump that changes a key's type changes
-//!   this file.
+//!   type named by the key's header annotation. Each header set declares
+//!   where its annotations sit, and a comment without one in that position
+//!   fails generation. A pin bump that changes a key's type changes this
+//!   file. Getter outputs that carry a mutable pointer, which the library
+//!   writes through, get a separate trait so only dedicated wrappers use
+//!   them.
 //! - `layout.rs`: a test-only table of every struct, enum, alias, and handle
 //!   in `bindings.rs`, which the ABI test compares with the linked library's
 //!   `ghostty_type_json()` manifest.
@@ -125,8 +128,12 @@ const VARS: &[&str] = &[
 /// How a key's annotated type is passed.
 #[derive(Clone, Copy)]
 enum Family {
-    /// A getter: `out` points to the annotated type.
-    Get { r#trait: &'static str },
+    /// A getter: `out` points to the annotated type. Outputs that carry a
+    /// mutable pointer implement `populate` instead of `trait`.
+    Get {
+        r#trait: &'static str,
+        populate: Option<&'static str>,
+    },
     /// A setter: `value` points to the annotated type, except function
     /// pointers and `void*`, which the header passes directly.
     Set {
@@ -136,12 +143,24 @@ enum Family {
     },
 }
 
+/// Where a header documents each key's type.
+#[derive(Clone, Copy)]
+enum Style {
+    /// The comment's last line: `Output type: T *`, `Input type: T*`,
+    /// `Input/output type: T *`, or a callback or `void*` input.
+    Labeled,
+    /// A parenthesized type, optionally `value:`-prefixed, that ends the
+    /// comment's first sentence: `Viewport width in cells (uint16_t).`
+    Sentence,
+}
+
 /// The keys Huterm uses from one key enum.
 struct KeySet {
     header: &'static str,
     r#enum: &'static str,
     prefix: &'static str,
     module: &'static str,
+    style: Style,
     family: Family,
     keys: &'static [&'static str],
 }
@@ -152,8 +171,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyTerminalData",
         prefix: "GHOSTTY_TERMINAL_DATA_",
         module: "terminal_data",
+        style: Style::Labeled,
         family: Family::Get {
             r#trait: "TerminalData",
+            populate: None,
         },
         keys: &[
             "COLS",
@@ -184,6 +205,7 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyTerminalOption",
         prefix: "GHOSTTY_TERMINAL_OPT_",
         module: "terminal_option",
+        style: Style::Labeled,
         family: Family::Set {
             value: "TerminalOption",
             callback: Some("TerminalCallback"),
@@ -216,8 +238,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyRenderStateData",
         prefix: "GHOSTTY_RENDER_STATE_DATA_",
         module: "render_state_data",
+        style: Style::Sentence,
         family: Family::Get {
             r#trait: "RenderStateData",
+            populate: Some("RenderStatePopulate"),
         },
         keys: &["DIRTY", "ROW_ITERATOR", "CURSOR", "COLORS"],
     },
@@ -226,8 +250,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyRenderStateRowData",
         prefix: "GHOSTTY_RENDER_STATE_ROW_DATA_",
         module: "render_row_data",
+        style: Style::Sentence,
         family: Family::Get {
             r#trait: "RenderRowData",
+            populate: Some("RenderRowPopulate"),
         },
         keys: &["DIRTY", "RAW", "CELLS"],
     },
@@ -236,8 +262,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyRenderStateRowCellsData",
         prefix: "GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_",
         module: "render_cell_data",
+        style: Style::Sentence,
         family: Family::Get {
             r#trait: "RenderCellData",
+            populate: Some("RenderCellPopulate"),
         },
         keys: &["RAW", "STYLE", "GRAPHEMES_UTF8"],
     },
@@ -246,8 +274,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyCellData",
         prefix: "GHOSTTY_CELL_DATA_",
         module: "cell_data",
+        style: Style::Labeled,
         family: Family::Get {
             r#trait: "CellData",
+            populate: None,
         },
         keys: &[
             "CODEPOINT",
@@ -265,7 +295,11 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyRowData",
         prefix: "GHOSTTY_ROW_DATA_",
         module: "row_data",
-        family: Family::Get { r#trait: "RowData" },
+        style: Style::Labeled,
+        family: Family::Get {
+            r#trait: "RowData",
+            populate: None,
+        },
         keys: &["WRAP", "GRAPHEME", "STYLED"],
     },
     KeySet {
@@ -273,6 +307,7 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyMouseEncoderOption",
         prefix: "GHOSTTY_MOUSE_ENCODER_OPT_",
         module: "mouse_encoder_option",
+        style: Style::Sentence,
         family: Family::Set {
             value: "MouseEncoderOption",
             callback: None,
@@ -285,8 +320,10 @@ const KEY_SETS: &[KeySet] = &[
         r#enum: "GhosttyBuildInfo",
         prefix: "GHOSTTY_BUILD_INFO_",
         module: "build_info",
+        style: Style::Labeled,
         family: Family::Get {
             r#trait: "BuildInfo",
+            populate: None,
         },
         keys: &["OPTIMIZE"],
     },
@@ -337,7 +374,7 @@ fn run(check: bool) -> Result<bool, Error> {
     let bindings = generate_bindings(&include)?;
     let file = syn::parse_file(&bindings)
         .map_err(|error| format!("parsing bindgen output: {error}"))?;
-    let keys = generate_keys(&include.join("ghostty/vt"))?;
+    let keys = generate_keys(&include.join("ghostty/vt"), &file)?;
     let sized = sized_structs(&file);
     let layout = generate_layout(&file)?;
 
@@ -433,7 +470,8 @@ fn generate_bindings(include: &Path) -> Result<String, Error> {
 
 /// One constant parsed from a header's `typedef enum` block.
 struct Constant {
-    doc: String,
+    /// The preceding doc comment's lines, without comment markers.
+    lines: Vec<String>,
 }
 
 /// Collects documented constants from every `typedef enum` in `header`.
@@ -446,13 +484,13 @@ fn header_constants(header: &str) -> Result<BTreeMap<String, Constant>, Error> {
         let close = rest.find('}').ok_or("unterminated enum")?;
         let body = &rest[open + 1..close];
         rest = &rest[close..];
-        let mut doc = String::new();
+        let mut lines = Vec::new();
         let mut index = 0;
         while index < body.len() {
             let tail = &body[index..];
             if let Some(comment) = tail.strip_prefix("/*") {
                 let end = comment.find("*/").ok_or("unterminated comment")?;
-                doc = normalize_doc(&comment[..end]);
+                lines = comment_lines(&comment[..end]);
                 index += 2 + end + 2;
             } else if tail.starts_with("GHOSTTY_") {
                 let end = tail
@@ -461,7 +499,7 @@ fn header_constants(header: &str) -> Result<BTreeMap<String, Constant>, Error> {
                 constants.insert(
                     tail[..end].to_owned(),
                     Constant {
-                        doc: std::mem::take(&mut doc),
+                        lines: std::mem::take(&mut lines),
                     },
                 );
                 let next = tail.find(',').unwrap_or(tail.len());
@@ -474,7 +512,9 @@ fn header_constants(header: &str) -> Result<BTreeMap<String, Constant>, Error> {
     Ok(constants)
 }
 
-fn normalize_doc(comment: &str) -> String {
+/// A comment's lines without `*` or `<` markers; blank lines separate
+/// paragraphs.
+fn comment_lines(comment: &str) -> Vec<String> {
     comment
         .lines()
         .map(|line| {
@@ -482,9 +522,9 @@ fn normalize_doc(comment: &str) -> String {
                 .trim_start_matches('*')
                 .trim_start_matches('<')
                 .trim()
+                .to_owned()
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }
 
 /// The type a key annotation names, and how the C API passes it.
@@ -496,35 +536,95 @@ enum Annotated {
     Direct(String),
 }
 
-fn annotation(doc: &str) -> Option<Annotated> {
-    for label in ["Input/output type:", "Output type:", "Input type:"] {
-        if let Some(position) = doc.find(label) {
-            let text = doc[position + label.len()..].trim();
-            // `GhosttyKittyKeyFlags * (uint8_t *)` names the typedef first.
-            let text = text.split(" (").next().unwrap_or(text).trim();
-            let text = text.split_whitespace().collect::<String>();
-            if text == "void*" {
-                return Some(Annotated::Direct(text));
+const LABELS: [&str; 3] = ["Input/output type:", "Output type:", "Input type:"];
+
+fn annotation(style: Style, lines: &[String]) -> Result<Annotated, Error> {
+    match style {
+        Style::Labeled => labeled_annotation(lines),
+        Style::Sentence => sentence_annotation(lines),
+    }
+}
+
+/// Reads the comment's last line, which must be the only labeled line.
+fn labeled_annotation(lines: &[String]) -> Result<Annotated, Error> {
+    let labeled = lines
+        .iter()
+        .filter(|line| LABELS.iter().any(|label| line.contains(label)))
+        .count();
+    let last = lines
+        .iter()
+        .rev()
+        .find(|line| !line.is_empty())
+        .ok_or("empty comment")?;
+    let text = LABELS
+        .iter()
+        .find_map(|label| last.strip_prefix(label))
+        .filter(|_| labeled == 1)
+        .ok_or("the last line is not the comment's only type label")?;
+    // `GhosttyKittyKeyFlags * (uint8_t *)` names the typedef first and its
+    // representation in parentheses.
+    let text = match text.split_once('(') {
+        Some((named, representation))
+            if representation
+                .strip_suffix(')')
+                .is_some_and(|inner| inner.trim_end().ends_with('*')) =>
+        {
+            named
+        }
+        Some(_) => return Err(format!("malformed type label {text:?}")),
+        None => text,
+    };
+    let text = text.split_whitespace().collect::<String>();
+    if text == "void*" {
+        return Ok(Annotated::Direct(text));
+    }
+    match text.strip_suffix('*') {
+        Some(pointee) if is_c_type(pointee) => {
+            Ok(Annotated::Pointee(pointee.to_owned()))
+        }
+        None if is_c_type(&text) => Ok(Annotated::Direct(text)),
+        _ => Err(format!("unsupported labeled type {text:?}")),
+    }
+}
+
+/// Reads the parenthesized type that ends the first sentence.
+fn sentence_annotation(lines: &[String]) -> Result<Annotated, Error> {
+    let text = lines
+        .iter()
+        .filter(|line| !line.is_empty())
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut depth = 0_usize;
+    let mut end = None;
+    for (index, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '.' if depth == 0
+                && text[index + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace) =>
+            {
+                end = Some(index);
+                break;
             }
-            return Some(match text.strip_suffix('*') {
-                Some(pointee) => Annotated::Pointee(pointee.to_owned()),
-                None => Annotated::Direct(text),
-            });
+            _ => {}
         }
     }
-    // render.h and mouse/encoder.h put the value type in parentheses.
-    let mut rest = doc;
-    while let Some(open) = rest.find('(') {
-        let tail = &rest[open + 1..];
-        let close = tail.find(')')?;
-        let inner = tail[..close].trim();
-        let inner = inner.strip_prefix("value:").unwrap_or(inner).trim();
-        if is_c_type(inner) {
-            return Some(Annotated::Pointee(inner.to_owned()));
-        }
-        rest = &tail[close + 1..];
+    let sentence = &text[..end.ok_or("no complete first sentence")?];
+    let inner = sentence
+        .strip_suffix(')')
+        .and_then(|head| head.rsplit_once('('))
+        .map(|(_, inner)| inner.trim())
+        .ok_or("the first sentence does not end with a parenthesized type")?;
+    let inner = inner.strip_prefix("value:").unwrap_or(inner).trim();
+    if is_c_type(inner) {
+        Ok(Annotated::Pointee(inner.to_owned()))
+    } else {
+        Err(format!("unsupported sentence type {inner:?}"))
     }
-    None
 }
 
 fn is_c_type(text: &str) -> bool {
@@ -561,6 +661,72 @@ fn rust_type(c_type: &str) -> Result<String, Error> {
     })
 }
 
+/// Raw pointers reachable inside a type without following them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Pointers {
+    any: bool,
+    mutable: bool,
+}
+
+impl Pointers {
+    const fn or(self, other: Self) -> Self {
+        Self {
+            any: self.any || other.any,
+            mutable: self.mutable || other.mutable,
+        }
+    }
+}
+
+/// Finds the raw pointers inside the binding type named `name`, including
+/// nested structs, unions, arrays, and handle typedefs.
+fn pointers(file: &syn::File, name: &str) -> Pointers {
+    let base = name.split('[').next().unwrap_or(name);
+    file.items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == base => Some(
+                item.fields
+                    .iter()
+                    .fold(Pointers::default(), |found, field| {
+                        found.or(type_pointers(file, &field.ty))
+                    }),
+            ),
+            syn::Item::Union(item) if item.ident == base => Some(
+                item.fields
+                    .named
+                    .iter()
+                    .fold(Pointers::default(), |found, field| {
+                        found.or(type_pointers(file, &field.ty))
+                    }),
+            ),
+            syn::Item::Type(item) if item.ident == base => {
+                Some(type_pointers(file, &item.ty))
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn type_pointers(file: &syn::File, ty: &syn::Type) -> Pointers {
+    match ty {
+        syn::Type::Ptr(pointer) => Pointers {
+            any: true,
+            mutable: pointer.mutability.is_some(),
+        },
+        syn::Type::Array(array) => type_pointers(file, &array.elem),
+        syn::Type::Path(path) => match path.path.segments.last() {
+            // Callback typedefs are `Option<unsafe extern "C" fn ...>`.
+            Some(segment) if segment.ident == "Option" => Pointers {
+                any: true,
+                mutable: false,
+            },
+            Some(segment) => pointers(file, &segment.ident.to_string()),
+            None => Pointers::default(),
+        },
+        _ => Pointers::default(),
+    }
+}
+
 fn marker_name(key: &str) -> String {
     key.split('_')
         .map(|word| {
@@ -572,7 +738,62 @@ fn marker_name(key: &str) -> String {
         .collect()
 }
 
-fn generate_keys(headers: &Path) -> Result<String, Error> {
+/// Chooses the trait and associated item for one key.
+fn key_impl(
+    family: Family,
+    annotated: Annotated,
+    file: &syn::File,
+    name: &str,
+) -> Result<(&'static str, &'static str, String), Error> {
+    Ok(match (family, annotated) {
+        (Family::Get { r#trait, populate }, Annotated::Pointee(c_type)) => {
+            let r#trait = if pointers(file, &c_type).mutable {
+                populate.ok_or_else(|| {
+                    format!(
+                        "{name} outputs {c_type}, which carries a pointer the \
+                         library writes through, but its key set has no \
+                         populate trait"
+                    )
+                })?
+            } else {
+                r#trait
+            };
+            (r#trait, "Out", rust_type(&c_type)?)
+        }
+        (Family::Set { value, .. }, Annotated::Pointee(c_type)) => {
+            if pointers(file, &c_type).any {
+                return Err(format!(
+                    "{name} takes {c_type}, which carries a pointer the \
+                     library reads through; give it a dedicated wrapper"
+                ));
+            }
+            (value, "Value", rust_type(&c_type)?)
+        }
+        (
+            Family::Set {
+                pointer: Some(pointer),
+                ..
+            },
+            Annotated::Direct(c_type),
+        ) if c_type == "void*" => (pointer, "", String::new()),
+        (
+            Family::Set {
+                callback: Some(callback),
+                ..
+            },
+            Annotated::Direct(c_type),
+        ) if c_type.starts_with("Ghostty") && c_type.ends_with("Fn") => {
+            (callback, "Callback", rust_type(&c_type)?)
+        }
+        (_, other) => {
+            return Err(format!(
+                "{name} has an unsupported annotation {other:?}"
+            ));
+        }
+    })
+}
+
+fn generate_keys(headers: &Path, file: &syn::File) -> Result<String, Error> {
     let mut out = String::from(
         "//! Key markers and the Rust type each header annotation names.\n\n\
          use super::bindings as ffi;\n",
@@ -584,49 +805,30 @@ fn generate_keys(headers: &Path) -> Result<String, Error> {
         let constants = header_constants(&text)?;
         let _ = write!(
             out,
-            "\n/// Keys of `{}` from `{}`.\npub(crate) mod {} {{\n    use super::ffi;\n",
-            set.r#enum, set.header, set.module
+            "\n/// Keys of `{}` from `{}`.\npub(crate) mod {} {{\n    use super::ffi;\n\n    \
+             /// Every key below, for tests that must cover them all.\n    \
+             #[cfg(test)]\n    pub(crate) const KEYS: &[&str] = &[{}];\n",
+            set.r#enum,
+            set.header,
+            set.module,
+            set.keys
+                .iter()
+                .map(|key| format!("\"{key}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         for key in set.keys {
             let name = format!("{}{key}", set.prefix);
             let constant = constants.get(&name).ok_or_else(|| {
                 format!("{name} is missing from {}", set.header)
             })?;
-            let annotated = annotation(&constant.doc).ok_or_else(|| {
-                format!("{name} in {} has no type annotation", set.header)
-            })?;
+            let annotated =
+                annotation(set.style, &constant.lines).map_err(|error| {
+                    format!("{name} in {}: {error}", set.header)
+                })?;
             let marker = marker_name(key);
-            let (r#trait, item, rust) = match (set.family, annotated) {
-                (Family::Get { r#trait }, Annotated::Pointee(c_type)) => {
-                    (r#trait, "Out", rust_type(&c_type)?)
-                }
-                (Family::Set { value, .. }, Annotated::Pointee(c_type)) => {
-                    (value, "Value", rust_type(&c_type)?)
-                }
-                (
-                    Family::Set {
-                        pointer: Some(pointer),
-                        ..
-                    },
-                    Annotated::Direct(c_type),
-                ) if c_type == "void*" => (pointer, "", String::new()),
-                (
-                    Family::Set {
-                        callback: Some(callback),
-                        ..
-                    },
-                    Annotated::Direct(c_type),
-                ) if c_type.starts_with("Ghostty")
-                    && c_type.ends_with("Fn") =>
-                {
-                    (callback, "Callback", rust_type(&c_type)?)
-                }
-                (_, other) => {
-                    return Err(format!(
-                        "{name} has an unsupported annotation {other:?}"
-                    ));
-                }
-            };
+            let (r#trait, item, rust) =
+                key_impl(set.family, annotated, file, &name)?;
             let _ = write!(
                 out,
                 "\n    /// `{name}`.\n    #[derive(Debug)]\n    pub(crate) enum {marker} {{}}\n\n    \
@@ -691,6 +893,11 @@ struct Items {
     enums: Vec<(String, Vec<String>)>,
     aliases: Vec<String>,
     handles: Vec<String>,
+    /// Types the manifest does not describe: callback typedefs and the
+    /// opaque structs behind handles.
+    unchecked: Vec<String>,
+    /// Every struct, union, and typedef in the bindings.
+    total: usize,
 }
 
 fn collect_items(file: &syn::File) -> Result<Items, Error> {
@@ -698,6 +905,12 @@ fn collect_items(file: &syn::File) -> Result<Items, Error> {
     let mut typedefs = Vec::new();
     let mut constants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for item in &file.items {
+        if matches!(
+            item,
+            syn::Item::Struct(_) | syn::Item::Union(_) | syn::Item::Type(_)
+        ) {
+            items.total += 1;
+        }
         match item {
             syn::Item::Struct(item) => {
                 let syn::Fields::Named(fields) = &item.fields else {
@@ -711,7 +924,9 @@ fn collect_items(file: &syn::File) -> Result<Items, Error> {
                     })
                     .collect();
                 // Opaque handle targets are zero-sized placeholders.
-                if !names.iter().any(|name| name == "_unused") {
+                if names.iter().any(|name| name == "_unused") {
+                    items.unchecked.push(item.ident.to_string());
+                } else {
                     items.structs.push((item.ident.to_string(), names));
                 }
             }
@@ -723,20 +938,24 @@ fn collect_items(file: &syn::File) -> Result<Items, Error> {
                     .push(item.ident.to_string());
             }
             syn::Item::Type(item) => match &*item.ty {
-                syn::Type::Ptr(pointer) => {
-                    if let syn::Type::Path(path) = &*pointer.elem
-                        && path.path.segments.last().is_some_and(|segment| {
-                            segment.ident.to_string().ends_with("Impl")
-                        })
-                    {
-                        items.handles.push(item.ident.to_string());
-                    }
+                syn::Type::Ptr(pointer)
+                    if matches!(&*pointer.elem, syn::Type::Path(path)
+                    if path.path.segments.last().is_some_and(|segment| {
+                        segment.ident.to_string().ends_with("Impl")
+                    })) =>
+                {
+                    items.handles.push(item.ident.to_string());
                 }
                 syn::Type::Path(_) => {
                     typedefs
                         .push((item.ident.to_string(), type_text(&item.ty)));
                 }
-                _ => {}
+                _ => {
+                    return Err(format!(
+                        "typedef {} has a shape the ABI test cannot check",
+                        item.ident
+                    ));
+                }
             },
             _ => {}
         }
@@ -744,9 +963,11 @@ fn collect_items(file: &syn::File) -> Result<Items, Error> {
     for (name, target) in typedefs {
         if let Some(values) = constants.remove(&name) {
             items.enums.push((name, values));
-        } else if !target.ends_with("Option") {
+        } else if target.ends_with("Option") {
             // Function-pointer typedefs appear as `Option<...>`; the
             // manifest does not describe them.
+            items.unchecked.push(name);
+        } else {
             items.aliases.push(name);
         }
     }
@@ -834,6 +1055,21 @@ fn generate_layout(file: &syn::File) -> Result<String, Error> {
         "HANDLES",
         &items.handles,
     );
+    let _ = write!(
+        out,
+        "\n/// Types the manifest does not describe: callback typedefs and the\n\
+         /// opaque structs behind handles.\n\
+         pub(crate) const UNCHECKED: &[&str] = &[{}];\n\n\
+         /// Every struct, union, and typedef in the bindings, checked or not.\n\
+         pub(crate) const TYPE_COUNT: usize = {};\n",
+        items
+            .unchecked
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        items.total
+    );
     Ok(out)
 }
 
@@ -870,19 +1106,23 @@ fn rustfmt(source: &str, config: &Path) -> Result<String, Error> {
 mod tests {
     use super::*;
 
+    fn annotate(style: Style, comment: &str) -> Result<Annotated, Error> {
+        annotation(style, &comment_lines(comment))
+    }
+
     #[test]
-    fn annotations_cover_every_header_style() {
+    fn labeled_annotations_come_only_from_the_last_line() {
         let cases = [
             (
-                "Terminal width in cells. Output type: uint16_t *",
+                "Terminal width in cells.\n\nOutput type: uint16_t *",
                 Annotated::Pointee("uint16_t".into()),
             ),
             (
-                "Current Kitty keyboard protocol flags. Output type: GhosttyKittyKeyFlags * (uint8_t *)",
+                "Kitty flags.\n\nOutput type: GhosttyKittyKeyFlags * (uint8_t *)",
                 Annotated::Pointee("GhosttyKittyKeyFlags".into()),
             ),
             (
-                "Get a mode. Input/output type: GhosttyTerminalModeConfig *",
+                "Get a mode.\n\nInput/output type: GhosttyTerminalModeConfig *",
                 Annotated::Pointee("GhosttyTerminalModeConfig".into()),
             ),
             (
@@ -894,42 +1134,156 @@ mod tests {
                 Annotated::Direct("GhosttyTerminalWritePtyFn".into()),
             ),
             (
-                "Opaque userdata. Input type: void*",
+                "Opaque userdata.\n\nInput type: void*\n",
                 Annotated::Direct("void*".into()),
             ),
+        ];
+        for (comment, expected) in cases {
+            assert_eq!(
+                annotate(Style::Labeled, comment),
+                Ok(expected),
+                "{comment}"
+            );
+        }
+        for comment in [
+            // The label is not the last line.
+            "Output type: uint16_t *\n\nThe value is in cells (uint32_t).",
+            // Prose mentions a second label.
+            "Replaces Output type: bool *.\n\nOutput type: uint16_t *",
+            // The label is not at the start of its line.
+            "Width. Output type: uint16_t *",
+            "Viewport width in cells (uint16_t).",
+            "Output type: int *",
+            "Output type: uint16_t * (see below)",
+        ] {
+            assert!(annotate(Style::Labeled, comment).is_err(), "{comment}");
+        }
+    }
+
+    #[test]
+    fn sentence_annotations_must_end_the_first_sentence() {
+        let cases = [
             (
                 "Viewport width in cells (uint16_t).",
                 Annotated::Pointee("uint16_t".into()),
             ),
             (
-                "Populate a pre-allocated GhosttyRenderStateRowIterator with row data (GhosttyRenderStateRowIterator). Row data is only valid (sometimes).",
+                "Populate a pre-allocated GhosttyRenderStateRowIterator with row data\n from the render state (GhosttyRenderStateRowIterator). Row data is\n only valid (sometimes).",
                 Annotated::Pointee("GhosttyRenderStateRowIterator".into()),
             ),
             (
                 "Mouse tracking mode (value: GhosttyMouseTrackingMode).",
                 Annotated::Pointee("GhosttyMouseTrackingMode".into()),
             ),
+            (
+                "\nEncode the cell as UTF-8 into a\ncaller-provided buffer (GhosttyBuffer).\n\nIf ptr is NULL (GhosttyString), fail.\n",
+                Annotated::Pointee("GhosttyBuffer".into()),
+            ),
         ];
-        for (doc, expected) in cases {
-            assert_eq!(annotation(doc), Some(expected), "{doc}");
+        for (comment, expected) in cases {
+            assert_eq!(
+                annotate(Style::Sentence, comment),
+                Ok(expected),
+                "{comment}"
+            );
         }
-        assert_eq!(
-            annotation("Write codepoints into a buffer (uint32_t*)."),
-            None
-        );
-        assert_eq!(annotation("Invalid data type."), None);
+        for comment in [
+            // A pointer the library writes through, not a value type.
+            "Write codepoints into a buffer (uint32_t*).",
+            // The first parenthesized type is not at the sentence's end.
+            "Populate (GhosttyRenderStateRowIterator) rows. Returns (bool).",
+            "Whether the row is dirty. Output (bool).",
+            "The raw row value (GhosttyRow)",
+            "Output type: bool *",
+        ] {
+            assert!(annotate(Style::Sentence, comment).is_err(), "{comment}");
+        }
     }
 
     #[test]
     fn header_constants_attach_the_preceding_comment() {
         let header = "typedef enum GHOSTTY_ENUM_TYPED {\n  /** Invalid. */\n  GHOSTTY_X_INVALID = 0,\n\n  /**\n   * Width.\n   *\n   * Output type: uint16_t *\n   */\n  GHOSTTY_X_COLS = 1,\n  GHOSTTY_X_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,\n} GhosttyX;";
         let constants = header_constants(header).unwrap();
-        assert!(constants["GHOSTTY_X_COLS"].doc.contains("Width."));
+        assert!(constants["GHOSTTY_X_COLS"].lines.contains(&"Width.".into()));
         assert_eq!(
-            annotation(&constants["GHOSTTY_X_COLS"].doc),
-            Some(Annotated::Pointee("uint16_t".into()))
+            annotation(Style::Labeled, &constants["GHOSTTY_X_COLS"].lines),
+            Ok(Annotated::Pointee("uint16_t".into()))
         );
-        assert!(constants["GHOSTTY_X_MAX_VALUE"].doc.is_empty());
+        assert!(constants["GHOSTTY_X_MAX_VALUE"].lines.is_empty());
+    }
+
+    #[test]
+    fn outputs_the_library_writes_through_need_a_populate_trait() {
+        let file = syn::parse_file(
+            "pub struct GhosttyBuffer { pub size: usize, pub ptr: *mut u8 }
+             pub struct GhosttyString { pub ptr: *const u8, pub len: usize }
+             pub struct GhosttyNested { pub buffers: [GhosttyBuffer; 2] }
+             pub type GhosttyHandle = *mut GhosttyHandleImpl;
+             pub struct GhosttyColorRgb { pub r: u8 }",
+        )
+        .unwrap();
+        let writes = Pointers {
+            any: true,
+            mutable: true,
+        };
+        assert_eq!(pointers(&file, "GhosttyBuffer"), writes);
+        assert_eq!(pointers(&file, "GhosttyNested"), writes);
+        assert_eq!(pointers(&file, "GhosttyHandle"), writes);
+        assert_eq!(
+            pointers(&file, "GhosttyString"),
+            Pointers {
+                any: true,
+                mutable: false
+            }
+        );
+        assert_eq!(
+            pointers(&file, "GhosttyColorRgb[256]"),
+            Pointers::default()
+        );
+        assert_eq!(pointers(&file, "bool"), Pointers::default());
+
+        let get = |populate| Family::Get {
+            r#trait: "Data",
+            populate,
+        };
+        let pointee = |name: &str| Annotated::Pointee(name.into());
+        assert!(
+            key_impl(get(None), pointee("GhosttyBuffer"), &file, "K").is_err()
+        );
+        assert_eq!(
+            key_impl(
+                get(Some("Populate")),
+                pointee("GhosttyBuffer"),
+                &file,
+                "K"
+            )
+            .unwrap()
+            .0,
+            "Populate"
+        );
+        assert_eq!(
+            key_impl(
+                get(Some("Populate")),
+                pointee("GhosttyString"),
+                &file,
+                "K"
+            )
+            .unwrap()
+            .0,
+            "Data"
+        );
+        let set = Family::Set {
+            value: "Option",
+            callback: None,
+            pointer: None,
+        };
+        assert!(key_impl(set, pointee("GhosttyString"), &file, "K").is_err());
+        assert_eq!(
+            key_impl(set, pointee("GhosttyColorRgb"), &file, "K")
+                .unwrap()
+                .0,
+            "Option"
+        );
     }
 
     #[test]

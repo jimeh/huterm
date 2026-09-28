@@ -580,18 +580,26 @@ safe wrapper, and API-gap probes. Its `unsafe` code stays in `native.rs`,
 each opts out with `#![expect(unsafe_code)]`, denies undocumented and
 multi-operation unsafe blocks, and cites the header contract in every
 `// SAFETY:` comment. Callbacks reach host code only as plain values, contain
-panics by poisoning the terminal, and queue effects until the write returns.
+panics by poisoning the terminal, drop panic payloads inside a second
+`catch_unwind`, and queue effects until the write returns. Keep the mouse
+encoder and events private to `MouseProbe`'s fixed geometry: Ghostty converts
+encoder geometry and positions with unchecked float-to-integer casts.
 `mise run ghostty:bindings` regenerates `src/ffi/{bindings,keys,layout}.rs` with
 bindgen, which loads libclang at run time; `ghostty:bindings:check` compares
-bytes. Getter and option value types come only from the generated `keys.rs`,
-which reads each key's header annotation. The build script reads
-`GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug, ReleaseSafe,
-ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`, `MACOSX_DEPLOYMENT_TARGET`,
-and `ZIG`, and reruns only when those, itself, or `scripts/ghostty-source.json`
-change; `scripts/ghostty-build.test.ts` runs its unit tests. The crate's
-contract tests pin each C behavior the engine relies on, and the ABI test checks
-every FFI type against `ghostty_type_json()`. After a pin bump, fix a failing
-contract test's assumption before changing engine code. Allocator vtable
+bytes. Getter and option value types come only from the generated `keys.rs`.
+Each key set declares where its header puts annotations (a final labeled line
+or the first sentence's parenthesized type), and generation fails otherwise.
+Outputs carrying a pointer the library writes through get a `*Populate` trait
+that the generic getters reject, plus a dedicated wrapper. `key_tests.rs`
+checks every key's type against the bytes the library writes or reads. The
+build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
+ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
+`MACOSX_DEPLOYMENT_TARGET`, and `ZIG`, and reruns only when those, itself, or
+`scripts/ghostty-source.json` change; `scripts/ghostty-build.test.ts` runs its
+unit tests. The crate's contract tests pin each C behavior the engine relies
+on, and the ABI test checks every emitted FFI type against
+`ghostty_type_json()`. After a pin bump, fix a failing contract test's
+assumption before changing engine code. Allocator vtable
 callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
 Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
 budget and reports actual retained rows.

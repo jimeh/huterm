@@ -9,6 +9,32 @@ use super::bindings as ffi;
 pub(crate) mod terminal_data {
     use super::ffi;
 
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &[
+        "COLS",
+        "ROWS",
+        "ACTIVE_SCREEN",
+        "SCROLLBAR",
+        "MOUSE_TRACKING",
+        "TITLE",
+        "PWD",
+        "TOTAL_ROWS",
+        "SCROLLBACK_ROWS",
+        "COLOR_FOREGROUND",
+        "COLOR_BACKGROUND",
+        "COLOR_CURSOR",
+        "COLOR_PALETTE",
+        "COLOR_FOREGROUND_DEFAULT",
+        "COLOR_BACKGROUND_DEFAULT",
+        "COLOR_CURSOR_DEFAULT",
+        "COLOR_PALETTE_DEFAULT",
+        "KITTY_IMAGE_STORAGE_LIMIT",
+        "SCROLLBACK_MAX_BYTES",
+        "MODE",
+        "VT_GROUND",
+    ];
+
     /// `GHOSTTY_TERMINAL_DATA_COLS`.
     #[derive(Debug)]
     pub(crate) enum Cols {}
@@ -219,6 +245,30 @@ pub(crate) mod terminal_data {
 pub(crate) mod terminal_option {
     use super::ffi;
 
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &[
+        "USERDATA",
+        "WRITE_PTY",
+        "BELL",
+        "XTVERSION",
+        "TITLE_CHANGED",
+        "SIZE",
+        "COLOR_SCHEME",
+        "DEVICE_ATTRIBUTES",
+        "COLOR_FOREGROUND",
+        "COLOR_BACKGROUND",
+        "COLOR_CURSOR",
+        "COLOR_PALETTE",
+        "KITTY_IMAGE_STORAGE_LIMIT",
+        "APC_MAX_BYTES",
+        "GLYPH_PROTOCOL",
+        "PWD_CHANGED",
+        "CLIPBOARD_WRITE",
+        "SCROLLBACK_MAX_BYTES",
+        "CLIPBOARD_WRITE_MAX_BYTES",
+    ];
+
     /// `GHOSTTY_TERMINAL_OPT_USERDATA`.
     #[derive(Debug)]
     pub(crate) enum Userdata {}
@@ -411,6 +461,11 @@ pub(crate) mod terminal_option {
 pub(crate) mod render_state_data {
     use super::ffi;
 
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] =
+        &["DIRTY", "ROW_ITERATOR", "CURSOR", "COLORS"];
+
     /// `GHOSTTY_RENDER_STATE_DATA_DIRTY`.
     #[derive(Debug)]
     pub(crate) enum Dirty {}
@@ -425,7 +480,7 @@ pub(crate) mod render_state_data {
     #[derive(Debug)]
     pub(crate) enum RowIterator {}
 
-    impl super::super::RenderStateData for RowIterator {
+    impl super::super::RenderStatePopulate for RowIterator {
         const KEY: ffi::GhosttyRenderStateData =
             ffi::GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR;
         type Out = ffi::GhosttyRenderStateRowIterator;
@@ -456,6 +511,10 @@ pub(crate) mod render_state_data {
 pub(crate) mod render_row_data {
     use super::ffi;
 
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &["DIRTY", "RAW", "CELLS"];
+
     /// `GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`.
     #[derive(Debug)]
     pub(crate) enum Dirty {}
@@ -480,7 +539,7 @@ pub(crate) mod render_row_data {
     #[derive(Debug)]
     pub(crate) enum Cells {}
 
-    impl super::super::RenderRowData for Cells {
+    impl super::super::RenderRowPopulate for Cells {
         const KEY: ffi::GhosttyRenderStateRowData =
             ffi::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS;
         type Out = ffi::GhosttyRenderStateRowCells;
@@ -490,6 +549,10 @@ pub(crate) mod render_row_data {
 /// Keys of `GhosttyRenderStateRowCellsData` from `render.h`.
 pub(crate) mod render_cell_data {
     use super::ffi;
+
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &["RAW", "STYLE", "GRAPHEMES_UTF8"];
 
     /// `GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW`.
     #[derive(Debug)]
@@ -515,7 +578,7 @@ pub(crate) mod render_cell_data {
     #[derive(Debug)]
     pub(crate) enum GraphemesUtf8 {}
 
-    impl super::super::RenderCellData for GraphemesUtf8 {
+    impl super::super::RenderCellPopulate for GraphemesUtf8 {
         const KEY: ffi::GhosttyRenderStateRowCellsData =
             ffi::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8;
         type Out = ffi::GhosttyBuffer;
@@ -525,6 +588,19 @@ pub(crate) mod render_cell_data {
 /// Keys of `GhosttyCellData` from `screen.h`.
 pub(crate) mod cell_data {
     use super::ffi;
+
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &[
+        "CODEPOINT",
+        "CONTENT_TAG",
+        "WIDE",
+        "HAS_TEXT",
+        "HAS_STYLING",
+        "HAS_HYPERLINK",
+        "COLOR_PALETTE",
+        "COLOR_RGB",
+    ];
 
     /// `GHOSTTY_CELL_DATA_CODEPOINT`.
     #[derive(Debug)]
@@ -603,6 +679,10 @@ pub(crate) mod cell_data {
 pub(crate) mod row_data {
     use super::ffi;
 
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &["WRAP", "GRAPHEME", "STYLED"];
+
     /// `GHOSTTY_ROW_DATA_WRAP`.
     #[derive(Debug)]
     pub(crate) enum Wrap {}
@@ -634,6 +714,11 @@ pub(crate) mod row_data {
 /// Keys of `GhosttyMouseEncoderOption` from `mouse/encoder.h`.
 pub(crate) mod mouse_encoder_option {
     use super::ffi;
+
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] =
+        &["EVENT", "SIZE", "ANY_BUTTON_PRESSED", "TRACK_LAST_CELL"];
 
     /// `GHOSTTY_MOUSE_ENCODER_OPT_EVENT`.
     #[derive(Debug)]
@@ -679,6 +764,10 @@ pub(crate) mod mouse_encoder_option {
 /// Keys of `GhosttyBuildInfo` from `build_info.h`.
 pub(crate) mod build_info {
     use super::ffi;
+
+    /// Every key below, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) const KEYS: &[&str] = &["OPTIMIZE"];
 
     /// `GHOSTTY_BUILD_INFO_OPTIMIZE`.
     #[derive(Debug)]

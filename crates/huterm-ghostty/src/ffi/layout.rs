@@ -1779,3 +1779,27 @@ pub(crate) const HANDLES: &[Sized] = &[
         align: align_of::<ffi::GhosttyMouseEncoder>(),
     },
 ];
+
+/// Types the manifest does not describe: callback typedefs and the
+/// opaque structs behind handles.
+pub(crate) const UNCHECKED: &[&str] = &[
+    "GhosttyTerminalImpl",
+    "GhosttyRenderStateImpl",
+    "GhosttyRenderStateRowIteratorImpl",
+    "GhosttyRenderStateRowCellsImpl",
+    "GhosttyMouseEventImpl",
+    "GhosttyMouseEncoderImpl",
+    "GhosttyTerminalBellFn",
+    "GhosttyClipboardWriteReplyFn",
+    "GhosttyTerminalClipboardWriteFn",
+    "GhosttyTerminalColorSchemeFn",
+    "GhosttyTerminalDeviceAttributesFn",
+    "GhosttyTerminalSizeFn",
+    "GhosttyTerminalTitleChangedFn",
+    "GhosttyTerminalPwdChangedFn",
+    "GhosttyTerminalWritePtyFn",
+    "GhosttyTerminalXtversionFn",
+];
+
+/// Every struct, union, and typedef in the bindings, checked or not.
+pub(crate) const TYPE_COUNT: usize = 84;

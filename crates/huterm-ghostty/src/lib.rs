@@ -32,13 +32,13 @@ mod abi_tests;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
+mod key_tests;
+#[cfg(test)]
 mod test_alloc;
 
 pub use callbacks::Host;
 pub use error::{Error, Result};
-pub use mouse::{
-    MouseEncoder, MouseEvent, MouseProbe, ProbedFormat, ProbedTracking,
-};
+pub use mouse::{MouseProbe, ProbedFormat, ProbedTracking};
 pub use native::NativeBytes;
 pub use overrides::ColorOverrides;
 pub use render::{RenderCells, RenderRow, RenderState, Rows};
@@ -46,9 +46,9 @@ pub use terminal::{GridRef, Options, Terminal};
 pub use types::{
     Cell, CellContent, CellWidth, ClipboardContent, ClipboardLocation,
     ClipboardWrite, ClipboardWriteResult, ColorScheme, Cursor, CursorStyle,
-    DeviceAttributes, Dirty, Effect, Fill, Mode, MouseAction, MouseButton,
-    MouseGeometry, MouseTrackingMode, Optimize, Palette, Point, PointSpace,
-    RenderColors, Rgb, Row, Screen, Scroll, Scrollbar, Style, StyleColor,
+    DeviceAttributes, Dirty, Effect, Fill, Mode, Optimize, Palette, Point,
+    PointSpace, RenderColors, Rgb, Row, Screen, Scroll, Scrollbar, Style,
+    StyleColor,
 };
 
 /// The optimization mode of the linked library.

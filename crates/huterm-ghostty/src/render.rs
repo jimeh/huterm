@@ -14,7 +14,7 @@ use crate::native::{
 };
 use crate::terminal::Terminal;
 use crate::types::{
-    Cell, Cursor, CursorStyle, Dirty, RenderColors, Rgb, Row, Style,
+    Cell, Cursor, CursorStyle, Dirty, Fill, RenderColors, Rgb, Row, Style,
     palette_from_ffi,
 };
 
@@ -137,6 +137,11 @@ impl RenderState {
         self.state.clean()
     }
 
+    #[cfg(test)]
+    pub(crate) const fn native(&self) -> &NativeRenderState {
+        &self.state
+    }
+
     /// Iterates the captured rows from the top of the viewport.
     ///
     /// # Errors
@@ -202,6 +207,11 @@ impl RenderRow<'_> {
         Ok(Row(row))
     }
 
+    #[cfg(test)]
+    pub(crate) const fn cursor(&self) -> &RowCursor<'_> {
+        self.cursor
+    }
+
     /// Iterates the row's cells from the left.
     ///
     /// # Errors
@@ -221,6 +231,11 @@ pub struct RenderCells<'c> {
 }
 
 impl RenderCells<'_> {
+    #[cfg(test)]
+    pub(crate) const fn cursor(&self) -> &CellCursor<'_> {
+        &self.cursor
+    }
+
     /// Moves to the next cell; returns false after the last.
     #[expect(
         clippy::should_implement_trait,
@@ -262,18 +277,18 @@ impl RenderCells<'_> {
         loop {
             let capacity = out.capacity().max(16);
             out.resize(capacity, 0);
-            let mut buffer = ffi::GhosttyBuffer {
-                ptr: out.as_mut_ptr(),
-                cap: out.len(),
-                len: 0,
-            };
-            match self.cursor.get::<cell_data::GraphemesUtf8>(&mut buffer) {
-                Ok(()) => {
-                    out.truncate(buffer.len.min(out.len()));
+            match self.cursor.graphemes_utf8(out) {
+                Ok(Fill::Written(len)) => {
+                    out.truncate(len);
                     return Ok(());
                 }
-                Err(crate::Error::OutOfSpace) if buffer.len > out.len() => {
-                    out.reserve(buffer.len - out.len());
+                Ok(Fill::TooSmall(len)) if len > out.len() => {
+                    out.reserve(len - out.len());
+                }
+                // A required size that already fits contradicts the call.
+                Ok(Fill::TooSmall(_)) => {
+                    out.clear();
+                    return Err(crate::Error::OutOfSpace);
                 }
                 Err(error) => {
                     out.clear();

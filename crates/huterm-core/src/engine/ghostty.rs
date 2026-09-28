@@ -543,6 +543,7 @@ impl TerminalEngine {
             terminal: &self.terminal,
             total,
             top,
+            codepoints: [0; LINK_GRAPHEME_CODEPOINTS],
         })
     }
 
@@ -746,14 +747,16 @@ pub(super) struct GhosttyLinks<'a> {
     terminal: &'a ghostty::Terminal<EngineHost>,
     total: usize,
     top: usize,
+    /// Grapheme scratch shared by every cell a lookup visits.
+    codepoints: [u32; LINK_GRAPHEME_CODEPOINTS],
 }
 
-impl GhosttyLinks<'_> {
+impl<'a> GhosttyLinks<'a> {
     fn grid_ref(
         &self,
         row: usize,
         column: u16,
-    ) -> Result<ghostty::GridRef<'_>, LinkLookup> {
+    ) -> Result<ghostty::GridRef<'a>, LinkLookup> {
         let point = if row >= self.top {
             Point::viewport(
                 column,
@@ -795,8 +798,8 @@ impl LinkBuffer for GhosttyLinks<'_> {
         text: &mut String,
     ) -> Result<(), LinkLookup> {
         let cell = self.grid_ref(row, column)?;
-        let mut codepoints = [0; LINK_GRAPHEME_CODEPOINTS];
-        match cell.graphemes(&mut codepoints).map_err(unavailable)? {
+        let codepoints = &mut self.codepoints;
+        match cell.graphemes(codepoints).map_err(unavailable)? {
             Fill::Written(0) => {
                 let spacer = cell
                     .cell()
@@ -903,6 +906,63 @@ mod tests {
         let default_cursor = terminal.default_cursor_color().unwrap();
         let overrides = terminal.probe_color_overrides().unwrap();
         (effective, defaults, cursor, default_cursor, overrides)
+    }
+
+    fn engine() -> TerminalEngine {
+        TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(8, 3),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+            TerminalPresentation::default(),
+        )
+        .unwrap()
+    }
+
+    fn pty_writes(effects: Vec<EngineEffect>) -> Vec<Vec<u8>> {
+        effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                EngineEffect::PtyWrite(bytes) => Some(bytes),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn in_band_size_reports_carry_the_resized_grid_and_cells() {
+        let mut engine = engine();
+        engine.process(b"\x1b[?2048h").unwrap();
+        let effects = engine
+            .resize(
+                GridSize::clamped(10, 4),
+                CellSize {
+                    width: 7,
+                    height: 15,
+                },
+            )
+            .unwrap();
+        // CSI 48 ; rows ; columns ; height px ; width px t
+        assert_eq!(pty_writes(effects), [b"\x1b[48;4;10;60;70t".to_vec()]);
+    }
+
+    #[test]
+    fn kitty_keyboard_and_graphics_replies_never_reach_the_pty() {
+        let mut engine = engine();
+        let replies = pty_writes(
+            engine
+                .process(
+                    b"\x1b[?u\x1b[>1u\x1b[?u\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[5n",
+                )
+                .unwrap(),
+        );
+        // The status report proves replies still flow.
+        assert_eq!(replies, [b"\x1b[0n".to_vec()]);
+        // Graphics replies are already disabled natively; the filter is a
+        // second line of defense.
+        assert!(unsupported_reply(b"\x1b_Gi=31;OK\x1b\\"));
     }
 
     #[test]

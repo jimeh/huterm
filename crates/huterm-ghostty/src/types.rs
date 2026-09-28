@@ -459,58 +459,6 @@ pub enum Fill {
     TooSmall(usize),
 }
 
-/// Mouse tracking mode for an encoder.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum MouseTrackingMode {
-    /// No reports.
-    None,
-    /// X10 press reports.
-    X10,
-    /// Presses and releases.
-    Normal,
-    /// Also motion with a held button.
-    Button,
-    /// Also motion without a button.
-    Any,
-}
-
-/// Mouse event kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MouseAction {
-    /// A button press.
-    Press,
-    /// A button release.
-    Release,
-    /// Pointer motion.
-    Motion,
-}
-
-/// Mouse button identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum MouseButton {
-    /// Left button.
-    Left,
-    /// Right button.
-    Right,
-    /// Middle button.
-    Middle,
-}
-
-/// Renderer geometry for converting surface pixels into cells.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MouseGeometry {
-    /// Surface width in pixels.
-    pub screen_width: u32,
-    /// Surface height in pixels.
-    pub screen_height: u32,
-    /// Cell width in pixels; must be nonzero.
-    pub cell_width: u32,
-    /// Cell height in pixels; must be nonzero.
-    pub cell_height: u32,
-}
-
 /// Build configuration of the linked library.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]

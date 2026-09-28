@@ -150,5 +150,13 @@ fn linked_library_abi_matches_every_ffi_declaration() {
         // `GhosttyCell` is a packed integer; other typedefs are aliases.
         + check_sized(types, layout::ALIASES, &["alias", "packed"])
         + check_sized(types, layout::HANDLES, &["opaque"]);
-    assert!(checked >= 60, "checked only {checked} types");
+    // Every type bindgen emitted is either checked or deliberately skipped.
+    assert!(
+        layout::UNCHECKED
+            .iter()
+            .all(|name| name.ends_with("Fn") || name.ends_with("Impl")),
+        "{:?}",
+        layout::UNCHECKED
+    );
+    assert_eq!(checked + layout::UNCHECKED.len(), layout::TYPE_COUNT);
 }

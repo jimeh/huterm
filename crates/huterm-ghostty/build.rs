@@ -124,6 +124,9 @@ impl Options {
         let mut arguments: Vec<OsString> = vec![
             "build".into(),
             "-Demit-lib-vt=true".into(),
+            // Linux otherwise defaults to the GTK runtime, which lib-vt does
+            // not use but records in its build options.
+            "-Dapp-runtime=none".into(),
             // Huterm links only the host archive; skip Apple bundles.
             "-Demit-xcframework=false".into(),
             format!("-Doptimize={}", self.optimize.as_str()).into(),
@@ -524,6 +527,7 @@ mod tests {
             [
                 "build",
                 "-Demit-lib-vt=true",
+                "-Dapp-runtime=none",
                 "-Demit-xcframework=false",
                 "-Doptimize=ReleaseFast",
                 "-Dcpu=baseline",

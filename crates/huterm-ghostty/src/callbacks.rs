@@ -24,6 +24,7 @@
 )]
 
 use core::ffi::c_void;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
@@ -91,10 +92,24 @@ fn guard<H, R>(
     if state.poisoned.get() {
         return fallback;
     }
-    catch_unwind(AssertUnwindSafe(|| body(state))).unwrap_or_else(|_| {
+    catch_unwind(AssertUnwindSafe(|| body(state))).unwrap_or_else(|payload| {
         state.poisoned.set(true);
+        drop_payload(payload);
         fallback
     })
+}
+
+/// Drops a caught panic payload inside the trampoline without letting a
+/// panicking destructor unwind into C, which would abort the process.
+fn drop_payload(payload: Box<dyn Any + Send>) {
+    if let Err(nested) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+        #[expect(
+            clippy::mem_forget,
+            reason = "the nested payload's destructor may also panic, and \
+                      nothing may unwind out of an extern \"C\" function"
+        )]
+        std::mem::forget(nested);
+    }
 }
 
 /// # Safety

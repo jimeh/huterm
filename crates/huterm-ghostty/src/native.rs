@@ -29,12 +29,13 @@ use std::ptr::{self, NonNull};
 use crate::error::{Error, Result};
 use crate::ffi::{
     self, BuildInfo, CellData, MouseEncoderOption, RenderCellData,
-    RenderRowData, RenderStateData, RowData, TerminalCallback, TerminalData,
+    RenderCellPopulate, RenderRowData, RenderRowPopulate, RenderStateData,
+    RenderStatePopulate, RowData, TerminalCallback, TerminalData,
     TerminalOption, TerminalPointer,
 };
 use crate::types::{
-    Cell, CellContent, CellWidth, Fill, MouseAction, MouseButton, Point,
-    PointSpace, Rgb, Row, Scroll, Style, StyleColor,
+    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row, Scroll,
+    Style, StyleColor,
 };
 
 /// An allocator that outlives every object created with it. `None` selects
@@ -775,10 +776,20 @@ impl NativeRenderState {
         &'s self,
         iterator: &'s mut NativeRowIterator,
     ) -> Result<RowCursor<'s>> {
-        // render.h: `GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR` fills the
-        // pre-allocated iterator named by the handle.
-        let mut handle = iterator.ptr.as_ptr();
-        self.get::<ffi::keys::render_state_data::RowIterator>(&mut handle)?;
+        type Key = ffi::keys::render_state_data::RowIterator;
+        let mut handle: <Key as RenderStatePopulate>::Out =
+            iterator.ptr.as_ptr();
+        // SAFETY: render.h `GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR` reads
+        // the handle from `out` and fills the live iterator it names, which
+        // `'s` borrows exclusively.
+        let code = unsafe {
+            ffi::ghostty_render_state_get(
+                self.ptr.as_ptr(),
+                Key::KEY,
+                ptr::from_mut(&mut handle).cast(),
+            )
+        };
+        Error::from_code(code)?;
         Ok(RowCursor {
             ptr: iterator.ptr,
             _state: PhantomData,
@@ -866,10 +877,19 @@ impl<'s> RowCursor<'s> {
     where
         's: 'c,
     {
-        // render.h: `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS` fills the
-        // pre-allocated row cells named by the handle.
-        let mut handle = cells.ptr.as_ptr();
-        self.get::<ffi::keys::render_row_data::Cells>(&mut handle)?;
+        type Key = ffi::keys::render_row_data::Cells;
+        let mut handle: <Key as RenderRowPopulate>::Out = cells.ptr.as_ptr();
+        // SAFETY: render.h `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS` reads the
+        // handle from `out` and fills the live row cells it names, which
+        // `'c` borrows exclusively.
+        let code = unsafe {
+            ffi::ghostty_render_state_row_get(
+                self.ptr.as_ptr(),
+                Key::KEY,
+                ptr::from_mut(&mut handle).cast(),
+            )
+        };
+        Error::from_code(code)?;
         Ok(CellCursor {
             ptr: cells.ptr,
             _row: PhantomData,
@@ -939,6 +959,53 @@ impl CellCursor<'_> {
         };
         Error::from_code(code)
     }
+
+    /// Writes the current cell's grapheme cluster as UTF-8 into `buffer`;
+    /// `Written(0)` means the cell has no text.
+    pub(crate) fn graphemes_utf8(&self, buffer: &mut [u8]) -> Result<Fill> {
+        type Key = ffi::keys::render_cell_data::GraphemesUtf8;
+        let mut out: <Key as RenderCellPopulate>::Out = ffi::GhosttyBuffer {
+            ptr: buffer_ptr(buffer),
+            cap: buffer.len(),
+            len: 0,
+        };
+        // SAFETY: render.h `GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8`
+        // writes at most `cap` bytes through `ptr` (NULL when empty), which
+        // name the exclusive `buffer`, and the count or required size to
+        // `len`; it returns INVALID_VALUE before the first `next`.
+        let code = unsafe {
+            ffi::ghostty_render_state_row_cells_get(
+                self.ptr.as_ptr(),
+                Key::KEY,
+                ptr::from_mut(&mut out).cast(),
+            )
+        };
+        fill(code, out.len)
+    }
+}
+
+/// The synthetic geometry the mouse probe encodes against: a 200x200 surface
+/// of 1x1 cells.
+///
+/// Ghostty converts encoder geometry and event positions with unchecked
+/// float-to-integer casts: grid sizes into `u16` (`renderer/size.zig`) and
+/// positions into `i32` pixels (`input/mouse_encode.zig`). A surface 65536
+/// cells wide, or a huge or NaN position, is undefined behavior in release
+/// builds, so the encoder only ever receives these constants.
+const PROBE_GEOMETRY: (u32, u32) = (200, 1);
+/// The probe position; (100, 100) is column 100, past the single-byte range
+/// so UTF-8 encoding is visible.
+const PROBE_POSITION: f32 = 100.0;
+
+/// An event the mouse probe encodes, always at the probe position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProbeEvent {
+    /// Motion without a button.
+    Motion,
+    /// Motion with the left button held.
+    LeftDrag,
+    /// A left button press.
+    LeftPress,
 }
 
 /// An owned mouse encoder.
@@ -964,7 +1031,7 @@ impl NativeMouseEncoder {
             .ok_or(Error::InvalidValue)
     }
 
-    pub(crate) fn set<K: MouseEncoderOption>(&mut self, value: &K::Value) {
+    fn set<K: MouseEncoderOption>(&mut self, value: &K::Value) {
         // SAFETY: mouse/encoder.h `ghostty_mouse_encoder_setopt` reads the
         // documented value type for `K::KEY`, which the generated table
         // names `K::Value`.
@@ -975,6 +1042,32 @@ impl NativeMouseEncoder {
                 ptr::from_ref(value).cast(),
             );
         }
+    }
+
+    /// Reports every event kind, overriding the synced tracking mode.
+    pub(crate) fn track_any_event(&mut self) {
+        self.set::<ffi::keys::mouse_encoder_option::Event>(
+            &ffi::GHOSTTY_MOUSE_TRACKING_ANY,
+        );
+    }
+
+    /// Sets the probe's fixed geometry, without padding.
+    pub(crate) fn set_probe_geometry(&mut self) {
+        let (screen, cell) = PROBE_GEOMETRY;
+        let mut size: ffi::GhosttyMouseEncoderSize = ffi::sized();
+        size.screen_width = screen;
+        size.screen_height = screen;
+        size.cell_width = cell;
+        size.cell_height = cell;
+        self.set::<ffi::keys::mouse_encoder_option::Size>(&size);
+    }
+
+    pub(crate) fn set_any_button_pressed(&mut self, pressed: bool) {
+        self.set::<ffi::keys::mouse_encoder_option::AnyButtonPressed>(&pressed);
+    }
+
+    pub(crate) fn set_track_last_cell(&mut self, track: bool) {
+        self.set::<ffi::keys::mouse_encoder_option::TrackLastCell>(&track);
     }
 
     pub(crate) fn sync(&mut self, terminal: TerminalRef<'_>) {
@@ -1037,47 +1130,38 @@ impl NativeMouseEvent {
             .ok_or(Error::InvalidValue)
     }
 
-    pub(crate) fn set_action(&mut self, action: MouseAction) {
-        let action = match action {
-            MouseAction::Press => ffi::GHOSTTY_MOUSE_ACTION_PRESS,
-            MouseAction::Release => ffi::GHOSTTY_MOUSE_ACTION_RELEASE,
-            MouseAction::Motion => ffi::GHOSTTY_MOUSE_ACTION_MOTION,
+    /// Describes `event` at the probe position.
+    pub(crate) fn set(&mut self, event: ProbeEvent) {
+        let (action, left) = match event {
+            ProbeEvent::Motion => (ffi::GHOSTTY_MOUSE_ACTION_MOTION, false),
+            ProbeEvent::LeftDrag => (ffi::GHOSTTY_MOUSE_ACTION_MOTION, true),
+            ProbeEvent::LeftPress => (ffi::GHOSTTY_MOUSE_ACTION_PRESS, true),
         };
+        let event = self.ptr.as_ptr();
         // SAFETY: mouse/event.h `ghostty_mouse_event_set_action` takes a
         // live event.
-        unsafe {
-            ffi::ghostty_mouse_event_set_action(self.ptr.as_ptr(), action);
-        }
-    }
-
-    pub(crate) fn set_button(&mut self, button: Option<MouseButton>) {
-        let Some(button) = button else {
+        unsafe { ffi::ghostty_mouse_event_set_action(event, action) };
+        if left {
+            // SAFETY: mouse/event.h `ghostty_mouse_event_set_button` takes a
+            // live event.
+            unsafe {
+                ffi::ghostty_mouse_event_set_button(
+                    event,
+                    ffi::GHOSTTY_MOUSE_BUTTON_LEFT,
+                );
+            }
+        } else {
             // SAFETY: mouse/event.h `ghostty_mouse_event_clear_button` takes
             // a live event.
-            unsafe { ffi::ghostty_mouse_event_clear_button(self.ptr.as_ptr()) };
-            return;
-        };
-        let button = match button {
-            MouseButton::Left => ffi::GHOSTTY_MOUSE_BUTTON_LEFT,
-            MouseButton::Right => ffi::GHOSTTY_MOUSE_BUTTON_RIGHT,
-            MouseButton::Middle => ffi::GHOSTTY_MOUSE_BUTTON_MIDDLE,
-        };
-        // SAFETY: mouse/event.h `ghostty_mouse_event_set_button` takes a live
-        // event.
-        unsafe {
-            ffi::ghostty_mouse_event_set_button(self.ptr.as_ptr(), button);
+            unsafe { ffi::ghostty_mouse_event_clear_button(event) };
         }
-    }
-
-    pub(crate) fn set_position(&mut self, x: f32, y: f32) {
+        let position = ffi::GhosttyMousePosition {
+            x: PROBE_POSITION,
+            y: PROBE_POSITION,
+        };
         // SAFETY: mouse/event.h `ghostty_mouse_event_set_position` takes a
         // live event.
-        unsafe {
-            ffi::ghostty_mouse_event_set_position(
-                self.ptr.as_ptr(),
-                ffi::GhosttyMousePosition { x, y },
-            );
-        }
+        unsafe { ffi::ghostty_mouse_event_set_position(event, position) };
     }
 }
 
@@ -1086,5 +1170,257 @@ impl Drop for NativeMouseEvent {
         // SAFETY: mouse/event.h `ghostty_mouse_event_free` releases a handle
         // from `ghostty_mouse_event_new`.
         unsafe { ffi::ghostty_mouse_event_free(self.ptr.as_ptr()) }
+    }
+}
+
+/// Measures how many bytes getters write and setters read, for the key
+/// contract tests.
+#[cfg(test)]
+pub(crate) mod key_probe {
+    use super::{
+        BuildInfo, CellCursor, CellData, Error, MouseEncoderOption,
+        NativeMouseEncoder, NativeRenderState, NativeRowCells,
+        NativeRowIterator, NativeTerminal, RenderCellData, RenderRowData,
+        RenderRowPopulate, RenderStateData, RenderStatePopulate, Result,
+        RowCursor, RowData, TerminalData, TerminalOption, TerminalRef, c_void,
+        ffi, ptr,
+    };
+    use crate::types::{Cell, Row};
+
+    /// Guard bytes probed after each value.
+    const GUARD: usize = 64;
+
+    /// What a getter wrote into its output.
+    #[derive(Debug, Eq, PartialEq)]
+    pub(crate) struct Written {
+        /// The output's Rust type.
+        pub(crate) type_name: &'static str,
+        /// Offsets at or past the kept input that the call left untouched.
+        pub(crate) untouched: Vec<usize>,
+        /// Whether any byte after the output changed.
+        pub(crate) overran: bool,
+    }
+
+    /// 16-byte-aligned storage for `len` bytes, all set to `byte`.
+    fn storage(len: usize, byte: u8) -> Vec<u128> {
+        vec![u128::from_ne_bytes([byte; 16]); len.div_ceil(16)]
+    }
+
+    fn bytes(storage: &[u128], len: usize) -> Vec<u8> {
+        storage
+            .iter()
+            .flat_map(|word| word.to_ne_bytes())
+            .take(len)
+            .collect()
+    }
+
+    /// Copies `value`'s first `len` bytes to the start of `storage`.
+    fn place<T>(storage: &mut [u128], value: &T, len: usize) {
+        assert!(len <= size_of::<T>() && len <= storage.len() * 16);
+        // SAFETY: `value` has `size_of::<T>()` readable bytes and `storage`
+        // at least `len` writable ones; they do not overlap.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                ptr::from_ref(value).cast::<u8>(),
+                storage.as_mut_ptr().cast::<u8>(),
+                len,
+            );
+        }
+    }
+
+    /// Calls `call` on an output of `T`'s size whose first `keep` bytes come
+    /// from `input`, with the rest and a guard prefilled with 0x00 and then
+    /// 0xFF. A byte that differs between the runs was never written.
+    fn probe<T>(
+        input: &T,
+        keep: usize,
+        mut call: impl FnMut(*mut c_void) -> ffi::GhosttyResult,
+    ) -> Result<Written> {
+        let size = size_of::<T>();
+        let mut runs = Vec::new();
+        for pattern in [0x00, 0xFF] {
+            let mut out = storage(size + GUARD, pattern);
+            place(&mut out, input, keep);
+            Error::from_code(call(out.as_mut_ptr().cast()))?;
+            runs.push((pattern, bytes(&out, size + GUARD)));
+        }
+        let [(low, first), (high, second)] = &runs[..] else {
+            unreachable!("two runs");
+        };
+        Ok(Written {
+            type_name: std::any::type_name::<T>(),
+            untouched: (keep..size)
+                .filter(|&index| first[index] != second[index])
+                .collect(),
+            overran: (size..size + GUARD)
+                .any(|index| first[index] != *low || second[index] != *high),
+        })
+    }
+
+    pub(crate) fn terminal<K: TerminalData>(
+        terminal: TerminalRef<'_>,
+        input: &K::Out,
+        keep: usize,
+    ) -> Result<Written> {
+        probe(input, keep, |out| {
+            // SAFETY: terminal.h `ghostty_terminal_get`; `out` holds
+            // `size_of::<K::Out>()` bytes plus a guard, with any input the
+            // key reads kept from `input`.
+            unsafe { ffi::ghostty_terminal_get(terminal.raw(), K::KEY, out) }
+        })
+    }
+
+    pub(crate) fn render_state<K: RenderStateData>(
+        state: &NativeRenderState,
+        input: &K::Out,
+        keep: usize,
+    ) -> Result<Written> {
+        probe(input, keep, |out| {
+            // SAFETY: render.h `ghostty_render_state_get`; `out` holds
+            // `size_of::<K::Out>()` bytes plus a guard.
+            unsafe {
+                ffi::ghostty_render_state_get(state.ptr.as_ptr(), K::KEY, out)
+            }
+        })
+    }
+
+    /// Probes the row-iterator key, which reads a handle from `out`.
+    pub(crate) fn row_iterator(
+        state: &NativeRenderState,
+        iterator: &mut NativeRowIterator,
+    ) -> Result<Written> {
+        type Key = ffi::keys::render_state_data::RowIterator;
+        let handle: <Key as RenderStatePopulate>::Out = iterator.ptr.as_ptr();
+        probe(&handle, size_of_val(&handle), |out| {
+            // SAFETY: render.h `GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR` reads
+            // the kept handle to the exclusively borrowed iterator and fills
+            // it.
+            unsafe {
+                ffi::ghostty_render_state_get(state.ptr.as_ptr(), Key::KEY, out)
+            }
+        })
+    }
+
+    pub(crate) fn render_row<K: RenderRowData>(
+        row: &RowCursor<'_>,
+        input: &K::Out,
+        keep: usize,
+    ) -> Result<Written> {
+        probe(input, keep, |out| {
+            // SAFETY: render.h `ghostty_render_state_row_get` on a cursor
+            // positioned on a row; `out` holds the output plus a guard.
+            unsafe {
+                ffi::ghostty_render_state_row_get(row.ptr.as_ptr(), K::KEY, out)
+            }
+        })
+    }
+
+    /// Probes the row-cells key, which reads a handle from `out`.
+    pub(crate) fn row_cells(
+        row: &RowCursor<'_>,
+        cells: &mut NativeRowCells,
+    ) -> Result<Written> {
+        type Key = ffi::keys::render_row_data::Cells;
+        let handle: <Key as RenderRowPopulate>::Out = cells.ptr.as_ptr();
+        probe(&handle, size_of_val(&handle), |out| {
+            // SAFETY: render.h `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS` reads
+            // the kept handle to the exclusively borrowed row cells and
+            // fills them.
+            unsafe {
+                ffi::ghostty_render_state_row_get(
+                    row.ptr.as_ptr(),
+                    Key::KEY,
+                    out,
+                )
+            }
+        })
+    }
+
+    pub(crate) fn render_cell<K: RenderCellData>(
+        cells: &CellCursor<'_>,
+        input: &K::Out,
+        keep: usize,
+    ) -> Result<Written> {
+        probe(input, keep, |out| {
+            // SAFETY: render.h `ghostty_render_state_row_cells_get` on a
+            // cursor positioned on a cell; `out` holds the output plus a
+            // guard.
+            unsafe {
+                ffi::ghostty_render_state_row_cells_get(
+                    cells.ptr.as_ptr(),
+                    K::KEY,
+                    out,
+                )
+            }
+        })
+    }
+
+    pub(crate) fn cell<K: CellData>(
+        cell: Cell,
+        input: &K::Out,
+    ) -> Result<Written> {
+        probe(input, 0, |out| {
+            // SAFETY: screen.h `ghostty_cell_get` decodes into `out`, which
+            // holds the output plus a guard.
+            unsafe { ffi::ghostty_cell_get(cell.0, K::KEY, out) }
+        })
+    }
+
+    pub(crate) fn row<K: RowData>(row: Row, input: &K::Out) -> Result<Written> {
+        probe(input, 0, |out| {
+            // SAFETY: screen.h `ghostty_row_get` decodes into `out`, which
+            // holds the output plus a guard.
+            unsafe { ffi::ghostty_row_get(row.0, K::KEY, out) }
+        })
+    }
+
+    pub(crate) fn build_info<K: BuildInfo>(input: &K::Out) -> Result<Written> {
+        probe(input, 0, |out| {
+            // SAFETY: build_info.h `ghostty_build_info` writes into `out`,
+            // which holds the output plus a guard.
+            unsafe { ffi::ghostty_build_info(K::KEY, out) }
+        })
+    }
+
+    /// Sets a terminal option from `value` followed by `guard` bytes, so a
+    /// library that reads past the value sees them.
+    pub(crate) fn set_terminal<K: TerminalOption>(
+        terminal: &mut NativeTerminal,
+        value: &K::Value,
+        guard: u8,
+    ) -> Result<()> {
+        let size = size_of::<K::Value>();
+        let mut input = storage(size + GUARD, guard);
+        place(&mut input, value, size);
+        // SAFETY: terminal.h `ghostty_terminal_set` reads `K::Value` from
+        // `input`, which holds it plus a guard.
+        let code = unsafe {
+            ffi::ghostty_terminal_set(
+                terminal.ptr.as_ptr(),
+                K::KEY,
+                input.as_ptr().cast(),
+            )
+        };
+        Error::from_code(code)
+    }
+
+    /// Sets a mouse encoder option from `value` followed by `guard` bytes.
+    pub(crate) fn set_mouse<K: MouseEncoderOption>(
+        encoder: &mut NativeMouseEncoder,
+        value: &K::Value,
+        guard: u8,
+    ) {
+        let size = size_of::<K::Value>();
+        let mut input = storage(size + GUARD, guard);
+        place(&mut input, value, size);
+        // SAFETY: mouse/encoder.h `ghostty_mouse_encoder_setopt` reads
+        // `K::Value` from `input`, which holds it plus a guard.
+        unsafe {
+            ffi::ghostty_mouse_encoder_setopt(
+                encoder.ptr.as_ptr(),
+                K::KEY,
+                input.as_ptr().cast(),
+            );
+        }
     }
 }

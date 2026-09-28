@@ -1,13 +1,12 @@
 //! One test per libghostty-vt behavior that Huterm relies on. A failure
 //! after a pin bump names the assumption that changed.
 
-use crate::native;
+use crate::native::{self, ProbeEvent};
 use crate::test_alloc;
 use crate::{
     CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
     ClipboardWriteResult, ColorScheme, DeviceAttributes, Dirty, Effect, Error,
-    Fill, Host, Mode, MouseAction, MouseButton, MouseEncoder, MouseEvent,
-    MouseGeometry, MouseProbe, Options, Point, ProbedFormat, ProbedTracking,
+    Fill, Host, Mode, MouseProbe, Options, Point, ProbedFormat, ProbedTracking,
     RenderState, Rgb, Screen, Scroll, Terminal,
 };
 
@@ -345,16 +344,37 @@ fn clipboard_reads_without_a_callback_are_silent() {
 
 #[test]
 fn image_and_glyph_protocols_can_be_disabled() {
+    use crate::ffi::keys::terminal_option as option;
+
+    const GLYPH: &[u8] = b"\x1b_25a1;s\x1b\\";
+    const IMAGE: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
+    let silent = |terminal: &mut Terminal<Recorder>| {
+        written(terminal, GLYPH).is_empty()
+            && written(terminal, IMAGE).is_empty()
+    };
     let mut terminal = terminal();
+    assert!(!written(&mut terminal, GLYPH).is_empty());
+    assert!(!written(&mut terminal, IMAGE).is_empty());
     terminal.disable_extensions().unwrap();
     assert!(matches!(
         terminal.kitty_image_storage_limit().unwrap(),
         None | Some(0)
     ));
-    assert!(
-        written(&mut terminal, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\")
-            .is_empty()
-    );
+    assert!(silent(&mut terminal));
+
+    // Each setting silences its protocol alone: first with APC buffering
+    // restored, then with both protocols re-enabled behind a zero APC
+    // limit.
+    let native = terminal.native_parts().unwrap();
+    native.set::<option::ApcMaxBytes>(None).unwrap();
+    assert!(silent(&mut terminal));
+    terminal.disable_extensions().unwrap();
+    let native = terminal.native_parts().unwrap();
+    native.set::<option::GlyphProtocol>(Some(&true)).unwrap();
+    native
+        .set::<option::KittyImageStorageLimit>(Some(&(1 << 20)))
+        .unwrap();
+    assert!(silent(&mut terminal));
 }
 
 #[test]
@@ -652,27 +672,13 @@ fn grid_refs_report_hyperlink_and_grapheme_buffer_sizes() {
 fn mouse_encoder_reports_synthetic_geometry_cells() {
     let mut terminal = terminal();
     terminal.write(b"\x1b[?1000h\x1b[?1006h").unwrap();
-    let mut encoder = MouseEncoder::new().unwrap();
-    let mut event = MouseEvent::new().unwrap();
-    encoder.sync(&terminal).unwrap();
-    encoder.set_geometry(MouseGeometry {
-        screen_width: 200,
-        screen_height: 200,
-        cell_width: 1,
-        cell_height: 1,
-    });
-    event.set(MouseAction::Press, Some(MouseButton::Left), 100.0, 100.0);
-    let mut buffer = [0; 32];
-    let Fill::Written(len) = encoder.encode(&event, &mut buffer).unwrap()
-    else {
-        panic!("buffer too small");
-    };
-    assert_eq!(&buffer[..len], b"\x1b[<0;101;101M");
-    event.set(MouseAction::Motion, None, 100.0, 100.0);
+    let mut probe = MouseProbe::new().unwrap();
+    probe.sync(&terminal).unwrap();
     assert_eq!(
-        encoder.encode(&event, &mut buffer).unwrap(),
-        Fill::Written(0)
+        probe.report(ProbeEvent::LeftPress).unwrap(),
+        b"\x1b[<0;101;101M"
     );
+    assert_eq!(probe.report(ProbeEvent::Motion).unwrap(), b"");
 }
 
 #[test]
@@ -724,6 +730,40 @@ fn panicking_host_callbacks_poison_the_terminal_without_aborting() {
     assert_eq!(terminal.title().unwrap_err(), Error::Poisoned);
     let mut render = RenderState::new().unwrap();
     assert_eq!(render.update(&mut terminal), Err(Error::Poisoned));
+}
+
+/// A panic payload whose destructor panics too.
+struct PanicsOnDrop;
+
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        panic!("panic payload destructor panicked");
+    }
+}
+
+/// Panics with a [`PanicsOnDrop`] payload when asked for a color scheme.
+struct PanicsWithBadPayload;
+
+impl Host for PanicsWithBadPayload {
+    fn color_scheme(&mut self, _background: Rgb) -> Option<ColorScheme> {
+        std::panic::panic_any(PanicsOnDrop)
+    }
+}
+
+#[test]
+fn panic_payloads_with_panicking_destructors_still_poison() {
+    let mut terminal = Terminal::new(options(), PanicsWithBadPayload).unwrap();
+    terminal
+        .set_default_background(Some(Rgb::new(1, 2, 3)))
+        .unwrap();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    // Without containment, the destructor's panic unwinds into C and the
+    // process aborts here.
+    let result = terminal.write(b"\x1b[?996n");
+    std::panic::set_hook(previous);
+    assert_eq!(result, Err(Error::Poisoned));
+    assert!(terminal.is_poisoned());
 }
 
 #[test]
