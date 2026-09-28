@@ -435,12 +435,27 @@ run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 [tasks."ghostty:bindings"]
 depends = ["ghostty:prepare"]
 description = "Regenerate huterm-ghostty's FFI declarations from the pinned headers"
-run = "bash scripts/build-exec.sh cargo run --locked --quiet -p huterm-ghostty-bindgen"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+# bindgen loads libclang at run time. On macOS, clang-sys otherwise prefers
+# any llvm-config on PATH over Xcode, so use the selected developer
+# directory's libclang, the same Xcode that builds Huterm.
+if [ "$(uname -s)" = Darwin ] && [ -z "${LIBCLANG_PATH:-}" ]; then
+  developer="$(xcode-select --print-path)"
+  for directory in "$developer/Toolchains/XcodeDefault.xctoolchain/usr/lib" "$developer/usr/lib"; do
+    if [ -e "$directory/libclang.dylib" ]; then
+      export LIBCLANG_PATH="$directory"
+      break
+    fi
+  done
+fi
+exec bash scripts/build-exec.sh cargo run --locked --quiet -p huterm-ghostty-bindgen -- "$@"
+'''
 
 [tasks."ghostty:bindings:check"]
-depends = ["ghostty:prepare"]
 description = "Check that huterm-ghostty's committed FFI declarations match the headers"
-run = "bash scripts/build-exec.sh cargo run --locked --quiet -p huterm-ghostty-bindgen -- --check"
+run = "mise run ghostty:bindings -- --check"
 
 [tasks."ghostty:check"]
 description = "Verify prepared Ghostty sources against the reviewed tree hash"

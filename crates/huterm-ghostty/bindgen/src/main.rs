@@ -371,6 +371,11 @@ fn run(check: bool) -> Result<bool, Error> {
     let include = source.join("include");
     let config = workspace.join("rustfmt.toml");
 
+    let libclang = load_libclang()?;
+    match std::env::var("LIBCLANG_PATH") {
+        Ok(path) => eprintln!("libclang: {libclang} from {path}"),
+        Err(_) => eprintln!("libclang: {libclang}"),
+    }
     let bindings = generate_bindings(&include)?;
     let file = syn::parse_file(&bindings)
         .map_err(|error| format!("parsing bindgen output: {error}"))?;
@@ -411,6 +416,34 @@ fn run(check: bool) -> Result<bool, Error> {
         }
     }
     Ok(current)
+}
+
+/// Loads libclang and returns its version. bindgen panics when it cannot
+/// find the library; this turns that into setup instructions.
+fn load_libclang() -> Result<String, Error> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let loaded = std::panic::catch_unwind(bindgen::clang_version);
+    std::panic::set_hook(hook);
+    loaded
+        .map(|version| version.full)
+        .map_err(|payload| libclang_error(&*payload))
+}
+
+fn libclang_error(payload: &(dyn std::any::Any + Send)) -> Error {
+    let detail = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("no details");
+    format!(
+        "could not load libclang ({detail}).\n\
+         \x20 macOS: select an Xcode or Command Line Tools with `xcode-select`; \
+         `mise run ghostty:bindings` uses its libclang.\n\
+         \x20 Ubuntu 22.04: sudo apt-get install --no-install-recommends \
+         libclang1-14\n\
+         \x20 Otherwise: set LIBCLANG_PATH to the directory containing libclang."
+    )
 }
 
 fn header(source: &str) -> String {
@@ -896,8 +929,6 @@ struct Items {
     /// Types the manifest does not describe: callback typedefs and the
     /// opaque structs behind handles.
     unchecked: Vec<String>,
-    /// Every struct, union, and typedef in the bindings.
-    total: usize,
 }
 
 fn collect_items(file: &syn::File) -> Result<Items, Error> {
@@ -905,12 +936,6 @@ fn collect_items(file: &syn::File) -> Result<Items, Error> {
     let mut typedefs = Vec::new();
     let mut constants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for item in &file.items {
-        if matches!(
-            item,
-            syn::Item::Struct(_) | syn::Item::Union(_) | syn::Item::Type(_)
-        ) {
-            items.total += 1;
-        }
         match item {
             syn::Item::Struct(item) => {
                 let syn::Fields::Named(fields) = &item.fields else {
@@ -1059,16 +1084,13 @@ fn generate_layout(file: &syn::File) -> Result<String, Error> {
         out,
         "\n/// Types the manifest does not describe: callback typedefs and the\n\
          /// opaque structs behind handles.\n\
-         pub(crate) const UNCHECKED: &[&str] = &[{}];\n\n\
-         /// Every struct, union, and typedef in the bindings, checked or not.\n\
-         pub(crate) const TYPE_COUNT: usize = {};\n",
+         pub(crate) const UNCHECKED: &[&str] = &[{}];\n",
         items
             .unchecked
             .iter()
             .map(|name| format!("\"{name}\""))
             .collect::<Vec<_>>()
             .join(", "),
-        items.total
     );
     Ok(out)
 }
@@ -1284,6 +1306,22 @@ mod tests {
                 .0,
             "Option"
         );
+    }
+
+    #[test]
+    fn libclang_failures_explain_the_fix() {
+        let error = libclang_error(&String::from(
+            "Unable to find libclang: \"couldn't find any valid shared libraries\"",
+        ));
+        for expected in [
+            "couldn't find any valid shared libraries",
+            "xcode-select",
+            "libclang1-14",
+            "LIBCLANG_PATH",
+        ] {
+            assert!(error.contains(expected), "{expected} in {error}");
+        }
+        assert!(libclang_error(&"static detail").contains("static detail"));
     }
 
     #[test]

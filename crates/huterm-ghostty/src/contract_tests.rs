@@ -720,10 +720,9 @@ fn mouse_probe_reads_active_modes_without_pty_output() {
 fn panicking_host_callbacks_poison_the_terminal_without_aborting() {
     let mut terminal = terminal();
     terminal.host_mut().panic_on_clipboard = true;
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    // The callback runs on this thread, so the test harness captures its
+    // panic message.
     let result = terminal.write(b"\x1b]52;c;YQ==\x07\x1b]2;after\x07");
-    std::panic::set_hook(previous);
     assert_eq!(result, Err(Error::Poisoned));
     assert!(terminal.is_poisoned());
     assert_eq!(terminal.write(b"x"), Err(Error::Poisoned));
@@ -750,20 +749,41 @@ impl Host for PanicsWithBadPayload {
     }
 }
 
+/// Set in the child process that runs the payload-destructor scenario.
+const PANIC_CHILD: &str = "HUTERM_GHOSTTY_PANIC_PAYLOAD_CHILD";
+
 #[test]
 fn panic_payloads_with_panicking_destructors_still_poison() {
-    let mut terminal = Terminal::new(options(), PanicsWithBadPayload).unwrap();
-    terminal
-        .set_default_background(Some(Rgb::new(1, 2, 3)))
+    const NAME: &str = "contract_tests::panic_payloads_with_panicking_destructors_still_poison";
+    const POISONED: &str = "panic payload scenario: terminal poisoned";
+    if std::env::var_os(PANIC_CHILD).is_some() {
+        // Without containment, the destructor's panic unwinds into C and
+        // aborts this child process.
+        let mut terminal =
+            Terminal::new(options(), PanicsWithBadPayload).unwrap();
+        terminal
+            .set_default_background(Some(Rgb::new(1, 2, 3)))
+            .unwrap();
+        assert_eq!(terminal.write(b"\x1b[?996n"), Err(Error::Poisoned));
+        assert!(terminal.is_poisoned());
+        println!("{POISONED}");
+        return;
+    }
+    // A regression aborts the process, so run the scenario in a child and
+    // report its outcome under this test's name.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+        .env(PANIC_CHILD, "1")
+        .output()
         .unwrap();
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    // Without containment, the destructor's panic unwinds into C and the
-    // process aborts here.
-    let result = terminal.write(b"\x1b[?996n");
-    std::panic::set_hook(previous);
-    assert_eq!(result, Err(Error::Poisoned));
-    assert!(terminal.is_poisoned());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains(POISONED),
+        "the scenario did not poison the terminal and exit cleanly ({}):\n\
+         {stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

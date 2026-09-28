@@ -608,18 +608,22 @@ also run through the appropriate verification and CI tasks.
 `huterm-ghostty` commits its FFI declarations. `mise run ghostty:bindings`
 regenerates them from the pinned headers, and `mise run ghostty:bindings:check`,
 part of `mise run check`, fails when they are stale. Both load libclang at run
-time:
+time and print the version they loaded:
 
-- macOS uses the libclang in the selected Xcode or Command Line Tools.
+- On macOS the task sets `LIBCLANG_PATH` to the selected Xcode's toolchain, or
+  to the Command Line Tools, so the libclang matches the Xcode that builds
+  Huterm. Without it, clang-sys prefers any `llvm-config` on `PATH`.
 - Ubuntu 22.04 needs `sudo apt-get install --no-install-recommends libclang1-14`.
   The Linux Docker image already provides libclang.
-- Set `LIBCLANG_PATH` to the directory containing the library when it is
-  elsewhere.
+- Set `LIBCLANG_PATH` to the directory containing the library to override
+  either choice. A missing library fails with these instructions.
 
-The generator parses the headers as C++17, so libclang 14 and Xcode's current
-libclang produce identical output. CI runs the check only in the macOS arm64
-checks job, where Xcode provides libclang; its Linux runners would load
-whichever unpinned LLVM the image ships.
+The generator parses the headers as C++17, so libclang 14 and Apple clang 21
+produce identical output. CI runs the check only in the macOS arm64 checks
+job. That job does not pin Xcode: it builds with the runner image's default,
+and the check uses the same Xcode's libclang, so an image update that changes
+the output fails the check and names the libclang version in its log. The
+Linux runners would load whichever unpinned LLVM the image ships.
 
 ### Native macOS input smoke
 

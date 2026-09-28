@@ -1800,6 +1800,3 @@ pub(crate) const UNCHECKED: &[&str] = &[
     "GhosttyTerminalWritePtyFn",
     "GhosttyTerminalXtversionFn",
 ];
-
-/// Every struct, union, and typedef in the bindings, checked or not.
-pub(crate) const TYPE_COUNT: usize = 84;

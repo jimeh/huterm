@@ -35,6 +35,8 @@ mod contract_tests;
 mod key_tests;
 #[cfg(test)]
 mod test_alloc;
+#[cfg(test)]
+mod test_layout;
 
 pub use callbacks::Host;
 pub use error::{Error, Result};

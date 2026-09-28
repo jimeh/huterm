@@ -102,12 +102,17 @@ impl RenderState {
             }
             _ => CursorStyle::Block,
         };
+        // render.h defines the position only when its flag is set, so read
+        // it only then.
+        let position = if cursor.viewport_has_value {
+            Some((cursor.viewport_x, cursor.viewport_y))
+        } else {
+            None
+        };
         Ok(Cursor {
             visible: cursor.visible,
             style,
-            position: cursor
-                .viewport_has_value
-                .then_some((cursor.viewport_x, cursor.viewport_y)),
+            position,
         })
     }
 

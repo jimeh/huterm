@@ -1185,6 +1185,10 @@ pub(crate) mod key_probe {
         RowCursor, RowData, TerminalData, TerminalOption, TerminalRef, c_void,
         ffi, ptr,
     };
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::mem::MaybeUninit;
+
+    use crate::test_layout::{self, Part};
     use crate::types::{Cell, Row};
 
     /// Guard bytes probed after each value.
@@ -1195,65 +1199,154 @@ pub(crate) mod key_probe {
     pub(crate) struct Written {
         /// The output's Rust type.
         pub(crate) type_name: &'static str,
-        /// Offsets at or past the kept input that the call left untouched.
+        /// Declared bytes at or past the kept input that the call left
+        /// untouched.
         pub(crate) untouched: Vec<usize>,
         /// Whether any byte after the output changed.
         pub(crate) overran: bool,
     }
 
-    /// 16-byte-aligned storage for `len` bytes, all set to `byte`.
-    fn storage(len: usize, byte: u8) -> Vec<u128> {
-        vec![u128::from_ne_bytes([byte; 16]); len.div_ceil(16)]
+    /// 16-byte-aligned bytes that a foreign call may write, including
+    /// uninitialized padding, so they are read only where a field lives.
+    struct Storage {
+        words: Vec<MaybeUninit<u128>>,
+        len: usize,
     }
 
-    fn bytes(storage: &[u128], len: usize) -> Vec<u8> {
-        storage
-            .iter()
-            .flat_map(|word| word.to_ne_bytes())
-            .take(len)
-            .collect()
+    impl Storage {
+        /// `len` bytes, all set to `byte`.
+        fn new(len: usize, byte: u8) -> Self {
+            let mut words = vec![MaybeUninit::uninit(); len.div_ceil(16)];
+            // SAFETY: `words` holds at least `len` writable bytes.
+            unsafe {
+                words.as_mut_ptr().cast::<u8>().write_bytes(byte, len);
+            }
+            Self { words, len }
+        }
+
+        fn as_mut_ptr(&mut self) -> *mut c_void {
+            self.words.as_mut_ptr().cast()
+        }
+
+        /// Copies `value`'s first `len` bytes to the start.
+        fn place<T>(&mut self, value: &T, len: usize) {
+            assert!(len <= size_of::<T>() && len <= self.len);
+            // SAFETY: `value` has `size_of::<T>()` readable bytes and the
+            // storage at least `len` writable ones; an untyped copy may
+            // carry `value`'s padding.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    ptr::from_ref(value).cast::<u8>(),
+                    self.words.as_mut_ptr().cast::<u8>(),
+                    len,
+                );
+            }
+        }
+
+        /// Reads one byte.
+        ///
+        /// # Safety
+        ///
+        /// `offset` must lie in a declared field of the output or in the
+        /// guard, which this storage initialized and the library either
+        /// left alone or wrote as part of a value.
+        unsafe fn read(&self, offset: usize) -> u8 {
+            // SAFETY: the words hold `self.len` bytes; viewing them as
+            // possibly uninitialized bytes reads nothing.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    self.words.as_ptr().cast::<MaybeUninit<u8>>(),
+                    self.len,
+                )
+            };
+            // SAFETY: initialized per the caller's contract.
+            unsafe { bytes[offset].assume_init() }
+        }
+
+        /// Reads the bytes of every declared part, following each tag to
+        /// its active union member.
+        fn declared(&self, parts: &[Part], out: &mut BTreeMap<usize, u8>) {
+            for part in parts {
+                match part {
+                    Part::Bytes(range) => {
+                        for offset in range.clone() {
+                            // SAFETY: `range` is a declared field.
+                            out.insert(offset, unsafe { self.read(offset) });
+                        }
+                    }
+                    Part::Tagged { tag, arms } => {
+                        let mut bytes = [0; 8];
+                        for (index, offset) in tag.clone().enumerate() {
+                            // SAFETY: the tag is a declared field.
+                            bytes[index] = unsafe { self.read(offset) };
+                            out.insert(offset, bytes[index]);
+                        }
+                        let value = tag_value(&bytes[..tag.len()]);
+                        let (_, active) = arms
+                            .iter()
+                            .find(|(arm, _)| *arm == value)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "tag at {tag:?} holds {value}, which \
+                                     names no union member"
+                                )
+                            });
+                        self.declared(active, out);
+                    }
+                }
+            }
+        }
     }
 
-    /// Copies `value`'s first `len` bytes to the start of `storage`.
-    fn place<T>(storage: &mut [u128], value: &T, len: usize) {
-        assert!(len <= size_of::<T>() && len <= storage.len() * 16);
-        // SAFETY: `value` has `size_of::<T>()` readable bytes and `storage`
-        // at least `len` writable ones; they do not overlap.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                ptr::from_ref(value).cast::<u8>(),
-                storage.as_mut_ptr().cast::<u8>(),
-                len,
-            );
+    /// A native-endian signed tag of one, two, four, or eight bytes.
+    fn tag_value(bytes: &[u8]) -> i64 {
+        match bytes.len() {
+            1 => i64::from(i8::from_ne_bytes([bytes[0]])),
+            2 => i64::from(i16::from_ne_bytes(bytes.try_into().unwrap())),
+            4 => i64::from(i32::from_ne_bytes(bytes.try_into().unwrap())),
+            8 => i64::from_ne_bytes(bytes.try_into().unwrap()),
+            width => panic!("unsupported tag width {width}"),
         }
     }
 
     /// Calls `call` on an output of `T`'s size whose first `keep` bytes come
     /// from `input`, with the rest and a guard prefilled with 0x00 and then
-    /// 0xFF. A byte that differs between the runs was never written.
+    /// 0xFF. A declared byte that differs between the runs was never
+    /// written; padding is never read.
     fn probe<T>(
         input: &T,
         keep: usize,
         mut call: impl FnMut(*mut c_void) -> ffi::GhosttyResult,
     ) -> Result<Written> {
         let size = size_of::<T>();
+        let parts = test_layout::of::<T>();
         let mut runs = Vec::new();
         for pattern in [0x00, 0xFF] {
-            let mut out = storage(size + GUARD, pattern);
-            place(&mut out, input, keep);
-            Error::from_code(call(out.as_mut_ptr().cast()))?;
-            runs.push((pattern, bytes(&out, size + GUARD)));
+            let mut out = Storage::new(size + GUARD, pattern);
+            out.place(input, keep);
+            Error::from_code(call(out.as_mut_ptr()))?;
+            let mut declared = BTreeMap::new();
+            out.declared(&parts, &mut declared);
+            let overran = (size..size + GUARD)
+                // SAFETY: the guard is storage this probe initialized.
+                .any(|offset| unsafe { out.read(offset) } != pattern);
+            runs.push((declared, overran));
         }
-        let [(low, first), (high, second)] = &runs[..] else {
+        let [(first, low), (second, high)] = &runs[..] else {
             unreachable!("two runs");
         };
         Ok(Written {
             type_name: std::any::type_name::<T>(),
-            untouched: (keep..size)
-                .filter(|&index| first[index] != second[index])
+            untouched: first
+                .keys()
+                .chain(second.keys())
+                .copied()
+                .filter(|&offset| offset >= keep)
+                .filter(|offset| first.get(offset) != second.get(offset))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect(),
-            overran: (size..size + GUARD)
-                .any(|index| first[index] != *low || second[index] != *high),
+            overran: *low || *high,
         })
     }
 
@@ -1390,15 +1483,15 @@ pub(crate) mod key_probe {
         guard: u8,
     ) -> Result<()> {
         let size = size_of::<K::Value>();
-        let mut input = storage(size + GUARD, guard);
-        place(&mut input, value, size);
+        let mut input = Storage::new(size + GUARD, guard);
+        input.place(value, size);
         // SAFETY: terminal.h `ghostty_terminal_set` reads `K::Value` from
         // `input`, which holds it plus a guard.
         let code = unsafe {
             ffi::ghostty_terminal_set(
                 terminal.ptr.as_ptr(),
                 K::KEY,
-                input.as_ptr().cast(),
+                input.as_mut_ptr().cast_const(),
             )
         };
         Error::from_code(code)
@@ -1411,15 +1504,15 @@ pub(crate) mod key_probe {
         guard: u8,
     ) {
         let size = size_of::<K::Value>();
-        let mut input = storage(size + GUARD, guard);
-        place(&mut input, value, size);
+        let mut input = Storage::new(size + GUARD, guard);
+        input.place(value, size);
         // SAFETY: mouse/encoder.h `ghostty_mouse_encoder_setopt` reads
         // `K::Value` from `input`, which holds it plus a guard.
         unsafe {
             ffi::ghostty_mouse_encoder_setopt(
                 encoder.ptr.as_ptr(),
                 K::KEY,
-                input.as_ptr().cast(),
+                input.as_mut_ptr().cast_const(),
             );
         }
     }

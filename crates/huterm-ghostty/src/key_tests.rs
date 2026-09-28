@@ -6,14 +6,9 @@
 //! no guard byte may change. Setters read a value followed by guard bytes,
 //! and the library's behavior must match the value alone.
 
-use std::collections::BTreeSet;
-use std::sync::OnceLock;
-
-use serde_json::Value;
-
 use crate::ffi::{self, keys};
 use crate::native::key_probe::{self, Written};
-use crate::native::{self, NativeRowCells, NativeRowIterator, ProbeEvent};
+use crate::native::{NativeRowCells, NativeRowIterator, ProbeEvent};
 use crate::{
     Effect, Fill, MouseProbe, Options, Point, RenderState, Rgb, Terminal,
 };
@@ -29,75 +24,16 @@ fn options() -> Options {
     }
 }
 
-/// Bytes of the manifest type `name`, offset by `base`, that a field-wise
-/// write may skip: struct padding and union storage.
-fn skippable(
-    types: &Value,
-    name: &str,
-    base: usize,
-    out: &mut BTreeSet<usize>,
-) {
-    let Some(descriptor) = types.get(name) else {
-        return;
-    };
-    let number =
-        |value: &Value| usize::try_from(value.as_u64().unwrap()).unwrap();
-    let size = number(&descriptor["size"]);
-    match descriptor["kind"].as_str() {
-        Some("union") => out.extend(base..base + size),
-        Some("struct") => {
-            let mut covered = vec![false; size];
-            for field in descriptor["fields"].as_object().unwrap().values() {
-                let (offset, len) =
-                    (number(&field["offset"]), number(&field["size"]));
-                covered[offset..offset + len].fill(true);
-                match field["type"].as_str().unwrap() {
-                    "array" => {
-                        let count = number(&field["count"]);
-                        let element = field["elem"].as_str().unwrap();
-                        for index in 0..count {
-                            skippable(
-                                types,
-                                element,
-                                base + offset + index * (len / count),
-                                out,
-                            );
-                        }
-                    }
-                    other => skippable(types, other, base + offset, out),
-                }
-            }
-            out.extend(
-                (0..size)
-                    .filter(|&offset| !covered[offset])
-                    .map(|offset| base + offset),
-            );
-        }
-        _ => {}
-    }
-}
-
-/// Asserts that a getter wrote every byte of its output except padding and
-/// union storage, which the library's manifest identifies, and nothing
-/// after it.
+/// Asserts that a getter wrote every declared byte of its output, including
+/// the union member its tag selects, and nothing after it. Padding is never
+/// read.
 fn check(written: &Written, marker: &str) {
-    static TYPES: OnceLock<Value> = OnceLock::new();
-    let types = TYPES.get_or_init(|| {
-        let manifest: Value =
-            serde_json::from_str(native::type_json()).unwrap();
-        manifest["types"].clone()
-    });
     assert!(!written.overran, "{marker} wrote past its output");
-    let name = written.type_name.rsplit("::").next().unwrap();
-    let mut allowed = BTreeSet::new();
-    skippable(types, name, 0, &mut allowed);
     assert!(
-        written
-            .untouched
-            .iter()
-            .all(|offset| allowed.contains(offset)),
-        "{marker} left {:?} of {name} unwritten; only {allowed:?} may be",
-        written.untouched
+        written.untouched.is_empty(),
+        "{marker} left declared bytes {:?} of {} unwritten",
+        written.untouched,
+        written.type_name
     );
 }
 
@@ -139,6 +75,11 @@ fn replies<H>(terminal: &mut Terminal<H>, bytes: &[u8]) -> Vec<Vec<u8>> {
 
 /// A terminal with every color set, a title, a directory, and styled,
 /// background-only, and grapheme cells.
+///
+/// The render-state probes read `GhosttyRenderStateColors.cursor` and
+/// `GhosttyRenderStateCursor.viewport_*`, which render.h defines only when
+/// their `*_has_value` flags are set, so the fixture needs a default cursor
+/// color and a cursor inside the viewport.
 fn populated() -> Terminal<()> {
     let mut terminal = Terminal::new(options(), ()).unwrap();
     terminal
@@ -158,6 +99,18 @@ fn populated() -> Terminal<()> {
                 .as_bytes(),
         )
         .unwrap();
+    let mut render = RenderState::new().unwrap();
+    render.update(&mut terminal).unwrap();
+    assert!(
+        render.colors().unwrap().cursor.is_some(),
+        "fixture precondition: set a default cursor color, or the render \
+         colors' cursor bytes are undefined"
+    );
+    assert!(
+        render.cursor().unwrap().position.is_some(),
+        "fixture precondition: keep the cursor inside the viewport, or the \
+         render cursor's position bytes are undefined"
+    );
     terminal
 }
 

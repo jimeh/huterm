@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,8 +19,11 @@ test("huterm-ghostty build script unit tests pass", () => {
   expect(run.exitCode, `${output}\n${run.stderr.toString()}`).toBe(0);
   const summary = /test result: ok\. (\d+) passed; 0 failed/.exec(output);
   expect(summary, output).not.toBeNull();
-  // A test binary that collected nothing would also report success.
-  expect(Number(summary![1])).toBeGreaterThanOrEqual(7);
+  // Every test in the file must run; a binary that collected fewer, or
+  // none, would also report success.
+  const declared = readFileSync(buildScript, "utf8").match(/^\s*#\[test\]$/gm)?.length ?? 0;
+  expect(declared).toBeGreaterThanOrEqual(8);
+  expect(Number(summary![1])).toBe(declared);
   for (const name of ["staging_copies_a_fresh_tree_and_leaves_the_source_unchanged", "targets_map_to_zig_and_keep_linux_host_builds_native"]) {
     expect(output).toContain(`test tests::${name} ... ok`);
   }

@@ -153,8 +153,9 @@ jobs:
       - name: Check schema generation on this platform
         run: mise run schema:check
 
-      # Bindgen loads libclang from the selected Xcode. The committed output
-      # matches Xcode's libclang and Ubuntu 22.04's libclang 14, so one
+      # The task loads libclang from the selected Xcode, the runner image's
+      # default that also builds this job, and logs its version. The
+      # committed output matches libclang 14 through Apple clang 21, so one
       # platform suffices; the Linux runners would load whichever unpinned
       # LLVM their image ships.
       - name: Check generated Ghostty bindings

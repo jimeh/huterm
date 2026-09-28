@@ -585,13 +585,18 @@ panics by poisoning the terminal, drop panic payloads inside a second
 encoder and events private to `MouseProbe`'s fixed geometry: Ghostty converts
 encoder geometry and positions with unchecked float-to-integer casts.
 `mise run ghostty:bindings` regenerates `src/ffi/{bindings,keys,layout}.rs` with
-bindgen, which loads libclang at run time; `ghostty:bindings:check` compares
-bytes. Getter and option value types come only from the generated `keys.rs`.
+bindgen, which loads libclang at run time; on macOS the task pins
+`LIBCLANG_PATH` to the selected Xcode, because clang-sys otherwise prefers any
+`llvm-config` on `PATH`. `ghostty:bindings:check` compares bytes. Getter and
+option value types come only from the generated `keys.rs`.
 Each key set declares where its header puts annotations (a final labeled line
 or the first sentence's parenthesized type), and generation fails otherwise.
 Outputs carrying a pointer the library writes through get a `*Populate` trait
 that the generic getters reject, plus a dedicated wrapper. `key_tests.rs`
-checks every key's type against the bytes the library writes or reads. The
+checks every key's type against the bytes the library writes or reads. Tests
+read native-written memory only at declared fields and the tag-selected union
+member, taken from the manifest: foreign writes may leave padding
+uninitialized. The
 build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
 ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
 `MACOSX_DEPLOYMENT_TARGET`, and `ZIG`, and reruns only when those, itself, or

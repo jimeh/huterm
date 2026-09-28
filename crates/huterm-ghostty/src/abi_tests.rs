@@ -120,6 +120,76 @@ fn check_sized(
     items.len()
 }
 
+/// Every type name the layout tables check.
+fn checked_names() -> BTreeSet<&'static str> {
+    let structs = layout::STRUCTS.iter().map(|item| item.name);
+    let enums = layout::ENUMS.iter().map(|item| item.name);
+    let sized = [layout::UNIONS, layout::ALIASES, layout::HANDLES]
+        .into_iter()
+        .flatten()
+        .map(|item| item.name);
+    structs.chain(enums).chain(sized).collect()
+}
+
+/// Type names declared in Rust source: `pub struct`, `pub union`, and
+/// `pub type` items at the start of a line, as rustfmt lays out bindgen
+/// output.
+fn declared_types(source: &str) -> BTreeSet<&str> {
+    source
+        .lines()
+        .filter_map(|line| {
+            ["pub struct ", "pub union ", "pub type "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+        })
+        .map(|rest| {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect()
+}
+
+/// Cross-checks the generated layout tables against two sources the
+/// generator's classification does not produce: the committed
+/// `bindings.rs` and the library's manifest. Every declared type must be
+/// checked or deliberately skipped, and nothing the manifest describes may
+/// be skipped.
+fn covers_every_committed_type(types: &Value) {
+    let checked = checked_names();
+    let unchecked: BTreeSet<&str> = layout::UNCHECKED.iter().copied().collect();
+    assert!(checked.is_disjoint(&unchecked));
+    let declared = declared_types(include_str!("ffi/bindings.rs"));
+    let covered: BTreeSet<&str> = checked.union(&unchecked).copied().collect();
+    let missing: Vec<_> = declared.difference(&covered).collect();
+    let stale: Vec<_> = covered.difference(&declared).collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "bindings.rs declares {missing:?}, which the ABI test neither \
+         checks nor skips; it lists {stale:?}, which bindings.rs lacks"
+    );
+    let described: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|name| types.get(*name).is_some())
+        .filter(|name| !checked.contains(name))
+        .collect();
+    assert!(
+        described.is_empty(),
+        "the manifest describes {described:?}, but the ABI test skips them"
+    );
+}
+
+#[test]
+fn declared_types_reads_rustfmt_bindgen_items() {
+    let source = "pub type GhosttyCell = u64;\n#[repr(C)]\npub struct GhosttyA {\n    pub size: usize,\n}\npub union GhosttyB {\n}\npub const GHOSTTY_X: GhosttyCell = 1;\n    pub fn ghostty_f();\n";
+    assert_eq!(
+        declared_types(source),
+        BTreeSet::from(["GhosttyA", "GhosttyB", "GhosttyCell"])
+    );
+}
+
 #[test]
 fn manifest_rejects_unknown_schemas() {
     assert!(manifest(r#"{"schema": 1, "types": {}}"#).is_ok());
@@ -150,13 +220,6 @@ fn linked_library_abi_matches_every_ffi_declaration() {
         // `GhosttyCell` is a packed integer; other typedefs are aliases.
         + check_sized(types, layout::ALIASES, &["alias", "packed"])
         + check_sized(types, layout::HANDLES, &["opaque"]);
-    // Every type bindgen emitted is either checked or deliberately skipped.
-    assert!(
-        layout::UNCHECKED
-            .iter()
-            .all(|name| name.ends_with("Fn") || name.ends_with("Impl")),
-        "{:?}",
-        layout::UNCHECKED
-    );
-    assert_eq!(checked + layout::UNCHECKED.len(), layout::TYPE_COUNT);
+    assert_eq!(checked, checked_names().len());
+    covers_every_committed_type(types);
 }

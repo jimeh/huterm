@@ -291,18 +291,22 @@ impl Layout {
     }
 }
 
-fn run_zig(
+/// The Zig build command, run from the private copy.
+///
+/// Commit hooks export repository paths that would point Ghostty's version
+/// probe at Huterm, so every inherited `GIT_*` variable is removed, and the
+/// ceiling stops discovery above the private copy.
+fn zig_command(
     zig: &OsString,
     layout: &Layout,
     options: &Options,
-) -> Result<(), BuildError> {
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Command {
     let mut command = Command::new(zig);
     command
         .current_dir(&layout.source)
         .args(options.zig_arguments(&layout.install, &layout.local_cache));
-    // Commit hooks export repository paths that would point Ghostty's version
-    // probe at Huterm; the ceiling stops discovery above the private copy.
-    for (key, _) in std::env::vars_os() {
+    for (key, _) in inherited {
         if key.to_str().is_some_and(|key| key.starts_with("GIT_")) {
             command.env_remove(key);
         }
@@ -310,15 +314,25 @@ fn run_zig(
     if let Some(parent) = layout.source.parent() {
         command.env("GIT_CEILING_DIRECTORIES", parent);
     }
-    let status = command.status().map_err(|error| {
-        BuildError::Io(
-            format!(
-                "running {}; install the pinned Zig with `mise install`",
-                zig.to_string_lossy()
-            ),
-            error,
-        )
-    })?;
+    command
+}
+
+fn run_zig(
+    zig: &OsString,
+    layout: &Layout,
+    options: &Options,
+) -> Result<(), BuildError> {
+    let status = zig_command(zig, layout, options, std::env::vars_os())
+        .status()
+        .map_err(|error| {
+            BuildError::Io(
+                format!(
+                    "running {}; install the pinned Zig with `mise install`",
+                    zig.to_string_lossy()
+                ),
+                error,
+            )
+        })?;
     if !status.success() {
         return Err(BuildError::Zig(format!(
             "zig build failed with {status} in {}",
@@ -628,6 +642,45 @@ mod tests {
         fs::create_dir_all(&empty).unwrap();
         let error = stage_source(&empty, &destination).unwrap_err();
         assert!(error.to_string().contains("ghostty:prepare"), "{error}");
+    }
+
+    #[test]
+    fn zig_runs_in_the_copy_without_inherited_git_state() {
+        let parsed = options(
+            Some("ReleaseFast"),
+            Some("baseline"),
+            "aarch64-apple-darwin",
+            None,
+        )
+        .unwrap();
+        let layout = Layout::new(Path::new("/out"));
+        let inherited = [
+            ("GIT_DIR", "/repo/.git"),
+            ("GIT_INDEX_FILE", "/repo/.git/index"),
+            ("HOME", "/home/user"),
+        ]
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+        let command =
+            zig_command(&OsString::from("zig"), &layout, &parsed, inherited);
+        assert_eq!(command.get_current_dir(), Some(layout.source.as_path()));
+        let mut environment: Vec<_> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_str().unwrap(),
+                    value.map(|value| value.to_str().unwrap()),
+                )
+            })
+            .collect();
+        environment.sort_unstable();
+        assert_eq!(
+            environment,
+            [
+                ("GIT_CEILING_DIRECTORIES", Some("/out")),
+                ("GIT_DIR", None),
+                ("GIT_INDEX_FILE", None),
+            ]
+        );
     }
 
     #[test]
