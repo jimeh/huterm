@@ -1,0 +1,16 @@
+[package]
+name = "huterm-ghostty-bindgen"
+description = "Regenerates huterm-ghostty's committed FFI declarations from Ghostty's headers"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.14.1"
+publish = false
+
+[dependencies]
+bindgen = { version = "=0.71.1", default-features = false, features = ["runtime"] }
+syn = { version = "=2.0.119", default-features = false, features = ["full", "parsing"] }
+
+[lints]
+workspace = true

@@ -15,10 +15,8 @@ use crate::APP_ID;
 use crate::assets::APP_ICON;
 use crate::keymap::Platform;
 
-/// The pinned terminal engine and version. The test below ties it to
-/// `huterm-core`'s dependency declaration.
+/// The terminal engine, identified by the native revision `huterm-core` pins.
 const ENGINE: &str = "libghostty-vt";
-const ENGINE_VERSION: &str = "0.2.1";
 
 /// The panel's width, clamped to the viewport.
 const PANEL_WIDTH: f32 = 380.0;
@@ -108,7 +106,10 @@ pub(crate) fn about_details(facts: &BuildFacts) -> AboutDetails {
         rows: vec![
             ("Identifier", APP_ID.to_owned()),
             ("Platform", platform),
-            ("Terminal engine", format!("{ENGINE} {ENGINE_VERSION}")),
+            (
+                "Terminal engine",
+                format!("{ENGINE} {}", &huterm_core::GHOSTTY_REVISION[..7]),
+            ),
             ("Build", build),
         ],
     }
@@ -371,14 +372,14 @@ mod tests {
             vec![
                 ("Identifier", "app.huterm.dev".to_owned()),
                 ("Platform", "Ubuntu 24.04.4 LTS, x86_64, X11".to_owned()),
-                ("Terminal engine", "libghostty-vt 0.2.1".to_owned()),
+                ("Terminal engine", "libghostty-vt 56dbc4a".to_owned()),
                 ("Build", "release, cdb720d".to_owned()),
             ]
         );
         assert_eq!(
             with.text(),
             format!(
-                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt 0.2.1\nBuild: release, cdb720d\n",
+                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt 56dbc4a\nBuild: release, cdb720d\n",
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -423,16 +424,6 @@ mod tests {
         let plist = "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>ProductName</key>\n\t<string>macOS</string>\n\t<key>ProductVersion</key>\n\t<string>15.1</string>\n</dict>\n</plist>\n";
         assert_eq!(product_version(plist).as_deref(), Some("15.1"));
         assert_eq!(product_version("<dict></dict>"), None);
-    }
-
-    #[test]
-    fn the_engine_version_matches_core_dependency_pin() {
-        let manifest = include_str!("../../../huterm-core/Cargo.toml");
-        let pin = format!("{ENGINE} = {{ version = \"={ENGINE_VERSION}\"");
-        assert!(
-            manifest.contains(&pin),
-            "huterm-core/Cargo.toml no longer pins {pin}; update ENGINE_VERSION"
-        );
     }
 
     #[test]

@@ -58,13 +58,13 @@ state; it never connects to the user's tmux server.
 
 ## Native inputs and policy
 
-The safe Rust bindings and locally patched sys crate are pinned to 0.2.1.
-Native Ghostty is pinned to
-`22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018` and built with Zig 0.16.0 using
-static linking. Both Rust crates incorporate upstream revision
-`5988a0b78b4aa804d1c12e66bbfe662bd97d81c0` over their published archives.
-`scripts/ghostty-source.json` records the reviewed archive and source-tree
-hashes. Required notices and provenance live in `third-party/ghostty`.
+Huterm binds the C API through its own `huterm-ghostty` crate. Native Ghostty
+is pinned to `56dbc4a768778753737a3b9cbe0a3f9b4e434553` and built with Zig
+0.16.0 using static linking. The crate's FFI declarations are generated from
+the pinned headers with `mise run ghostty:bindings` and checked with
+`mise run ghostty:bindings:check`. `scripts/ghostty-source.json` records the
+reviewed archive and source-tree hashes. Required notices and provenance live
+in `third-party/ghostty`.
 
 Normal Mise build, test, smoke, benchmark, and package tasks prepare these
 inputs. Before a direct Cargo build, run:
@@ -75,9 +75,10 @@ mise run build:exec -- cargo build --locked
 ```
 
 Preparation verifies the ignored `.native/ghostty` tree rather than accepting
-local drift. The sys build copies it into a private Cargo build directory so
-Zig-generated state cannot modify the verified source. Build isolation also
-prevents enclosing Git tags from changing Ghostty's generated version data.
+local drift. The `huterm-ghostty` build script copies it into a private Cargo
+build directory so Zig-generated state cannot modify the verified source. Build
+isolation also prevents enclosing Git tags from changing Ghostty's generated
+version data.
 The adapter disables Kitty graphics and scrollback compression, uses the
 portable CPU baseline, and retains a 16 MiB scrollback byte budget.
 

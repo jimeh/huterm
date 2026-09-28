@@ -8,10 +8,8 @@ rust-version.workspace = true
 version = "0.14.1"
 
 [dependencies]
-# Keep the native binding/build pin aligned with scripts/ghostty-source.json.
-libghostty-vt = { version = "=0.2.1", default-features = false }
-libghostty-vt-sys = { version = "=0.2.1" }
 async-channel.workspace = true
+huterm-ghostty.workspace = true
 huterm-procinfo.workspace = true
 huterm-protocol.workspace = true
 memchr.workspace = true

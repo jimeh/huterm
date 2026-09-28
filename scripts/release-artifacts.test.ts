@@ -116,7 +116,6 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
       cargoPackage("huterm", "0.4.0"),
       cargoPackage("gpui-pre", "0.3.6"),
       cargoPackage("gpui-pre-macos", "0.3.6"),
-      cargoPackage("libghostty-vt-sys", "0.2.1"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
   };
@@ -126,7 +125,7 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   });
   const packages = result.packages as Record<string, unknown>[];
   const described = result.documentDescribes as string[];
-  for (const name of ["gpui-pre", "gpui-pre-macos", "libghostty-vt-sys"]) {
+  for (const name of ["gpui-pre", "gpui-pre-macos"]) {
     const retained = packages.find(pkg => pkg.name === name)!;
     expect(described).toContain(retained.SPDXID as string);
     expect(described).not.toContain(`SPDXRef-Package-${name}`);
@@ -138,8 +137,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   // The Linux backend is vendored but absent from the macOS binaries.
   expect(packages.some(pkg => pkg.name === "gpui-pre-linux")).toBe(false);
   expect(described).not.toContain("SPDXRef-Package-gpui-pre-linux");
-  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018");
-  for (const name of ["Sparkle", "ghostty", "uucode", "highway", "libghostty-vt-sys"]) {
+  expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("56dbc4a768778753737a3b9cbe0a3f9b4e434553");
+  for (const name of ["Sparkle", "ghostty", "uucode", "highway"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
 });
@@ -168,7 +167,6 @@ test("SPDX augmentation preserves packages without optional version metadata", a
       cargoPackage("huterm", "0.4.0"),
       cargoPackage("gpui-pre", "0.3.6"),
       cargoPackage("gpui-pre-macos", "0.3.6"),
-      cargoPackage("libghostty-vt-sys", "0.2.1"),
       unversioned,
       blankVersion,
     ],

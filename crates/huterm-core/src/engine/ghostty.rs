@@ -1,303 +1,209 @@
-use std::cell::{Cell as SharedCell, OnceCell, RefCell};
-use std::rc::Rc;
+//! Huterm's terminal engine on `huterm-ghostty`.
+//!
+//! Terminal policy lives here: which replies reach the PTY, clipboard
+//! admission, directory normalization, and snapshot construction with row
+//! reuse. Everything that depends on Ghostty's C API lives in
+//! `huterm-ghostty`.
+
+use std::cell::{Cell as StdCell, RefCell};
 use std::sync::Arc;
 
-use super::EngineEffect;
+use huterm_ghostty::{
+    self as ghostty, CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
+    ClipboardWriteResult, ColorOverrides, ColorScheme, CursorStyle,
+    DeviceAttributes, Dirty, Fill, Host, Mode, MouseProbe, Point, ProbedFormat,
+    ProbedTracking, RenderState, Screen, Scroll, StyleColor,
+};
+use huterm_protocol::{
+    BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
+    Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding, MouseTracking,
+    Rgb, ScrollCommand, TerminalAppearance, TerminalId, TerminalModes,
+    TerminalPresentation, TerminalRow, TerminalSnapshot, Viewport,
+    appearance_for_background,
+};
+
+use super::escape_hint::EscapeHint;
+use super::links::{LinkBuffer, MAX_LINK_BYTES};
+use super::row_matcher::{RowMatcher, viewport_shift};
+use super::{DirectoryUpdate, EngineEffect, normalize_directory};
 use crate::host_effects::{HostEffectAdmission, HostEffectSink};
 use crate::terminal::RuntimeError;
-use huterm_protocol::{
-    BufferRange, Cell, CellColor, CellSize, CellStyle, CellText, Cursor,
-    CursorShape, GridSize, MouseEncoding, MouseTracking, Rgb, ScrollCommand,
-    TerminalId, TerminalModes, TerminalPresentation, TerminalRow,
-    TerminalSnapshot, Viewport, appearance_for_background,
-};
-use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
-use libghostty_vt::render::{
-    CellIterator, CursorVisualStyle, Dirty, RowIterator,
-};
-use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
-use libghostty_vt::selection::Selection;
-use libghostty_vt::style::{Palette, RgbColor, StyleColor, Underline};
-use libghostty_vt::terminal::{
-    ClipboardLocation, ClipboardWriteError, ColorScheme, ConformanceLevel,
-    DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
-    PointCoordinate, PrimaryDeviceAttributes, ScrollViewport,
-    SecondaryDeviceAttributes, SizeReportSize, TertiaryDeviceAttributes,
-};
-use libghostty_vt::{RenderState, Terminal};
 
-/// ED 3, which Ghostty applies by erasing the scrollback alone.
+/// History budget; Ghostty prunes whole pages, so retention is approximate.
+const SCROLLBACK_BYTES: usize = 16 * 1024 * 1024;
+/// ED 3: erase scrollback only.
 const CLEAR_HISTORY: &[u8] = b"\x1b[3J";
-/// The unfinished-sequence bytes the native stream retains, which tell the
-/// engine when it sits at ground. A longer unfinished sequence reads as not
-/// at ground until it ends.
-const CONTINUATION_BYTES: usize = 256;
+/// Longest grapheme cluster a link scan reads from one cell.
+const LINK_GRAPHEME_CODEPOINTS: usize = 256;
 
-impl From<libghostty_vt::Error> for RuntimeError {
-    fn from(error: libghostty_vt::Error) -> Self {
-        Self::Engine(error.to_string())
+impl From<ghostty::Error> for RuntimeError {
+    fn from(error: ghostty::Error) -> Self {
+        Self::Engine(format!("ghostty: {error}"))
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct TerminalEngine {
-    terminal_id: TerminalId,
-    generation: u64,
-    size: GridSize,
-    cell: Rc<SharedCell<CellSize>>,
-    presentation: TerminalPresentation,
-    terminal: Terminal<'static, 'static>,
-    render: RenderState<'static>,
-    row_iterator: RowIterator<'static>,
-    cell_iterator: CellIterator<'static>,
-    retained_rows: Vec<Arc<TerminalRow>>,
-    /// Bottom offset and history size of the retained rows' viewport.
-    retained_viewport: (usize, usize),
-    /// Reused cells for the row being extracted, moved out only when no
-    /// retained row matches.
-    row_scratch: Vec<Cell>,
-    /// Rows extracted by the current snapshot, whose damage it clears.
-    extracted_rows: Vec<bool>,
-    colors: Option<(Option<RgbColor>, Option<RgbColor>, [RgbColor; 256])>,
-    effects: Rc<RefCell<Vec<EngineEffect>>>,
-    host_effect_sink: Rc<OnceCell<HostEffectSink>>,
-    title_dirty: Rc<std::cell::Cell<bool>>,
-    palette_overrides: [bool; 256],
-    colors_dirty: bool,
-    default_overrides: DefaultOverrides,
-    escape_hint: EscapeHint,
-    /// A requested history clear waiting for the stream to reach ground.
-    clear_history_pending: bool,
-    /// Modes change only when `process` or `resize` advances the
-    /// generation, or when presentation is reapplied.
-    modes: SharedCell<Option<(u64, TerminalModes)>>,
-    /// Reused UTF-8 buffer for multi-codepoint grapheme clusters.
-    grapheme: String,
-    mouse_probe: RefCell<(
-        libghostty_vt::mouse::Encoder<'static>,
-        libghostty_vt::mouse::Event<'static>,
-    )>,
-    #[cfg(test)]
-    last_snapshot_stats: SnapshotStats,
+/// Clipboard and color-scheme policy consulted during writes.
+#[derive(Debug, Default)]
+struct EngineHost {
+    sink: Option<HostEffectSink>,
 }
 
-/// Independent row counts for the most recent snapshot. Extraction and `Arc`
-/// allocation are separate so reuse cannot hide rows read from the engine.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SnapshotStats {
-    /// Rows whose cells were read from the engine.
-    pub(crate) extracted: usize,
-    /// Rows published through a newly allocated `Arc`.
-    pub(crate) allocated: usize,
-    /// Rows published through a retained `Arc`, at any index.
-    pub(crate) reused: usize,
+impl Host for EngineHost {
+    fn clipboard_write(
+        &mut self,
+        request: &ClipboardWrite<'_>,
+    ) -> ClipboardWriteResult {
+        if request.location != ClipboardLocation::Standard {
+            return ClipboardWriteResult::Unsupported;
+        }
+        // Only the Kitty protocol (OSC 5522) carries names and passwords.
+        if !request.name.is_empty() || request.granted || request.can_remember {
+            return ClipboardWriteResult::Denied;
+        }
+        let text = match request.contents.as_slice() {
+            [] => "",
+            [content] if content.mime == b"text/plain" => {
+                match std::str::from_utf8(content.data) {
+                    Ok(text) => text,
+                    Err(_) => return ClipboardWriteResult::InvalidData,
+                }
+            }
+            _ => return ClipboardWriteResult::Unsupported,
+        };
+        let Some(sink) = &self.sink else {
+            // No client has attached yet; allow and drop the write.
+            return ClipboardWriteResult::Success;
+        };
+        match sink.admit_borrowed(text) {
+            HostEffectAdmission::Accepted => ClipboardWriteResult::Success,
+            HostEffectAdmission::Full | HostEffectAdmission::Contended => {
+                ClipboardWriteResult::Busy
+            }
+            HostEffectAdmission::NoRecipient
+            | HostEffectAdmission::Denied
+            | HostEffectAdmission::Closed => ClipboardWriteResult::Denied,
+        }
+    }
+
+    fn color_scheme(
+        &mut self,
+        background: ghostty::Rgb,
+    ) -> Option<ColorScheme> {
+        Some(match appearance_for_background(rgb(background)) {
+            TerminalAppearance::Light => ColorScheme::Light,
+            TerminalAppearance::Dark => ColorScheme::Dark,
+        })
+    }
+}
+
+const fn rgb(color: ghostty::Rgb) -> Rgb {
+    Rgb {
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+    }
+}
+
+const fn native_rgb(color: Rgb) -> ghostty::Rgb {
+    ghostty::Rgb::new(color.red, color.green, color.blue)
+}
+
+/// Effective colors a snapshot resolves cells against.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Colors {
+    foreground: Option<ghostty::Rgb>,
+    background: Option<ghostty::Rgb>,
+    palette: ghostty::Palette,
+}
+
+/// Replies Huterm must not send: Kitty graphics responses and Kitty
+/// keyboard flags, whose protocols it does not implement.
+fn unsupported_reply(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x1b_G")
+        || (bytes.starts_with(b"\x1b[?") && bytes.ends_with(b"u"))
+}
+
+#[derive(Debug)]
+pub(super) struct TerminalEngine {
+    terminal: ghostty::Terminal<EngineHost>,
+    render: RenderState,
+    mouse: RefCell<MouseProbe>,
+    id: TerminalId,
+    size: GridSize,
+    cell: CellSize,
+    presentation: TerminalPresentation,
+    generation: u64,
+    modes: StdCell<Option<(u64, TerminalModes)>>,
+    hint: EscapeHint,
+    overrides: ColorOverrides,
+    overrides_stale: bool,
+    pending_clear: bool,
+    retained: Vec<Arc<TerminalRow>>,
+    retained_viewport: (usize, usize),
+    retained_colors: Option<Colors>,
+    scratch: Vec<Cell>,
+    grapheme: Vec<u8>,
+    effects: Vec<ghostty::Effect>,
+    server_hostname: Option<String>,
+    #[cfg(test)]
+    stats: super::SnapshotStats,
 }
 
 impl TerminalEngine {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "native callbacks are installed together before ownership starts"
-    )]
     pub(super) fn new(
-        terminal_id: TerminalId,
+        id: TerminalId,
         size: GridSize,
         cell: CellSize,
         presentation: TerminalPresentation,
     ) -> Result<Self, RuntimeError> {
-        let mut terminal = Terminal::new(size.columns, size.rows)?;
-        terminal.set_scrollback_max_bytes(Some(16 * 1024 * 1024))?;
-        terminal.set_glyph_protocol_enabled(false)?;
-        terminal.set_apc_max_bytes(Some(0))?;
-        terminal.set_continuation_max_bytes(CONTINUATION_BYTES)?;
-        let host_effect_sink = Rc::new(OnceCell::new());
-        let clipboard_sink = Rc::clone(&host_effect_sink);
-        terminal.on_clipboard_write(move |_, write| {
-            if write.location() != ClipboardLocation::Standard {
-                return Err(ClipboardWriteError::Unsupported);
-            }
-            let mut contents = write.contents();
-            let Some(content) = contents.next() else {
-                return admit_clipboard(&clipboard_sink, "");
-            };
-            if content.mime != "text/plain" || contents.next().is_some() {
-                return Err(ClipboardWriteError::Unsupported);
-            }
-            let text = std::str::from_utf8(content.data)
-                .map_err(|_| ClipboardWriteError::InvalidData)?;
-            admit_clipboard(&clipboard_sink, text)
-        })?;
-        let effects = Rc::new(RefCell::new(Vec::new()));
-        let write_effects = Rc::clone(&effects);
-        terminal.on_pty_write(move |_, bytes| {
-            if bytes.starts_with(b"\x1b_G")
-                || (bytes.starts_with(b"\x1b[?") && bytes.ends_with(b"u"))
-            {
-                return;
-            }
-            write_effects
-                .borrow_mut()
-                .push(EngineEffect::PtyWrite(bytes.to_vec()));
-        })?;
-        let bell_effects = Rc::clone(&effects);
-        terminal.on_bell(move |_| {
-            bell_effects.borrow_mut().push(EngineEffect::Bell);
-        })?;
-        let title_dirty = Rc::new(std::cell::Cell::new(false));
-        let title_changed = Rc::clone(&title_dirty);
-        terminal.on_title_changed(move |_| title_changed.set(true))?;
-        let directory_effects = Rc::clone(&effects);
-        let server_hostname = server_hostname();
-        terminal.on_pwd_changed(move |terminal| {
-            let Ok(reported) = terminal.pwd() else {
-                return;
-            };
-            match super::normalize_directory(
-                reported,
-                server_hostname.as_deref(),
-            ) {
-                super::DirectoryUpdate::Ignore => {}
-                super::DirectoryUpdate::Clear => directory_effects
-                    .borrow_mut()
-                    .push(EngineEffect::Directory(None)),
-                super::DirectoryUpdate::Set(directory) => directory_effects
-                    .borrow_mut()
-                    .push(EngineEffect::Directory(Some(directory))),
-            }
-        })?;
-        // Huterm does not implement Ghostty's image or keyboard extensions.
-        terminal.on_device_attributes(|_| {
-            Some(DeviceAttributes {
-                primary: PrimaryDeviceAttributes::new(
-                    ConformanceLevel::VT220,
-                    &[DeviceAttributeFeature::ANSI_COLOR],
-                ),
-                secondary: SecondaryDeviceAttributes {
-                    device_type: DeviceType::VT220,
-                    firmware_version: 0,
-                    rom_cartridge: 0,
-                },
-                tertiary: TertiaryDeviceAttributes { unit_id: 0 },
-            })
-        })?;
-        terminal.on_xtversion(|_| Some("Huterm"))?;
-        let reported_cell = Rc::new(SharedCell::new(cell));
-        let size_cell = Rc::clone(&reported_cell);
-        terminal.on_size(move |terminal| {
-            let cell = size_cell.get();
-            if cell.width == 0 || cell.height == 0 {
-                return None;
-            }
-            Some(SizeReportSize {
-                rows: terminal.rows().ok()?,
-                columns: terminal.cols().ok()?,
-                cell_width: u32::from(cell.width),
-                cell_height: u32::from(cell.height),
-            })
-        })?;
-        terminal.on_color_scheme(|terminal| {
-            let background = terminal.bg_color().ok()??;
-            Some(match appearance_for_background(rgb(background)) {
-                huterm_protocol::TerminalAppearance::Light => {
-                    ColorScheme::Light
-                }
-                huterm_protocol::TerminalAppearance::Dark => ColorScheme::Dark,
-            })
-        })?;
+        let options = ghostty::Options {
+            columns: size.columns,
+            rows: size.rows,
+            cell_width: u32::from(cell.width),
+            cell_height: u32::from(cell.height),
+            device_attributes: Some(DeviceAttributes {
+                conformance_level: DeviceAttributes::VT220,
+                features: vec![DeviceAttributes::FEATURE_ANSI_COLOR],
+                device_type: DeviceAttributes::DEVICE_TYPE_VT220,
+                firmware_version: 0,
+                rom_cartridge: 0,
+                unit_id: 0,
+            }),
+            xtversion: Some("Huterm".to_owned()),
+        };
+        let mut terminal =
+            ghostty::Terminal::new(options, EngineHost::default())?;
+        terminal.set_scrollback_bytes(Some(SCROLLBACK_BYTES))?;
+        terminal.disable_extensions()?;
         apply_presentation(&mut terminal, &presentation)?;
-        terminal.resize(
-            size.columns,
-            size.rows,
-            u32::from(cell.width),
-            u32::from(cell.height),
-        )?;
         Ok(Self {
-            terminal_id,
-            generation: 0,
-            size,
-            cell: reported_cell,
-            presentation,
             terminal,
             render: RenderState::new()?,
-            row_iterator: RowIterator::new()?,
-            cell_iterator: CellIterator::new()?,
-            retained_rows: Vec::new(),
+            mouse: RefCell::new(MouseProbe::new()?),
+            id,
+            size,
+            cell,
+            presentation,
+            generation: 0,
+            modes: StdCell::new(None),
+            hint: EscapeHint::Ground,
+            overrides: ColorOverrides::default(),
+            overrides_stale: false,
+            pending_clear: false,
+            retained: Vec::new(),
             retained_viewport: (0, 0),
-            row_scratch: Vec::new(),
-            extracted_rows: Vec::new(),
-            colors: None,
-            effects,
-            host_effect_sink,
-            title_dirty,
-            palette_overrides: [false; 256],
-            colors_dirty: false,
-            default_overrides: DefaultOverrides::default(),
-            escape_hint: EscapeHint::Ground,
-            clear_history_pending: false,
-            modes: SharedCell::new(None),
-            grapheme: String::with_capacity(32),
-            mouse_probe: RefCell::new((
-                libghostty_vt::mouse::Encoder::new()?,
-                libghostty_vt::mouse::Event::new()?,
-            )),
+            retained_colors: None,
+            scratch: Vec::new(),
+            grapheme: Vec::new(),
+            effects: Vec::new(),
+            server_hostname: server_hostname(),
             #[cfg(test)]
-            last_snapshot_stats: SnapshotStats::default(),
+            stats: super::SnapshotStats::default(),
         })
     }
 
-    pub(super) fn set_host_effect_sink(&self, sink: HostEffectSink) {
-        let result = self.host_effect_sink.set(sink);
-        debug_assert!(result.is_ok());
-    }
-
-    pub(super) fn process(
-        &mut self,
-        bytes: &[u8],
-    ) -> Result<Vec<EngineEffect>, RuntimeError> {
-        self.colors_dirty |= self.escape_hint.observe(bytes);
-        self.terminal.vt_write(bytes);
-        self.apply_pending_clear();
-        self.generation = self.generation.saturating_add(1);
-        self.drain_effects()
-    }
-
-    /// Erases the scrollback, leaving the screen. Output that stopped inside
-    /// an escape sequence or UTF-8 codepoint defers the erase until a later
-    /// write reaches ground, so the injected sequence never joins it.
-    pub(super) fn clear_history(
-        &mut self,
-    ) -> Result<Vec<EngineEffect>, RuntimeError> {
-        self.clear_history_pending = true;
-        self.apply_pending_clear();
-        self.generation = self.generation.saturating_add(1);
-        self.drain_effects()
-    }
-
-    fn apply_pending_clear(&mut self) {
-        if self.clear_history_pending && self.stream_at_ground() {
-            self.clear_history_pending = false;
-            self.escape_hint.observe(CLEAR_HISTORY);
-            self.terminal.vt_write(CLEAR_HISTORY);
-        }
-    }
-
-    /// Whether the native parser and UTF-8 decoder are both idle: the
-    /// stream then needs no continuation bytes to resume.
-    fn stream_at_ground(&self) -> bool {
-        matches!(
-            self.terminal.continuation_buf(&mut []),
-            Err(libghostty_vt::Error::OutOfSpace { required: 0 })
-        )
-    }
-
-    /// Resets the emulator as RIS does: screens, scrollback, modes, and
-    /// the alternate screen. Like RIS in Ghostty, it keeps color overrides,
-    /// and the parser keeps any unfinished sequence.
-    pub(super) fn reset(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
-        self.terminal.reset();
-        self.clear_history_pending = false;
-        self.generation = self.generation.saturating_add(1);
-        self.drain_effects()
+    pub(super) fn set_host_effect_sink(&mut self, sink: HostEffectSink) {
+        self.terminal.host_mut().sink = Some(sink);
     }
 
     pub(super) fn update_presentation(
@@ -306,28 +212,76 @@ impl TerminalEngine {
     ) -> Result<(), RuntimeError> {
         apply_presentation(&mut self.terminal, &presentation)?;
         self.presentation = presentation;
-        self.colors = None;
+        self.retained_colors = None;
         self.modes.set(None);
         Ok(())
     }
 
     #[cfg(test)]
-    pub(super) fn presentation(&self) -> &TerminalPresentation {
+    pub(super) const fn presentation(&self) -> &TerminalPresentation {
         &self.presentation
     }
 
     #[cfg(test)]
-    pub(super) fn cell_size(&self) -> CellSize {
-        self.cell.get()
+    pub(super) const fn cell_size(&self) -> CellSize {
+        self.cell
     }
 
-    fn drain_effects(&self) -> Result<Vec<EngineEffect>, RuntimeError> {
-        let mut effects = self.effects.borrow_mut();
-        if self.title_dirty.replace(false) {
-            effects
-                .push(EngineEffect::Title(self.terminal.title()?.to_owned()));
+    /// Rows between the viewport bottom and the live bottom, and history
+    /// rows.
+    pub(super) fn viewport_state(
+        &self,
+    ) -> Result<(usize, usize), RuntimeError> {
+        let bar = self.terminal.scrollbar()?;
+        let bottom =
+            bar.total.saturating_sub(bar.offset.saturating_add(bar.len));
+        Ok((
+            usize::try_from(bottom).unwrap_or(usize::MAX),
+            self.terminal.scrollback_rows()?,
+        ))
+    }
+
+    pub(super) fn process(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.generation = self.generation.saturating_add(1);
+        if self.hint.observe(bytes) {
+            self.overrides_stale = true;
         }
-        Ok(std::mem::take(&mut *effects))
+        self.terminal.write(bytes)?;
+        self.apply_pending_clear()?;
+        self.drain_effects()
+    }
+
+    pub(super) fn clear_history(
+        &mut self,
+    ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.generation = self.generation.saturating_add(1);
+        self.pending_clear = true;
+        self.apply_pending_clear()?;
+        self.drain_effects()
+    }
+
+    /// Injects ED 3 only at ground, so it never joins an unfinished
+    /// sequence or codepoint from the PTY.
+    fn apply_pending_clear(&mut self) -> Result<(), RuntimeError> {
+        if self.pending_clear && self.terminal.is_ground()? {
+            self.pending_clear = false;
+            if self.hint.observe(CLEAR_HISTORY) {
+                self.overrides_stale = true;
+            }
+            self.terminal.write(CLEAR_HISTORY)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reset(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.generation = self.generation.saturating_add(1);
+        self.pending_clear = false;
+        self.terminal.reset()?;
+        self.overrides_stale = true;
+        self.drain_effects()
     }
 
     pub(super) fn resize(
@@ -335,6 +289,7 @@ impl TerminalEngine {
         size: GridSize,
         cell: CellSize,
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.generation = self.generation.saturating_add(1);
         self.terminal.resize(
             size.columns,
             size.rows,
@@ -342,15 +297,70 @@ impl TerminalEngine {
             u32::from(cell.height),
         )?;
         self.size = size;
-        self.cell.set(cell);
-        self.generation = self.generation.saturating_add(1);
+        self.cell = cell;
         self.drain_effects()
     }
-    pub(super) fn size(&self) -> GridSize {
+
+    pub(super) const fn size(&self) -> GridSize {
         self.size
     }
-    pub(super) fn generation(&self) -> u64 {
+
+    pub(super) const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    #[cfg(test)]
+    pub(super) const fn last_snapshot_stats(&self) -> super::SnapshotStats {
+        self.stats
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_scrollback_limit(
+        &mut self,
+        bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        Ok(self.terminal.set_scrollback_bytes(Some(bytes))?)
+    }
+
+    fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
+        self.terminal.take_effects(&mut self.effects);
+        let mut effects = Vec::with_capacity(self.effects.len());
+        let mut title = false;
+        for effect in self.effects.drain(..) {
+            match effect {
+                ghostty::Effect::PtyWrite(bytes) => {
+                    if !unsupported_reply(&bytes) {
+                        effects.push(EngineEffect::PtyWrite(bytes));
+                    }
+                }
+                ghostty::Effect::Bell => effects.push(EngineEffect::Bell),
+                ghostty::Effect::TitleChanged => title = true,
+                ghostty::Effect::PwdChanged(bytes) => {
+                    let Ok(reported) = std::str::from_utf8(&bytes) else {
+                        continue;
+                    };
+                    match normalize_directory(
+                        reported,
+                        self.server_hostname.as_deref(),
+                    ) {
+                        DirectoryUpdate::Ignore => {}
+                        DirectoryUpdate::Clear => {
+                            effects.push(EngineEffect::Directory(None));
+                        }
+                        DirectoryUpdate::Set(directory) => {
+                            effects
+                                .push(EngineEffect::Directory(Some(directory)));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if title {
+            let title = String::from_utf8_lossy(self.terminal.title()?);
+            effects.push(EngineEffect::Title(title.into_owned()));
+        }
+        Ok(effects)
     }
 
     pub(super) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
@@ -359,305 +369,181 @@ impl TerminalEngine {
         {
             return Ok(modes);
         }
-        let mode = |mode| self.terminal.mode(mode);
-        let (tracking, encoding) = self.mouse_modes()?;
+        let (tracking, encoding) =
+            self.mouse.borrow_mut().probe(&self.terminal)?;
         let modes = TerminalModes {
-            application_cursor: mode(Mode::DECCKM)?,
-            alternate_screen: self.terminal.active_screen()?
-                == Screen::Alternate,
-            bracketed_paste: mode(Mode::BRACKETED_PASTE)?,
-            focus_reporting: mode(Mode::FOCUS_EVENT)?,
-            mouse_tracking: tracking,
-            mouse_encoding: encoding,
+            application_cursor: self.terminal.mode(Mode::CURSOR_KEYS)?,
+            alternate_screen: self.terminal.screen()? == Screen::Alternate,
+            bracketed_paste: self.terminal.mode(Mode::BRACKETED_PASTE)?,
+            focus_reporting: self.terminal.mode(Mode::FOCUS_EVENT)?,
+            mouse_tracking: match tracking {
+                ProbedTracking::Disabled => MouseTracking::Disabled,
+                ProbedTracking::Buttons => MouseTracking::Buttons,
+                ProbedTracking::ButtonMotion => MouseTracking::ButtonMotion,
+                ProbedTracking::AllMotion => MouseTracking::AllMotion,
+            },
+            mouse_encoding: match encoding {
+                ProbedFormat::Legacy => MouseEncoding::Legacy,
+                ProbedFormat::Utf8 => MouseEncoding::Utf8,
+                ProbedFormat::Sgr => MouseEncoding::Sgr,
+            },
         };
         self.modes.set(Some((self.generation, modes)));
         Ok(modes)
     }
 
-    fn mouse_modes(
-        &self,
-    ) -> Result<(MouseTracking, MouseEncoding), RuntimeError> {
-        use libghostty_vt::mouse::{
-            Action, Button, EncoderSize, Position, TrackingMode,
-        };
-        let mut probe = self.mouse_probe.borrow_mut();
-        let (encoder, event) = &mut *probe;
-        // Native mode bits are independent; only the mouse encoder sees the
-        // actual last-selected format/tracking flags. Probe locally with fixed
-        // geometry so UTF-8 remains distinguishable even in a 1x1 terminal.
-        encoder
-            .set_options_from_terminal(&self.terminal)
-            .set_size(EncoderSize {
-                screen_width: 200,
-                screen_height: 200,
-                cell_width: 1,
-                cell_height: 1,
-                padding_top: 0,
-                padding_bottom: 0,
-                padding_left: 0,
-                padding_right: 0,
-            })
-            .set_track_last_cell(false)
-            .set_any_button_pressed(false);
-        event
-            .set_position(Position { x: 100.0, y: 100.0 })
-            .set_action(Action::Motion)
-            .set_button(None);
-        let mut buffer = [0; 64];
-        let tracking = if encoder.encode(event, &mut buffer)? > 0 {
-            MouseTracking::AllMotion
-        } else {
-            encoder.set_any_button_pressed(true);
-            event.set_button(Some(Button::Left));
-            if encoder.encode(event, &mut buffer)? > 0 {
-                MouseTracking::ButtonMotion
-            } else if self.terminal.is_mouse_tracking()? {
-                MouseTracking::Buttons
-            } else {
-                MouseTracking::Disabled
-            }
-        };
-        encoder
-            .set_tracking_mode(TrackingMode::Any)
-            .set_any_button_pressed(false);
-        event
-            .set_action(Action::Press)
-            .set_button(Some(Button::Left));
-        let count = encoder.encode(event, &mut buffer)?;
-        let encoding = if buffer[..count].starts_with(b"\x1b[<") {
-            MouseEncoding::Sgr
-        } else if count > 6 && buffer[..count].starts_with(b"\x1b[M") {
-            MouseEncoding::Utf8
-        } else {
-            MouseEncoding::Legacy
-        };
-        Ok((tracking, encoding))
-    }
-
     pub(super) fn scroll(
         &mut self,
-        command: ScrollCommand,
+        scroll: ScrollCommand,
     ) -> Result<(), RuntimeError> {
         let scroll =
-            match command {
-                ScrollCommand::Relative(rows) => ScrollViewport::Delta(
-                    isize::try_from(rows.saturating_neg()).unwrap_or(
-                        if rows < 0 { isize::MAX } else { isize::MIN },
-                    ),
-                ),
-                ScrollCommand::Absolute(offset) => ScrollViewport::Row(
+            match scroll {
+                ScrollCommand::Relative(rows) => {
+                    let delta = rows.saturating_neg();
+                    Scroll::Delta(isize::try_from(delta).unwrap_or(
+                        if delta < 0 { isize::MIN } else { isize::MAX },
+                    ))
+                }
+                ScrollCommand::Absolute(offset) => Scroll::Row(
                     self.terminal.scrollback_rows()?.saturating_sub(offset),
                 ),
-                ScrollCommand::Live => ScrollViewport::Bottom,
+                ScrollCommand::Live => Scroll::Bottom,
             };
-        self.terminal.scroll_viewport(scroll);
-        Ok(())
+        Ok(self.terminal.scroll(scroll)?)
     }
 
-    fn refresh_color_overrides(&mut self) -> Result<(), RuntimeError> {
-        if !self.colors_dirty {
-            return Ok(());
-        }
-        let defaults = self.default_overrides;
-        self.default_overrides.foreground = probe_default_override(
-            &mut self.terminal,
-            DefaultColor::Foreground,
-        )?;
-        self.default_overrides.background = probe_default_override(
-            &mut self.terminal,
-            DefaultColor::Background,
-        )?;
-        self.default_overrides.cursor =
-            probe_default_override(&mut self.terminal, DefaultColor::Cursor)?;
-        let original = self.terminal.default_color_palette()?;
-        let before = self.terminal.color_palette()?;
-        let mut probe = original;
-        for color in &mut probe.0 {
-            color.r ^= 1;
-        }
-        self.terminal.set_default_color_palette(Some(probe))?;
-        let probed = self.terminal.color_palette();
-        // Always restore the palette, including a failed effective-color read.
-        self.terminal.set_default_color_palette(Some(original))?;
-        let probed = probed?;
-        let mut overrides_changed = false;
-        for (index, overridden) in self.palette_overrides.iter_mut().enumerate()
-        {
-            let probed = probed.0[index] == before.0[index];
-            overrides_changed |= *overridden != probed;
-            *overridden = probed;
-        }
-        self.colors_dirty = false;
-        // Override flags decide how cells resolve palette colors. Effective
-        // color changes are compared separately when the snapshot is built.
-        // The pinned Ghostty marks its palette dirty on the probe's own
-        // writes, which already forces a full redraw; this keeps the rebuild
-        // tied to real changes if that side effect goes away.
-        if overrides_changed || defaults != self.default_overrides {
-            self.colors = None;
-        }
-        Ok(())
+    fn colors(&self) -> Result<Colors, RuntimeError> {
+        Ok(Colors {
+            foreground: self.terminal.foreground()?,
+            background: self.terminal.background()?,
+            palette: self.terminal.palette()?,
+        })
     }
 
-    pub(super) fn viewport_state(
-        &self,
-    ) -> Result<(usize, usize), RuntimeError> {
-        let scrollbar = self.terminal.scrollbar()?;
-        let history_size = self.terminal.scrollback_rows()?;
-        let bottom_offset = usize::try_from(
-            scrollbar
-                .total
-                .saturating_sub(scrollbar.len)
-                .saturating_sub(scrollbar.offset),
-        )
-        .unwrap_or(usize::MAX);
-        Ok((bottom_offset, history_size))
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "row extraction, reuse, and damage clearing share one render-state borrow"
-    )]
     pub(super) fn snapshot(
         &mut self,
     ) -> Result<TerminalSnapshot, RuntimeError> {
-        self.refresh_color_overrides()?;
-        let modes = self.modes()?;
-        let (bottom_offset, history_size) = self.viewport_state()?;
-        let fg = self.terminal.fg_color()?;
-        let bg = self.terminal.bg_color()?;
-        let palette = self.terminal.color_palette()?;
-
-        let state = self.render.update(&self.terminal)?;
-        let colors = (fg, bg, palette.0);
-        let full = self.colors.as_ref() != Some(&colors)
-            || state.dirty()? == Dirty::Full
-            || self.retained_rows.len() != usize::from(self.size.rows)
-            || self.retained_rows.first().is_some_and(|row| {
-                row.cells.len() != usize::from(self.size.columns)
-            });
-        #[cfg(test)]
-        let mut row_stats = SnapshotStats::default();
-        let columns = usize::from(self.size.columns);
-        // Taken so rows can match retained content at any index. A failed
-        // snapshot leaves no retained rows, which forces the next to be full.
-        let previous = std::mem::take(&mut self.retained_rows);
-        let mut next = Vec::with_capacity(usize::from(self.size.rows));
-        let mut matcher = RowMatcher::new(
-            &previous,
-            viewport_shift(
-                self.retained_viewport,
-                (bottom_offset, history_size),
-            ),
-        );
-        self.extracted_rows.clear();
-        let mut rows = self.row_iterator.update(&state)?;
-        while let Some(row) = rows.next() {
-            let clean = if full || row.dirty()? {
-                None
-            } else {
-                previous.get(next.len())
-            };
-            self.extracted_rows.push(clean.is_none());
-            if let Some(retained) = clean {
-                #[cfg(test)]
-                {
-                    row_stats.reused += 1;
-                }
-                next.push(Arc::clone(retained));
-                continue;
-            }
-            #[cfg(test)]
-            {
-                row_stats.extracted += 1;
-            }
-            self.row_scratch.clear();
-            self.row_scratch
-                .try_reserve_exact(columns)
-                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-            let mut iter = self.cell_iterator.update(row)?;
-            while let Some(cell) = iter.next() {
-                self.row_scratch.push(snapshot_cell(
-                    cell,
-                    fg,
-                    bg,
-                    &palette,
-                    &self.palette_overrides,
-                    self.default_overrides,
-                    &mut self.grapheme,
-                )?);
-            }
-            if let Some(retained) = matcher.find(next.len(), &self.row_scratch)
-            {
-                #[cfg(test)]
-                {
-                    row_stats.reused += 1;
-                }
-                next.push(Arc::clone(retained));
-            } else {
-                #[cfg(test)]
-                {
-                    row_stats.allocated += 1;
-                }
-                next.push(Arc::new(TerminalRow {
-                    cells: std::mem::take(&mut self.row_scratch),
-                }));
-            }
+        if self.overrides_stale {
+            self.overrides = self.terminal.probe_color_overrides()?;
+            self.overrides_stale = false;
         }
-        drop(previous);
-        self.retained_rows = next;
-        let visible = state.cursor_visible()?;
-        let shape = if visible {
-            match state.cursor_visual_style()? {
-                CursorVisualStyle::Bar => CursorShape::Beam,
-                CursorVisualStyle::Underline => CursorShape::Underline,
-                _ => CursorShape::Block,
-            }
+        let modes = self.modes()?;
+        let viewport = self.viewport_state()?;
+        let colors = self.colors()?;
+        self.render.update(&mut self.terminal)?;
+
+        let rows = usize::from(self.size.rows);
+        let columns = usize::from(self.size.columns);
+        // A failed snapshot leaves nothing retained, forcing a full rebuild.
+        let previous = std::mem::take(&mut self.retained);
+        let full = self.retained_colors.as_ref() != Some(&colors)
+            || self.render.dirty()? == Dirty::Full
+            || previous.len() != rows
+            || previous
+                .first()
+                .is_some_and(|row| row.cells.len() != columns);
+        let cursor = self.render.cursor()?;
+        let cursor_color = if self.overrides.cursor {
+            self.render.colors()?.cursor.map(rgb)
         } else {
-            CursorShape::Hidden
+            None
         };
-        let cursor = state.cursor_viewport()?.map(|cursor| Cursor {
-            row: cursor.y,
-            column: cursor.x,
-            shape,
-        });
-        let snapshot = TerminalSnapshot {
-            terminal_id: self.terminal_id,
+
+        let built = self.build_rows(full, &previous, viewport, &colors)?;
+        // Consume damage only once the retained rows are coherent.
+        self.render.clean()?;
+        self.retained.clone_from(&built);
+        self.retained_viewport = viewport;
+        self.retained_colors = Some(colors);
+        Ok(TerminalSnapshot {
+            terminal_id: self.id,
             generation: self.generation,
             size: self.size,
-            rows: self.retained_rows.clone(),
-            cursor,
+            rows: built,
+            cursor: snapshot_cursor(cursor),
             modes,
-            viewport: Viewport { bottom_offset },
-            history_size,
-            cursor_color: if self.default_overrides.cursor {
-                state.cursor_color()?.map(rgb)
-            } else {
-                None
+            viewport: Viewport {
+                bottom_offset: viewport.0,
             },
-        };
-        if self.extracted_rows.contains(&true) {
-            let mut rows = self.row_iterator.update(&state)?;
-            let mut extracted = self.extracted_rows.iter();
-            while let Some(row) = rows.next() {
-                if extracted.next().copied().unwrap_or(true) {
-                    row.set_dirty(false)?;
-                }
-            }
-        }
-        state.set_dirty(Dirty::Clean)?;
-        self.colors = Some(colors);
-        self.retained_viewport = (bottom_offset, history_size);
-        #[cfg(test)]
-        {
-            self.last_snapshot_stats = row_stats;
-        }
-        Ok(snapshot)
+            history_size: viewport.1,
+            cursor_color,
+        })
     }
 
-    #[cfg(test)]
-    pub(super) fn last_snapshot_stats(&self) -> SnapshotStats {
-        self.last_snapshot_stats
+    /// Builds viewport rows from the updated render state. Clean rows keep
+    /// their retained `Arc`; extracted rows reuse any identical retained
+    /// row.
+    fn build_rows(
+        &mut self,
+        full: bool,
+        previous: &[Arc<TerminalRow>],
+        viewport: (usize, usize),
+        colors: &Colors,
+    ) -> Result<Vec<Arc<TerminalRow>>, RuntimeError> {
+        let columns = usize::from(self.size.columns);
+        let resolver = Resolver {
+            overrides: &self.overrides,
+            colors,
+        };
+        let mut matcher = RowMatcher::new(
+            previous,
+            viewport_shift(self.retained_viewport, viewport),
+        );
+        let mut built = Vec::with_capacity(usize::from(self.size.rows));
+        let (mut extracted, mut allocated, mut reused) = (0, 0, 0);
+        let mut rows = self.render.rows()?;
+        while let Some(mut row) = rows.next() {
+            let index = built.len();
+            if !full
+                && !row.dirty()?
+                && let Some(retained) = previous.get(index)
+            {
+                built.push(Arc::clone(retained));
+                reused += 1;
+                continue;
+            }
+            extract_row(
+                &mut row,
+                &mut self.scratch,
+                &mut self.grapheme,
+                &resolver,
+                columns,
+            )?;
+            extracted += 1;
+            if let Some(found) = matcher.find(index, &self.scratch) {
+                built.push(Arc::clone(found));
+                reused += 1;
+            } else {
+                built.push(Arc::new(TerminalRow {
+                    cells: std::mem::take(&mut self.scratch),
+                }));
+                allocated += 1;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.stats = super::SnapshotStats {
+                extracted,
+                allocated,
+                reused,
+            };
+        }
+        #[cfg(not(test))]
+        let _ = (extracted, allocated, reused);
+        Ok(built)
+    }
+
+    pub(super) fn link_reader(&self) -> Result<GhosttyLinks<'_>, RuntimeError> {
+        let total = self.terminal.total_rows()?;
+        let (bottom, _) = self.viewport_state()?;
+        let top = total
+            .checked_sub(usize::from(self.size.rows) + bottom)
+            .ok_or(RuntimeError::Invariant("viewport extends above history"))?;
+        Ok(GhosttyLinks {
+            terminal: &self.terminal,
+            total,
+            top,
+        })
     }
 
     pub(super) fn extract_text(
@@ -671,42 +557,49 @@ impl TerminalEngine {
             return Ok(None);
         }
         let total = self.terminal.total_rows()?;
-        let point = |point: huterm_protocol::BufferPoint| {
-            if usize::from(point.column) >= usize::from(self.size.columns) {
+        let point = |point: BufferPoint| {
+            if point.column >= self.size.columns {
                 return None;
             }
-            Some(Point::Screen(PointCoordinate {
-                x: point.column,
-                y: u32::try_from(
-                    total
-                        .checked_sub(1)?
-                        .checked_sub(point.rows_from_live_bottom)?,
-                )
-                .ok()?,
-            }))
+            let row = total
+                .checked_sub(1)?
+                .checked_sub(point.rows_from_live_bottom)?;
+            Some(Point::screen(point.column, u32::try_from(row).ok()?))
         };
         let (Some(start), Some(end)) = (point(range.start), point(range.end))
         else {
             return Ok(None);
         };
-        let selection = Selection::new(
-            self.terminal.grid_ref(start)?,
-            self.terminal.grid_ref(end)?,
-            false,
-        );
-        let mut formatter = Formatter::new(
-            &self.terminal,
-            FormatterOptions::new()
-                .with_format(Format::Plain)
-                .with_unwrap(true)
-                .with_trim(true)
-                .with_selection(&selection),
-        )?;
-        let bytes = formatter.format_alloc(None)?;
-        Ok(Some(String::from_utf8(bytes.to_vec()).map_err(
-            |error| RuntimeError::Engine(error.to_string()),
-        )?))
+        let text = self.terminal.format_plain(start, end)?;
+        Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
     }
+}
+
+fn snapshot_cursor(cursor: ghostty::Cursor) -> Option<Cursor> {
+    let (column, row) = cursor.position?;
+    let shape = if cursor.visible {
+        match cursor.style {
+            CursorStyle::Bar => CursorShape::Beam,
+            CursorStyle::Underline => CursorShape::Underline,
+            _ => CursorShape::Block,
+        }
+    } else {
+        CursorShape::Hidden
+    };
+    Some(Cursor { row, column, shape })
+}
+
+fn apply_presentation(
+    terminal: &mut ghostty::Terminal<EngineHost>,
+    presentation: &TerminalPresentation,
+) -> Result<(), RuntimeError> {
+    terminal
+        .set_default_foreground(Some(native_rgb(presentation.foreground)))?;
+    terminal
+        .set_default_background(Some(native_rgb(presentation.background)))?;
+    terminal.set_default_cursor(Some(native_rgb(presentation.cursor)))?;
+    terminal.set_default_palette(&presentation.palette.map(native_rgb))?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -719,490 +612,180 @@ fn server_hostname() -> Option<String> {
     None
 }
 
-fn admit_clipboard(
-    sink: &OnceCell<HostEffectSink>,
-    text: &str,
-) -> Result<(), ClipboardWriteError> {
-    let Some(sink) = sink.get() else {
-        return Ok(());
-    };
-    match sink.admit_borrowed(text) {
-        HostEffectAdmission::Accepted => Ok(()),
-        HostEffectAdmission::Full | HostEffectAdmission::Contended => {
-            Err(ClipboardWriteError::Busy)
-        }
-        HostEffectAdmission::NoRecipient
-        | HostEffectAdmission::Denied
-        | HostEffectAdmission::Closed => Err(ClipboardWriteError::Denied),
-    }
+/// Maps native cell colors to snapshot colors. Default and palette colors
+/// stay symbolic unless an OSC sequence overrode them.
+struct Resolver<'a> {
+    overrides: &'a ColorOverrides,
+    colors: &'a Colors,
 }
 
-fn rgb(color: RgbColor) -> Rgb {
-    Rgb {
-        red: color.r,
-        green: color.g,
-        blue: color.b,
-    }
-}
-
-fn ghostty_rgb(color: Rgb) -> RgbColor {
-    RgbColor {
-        r: color.red,
-        g: color.green,
-        b: color.blue,
-    }
-}
-
-fn apply_presentation(
-    terminal: &mut Terminal<'_, '_>,
-    presentation: &TerminalPresentation,
-) -> Result<(), RuntimeError> {
-    terminal
-        .set_default_fg_color(Some(ghostty_rgb(presentation.foreground)))?
-        .set_default_bg_color(Some(ghostty_rgb(presentation.background)))?
-        .set_default_cursor_color(Some(ghostty_rgb(presentation.cursor)))?
-        .set_default_color_palette(Some(Palette(
-            presentation.palette.map(ghostty_rgb),
-        )))?;
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum DefaultColor {
-    Foreground,
-    Background,
-    Cursor,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct DefaultOverrides {
-    foreground: bool,
-    background: bool,
-    cursor: bool,
-}
-
-fn probe_default_override(
-    terminal: &mut Terminal<'_, '_>,
-    color: DefaultColor,
-) -> Result<bool, RuntimeError> {
-    let (original, before) = match color {
-        DefaultColor::Foreground => {
-            (terminal.default_fg_color()?, terminal.fg_color()?)
-        }
-        DefaultColor::Background => {
-            (terminal.default_bg_color()?, terminal.bg_color()?)
-        }
-        DefaultColor::Cursor => {
-            (terminal.default_cursor_color()?, terminal.cursor_color()?)
-        }
-    };
-    let mut probe = original.unwrap_or(RgbColor { r: 0, g: 0, b: 0 });
-    probe.r ^= 1;
-    match color {
-        DefaultColor::Foreground => {
-            terminal.set_default_fg_color(Some(probe))?;
-        }
-        DefaultColor::Background => {
-            terminal.set_default_bg_color(Some(probe))?;
-        }
-        DefaultColor::Cursor => {
-            terminal.set_default_cursor_color(Some(probe))?;
-        }
-    }
-    let probed = match color {
-        DefaultColor::Foreground => terminal.fg_color(),
-        DefaultColor::Background => terminal.bg_color(),
-        DefaultColor::Cursor => terminal.cursor_color(),
-    };
-    match color {
-        DefaultColor::Foreground => {
-            terminal.set_default_fg_color(original)?;
-        }
-        DefaultColor::Background => {
-            terminal.set_default_bg_color(original)?;
-        }
-        DefaultColor::Cursor => {
-            terminal.set_default_cursor_color(original)?;
-        }
-    }
-    Ok(probed? == before)
-}
-
-/// Offset from a current viewport row to the retained row that held the same
-/// screen line: positive when output or scrolling moved content upward.
-fn viewport_shift(
-    (old_bottom, old_history): (usize, usize),
-    (bottom, history): (usize, usize),
-) -> isize {
-    let top = |bottom: usize, history: usize| {
-        i128::try_from(history).unwrap_or(i128::MAX)
-            - i128::try_from(bottom).unwrap_or(i128::MAX)
-    };
-    isize::try_from(top(bottom, history) - top(old_bottom, old_history))
-        .unwrap_or(isize::MAX)
-}
-
-/// Finds a retained row with identical cells so unchanged content keeps its
-/// `Arc`. Rows are immutable, so any equal row is valid, even at another
-/// index. The history-derived shift misses once scrollback reaches its byte
-/// budget, so a bounded scan recovers the offset without trusting one anchor.
-struct RowMatcher<'a> {
-    previous: &'a [Arc<TerminalRow>],
-    shift: isize,
-    last: Option<isize>,
-    scan_budget: usize,
-}
-
-impl<'a> RowMatcher<'a> {
-    fn new(previous: &'a [Arc<TerminalRow>], shift: isize) -> Self {
-        Self {
-            previous,
-            shift,
-            last: None,
-            // Enough for one failed scan, such as a changed first row, plus
-            // the scan that finds the shifted rows below it.
-            scan_budget: previous.len().saturating_mul(2),
-        }
-    }
-
-    fn find(
-        &mut self,
-        index: usize,
-        cells: &[Cell],
-    ) -> Option<&'a Arc<TerminalRow>> {
-        let offsets = [Some(0), Some(self.shift), self.last];
-        for (position, offset) in offsets.iter().enumerate() {
-            let Some(offset) = *offset else {
-                continue;
-            };
-            if offsets[..position].contains(&Some(offset)) {
-                continue;
-            }
-            if let Some(row) = index
-                .checked_add_signed(offset)
-                .and_then(|row| self.previous.get(row))
-                && row.cells == cells
-            {
-                self.last = Some(offset);
-                return Some(row);
-            }
-        }
-        let previous = self.previous;
-        for (row_index, row) in previous.iter().enumerate() {
-            if self.scan_budget == 0 {
-                return None;
-            }
-            self.scan_budget -= 1;
-            if row.cells == cells {
-                self.last = isize::try_from(row_index)
-                    .ok()
-                    .zip(isize::try_from(index).ok())
-                    .map(|(old, new)| old - new);
-                return Some(row);
-            }
-        }
-        None
-    }
-}
-
-fn snapshot_cell(
-    cell: &libghostty_vt::render::CellIteration<'_, '_>,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
-    palette: &libghostty_vt::style::Palette,
-    overrides: &[bool; 256],
-    default_overrides: DefaultOverrides,
-    grapheme: &mut String,
-) -> Result<Cell, RuntimeError> {
-    let raw = cell.raw_cell()?;
-    let style = cell.style()?;
-    let content = raw.content_tag()?;
-    let resolve =
-        |color, default, override_color: Option<RgbColor>| match color {
-            StyleColor::None => override_color
+impl Resolver<'_> {
+    fn color(
+        &self,
+        color: StyleColor,
+        default: CellColor,
+        default_override: Option<ghostty::Rgb>,
+    ) -> CellColor {
+        match color {
+            StyleColor::None => default_override
                 .map_or(default, |color| CellColor::Rgb(rgb(color))),
             StyleColor::Rgb(color) => CellColor::Rgb(rgb(color)),
             StyleColor::Palette(index) => {
-                if overrides[usize::from(index.0)] {
-                    CellColor::Rgb(rgb(palette.get(index)))
+                if self.overrides.palette[usize::from(index)] {
+                    CellColor::Rgb(rgb(self.colors.palette[usize::from(index)]))
                 } else {
-                    CellColor::Indexed(index.0)
+                    CellColor::Indexed(index)
                 }
             }
+        }
+    }
+
+    fn foreground(&self, color: StyleColor) -> CellColor {
+        let default =
+            self.colors.foreground.filter(|_| self.overrides.foreground);
+        self.color(color, CellColor::DefaultForeground, default)
+    }
+
+    fn background(&self, color: StyleColor) -> CellColor {
+        let default =
+            self.colors.background.filter(|_| self.overrides.background);
+        self.color(color, CellColor::DefaultBackground, default)
+    }
+}
+
+/// Reads one row's cells into `out`, reusing its allocation.
+fn extract_row(
+    row: &mut ghostty::RenderRow<'_>,
+    out: &mut Vec<Cell>,
+    grapheme: &mut Vec<u8>,
+    resolver: &Resolver<'_>,
+    columns: usize,
+) -> Result<(), RuntimeError> {
+    out.clear();
+    out.try_reserve_exact(columns).map_err(|error| {
+        RuntimeError::Engine(format!("snapshot row allocation failed: {error}"))
+    })?;
+    let hints = row.row()?;
+    // Row flags may report false positives but never false negatives, so
+    // unstyled and grapheme-free rows skip per-cell queries.
+    let graphemes = hints.has_graphemes()?;
+    let styled = hints.has_styles()?;
+    let mut cells = row.cells()?;
+    while cells.next() {
+        let cell = cells.cell()?;
+        let codepoint = cell.codepoint()?;
+        let content = if graphemes || codepoint == 0 {
+            cell.content()?
+        } else {
+            CellContent::Codepoint
         };
-    let mut foreground = resolve(
-        style.fg_color,
-        CellColor::DefaultForeground,
-        default_overrides.foreground.then_some(fg).flatten(),
-    );
-    let background_style = match content {
-        CellContentTag::BgColorPalette => {
-            StyleColor::Palette(raw.bg_color_palette()?)
-        }
-        CellContentTag::BgColorRgb => StyleColor::Rgb(raw.bg_color_rgb()?),
-        _ => style.bg_color,
-    };
-    let mut background = resolve(
-        background_style,
-        CellColor::DefaultBackground,
-        default_overrides.background.then_some(bg).flatten(),
-    );
-    if style.inverse {
-        std::mem::swap(&mut foreground, &mut background);
-    }
-    let text = match content {
-        CellContentTag::Codepoint => match raw.codepoint()? {
-            0 => CellText::BLANK,
-            codepoint => CellText::from(
-                char::from_u32(codepoint)
-                    .unwrap_or(char::REPLACEMENT_CHARACTER),
-            ),
-        },
-        CellContentTag::CodepointGrapheme => {
-            grapheme.clear();
-            cell.graphemes_utf8(grapheme)?;
-            if grapheme.is_empty() {
-                CellText::BLANK
-            } else {
-                CellText::new(grapheme)
-            }
-        }
-        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {
-            CellText::BLANK
-        }
-    };
-    let wide = raw.wide()?;
-    Ok(Cell {
-        text,
-        foreground,
-        background,
-        style: CellStyle {
-            bold: style.bold,
-            dim: style.faint,
-            italic: style.italic,
-            underline: style.underline != Underline::None,
-            strikeout: style.strikethrough,
-            hidden: style.invisible,
-            wide: wide == CellWide::Wide,
-            wide_spacer: matches!(
-                wide,
-                CellWide::SpacerTail | CellWide::SpacerHead
-            ),
-        },
-    })
-}
-
-// A conservative invalidation hint, not a second terminal parser. Native
-// Ghostty still interprets every color and reset. This mirrors the pinned
-// parser's state transitions (`stream.zig` and `parse_table.zig`) closely
-// enough to find color OSC dispatches and RIS across PTY chunks, so ordinary
-// text, CSI, and non-color OSC output never trigger palette probing. It may
-// flag extra sequences, but it must never miss a color operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EscapeHint {
-    Ground,
-    Escape,
-    EscapeIntermediate,
-    Csi,
-    /// DCS, SOS, PM, and APC strings, which only anywhere transitions exit.
-    Passthrough,
-    Osc(OscNumber),
-}
-
-/// The leading decimal number of an OSC, accumulated across chunks.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct OscNumber {
-    value: u16,
-    digits: u8,
-    complete: bool,
-}
-
-impl OscNumber {
-    /// Ghostty accepts at most four prefix digits (OSC 3008).
-    const MAX_DIGITS: u8 = 4;
-
-    fn push(self, byte: u8) -> Self {
-        if self.complete {
-            return self;
-        }
-        if !byte.is_ascii_digit() {
-            return Self {
-                complete: true,
-                ..self
-            };
-        }
-        if self.digits == Self::MAX_DIGITS {
-            // Too long for any OSC Ghostty dispatches.
-            return Self {
-                value: 0,
-                digits: Self::MAX_DIGITS + 1,
-                complete: true,
-            };
-        }
-        Self {
-            value: self.value * 10 + u16::from(byte - b'0'),
-            digits: self.digits + 1,
-            complete: false,
-        }
-    }
-
-    /// OSCs that `osc.zig` dispatches to its color and kitty color parsers.
-    fn is_color(self) -> bool {
-        (1..=Self::MAX_DIGITS).contains(&self.digits)
-            && matches!(
-                self.value,
-                4 | 5 | 10..=19 | 21 | 104 | 105 | 110..=119
-            )
-    }
-}
-
-impl EscapeHint {
-    fn observe(&mut self, bytes: &[u8]) -> bool {
-        let mut changed = false;
-        let mut index = 0;
-        while index < bytes.len() {
-            // Skip bytes that cannot change the current state. Dense SGR
-            // output, such as truecolor per-cell colors, is mostly CSI
-            // parameters, and stepping each one dominated parse time.
-            let rest = &bytes[index..];
-            let next = match *self {
-                // Ghostty decodes ground bytes as UTF-8, so only ESC leaves it.
-                Self::Ground => memchr::memchr(0x1b, rest),
-                Self::Csi => {
-                    rest.iter().position(|byte| !matches!(byte, 0x20..=0x3f))
-                }
-                // Strings end only through anywhere transitions.
-                Self::Passthrough => rest.iter().position(|byte| {
-                    matches!(byte, 0x18 | 0x1a | 0x1b | 0x80..=0x9f)
-                }),
-                Self::Osc(number) if number.complete => rest
-                    .iter()
-                    .position(|byte| matches!(byte, 0x07 | 0x18 | 0x1a | 0x1b)),
-                _ => Some(0),
-            };
-            let Some(offset) = next else {
-                break;
-            };
-            index += offset;
-            changed |= self.step(bytes[index]);
-            index += 1;
-        }
-        changed
-    }
-
-    fn step(&mut self, byte: u8) -> bool {
-        let (next, changed) = match (*self, byte) {
-            // OSC exits dispatch the accumulated command. Other C0 bytes are
-            // ignored, and 0x20..=0xff, including C1 values, are payload.
-            (Self::Osc(number), 0x07 | 0x18 | 0x1a) => {
-                (Self::Ground, number.is_color())
-            }
-            (Self::Osc(number), 0x1b) => (Self::Escape, number.is_color()),
-            (Self::Osc(number), 0x20..=0xff) => {
-                (Self::Osc(number.push(byte)), false)
-            }
-            (_, 0x1b) => (Self::Escape, false),
-            (Self::Ground | Self::Osc(_), _) => (*self, false),
-            (Self::Escape, b'c') => (Self::Ground, true),
-            // C1 bytes are anywhere transitions in every other non-ground
-            // state; the ESC finals that open sequences must precede the
-            // generic ESC-final arm below.
-            (_, 0x90 | 0x98 | 0x9e | 0x9f)
-            | (Self::Escape, b'P' | b'X' | b'^' | b'_') => {
-                (Self::Passthrough, false)
-            }
-            (_, 0x9b) | (Self::Escape, b'[') => (Self::Csi, false),
-            (_, 0x9d) | (Self::Escape, b']') => {
-                (Self::Osc(OscNumber::default()), false)
-            }
-            (
-                _,
-                0x18 | 0x1a | 0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c,
-            )
-            | (Self::Escape | Self::EscapeIntermediate, 0x30..=0x7e)
-            | (Self::Csi, 0x40..=0x7e) => (Self::Ground, false),
-            (Self::Escape | Self::EscapeIntermediate, 0x20..=0x2f) => {
-                (Self::EscapeIntermediate, false)
-            }
-            _ => (*self, false),
+        let width = cell.width()?;
+        // The style getter returns the default for unstyled cells, so one
+        // call replaces a `has_styling` check plus a style read.
+        let style = if styled {
+            cells.style()?
+        } else {
+            ghostty::Style::default()
         };
-        *self = next;
-        changed
+        let (text, background) = match content {
+            CellContent::Codepoint if codepoint != 0 => (
+                char::from_u32(codepoint).map_or(
+                    CellText::new("\u{fffd}"),
+                    |character| {
+                        CellText::new(character.encode_utf8(&mut [0; 4]))
+                    },
+                ),
+                style.background,
+            ),
+            CellContent::Grapheme => {
+                cells.graphemes_utf8(grapheme)?;
+                let text = if grapheme.is_empty() {
+                    CellText::BLANK
+                } else {
+                    CellText::new(&String::from_utf8_lossy(grapheme))
+                };
+                (text, style.background)
+            }
+            CellContent::BackgroundPalette => (
+                CellText::BLANK,
+                StyleColor::Palette(cell.background_palette()?),
+            ),
+            CellContent::BackgroundRgb => {
+                (CellText::BLANK, StyleColor::Rgb(cell.background_rgb()?))
+            }
+            _ => (CellText::BLANK, style.background),
+        };
+        let mut foreground = resolver.foreground(style.foreground);
+        let mut background = resolver.background(background);
+        if style.inverse {
+            std::mem::swap(&mut foreground, &mut background);
+        }
+        out.push(Cell {
+            text,
+            foreground,
+            background,
+            style: CellStyle {
+                bold: style.bold,
+                dim: style.faint,
+                italic: style.italic,
+                underline: style.underline,
+                strikeout: style.strikethrough,
+                hidden: style.invisible,
+                wide: width == CellWidth::Wide,
+                wide_spacer: width.is_spacer(),
+            },
+        });
     }
+    Ok(())
 }
 
-impl TerminalEngine {
-    pub(super) fn link_reader(&self) -> Result<LinkReader<'_>, RuntimeError> {
-        let (bottom_offset, _) = self.viewport_state()?;
-        let viewport_top = self
-            .terminal
-            .total_rows()?
-            .checked_sub(usize::from(self.size.rows) + bottom_offset)
-            .ok_or_else(|| {
-                RuntimeError::Engine("viewport exceeds screen rows".to_owned())
-            })?;
-        Ok(LinkReader {
-            terminal: &self.terminal,
-            viewport_top,
-            graphemes: ['\0'; 256],
-        })
-    }
+/// Reads the grid for link resolution. Rows at or below the viewport top
+/// use viewport points; Ghostty resolves screen points by walking history
+/// from its first page, so only rows above the viewport pay that cost.
+pub(super) struct GhosttyLinks<'a> {
+    terminal: &'a ghostty::Terminal<EngineHost>,
+    total: usize,
+    top: usize,
 }
 
-/// Link scan access to one unchanged terminal.
-pub(super) struct LinkReader<'a> {
-    terminal: &'a Terminal<'static, 'static>,
-    /// Screen row at the top of the current viewport, which may be scrolled
-    /// back.
-    viewport_top: usize,
-    graphemes: [char; 256],
-}
-
-impl<'a> LinkReader<'a> {
+impl GhosttyLinks<'_> {
     fn grid_ref(
         &self,
         row: usize,
         column: u16,
-    ) -> Result<libghostty_vt::screen::GridRef<'a>, huterm_protocol::LinkLookup>
-    {
-        let coordinate = |y: usize| {
-            u32::try_from(y)
-                .map(|y| PointCoordinate { x: column, y })
-                .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+    ) -> Result<ghostty::GridRef<'_>, LinkLookup> {
+        let point = if row >= self.top {
+            Point::viewport(
+                column,
+                u32::try_from(row - self.top)
+                    .map_err(|_| LinkLookup::Unavailable)?,
+            )
+        } else {
+            Point::screen(
+                column,
+                u32::try_from(row).map_err(|_| LinkLookup::Unavailable)?,
+            )
         };
-        // Ghostty resolves screen points by walking every page from the top
-        // of history, but viewport points from the viewport's own position.
-        // Rows at or below the viewport top therefore cost the same however
-        // long the history is.
-        let point = match row.checked_sub(self.viewport_top) {
-            Some(y) => Point::Viewport(coordinate(y)?),
-            None => Point::Screen(coordinate(row)?),
-        };
-        self.terminal.grid_ref(point).map_err(link_error)
-    }
-}
-
-fn link_error(error: libghostty_vt::Error) -> huterm_protocol::LinkLookup {
-    match error {
-        libghostty_vt::Error::OutOfSpace { .. } => {
-            huterm_protocol::LinkLookup::ScanLimit
-        }
-        _ => huterm_protocol::LinkLookup::Unavailable,
-    }
-}
-
-impl super::links::LinkBuffer for LinkReader<'_> {
-    fn total_rows(&self) -> Result<usize, huterm_protocol::LinkLookup> {
         self.terminal
-            .total_rows()
-            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+            .grid_ref(point)
+            .map_err(|_| LinkLookup::Unavailable)
+    }
+}
+
+fn unavailable(_: ghostty::Error) -> LinkLookup {
+    LinkLookup::Unavailable
+}
+
+impl LinkBuffer for GhosttyLinks<'_> {
+    fn total_rows(&self) -> Result<usize, LinkLookup> {
+        Ok(self.total)
     }
 
-    fn wrapped(&self, row: usize) -> Result<bool, huterm_protocol::LinkLookup> {
+    fn wrapped(&self, row: usize) -> Result<bool, LinkLookup> {
         self.grid_ref(row, 0)?
             .row()
-            .and_then(libghostty_vt::screen::Row::is_wrapped)
-            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
+            .and_then(ghostty::Row::wrapped)
+            .map_err(unavailable)
     }
 
     fn push_cell(
@@ -1210,23 +793,27 @@ impl super::links::LinkBuffer for LinkReader<'_> {
         row: usize,
         column: u16,
         text: &mut String,
-    ) -> Result<(), huterm_protocol::LinkLookup> {
-        let reference = self.grid_ref(row, column)?;
-        let count = reference
-            .graphemes(&mut self.graphemes)
-            .map_err(link_error)?;
-        if count > 0 {
-            text.extend(&self.graphemes[..count]);
-        // Ghostty writes wide spacers with no text, so only textless cells
-        // need their width read.
-        } else if !matches!(
-            reference
-                .cell()
-                .and_then(libghostty_vt::screen::Cell::wide)
-                .map_err(link_error)?,
-            CellWide::SpacerTail | CellWide::SpacerHead
-        ) {
-            text.push(' ');
+    ) -> Result<(), LinkLookup> {
+        let cell = self.grid_ref(row, column)?;
+        let mut codepoints = [0; LINK_GRAPHEME_CODEPOINTS];
+        match cell.graphemes(&mut codepoints).map_err(unavailable)? {
+            Fill::Written(0) => {
+                let spacer = cell
+                    .cell()
+                    .and_then(ghostty::Cell::width)
+                    .map_err(unavailable)?
+                    .is_spacer();
+                if !spacer {
+                    text.push(' ');
+                }
+            }
+            Fill::Written(len) => {
+                let codepoints = &codepoints[..len.min(codepoints.len())];
+                text.extend(codepoints.iter().map(|&codepoint| {
+                    char::from_u32(codepoint).unwrap_or('\u{fffd}')
+                }));
+            }
+            Fill::TooSmall(_) => return Err(LinkLookup::ScanLimit),
         }
         Ok(())
     }
@@ -1235,31 +822,32 @@ impl super::links::LinkBuffer for LinkReader<'_> {
         &self,
         row: usize,
         column: u16,
-    ) -> Result<Option<String>, huterm_protocol::LinkLookup> {
-        let reference = self.grid_ref(row, column)?;
-        if !reference
+    ) -> Result<Option<String>, LinkLookup> {
+        let cell = self.grid_ref(row, column)?;
+        if !cell
             .cell()
-            .and_then(libghostty_vt::screen::Cell::has_hyperlink)
-            .map_err(link_error)?
+            .and_then(ghostty::Cell::has_hyperlink)
+            .map_err(unavailable)?
         {
             return Ok(None);
         }
-        // Ask for the destination's length before allocating for it. Only an
-        // empty or unresolvable destination fits the empty buffer.
-        let length = match reference.hyperlink_uri(&mut []) {
-            Ok(_) => return Ok(Some(String::new())),
-            Err(libghostty_vt::Error::OutOfSpace { required }) => required,
-            Err(error) => return Err(link_error(error)),
+        let len = match cell.hyperlink_uri(&mut []).map_err(unavailable)? {
+            Fill::Written(_) => return Ok(None),
+            Fill::TooSmall(len) if len > MAX_LINK_BYTES => {
+                return Err(LinkLookup::ScanLimit);
+            }
+            Fill::TooSmall(len) => len,
         };
-        if length > super::links::MAX_LINK_BYTES {
-            return Err(huterm_protocol::LinkLookup::ScanLimit);
+        let mut uri = vec![0; len];
+        match cell.hyperlink_uri(&mut uri).map_err(unavailable)? {
+            Fill::Written(written) => {
+                uri.truncate(written);
+                String::from_utf8(uri)
+                    .map(Some)
+                    .map_err(|_| LinkLookup::Unavailable)
+            }
+            Fill::TooSmall(_) => Err(LinkLookup::ScanLimit),
         }
-        let mut bytes = vec![0; length];
-        let count = reference.hyperlink_uri(&mut bytes).map_err(link_error)?;
-        bytes.truncate(count);
-        String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| huterm_protocol::LinkLookup::Unavailable)
     }
 
     fn same_hyperlink(
@@ -1268,14 +856,21 @@ impl super::links::LinkBuffer for LinkReader<'_> {
         column: u16,
         destination: &str,
         scratch: &mut [u8],
-    ) -> Result<bool, huterm_protocol::LinkLookup> {
-        use huterm_protocol::LinkLookup;
-        let reference = self.grid_ref(row, column)?;
-        match reference.hyperlink_uri(scratch) {
-            Ok(count) => Ok(scratch[..count] == *destination.as_bytes()),
-            Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(false),
-            Err(_) => Err(LinkLookup::Unavailable),
+    ) -> Result<bool, LinkLookup> {
+        let cell = self.grid_ref(row, column)?;
+        if !cell
+            .cell()
+            .and_then(ghostty::Cell::has_hyperlink)
+            .map_err(unavailable)?
+        {
+            return Ok(false);
         }
+        Ok(match cell.hyperlink_uri(scratch).map_err(unavailable)? {
+            Fill::Written(len) => {
+                scratch.get(..len) == Some(destination.as_bytes())
+            }
+            Fill::TooSmall(_) => false,
+        })
     }
 }
 
@@ -1283,723 +878,94 @@ impl super::links::LinkBuffer for LinkReader<'_> {
 mod tests {
     use super::*;
 
-    fn presentation() -> TerminalPresentation {
-        let mut palette = TerminalPresentation::default().palette;
-        palette[1] = Rgb {
-            red: 0xaa,
-            green: 0xbb,
-            blue: 0xcc,
+    /// Everything a color operation can change, read without the hint.
+    fn observe(
+        engine: &mut TerminalEngine,
+    ) -> (
+        Colors,
+        Colors,
+        Option<ghostty::Rgb>,
+        Option<ghostty::Rgb>,
+        ColorOverrides,
+    ) {
+        let terminal = &mut engine.terminal;
+        let effective = Colors {
+            foreground: terminal.foreground().unwrap(),
+            background: terminal.background().unwrap(),
+            palette: terminal.palette().unwrap(),
         };
-        TerminalPresentation {
-            foreground: Rgb {
-                red: 0x11,
-                green: 0x22,
-                blue: 0x33,
-            },
-            background: Rgb {
-                red: 0x44,
-                green: 0x55,
-                blue: 0x66,
-            },
-            cursor: Rgb {
-                red: 0x77,
-                green: 0x88,
-                blue: 0x99,
-            },
-            palette,
-        }
-    }
-
-    fn engine() -> TerminalEngine {
-        TerminalEngine::new(
-            TerminalId::new(1),
-            GridSize::clamped(8, 3),
-            CellSize {
-                width: 9,
-                height: 17,
-            },
-            presentation(),
-        )
-        .unwrap()
-    }
-
-    fn replies(effects: Vec<EngineEffect>) -> Vec<Vec<u8>> {
-        effects
-            .into_iter()
-            .filter_map(|effect| match effect {
-                EngineEffect::PtyWrite(bytes) => Some(bytes),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn native_queries_report_seeded_colors_size_and_appearance() {
-        let mut engine = engine();
-        let effects = engine
-            .process(
-                b"\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[14t\x1b[16t\x1b[18t\x1b[?996n",
-            )
-            .unwrap();
-        assert_eq!(
-            replies(effects),
-            vec![
-                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
-                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
-                b"\x1b]11;rgb:4444/5555/6666\x1b\\".to_vec(),
-                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
-                b"\x1b[4;51;72t".to_vec(),
-                b"\x1b[6;17;9t".to_vec(),
-                b"\x1b[8;3;8t".to_vec(),
-                b"\x1b[?997;1n".to_vec(),
-            ]
-        );
-    }
-
-    #[test]
-    fn size_queries_follow_the_existing_ordered_resize_state() {
-        let mut engine = engine();
-        engine
-            .resize(
-                GridSize::clamped(5, 4),
-                CellSize {
-                    width: 11,
-                    height: 19,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
-            vec![
-                b"\x1b[4;76;55t".to_vec(),
-                b"\x1b[6;19;11t".to_vec(),
-                b"\x1b[8;4;5t".to_vec(),
-            ]
-        );
-    }
-
-    #[test]
-    fn size_queries_are_silent_until_cell_geometry_is_known() {
-        let mut engine = TerminalEngine::new(
-            TerminalId::new(1),
-            GridSize::clamped(8, 3),
-            CellSize {
-                width: 0,
-                height: 0,
-            },
-            presentation(),
-        )
-        .unwrap();
-        assert!(
-            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap())
-                .is_empty()
-        );
-
-        engine
-            .resize(
-                GridSize::clamped(5, 4),
-                CellSize {
-                    width: 11,
-                    height: 19,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
-            vec![
-                b"\x1b[4;76;55t".to_vec(),
-                b"\x1b[6;19;11t".to_vec(),
-                b"\x1b[8;4;5t".to_vec(),
-            ]
-        );
-    }
-
-    #[test]
-    fn mutations_queries_and_resets_are_ordered_within_one_write() {
-        let mut engine = engine();
-        let effects = engine
-            .process(
-                b"\x1b]4;1;#010203\x1b\\\x1b]4;1;?\x1b\\\x1b]104;1\x1b\\\x1b]4;1;?\x1b\\\x1b]10;#abcdef\x1b\\\x1b]10;?\x1b\\\x1b]110\x1b\\\x1b]10;?\x1b\\\x1b]11;#ffffff\x1b\\\x1b]11;?\x1b\\\x1b[?996n\x1b]111\x1b\\\x1b]11;?\x1b\\\x1b[?996n\x1b]12;#0a0b0c\x1b\\\x1b]12;?\x1b\\\x1b]112\x1b\\\x1b]12;?\x1b\\",
-            )
-            .unwrap();
-        assert_eq!(
-            replies(effects),
-            vec![
-                b"\x1b]4;1;rgb:0101/0202/0303\x1b\\".to_vec(),
-                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
-                b"\x1b]10;rgb:abab/cdcd/efef\x1b\\".to_vec(),
-                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
-                b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\".to_vec(),
-                b"\x1b[?997;2n".to_vec(),
-                b"\x1b]11;rgb:4444/5555/6666\x1b\\".to_vec(),
-                b"\x1b[?997;1n".to_vec(),
-                b"\x1b]12;rgb:0a0a/0b0b/0c0c\x1b\\".to_vec(),
-                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
-            ]
-        );
-    }
-
-    #[test]
-    fn osc_dispatch_at_escape_updates_override_state_before_the_next_byte() {
-        let mut engine = engine();
-        engine.process(b"A\x1b[31mB").unwrap();
-        engine
-            .process(
-                b"\x1b]10;#010203\x1b]11;#040506\x1b]12;#070809\x1b]4;1;#0a0b0c\x1b",
-            )
-            .unwrap();
-        let overridden = engine.snapshot().unwrap();
-        assert_eq!(
-            (
-                overridden.rows[0].cells[0].foreground,
-                overridden.rows[0].cells[0].background,
-                overridden.rows[0].cells[1].foreground,
-                overridden.cursor_color,
-            ),
-            (
-                CellColor::Rgb(Rgb {
-                    red: 1,
-                    green: 2,
-                    blue: 3,
-                }),
-                CellColor::Rgb(Rgb {
-                    red: 4,
-                    green: 5,
-                    blue: 6,
-                }),
-                CellColor::Rgb(Rgb {
-                    red: 10,
-                    green: 11,
-                    blue: 12,
-                }),
-                Some(Rgb {
-                    red: 7,
-                    green: 8,
-                    blue: 9,
-                }),
-            )
-        );
-
-        engine
-            .process(b"]110\x1b]111\x1b]112\x1b]104;1\x1b")
-            .unwrap();
-        let reset = engine.snapshot().unwrap();
-        assert_eq!(
-            (
-                reset.rows[0].cells[0].foreground,
-                reset.rows[0].cells[0].background,
-                reset.rows[0].cells[1].foreground,
-                reset.cursor_color,
-            ),
-            (
-                CellColor::DefaultForeground,
-                CellColor::DefaultBackground,
-                CellColor::Indexed(1),
-                None,
-            )
-        );
-    }
-
-    #[test]
-    fn osc_dispatch_at_can_or_sub_updates_override_state_immediately() {
-        for terminator in [0x18, 0x1a] {
-            let mut engine = engine();
-            engine.process(b"A").unwrap();
-            let mut mutation = b"\x1b]10;#010203".to_vec();
-            mutation.push(terminator);
-            engine.process(&mutation).unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().rows[0].cells[0].foreground,
-                CellColor::Rgb(Rgb {
-                    red: 1,
-                    green: 2,
-                    blue: 3,
-                }),
-                "terminator={terminator:#x}"
-            );
-
-            let mut reset = b"\x1b]110".to_vec();
-            reset.push(terminator);
-            engine.process(&reset).unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().rows[0].cells[0].foreground,
-                CellColor::DefaultForeground,
-                "terminator={terminator:#x}"
-            );
-        }
-    }
-
-    fn row(text: &str) -> Arc<TerminalRow> {
-        Arc::new(TerminalRow {
-            cells: text
-                .chars()
-                .map(|character| Cell {
-                    text: character.into(),
-                    foreground: CellColor::DefaultForeground,
-                    background: CellColor::DefaultBackground,
-                    style: CellStyle::default(),
-                })
-                .collect(),
-        })
-    }
-
-    /// Matches `current` rows against `previous`, returning retained indices.
-    fn matches(
-        previous: &[Arc<TerminalRow>],
-        shift: isize,
-        current: &[&str],
-    ) -> Vec<Option<usize>> {
-        let mut matcher = RowMatcher::new(previous, shift);
-        current
-            .iter()
-            .enumerate()
-            .map(|(index, text)| {
-                matcher.find(index, &row(text).cells).map(|found| {
-                    previous
-                        .iter()
-                        .position(|row| Arc::ptr_eq(row, found))
-                        .unwrap()
-                })
-            })
-            .collect()
-    }
-
-    #[test]
-    fn row_matcher_recovers_shifts_the_history_size_cannot_report() {
-        let previous = ["    ", "    ", "A   ", "B   "].map(row);
-        // At the scrollback budget, history stays constant, so the derived
-        // shift is zero even though content moved up one row.
-        assert_eq!(
-            matches(&previous, 0, &["    ", "A   ", "B   ", "C   "]),
-            [Some(0), Some(2), Some(3), None]
-        );
-        let previous = ["A   ", "B   ", "C   ", "D   "].map(row);
-        assert_eq!(
-            matches(&previous, 0, &["Z   ", "C   ", "D   ", "E   "]),
-            [None, Some(2), Some(3), None]
-        );
-        // A correct derived shift matches without scanning.
-        assert_eq!(
-            matches(&previous, 2, &["C   ", "D   ", "E   ", "F   "]),
-            [Some(2), Some(3), None, None]
-        );
-    }
-
-    #[test]
-    fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_budget()
-    {
-        for budget in [None, Some(0)] {
-            let mut engine = TerminalEngine::new(
-                TerminalId::new(1),
-                GridSize::clamped(8, 4),
-                CellSize {
-                    width: 8,
-                    height: 16,
-                },
-                presentation(),
-            )
-            .unwrap();
-            if let Some(bytes) = budget {
-                engine
-                    .terminal
-                    .set_scrollback_max_bytes(Some(bytes))
-                    .unwrap();
-            }
-            engine.process(b"\r\n\r\nA\r\nB").unwrap();
-            let before = engine.snapshot().unwrap();
-            engine.process(b"\r\nC").unwrap();
-            let after = engine.snapshot().unwrap();
-            if budget.is_some() {
-                assert_eq!(after.history_size, before.history_size);
-            }
-            let text = |row: &TerminalRow| {
-                row.cells
-                    .iter()
-                    .map(|cell| cell.text.as_str())
-                    .collect::<String>()
-            };
-            assert_eq!(text(&after.rows[1]), "A       ", "{budget:?}");
-            assert!(Arc::ptr_eq(&after.rows[1], &before.rows[2]), "{budget:?}");
-            assert!(Arc::ptr_eq(&after.rows[2], &before.rows[3]), "{budget:?}");
-            assert!(
-                before.rows[..2]
-                    .iter()
-                    .any(|blank| Arc::ptr_eq(blank, &after.rows[0])),
-                "{budget:?}"
-            );
-            assert_eq!(text(&after.rows[3]), "C       ", "{budget:?}");
-            assert_eq!(engine.last_snapshot_stats().allocated, 1, "{budget:?}");
-        }
-    }
-
-    fn screen_text(snapshot: &TerminalSnapshot) -> String {
-        snapshot
-            .rows
-            .iter()
-            .map(|row| {
-                row.cells
-                    .iter()
-                    .map(|cell| cell.text.as_str())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    }
-
-    #[test]
-    fn clearing_history_keeps_the_screen() {
-        let mut engine = engine();
-        engine.process(b"1\r\n2\r\n3\r\n4\r\n5").unwrap();
-        assert_eq!(engine.snapshot().unwrap().history_size, 2);
-        engine.clear_history().unwrap();
-        let snapshot = engine.snapshot().unwrap();
-        assert_eq!(snapshot.history_size, 0);
-        assert_eq!(screen_text(&snapshot), "3|4|5");
-    }
-
-    #[test]
-    fn clearing_history_waits_for_an_unfinished_sequence_or_codepoint() {
-        for (partial, rest, shown) in [
-            (&b"\x1b[3"[..], &b"1mX"[..], "X"),
-            (&b"\x1b]2;title"[..], &b"\x07X"[..], "X"),
-            // The first two bytes of U+2603.
-            (&b"\xe2\x98"[..], &b"\x83"[..], "\u{2603}"),
-        ] {
-            let mut engine = engine();
-            engine.process(b"1\r\n2\r\n3\r\n4\r\n").unwrap();
-            engine.process(partial).unwrap();
-            engine.clear_history().unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().history_size,
-                2,
-                "{partial:?}"
-            );
-            engine.process(rest).unwrap();
-            let snapshot = engine.snapshot().unwrap();
-            assert_eq!(snapshot.history_size, 0, "{partial:?}");
-            // The interrupted sequence still completed as sent.
-            assert_eq!(screen_text(&snapshot), format!("3|4|{shown}"));
-        }
-    }
-
-    #[test]
-    fn reset_clears_the_screen_history_and_modes() {
-        let mut engine = engine();
-        engine.process(b"\x1b[?2004h1\r\n2\r\n3\r\n4").unwrap();
-        assert!(engine.modes().unwrap().bracketed_paste);
-        engine.reset().unwrap();
-        let snapshot = engine.snapshot().unwrap();
-        assert_eq!(snapshot.history_size, 0);
-        assert_eq!(screen_text(&snapshot), "||");
-        assert!(!engine.modes().unwrap().bracketed_paste);
-    }
-
-    #[test]
-    fn rewriting_a_row_with_identical_content_keeps_its_arc() {
-        let mut engine = engine();
-        engine.process(b"same").unwrap();
-        let before = engine.snapshot().unwrap();
-        engine.process(b"\rsame").unwrap();
-        let after = engine.snapshot().unwrap();
-        assert!(Arc::ptr_eq(&before.rows[0], &after.rows[0]));
-        let stats = engine.last_snapshot_stats();
-        assert_eq!((stats.extracted, stats.allocated), (1, 0));
-    }
-
-    #[test]
-    fn non_color_osc_and_utf8_output_keep_snapshots_partial() {
-        let mut engine = TerminalEngine::new(
-            TerminalId::new(1),
-            GridSize::clamped(20, 10),
-            CellSize {
-                width: 9,
-                height: 17,
-            },
-            presentation(),
-        )
-        .unwrap();
-        engine.process(b"first\r\nsecond\r\nthird").unwrap();
-        engine.snapshot().unwrap();
-        // OSC 8 is absent: Ghostty's own damage still rebuilds most rows.
-        for chunk in [
-            "\x1b]2;title\x07\x1b[2;1Hx".as_bytes(),
-            b"\x1b]133;A\x07\x1b[2;1H$ \x1b]133;B\x07\x1b]7;file:///tmp\x07",
-            "\x1b[2;1H\x1b[31m\u{255d}\u{5e1d}\x1b[0m".as_bytes(),
-        ] {
-            engine.process(chunk).unwrap();
-            engine.snapshot().unwrap();
-            let extracted = engine.last_snapshot_stats().extracted;
-            assert!(
-                extracted <= 2,
-                "{:?} extracted {extracted} of 10 rows",
-                String::from_utf8_lossy(chunk)
-            );
-        }
-        // Shows the fixture detects a full redraw. OSC 4 dirties Ghostty's
-        // palette on its own, so this does not test the hint; the full-probe
-        // differential test guards against missed color changes.
-        engine.process(b"\x1b]4;1;#123456\x07").unwrap();
-        engine.snapshot().unwrap();
-        assert_eq!(engine.last_snapshot_stats().extracted, 10);
-    }
-
-    #[test]
-    fn default_and_equal_osc_overrides_survive_theme_updates_and_resets() {
-        let mut engine = engine();
-        engine.process(b"A\x1b[31mB").unwrap();
-        let initial = engine.snapshot().unwrap();
-        assert_eq!(
-            initial.rows[0].cells[0].foreground,
-            CellColor::DefaultForeground
-        );
-        assert_eq!(initial.rows[0].cells[1].foreground, CellColor::Indexed(1));
-
-        engine
-            .process(
-                b"\r\x1b[0m\x1b]10;#112233\x1b\\\x1b]11;#ffffff\x1b\\\x1b]12;#778899\x1b\\\x1b]4;1;#aabbcc\x1b\\A",
-            )
-            .unwrap();
-        let overridden = engine.snapshot().unwrap();
-        assert_eq!(
-            overridden.rows[0].cells[0].foreground,
-            CellColor::Rgb(presentation().foreground)
-        );
-        assert_eq!(
-            overridden.rows[0].cells[0].background,
-            CellColor::Rgb(Rgb {
-                red: 0xff,
-                green: 0xff,
-                blue: 0xff,
-            })
-        );
-        assert_eq!(
-            overridden.rows[0].cells[1].foreground,
-            CellColor::Rgb(presentation().palette[1])
-        );
-        assert_eq!(overridden.cursor_color, Some(presentation().cursor));
-
-        let mut changed = presentation();
-        changed.foreground.red = 0xfe;
-        changed.background = Rgb {
-            red: 0x10,
-            green: 0x20,
-            blue: 0x30,
+        let defaults = Colors {
+            foreground: terminal.default_foreground().unwrap(),
+            background: terminal.default_background().unwrap(),
+            palette: terminal.default_palette().unwrap(),
         };
-        changed.cursor.blue = 0xdc;
-        changed.palette[1].red = 0xcb;
-        let generation = engine.generation();
-        engine.update_presentation(changed.clone()).unwrap();
-        let themed = engine.snapshot().unwrap();
-        assert_eq!(themed.generation, generation);
-        // Every row is read again; rows with unchanged cells may keep their Arc.
-        assert_eq!(engine.last_snapshot_stats().extracted, themed.rows.len());
-        assert_eq!(
-            themed.rows[0].cells[0].foreground,
-            CellColor::Rgb(presentation().foreground)
-        );
-        assert_eq!(
-            replies(
-                engine
-                    .process(
-                        b"\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
-                    )
-                    .unwrap()
-            ),
-            vec![
-                b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\".to_vec(),
-                b"\x1b]10;rgb:1111/2222/3333\x1b\\".to_vec(),
-                b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\".to_vec(),
-                b"\x1b]12;rgb:7777/8888/9999\x1b\\".to_vec(),
-                b"\x1b[?997;2n".to_vec(),
-            ]
-        );
-
-        assert_eq!(
-            replies(
-                engine
-                    .process(
-                        b"\x1b]104;1\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?996n"
-                    )
-                    .unwrap()
-            ),
-            vec![
-                b"\x1b]4;1;rgb:cbcb/bbbb/cccc\x1b\\".to_vec(),
-                b"\x1b]10;rgb:fefe/2222/3333\x1b\\".to_vec(),
-                b"\x1b]11;rgb:1010/2020/3030\x1b\\".to_vec(),
-                b"\x1b]12;rgb:7777/8888/dcdc\x1b\\".to_vec(),
-                b"\x1b[?997;1n".to_vec(),
-            ]
-        );
-        let reset = engine.snapshot().unwrap();
-        assert_eq!(
-            reset.rows[0].cells[0].foreground,
-            CellColor::DefaultForeground
-        );
-        assert_eq!(
-            reset.rows[0].cells[0].background,
-            CellColor::DefaultBackground
-        );
-        assert_eq!(reset.rows[0].cells[1].foreground, CellColor::Indexed(1));
-        assert_eq!(reset.cursor_color, None);
-        assert_eq!(engine.presentation(), &changed);
+        let cursor = terminal.cursor_color().unwrap();
+        let default_cursor = terminal.default_cursor_color().unwrap();
+        let overrides = terminal.probe_color_overrides().unwrap();
+        (effective, defaults, cursor, default_cursor, overrides)
     }
 
     #[test]
-    fn split_queries_reply_once_after_completion() {
-        for (query, dispatch_at, expected) in [
-            (
-                b"\x1b]10;?\x1b\\".as_slice(),
-                b"\x1b]10;?\x1b\\".len() - 1,
-                b"\x1b]10;rgb:1111/2222/3333\x1b\\".as_slice(),
-            ),
-            (
-                b"\x1b[14t".as_slice(),
-                b"\x1b[14t".len(),
-                b"\x1b[4;51;72t".as_slice(),
-            ),
-            (
-                b"\x1b[?996n".as_slice(),
-                b"\x1b[?996n".len(),
-                b"\x1b[?997;1n".as_slice(),
-            ),
-        ] {
-            for split in 0..=query.len() {
-                let mut engine = engine();
-                let mut actual =
-                    replies(engine.process(&query[..split]).unwrap());
-                if split < dispatch_at {
-                    assert!(actual.is_empty());
+    fn escape_hint_flags_every_observed_color_change() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut random = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            usize::try_from(seed).unwrap() % bound
+        };
+        let fixed: &[&[u8]] = &[
+            b"text ",
+            "界╝".as_bytes(),
+            b"\x1b",
+            b"\x1b[",
+            b"\x1b]",
+            b"\x1bP",
+            b"\x1bPq",
+            b"\x1b_G",
+            b"\x1b(",
+            b"\x1bc",
+            &[0x90],
+            &[0x98],
+            &[0x9b],
+            &[0x9c],
+            &[0x9d],
+            &[0xc2, 0x9d],
+            b"0",
+            b"1",
+            b"4",
+            b"10",
+            b"11",
+            b"104",
+            b"110",
+            b";",
+            b"\x07",
+            b"\x1b\\",
+            b"\x18",
+            b"\x1a",
+            b"\x01",
+        ];
+        let mut changes = 0;
+        for stream in 0..200 {
+            let mut bytes = Vec::new();
+            for _ in 0..40 {
+                if random(4) == 0 {
+                    let value = random(0x100_0000);
+                    let color = match random(8) {
+                        0 => format!("\x1b]4;{};#{value:06x}\x07", random(256)),
+                        1 => format!("\x1b]10;#{value:06x}\x1b\\"),
+                        2 => format!("\x1b]11;#{value:06x}\x07"),
+                        3 => format!("\x1b]12;#{value:06x}\x07"),
+                        4 => format!("\x1b]104;{}\x07", random(256)),
+                        5 => "\x1b]110\x1b\\\x1b]111\x07".to_owned(),
+                        6 => format!("\x1b]21;foreground=#{value:06x}\x07"),
+                        _ => "\x1b]112\x18\x1b]104\x1a".to_owned(),
+                    };
+                    bytes.extend_from_slice(color.as_bytes());
+                } else {
+                    bytes.extend_from_slice(fixed[random(fixed.len())]);
                 }
-                actual
-                    .extend(replies(engine.process(&query[split..]).unwrap()));
-                assert_eq!(
-                    actual,
-                    vec![expected.to_vec()],
-                    "query={query:?} split={split}"
-                );
             }
-        }
-    }
-
-    #[test]
-    fn malformed_and_unsupported_queries_are_silent() {
-        let mut engine = engine();
-        assert!(
-            replies(
-                engine
-                    .process(
-                        b"\x1b]4;999;?\x1b\\\x1b]10;bogus\x1b\\\x1b[15t\x1b[?996;1n"
-                    )
-                    .unwrap()
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn osc_104_without_indices_resets_the_complete_palette() {
-        let mut engine = engine();
-        assert_eq!(
-            replies(
-                engine
-                    .process(
-                        b"\x1b]4;1;#010203;2;#040506\x1b\\\x1b]104\x1b\\\x1b]4;1;?;2;?\x1b\\"
-                    )
-                    .unwrap()
-            ),
-            vec![concat!(
-                "\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\",
-                "\x1b]4;2;rgb:0000/cdcd/0000\x1b\\"
-            )
-            .as_bytes()
-            .to_vec()]
-        );
-    }
-
-    #[test]
-    fn clipboard_callbacks_preserve_empty_and_binary_contents() {
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&writes);
-        let mut terminal = Terminal::new(8, 3).unwrap();
-        terminal
-            .on_clipboard_write(move |_, write| {
-                captured.borrow_mut().push(
-                    write
-                        .contents()
-                        .map(|content| content.data.to_vec())
-                        .collect::<Vec<_>>(),
-                );
-                Ok(())
-            })
-            .unwrap();
-        terminal.vt_write(b"\x1b]52;c;\x07");
-        terminal.vt_write(b"\x1b]52;c;/w==\x07");
-        terminal.vt_write(b"\x1b]1337;Copy=:Zg==\x1b\\");
-        assert_eq!(
-            *writes.borrow(),
-            vec![vec![], vec![vec![255]], vec![b"f".to_vec()]]
-        );
-    }
-
-    #[test]
-    fn oversized_clipboard_capture_is_dropped_and_parser_recovers() {
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&writes);
-        let mut terminal = Terminal::new(8, 3).unwrap();
-        terminal
-            .on_clipboard_write(move |_, write| {
-                captured.borrow_mut().push(
-                    write
-                        .contents()
-                        .map(|content| content.data.to_vec())
-                        .collect::<Vec<_>>(),
-                );
-                Ok(())
-            })
-            .unwrap();
-        // Feed bounded chunks so the test itself never retains the huge OSC.
-        // Cancellation and reset must not dispatch the rejected prefix.
-        for (prefix, ending) in [
-            (b"\x1b]52;c;".as_slice(), b"\x07".as_slice()),
-            (b"\x1b]1337;Copy=:", b"\x07"),
-            (b"\x1b]52;c;".as_slice(), b"\x18".as_slice()),
-            (b"\x1b]1337;Copy=:", b"\x1bc"),
-        ] {
-            terminal.vt_write(prefix);
-            for _ in 0..=8192 {
-                terminal.vt_write(&[b'A'; 1024]);
-            }
-            terminal.vt_write(ending);
-            assert!(writes.borrow().is_empty());
-        }
-        terminal.vt_write(b"\x1b]52;c;Zg==\x07");
-        assert_eq!(*writes.borrow(), vec![vec![b"f".to_vec()]]);
-    }
-
-    #[test]
-    fn linked_native_memset_preserves_rust_byte_fills() {
-        // Ghostty's exported memset once treated C's int fill as a u8.
-        // Rust may pass -1 for 0xff, corrupting hash-table control bytes.
-        for size in [4, 8, 16, 17, 31, 32, 64, 256] {
-            let bytes = vec![u8::MAX; std::hint::black_box(size)];
-            assert!(
-                bytes.iter().all(|byte| *byte == u8::MAX),
-                "native memset corrupted a {size}-byte fill: {bytes:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn split_osc_palette_override_equal_to_default_stays_explicit_until_reset()
-    {
-        let original = libghostty_vt::style::Palette::default().0[1];
-        let sequence = format!(
-            "\x1b]4;1;#{:02x}{:02x}{:02x}\x1b\\",
-            original.r, original.g, original.b
-        );
-        for split in 0..=sequence.len() {
             let mut engine = TerminalEngine::new(
                 TerminalId::new(1),
                 GridSize::clamped(8, 3),
@@ -2010,304 +976,28 @@ mod tests {
                 TerminalPresentation::default(),
             )
             .unwrap();
-            engine.process(b"\x1b[31mA").unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().rows[0].cells[0].foreground,
-                CellColor::Indexed(1)
-            );
-            engine.process(&sequence.as_bytes()[..split]).unwrap();
-            let _ = engine.snapshot().unwrap();
-            engine.process(&sequence.as_bytes()[split..]).unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().rows[0].cells[0].foreground,
-                CellColor::Rgb(rgb(original)),
-                "split={split}"
-            );
-            engine.process(b"\x1b]104;1\x07").unwrap();
-            assert_eq!(
-                engine.snapshot().unwrap().rows[0].cells[0].foreground,
-                CellColor::Indexed(1)
-            );
-        }
-    }
-
-    #[test]
-    fn osc7_directory_callbacks_preserve_framing_and_chunk_boundaries() {
-        for terminator in ["\x07", "\x1b\\"] {
-            let sequence = format!(
-                "\x1b]7;file://localhost/tmp/hello%20world{terminator}"
-            );
-            for split in 0..=sequence.len() {
-                let mut engine = engine();
-                let mut effects =
-                    engine.process(&sequence.as_bytes()[..split]).unwrap();
-                effects.extend(
-                    engine.process(&sequence.as_bytes()[split..]).unwrap(),
-                );
-                assert!(effects.iter().any(|effect| matches!(
-                    effect,
-                    EngineEffect::Directory(Some(directory))
-                        if directory.path() == "/tmp/hello world" && directory.is_local()
-                )), "split={split} terminator={terminator:?}");
-            }
-            let mut engine = engine();
-            let mut effects = Vec::new();
-            for byte in sequence.bytes() {
-                effects.extend(engine.process(&[byte]).unwrap());
-            }
-            assert!(effects.iter().any(|effect| matches!(
-                effect,
-                EngineEffect::Directory(Some(directory)) if directory.path() == "/tmp/hello world"
-            )));
-        }
-    }
-
-    #[test]
-    fn empty_osc7_clears_directory_metadata() {
-        let mut engine = engine();
-        let effects = engine
-            .process(b"\x1b]7;file://localhost/tmp\x07\x1b]7;\x07")
-            .unwrap();
-        assert!(matches!(
-            effects.as_slice(),
-            [
-                EngineEffect::Directory(Some(_)),
-                EngineEffect::Directory(None)
-            ]
-        ));
-    }
-
-    #[test]
-    fn iterm_current_directory_reports_bare_display_only_paths() {
-        let mut engine = engine();
-        let effects = engine
-            .process(b"\x1b]1337;CurrentDir=/tmp/bare\x07")
-            .unwrap();
-        assert!(matches!(
-            effects.as_slice(),
-            [EngineEffect::Directory(Some(directory))]
-                if directory.path() == "/tmp/bare" && !directory.is_local()
-        ));
-    }
-
-    #[test]
-    fn malformed_utf8_directory_reports_are_nonfatal_and_ignored() {
-        let mut engine = engine();
-        let effects = engine
-            .process(b"\x1b]7;file://localhost/tmp/\xff\x07")
-            .unwrap();
-        assert!(
-            !effects
-                .iter()
-                .any(|effect| matches!(effect, EngineEffect::Directory(_)))
-        );
-    }
-
-    #[test]
-    fn escape_hint_skipping_matches_bytewise_state_across_chunks() {
-        fn bytewise(state: &mut EscapeHint, bytes: &[u8]) -> bool {
-            let mut changed = false;
-            for &byte in bytes {
-                changed |= state.step(byte);
-            }
-            changed
-        }
-
-        let mut fixtures: Vec<Vec<u8>> = [
-            &b"plain text without escapes"[..],
-            b"a\x1b[31mred\x1b[0m b",
-            b"x\x1b]4;1;rgb:aa/bb/cc\x07y",
-            b"x\x1b]10;?\x1b\\y\x1bcz",
-            b"\x1b[1\x9d4;1;#fff\x9cq\x1b\x1b]11;#000\x18w\x1a",
-            // U+271D encodes a 0x9d continuation byte inside ordinary text.
-            "cross \u{271d} then \x1b]2;title\x07 done".as_bytes(),
-            "\x1b[38;2;1;2;3;48;2;4;5;6m\u{2580}\x1b[0m".as_bytes(),
-            b"\x1bPq#0;2;0;0;0\xa0\x01\x9d11;#000\x07",
-            b"\x1b]52;c;aGVsbG8gd29ybGQ=\x01\xa0\x9d\x1b\\",
-        ]
-        .map(<[u8]>::to_vec)
-        .into();
-        let alphabet = b"ab14;m \x01\xa0\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
-        let mut seed = 0x2545_f491_u32;
-        fixtures.push(
-            (0..512)
-                .map(|_| {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 17;
-                    seed ^= seed << 5;
-                    alphabet[seed as usize % alphabet.len()]
-                })
-                .collect(),
-        );
-
-        for bytes in &fixtures {
-            for start in [
-                EscapeHint::Ground,
-                EscapeHint::Escape,
-                EscapeHint::Csi,
-                EscapeHint::Passthrough,
-                EscapeHint::Osc(OscNumber::default()),
-                EscapeHint::Osc(OscNumber {
-                    value: 11,
-                    digits: 2,
-                    complete: true,
-                }),
-            ] {
-                for split in 0..=bytes.len() {
-                    let (mut fast, mut expected) = (start, start);
-                    for chunk in [&bytes[..split], &bytes[split..]] {
-                        assert_eq!(
-                            fast.observe(chunk),
-                            bytewise(&mut expected, chunk),
-                            "{bytes:?} from {start:?} split at {split}"
-                        );
-                        assert_eq!(fast, expected);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn escape_hint_flags_only_color_operations_at_every_split() {
-        let cases: &[(&[u8], bool)] = &[
-            ("╝帝\x1b[31mtext\x1b[0m".as_bytes(), false),
-            (b"\x1b]2;title\x07", false),
-            (b"\x1b]7;file:///tmp\x1b\\", false),
-            (b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07", false),
-            (b"\x1b]133;A\x07", false),
-            (b"\x1b]52;c;aGk=\x07", false),
-            (b"\x1b]3008;x\x07", false),
-            (b"\x1b]10004;#fff\x07", false),
-            // Raw C1 bytes are UTF-8 data in the ground state.
-            (b"\x9d4;1;#fff\x07", false),
-            // Inside an OSC, C1 bytes are payload rather than new sequences.
-            (b"\x1b]2;a\x9d4;1;#fff\x07", false),
-            // An intermediate turns `]` into an ordinary escape final byte.
-            (b"\x1b(]4;1;#fff\x07", false),
-            (b"\x1b]4;1;#fff\x07", true),
-            (b"\x1b]11;#000\x1b\\", true),
-            (b"\x1b]21;foreground=#fff\x1b\\", true),
-            (b"\x1b]104\x07", true),
-            (b"\x1b]105;0\x07", true),
-            (b"\x1b]110\x18", true),
-            (b"\x1b]119\x1a", true),
-            (b"\x1bc", true),
-            // Ignored C0 bytes do not end the OSC number.
-            (b"\x1b]1\x010;#fff\x07", true),
-            // C1 OSC is recognized once another sequence has started.
-            (b"\x1b[1\x9d4;1;#fff\x07", true),
-            (b"\x1bPq\x9d11;#000\x07", true),
-        ];
-        for &(bytes, expected) in cases {
-            for split in 0..=bytes.len() {
-                let mut hint = EscapeHint::Ground;
-                let flagged = hint.observe(&bytes[..split])
-                    | hint.observe(&bytes[split..]);
-                assert_eq!(
-                    flagged,
-                    expected,
-                    "{:?} split at {split}",
-                    String::from_utf8_lossy(bytes)
-                );
-            }
-        }
-    }
-
-    type ObservedColors = (
-        Option<RgbColor>,
-        Option<RgbColor>,
-        Option<RgbColor>,
-        [RgbColor; 256],
-        [bool; 256],
-        DefaultOverrides,
-    );
-
-    /// Runs the full override probe regardless of the hint.
-    fn observed_colors(engine: &mut TerminalEngine) -> ObservedColors {
-        engine.colors_dirty = true;
-        engine.refresh_color_overrides().unwrap();
-        (
-            engine.terminal.fg_color().unwrap(),
-            engine.terminal.bg_color().unwrap(),
-            engine.terminal.cursor_color().unwrap(),
-            engine.terminal.color_palette().unwrap().0,
-            engine.palette_overrides,
-            engine.default_overrides,
-        )
-    }
-
-    #[test]
-    fn escape_hint_never_misses_a_color_change_seen_by_the_full_probe() {
-        let tokens: &[&[u8]] = &[
-            b"a",
-            "╝".as_bytes(),
-            "帝".as_bytes(),
-            b"\x1b",
-            b"[",
-            b"]",
-            b"(",
-            b"P",
-            b"\x9b",
-            b"\x9d",
-            b"\x9c",
-            b"\x90",
-            b"\x98",
-            b"\x01",
-            b"4",
-            b"1",
-            b"0",
-            b"2",
-            b";",
-            b"#123456",
-            b"rgb:12/34/56",
-            b"?",
-            b"m",
-            b"\\",
-            b"\x07",
-            b"\x18",
-            b"\x1a",
-            b"\x1b]4;3;#a0b0c0\x07",
-            b"\x1b]11;#102030\x1b\\",
-            b"\x1b]104;3\x07",
-            b"\x1b]21;foreground=#405060\x1b\\",
-            b"\x1b]2;title\x07",
-        ];
-        let mut seed = 0x9e37_79b9_u32;
-        let mut next = move |bound: usize| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            seed as usize % bound
-        };
-        let mut changes = 0;
-        for sequence in 0..200 {
-            let mut engine = engine();
-            let mut stream = Vec::new();
-            for _ in 0..40 {
-                stream.extend_from_slice(tokens[next(tokens.len())]);
-            }
-            let mut before = observed_colors(&mut engine);
+            let mut previous = observe(&mut engine);
             let mut offset = 0;
-            while offset < stream.len() {
-                let end = (offset + 1 + next(8)).min(stream.len());
-                engine.colors_dirty = false;
-                engine.process(&stream[offset..end]).unwrap();
-                let flagged = engine.colors_dirty;
-                let after = observed_colors(&mut engine);
-                if after != before {
+            while offset < bytes.len() {
+                let end = (offset + 1 + random(8)).min(bytes.len());
+                let chunk = &bytes[offset..end];
+                engine.overrides_stale = false;
+                engine.process(chunk).unwrap();
+                let flagged = engine.overrides_stale;
+                let current = observe(&mut engine);
+                if current != previous {
                     changes += 1;
                     assert!(
                         flagged,
-                        "sequence {sequence} missed a color change in {:?}",
-                        String::from_utf8_lossy(&stream[offset..end])
+                        "stream {stream}: unflagged color change from {:?} in {:?}",
+                        String::from_utf8_lossy(chunk),
+                        String::from_utf8_lossy(&bytes),
                     );
                 }
-                before = after;
+                previous = current;
                 offset = end;
             }
         }
-        // Guard against a generator that never exercises color operations.
         assert!(changes > 100, "only {changes} color changes observed");
     }
 }

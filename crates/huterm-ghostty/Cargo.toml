@@ -1,0 +1,16 @@
+[package]
+name = "huterm-ghostty"
+description = "Safe bindings to Ghostty's libghostty-vt for Huterm"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.14.1"
+links = "ghostty-vt"
+build = "build.rs"
+
+[dev-dependencies]
+serde_json = "=1.0.151"
+
+[lints]
+workspace = true

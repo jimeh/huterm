@@ -8,9 +8,7 @@ Each patch has a stable name, a description, and an upstream link when available
 Keep each coherent fix together. GPUI's core crate has hidden-window creation
 and file-drop pointer-modality patches, its Linux crate has X11 file-drop,
 native-handle, and fullscreen-state patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches. The sys crate
-has a matched upstream upgrade plus build-script watch-path, license, and
-build-source staging patches. The safe wrapper has the same upstream upgrade.
+offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -44,7 +42,7 @@ the user to operate the patch tools or approve bookkeeping steps.
 
    ```sh
    mise run vendor:status
-   mise run vendor:start -- libghostty-vt-sys cpu-target
+   mise run vendor:start -- gpui-pre-linux x11-file-drop
    ```
 
 2. Edit the real vendored directory and run the affected builds and tests normally.
@@ -55,7 +53,7 @@ the user to operate the patch tools or approve bookkeeping steps.
 3. Once the fix passes its behavioral checks, fold those edits into its patch:
 
    ```sh
-   mise run vendor:finish -- libghostty-vt-sys
+   mise run vendor:finish -- gpui-pre-linux
    ```
 
 4. Inspect the resulting patch diffs and run `mise run vendor:check`, followed by
@@ -141,35 +139,10 @@ For an upgrade:
    textual patch application does not establish behavioral compatibility.
 4. Update dependency versions and `Cargo.lock` as needed, remove the superseded
    source and patch files, update the provenance notes, and run `mise run verify`.
-   Check both macOS and Linux for GPUI changes. Preserve libghostty's binding,
-   native-source, and toolchain compatibility constraints.
+   Check both macOS and Linux for GPUI changes.
 
 When upstream includes every required fix, remove the override, vendored source,
 patches, and manifest entry, then validate the registry dependency instead.
-
-## Matched libghostty upstream upgrade
-
-Both `libghostty-vt` and `libghostty-vt-sys` retain published 0.2.1 archives
-as reproducible baselines. Their `upstream-20260901` patches replace source with
-upstream revision `5988a0b78b4aa804d1c12e66bbfe662bd97d81c0`; normalized package
-manifests retain registry dependency versions and incorporate upstream features.
-This is an unreleased upstream snapshot, not the unmodified 0.2.1 release.
-
-The matched native revision is `22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018`,
-using Zig 0.16.0. It includes upstream OSC allocation bounds and the C ABI
-`memset` fix. The wrapper exposes binary clipboard contents safely and handles
-empty native arrays. No Huterm-specific clipboard parser patch is applied.
-
-Upstream supplies CPU targeting and the Zig migration. Only three sys fixes
-remain local: the crate-relative build-script watch path, packaged MIT notice,
-and private build-source staging. The staging patch preserves pristine verified
-source, keeps caches outside the disposable copy, and isolates Git discovery.
-Its tests run through `mise run test:build-toolchain`. Huterm continues to force
-`LIBGHOSTTY_VT_SYS_CPU=baseline` for portable native artifacts.
-
-When a published release includes the selected upstream changes, migrate both
-crates together and retain only the local fixes still needed. Keep source hashes,
-notices, generated bindings, and native toolchain aligned.
 
 ## GPUI snapshot crates
 

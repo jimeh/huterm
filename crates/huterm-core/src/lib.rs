@@ -37,4 +37,4 @@ pub use terminal::{
 };
 
 /// Immutable native revision used by the Ghostty adapter.
-pub const GHOSTTY_REVISION: &str = "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018";
+pub const GHOSTTY_REVISION: &str = "56dbc4a768778753737a3b9cbe0a3f9b4e434553";
