@@ -12,18 +12,18 @@ pub(crate) fn selected(cx: &App) -> anyhow::Result<Option<DisplayId>> {
         Err(error) => return Err(error.into()),
     };
     let requested = value
-        .parse::<u32>()
+        .parse::<u64>()
         .context("HUTERM_BENCH_DISPLAY_ID must be a numeric display ID")?;
     select(requested, cx.displays().iter().map(|display| display.id()))
         .map(Some)
 }
 
 fn select(
-    requested: u32,
+    requested: u64,
     displays: impl IntoIterator<Item = DisplayId>,
 ) -> anyhow::Result<DisplayId> {
     for id in displays {
-        if u64::from(id) == u64::from(requested) {
+        if u64::from(id) == requested {
             return Ok(id);
         }
     }

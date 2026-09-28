@@ -211,8 +211,8 @@ GPUI suppresses hitbox hover while the last input was a key press, and only
 mouse and touch events end that state. Native file drags arrive as `FileDrop`
 events without mouse events, so a drop after typing found no target and was
 discarded. The `file-drop-pointer-modality` patch counts drag entry, movement,
-and drop as pointer input. The integration smoke types Escape before its first
-native drop and fails without it.
+and drop as pointer input. The integration smoke types a barrier key after
+positioning the pointer and before each native drop, so it fails without it.
 
 ## GPUI window lifetime and native state
 

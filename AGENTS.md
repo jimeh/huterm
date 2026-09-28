@@ -396,8 +396,8 @@ weak callback per window replenishes per-view frame allowances. It does not
 request idle redraws. Keep in-flight scroll and dirtiness separate from frame
 allowance, including on config reload and snapshot completion. GPUI throttles
 next-frame callbacks in unfocused windows to `inactive_frame_interval`, 30 fps
-by default; desktop windows set it to `None`, or `bench:scroll` input-to-paint
-latency doubles whenever the window is not active.
+by default; desktop windows set it to `None`. With the throttle, Linux
+`bench:scroll` p95 input-to-paint latency rose from about 6.5 ms to 35 ms.
 Animations share that window callback and one earliest-deadline timer. Report
 frame work and deadline work separately from presentation changes: a static hold
 can require a future wake without a redraw. Entity notifications arm animations;

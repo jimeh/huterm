@@ -12,6 +12,8 @@ updates:
       # Snapshot crates pin each other exactly and three are vendored with
       # patches; upgrade them together through the vendor workflow.
       - dependency-name: "gpui-pre*"
+      # Must match GPUI's font-kit requirement so the dlopen feature unifies.
+      - dependency-name: zed-font-kit
 
   - package-ecosystem: github-actions
     directory: "/"
