@@ -30,6 +30,8 @@ mod mouse;
 mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_quit;
+#[cfg(target_os = "macos")]
+mod native_titlebar;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 mod native_updater;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

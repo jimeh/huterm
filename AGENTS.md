@@ -1273,10 +1273,14 @@ macOS or X11. Huterm owns macOS title-bar drags: windows set
 `start_window_move` on the first drag motion and runs `titlebar_double_click`.
 Otherwise the window server takes a press on a tab in the title strip as a
 window drag, and AppKit and Huterm could both act on a double-click. GPUI
-supplies both pieces upstream (zed#41839, zed#60620). GPUI repositions traffic
-lights for any window given `traffic_light_position`, including after
-regular-to-Quake conversion; it skips a borderless window, which has no buttons,
-and Quake windows never request a position.
+supplies both pieces upstream (zed#41839, zed#60620). AppKit's traffic-light
+size varies (12 points under GPUI 0.2.2, 14 points now), so a merged row reads
+the native close button once the window exists and centres the buttons in the
+strip at AppKit's left inset through `set_traffic_light_position`; a fixed
+offset drifts when the size changes. GPUI keeps repositioning them for that
+window, including after regular-to-Quake conversion; it skips a borderless
+window, which has no buttons, and Quake windows never request a position.
+`smoke:macos-palette` asserts the centring from the `traffic_lights` state.
 X11 moves also need `start_window_move`. GPUI grants
 X11 client-side decorations only when, at client start, the window manager
 lists `_GTK_FRAME_EXTENTS` in the root

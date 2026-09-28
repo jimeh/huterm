@@ -1399,17 +1399,10 @@ fn open_window_with_profile(
             titlebar: Some(TitlebarOptions {
                 title: Some(window_title(None).into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                // GPUI centres the buttons in AppKit's 28-point title bar,
-                // two points above the 32-point strip's centre. A merged
-                // tab row makes that visible, so it takes the centred
-                // placement: 12-point buttons at a 10-point top inset, at
-                // AppKit's own 7-point left edge. Other positions keep the
-                // platform default until the same alignment is checked
-                // for them. Borderless Quake windows have no buttons.
-                traffic_light_position: (cfg!(target_os = "macos")
-                    && config.tabs.position == TabPosition::Titlebar
-                    && !host.quake)
-                    .then_some(point(px(7.0), px(10.0))),
+                // A merged tab row centres the buttons once the window
+                // exists, from AppKit's native placement; see
+                // `merged_traffic_lights`.
+                traffic_light_position: None,
             }),
             window_min_size: Some(size(px(280.0), px(180.0))),
             app_id: Some(APP_ID.into()),
@@ -1420,6 +1413,21 @@ fn open_window_with_profile(
                 crate::benchmark_display::observe(window, cx, display);
             }
             let scaled_metrics = metrics.at_scale(window.scale_factor());
+            // AppKit centres the buttons in its 28-point title bar, two points
+            // above the 32-point strip's centre. A merged tab row makes that
+            // visible, so it centres them in the strip, keeping AppKit's left
+            // inset. Other positions keep the native placement until the
+            // same alignment is checked for them. Borderless Quake windows
+            // have no buttons.
+            #[cfg(target_os = "macos")]
+            if config.tabs.position == TabPosition::Titlebar && !host.quake {
+                match crate::native_titlebar::close_button_frame(window) {
+                    Ok(native) => window.set_traffic_light_position(
+                        merged_traffic_lights(native),
+                    ),
+                    Err(error) => eprintln!("Traffic lights: {error}"),
+                }
+            }
             // GPUI has applied the requested decorations, or fallen back
             // without a compositor: the window now knows whether it draws
             // its title row and border, which take their own room.
@@ -5972,6 +5980,19 @@ fn content_inside(
 /// The height of the title row above the terminal: `AppKit`'s strip on
 /// macOS, or the row Huterm draws inside its own frame on Linux, which is
 /// the tab bar's height.
+/// Where a merged tab row puts the macOS traffic lights: centred in the title
+/// strip, at `AppKit`'s own left inset. Their size depends on the macOS release
+/// and window style, so this starts from the native close button's frame.
+#[cfg(any(target_os = "macos", test))]
+fn merged_traffic_lights(native: Bounds<f64>) -> gpui::Point<Pixels> {
+    #[expect(clippy::cast_possible_truncation, reason = "point-sized geometry")]
+    let (left, height) = (native.origin.x as f32, native.size.height as f32);
+    point(
+        px(left),
+        ((super::TITLEBAR_HEIGHT - px(height)) / 2.0).max(px(0.0)),
+    )
+}
+
 pub(super) fn title_row_height(
     chrome_hidden: bool,
     frame: WindowFrame,
@@ -8330,8 +8351,24 @@ impl WorkspaceView {
             window_buttons.join(";")
         };
         let content = self.chrome_layout(window).content;
+        #[cfg(target_os = "macos")]
+        let traffic_lights = crate::native_titlebar::buttons_in_window(window)
+            .map_or_else(
+                |_| "none".to_owned(),
+                |lights| {
+                    format!(
+                        "{},{},{},{}",
+                        lights.origin.x,
+                        lights.origin.y,
+                        lights.size.width,
+                        lights.size.height
+                    )
+                },
+            );
+        #[cfg(not(target_os = "macos"))]
+        let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.notice_focus.is_focused(window),
             self.window_title,
@@ -10109,6 +10146,29 @@ mod tests {
                 assert!(layout.terminal.top() >= titlebar);
             }
         }
+    }
+
+    #[test]
+    fn merged_traffic_lights_centre_any_button_size_at_the_native_inset() {
+        let native = |x: f64, size: f64| Bounds {
+            origin: point(x, 5.0),
+            size: gpui::size(size, size),
+        };
+        // AppKit's 12-point buttons keep the placement GPUI 0.2.2 needed.
+        assert_eq!(
+            merged_traffic_lights(native(7.0, 12.0)),
+            point(px(7.0), px(10.0))
+        );
+        // Larger 14-point buttons move right with AppKit and stay centred.
+        assert_eq!(
+            merged_traffic_lights(native(9.0, 14.0)),
+            point(px(9.0), px(9.0))
+        );
+        // Buttons taller than the strip start at its top edge.
+        assert_eq!(
+            merged_traffic_lights(native(9.0, 40.0)),
+            point(px(9.0), px(0.0))
+        );
     }
 
     #[test]
