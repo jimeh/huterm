@@ -24,7 +24,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             let mut last_progress = String::new();
             loop {
                 let result = cx.update(|cx| advance(cx, tabs, windows, quake, hidden));
-                match result.and_then(std::convert::identity) {
+                match result {
                     Ok(Some(adapters)) => {
                         // No persistent observer, state writer or control loop survives
                         // this acknowledgement. The native runner samples externally.
@@ -32,7 +32,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                         break;
                     }
                     Ok(None) if Instant::now() < deadline => {
-                        let progress = cx.update(startup_progress).unwrap_or_else(|error| format!("progress error: {error}"));
+                        let progress = cx.update(startup_progress);
                         if progress != last_progress {
                             eprintln!("huterm-idle startup: {progress}");
                             last_progress = progress;
@@ -40,7 +40,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     }
                     result => {
                         eprintln!("huterm-idle startup failed: {result:?}; last progress: {last_progress}");
-                        let _ = cx.update(|cx| cx.quit());
+                        cx.update(|cx| cx.quit());
                         break;
                     }
                 }

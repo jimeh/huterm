@@ -19,14 +19,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(Duration::from_millis(10))
                     .await;
-                let Ok((state, observations)) = cx.update(|cx| {
+                let (state, observations) = cx.update(|cx| {
                     let state = read_state(cx);
                     let observations =
                         quake_windows::drain_smoke_observations(cx);
                     (state, observations)
-                }) else {
-                    break;
-                };
+                });
                 append_trace(&directory, &observations);
                 publish(
                     &directory,
@@ -133,7 +131,7 @@ async fn execute(
     if command.split_whitespace().nth(1) == Some("report_dead") {
         return report_dead_for_smoke(cx).await;
     }
-    cx.update(|cx| execute_ui(cx, command))?
+    cx.update(|cx| execute_ui(cx, command))
 }
 
 fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
@@ -228,10 +226,10 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
 async fn report_dead_for_smoke(
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
-    let (reporter, fallback) = cx.update(setup_dead_reporter)??;
+    let (reporter, fallback) = cx.update(setup_dead_reporter)?;
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !cx.update(|cx| cx.active_window() == Some(fallback))? {
+    while !cx.update(|cx| cx.active_window() == Some(fallback)) {
         anyhow::ensure!(
             std::time::Instant::now() < deadline,
             "fallback window {:?} did not become active",
@@ -243,7 +241,7 @@ async fn report_dead_for_smoke(
     }
     cx.update(move |cx| {
         quake_windows::report(cx, "smoke dead reporter", Some(reporter));
-    })?;
+    });
     Ok(format!("fallback={:?}", fallback.window_id()))
 }
 
@@ -452,7 +450,7 @@ fn run_hidden_probe(directory: PathBuf) {
                 }
             }
             drop(grab);
-            let _ = cx.update(|cx| cx.quit());
+            cx.update(|cx| cx.quit());
         })
         .detach();
     });

@@ -1975,6 +1975,7 @@ impl Render for CommandPalette {
                 offset: point(px(0.0), px(16.0)),
                 blur_radius: px(48.0),
                 spread_radius: px(0.0),
+                inset: false,
             }])
             .overflow_hidden()
             .flex()
@@ -1982,7 +1983,7 @@ impl Render for CommandPalette {
             .on_mouse_down(
                 MouseButton::Left,
                 move |_: &MouseDownEvent, window, cx| {
-                    input_focus.focus(window);
+                    input_focus.focus(window, cx);
                     cx.stop_propagation();
                 },
             )

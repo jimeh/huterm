@@ -1047,7 +1047,7 @@ pub(super) fn run_with_startup(
                 cx.defer(move |cx| show_active_window_failure(cx, message));
             }
         });
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             cx.global_mut::<Desktop>()
                 .windows
                 .retain(|view| view.upgrade().is_some());
@@ -1072,7 +1072,7 @@ fn follow_button_layout(cx: &mut App) {
     button_layout::watch(sender);
     cx.spawn(async move |cx| {
         while let Ok(layout) = receiver.recv().await {
-            let updated = cx.update(|cx| {
+            cx.update(|cx| {
                 cx.global_mut::<Desktop>().button_layout = layout;
                 for view in cx.global::<Desktop>().windows.clone() {
                     let _ = view.update(cx, |view, cx| {
@@ -1081,9 +1081,6 @@ fn follow_button_layout(cx: &mut App) {
                     });
                 }
             });
-            if updated.is_err() {
-                break;
-            }
         }
     })
     .detach();
@@ -1198,7 +1195,7 @@ fn maybe_exit(cx: &mut App) {
     });
     cx.spawn(async move |cx| {
         if task.await {
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 if cx.windows().is_empty()
                     && !quake_windows::keep_alive(cx)
                     && cx.global::<Desktop>().pending_spawns == 0
@@ -1216,7 +1213,7 @@ fn approved_quit(cx: &mut App) {
         let mut quake_presentations = Vec::new();
         #[cfg(target_os = "macos")]
         let mut adapters = Vec::new();
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             quake_presentations = quake_windows::take_for_quit(cx);
             quake_windows::shutdown(cx);
             for view in cx.global::<Desktop>().windows.clone() {
@@ -1238,7 +1235,7 @@ fn approved_quit(cx: &mut App) {
         for adapter in adapters {
             adapter.close();
         }
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             #[cfg(target_os = "macos")]
             native_quit::allow_termination();
             cx.quit();
@@ -1253,7 +1250,7 @@ fn install_native_quit(cx: &mut App) {
         .expect("cannot install cancellable native termination hook");
     cx.spawn(async move |cx| {
         while requests.recv().await.is_ok() {
-            let _ = cx.update(|cx| cx.defer(request_quit));
+            cx.update(|cx| cx.defer(request_quit));
         }
     })
     .detach();
@@ -1613,7 +1610,7 @@ fn open_window_with_profile(
             });
             cx.global_mut::<Desktop>().windows.push(view.downgrade());
             view.update(cx, |view, cx| {
-                view.focus.focus(window);
+                view.focus.focus(window, cx);
                 if launch_shell
                     && (!profile_requested || view.quake.is_some())
                     && let Err(error) = view.new_tab(window, cx)
@@ -1792,7 +1789,7 @@ impl WorkspaceView {
     /// Render runs it too: a stack change that skipped reconciling would
     /// otherwise keep keyboard focus on a dead toast, where every `notice_*`
     /// key fails and the paused stack never expires.
-    fn heal_notice_state(&mut self, window: &mut Window, cx: &App) {
+    fn heal_notice_state(&mut self, window: &mut Window, cx: &mut App) {
         if reconcile_notice_state(
             &mut self.notices,
             &mut self.focused_notice,
@@ -1810,7 +1807,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.focused_notice = Some(id);
-        self.notice_focus.focus(window);
+        self.notice_focus.focus(window, cx);
         self.reconcile_notices(window, cx);
     }
 
@@ -3295,9 +3292,10 @@ impl WorkspaceView {
         changed
     }
 
-    fn restore_tab_focus(&self, window: &mut Window, cx: &App) {
+    fn restore_tab_focus(&self, window: &mut Window, cx: &mut App) {
         if let Some(tab) = self.active_view() {
-            tab.read(cx).focus.focus(window);
+            let focus = tab.read(cx).focus.clone();
+            focus.focus(window, cx);
         }
     }
 
@@ -3483,7 +3481,7 @@ impl WorkspaceView {
                 ),
                 huterm_core::MuxError,
             > = task.await;
-            let _ = app.update(|cx| {
+            app.update(|cx| {
                 cx.global_mut::<Desktop>().pending_spawns -= 1;
                 if cx.global::<Desktop>().pending_spawns == 0
                     && cx.global::<Desktop>().quit_pending
@@ -3749,7 +3747,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if let Some(palette) = &self.palette {
-            palette.read(cx).focus_handle(cx).focus(window);
+            palette.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -3816,7 +3814,7 @@ impl WorkspaceView {
             .detach();
         self.palette = Some(palette.clone());
         self.palette_refresh_state = Some(self.current_palette_refresh_state());
-        palette.read(cx).focus_handle(cx).focus(window);
+        palette.read(cx).focus_handle(cx).focus(window, cx);
 
         self.load_palette_hierarchy(palette, generation, cx);
         cx.notify();
@@ -3959,18 +3957,20 @@ impl WorkspaceView {
         &self,
         target: &PaletteTarget,
         window: &mut Window,
-        cx: &App,
+        cx: &mut App,
     ) {
         if target.tab == self.active
             && let Some(terminal) =
                 target.terminal_view.as_ref().and_then(WeakEntity::upgrade)
             && terminal.read(cx).visible
         {
-            terminal.read(cx).focus.focus(window);
+            let focus = terminal.read(cx).focus.clone();
+            focus.focus(window, cx);
         } else if let Some(terminal) = self.active_view() {
-            terminal.read(cx).focus.focus(window);
+            let focus = terminal.read(cx).focus.clone();
+            focus.focus(window, cx);
         } else {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
         }
     }
 
@@ -4853,7 +4853,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         if self.about.is_some() {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -4865,7 +4865,7 @@ impl WorkspaceView {
         }
         let facts = BuildFacts::current(display_backend(window));
         self.about = Some(about_details(&facts));
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
     }
@@ -5286,7 +5286,7 @@ impl WorkspaceView {
                 if view.visible {
                     view.bell.viewed(window.is_window_active());
                     view.resize_if_needed(window);
-                    view.focus.focus(window);
+                    view.focus.focus(window, cx);
                     view.start_initial_snapshot(cx);
                 } else {
                     view.hide(cx);
@@ -5507,7 +5507,7 @@ impl WorkspaceView {
                         view.dismiss_palette_for_confirmation(cx);
                         view.close_menu(MenuFocusReturn::Keep, window, cx);
                         view.about = None;
-                        view.focus.focus(window);
+                        view.focus.focus(window, cx);
                         cx.notify();
                     }
                     Some(CloseDecision::Close(target)) => {
@@ -5554,7 +5554,8 @@ impl WorkspaceView {
             cx.global_mut::<Desktop>().quitting = false;
         }
         if let Some(tab) = self.active_view() {
-            tab.read(cx).focus.focus(window);
+            let focus = tab.read(cx).focus.clone();
+            focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -5696,7 +5697,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
         .spawn(async move { config::reload(&reload_path) });
     cx.spawn(async move |cx| {
         let result = task.await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             cx.global_mut::<Desktop>().reloading = false;
             let result = result.and_then(|config| {
                 let (family, metrics) = resolve_metrics(&config, cx)
@@ -7466,7 +7467,7 @@ impl WorkspaceView {
         if let Some(menu) = &self.menu
             && menu.kind == MenuKind::Window
         {
-            menu.view.read(cx).focus_handle(cx).focus(window);
+            menu.view.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
             return Ok(CommandOutcome::Completed);
         }
@@ -7716,7 +7717,7 @@ impl WorkspaceView {
         });
         cx.subscribe_in(&view, window, Self::handle_menu_event)
             .detach();
-        view.read(cx).focus_handle(cx).focus(window);
+        view.read(cx).focus_handle(cx).focus(window, cx);
         self.menu = Some(OpenMenu {
             view,
             kind,
@@ -7757,11 +7758,12 @@ impl WorkspaceView {
         true
     }
 
-    fn focus_terminal(&self, window: &mut Window, cx: &App) {
+    fn focus_terminal(&self, window: &mut Window, cx: &mut App) {
         if let Some(terminal) = self.active_view() {
-            terminal.read(cx).focus.focus(window);
+            let focus = terminal.read(cx).focus.clone();
+            focus.focus(window, cx);
         } else {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
         }
     }
 

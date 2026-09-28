@@ -9,6 +9,9 @@ updates:
     ignore:
       - dependency-name: nix
         versions: [">= 0.30"]
+      # Snapshot crates pin each other exactly and three are vendored with
+      # patches; upgrade them together through the vendor workflow.
+      - dependency-name: "gpui-pre*"
 
   - package-ecosystem: github-actions
     directory: "/"

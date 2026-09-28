@@ -5,11 +5,10 @@
 [sources.json](sources.json) pins each published crate archive by URL and SHA-256,
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
-Keep each coherent fix together. GPUI has separate file-drop and explicit-float
-patches, plus hidden-window creation, X11 native-handle, application-lifetime,
-buffered-event drain, and macOS offscreen-display, per-window
-frame-constraint, app-owned title-bar drag, and borderless traffic-light
-fixes, and sharp Linux shadows. The sys crate
+Keep each coherent fix together. GPUI's core crate has hidden-window creation
+and file-drop pointer-modality patches, its Linux crate has X11 file-drop,
+native-handle, and fullscreen-state patches, and its macOS crate has
+offscreen-screen and per-window frame-constraint patches. The sys crate
 has a matched upstream upgrade plus build-script watch-path, license, and
 build-source staging patches. The safe wrapper has the same upstream upgrade.
 
@@ -18,7 +17,7 @@ Normal Cargo builds use the fully patched vendored source through
 
 ```sh
 mise run vendor:check
-mise run vendor:check -- gpui
+mise run vendor:check -- gpui-pre-linux
 ```
 
 The checker verifies archive hashes, extracts into temporary storage, applies
@@ -109,7 +108,7 @@ If source edits predate a session, inspect their diff and establish that they
 belong to the authorized fix. Then explicitly adopt them:
 
 ```sh
-mise run vendor:start -- gpui x11-file-drop --adopt-edits
+mise run vendor:start -- gpui-pre-linux x11-file-drop --adopt-edits
 ```
 
 The recipe still defines the baseline. Adoption assigns the existing source delta
@@ -128,8 +127,10 @@ patch needs that dependency. Document the reason and any upstream reference.
 For an upgrade:
 
 1. Obtain the new published archive and record its checksum and VCS metadata.
-   Use the release archive, not a Git checkout. Packaging can change files, and
-   GPUI's current release records a dirty checkout.
+   Use the release archive, not a Git checkout. Packaging can change files.
+   `gpui-pre` archives have no Cargo VCS file; mark their manifest entries with
+   `"snapshot": "gpui-pre"` so the checker reads the Zed crate and revision from
+   `package.metadata.gpui-pre` instead.
 2. Extract it into the new versioned vendor directory and update the manifest and
    Cargo override. Preserve the old recipe in a temporary directory while working.
    Start the new manifest entry with an empty patch list and verify the baseline.
@@ -170,67 +171,73 @@ When a published release includes the selected upstream changes, migrate both
 crates together and retain only the local fixes still needed. Keep source hashes,
 notices, generated bindings, and native toolchain aligned.
 
+## GPUI snapshot crates
+
+Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
+0.3.6, which republishes Zed's workspace crates from revision
+`bcf6582ce3500df93a8a39366640173e6786cea6` as separate Apache-2.0 registry
+crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
+`crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
+(`crates/gpui_macos`). The other snapshot crates resolve from the registry.
+The archives omit Cargo's VCS file and record their Zed crate and revision in
+`package.metadata.gpui-pre`, which `vendor:check` compares with the manifest.
+The registry archive is the reproducible source of truth. All published files
+are retained; Cargo's `.cargo-ok` extraction marker is omitted. Keep upstream
+formatting in these directories.
+
+Upstream supplies fixes that earlier Huterm patches carried: the buffered X11
+event drain (zed#62081), app-owned macOS title-bar drags (zed#41839,
+zed#60620), sharp zero-blur shadows in the wgpu renderer (zed#57685), the
+borderless traffic-light guard, explicit application lifetime, a live X11 window
+handle, a patched Taffy grid, and explicit float literals.
+
 ## GPUI X11 native file-drop correction
 
-`gpui-0.2.2` contains the published Apache-2.0 registry crate. The archive's
-SHA-256 is `979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`.
-Its published VCS metadata names `69e2130295c2649963eb639fc70b4f2ee8ea1624` and
-marks that upstream checkout dirty. The registry archive is the reproducible
-source of truth. All published files are retained; Cargo's `.cargo-ok` extraction
-marker is omitted.
-
-Huterm's patch is restricted to X11 native file-drop sequencing and complete
-URI-list decoding. Type negotiation selects `text/uri-list` wherever it appears
-in inline offers or `XdndTypeList`; text-only offers are refused. Native
-selection conversion uses a temporary requestor
+Huterm's `x11-file-drop` patch is restricted to X11 native file-drop sequencing
+and complete URI-list decoding. Type negotiation selects `text/uri-list` wherever
+it appears in inline offers or `XdndTypeList`; text-only offers are refused.
+Native selection conversion uses a temporary requestor
 window per drag. Late replies from canceled drags cannot be mistaken for a
 new drag in the same Huterm window. No synthetic Pending/Submit event reaches
 terminal mouse handlers before a valid Entered event. Invalid or truncated
 native lists are refused as a whole. App-specific path quoting, paste admission,
 and status feedback remain in Huterm.
 
-Keep upstream formatting in this directory. Remove the Cargo patch and vendored
-crate once a reviewed published GPUI release supplies equivalent native
+Remove the patch once a reviewed GPUI snapshot supplies equivalent native
 sequencing, whole-payload validation, and stale-reply isolation. Rerun both
 platforms' desktop integration smokes when removing it.
 
-## GPUI Taffy security update
+GPUI suppresses hitbox hover while the last input was a key press, and only
+mouse and touch events end that state. Native file drags arrive as `FileDrop`
+events without mouse events, so a drop after typing found no target and was
+discarded. The `file-drop-pointer-modality` patch counts drag entry, movement,
+and drop as pointer input. The integration smoke types Escape before its first
+native drop and fails without it.
 
-The `taffy-grid-security-update` patch changes GPUI's exact Taffy pin from
-0.9.0 to 0.9.2, allowing the workspace lockfile to select `grid` 1.0.1.
-That version fixes unchecked dimension growth described in
-[GHSA-38c5-483c-4qqp](https://github.com/advisories/GHSA-38c5-483c-4qqp).
-Taffy's occupancy matrix does not call the affected growth methods, but the
-update removes the vulnerable dependency from the workspace graph. Remove this
-patch when the selected GPUI release permits a patched `grid` version.
+## GPUI window lifetime and native state
 
-## GPUI explicit float literals
+GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
+The `hidden-window-creation` patch gates that call on `show` and propagates
+mapping errors. The `x11-window-handle` patch reports a destroyed X11 window as
+unavailable instead of returning its stale Xcb handle. Quake uses that handle to
+address the exact window. The native quake smoke checks an untouched hidden GPUI
+window before any hide operation, then summons a real profile through the OS
+shortcut and reads its native state. Upstream X11 window destruction no longer
+stops the event loop; GPUI's `QuitMode` now decides instead, and Huterm selects
+`QuitMode::Explicit` so its close/quit coordinator owns zero-window lifetime.
+The native smoke proves that active global registrations retain a zero-window
+process, and that final-window close without registrations still exits it.
 
-`explicit-f32-literals` adds `f32` suffixes to the two grid-track literals in
-`src/taffy.rs`. Rust already infers these values as `f32`, but warns that this
-fallback will become an error. Explicit types preserve the existing behavior.
-Remove this patch when the selected upstream release supplies explicit types or
-otherwise removes the `float_literal_f32_fallback` warnings at this call site.
+The `fullscreen-state-notification` patch notifies bounds observers when an X11
+window manager changes `_NET_WM_STATE` fullscreen without a geometry event.
 
-GPUI 0.2.2 called `map_window()` even for `WindowOptions { show: false }`.
-The hidden-window patch gates that call on `show` and propagates mapping errors.
-The X11 handle patch implements `HasWindowHandle` for live XCB windows instead
-of panicking. Quake uses that handle to address the exact window. The native
-quake smoke checks an untouched hidden GPUI window before any hide operation,
-then summons a real profile through the OS shortcut and reads its native state.
-GPUI's X11 window destruction also stopped the event loop when its last window
-closed. The application-lifetime patch leaves that decision to Huterm's existing
-close/quit coordinator. The native smoke proves that active global registrations
-retain a zero-window process, and that final-window close without registrations
-still exits it.
-
-GPUI's macOS display-link setup dereferenced `NSWindow.screen` while an animated
-window was fully offscreen. AppKit returns nil in that state. The offscreen-display
-patch stops the link until a screen or visibility callback restarts it, and treats
-an offscreen window as not maximized. It reads backing scale from NSWindow, which
-retains the real scale without a screen. A synthetic offscreen scale can resize
-Metal's drawable at 2x while GPUI returns to 1x after moving onscreen. The native
-quake smoke checks retained resize, drawable/viewport agreement, and PTY geometry.
+GPUI's macOS display link now tolerates a nil `NSWindow.screen` while an
+animated window is fully offscreen. The `macos-offscreen-screen` patch also
+treats such a window as not maximized, and reads backing scale from NSWindow,
+which retains the real scale without a screen. A synthetic offscreen scale can
+resize Metal's drawable at 2x while GPUI returns to 1x after moving onscreen.
+The native quake smoke checks retained resize, drawable/viewport agreement, and
+PTY geometry.
 
 The `macos-offscreen-frame` patch adds a per-window `gpuiAllowsOffscreenFrame` opt-in
 and `setGpuiAllowsOffscreenFrame:` setter. It defaults to false. Only opted-in windows

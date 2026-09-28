@@ -518,7 +518,7 @@ impl Menu {
     /// the scroll indicator is drawn, for smoke state.
     pub(crate) fn scroll_state(&self) -> (bool, bool) {
         (
-            self.scroll.max_offset().height > px(0.0),
+            self.scroll.max_offset().y > px(0.0),
             self.scrollbar.indicator_visible(),
         )
     }

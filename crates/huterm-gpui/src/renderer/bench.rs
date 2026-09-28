@@ -535,8 +535,7 @@ impl Render for Fixture {
                                 cx.update(|cx| {
                                     println!("RENDERER_BENCH passed");
                                     cx.quit();
-                                })
-                                .expect("finish renderer benchmark");
+                                });
                             })
                             .detach();
                         });

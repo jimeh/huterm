@@ -1,0 +1,18 @@
+diff --git a/src/window.rs b/src/window.rs
+index 1d65b5fc22e2beea97d770d3dd7a56aa7f9a11d8..9a7727feff5b6a7a934653c77fd303fd94660598 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -5425,6 +5425,13 @@ impl Window {
+         self.last_input_modality = match &event {
+             PlatformInput::KeyDown(_) => InputModality::Keyboard,
+             PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
++            // A native file drag moves the pointer without mouse events, so its
++            // drop must still hit-test the element under it after typing.
++            PlatformInput::FileDrop(
++                FileDropEvent::Entered { .. }
++                | FileDropEvent::Pending { .. }
++                | FileDropEvent::Submit { .. },
++            ) => InputModality::Mouse,
+             PlatformInput::Touch(_) => InputModality::Touch,
+             _ => self.last_input_modality,
+         };

@@ -120,7 +120,7 @@ fn main() {
             native_quit::allow_termination();
             marker("approved");
             // Exercise GPUI's production main-queue terminate: dispatch too.
-            cx.update(|cx| cx.quit()).unwrap();
+            cx.update(|cx| cx.quit());
         })
         .detach();
     });

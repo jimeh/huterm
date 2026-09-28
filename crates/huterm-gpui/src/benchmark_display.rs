@@ -23,7 +23,7 @@ fn select(
     displays: impl IntoIterator<Item = DisplayId>,
 ) -> anyhow::Result<DisplayId> {
     for id in displays {
-        if u32::from(id) == requested {
+        if u64::from(id) == u64::from(requested) {
             return Ok(id);
         }
     }
@@ -45,7 +45,7 @@ pub(crate) fn observe(window: &Window, cx: &App, expected: DisplayId) {
     verify(window, cx, expected);
     eprintln!(
         "HUTERM_BENCH display_id={} scale={}",
-        u32::from(expected),
+        u64::from(expected),
         window.scale_factor(),
     );
     next_frame(window, expected, FrameIntervals::default());
@@ -91,7 +91,7 @@ impl FrameIntervals {
         let median = sorted.get(sorted.len() / 2).copied().unwrap_or_default();
         eprintln!(
             "HUTERM_BENCH source={source} display_id={} intervals={} elapsed_us={} median_interval_us={}",
-            u32::from(display),
+            u64::from(display),
             sorted.len(),
             self.elapsed.as_micros(),
             median.as_micros(),

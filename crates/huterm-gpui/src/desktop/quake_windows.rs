@@ -425,9 +425,7 @@ pub(super) fn replace_registrations(
         cx.global_mut::<Desktop>().quake.registrations = Some(registrations);
         cx.spawn(async move |cx| {
             while wakeups.recv().await.is_ok() {
-                if cx.update(dispatch_hotkeys).is_err() {
-                    break;
-                }
+                cx.update(dispatch_hotkeys);
             }
         })
         .detach();

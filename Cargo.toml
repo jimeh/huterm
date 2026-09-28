@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol"]
-exclude = ["third-party/vendor/libghostty-vt-0.2.1", "third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-0.2.2", "third-party/vendor/portable-pty-0.9.0"]
+exclude = ["third-party/vendor/libghostty-vt-0.2.1", "third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/libghostty-vt-sys-0.2.1", "third-party/vendor/gpui-pre-0.3.6", "third-party/vendor/gpui-pre-linux-0.3.6", "third-party/vendor/gpui-pre-macos-0.3.6", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
 [workspace.package]
@@ -12,7 +12,8 @@ rust-version = "1.88"
 [workspace.dependencies]
 anyhow = "1.0.104"
 async-channel = "=2.5.0"
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "x11"] }
+gpui = { package = "gpui-pre", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
 huterm-config = { path = "crates/huterm-config", version = "=0.14.1" } # x-release-please-version
 huterm-core = { path = "crates/huterm-core", version = "=0.14.1" } # x-release-please-version
 huterm-gpui = { path = "crates/huterm-gpui", version = "=0.14.1" } # x-release-please-version
@@ -83,6 +84,8 @@ workspace = true
 [patch.crates-io]
 libghostty-vt = { path = "third-party/vendor/libghostty-vt-0.2.1" }
 global-hotkey = { path = "third-party/vendor/global-hotkey-0.8.0" }
-gpui = { path = "third-party/vendor/gpui-0.2.2" }
+gpui-pre = { path = "third-party/vendor/gpui-pre-0.3.6" }
+gpui-pre-linux = { path = "third-party/vendor/gpui-pre-linux-0.3.6" }
+gpui-pre-macos = { path = "third-party/vendor/gpui-pre-macos-0.3.6" }
 libghostty-vt-sys = { path = "third-party/vendor/libghostty-vt-sys-0.2.1" }
 portable-pty = { path = "third-party/vendor/portable-pty-0.9.0" }

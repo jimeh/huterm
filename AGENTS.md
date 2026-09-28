@@ -262,10 +262,16 @@ Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
 when changing the policy.
 The published GPUI dependency graph needs Rust 1.88 or newer; project tooling
 pins Rust 1.98.
-GPUI 0.2.2 depends on `stacksafe` 0.1.x, whose `proc-macro-error2` dependency
-emits a Rust future-incompatibility warning. The published `stacksafe` 1.x fix
-is outside GPUI's semver requirement, so resolve this through a future GPUI
-release rather than a Git or local patch.
+GPUI comes from `gpui-pre`, huacnlee's crates.io snapshots of Zed's main
+branch, because Zed has not published GPUI since 0.2.2. Depend on it as
+`gpui = { package = "gpui-pre" }` so code keeps the `gpui` crate name, and on
+`gpui-pre-platform` (`gpui_platform::application()`) for the native
+`Application`. Its crates pin each other exactly, so upgrade them together and
+review every vendored patch against the new Zed revision. Upstream's Linux
+font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
+`huterm-gpui` restores `source-fontconfig-dlopen` so packages keep loading
+fontconfig at runtime. Zed's HTTP client pulls `libbz2-rs-sys`, allowed through
+a crate-scoped cargo-deny license exception.
 Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
 `MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for
 `fcntl`; upgrading earlier would require an unsafe borrowed-descriptor
@@ -308,7 +314,7 @@ rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
 and apply colors and decorations during paint. Use the generic `monospace` font
 family on Linux; requesting macOS-only Menlo repeatedly exercises GPUI's
 missing-font fallback path.
-Derive the terminal's grid geometry once through `GridMetrics`. GPUI 0.2.2
+Derive the terminal's grid geometry once through `GridMetrics`. GPUI
 reports raw font descent as negative on macOS and Linux, so normalize it to a
 positive distance before calculating cell height, baseline, or decorations.
 Round grid dimensions in physical pixels using the window scale, then convert
@@ -453,7 +459,7 @@ GPUI's X11 backend remaps Shift vertical wheel lines to horizontal-only deltas.
 Restore those deltas to vertical only on the local scroll path on Linux. Leave
 application horizontal wheel reports and macOS deltas unchanged until native
 macOS device evidence justifies normalization there.
-On macOS, GPUI 0.2.2 remaps Control-left independently at press and release,
+On macOS, GPUI remaps Control-left independently at press and release,
 clearing Control and discarding the original button identity. Match releases
 to held logical buttons first; an unmatched Left/Right release closes the held
 opposite Left/Right only on macOS. Simultaneous Control-left and physical Right
@@ -753,8 +759,13 @@ carry `#[expect(dead_code)]` so Clippy fails when the consumer arrives and the
 attribute must go.
 Native input smoke events must enter NSApplication through `postEvent:atStart:`;
 calling NSView.keyDown: directly does not establish `currentEvent` for Option
-composition. Use printable Option prefixes and held printable suffixes in replay
-regressions: control-only prefixes can pass even when replay suppression breaks.
+composition. Mouse moves are the exception: GPUI windows refuse window-level
+moved events and take them from a tracking area that only real pointer motion
+feeds, so the fixture calls `mouseMoved:` on the view under the point. Fake
+`NSDraggingInfo` fixtures must answer every selector GPUI sends, including
+`draggingSource`; an unrecognized selector aborts inside the AppKit callback.
+Use printable Option prefixes and held printable suffixes in replay regressions:
+control-only prefixes can pass even when replay suppression breaks.
 Conditional fallback tests must change selection after the prefix starts and
 before resolution; GPUI may dispatch a conditional short binding immediately
 when that condition was already true at prefix start.
@@ -783,7 +794,7 @@ Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligne
 with the repository ruleset. These gates require every validation job and disable
 matrix fail-fast so each reports its own failure instead of cancelling its sibling.
 
-GPUI 0.2.2's X11 ConfigureNotify handler stores raw event origins, including
+GPUI's X11 ConfigureNotify handler stores raw event origins, including
 parent-relative coordinates after a reparenting window manager restores a
 window. Fullscreen smokes must compare actual root geometry through xdotool;
 GPUI's windowed and Quit metadata can retain the parent-relative origin even
@@ -846,7 +857,7 @@ and every retained TerminalView. Keep safe-area padding separate from the titleb
 inset, which also controls titlebar rendering. AppKit NSEdgeInsets field order is
 top/left/bottom/right, unlike GPUI's top/right/bottom/left.
 
-GPUI 0.2.2 passes literal `enter` and `tab` strings to NSMenuItem instead of
+GPUI still passes literal `enter` and `tab` strings to NSMenuItem instead of
 AppKit's Return and Tab characters. Normalize those two key equivalents after
 `set_menus` at startup and reload; leave the configured GPUI keys unchanged.
 AppKit derives both shortcut display and activation from `keyEquivalent`.
@@ -948,6 +959,9 @@ snapshot. Keep the scan limits (32 KiB text/destination, 128 rows, 16,384 cells,
 Ghostty native OSC 8 parser uses a fixed 2,048-byte capture: parameters plus URI
 may occupy 2,046 bytes; larger sequences are discarded, not truncated.
 
+GPUI suppresses hitbox hover while the last input was a key press. Native file
+drags deliver only `FileDrop` events, so the `file-drop-pointer-modality` patch
+counts them as pointer input; otherwise a drop after typing hits no target.
 The vendored GPUI X11 patch resolves native file-URI lists as a whole before
 emitting any FileDrop event. Each conversion owns a fresh requestor window;
 sources may use CurrentTime=0, so timestamps cannot identify stale replies.
@@ -1027,8 +1041,10 @@ adopt pre-existing edits after reviewing their scope; never absorb unexplained
 source drift or edit recipe files during an active session. Review patch ownership,
 run `vendor:check` and the affected behavioral checks, and finish every session
 before handoff or commit. Commit source and patches together when authorized.
-GPUI 0.2.2 was packaged from a dirty checkout, so its Git revision alone is not
-an exact source baseline. Normal builds use the vendored tree directly.
+`gpui-pre` archives carry no Cargo VCS file; their manifest entries set
+`"snapshot": "gpui-pre"` so the checker reads the Zed crate and revision from
+`package.metadata.gpui-pre`. The archive remains the exact source baseline.
+Normal builds use the vendored tree directly.
 Private Git snapshots must force-add ignored package files and disable attributes
 that transform bytes or omit archive entries; otherwise the patch recipe can lose
 published files or alter line endings.
@@ -1060,7 +1076,7 @@ A sibling typecheck's install dependency does not order parallel test startup.
 
 Advance tab-overlay animation through the shared window frame clock;
 call GPUI's `request_animation_frame` only while rendering. Despite its wording,
-the GPUI 0.2.2 method requires a current view and panics from a timer callback.
+the GPUI method requires a current view and panics from a timer callback.
 Terminal gestures retain move/release ownership beneath an overlay until the
 deferred pointer reconciliation hides it; overlay hit bounds alone must never
 discard that release.
@@ -1079,16 +1095,18 @@ AppKit frame, style, and visibility changes can synchronously reenter GPUI.
 Keep a generation check before every effect, and wait for native Space exit
 before restoring style or applying quake geometry. Quake fullscreen shares the
 existing application presentation lease pool. Hide only the associated window,
-never the whole application. GPUI 0.2.2 needs the tracked hidden-window and
-X11-handle vendor patches: `show: false` otherwise maps on X11, and its native
-handle method otherwise panics. Run the quake native smoke to verify both.
+never the whole application. GPUI needs the tracked hidden-window vendor
+patch: `show: false` otherwise maps on X11. The X11-handle patch reports a
+destroyed window as unavailable. Run the quake native smoke to verify both.
 Openbox may place a remapped window after its unmapped geometry was configured.
 Quake must observe mapping and reassert the final EWMH frame until it settles,
 including `animation = "none"` and zero-duration transitions.
-GPUI's X11 `drop_window` also stopped the platform loop on the last native
-window, bypassing Huterm's zero-window keepalive. Keep the tracked application-
-lifetime patch until upstream permits explicit ownership. Pair zero-window global
-summon coverage with ordinary final-window exit coverage when changing it.
+GPUI 0.2.2's X11 `drop_window` stopped the platform loop on the last native
+window, bypassing Huterm's zero-window keepalive. Upstream moved that policy
+into `QuitMode`, whose default still quits after the last Linux window; the
+application sets `QuitMode::Explicit` so Huterm's close/quit coordinator owns
+that lifetime. Pair zero-window global
+summon coverage with ordinary final-window exit coverage when upgrading GPUI.
 
 Quake profile definitions and portable validation live in `huterm-config`;
 keep desktop geometry and animation behavior in `huterm-gpui`. The global
@@ -1227,10 +1245,9 @@ pill, dialog buttons, and the About panel; the palette and menus always show
 theirs. The tab position default differs by platform, so the schema describes
 it instead of stating a default, and the config template leaves it commented.
 Pin `position` in smoke fixtures whose geometry assumes one.
-GPUI 0.2.2's Linux shadow shader divides by the blur radius, so a zero-blur
-shadow such as the focus ring drew nothing there while Metal drew it sharp. The
-`linux-sharp-shadows` patch backports Metal's sharp branch (zed#57685). Xvfb
-captures of GPUI windows are black, so check Linux visuals in `vm:linux:dev`.
+GPUI's wgpu shader draws zero-blur shadows, such as the focus ring, as sharp
+shapes on Linux, as Metal does (zed#57685). Xvfb captures of GPUI windows are
+black, so check Linux visuals in `vm:linux:dev`.
 Palette ranking ties fall back to catalog order. A new command whose title
 shares a prefix with an existing one, such as Copy Tab Directory beside Copy,
 must come after it in the catalog, or the palette smoke's `copy` query selects
@@ -1246,17 +1263,16 @@ stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<me
 `tabs.position = "titlebar"` resolves through
 `tab_position::resolve_tab_position`: `top` in fullscreen, Quake windows, and
 Linux windows without granted client-side decorations. Only drawing code
-matches `Titlebar`. GPUI 0.2.2's `WindowControlArea` hit testing exists only on
-Windows. Huterm owns macOS title-bar drags: windows set
+matches `Titlebar`. GPUI's `WindowControlArea` hit testing does nothing on
+macOS or X11. Huterm owns macOS title-bar drags: windows set
 `app_owns_titlebar_drag`, and `title_row_gestures` moves them through
 `start_window_move` on the first drag motion and runs `titlebar_double_click`.
 Otherwise the window server takes a press on a tab in the title strip as a
-window drag, and AppKit and Huterm could both act on a double-click. The
-`macos-app-owned-titlebar-drag` vendor patch backports both GPUI pieces
-(zed#41839, zed#60620). GPUI repositions traffic lights for any window given
-`traffic_light_position`, including after regular-to-Quake conversion, and a
-borderless window has no buttons: the `macos-borderless-traffic-lights` patch
-skips it instead of messaging nil, and Quake windows never request a position.
+window drag, and AppKit and Huterm could both act on a double-click. GPUI
+supplies both pieces upstream (zed#41839, zed#60620). GPUI repositions traffic
+lights for any window given `traffic_light_position`, including after
+regular-to-Quake conversion; it skips a borderless window, which has no buttons,
+and Quake windows never request a position.
 X11 moves also need `start_window_move`. GPUI grants
 X11 client-side decorations only when, at client start, the window manager
 lists `_GTK_FRAME_EXTENTS` in the root
@@ -1277,9 +1293,8 @@ GPUI's X11 setters such as `set_title` and `set_client_inset` wait for a
 checked reply, which reads pending events into x11rb's queue. calloop watches
 only the socket, so an event queued this way, such as a new window's
 MapNotify, can wait forever: GPUI never starts that window's refresh loop and
-requests no further frame. The tracked `x11-drain-buffered-events` patch
-backports Zed's drain after each foreground task (zed#62081). Keep it until the
-GPUI upgrade includes that fix; `bench:scroll` under twm and the composited
+requests no further frame. GPUI drains those buffered events after each
+foreground task (zed#62081); `bench:scroll` under twm and the composited
 client-frame smoke both stall without it. Still seed cached platform values,
 such as the window title, with what the window opened with, and call these
 setters only when the value changes.

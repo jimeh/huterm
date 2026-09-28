@@ -387,8 +387,7 @@ pub(in crate::desktop) fn start(
             if let Some(effect) = effect {
                 // Native effects execute outside GPUI window/entity borrows.
                 let result = effect.run();
-                let recovery =
-                    cx.update(|cx| complete(result, handle, cx)).ok().flatten();
+                let recovery = cx.update(|cx| complete(result, handle, cx));
                 if let Some(effect) = recovery
                     && let Err(error) = effect.run().outcome
                 {

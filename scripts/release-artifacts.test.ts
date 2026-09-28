@@ -114,7 +114,7 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui", "0.2.2"),
+      cargoPackage("gpui-pre", "0.3.6"),
       cargoPackage("libghostty-vt-sys", "0.2.1"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
@@ -125,7 +125,7 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   });
   const packages = result.packages as Record<string, unknown>[];
   const described = result.documentDescribes as string[];
-  for (const name of ["gpui", "libghostty-vt-sys"]) {
+  for (const name of ["gpui-pre", "libghostty-vt-sys"]) {
     const retained = packages.find(pkg => pkg.name === name)!;
     expect(described).toContain(retained.SPDXID as string);
     expect(described).not.toContain(`SPDXRef-Package-${name}`);
@@ -133,7 +133,7 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   expect(() => validateRuntimeSpdx(result, "0.4.0")).not.toThrow();
   expect(packages.find(pkg => pkg.name === "anyhow")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64 and x86_64") })]);
   expect(packages.find(pkg => pkg.name === "arm-only")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64") })]);
-  expect(packages.find(pkg => pkg.name === "gpui")?.sourceInfo).toContain("Locally patched runtime crate");
+  expect(packages.find(pkg => pkg.name === "gpui-pre")?.sourceInfo).toContain("Locally patched runtime crate");
   expect(packages.find(pkg => pkg.name === "ghostty")?.versionInfo).toBe("22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018");
   for (const name of ["Sparkle", "ghostty", "uucode", "highway", "libghostty-vt-sys"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
