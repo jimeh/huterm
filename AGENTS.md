@@ -99,6 +99,11 @@ Run `mise tasks` to discover the full task set.
 - `mise run check` runs the fast format, Clippy compilation, docs, and
   architecture gate; `mise run typecheck` remains available independently.
 - `mise run test` runs unit and PTY integration tests.
+- `mise run test:ghostty-releasesafe` reruns the `huterm-ghostty` and
+  `huterm-core` tests against a ReleaseSafe Ghostty build in
+  `target/ghostty-releasesafe`, where Zig's safety checks turn silent
+  undefined behavior into failures. CI runs it on every pull request, and both
+  `Verify` gates require it.
 - `mise run verify` matches CI and adds dependency-license and workflow checks.
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.

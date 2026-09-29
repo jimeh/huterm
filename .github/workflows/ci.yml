@@ -428,6 +428,40 @@ jobs:
       - name: Verify Ghostty scroll and link budgets
         run: mise run ci:benchmarks
 
+  releasesafe:
+    # Normal builds link Ghostty in ReleaseFast, where a bounds, overflow, or
+    # enum-tag violation triggered by Huterm's inputs is silent undefined
+    # behavior. ReleaseSafe turns those into test failures. One platform
+    # suffices because the checks guard Ghostty's own Zig code.
+    name: Ghostty ReleaseSafe tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install job tools with Mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          # Lock and toolchain inputs exclude task-only edits from tool cache keys.
+          cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
+          install_args: bun zig
+          minimum_release_age: 3d
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ghostty-releasesafe
+
+      - name: Run tests against ReleaseSafe Ghostty
+        run: mise run ci:test:ghostty-releasesafe
+
   package:
     name: Package ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
@@ -534,7 +568,7 @@ jobs:
     # These historical labels now cover both native Linux architectures because
     # matrix results are aggregated by job ID.
     name: Verify ${{ matrix.platform }}
-    needs: [policy, checks, smoke, benchmarks, package]
+    needs: [policy, checks, smoke, benchmarks, releasesafe, package]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

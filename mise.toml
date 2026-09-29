@@ -158,6 +158,23 @@ run = [
   "bash scripts/build-exec.sh cargo test --locked -p huterm-ghostty --doc",
 ]
 
+[tasks."test:ghostty-releasesafe"]
+description = "Run huterm-ghostty and huterm-core tests against a ReleaseSafe Ghostty build"
+depends = ["ghostty:prepare"]
+# ReleaseSafe keeps Zig's bounds, overflow, and tag checks, which ReleaseFast
+# turns into undefined behavior. `.cargo/config.toml` forces ReleaseFast, so
+# override it here, and keep the separately built native library out of the
+# normal target directory.
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec bash scripts/build-exec.sh cargo test --locked --no-fail-fast --all-targets \
+  -p huterm-ghostty -p huterm-core \
+  --target-dir target/ghostty-releasesafe \
+  --config 'env.HUTERM_GHOSTTY_OPTIMIZE.value="ReleaseSafe"' \
+  --config 'env.HUTERM_GHOSTTY_OPTIMIZE.force=true'
+'''
+
 [tasks."test:scroll-checker"]
 description = "Test scroll benchmark log validation"
 run = "bun test ./scripts/check-scroll-benchmark.test.ts"
@@ -813,6 +830,11 @@ run = "mise run check:rust:analysis"
 description = "Run CI Rust unit and PTY integration tests"
 depends = ["verify:toolchain"]
 run = "mise run test:rust"
+
+[tasks."ci:test:ghostty-releasesafe"]
+description = "Run CI huterm-ghostty and huterm-core tests against ReleaseSafe Ghostty"
+depends = ["verify:toolchain"]
+run = "mise run test:ghostty-releasesafe"
 
 [tasks."ci:smoke"]
 description = "Run CI desktop smokes for the current platform"
