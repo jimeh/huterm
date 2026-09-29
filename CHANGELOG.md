@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/jimeh/huterm/compare/v0.15.0...v0.15.1) (2026-09-29)
+
+
+### Performance Improvements
+
+* cut per-frame GPUI paint and scene sort cost for terminal grids ([#192](https://github.com/jimeh/huterm/issues/192)) ([15ee8a0](https://github.com/jimeh/huterm/commit/15ee8a0b22f1626c8f3358c5c80e6c1b3cf762db))
+
 ## [0.15.0](https://github.com/jimeh/huterm/compare/v0.14.1...v0.15.0) (2026-09-29)
 
 

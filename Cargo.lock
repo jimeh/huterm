@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "huterm"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "huterm-gpui",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "huterm-config"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "huterm-protocol",
  "schemars",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "huterm-core"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "async-channel",
  "filedescriptor",
@@ -2652,14 +2652,14 @@ dependencies = [
 
 [[package]]
 name = "huterm-ghostty"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "huterm-ghostty-bindgen"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "bindgen 0.71.1",
  "syn 2.0.119",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "huterm-gpui"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2690,14 +2690,14 @@ dependencies = [
 
 [[package]]
 name = "huterm-procinfo"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "huterm-protocol"
-version = "0.15.0"
+version = "0.15.1"
 
 [[package]]
 name = "iana-time-zone"
