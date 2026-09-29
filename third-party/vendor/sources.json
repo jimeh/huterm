@@ -79,40 +79,6 @@
       ]
     },
     {
-      "name": "libghostty-vt-sys",
-      "version": "0.2.1",
-      "url": "https://static.crates.io/crates/libghostty-vt-sys/libghostty-vt-sys-0.2.1.crate",
-      "sha256": "865fed12a8b2bba3507b3bccd0bef439e06ef1100e652fe6b71d132c41ee8db0",
-      "upstream": {
-        "repository": "https://github.com/Uzaaft/libghostty-rs",
-        "revision": "46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0",
-        "path": "crates/libghostty-vt-sys"
-      },
-      "patches": [
-        {
-          "name": "upstream-20260901",
-          "file": "patches/libghostty-vt-sys/upstream-20260901.patch",
-          "description": "Upgrade to the matched upstream bindings and native pin, including clipboard callback safety.",
-          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/5988a0b78b4aa804d1c12e66bbfe662bd97d81c0"
-        },
-        {
-          "name": "build-script-watch-path",
-          "file": "patches/libghostty-vt-sys/build-script-watch-path.patch",
-          "description": "Watch the crate-relative build script."
-        },
-        {
-          "name": "license",
-          "file": "patches/libghostty-vt-sys/license.patch",
-          "description": "Include the MIT license supplied with the reviewed binding notice."
-        },
-        {
-          "name": "build-source-staging",
-          "file": "patches/libghostty-vt-sys/build-source-staging.patch",
-          "description": "Build from a disposable OUT_DIR source copy so Zig-generated files cannot modify the verified Ghostty source tree."
-        }
-      ]
-    },
-    {
       "name": "global-hotkey",
       "version": "0.8.0",
       "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.8.0.crate",
@@ -127,25 +93,6 @@
           "name": "macos-exclusive-registration",
           "file": "patches/global-hotkey/macos-exclusive-registration.patch",
           "description": "Use exclusive Carbon hotkey registration so conflicting macOS grabs fail instead of succeeding without event delivery."
-        }
-      ]
-    },
-    {
-      "name": "libghostty-vt",
-      "version": "0.2.1",
-      "url": "https://static.crates.io/crates/libghostty-vt/libghostty-vt-0.2.1.crate",
-      "sha256": "6219ed1c364b3ef5815fb0fd2acc0662f792adc706dabf59b7ca89280ee6d066",
-      "upstream": {
-        "repository": "https://github.com/Uzaaft/libghostty-rs",
-        "revision": "46a9d2ac941ed600cf43c5e6299c8dfd1d3a1ef0",
-        "path": "crates/libghostty-vt"
-      },
-      "patches": [
-        {
-          "name": "upstream-20260901",
-          "file": "patches/libghostty-vt/upstream-20260901.patch",
-          "description": "Upgrade to the matched upstream bindings and native pin, including clipboard callback safety.",
-          "upstream": "https://github.com/Uzaaft/libghostty-rs/commit/5988a0b78b4aa804d1c12e66bbfe662bd97d81c0"
         }
       ]
     },

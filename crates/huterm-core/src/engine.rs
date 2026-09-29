@@ -1,5 +1,9 @@
+#[cfg(test)]
+mod behavior_tests;
+mod escape_hint;
 mod ghostty;
 mod links;
+mod row_matcher;
 
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
@@ -109,6 +113,19 @@ pub(crate) struct TerminalEngine {
     inner: Box<ghostty::TerminalEngine>,
 }
 
+/// Independent row counts for the most recent snapshot. Extraction and `Arc`
+/// allocation are separate so reuse cannot hide rows read from the engine.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SnapshotStats {
+    /// Rows whose cells were read from the engine.
+    pub(crate) extracted: usize,
+    /// Rows published through a newly allocated `Arc`.
+    pub(crate) allocated: usize,
+    /// Rows published through a retained `Arc`, at any index.
+    pub(crate) reused: usize,
+}
+
 impl TerminalEngine {
     pub(crate) fn new(
         id: TerminalId,
@@ -204,8 +221,17 @@ impl TerminalEngine {
     }
 
     #[cfg(test)]
-    pub(crate) fn last_snapshot_stats(&self) -> ghostty::SnapshotStats {
+    pub(crate) fn last_snapshot_stats(&self) -> SnapshotStats {
         self.inner.last_snapshot_stats()
+    }
+
+    /// Replaces the 16 MiB scrollback budget so tests can reach it quickly.
+    #[cfg(test)]
+    pub(crate) fn set_scrollback_limit(
+        &mut self,
+        bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        self.inner.set_scrollback_limit(bytes)
     }
     pub(crate) fn lookup_link(
         &self,

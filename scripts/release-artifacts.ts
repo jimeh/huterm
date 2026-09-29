@@ -428,18 +428,17 @@ export function validateRuntimeSpdx(value: unknown, version: string): void {
   for (const [name, expectedVersion] of [
     ["huterm", version],
     ["Sparkle", "2.9.6"],
-    ["ghostty", "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018"],
+    ["ghostty", "56dbc4a768778753737a3b9cbe0a3f9b4e434553"],
     ["uucode", "0.2.0"],
     ["highway", "66486a10623fa0d72fe91260f96c892e41aceb06"],
     ["gpui-pre", "0.3.6"],
-    ["libghostty-vt-sys", "0.2.1"],
   ] as const) {
     if (!packages.some(pkg => pkg.name === name && pkg.versionInfo === expectedVersion)) {
       throw new Error(`SBOM lacks required runtime component ${name}@${expectedVersion}`);
     }
   }
   if (!packages.some(isCargoPackage)) throw new Error("SBOM lacks cargo-auditable Rust package evidence");
-  for (const patched of ["gpui-pre", "gpui-pre-macos", "libghostty-vt-sys"]) {
+  for (const patched of ["gpui-pre", "gpui-pre-macos"]) {
     const pkg = packages.find(candidate => candidate.name === patched);
     if (typeof pkg?.sourceInfo !== "string" || !pkg.sourceInfo.startsWith("Locally patched runtime crate")) {
       throw new Error(`SBOM lacks patched-crate provenance for ${patched}`);

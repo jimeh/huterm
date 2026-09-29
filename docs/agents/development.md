@@ -603,6 +603,28 @@ TypeScript dependencies, `mise run check:scripts` for script tests and type
 checking, and `mise run audit:scripts` for dependency advisories. These checks
 also run through the appropriate verification and CI tasks.
 
+### Generated Ghostty bindings
+
+`huterm-ghostty` commits its FFI declarations. `mise run ghostty:bindings`
+regenerates them from the pinned headers, and `mise run ghostty:bindings:check`,
+part of `mise run check`, fails when they are stale. Both load libclang at run
+time and print the version they loaded:
+
+- On macOS the task sets `LIBCLANG_PATH` to the selected Xcode's toolchain, or
+  to the Command Line Tools, so the libclang matches the Xcode that builds
+  Huterm. Without it, clang-sys prefers any `llvm-config` on `PATH`.
+- Ubuntu 22.04 needs `sudo apt-get install --no-install-recommends libclang1-14`.
+  The Linux Docker image already provides libclang.
+- Set `LIBCLANG_PATH` to the directory containing the library to override
+  either choice. A missing library fails with these instructions.
+
+The generator parses the headers as C++17, so libclang 14 and Apple clang 21
+produce identical output. CI runs the check only in the macOS arm64 checks
+job. That job does not pin Xcode: it builds with the runner image's default,
+and the check uses the same Xcode's libclang, so an image update that changes
+the output fails the check and names the libclang version in its log. The
+Linux runners would load whichever unpinned LLVM the image ships.
+
 ### Native macOS input smoke
 
 Run `mise run smoke:macos-input` in a macOS GUI session with the US, ABC, or

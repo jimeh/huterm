@@ -102,7 +102,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol and process-info boundaries"
+description = "Check dependency-neutral protocol, process-info, and Ghostty binding boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -111,7 +111,7 @@ if [ -n "$dependencies" ]; then
   exit 1
 fi
 config_dependencies="$(cargo tree --locked -p huterm-config --features schema --prefix none --edges normal,build)"
-if echo "$config_dependencies" | rg '^(gpui|huterm-core|alacritty_terminal|libghostty-vt|portable-pty)( |-)'; then
+if echo "$config_dependencies" | rg '^(gpui|huterm-core|huterm-ghostty|alacritty_terminal|portable-pty)( |-)'; then
   echo "huterm-config must remain independent of desktop and terminal engines" >&2
   exit 1
 fi
@@ -120,11 +120,21 @@ if echo "$procinfo_dependencies" | rg '^huterm-'; then
   echo "huterm-procinfo must not depend on other Huterm crates" >&2
   exit 1
 fi
+ghostty_dependencies="$(cargo tree --locked -p huterm-ghostty --target all --prefix none --edges normal,build | tail -n +2)"
+if echo "$ghostty_dependencies" | rg '^huterm-'; then
+  echo "huterm-ghostty must not depend on other Huterm crates" >&2
+  exit 1
+fi
+ghostty_dependents="$(cargo tree --locked --workspace --target all --invert huterm-ghostty --prefix none --edges normal,build,dev --depth 1 | tail -n +2)"
+if echo "$ghostty_dependents" | rg -v '^huterm-core '; then
+  echo "only huterm-core may depend on huterm-ghostty" >&2
+  exit 1
+fi
 '''
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check"]
+depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, and architecture checks"
@@ -141,7 +151,12 @@ depends = ["test:scripts", "test:rust"]
 [tasks."test:rust"]
 description = "Run Rust unit and PTY integration tests"
 depends = ["ghostty:prepare"]
-run = "bash scripts/build-exec.sh cargo test --workspace --all-targets --locked"
+# `--all-targets` skips doctests; huterm-ghostty's compile_fail doctests
+# prove its borrow and thread-affinity guarantees.
+run = [
+  "bash scripts/build-exec.sh cargo test --workspace --all-targets --locked",
+  "bash scripts/build-exec.sh cargo test --locked -p huterm-ghostty --doc",
+]
 
 [tasks."test:scroll-checker"]
 description = "Test scroll benchmark log validation"
@@ -416,6 +431,31 @@ run = "bash scripts/build-exec.sh cargo test --release --locked -p huterm-core e
 [tasks."ghostty:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
+
+[tasks."ghostty:bindings"]
+depends = ["ghostty:prepare"]
+description = "Regenerate huterm-ghostty's FFI declarations from the pinned headers"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+# bindgen loads libclang at run time. On macOS, clang-sys otherwise prefers
+# any llvm-config on PATH over Xcode, so use the selected developer
+# directory's libclang, the same Xcode that builds Huterm.
+if [ "$(uname -s)" = Darwin ] && [ -z "${LIBCLANG_PATH:-}" ]; then
+  developer="$(xcode-select --print-path)"
+  for directory in "$developer/Toolchains/XcodeDefault.xctoolchain/usr/lib" "$developer/usr/lib"; do
+    if [ -e "$directory/libclang.dylib" ]; then
+      export LIBCLANG_PATH="$directory"
+      break
+    fi
+  done
+fi
+exec bash scripts/build-exec.sh cargo run --locked --quiet -p huterm-ghostty-bindgen -- "$@"
+'''
+
+[tasks."ghostty:bindings:check"]
+description = "Check that huterm-ghostty's committed FFI declarations match the headers"
+run = "mise run ghostty:bindings -- --check"
 
 [tasks."ghostty:check"]
 description = "Verify prepared Ghostty sources against the reviewed tree hash"

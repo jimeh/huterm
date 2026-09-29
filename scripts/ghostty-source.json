@@ -1,21 +1,21 @@
 {
-  "revision": "22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018",
+  "revision": "56dbc4a768778753737a3b9cbe0a3f9b4e434553",
   "zig": "0.16.0",
   "source": {
     "name": "ghostty",
-    "url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018",
-    "sha256": "5fdb21d3744ce76dfaefb0e25fd113540906939752627a4193b88520e126c389",
-    "tree_sha256": "ba1e7295c7ad6723e241f4a2f3b0b61c3b06687cd39df5c7fe4e7b82fe34198a"
+    "url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/56dbc4a768778753737a3b9cbe0a3f9b4e434553",
+    "sha256": "84d9b4b1d7f9d89de009d50cd123460cbd2280ba3b66fbe1c2064bb68f9b0a9e",
+    "tree_sha256": "ebf4a2d9fe16d1bfca85bf1756212a6e92c86923096fe145ba92844cd42bd20b"
   },
   "packages": [
     {
       "name": "uucode",
       "version": "0.2.0",
       "license": "MIT",
-      "url": "https://deps.files.ghostty.org/uucode-2826a37a4562284fdacd8fa029d49509cc9bffcd.tar.gz",
-      "sha256": "7e76fc7fab1e7ac728c52b35bbb3e5b8c639841abfc7fe1a4bcb13050594bc9e",
-      "zig_hash": "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
-      "tree_sha256": "65c9a0148cc53be39f14e872e94ae727676287541e94ed19b6cf34473cdbc4f2"
+      "url": "https://github.com/jacobsandlund/uucode/archive/9d55524551411b493cca41ca06363625d90aff1e.tar.gz",
+      "sha256": "68d23543cb2c6c5dfdbdf38b38375e0c6d412a5c5fb72ce06bd139f7a4d25132",
+      "zig_hash": "uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7",
+      "tree_sha256": "6abbfd0df84bffb6242cbb30bfcdce87d70696ebd59935f36ea21e02cb3aca0d"
     },
     {
       "name": "highway",

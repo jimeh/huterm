@@ -27,10 +27,12 @@ Keep view destruction and detachment separate from explicit close.
 - `huterm-gpui` owns macOS/Linux window state, rendering, key translation,
   focus, selection gestures, and scrollbar animation. The terminal runtime owns
   the shared viewport; clients send ordered scroll commands.
-- Every terminal uses `libghostty-vt` behind core's private concrete wrapper.
-  Do not expose native handles outside core or use Ghostty's application or PTY
-  event loop. Keep engine selection out of runtime and protocol APIs.
-  Do not copy or depend on GPL-covered Zed application or terminal-view code.
+- Every terminal uses `libghostty-vt` through Huterm's own `huterm-ghostty`
+  binding crate, behind core's private concrete engine. Only `huterm-core`
+  depends on it. Do not expose native handles outside core or use Ghostty's
+  application or PTY event loop. Keep engine selection out of runtime and
+  protocol APIs. Do not copy or depend on GPL-covered Zed application or
+  terminal-view code.
 - Treat child exit, client detachment, and explicit terminal close as distinct
   lifecycle events. Any shutdown change must prove that live children and
   blocked I/O workers terminate.
@@ -562,19 +564,49 @@ A late writer failure after observed exit must not destroy retained history.
 Give confirmation dialogs an explicit viewport-clamped width before measuring
 wrapped text. GPUI's w_full/max_w combination can measure a shorter height and
 let buttons escape the panel; keep text and button containers nonshrinking.
-Ghostty builds use libghostty-vt/sys 0.2.1, native revision
-`22d13172cde98a0a4dda05d3d6a3fcb0dd8ed018`, and Zig 0.16.0. Keep its
+Ghostty builds use native revision
+`56dbc4a768778753737a3b9cbe0a3f9b4e434553` and Zig 0.16.0. Keep its
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
-full native source tree against `scripts/ghostty-source.json`. Keep that source,
-the binding versions, and bundled notices aligned. All builds require the
-pinned Ghostty source and Zig toolchain. Native source dependencies use
-Zig's content hashes; their notices are in `third-party/ghostty` because they
-are outside Cargo's license audit.
-Both Rust crates include upstream revision
-`5988a0b78b4aa804d1c12e66bbfe662bd97d81c0` over their published 0.2.1 archives.
-Set history through `set_scrollback_max_bytes`; the adapter retains its 16 MiB
+full native source tree against `scripts/ghostty-source.json`. Keep that
+source, `huterm-ghostty`'s generated bindings, and bundled notices aligned. All
+builds require the pinned Ghostty source and Zig toolchain. Native source
+dependencies use Zig's content hashes; their notices are in `third-party/ghostty`
+because they are outside Cargo's license audit.
+`huterm-ghostty` owns everything that changes with the pin: native build, FFI,
+safe wrapper, and API-gap probes. Its `unsafe` code stays in `native.rs`,
+`callbacks.rs`, generated `ffi/bindings.rs`, and test-only `test_alloc.rs`;
+each opts out with `#![expect(unsafe_code)]`, denies undocumented and
+multi-operation unsafe blocks, and cites the header contract in every
+`// SAFETY:` comment. Callbacks reach host code only as plain values, contain
+panics by poisoning the terminal, drop panic payloads inside a second
+`catch_unwind`, and queue effects until the write returns. Keep the mouse
+encoder and events private to `MouseProbe`'s fixed geometry: Ghostty converts
+encoder geometry and positions with unchecked float-to-integer casts.
+`mise run ghostty:bindings` regenerates `src/ffi/{bindings,keys,layout}.rs` with
+bindgen, which loads libclang at run time; on macOS the task pins
+`LIBCLANG_PATH` to the selected Xcode, because clang-sys otherwise prefers any
+`llvm-config` on `PATH`. `ghostty:bindings:check` compares bytes. Getter and
+option value types come only from the generated `keys.rs`.
+Each key set declares where its header puts annotations (a final labeled line
+or the first sentence's parenthesized type), and generation fails otherwise.
+Outputs carrying a pointer the library writes through get a `*Populate` trait
+that the generic getters reject, plus a dedicated wrapper. `key_tests.rs`
+checks every key's type against the bytes the library writes or reads. Tests
+read native-written memory only at declared fields and the tag-selected union
+member, taken from the manifest: foreign writes may leave padding
+uninitialized. The
+build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
+ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
+`MACOSX_DEPLOYMENT_TARGET`, and `ZIG`, and reruns only when those, itself, or
+`scripts/ghostty-source.json` change; `scripts/ghostty-build.test.ts` runs its
+unit tests. The crate's contract tests pin each C behavior the engine relies
+on, and the ABI test checks every emitted FFI type against
+`ghostty_type_json()`. After a pin bump, fix a failing contract test's
+assumption before changing engine code. Allocator vtable
+callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
+Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
 budget and reports actual retained rows.
 Ghostty color-only OSC updates can leave render rows clean. Compare effective
 colors and retain explicit palette override information before consuming damage.
@@ -583,10 +615,10 @@ color OSC (4, 5, 10-19, 21, 104, 105, 110-119) or RIS hints, then restores
 defaults before rendering. The probe's palette writes force a full redraw, so
 other OSCs must not trigger it. The hint mirrors the pinned parser's
 transitions: Ghostty decodes ground bytes as UTF-8, so raw C1 bytes there are
-text, and OSC payload bytes never start new sequences. It may over-flag but must
-never miss a color operation; the full-probe differential test enforces that.
-Keep this hint state across input chunks, including snapshots between
-fragments.
+text, and OSC and DCS payload bytes never start new sequences. It may over-flag
+but must never miss a color operation; the full-probe differential test
+enforces that. Keep this hint state across input chunks, including snapshots
+between fragments.
 Construct non-Send native handles on their owner thread before spawning the PTY;
 only publish startup after workers are ready. Scroll-and-snapshot share one
 ordered control operation. Ordinary snapshots must not reset the viewport.
@@ -611,9 +643,9 @@ Ghostty with the migration warning. For valid TOML, fallback from unrelated
 settings errors must preserve clipboard policy and the migration diagnostic.
 Fatal snapshot errors set the runtime closing
 gate; latch client snapshot failure so pending scroll or invalidation cannot
-create an immediate retry loop. Set Ghostty device attributes explicitly: the
-pinned native implementation answers a callback returning None despite binding
-documentation saying it suppresses replies.
+create an immediate retry loop. Set Ghostty device attributes explicitly: a
+declining callback still gets Ghostty's default VT220 replies at this pin, as a
+`huterm-ghostty` contract test shows.
 
 Keep verified native source inputs in `.native/ghostty`, outside Cargo's
 `target` directory. The pinned rust-cache action recursively removes non-Cargo
@@ -624,7 +656,7 @@ has no repository, and Ghostty otherwise discovers Huterm's enclosing release
 tag and panics because it does not match Ghostty's version. The ceiling preserves
 Git discovery from Huterm's root and uses Ghostty's archive-version fallback.
 Zig 0.16 creates mutable `zig-pkg` dependencies beside `build.zig`. Build from a
-fresh private source copy under the sys crate's `OUT_DIR`, with the Zig child's
+fresh private source copy under `huterm-ghostty`'s `OUT_DIR`, with the Zig child's
 Git discovery ceiling set there. Keep the verified `.native/ghostty/source`
 unchanged and compilation caches outside the refreshed copy.
 Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
@@ -660,15 +692,10 @@ Ubuntu CI.
 Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
 can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
-The local sys 0.2.1 patch backports the upstream CPU-target option and fixes its
-crate-relative build-script watch path for vendoring. Cargo
-forces `LIBGHOSTTY_VT_SYS_CPU=baseline` for portable native instructions.
-Keep bindings and the native revision unchanged; remove the patch
-when a reviewed published release supplies the fix. See
-`third-party/vendor/README.md` for provenance. The path dependency has a distinct
-Cargo fingerprint from the old registry crate; no manual cache cleanup is needed.
-Local builds retain warm native artifacts. The pinned CI cache action prunes
-path dependencies inside the repository, so CI rebuilds the vendored sys crate.
+Cargo forces `HUTERM_GHOSTTY_CPU=baseline` for portable native instructions and
+`HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast`. Local builds retain warm native artifacts.
+The pinned CI cache action prunes path dependencies inside the repository, so CI
+rebuilds `huterm-ghostty`'s native library.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
 
@@ -1232,10 +1259,9 @@ right-click's link rides on the next snapshot request and opens the menu when
 it answers or after a bounded wait. `MouseState::down` records a local press as
 held, so sample `owns_pointer_gesture` before it; a right press during another
 gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
-`CSI 3 J` go through `vt_write` only while the native stream is at ground,
-read from its continuation tracker. `EscapeHint` ignores UTF-8 state and must
-not gate injected bytes. Ghostty's full reset, like its RIS, keeps OSC color
-overrides.
+`CSI 3 J` reach the emulator only while the native stream is at ground.
+`EscapeHint` ignores UTF-8 state and must not gate injected bytes. Ghostty's
+full reset, like its RIS, keeps OSC color overrides.
 Clickable controls pair their hover style with an `.active` pressed style:
 `Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays and
 `TabColors::control_pressed` in the tab bar and title row. `Swatch` is passed
