@@ -838,6 +838,18 @@ stop matching main. The smoke key must name any such workflow value itself.
 CI Linux packaging retries once with retained Cargo and Zig caches because
 Ghostty's native dependency downloads can fail transiently. A second failure
 remains authoritative.
+CI installs Zig through `.github/actions/setup-zig`, which reads the version
+from `mise.toml` and runs `mlugg/setup-zig`; keep `zig` out of CI's Mise install
+lists. Mise's `core:zig` fetches the `.minisig` only from the mirror that served
+the tarball, so one rate-limited mirror (HTTP 429) failed the job. The action
+falls through to the next mirror and then ziglang.org. It always sets
+`ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` to `.zig-cache` in the
+checkout, so the wrapper moves them under `RUNNER_TEMP`. Release jobs keep
+Mise's Zig install: the action's tarball cache cannot be disabled and a cache
+hit skips signature verification, while release installs never use the Actions
+cache. Reference local actions as `./.github/actions/...` with a
+`zizmor: ignore[self-repository]` comment: actionlint rejects GitHub's `$/`
+self-repository syntax.
 Keep the aggregate `ci:smoke:build` targets aligned with the binaries consumed
 by `ci:smoke:run`.
 

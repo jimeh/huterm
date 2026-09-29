@@ -1,0 +1,28 @@
+name: Set up Zig
+description: >-
+  Install the Zig version pinned in mise.toml. Requires Mise on PATH.
+runs:
+  using: composite
+  steps:
+    - name: Resolve the pinned Zig version
+      id: version
+      shell: bash
+      run: echo "zig=$(mise tool zig --requested)" >> "$GITHUB_OUTPUT"
+
+    # Mise's core:zig fetches a signature only from the mirror that served the
+    # tarball, so one rate-limited mirror fails the install. This action
+    # verifies each mirror's tarball and signature together, falls through to
+    # the next mirror and then ziglang.org, and caches the verified tarball.
+    - name: Install Zig
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: ${{ steps.version.outputs.zig }}
+        use-cache: false
+
+    # The action always points both Zig caches at .zig-cache in the checkout.
+    # Only literal paths under RUNNER_TEMP reach GITHUB_ENV.
+    - name: Keep Zig caches outside the checkout
+      shell: bash
+      run: | # zizmor: ignore[github-env]
+        echo "ZIG_GLOBAL_CACHE_DIR=$RUNNER_TEMP/zig-global-cache" >> "$GITHUB_ENV"
+        echo "ZIG_LOCAL_CACHE_DIR=$RUNNER_TEMP/zig-local-cache" >> "$GITHUB_ENV"

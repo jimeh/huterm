@@ -135,8 +135,12 @@ jobs:
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Install Zig
+        # actionlint does not accept the $/ self-repository syntax.
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -246,8 +250,12 @@ jobs:
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Install Zig
+        # actionlint does not accept the $/ self-repository syntax.
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -418,8 +426,12 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Install Zig
+        # actionlint does not accept the $/ self-repository syntax.
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -456,8 +468,12 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Install Zig
+        # actionlint does not accept the $/ self-repository syntax.
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -532,7 +548,7 @@ jobs:
           cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
 
       - name: Install Linux package tools with Mise
@@ -541,8 +557,12 @@ jobs:
         with:
           cache: true
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun zig
+          install_args: bun
           minimum_release_age: 3d
+
+      - name: Install Zig
+        # actionlint does not accept the $/ self-repository syntax.
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
