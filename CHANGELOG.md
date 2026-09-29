@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/jimeh/huterm/compare/v0.14.1...v0.15.0) (2026-09-29)
+
+
+### Features
+
+* bind libghostty-vt through Huterm's own huterm-ghostty crate ([#184](https://github.com/jimeh/huterm/issues/184)) ([b47c4df](https://github.com/jimeh/huterm/commit/b47c4df52aa7f81416b1e31b33d03bd32d205970))
+* support Kitty clipboard protocol writes ([#185](https://github.com/jimeh/huterm/issues/185)) ([75152ff](https://github.com/jimeh/huterm/commit/75152ffb5a7eaeba800c7d3d774df1b27314ad69))
+
 ## [0.14.1](https://github.com/jimeh/huterm/compare/v0.14.0...v0.14.1) (2026-09-27)
 
 
