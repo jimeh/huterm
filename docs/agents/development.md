@@ -25,13 +25,17 @@ The AppKit smoke helper uses Xcode's bundled Swift compiler; no separate Swift
 installation is needed. `mise run build:swift` compiles it independently of Rust
 and Ghostty. Both the native smoke tasks and CodeQL use this task.
 
-CodeQL's advanced workflow scans Actions, JavaScript/TypeScript, Rust, and Swift
+CodeQL's advanced workflows scan Actions, JavaScript/TypeScript, Rust, and Swift
 with the security-extended query suite. Swift uses a manual build because the
-helper is a standalone file, not an Xcode project or Swift package. When enabling
-`.github/workflows/codeql.yml`, switch the repository from default to advanced
-CodeQL setup: default setup blocks uploads from custom CodeQL workflows. Verify
-all four language jobs and their uploaded analyses before retiring the old
-default-setup analysis configurations.
+helper is a standalone file, not an Xcode project or Swift package. Swift lives
+in `.github/workflows/codeql-swift.yml` and runs only when Swift sources or that
+workflow change, plus the weekly schedule: its macOS runner competes with CI's
+macOS jobs for the account's macOS concurrency limit. `codeql.yml` skips Release
+Please pull requests, which change only versions and the changelog. When enabling
+these workflows, switch the repository from default to advanced CodeQL setup:
+default setup blocks uploads from custom CodeQL workflows. Verify all four
+language jobs and their uploaded analyses before retiring the old default-setup
+analysis configurations.
 
 ## Ubuntu 22.04 prerequisites
 
@@ -439,9 +443,16 @@ for local use; the workflow invokes its build and run subtasks directly so a
 slow cache restore, native preparation, compile, or test is visible on its own.
 The smoke cache key hashes the repository's pinned Rust, Cargo, and Ghostty
 inputs explicitly; it does not vary with unrelated Rust versions preinstalled
-on a hosted runner image. Because native smoke execution can fail transiently
-after compilation succeeds, the job still saves its build cache on failure so
-the requested rerun does not compile from scratch.
+on a hosted runner image. Because it omits Rust's environment hash, the key also
+names `CARGO_PROFILE_DEV_DEBUG`; CI sets `line-tables-only` so debug builds and
+caches stay smaller while backtraces keep symbols. Because native smoke
+execution can fail transiently after compilation succeeds, main still saves its
+smoke build cache on failure so the requested rerun does not compile from
+scratch.
+
+Only pushes to main save Rust build caches. Pull requests restore main's
+entries; per-PR copies pushed the repository past GitHub's 10 GB cache limit,
+and the resulting evictions made unrelated jobs compile cold.
 
 Each CI smoke step has a five-minute process deadline and a six-minute Actions
 backstop. The supervisor streams output and records stdout, stderr, elapsed-time

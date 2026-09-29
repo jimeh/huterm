@@ -16,6 +16,9 @@ concurrency:
 env:
   # Each job installs only its declared tools, including nested mise run calls.
   MISE_AUTO_INSTALL: 'false'
+  # Line tables keep symbolized backtraces while shrinking debug builds and
+  # their caches. Keys without Rust's environment hash must include this value.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   policy:
@@ -47,6 +50,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: policy
+          # PRs restore main's caches; per-PR copies overflow the repository limit.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Verify repository policy
         env:
@@ -140,6 +145,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: checks-debug-${{ runner.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -251,10 +257,11 @@ jobs:
         with:
           # Avoid keys drifting with unrelated Rust versions on hosted images.
           add-rust-environment-hash-key: false
-          key: smoke-debug-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml', 'scripts/ghostty-source.json') }}
+          key: smoke-debug-${{ runner.arch }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml', 'scripts/ghostty-source.json') }}
           cache-on-failure: true
           cache-workspace-crates: true
           cache-directories: .native/ghostty
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -421,6 +428,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: benchmarks-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -458,6 +466,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ghostty-releasesafe
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests against ReleaseSafe Ghostty
         run: mise run ci:test:ghostty-releasesafe
@@ -548,6 +557,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: package-release-${{ runner.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check platform prerequisites
         run: mise run doctor

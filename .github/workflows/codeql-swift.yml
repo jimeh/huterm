@@ -1,0 +1,61 @@
+name: CodeQL Swift
+
+# Swift analysis holds a macOS runner, which CI's macOS jobs share across the
+# account, so it runs only when the smoke helpers or this workflow change.
+on:
+  pull_request:
+    paths:
+      - '**/*.swift'
+      - .github/workflows/codeql-swift.yml
+  push:
+    branches: [main]
+    paths:
+      - '**/*.swift'
+      - .github/workflows/codeql-swift.yml
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-swift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (swift)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      MISE_AUTO_INSTALL: 'false'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Mise for the Swift build task
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install: false
+          cache: false
+
+      # Advanced setup is required to trace the standalone swiftc invocation.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: swift
+          build-mode: manual
+          queries: security-extended
+
+      - name: Compile Swift helper
+        run: mise run build:swift
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:swift

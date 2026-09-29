@@ -17,7 +17,9 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ${{ matrix.runner }}
+    # Release Please pull requests change only versions and the changelog.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -25,46 +27,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: actions
-            runner: ubuntu-24.04
-            build-mode: none
-          - language: javascript-typescript
-            runner: ubuntu-24.04
-            build-mode: none
-          - language: rust
-            runner: ubuntu-24.04
-            build-mode: none
-          - language: swift
-            runner: macos-15
-            build-mode: manual
-    env:
-      MISE_AUTO_INSTALL: 'false'
+        language: [actions, javascript-typescript, rust]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Mise for the Swift build task
-        if: matrix.language == 'swift'
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          install: false
-          cache: false
-
-      # Advanced setup is required to trace the standalone swiftc invocation.
-      # Preserve the existing security-extended coverage for the other languages.
+      # Preserve the existing security-extended coverage.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
           queries: security-extended
-
-      - name: Compile Swift helper
-        if: matrix.language == 'swift'
-        run: mise run build:swift
 
       - name: Analyze
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
