@@ -26,7 +26,9 @@ use super::escape_hint::EscapeHint;
 use super::links::{LinkBuffer, MAX_LINK_BYTES};
 use super::row_matcher::{RowMatcher, viewport_shift};
 use super::{DirectoryUpdate, EngineEffect, normalize_directory};
-use crate::host_effects::{HostEffectAdmission, HostEffectSink};
+use crate::host_effects::{
+    HostEffectAdmission, HostEffectSink, TERMINAL_BYTE_LIMIT,
+};
 use crate::terminal::RuntimeError;
 
 /// History budget; Ghostty prunes whole pages, so retention is approximate.
@@ -53,22 +55,27 @@ impl Host for EngineHost {
         &mut self,
         request: &ClipboardWrite<'_>,
     ) -> ClipboardWriteResult {
+        // OSC 52, OSC 1337 Copy, and Kitty OSC 5522 writes share one
+        // policy. Kitty names, passwords, and grants change nothing: Huterm
+        // never prompts, so the policy alone answers.
         if request.location != ClipboardLocation::Standard {
             return ClipboardWriteResult::Unsupported;
         }
-        // Only the Kitty protocol (OSC 5522) carries names and passwords.
-        if !request.name.is_empty() || request.granted || request.can_remember {
-            return ClipboardWriteResult::Denied;
-        }
-        let text = match request.contents.as_slice() {
-            [] => "",
-            [content] if content.mime == b"text/plain" => {
-                match std::str::from_utf8(content.data) {
-                    Ok(text) => text,
-                    Err(_) => return ClipboardWriteResult::InvalidData,
-                }
+        let text = if request.contents.is_empty() {
+            // No representations: clear the clipboard.
+            ""
+        } else {
+            let Some(content) = request
+                .contents
+                .iter()
+                .find(|content| is_plain_text(content.mime))
+            else {
+                return ClipboardWriteResult::Unsupported;
+            };
+            match std::str::from_utf8(content.data) {
+                Ok(text) => text,
+                Err(_) => return ClipboardWriteResult::InvalidData,
             }
-            _ => return ClipboardWriteResult::Unsupported,
         };
         let Some(sink) = &self.sink else {
             // No client has attached yet; allow and drop the write.
@@ -94,6 +101,94 @@ impl Host for EngineHost {
             TerminalAppearance::Dark => ColorScheme::Dark,
         })
     }
+}
+
+/// Whether a clipboard representation is UTF-8 plain text: `text/plain`
+/// in any case, with any parameters, whose `charset`, if present, is
+/// `utf-8` or `utf8`, as a token or quoted string. Whitespace around `;`
+/// and `=` is ignored, unknown parameters are ignored, and malformed
+/// parameters (an unterminated quote, text after a closing quote, or a
+/// `charset` without a value) reject the representation.
+fn is_plain_text(mime: &[u8]) -> bool {
+    std::str::from_utf8(mime)
+        .ok()
+        .and_then(plain_text_utf8)
+        .unwrap_or(false)
+}
+
+/// `Some(true)` for UTF-8 plain text, `None` when a parameter is malformed.
+fn plain_text_utf8(mime: &str) -> Option<bool> {
+    let parts = mime_parts(mime)?;
+    let (essence, parameters) = parts.split_first()?;
+    if !essence.trim().eq_ignore_ascii_case("text/plain") {
+        return Some(false);
+    }
+    for parameter in parameters {
+        let Some((name, value)) = parameter.split_once('=') else {
+            // A parameter without a value is named by its first word.
+            let name = parameter.split_whitespace().next().unwrap_or_default();
+            if name.eq_ignore_ascii_case("charset") {
+                return None;
+            }
+            continue;
+        };
+        let value = parameter_value(value)?;
+        if name.trim().eq_ignore_ascii_case("charset")
+            && !value.eq_ignore_ascii_case("utf-8")
+            && !value.eq_ignore_ascii_case("utf8")
+        {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// Splits a MIME type at the semicolons outside quoted strings; `None`
+/// when a quoted string is unterminated.
+fn mime_parts(mime: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in mime.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ';' if !quoted => {
+                parts.push(&mime[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if quoted {
+        return None;
+    }
+    parts.push(&mime[start..]);
+    Some(parts)
+}
+
+/// A parameter value: a token, or a quoted string with backslash escapes
+/// and nothing after its closing quote. `None` when malformed.
+fn parameter_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let Some(quoted) = raw.strip_prefix('"') else {
+        return Some(raw.to_owned());
+    };
+    let mut value = String::new();
+    let mut characters = quoted.chars();
+    loop {
+        match characters.next()? {
+            '\\' => value.push(characters.next()?),
+            '"' => break,
+            character => value.push(character),
+        }
+    }
+    characters.as_str().trim().is_empty().then_some(value)
 }
 
 const fn rgb(color: ghostty::Rgb) -> Rgb {
@@ -174,7 +269,10 @@ impl TerminalEngine {
         let mut terminal =
             ghostty::Terminal::new(options, EngineHost::default())?;
         terminal.set_scrollback_bytes(Some(SCROLLBACK_BYTES))?;
-        terminal.disable_extensions()?;
+        terminal.disable_apc_protocols()?;
+        // A larger Kitty write could never fit the terminal's host-effect
+        // budget, so Ghostty answers it with EFBIG before asking the host.
+        terminal.set_clipboard_write_limit(Some(TERMINAL_BYTE_LIMIT))?;
         apply_presentation(&mut terminal, &presentation)?;
         Ok(Self {
             terminal,
@@ -929,6 +1027,77 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn kitty_clipboard_writes_are_capped_at_the_terminal_budget() {
+        assert_eq!(
+            engine().terminal.clipboard_write_limit().unwrap(),
+            crate::host_effects::TERMINAL_BYTE_LIMIT
+        );
+        // terminal.h documents Ghostty's default as the protocol's minimum,
+        // so the host budget must not fall below it.
+        let fresh = ghostty::Terminal::new(
+            ghostty::Options {
+                columns: 8,
+                rows: 3,
+                cell_width: 0,
+                cell_height: 0,
+                device_attributes: None,
+                xtversion: None,
+            },
+            (),
+        )
+        .unwrap();
+        assert!(
+            crate::host_effects::TERMINAL_BYTE_LIMIT
+                >= fresh.clipboard_write_limit().unwrap(),
+            "the terminal budget is below the Kitty protocol's minimum"
+        );
+    }
+
+    #[test]
+    fn plain_text_mime_types_allow_parameters_but_only_utf8_charsets() {
+        let wrong = [
+            ("text/plain", true),
+            ("TEXT/PLAIN", true),
+            ("text/plain;charset=utf-8", true),
+            ("text/plain; charset=UTF-8", true),
+            ("text/plain ;charset = utf8", true),
+            ("text/plain;charset=\"utf-8\"", true),
+            ("text/plain; format=flowed", true),
+            ("text/plain; format=flowed; charset=UTF8", true),
+            ("text/plain;", true),
+            // Semicolons and escaped quotes inside quoted values do not
+            // split parameters.
+            ("text/plain; x=\"a;charset=q\"; charset=utf-8", true),
+            ("text/plain; x=\"a\\\";charset=q\"; charset=utf-8", true),
+            ("text/plain; x=\"a;b\"", true),
+            ("text/plain; charset=\"utf\\-8\"", true),
+            // Unknown parameters without a value stay ignored.
+            ("text/plain; flowed", true),
+            ("text/plain; charset=latin1", false),
+            // Malformed: unterminated quotes, text after a closing quote,
+            // and a charset without a value.
+            ("text/plain; x=\"a;charset=utf-8", false),
+            ("text/plain; charset=\"utf-8", false),
+            ("text/plain; charset=\"utf-8\\\"", false),
+            ("text/plain; charset=\"utf-8\"x", false),
+            ("text/plain;charset", false),
+            ("text/plain; charset utf-8", false),
+            ("text/plain; charset=", false),
+            ("text/plain; charset=\"\"", false),
+            ("text/plain; charset=utf-8; charset=latin1", false),
+            ("text/plainx", false),
+            ("text/html", false),
+            ("text / plain", false),
+            ("", false),
+        ]
+        .into_iter()
+        .filter(|(mime, expected)| is_plain_text(mime.as_bytes()) != *expected)
+        .collect::<Vec<_>>();
+        assert!(wrong.is_empty(), "misclassified: {wrong:?}");
+        assert!(!is_plain_text(&[0xff, b'/', b'x']));
     }
 
     #[test]

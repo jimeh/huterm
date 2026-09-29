@@ -248,18 +248,19 @@ impl<H> Terminal<H> {
             .set::<option::ScrollbackMaxBytes>(bytes.as_ref())
     }
 
-    /// Turns off Kitty graphics, the Glyph protocol, and every APC buffer,
-    /// and refuses Kitty clipboard (OSC 5522) transactions that carry data.
+    /// Turns off the APC protocols, Kitty graphics and the Glyph protocol,
+    /// and stops buffering APC payloads. Kitty clipboard (OSC 5522) is an
+    /// OSC protocol and stays enabled; see
+    /// [`Terminal::set_clipboard_write_limit`].
     ///
     /// # Errors
     ///
     /// Fails if the library rejects an option.
-    pub fn disable_extensions(&mut self) -> Result<()> {
+    pub fn disable_apc_protocols(&mut self) -> Result<()> {
         let native = self.native_mut()?;
         native.set::<option::KittyImageStorageLimit>(Some(&0))?;
         native.set::<option::GlyphProtocol>(Some(&false))?;
-        native.set::<option::ApcMaxBytes>(Some(&0))?;
-        native.set::<option::ClipboardWriteMaxBytes>(Some(&0))
+        native.set::<option::ApcMaxBytes>(Some(&0))
     }
 
     /// Grid width and height in cells.
@@ -393,6 +394,34 @@ impl<H> Terminal<H> {
                 .as_ref()
                 .value::<data::KittyImageStorageLimit>(),
         )
+    }
+
+    /// The most decoded bytes one Kitty clipboard (OSC 5522) write may
+    /// carry; a larger write fails with `EFBIG` before reaching the host.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the terminal is poisoned.
+    pub fn clipboard_write_limit(&self) -> Result<usize> {
+        self.native()?
+            .as_ref()
+            .value::<data::ClipboardWriteMaxBytes>()
+    }
+
+    /// Sets the most decoded bytes one Kitty clipboard (OSC 5522) write may
+    /// carry, counted across all its representations; `None` restores
+    /// Ghostty's 64 MiB default. Every value is valid: 0 refuses any write
+    /// that carries data, and `usize::MAX` removes the limit.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the terminal is poisoned.
+    pub fn set_clipboard_write_limit(
+        &mut self,
+        bytes: Option<usize>,
+    ) -> Result<()> {
+        self.native_mut()?
+            .set::<option::ClipboardWriteMaxBytes>(bytes.as_ref())
     }
 
     /// Effective foreground: the OSC override, else the default.

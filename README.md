@@ -456,12 +456,19 @@ do not accept file drops.
 Terminal applications may write UTF-8 text to the system clipboard with OSC
 52. Huterm accepts the empty selector or `c`, preserves empty text and embedded
 NUL bytes, and ignores clipboard read requests. Both BEL and ST terminate OSC
-52 writes. Ghostty also accepts its OSC 1337 `Copy` extension. The upstream
-engines retain their own parsing and allocation limits; Huterm drops writes
-that cannot fit its bounded delivery queues instead of truncating them.
-Those queues retain at most 8 writes/16 MiB per terminal and 32 writes/32 MiB
-across the desktop process. Ghostty caps encoded OSC capture at 8 MiB;
-Alacritty has no equivalent parser limit.
+52 writes. Ghostty also accepts its OSC 1337 `Copy` extension and Kitty's
+clipboard protocol (OSC 5522) writes, which take the first `text/plain`
+representation whose charset, if given, is UTF-8, ignore other MIME types,
+and follow the same policy. Kitty programs receive `DONE` on success, `EPERM`
+when the policy denies the write, `ENOSYS` for other clipboards or requests
+without text, `EINVAL` for text that is not UTF-8, `EFBIG` when all
+representations together exceed 64 MiB, and `EBUSY` while earlier writes
+still fill the delivery queues below. Ghostty keeps its own parsing and
+allocation limits; Huterm drops writes that cannot fit its bounded delivery
+queues instead of truncating them. Those queues retain at most 8 writes/64
+MiB per terminal and 32 writes/128 MiB across the desktop process. Ghostty
+caps encoded OSC capture at 8 MiB, and decoded Kitty write transactions at
+the 64 MiB per-terminal queue size, the minimum the Kitty protocol requires.
 
 Clipboard writes are allowed by default. Set this policy to deny them without
 disabling explicit Copy or Paste commands:

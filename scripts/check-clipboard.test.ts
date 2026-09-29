@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { assertClipboardBytes, decodeClipboardRead, privateTmuxArgs, tmuxShellWrapper } from "./check-clipboard";
+import {
+  assertClipboardBytes, decodeClipboardRead, kittyStatus, kittyWrite, privateTmuxArgs, tmuxShellWrapper,
+} from "./check-clipboard";
 
 function framed(value: Uint8Array): Buffer {
   const result = Buffer.alloc(8 + value.length);
@@ -74,5 +76,19 @@ describe("private tmux shell wrapper", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Kitty clipboard fixture", () => {
+  test("writes open, carry base64 MIME types and data, and commit", () => {
+    expect(kittyWrite("k1", [["text/plain", Buffer.from("λ")]]).toString("binary")).toBe(
+      "\x1b]5522;type=write:id=k1\x1b\\"
+        + "\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;zrs=\x1b\\"
+        + "\x1b]5522;type=wdata\x1b\\",
+    );
+  });
+
+  test("statuses echo the id", () => {
+    expect(kittyStatus("k3", "ENOSYS").toString("binary")).toBe("\x1b]5522;type=write:status=ENOSYS:id=k3\x1b\\");
   });
 });
