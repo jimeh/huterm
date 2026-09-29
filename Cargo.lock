@@ -2662,7 +2662,7 @@ name = "huterm-ghostty-bindgen"
 version = "0.15.1"
 dependencies = [
  "bindgen 0.71.1",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
