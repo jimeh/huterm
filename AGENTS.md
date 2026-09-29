@@ -831,6 +831,10 @@ restore rust-cache's automatic Rust environment hash: hosted images can carry
 different unrelated toolchains between runs, preventing valid cache restores.
 Keep `cache-on-failure` enabled so transient native smoke failures do not discard
 a successful compilation before the requested rerun.
+Rust caches save only from main (`save-if`); PRs restore main's entries. Never
+set a `CARGO*`, `RUST*`, `CC*`, `CXX*`, or `CMAKE*` variable that differs between
+PR and main runs: rust-cache hashes those prefixes into the key, so PRs would
+stop matching main. The smoke key must name any such workflow value itself.
 CI Linux packaging retries once with retained Cargo and Zig caches because
 Ghostty's native dependency downloads can fail transiently. A second failure
 remains authoritative.
