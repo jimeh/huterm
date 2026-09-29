@@ -2958,37 +2958,13 @@ impl Render for TerminalView {
                                     .borrow_mut()
                                     .paint(bounds, window);
                                 if let Some(link) = &paint_link {
-                                    for cell in &link.cells {
-                                        let origin = bounds.origin
-                                            + point(
-                                                link_metrics.cell_width
-                                                    * f32::from(
-                                                        u16::try_from(
-                                                            cell.position
-                                                                .column,
-                                                        )
-                                                        .unwrap_or(u16::MAX),
-                                                    ),
-                                                link_metrics.cell_height
-                                                    * (f32::from(
-                                                        u16::try_from(
-                                                            cell.position.row,
-                                                        )
-                                                        .unwrap_or(u16::MAX),
-                                                    ) + 1.0)
-                                                    - px(1.0),
-                                            );
-                                        window.paint_quad(gpui::fill(
-                                            Bounds::new(
-                                                origin,
-                                                size(
-                                                    link_metrics.cell_width,
-                                                    px(1.0),
-                                                ),
-                                            ),
-                                            underline,
-                                        ));
-                                    }
+                                    paint_link_underline(
+                                        link,
+                                        bounds,
+                                        link_metrics,
+                                        underline,
+                                        window,
+                                    );
                                 }
                             },
                         );
@@ -3080,6 +3056,54 @@ impl Render for TerminalView {
         }
         root
     }
+}
+
+/// Underlines a hovered link with one quad per row segment, in a single layer
+/// so GPUI orders them with one bounds-tree insertion.
+fn paint_link_underline(
+    link: &huterm_protocol::TerminalLink,
+    grid: Bounds<Pixels>,
+    metrics: GridMetrics,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    let cells =
+        |value: u32| f32::from(u16::try_from(value).unwrap_or(u16::MAX));
+    window.paint_layer(grid, |window| {
+        for (start, columns) in link_segments(&link.cells) {
+            let origin = grid.origin
+                + point(
+                    metrics.cell_width * cells(start.column),
+                    metrics.cell_height * (cells(start.row) + 1.0) - px(1.0),
+                );
+            window.paint_quad(gpui::fill(
+                Bounds::new(
+                    origin,
+                    size(metrics.cell_width * cells(columns), px(1.0)),
+                ),
+                color,
+            ));
+        }
+    });
+}
+
+/// Merges a link's ordered cells into runs of adjacent cells on one row.
+fn link_segments(
+    cells: &[huterm_protocol::LinkCell],
+) -> Vec<(MousePosition, u32)> {
+    let mut segments: Vec<(MousePosition, u32)> = Vec::new();
+    for cell in cells {
+        let position = cell.position;
+        if let Some((start, columns)) = segments.last_mut()
+            && start.row == position.row
+            && start.column.checked_add(*columns) == Some(position.column)
+        {
+            *columns += 1;
+        } else {
+            segments.push((position, 1));
+        }
+    }
+    segments
 }
 
 /// Terminal scrollbar geometry in rows: `history` rows above `visible_rows`,
@@ -3500,6 +3524,24 @@ mod tests {
         assert_eq!(presentation.cursor, theme.cursor);
         assert_eq!(presentation.palette[0], theme.indexed(0));
         assert_eq!(presentation.palette[255], theme.indexed(255));
+    }
+
+    #[test]
+    fn link_segments_split_at_row_wraps_and_gaps() {
+        let cell = |row, column| huterm_protocol::LinkCell {
+            position: MousePosition { column, row },
+            text: huterm_protocol::CellText::from('x'),
+        };
+        let cells =
+            [cell(0, 78), cell(0, 79), cell(1, 0), cell(1, 1), cell(1, 3)];
+        assert_eq!(
+            link_segments(&cells),
+            [
+                (MousePosition { column: 78, row: 0 }, 2),
+                (MousePosition { column: 0, row: 1 }, 2),
+                (MousePosition { column: 3, row: 1 }, 1),
+            ]
+        );
     }
 
     #[test]

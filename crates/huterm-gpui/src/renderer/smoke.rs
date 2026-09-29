@@ -10,8 +10,9 @@ use gpui::{
     div, point, prelude::*, px, size,
 };
 use huterm_protocol::{
-    BufferPoint, BufferRange, Cell, CellColor, CellStyle, GridSize, TerminalId,
-    TerminalModes, TerminalRow, TerminalSnapshot, Viewport,
+    BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
+    GridSize, TerminalId, TerminalModes, TerminalRow, TerminalSnapshot,
+    Viewport,
 };
 
 use super::{GlyphContent, GridMetrics, TerminalRenderer};
@@ -377,7 +378,12 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
         generation: 1,
         size: GridSize::clamped(32, 33),
         rows,
-        cursor: None,
+        // The translucent block cursor must paint over the "n" of "normal".
+        cursor: Some(Cursor {
+            row: 24,
+            column: 0,
+            shape: CursorShape::Block,
+        }),
         modes: TerminalModes::default(),
         viewport: Viewport::default(),
         history_size: 0,

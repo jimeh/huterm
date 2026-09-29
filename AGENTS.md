@@ -937,6 +937,11 @@ converting logical points back to physical pixels: floating-point residue before
 `floor` can move stroke centers by one pixel at fractional scales.
 GPUI `paint_layer` controls
 scene ordering, not clipping; use `with_content_mask` for diagonal overshoot.
+Every primitive painted outside a layer costs a bounds-tree insertion, so paint
+per-cell primitives inside grid-sized layers. Inside one layer GPUI draws all
+quads, then paths, underlines, and sprites, so a quad that must cover glyphs,
+such as the block cursor, needs a later layer or an unlayered paint after it.
+Tessellate built-in paths once per geometry, never per paint.
 Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.
