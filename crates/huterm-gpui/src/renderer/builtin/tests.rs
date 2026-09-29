@@ -391,6 +391,8 @@ fn cached_paths_translate_to_the_painted_origin() {
     };
     for ch in ['╭', '╱', '\u{e0b0}', '\u{e0b4}', '◢'] {
         let g = Geometry::new(ch, metrics(7.0, 14.0, 1.5), 1);
+        assert!(!g.paths.is_empty(), "{ch} must have a path");
+        assert_eq!(g.paths.len(), g.strokes.len() + g.fills.len(), "{ch}");
         let shapes = g.strokes.iter().map(|shape| (shape, false));
         let shapes = shapes.chain(g.fills.iter().map(|shape| (shape, true)));
         for ((shape, filled), cached) in shapes.zip(&g.paths) {
