@@ -585,8 +585,11 @@ panics by poisoning the terminal, drop panic payloads inside a second
 writes reach the same host path as OSC 52: `disable_apc_protocols` turns off
 only Kitty graphics, the Glyph protocol, and APC buffering. The engine sets
 the Kitty write limit from `host_effects::TERMINAL_BYTE_LIMIT`, so larger
-writes get `EFBIG` from Ghostty instead of a misleading `EBUSY`. It admits
-the first `text/plain` representation whose charset, if any, is UTF-8, under
+writes get `EFBIG` from Ghostty instead of a misleading `EBUSY`. That budget
+is 64 MiB, the minimum `terminal.h` says the protocol requires, and the
+process budget holds two such writes; never lower it below Ghostty's default.
+It admits the first `text/plain` representation whose charset, if any, is
+UTF-8 (quote-aware parameter parsing; a valueless `charset` is refused), under
 `terminal.clipboard_write`, and ignores Kitty names, passwords, and grants;
 replies never set `remember`. Clipboard reads and Kitty paste events stay
 uninstalled. Keep the mouse

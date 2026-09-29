@@ -604,7 +604,8 @@ mod clipboard_tests {
                 &[
                     ("text/html", b"<b>bold</b>"),
                     ("text/plain; charset=latin1", b"latin"),
-                    ("TEXT/PLAIN ; format=flowed; charset=\"UTF-8\"", b"bold"),
+                    ("text/plain; x=\"a;charset=q\"; charset=utf-8", b"bold"),
+                    ("TEXT/PLAIN ; format=flowed; charset=\"UTF-8\"", b"later"),
                     ("text/plain", b"second"),
                     ("image/png", &[0x89, b'P', b'N', b'G']),
                 ],
@@ -640,27 +641,48 @@ mod clipboard_tests {
         let password = format!("{name}:pw={}", base64(b"secret"));
         for (clipboard_allowed, expected) in [(true, "DONE"), (false, "EPERM")]
         {
+            // The engine never reads `granted`, so remembered grants cannot
+            // change its answer; huterm-ghostty's contract test
+            // `kitty_clipboard_writes_deliver_every_representation_name_and_password`
+            // shows that replies never record one.
             with_policy(clipboard_allowed, |engine, recipient| {
                 for metadata in ["", name.as_str(), password.as_str()] {
-                    // Repeat so a remembered grant would show up.
-                    for _ in 0..2 {
-                        let write =
-                            kitty_write(metadata, &[("text/plain", b"same")]);
-                        assert_eq!(
-                            status(engine.process(&write).unwrap()),
-                            expected,
-                            "{metadata}"
-                        );
-                    }
+                    let write =
+                        kitty_write(metadata, &[("text/plain", b"same")]);
+                    assert_eq!(
+                        status(engine.process(&write).unwrap()),
+                        expected,
+                        "{metadata}"
+                    );
                 }
                 let admitted = drain_text(recipient);
                 assert_eq!(
                     admitted.len(),
-                    if clipboard_allowed { 6 } else { 0 }
+                    if clipboard_allowed { 3 } else { 0 }
                 );
                 assert!(admitted.iter().all(|text| text == "same"));
             });
         }
+    }
+
+    #[test]
+    fn kitty_writes_to_a_full_queue_are_busy_until_it_drains() {
+        with_engine(|engine, recipient| {
+            let limit = crate::host_effects::TERMINAL_EFFECT_LIMIT;
+            let fill: Vec<_> =
+                (0..limit).map(|index| format!("fill-{index}")).collect();
+            for text in &fill {
+                let write = kitty_write("", &[("text/plain", text.as_bytes())]);
+                assert_eq!(status(engine.process(&write).unwrap()), "DONE");
+            }
+            // Nobody consumes the queue, so the next write is refused as busy.
+            let overflow = kitty_write("", &[("text/plain", b"overflow")]);
+            assert_eq!(status(engine.process(&overflow).unwrap()), "EBUSY");
+            assert_eq!(drain_text(recipient), fill);
+            let after = kitty_write("", &[("text/plain", b"after")]);
+            assert_eq!(status(engine.process(&after).unwrap()), "DONE");
+            assert_eq!(drain_text(recipient), ["after"]);
+        });
     }
 
     /// Streams a Kitty write of `len` bytes of `a` as `text/plain` in
@@ -721,10 +743,15 @@ mod clipboard_tests {
                 stream_kitty_text(engine, limit),
                 ["\x1b]5522;type=write:status=DONE\x1b\\"]
             );
-            let admitted = drain_text(recipient);
-            assert_eq!(admitted.len(), 1);
-            assert_eq!(admitted[0].len(), limit);
-            assert!(admitted[0].bytes().all(|byte| byte == b'a'));
+            // Inspect the queued text in place rather than copying it.
+            let pending = recipient.try_next().expect("the write is queued");
+            let HostEffect::ClipboardWrite(write) = pending.effect() else {
+                panic!("unexpected host effect");
+            };
+            assert_eq!(write.text().len(), limit);
+            assert!(write.text().bytes().all(|byte| byte == b'a'));
+            drop(pending);
+            assert!(recipient.try_next().is_none());
         });
     }
 

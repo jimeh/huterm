@@ -363,6 +363,46 @@ fn kitty_clipboard_writes_deliver_every_representation_name_and_password() {
 }
 
 #[test]
+fn kitty_clipboard_repeats_and_aliases_keep_first_arrival_order() {
+    let mut terminal = terminal();
+    let packet = |metadata: &str, payload: &str| {
+        format!("\x1b]5522;{metadata};{payload}\x1b\\")
+    };
+    let write = [
+        "\x1b]5522;type=write\x1b\\".to_owned(),
+        // text/plain "A", text/html "H", then text/plain again as "B".
+        packet("type=wdata:mime=dGV4dC9wbGFpbg==", "QQ=="),
+        packet("type=wdata:mime=dGV4dC9odG1s", "SA=="),
+        packet("type=wdata:mime=dGV4dC9wbGFpbg==", "Qg=="),
+        // text/plain also names text/html and the new text/x-new.
+        packet(
+            "type=walias:mime=dGV4dC9wbGFpbg==",
+            "dGV4dC9odG1sIHRleHQveC1uZXc=",
+        ),
+        // An alias of a type that carries no data is dropped.
+        packet("type=walias:mime=dGV4dC9taXNzaW5n", "aW1hZ2UvcG5n"),
+        "\x1b]5522;type=wdata\x1b\\".to_owned(),
+    ]
+    .concat();
+    assert_eq!(
+        written(&mut terminal, write.as_bytes()),
+        [b"\x1b]5522;type=write:status=DONE\x1b\\".to_vec()]
+    );
+    assert_eq!(
+        terminal.host_mut().clipboard,
+        [(
+            ClipboardLocation::Standard,
+            vec![
+                (b"text/plain".to_vec(), b"B".to_vec()),
+                (b"text/html".to_vec(), b"B".to_vec()),
+                (b"text/x-new".to_vec(), b"B".to_vec()),
+            ],
+            Vec::new()
+        )]
+    );
+}
+
+#[test]
 fn kitty_clipboard_write_limit_counts_every_representation() {
     let mut terminal = terminal();
     let reply = |status: &str| {

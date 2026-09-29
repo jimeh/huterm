@@ -7,12 +7,15 @@ use huterm_protocol::{
     HostEffectMetadata, HostEffectOrigin, HostEffectRecipientId, TerminalId,
 };
 
-const TERMINAL_EFFECT_LIMIT: usize = 8;
-/// Text bytes one terminal may have queued. The engine also caps Kitty
+/// Effects one terminal may have queued.
+pub(crate) const TERMINAL_EFFECT_LIMIT: usize = 8;
+/// Text bytes one terminal may have queued: 64 MiB, the minimum write size
+/// the Kitty clipboard protocol requires. The engine also caps Kitty
 /// clipboard writes at this size, so larger ones fail before admission.
-pub(crate) const TERMINAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+pub(crate) const TERMINAL_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 const PROCESS_EFFECT_LIMIT: usize = 32;
-const PROCESS_BYTE_LIMIT: usize = 32 * 1024 * 1024;
+/// Room for two terminals to each hold one maximum Kitty write.
+const PROCESS_BYTE_LIMIT: usize = 2 * TERMINAL_BYTE_LIMIT;
 const TERMINAL_RECIPIENT_LIMIT: usize = 32;
 
 /// Connection boundary represented by a host-effect recipient.

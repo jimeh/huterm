@@ -215,7 +215,10 @@ pub struct ClipboardWrite<'a> {
     /// Destination clipboard.
     pub location: ClipboardLocation,
     /// Representations of one value; empty requests clearing. Kitty
-    /// representations arrive in packet order, followed by aliases.
+    /// representations keep the order in which each MIME type first
+    /// arrived: a repeated type keeps its slot with the newer data, an
+    /// alias naming an existing type replaces that slot's data, and a new
+    /// alias name is appended.
     pub contents: Vec<ClipboardContent<'a>>,
     /// Program name from the Kitty protocol; empty otherwise.
     pub name: &'a [u8],
