@@ -100,6 +100,9 @@ pub(super) struct Geometry {
     rectangles: Vec<Rectangle>,
     strokes: Vec<ShapePath>,
     fills: Vec<ShapePath>,
+    /// `strokes` and `fills` tessellated at the cell origin. Tessellation
+    /// is too slow to repeat for every cell on every paint.
+    paths: Vec<gpui::Path<Pixels>>,
 }
 
 struct Rectangle {
@@ -237,12 +240,22 @@ impl Geometry {
             }
             _ => {}
         }
-        canvas.geometry
+        let mut geometry = canvas.geometry;
+        geometry.paths = geometry
+            .strokes
+            .iter()
+            .map(|shape| (shape, false))
+            .chain(geometry.fills.iter().map(|shape| (shape, true)))
+            .filter_map(|(shape, filled)| {
+                shape.build(Point::default(), filled).ok()
+            })
+            .collect();
+        geometry
     }
 
     /// Rectangle and path primitives emitted by every paint of this glyph.
     pub(super) fn primitive_counts(&self) -> (usize, usize) {
-        (self.rectangles.len(), self.strokes.len() + self.fills.len())
+        (self.rectangles.len(), self.paths.len())
     }
 
     pub(super) fn paint(
@@ -263,7 +276,7 @@ impl Geometry {
                 tint,
             ));
         }
-        if self.strokes.is_empty() && self.fills.is_empty() {
+        if self.paths.is_empty() {
             return;
         }
         // Diagonal strokes overshoot the cell, so only paths need the mask.
@@ -272,19 +285,24 @@ impl Geometry {
                 bounds: Bounds::new(origin, self.size),
             }),
             |window| {
-                for (stroke, filled) in self
-                    .strokes
-                    .iter()
-                    .map(|s| (s, false))
-                    .chain(self.fills.iter().map(|s| (s, true)))
-                {
-                    if let Ok(path) = stroke.build(origin, filled) {
-                        window.paint_path(path, color);
-                    }
+                for path in &self.paths {
+                    window.paint_path(translated(path, origin), color);
                 }
             },
         );
     }
+}
+
+fn translated(
+    path: &gpui::Path<Pixels>,
+    origin: Point<Pixels>,
+) -> gpui::Path<Pixels> {
+    let mut path = path.clone();
+    path.bounds.origin += origin;
+    for vertex in &mut path.vertices {
+        vertex.xy_position += origin;
+    }
+    path
 }
 
 #[cfg(test)]

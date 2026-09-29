@@ -322,51 +322,49 @@ impl TerminalRenderer {
         };
 
         let metrics = self.metrics;
-        let grid_width = metrics.cell_width * f32::from(snapshot.size.columns);
-        // One quad covers every cell with the theme background, so rows keep
-        // quads only for cells that differ from it.
-        window.paint_quad(fill(
-            Bounds::new(
-                bounds.origin,
-                size(
-                    grid_width,
-                    metrics.cell_height * f32::from(snapshot.size.rows),
-                ),
+        let grid = Bounds::new(
+            bounds.origin,
+            size(
+                metrics.cell_width * f32::from(snapshot.size.columns),
+                metrics.cell_height * f32::from(snapshot.size.rows),
             ),
-            rgb_color(self.theme.background),
-        ));
-        for (row_index, row) in self.rows.iter().enumerate() {
-            for background in &row.backgrounds {
-                window.paint_quad(fill(
-                    cell_bounds(
-                        bounds.origin,
-                        background.start,
-                        row_index,
-                        background.columns,
-                        self.metrics,
-                    ),
-                    background.color,
-                ));
+        );
+        // Each unlayered primitive costs GPUI a bounds-tree insertion, while
+        // a layer costs one for all of its primitives. Within a layer GPUI
+        // draws quads, then paths, underlines, and sprites, so anything that
+        // must cover glyphs, such as the cursor, is painted after the layers.
+        window.paint_layer(grid, |window| {
+            // One quad covers every cell with the theme background, so rows
+            // keep quads only for cells that differ from it.
+            window.paint_quad(fill(grid, rgb_color(self.theme.background)));
+            for (row_index, row) in self.rows.iter().enumerate() {
+                for background in &row.backgrounds {
+                    window.paint_quad(fill(
+                        cell_bounds(
+                            bounds.origin,
+                            background.start,
+                            row_index,
+                            background.columns,
+                            metrics,
+                        ),
+                        background.color,
+                    ));
+                }
             }
-        }
+            if let Some(selection) = self.selection {
+                paint_selection(
+                    snapshot,
+                    selection,
+                    bounds.origin,
+                    metrics,
+                    &self.theme,
+                    window,
+                );
+            }
+        });
 
-        if let Some(selection) = self.selection {
-            paint_selection(
-                snapshot,
-                selection,
-                bounds.origin,
-                self.metrics,
-                &self.theme,
-                window,
-            );
-        }
-
-        for (row_index, row) in self.rows.iter().enumerate() {
-            let row_bounds = Bounds::new(
-                cell_origin(bounds.origin, 0, row_index, metrics),
-                size(grid_width, metrics.cell_height),
-            );
-            window.paint_layer(row_bounds, |window| {
+        window.paint_layer(grid, |window| {
+            for (row_index, row) in self.rows.iter().enumerate() {
                 paint_row(
                     row,
                     row_index,
@@ -384,8 +382,8 @@ impl TerminalRenderer {
                         .map_or(original, rgb_color)
                     },
                 );
-            });
-        }
+            }
+        });
 
         if let Some(cursor) = snapshot
             .cursor

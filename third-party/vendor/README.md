@@ -5,10 +5,10 @@
 [sources.json](sources.json) pins each published crate archive by URL and SHA-256,
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
-Keep each coherent fix together. GPUI's core crate has hidden-window creation
-and file-drop pointer-modality patches, its Linux crate has X11 file-drop,
-native-handle, and fullscreen-state patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches.
+Keep each coherent fix together. GPUI's core crate has hidden-window creation,
+file-drop pointer-modality, and scene sprite-order patches, its Linux crate has
+X11 file-drop, native-handle, and fullscreen-state patches, and its macOS crate
+has offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -219,6 +219,19 @@ Huterm enables it throughout quake presentation and disables it on regular
 conversion and retained-window cleanup. AppKit clamps intermediate top-edge
 animation frames even with a zero borderless style mask. The native smoke checks
 actual slide intermediates and restored constraints on regular conversion.
+
+## GPUI scene sprite order
+
+`Scene::finish` sorted each sprite list by draw order and atlas tile ID, but
+batching only breaks on draw order and atlas texture. The tile key made every
+frame reorder thousands of glyph sprites of about 100 bytes each, even when a
+layer's sprites already shared one texture. The `scene-sprite-texture-order`
+patch sorts by draw order and texture index instead; each sprite list holds one
+texture kind. The stable sort keeps insertion order within a texture and finds
+an already ordered list in one pass. On macOS, sampling a full-grid terminal
+paint put `Scene::finish` at 697 of 1,274 `Window::draw` samples before the
+patch and 18 of 720 after it. The renderer smoke's held fixture differed only
+in three pixels by 1/255. Remove the patch if upstream changes the sort key.
 
 ## macOS exclusive global shortcuts
 

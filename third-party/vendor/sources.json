@@ -22,6 +22,11 @@
           "name": "file-drop-pointer-modality",
           "file": "patches/gpui-pre/file-drop-pointer-modality.patch",
           "description": "Treat external file drag movement and drops as pointer input, so a drop after typing still hit-tests its target."
+        },
+        {
+          "name": "scene-sprite-texture-order",
+          "file": "patches/gpui-pre/scene-sprite-texture-order.patch",
+          "description": "Sort sprites by draw order and atlas texture, the key that batching uses, so sprites already grouped by texture skip a full reorder every frame."
         }
       ]
     },

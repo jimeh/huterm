@@ -333,6 +333,7 @@ earlier report.
 | `blocks` | The `bench:renderer` half-block grid: built-in rectangles only |
 | `boxes` | A bordered TUI whose rounded corners, diagonals, and powerline separators paint as paths |
 | `churn` | A full redraw of about 480 distinct characters after two single-row updates; cache misses show what those updates evicted |
+| `colors` | A heat map whose cells each have their own foreground and background, so no background run merges |
 | `scroll` | Output scrolling by one row: retained rows shift and one is rebuilt |
 | `selection` | `ascii` painted under a full-screen selection with a selection foreground |
 
@@ -1534,3 +1535,90 @@ which accepts text only while the window is active. The driver skips keys
 while another application is active and prints
 `HUTERM_BENCH key_bench window_active=false`, so a run that loses focus
 reports fewer keys instead of keys without echoes.
+
+## Paint layering and built-in path caching (2026-09-29)
+
+GPUI inserts every primitive painted outside a `paint_layer` into its scene
+bounds tree, and each insertion searches the overlapping entries. A layer takes
+one insertion for all of its primitives. The renderer previously painted the
+grid background, every background run, and selection quads outside any layer,
+then opened one layer per row for glyphs. It now paints two grid-sized layers,
+backgrounds and selection followed by glyphs and decorations, and paints the
+cursor after them. Inside one layer GPUI draws quads, then paths, underlines,
+and sprites, so the block cursor must stay outside the glyph layer to cover the
+glyph beneath it. Hovered link underlines paint as one quad per row segment in
+their own layer instead of one unlayered quad per cell.
+
+Built-in diagonal, rounded, powerline, and geometric-shape paths were
+tessellated with lyon for every cell on every paint. `Geometry` now tessellates
+them once at the cell origin and offsets the cached vertices while painting;
+the geometry cache already invalidates on metric changes.
+
+The new `colors` scenario gives every cell its own background and foreground.
+Its baseline paint took 3.7 ms for 8,000 unlayered background quads and 8,000
+glyphs, while `blocks` painted 8,000 layered rectangles in 0.25 ms.
+
+Linux arm64 container on an Apple M3 Max host, GPUI `gpui-pre` 0.3.6 with wgpu
+on Lavapipe, five runs per scenario, both arms at commit `d9fd242e` plus the
+new scenario:
+
+| Scenario | Baseline paint µs | Feature paint µs | Change |
+| --- | ---: | ---: | ---: |
+| ascii | 480.6 | 449.7 | -6.4% |
+| blocks | 248.9 | 238.5 | -4.2% |
+| boxes | 1,029.9 | 504.1 | -51.1% |
+| churn | 925.2 | 593.5 | -35.9% |
+| colors | 3,733.7 | 679.8 | -81.8% |
+| scroll | 482.8 | 461.6 | -4.4% |
+| selection | 494.3 | 458.4 | -7.3% |
+
+Prepare medians changed by -7.1% to +2.0%. The baseline `churn` paint had a
+1,887 µs p95 and the feature a 624 µs p95 with nearly equal minimums, so treat
+its median change as noise. The other small paint changes fall within the
+documented 10% noise band but all moved in the same direction.
+
+Native macOS 27 on the same host, five runs per scenario, both arms built from
+the same tree with only the renderer files differing:
+
+| Scenario | Baseline paint µs | Feature paint µs | Change |
+| --- | ---: | ---: | ---: |
+| ascii | 602.6 | 566.2 | -6.0% |
+| blocks | 249.6 | 237.9 | -4.7% |
+| boxes | 998.5 | 551.6 | -44.8% |
+| churn | 686.1 | 674.8 | -1.6% |
+| colors | 3,916.9 | 837.2 | -78.6% |
+| scroll | 623.7 | 581.2 | -6.8% |
+| selection | 777.1 | 723.5 | -6.9% |
+
+Prepare medians changed by -2.2% to +2.8%.
+
+The held renderer smoke fixture, captured from both arms and compared pixel by
+pixel, differed in five pixels by at most 11/255. All five sit where the emoji
+on the row below overshoots into a selected row. Before, that row's unlayered
+selection quad could take a later draw order than the next row's glyph layer
+and cover the overshoot; now every background and selection quad draws before
+every glyph. The fixture gained a block cursor over a glyph. Moving the cursor
+into the glyph layer changed exactly those cursor cells, so its draw order is
+observable, and the feature keeps it after the glyphs as before.
+
+### Scene sort patch
+
+`sample` on a long macOS `ascii` run attributed 697 of 1,274 `Window::draw`
+samples to GPUI's `Scene::finish`, against 409 for `TerminalRenderer::paint` and
+130 for `prepare`. The renderer benchmark does not time `finish`, which runs
+after every element has painted. It sorted each sprite list by draw order and
+atlas tile ID, although batching only needs draw order and texture, so every
+frame reordered about 7,000 glyph sprites. The vendored
+`scene-sprite-texture-order` patch sorts by draw order and texture index. In
+the same 15-second sample, `Scene::finish` fell to 18 samples and
+`Window::draw` to 720, about 0.71 ms to 0.40 ms per 120 Hz frame. Paint rose
+from 409 to 522 samples in that run, and every paint component rose by the same
+fraction, which points to processor scheduling rather than a code path; the
+renderer benchmark times paint directly and is the better measure of it. The
+patched fixture differed from the unpatched one in three pixels by 1/255.
+
+Within the unpatched run's 409 paint samples, `Window::paint_glyph` spent 77 in
+sprite-atlas lookups, 46 in raster-bounds lookups, and 35 computing the glyph
+dilation from its color, and scene insertion took 152. Caching resolved sprites
+in prepared rows would be unsafe because the wgpu atlas clears its tiles after
+device loss.

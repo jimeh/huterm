@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { runSmokeProcess } from "./smoke-process.ts";
 
-export const SCENARIOS = ["ascii", "blocks", "boxes", "churn", "scroll", "selection"] as const;
+export const SCENARIOS = ["ascii", "blocks", "boxes", "churn", "colors", "scroll", "selection"] as const;
 const PREFIX = "RENDERER_BENCH ";
 const PASSED = "RENDERER_BENCH passed";
 const TIMEOUT_MS = 60_000;

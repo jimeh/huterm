@@ -29,7 +29,7 @@ use gpui::{
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellStyle, CellText, Cursor,
-    CursorShape, GridSize, TerminalId, TerminalModes, TerminalRow,
+    CursorShape, GridSize, Rgb, TerminalId, TerminalModes, TerminalRow,
     TerminalSnapshot, Viewport,
 };
 
@@ -47,8 +47,15 @@ const MAX_ITERATIONS: usize = 10_000;
 const FRAME_DEADLINE: Duration = Duration::from_secs(15);
 /// Distinguishes missing frames, a display problem, from benchmark failures.
 const FRAME_STALL_EXIT_CODE: i32 = 3;
-const SCENARIOS: [&str; 6] =
-    ["ascii", "blocks", "boxes", "churn", "scroll", "selection"];
+const SCENARIOS: [&str; 7] = [
+    "ascii",
+    "blocks",
+    "boxes",
+    "churn",
+    "colors",
+    "scroll",
+    "selection",
+];
 
 pub(crate) fn run() -> anyhow::Result<()> {
     let name = std::env::var("HUTERM_RENDERER_BENCH_SCENARIO")
@@ -139,6 +146,9 @@ impl Scenario {
             // A bordered TUI with rounded corners, diagonals, and powerline
             // separators, which paint through paths instead of glyph sprites.
             "boxes" => Self::alternating("boxes", cycles, box_cell),
+            // A heat map: every cell has its own background and foreground,
+            // so no background run merges.
+            "colors" => Self::alternating("colors", cycles, color_cell),
             "selection" => Self::selection(cycles),
             "scroll" => Self::scroll(cycles),
             // Three frames per cycle: fewer cycles keep sampling early, but
@@ -362,6 +372,27 @@ fn box_cell(row: usize, column: usize, variant: usize) -> Cell {
             indexed(0)
         };
     }
+    cell
+}
+
+fn color_cell(row: usize, column: usize, variant: usize) -> Cell {
+    // Each channel steps by an odd amount per column, so horizontal
+    // neighbors never share a color.
+    let channel = |step: usize| {
+        u8::try_from((row * step * 3 + column * step + variant * 17) % 256)
+            .unwrap_or_default()
+    };
+    let mut cell = plain(char::from(b"#%&*+=@"[(row + column) % 7]));
+    cell.background = CellColor::Rgb(Rgb {
+        red: channel(7),
+        green: channel(13),
+        blue: channel(29),
+    });
+    cell.foreground = CellColor::Rgb(Rgb {
+        red: 255 - channel(7),
+        green: 255 - channel(13),
+        blue: 255 - channel(29),
+    });
     cell
 }
 

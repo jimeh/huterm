@@ -375,10 +375,34 @@ fn powerline_and_triangle_paths_build_at_tiny_wide_and_fractional_sizes() {
                 for ch in "\u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3}\u{e0b4}\u{e0b5}\u{e0b6}\u{e0b7}\u{e0b8}\u{e0b9}\u{e0ba}\u{e0bb}\u{e0bc}\u{e0bd}\u{e0be}\u{e0bf}\u{e0d2}\u{e0d4}◢◣◤◥◸◹◺◿".chars() {
                     let g = Geometry::new(ch, metrics(width, 14.0, scale), columns);
                     assert!(!g.fills.is_empty() || !g.strokes.is_empty(), "{ch} must have a path");
-                    for (shape, filled) in g.fills.iter().map(|shape| (shape, true)).chain(g.strokes.iter().map(|shape| (shape, false))) {
-                        assert!(shape.build(point(px(13.25), px(29.5)), filled).is_ok(), "{ch} width={width} scale={scale} columns={columns}");
-                    }
+                    assert_eq!(g.paths.len(), g.fills.len() + g.strokes.len(), "{ch} width={width} scale={scale} columns={columns}");
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn cached_paths_translate_to_the_painted_origin() {
+    let origin = point(px(13.25), px(29.5));
+    let close = |a: Point<Pixels>, b: Point<Pixels>| {
+        (f32::from(a.x) - f32::from(b.x)).abs() < 1e-3
+            && (f32::from(a.y) - f32::from(b.y)).abs() < 1e-3
+    };
+    for ch in ['╭', '╱', '\u{e0b0}', '\u{e0b4}', '◢'] {
+        let g = Geometry::new(ch, metrics(7.0, 14.0, 1.5), 1);
+        let shapes = g.strokes.iter().map(|shape| (shape, false));
+        let shapes = shapes.chain(g.fills.iter().map(|shape| (shape, true)));
+        for ((shape, filled), cached) in shapes.zip(&g.paths) {
+            let expected = shape.build(origin, filled).expect("tessellates");
+            let painted = translated(cached, origin);
+            assert!(
+                close(painted.bounds.origin, expected.bounds.origin),
+                "{ch}"
+            );
+            assert_eq!(painted.vertices.len(), expected.vertices.len(), "{ch}");
+            for (a, b) in painted.vertices.iter().zip(&expected.vertices) {
+                assert!(close(a.xy_position, b.xy_position), "{ch}");
             }
         }
     }
