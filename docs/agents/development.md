@@ -29,13 +29,13 @@ CodeQL's advanced workflows scan Actions, JavaScript/TypeScript, Rust, and Swift
 with the security-extended query suite. Swift uses a manual build because the
 helper is a standalone file, not an Xcode project or Swift package. Swift lives
 in `.github/workflows/codeql-swift.yml` and runs only when Swift sources or that
-workflow change, plus the weekly schedule: its macOS runner competes with CI's
-macOS jobs for the account's macOS concurrency limit. `codeql.yml` skips Release
-Please pull requests, which change only versions and the changelog. When enabling
-these workflows, switch the repository from default to advanced CodeQL setup:
-default setup blocks uploads from custom CodeQL workflows. Verify all four
-language jobs and their uploaded analyses before retiring the old default-setup
-analysis configurations.
+workflow change, on the weekly schedule, or by manual dispatch: its macOS runner
+competes with CI's macOS jobs for the account's macOS concurrency limit.
+`codeql.yml` skips Release Please pull requests, which change only versions and
+the changelog. When enabling these workflows, switch the repository from default
+to advanced CodeQL setup: default setup blocks uploads from custom CodeQL
+workflows. Verify all four language jobs and their uploaded analyses before
+retiring the old default-setup analysis configurations.
 
 ## Ubuntu 22.04 prerequisites
 
@@ -450,9 +450,10 @@ execution can fail transiently after compilation succeeds, main still saves its
 smoke build cache on failure so the requested rerun does not compile from
 scratch.
 
-Only pushes to main save Rust build caches. Pull requests restore main's
-entries; per-PR copies pushed the repository past GitHub's 10 GB cache limit,
-and the resulting evictions made unrelated jobs compile cold.
+Only runs on main, including manual dispatches, save Rust build caches. Pull
+requests restore main's entries; per-PR copies pushed the repository past
+GitHub's 10 GB cache limit, and the resulting evictions made unrelated jobs
+compile cold.
 
 Each CI smoke step has a five-minute process deadline and a six-minute Actions
 backstop. The supervisor streams output and records stdout, stderr, elapsed-time
