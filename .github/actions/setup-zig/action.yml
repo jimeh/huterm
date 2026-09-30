@@ -7,7 +7,11 @@ runs:
     - name: Resolve the pinned Zig version
       id: version
       shell: bash
-      run: echo "zig=$(mise tool zig --requested)" >> "$GITHUB_OUTPUT"
+      # An empty version would make setup-zig install the latest release.
+      run: |
+        version="$(mise tool zig --requested)"
+        test -n "$version"
+        echo "zig=$version" >> "$GITHUB_OUTPUT"
 
     # Mise's core:zig fetches a signature only from the mirror that served the
     # tarball, so one rate-limited mirror fails the install. This action
