@@ -499,13 +499,18 @@ done
       await checkTitlebar();
       await checkQuietChrome();
       // Only the bounds observer, the fullscreen wake, and
-      // `observe_fullscreen` carry a resize to the window model. Resize
-      // before the baselines below so restoration compares against it.
+      // `observe_fullscreen` carry a resize to the window model. Return to
+      // the launch size afterwards: hosted macOS 15 restored native
+      // fullscreen to the launch frame rather than the resized one.
       const initialRestore = (await state())["w0.restore"]!;
       const [, , width, height] = initialRestore.split(",").map(Number) as [number, number, number, number];
-      await accepted(`0 resize:${Math.round(width - 40)}x${Math.round(height - 30)}`);
-      await waitFor(async () => { const current = await state(); return current["w0.restore"] !== initialRestore && current["w0.pending"] === "false"; }, "resized restorable bounds");
-      await modelRestored("after resize");
+      const resizeTo = async (target: string, label: string) => {
+        await accepted(`0 resize:${target}`);
+        await waitFor(async () => { const current = await state(); return current["w0.restore"]!.split(",").slice(2).join("x") === target && current["w0.pending"] === "false"; }, `${label} restorable bounds`);
+        await modelRestored(label);
+      };
+      await resizeTo(`${Math.round(width - 40)}x${Math.round(height - 30)}`, "after resize");
+      await resizeTo(`${width}x${height}`, "after resizing back");
     }
     const original = await stable("Windowed");
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
