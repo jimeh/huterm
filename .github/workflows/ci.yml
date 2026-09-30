@@ -139,7 +139,16 @@ jobs:
           minimum_release_age: 3d
 
       - name: Install Zig
-        # actionlint does not accept the $/ self-repository syntax.
+        id: zig
+        # A stalled mirror holds setup-zig for about 14 minutes; a retry
+        # reshuffles the mirrors. actionlint rejects the $/ self-repository syntax.
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
+
+      - name: Retry Zig installation
+        if: steps.zig.outcome != 'success'
+        timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
@@ -254,7 +263,16 @@ jobs:
           minimum_release_age: 3d
 
       - name: Install Zig
-        # actionlint does not accept the $/ self-repository syntax.
+        id: zig
+        # A stalled mirror holds setup-zig for about 14 minutes; a retry
+        # reshuffles the mirrors. actionlint rejects the $/ self-repository syntax.
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
+
+      - name: Retry Zig installation
+        if: steps.zig.outcome != 'success'
+        timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
@@ -430,7 +448,16 @@ jobs:
           minimum_release_age: 3d
 
       - name: Install Zig
-        # actionlint does not accept the $/ self-repository syntax.
+        id: zig
+        # A stalled mirror holds setup-zig for about 14 minutes; a retry
+        # reshuffles the mirrors. actionlint rejects the $/ self-repository syntax.
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
+
+      - name: Retry Zig installation
+        if: steps.zig.outcome != 'success'
+        timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
@@ -472,7 +499,16 @@ jobs:
           minimum_release_age: 3d
 
       - name: Install Zig
-        # actionlint does not accept the $/ self-repository syntax.
+        id: zig
+        # A stalled mirror holds setup-zig for about 14 minutes; a retry
+        # reshuffles the mirrors. actionlint rejects the $/ self-repository syntax.
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
+
+      - name: Retry Zig installation
+        if: steps.zig.outcome != 'success'
+        timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
@@ -561,7 +597,16 @@ jobs:
           minimum_release_age: 3d
 
       - name: Install Zig
-        # actionlint does not accept the $/ self-repository syntax.
+        id: zig
+        # A stalled mirror holds setup-zig for about 14 minutes; a retry
+        # reshuffles the mirrors. actionlint rejects the $/ self-repository syntax.
+        continue-on-error: true
+        timeout-minutes: 4
+        uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
+
+      - name: Retry Zig installation
+        if: steps.zig.outcome != 'success'
+        timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
       - name: Materialize Rust toolchain
