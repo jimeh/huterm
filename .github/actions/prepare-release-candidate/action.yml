@@ -18,7 +18,7 @@ runs:
       with:
         cache: false
         install_args: bun pipx:spdx-tools
-        minimum_release_age: 3d
+        version: 2026.9.14
 
     - name: Materialize Rust toolchain
       shell: bash

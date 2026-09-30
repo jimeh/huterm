@@ -94,3 +94,28 @@ test("CI and release setup reach Rust recovery before any Cargo tool installatio
     }
   }
 });
+
+test("every Mise action step pins the same explicit mise release", () => {
+  // Without a version, a restored Mise cache holding an older binary makes the
+  // action run `mise self-update`, whose GitHub API lookup can be rate limited.
+  type Step = { uses?: string; with?: { version?: unknown; minimum_release_age?: unknown } };
+  type Workflow = { jobs?: Record<string, { steps?: Step[] }>; runs?: { steps: Step[] } };
+  const root = join(import.meta.dir, "..");
+  const files = [".github/workflows/*.yml", ".github/actions/*/action.yml"]
+    .flatMap(pattern => [...new Bun.Glob(pattern).scanSync({ cwd: root, dot: true })]).sort();
+  const pins = new Set<string>();
+  for (const file of files) {
+    const workflow = Bun.YAML.parse(readFileSync(join(root, file), "utf8")) as Workflow;
+    const groups = workflow.runs ? [workflow.runs] : Object.values(workflow.jobs ?? {});
+    for (const { steps = [] } of groups) {
+      for (const step of steps.filter(step => step.uses?.startsWith("jdx/mise-action@"))) {
+        const version = String(step.with?.version ?? "");
+        expect(`${file}: ${version}`).toMatch(/: \d{4}\.\d{1,2}\.\d+$/);
+        expect(step.with?.minimum_release_age).toBeUndefined();
+        pins.add(version);
+      }
+    }
+  }
+  expect(files).toContain(".github/actions/prepare-release-candidate/action.yml");
+  expect([...pins]).toHaveLength(1);
+});
