@@ -26,6 +26,10 @@ updates:
     groups:
       codeql-action:
         patterns: ["github/codeql-action*"]
+      # One PR per action bump across workflows and local composite actions.
+      actions:
+        patterns: ["*"]
+        group-by: dependency-name
 
   - package-ecosystem: bun
     directory: "/"

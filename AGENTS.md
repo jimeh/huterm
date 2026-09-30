@@ -844,7 +844,8 @@ lists. Mise's `core:zig` fetches the `.minisig` only from the mirror that served
 the tarball, so one rate-limited mirror (HTTP 429) failed the job. The action
 falls through to the next mirror and then ziglang.org, but a stalled mirror
 holds it for about 14 minutes: three 3-minute attempts, then a slow exit.
-Jobs bound the step to 4 minutes and retry once, which reshuffles the mirrors.
+Jobs bound the step to 4 minutes and retry once within 6 minutes, which
+reshuffles the mirrors; a stall in both attempts fails the job.
 This only matters when the tarball cache misses. It always sets
 `ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` to `.zig-cache` in the
 checkout, so the wrapper moves them under `RUNNER_TEMP`. Release jobs keep
