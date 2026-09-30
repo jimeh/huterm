@@ -460,11 +460,15 @@ the active window fails with `window not found` even though it remains open.
 Reading any window handle, or the root view entity of the dispatching window,
 from inside that window's action handler panics inside GPUI with `attempted
 to read a window that is already on the stack`, and the panic aborts because
-AppKit's selector callback cannot unwind. Cross-window reads such as quake
-profile rows take a `Viewpoint` naming the calling view with its own state;
-read other windows through their view entities, never through
-`AnyWindowHandle`, and pass `Outside` only from async tasks or smoke commands
-with no window update in progress.
+AppKit's selector callback cannot unwind. Cross-window and application reads
+of window facts, such as quake profile rows, Quit dialog titles, and Quit
+capture, go through the client window model in `Desktop::windows`, which
+never touches the window stack. `views::broadcast` is only for updates that
+reach every window; never read another window's view entity or
+`AnyWindowHandle` for facts. The model owns each window's attachment,
+workspace, active tab, and history; `WorkspaceView` keeps only its tab
+entities, aligned with the model through `push_tab_view`,
+`apply_tab_view_order`, and `drop_tab_views`.
 
 Ghostty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Read its active behavior through the retained native probe

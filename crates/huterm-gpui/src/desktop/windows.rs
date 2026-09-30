@@ -69,13 +69,6 @@ const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "window model consumers arrive with the rest of the client window model plan"
-    )
-)]
 mod model;
 mod tab_bar;
 mod tab_menu;
@@ -83,6 +76,7 @@ mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod terminal_menu;
+mod views;
 mod window_menu;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
@@ -97,8 +91,8 @@ use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
 };
 use model::{
-    WindowRestore, apply_tab_order, prune_tab_history, record_tab_activation,
-    remove_tab,
+    QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel, WindowRecord,
+    WindowRestore, apply_tab_order,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -110,6 +104,7 @@ use tab_position::{TabHost, resolve_tab_position};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
 use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu_model};
+use views::{Views, broadcast};
 use window_menu::{
     MenuButtonPlacement, WindowMenuInput, menu_button_placement,
     split_new_tab_row, window_menu_model,
@@ -524,7 +519,10 @@ struct Desktop {
     /// Failures reported while no window could show them, such as a startup
     /// hotkey conflict. New windows raise them until a reload clears them.
     latched: Vec<NoticeContent>,
-    windows: Vec<WeakEntity<WorkspaceView>>,
+    /// Client-owned facts about every window; read window facts here.
+    windows: WindowModel,
+    /// Open windows' views, for updates that reach every window.
+    views: Views,
     keymap: InstalledKeymap,
     frequency: CommandFrequency,
     reloading: bool,
@@ -596,7 +594,7 @@ impl Desktop {
                         .downcast::<WorkspaceView>()
                         .map_err(|_| CommandError::ClientRequired)?;
                     let terminal =
-                        view.read(cx).active_view().ok_or_else(|| {
+                        view.read(cx).active_view(cx).ok_or_else(|| {
                             CommandError::Unavailable(
                                 "window has no active terminal".to_owned(),
                             )
@@ -787,21 +785,10 @@ fn interactive_spec(
     Ok((spec, prompt))
 }
 
-/// Profile rows for a palette opened from `view`, which is on GPUI's update
-/// stack and must not be read back; its own state is passed instead.
-fn quake_profile_rows(
-    view: &WorkspaceView,
-    cx: &Context<'_, WorkspaceView>,
-) -> Vec<QuakeProfileRow> {
-    let viewpoint = quake_windows::Viewpoint::Window {
-        view: cx.entity_id(),
-        quake: view
-            .quake
-            .as_ref()
-            .map(|state| (state.name.clone(), state.visible())),
-        tabs: view.tabs.len(),
-    };
-    quake_windows::profile_rows(cx, &viewpoint)
+/// Profile rows for the palette's quake profile picker, read from the window
+/// model, so opening the palette inside a quake window reads no view.
+fn quake_profile_rows(cx: &App) -> Vec<QuakeProfileRow> {
+    quake_windows::profile_rows(cx)
         .into_iter()
         .map(|row| QuakeProfileRow {
             detail: format!(
@@ -1005,7 +992,8 @@ pub(super) fn run_with_startup(
             diagnostics,
             latched: Vec::new(),
             config_path: loaded.path,
-            windows: Vec::new(),
+            windows: WindowModel::default(),
+            views: Views::default(),
             keymap,
             frequency: CommandFrequency::default(),
             reloading: false,
@@ -1044,10 +1032,10 @@ pub(super) fn run_with_startup(
                 cx.defer(move |cx| show_active_window_failure(cx, message));
             }
         });
-        cx.on_window_closed(|cx, _| {
-            cx.global_mut::<Desktop>()
-                .windows
-                .retain(|view| view.upgrade().is_some());
+        cx.on_window_closed(|cx, window| {
+            let desktop = cx.global_mut::<Desktop>();
+            desktop.windows.remove(window);
+            desktop.views.prune();
             maybe_exit(cx);
         })
         .detach();
@@ -1071,12 +1059,10 @@ fn follow_button_layout(cx: &mut App) {
         while let Ok(layout) = receiver.recv().await {
             cx.update(|cx| {
                 cx.global_mut::<Desktop>().button_layout = layout;
-                for view in cx.global::<Desktop>().windows.clone() {
-                    let _ = view.update(cx, |view, cx| {
-                        view.button_layout = layout;
-                        cx.notify();
-                    });
-                }
+                broadcast(cx, |view, cx| {
+                    view.button_layout = layout;
+                    cx.notify();
+                });
             });
         }
     })
@@ -1098,7 +1084,7 @@ fn observe_keystroke(
                 || view.reorder.is_some()
                 || view.palette.is_some()
                 || view.menu.is_some();
-            if let Some(tab) = view.active_view() {
+            if let Some(tab) = view.active_view(cx) {
                 tab.update(cx, |tab, cx| {
                     #[cfg(target_os = "macos")]
                     if let Some(action) = &event.action {
@@ -1158,20 +1144,10 @@ fn request_quit(cx: &mut App) {
 }
 
 fn capture_windows(cx: &App) -> Vec<WindowRestore> {
-    capture_other_windows(cx, None)
-}
-
-fn capture_other_windows(
-    cx: &App,
-    except: Option<gpui::EntityId>,
-) -> Vec<WindowRestore> {
-    cx.global::<Desktop>()
+    let desktop = cx.global::<Desktop>();
+    desktop
         .windows
-        .iter()
-        .filter_map(WeakEntity::upgrade)
-        .filter(|view| Some(view.entity_id()) != except)
-        .filter_map(|view| view.read(cx).restore_window())
-        .collect()
+        .restore_windows(desktop.config.tabs.position)
 }
 
 fn maybe_exit(cx: &mut App) {
@@ -1213,17 +1189,15 @@ fn approved_quit(cx: &mut App) {
         cx.update(|cx| {
             quake_presentations = quake_windows::take_for_quit(cx);
             quake_windows::shutdown(cx);
-            for view in cx.global::<Desktop>().windows.clone() {
-                let _ = view.update(cx, |view, _| {
-                    view.fullscreen_work.wake.stop();
-                    view.fullscreen.close();
-                    #[cfg(target_os = "macos")]
-                    if let Some(adapter) = view.native_fullscreen.take() {
-                        adapter.close_gate();
-                        adapters.push(adapter);
-                    }
-                });
-            }
+            broadcast(cx, |view, _| {
+                view.fullscreen_work.wake.stop();
+                view.fullscreen.close();
+                #[cfg(target_os = "macos")]
+                if let Some(adapter) = view.native_fullscreen.take() {
+                    adapter.close_gate();
+                    adapters.push(adapter);
+                }
+            });
         });
         for state in quake_presentations {
             state.cleanup();
@@ -1487,11 +1461,22 @@ fn open_window_with_profile(
                     adapter.discard_quake_events();
                 }
             }
+            let window_id = window.window_handle().window_id();
+            cx.global_mut::<Desktop>().windows.open(
+                window_id,
+                quake.as_ref().map(|state| QuakeRecord {
+                    profile: state.name.clone(),
+                    visible: state.visible(),
+                }),
+                WindowLayout {
+                    bounds: window.window_bounds(),
+                    sidebar_width: SIDEBAR_WIDTH,
+                },
+            );
             let view = cx.new(|cx| WorkspaceView {
                 frame_clock,
                 quake,
-                attachment: None,
-                bounds: window.window_bounds(),
+                window: window_id,
                 fullscreen_insets: gpui::Edges::default(),
                 notch_shelves: None,
                 fullscreen: FullscreenController::new(
@@ -1505,10 +1490,7 @@ fn open_window_with_profile(
                 frame_state: state,
                 applied_frame: None,
                 button_layout,
-                workspace: None,
                 tabs: Vec::new(),
-                active: None,
-                history: Vec::new(),
                 tab_scroll: px(0.0),
                 tab_widths: Vec::new(),
                 title_widths: HashMap::new(),
@@ -1617,7 +1599,7 @@ fn open_window_with_profile(
                 });
                 false
             });
-            cx.global_mut::<Desktop>().windows.push(view.downgrade());
+            cx.global_mut::<Desktop>().views.push(view.downgrade());
             view.update(cx, |view, cx| {
                 view.focus.focus(window, cx);
                 if launch_shell
@@ -1942,7 +1924,7 @@ impl WorkspaceView {
     /// Whether the active terminal draws its scroll pill, which the toast
     /// column must clear.
     fn scroll_pill_visible(&self, cx: &App) -> bool {
-        self.active_view()
+        self.active_view(cx)
             .is_some_and(|view| view.read(cx).scroll_pill_visible())
     }
 
@@ -2024,11 +2006,7 @@ impl TabView {
     /// window title.
     fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
         let (title, status) = self.label(tabs, cx);
-        if status.exited() {
-            format!("{title} · exited")
-        } else {
-            title
-        }
+        with_status_suffix(title, status)
     }
 
     /// Returns the display name without status text, and the status its
@@ -2060,6 +2038,16 @@ impl TabView {
                 terminal.metadata.foreground_process(),
             ),
         )
+    }
+}
+
+/// A tab label with the status text previews, dialogs, and the window model
+/// show.
+fn with_status_suffix(label: String, status: TabStatus) -> String {
+    if status.exited() {
+        format!("{label} · exited")
+    } else {
+        label
     }
 }
 
@@ -2223,8 +2211,9 @@ struct PointerReveal {
 struct WorkspaceView {
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
-    attachment: Option<AttachmentId>,
-    bounds: WindowBounds,
+    /// This window's key in the window model, which owns its attachment,
+    /// workspace, active tab, activation history, and restorable layout.
+    window: gpui::WindowId,
     fullscreen: FullscreenController,
     fullscreen_work: crate::fullscreen_work::Work,
     /// The decorations, maximized, and fullscreen facts GPUI last
@@ -2240,10 +2229,8 @@ struct WorkspaceView {
     notch_shelves: Option<crate::fullscreen::NotchShelves>,
     #[cfg(target_os = "macos")]
     native_fullscreen: Option<crate::native_fullscreen::Adapter>,
-    workspace: Option<WorkspaceId>,
+    /// Tab views in display order, aligned with the window model's entries.
     tabs: Vec<TabView>,
-    active: Option<TabId>,
-    history: Vec<TabId>,
     tab_scroll: Pixels,
     scroll_target: Option<Pixels>,
     last_scroll: Instant,
@@ -2464,6 +2451,16 @@ fn tabs_target(tabs: Vec<TabId>) -> Option<CloseTarget> {
 /// Window or application scope wins over tabs. A tab set unions with any
 /// other tab target; a single tab replaces a single tab, so repeated closes
 /// of one tab coalesce and [`CloseState::checked`] can requeue a second.
+/// Whether a close commit was refused and must be assessed again. Any other
+/// result, including a terminal teardown error, means the runtime accepted
+/// the close and already removed its structure.
+fn close_commit_retries(result: &Result<(), MuxError>) -> bool {
+    matches!(
+        result,
+        Err(MuxError::StaleClose | MuxError::ConfirmationRequired)
+    )
+}
+
 fn merge_close(
     pending: Option<CloseTarget>,
     requested: CloseTarget,
@@ -2629,15 +2626,99 @@ impl CloseState {
     }
 }
 
-fn recent_tab(
-    history: &[TabId],
-    active: Option<TabId>,
-    tabs: impl Fn(TabId) -> bool,
-) -> Option<TabId> {
-    history
-        .iter()
-        .copied()
-        .find(|id| Some(*id) != active && tabs(*id))
+impl WorkspaceView {
+    /// This window's record in the window model. `None` only after GPUI
+    /// removed the window while a queued update of this view still runs.
+    fn record<'a>(&self, cx: &'a App) -> Option<&'a WindowRecord> {
+        cx.global::<Desktop>().windows.record(self.window)
+    }
+
+    fn active_tab(&self, cx: &App) -> Option<TabId> {
+        self.record(cx).and_then(|record| record.active)
+    }
+
+    fn workspace_id(&self, cx: &App) -> Option<WorkspaceId> {
+        self.record(cx).and_then(|record| record.workspace)
+    }
+
+    fn attachment_id(&self, cx: &App) -> Option<AttachmentId> {
+        self.record(cx).and_then(|record| record.attachment)
+    }
+
+    /// Appends a spawned tab's view and model entry, and activates it.
+    fn push_tab_view(&mut self, tab: TabView, cx: &mut App) {
+        let entry = TabEntry {
+            id: tab.id,
+            terminal: tab.record.terminal_id,
+            title: tab.title(self.config.tabs, cx),
+        };
+        self.tabs.push(tab);
+        cx.global_mut::<Desktop>()
+            .windows
+            .open_tab(self.window, entry);
+        self.debug_assert_tabs_aligned(cx);
+    }
+
+    /// Applies canonical order to the tab views and model entries; returns
+    /// false and changes neither when `order` does not match the tabs.
+    fn apply_tab_view_order(&mut self, order: &[TabId], cx: &mut App) -> bool {
+        if !apply_tab_order(&mut self.tabs, order, |tab| tab.id) {
+            return false;
+        }
+        cx.global_mut::<Desktop>()
+            .windows
+            .apply_order(self.window, order);
+        self.debug_assert_tabs_aligned(cx);
+        true
+    }
+
+    /// Drops tab views and their model entries without closing anything; the
+    /// model moves the active tab as closing would.
+    fn drop_tab_views(&mut self, ids: &[TabId], cx: &mut App) {
+        self.tabs.retain(|tab| !ids.contains(&tab.id));
+        cx.global_mut::<Desktop>()
+            .windows
+            .close_tabs(self.window, ids);
+        self.debug_assert_tabs_aligned(cx);
+    }
+
+    /// Records the bounds this window reopens with, unless quake owns its
+    /// geometry.
+    fn publish_restorable_bounds(&self, cx: &mut App) {
+        if self.quake.is_none() {
+            cx.global_mut::<Desktop>().windows.set_layout_bounds(
+                self.window,
+                self.fullscreen.restorable_bounds(),
+            );
+        }
+    }
+
+    /// Republishes every tab's title, for changes outside the tab's own
+    /// activity drain, such as label settings.
+    fn publish_tab_titles(&self, cx: &mut App) {
+        let titles: Vec<_> = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.id, tab.title(self.config.tabs, cx)))
+            .collect();
+        let windows = &mut cx.global_mut::<Desktop>().windows;
+        for (tab, title) in titles {
+            windows.set_tab_title(self.window, tab, &title);
+        }
+    }
+
+    fn debug_assert_tabs_aligned(&self, cx: &App) {
+        debug_assert!(
+            self.record(cx).is_none_or(|record| {
+                record
+                    .tabs
+                    .iter()
+                    .map(|entry| entry.id)
+                    .eq(self.tabs.iter().map(|tab| tab.id))
+            }),
+            "tab views and window model entries diverged"
+        );
+    }
 }
 
 impl WorkspaceView {
@@ -2860,7 +2941,7 @@ impl WorkspaceView {
             && window.is_window_active()
             && self.close.confirmation.is_none();
         let gesture = self
-            .active_view()
+            .active_view(cx)
             .is_some_and(|tab| tab.read(cx).owns_pointer_gesture());
         let layout = self.chrome_layout(window);
         let pointer = window.mouse_position();
@@ -2938,10 +3019,11 @@ impl WorkspaceView {
         )
     }
 
-    fn reveal_active(&mut self, window: &Window) {
+    fn reveal_active(&mut self, window: &Window, cx: &App) {
         self.scroll_target = None;
+        let active = self.active_tab(cx);
         if let Some(index) =
-            self.tabs.iter().position(|tab| Some(tab.id) == self.active)
+            self.tabs.iter().position(|tab| Some(tab.id) == active)
         {
             let revealed = self.tab_strip(window).reveal(index);
             // Only an actual move shows the indicator; switching to a tab
@@ -3132,6 +3214,9 @@ impl WorkspaceView {
             window.viewport_size().width - pointer.x
         };
         self.sidebar_width = desired.clamp(px(140.0), px(400.0));
+        cx.global_mut::<Desktop>()
+            .windows
+            .set_sidebar_width(self.window, self.sidebar_width);
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
                 view.sidebar_width = self.sidebar_width;
@@ -3151,7 +3236,7 @@ impl WorkspaceView {
         cx: &App,
     ) -> bool {
         source.window == window.window_handle().window_id()
-            && Some(source.workspace) == self.workspace
+            && Some(source.workspace) == self.workspace_id(cx)
             && self.tabs.iter().any(|tab| tab.id == source.tab)
             && !self.busy
             && self.close.confirmation.is_none()
@@ -3166,7 +3251,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(workspace) = self.workspace else {
+        let Some(workspace) = self.workspace_id(cx) else {
             return;
         };
         let source = TabDragSource {
@@ -3253,7 +3338,7 @@ impl WorkspaceView {
     }
 
     fn restore_tab_focus(&self, window: &mut Window, cx: &mut App) {
-        if let Some(tab) = self.active_view() {
+        if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
         }
@@ -3301,9 +3386,7 @@ impl WorkspaceView {
                 view.busy = false;
                 match result {
                     Ok(order) => {
-                        if !apply_tab_order(&mut view.tabs, &order, |tab| {
-                            tab.id
-                        }) {
+                        if !view.apply_tab_view_order(&order, cx) {
                             view.notify(
                                 NoticeContent::command_failure(
                                     "Reorder tab",
@@ -3331,10 +3414,11 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn active_view(&self) -> Option<Entity<TerminalView>> {
+    fn active_view(&self, cx: &App) -> Option<Entity<TerminalView>> {
+        let active = self.active_tab(cx)?;
         self.tabs
             .iter()
-            .find(|tab| Some(tab.id) == self.active)
+            .find(|tab| tab.id == active)
             .map(|tab| tab.view.clone())
     }
 
@@ -3348,7 +3432,14 @@ impl WorkspaceView {
         let result = tab
             .view
             .update(cx, |terminal, cx| terminal.refresh(window, cx));
-        let title = tab.label(self.config.tabs, cx).0;
+        let (title, status) = tab.label(self.config.tabs, cx);
+        // Title, metadata, and exit changes all arrive through this drain;
+        // the model only records a title that actually changed.
+        cx.global_mut::<Desktop>().windows.set_tab_title(
+            self.window,
+            tab_id,
+            &with_status_suffix(title.clone(), status),
+        );
         if !result.failures.is_empty() {
             // A tab is one keyed source: its latest failures replace the
             // earlier ones, so a flooding tab cannot fill the stack. The
@@ -3407,15 +3498,15 @@ impl WorkspaceView {
             self.config.terminal.term,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
-        let inherited_directory = self.active_view().and_then(|view| {
+        let inherited_directory = self.active_view(cx).and_then(|view| {
             inherited_directory(
                 self.config.terminal.new_tab_directory,
                 &view.read(cx).metadata,
             )
         });
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let workspace = self.workspace;
-        let attachment = self.attachment;
+        let workspace = self.workspace_id(cx);
+        let attachment = self.attachment_id(cx);
         let clipboard_allowed =
             self.config.terminal.clipboard_write.is_allowed();
         self.busy = true;
@@ -3455,12 +3546,14 @@ impl WorkspaceView {
                 view.busy = false;
                 if let Some(result) = result.take() {
                     match result {
-                        Ok((_, id, opened, attachment, authority)) => {
+                        Ok((session, id, opened, attachment, authority)) => {
                             view.startup_reporter = None;
-                            if let Some(attachment) = attachment {
-                                view.attachment = Some(attachment);
-                            }
-                            view.workspace = Some(id);
+                            cx.global_mut::<Desktop>().windows.attach(
+                                view.window,
+                                attachment,
+                                session,
+                                id,
+                            );
                             authority.host_effects.set_allowed(
                                 view.config
                                     .terminal
@@ -3545,12 +3638,15 @@ impl WorkspaceView {
                                             .await;
                                     }
                                 });
-                            view.tabs.push(TabView {
-                                id: tab_id,
-                                record: opened.tab,
-                                view: terminal,
-                                _activity_task: activity_task,
-                            });
+                            view.push_tab_view(
+                                TabView {
+                                    id: tab_id,
+                                    record: opened.tab,
+                                    view: terminal,
+                                    _activity_task: activity_task,
+                                },
+                                cx,
+                            );
                             view.select(tab_id, window, cx);
                             view.reveal_tab_activity(window, cx);
                             if let Some(state) = &view.quake {
@@ -3727,18 +3823,19 @@ impl WorkspaceView {
             ));
         }
 
-        let terminal = self.active_view();
+        let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
             terminal.update(cx, TerminalView::clear_composition);
         }
+        let active = self.active_tab(cx);
         let target = PaletteTarget {
             session: None,
-            workspace: self.workspace,
-            tab: self.active,
+            workspace: self.workspace_id(cx),
+            tab: active,
             terminal: self
                 .tabs
                 .iter()
-                .find(|tab| Some(tab.id) == self.active)
+                .find(|tab| Some(tab.id) == active)
                 .map(|tab| tab.record.terminal_id),
             terminal_view: terminal.map(|terminal| terminal.downgrade()),
             contexts: window.context_stack(),
@@ -3751,7 +3848,10 @@ impl WorkspaceView {
         } else {
             self.take_retained_query()
         };
-        let tab_order = self.palette_tab_order();
+        let tab_order = cx
+            .global::<Desktop>()
+            .windows
+            .palette_tab_order(self.window);
         let open = PaletteOpen {
             target,
             keymap,
@@ -3759,7 +3859,7 @@ impl WorkspaceView {
             colors: self.palette_colors(),
             placement: self.config.palette.placement,
             history,
-            profiles: quake_profile_rows(self, cx),
+            profiles: quake_profile_rows(cx),
             request,
             retained_query,
             tab_order,
@@ -3773,7 +3873,8 @@ impl WorkspaceView {
         cx.subscribe_in(&palette, window, Self::handle_palette_event)
             .detach();
         self.palette = Some(palette.clone());
-        self.palette_refresh_state = Some(self.current_palette_refresh_state());
+        self.palette_refresh_state =
+            Some(self.current_palette_refresh_state(cx));
         palette.read(cx).focus_handle(cx).focus(window, cx);
 
         self.load_palette_hierarchy(palette, generation, cx);
@@ -3788,8 +3889,8 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let workspace = self.workspace;
-        let tab = self.active;
+        let workspace = self.workspace_id(cx);
+        let tab = self.active_tab(cx);
         let live_titles = self
             .tabs
             .iter()
@@ -3919,14 +4020,14 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if target.tab == self.active
+        if target.tab == self.active_tab(cx)
             && let Some(terminal) =
                 target.terminal_view.as_ref().and_then(WeakEntity::upgrade)
             && terminal.read(cx).visible
         {
             let focus = terminal.read(cx).focus.clone();
             focus.focus(window, cx);
-        } else if let Some(terminal) = self.active_view() {
+        } else if let Some(terminal) = self.active_view(cx) {
             let focus = terminal.read(cx).focus.clone();
             focus.focus(window, cx);
         } else {
@@ -3971,10 +4072,10 @@ impl WorkspaceView {
             .collect()
     }
 
-    fn current_palette_refresh_state(&self) -> PaletteRefreshState {
+    fn current_palette_refresh_state(&self, cx: &App) -> PaletteRefreshState {
         PaletteRefreshState {
             tabs: self.tabs.len(),
-            active: self.active,
+            active: self.active_tab(cx),
             busy: self.busy,
             confirming: self.dialog_showing(),
             reordering: self.reorder.is_some(),
@@ -3990,7 +4091,7 @@ impl WorkspaceView {
             self.palette_refresh_state = None;
             return;
         };
-        let state = self.current_palette_refresh_state();
+        let state = self.current_palette_refresh_state(cx);
         if self.palette_refresh_state == Some(state) {
             return;
         }
@@ -4019,24 +4120,6 @@ impl WorkspaceView {
         ));
         (self.config.palette.retain_query && cancelled.elapsed() <= limit)
             .then_some(query)
-    }
-
-    /// Tabs in most-recently-used order with the active tab last, so a
-    /// picker's first row is the tab the user most likely wants next.
-    fn palette_tab_order(&self) -> Vec<TabId> {
-        let mut order: Vec<TabId> = self
-            .history
-            .iter()
-            .copied()
-            .filter(|id| Some(*id) != self.active)
-            .collect();
-        for tab in &self.tabs {
-            if !order.contains(&tab.id) && Some(tab.id) != self.active {
-                order.push(tab.id);
-            }
-        }
-        order.extend(self.active);
-        order
     }
 
     fn palette_colors(&self) -> OverlayColors {
@@ -4068,7 +4151,7 @@ impl WorkspaceView {
                 }
                 ids::OPEN_CONTEXT_MENU => {
                     self.check_available(true)?;
-                    self.active_view().map(|_| ()).ok_or_else(|| {
+                    self.active_view(cx).map(|_| ()).ok_or_else(|| {
                         CommandError::Unavailable(
                             "window has no active terminal".to_owned(),
                         )
@@ -4100,11 +4183,11 @@ impl WorkspaceView {
                 | ids::MENU_CONFIRM
                 | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
-                    self.check_navigation_available()
+                    self.check_navigation_available(cx)
                 }
-                ids::SELECT_TAB => self.check_navigation_available(),
+                ids::SELECT_TAB => self.check_navigation_available(cx),
                 ids::SELECT_RECENT_TAB => {
-                    self.check_navigation_available()?;
+                    self.check_navigation_available(cx)?;
                     if self.tabs.len() < 2 {
                         Err(CommandError::Unavailable(
                             "window has one tab".to_owned(),
@@ -4177,7 +4260,7 @@ impl WorkspaceView {
             self.check_tab_close_available()?;
         }
         let tab = tab.map_or_else(
-            || self.active_tab_id(),
+            || self.active_tab_id(cx),
             |tab| self.existing_tab(tab),
         )?;
         match command {
@@ -4195,7 +4278,7 @@ impl WorkspaceView {
         self.refresh_palette(cx);
         if let Some(palette) = self.palette.clone() {
             let colors = self.palette_colors();
-            let profiles = quake_profile_rows(self, cx);
+            let profiles = quake_profile_rows(cx);
             palette.update(cx, |palette, cx| {
                 palette.set_presentation(
                     colors,
@@ -4252,8 +4335,8 @@ impl WorkspaceView {
         self.close.confirmation.is_some() || self.about.is_some()
     }
 
-    fn active_tab_id(&self) -> Result<TabId, CommandError> {
-        self.active.ok_or_else(|| {
+    fn active_tab_id(&self, cx: &App) -> Result<TabId, CommandError> {
+        self.active_tab(cx).ok_or_else(|| {
             CommandError::Unavailable("window has no tab".to_owned())
         })
     }
@@ -4307,7 +4390,7 @@ impl WorkspaceView {
         invocation: &CommandInvocation,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        let tab = self.target_tab(invocation)?;
+        let tab = self.target_tab(invocation, cx)?;
         let path = self.local_tab_directory(tab, cx)?;
         cx.open_with_system(&path);
         Ok(CommandOutcome::Completed)
@@ -4320,7 +4403,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.check_available(true)?;
-        let terminal = self.active_view().ok_or_else(|| {
+        let terminal = self.active_view(cx).ok_or_else(|| {
             CommandError::Unavailable(
                 "window has no active terminal".to_owned(),
             )
@@ -4340,7 +4423,7 @@ impl WorkspaceView {
         invocation: &CommandInvocation,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        let tab = self.target_tab(invocation)?;
+        let tab = self.target_tab(invocation, cx)?;
         let path = self.tab_directory(tab, cx)?;
         cx.write_to_clipboard(ClipboardItem::new_string(path));
         Ok(CommandOutcome::Completed)
@@ -4358,10 +4441,11 @@ impl WorkspaceView {
     fn target_tab(
         &self,
         invocation: &CommandInvocation,
+        cx: &App,
     ) -> Result<TabId, CommandError> {
         match invocation.tab("tab") {
             Some(tab) => self.existing_tab(tab),
-            None => self.active_tab_id(),
+            None => self.active_tab_id(cx),
         }
     }
 
@@ -4408,7 +4492,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.check_tab_close_available()?;
-        let tab = self.target_tab(invocation)?;
+        let tab = self.target_tab(invocation, cx)?;
         let target = if invocation.id == ids::CLOSE_TAB {
             CloseTarget::Tab(tab)
         } else {
@@ -4463,9 +4547,9 @@ impl WorkspaceView {
         })
     }
 
-    fn check_navigation_available(&self) -> Result<(), CommandError> {
+    fn check_navigation_available(&self, cx: &App) -> Result<(), CommandError> {
         self.check_available(true)?;
-        self.active_tab_id().map(|_| ())
+        self.active_tab_id(cx).map(|_| ())
     }
 
     fn check_new_tab_available(&self, cx: &App) -> Result<(), CommandError> {
@@ -4586,7 +4670,7 @@ impl WorkspaceView {
                 "command palette is open".to_owned(),
             ));
         }
-        if let Some(tab) = self.active_view() {
+        if let Some(tab) = self.active_view(cx) {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
         // A shortcut pressed while the menu is open runs its command in
@@ -4664,8 +4748,8 @@ impl WorkspaceView {
             ids::RENAME_TAB | ids::RENAME_WORKSPACE | ids::RENAME_SESSION => {
                 let invocation = fill_rename_target(
                     invocation,
-                    self.active,
-                    self.workspace,
+                    self.active_tab(cx),
+                    self.workspace_id(cx),
                 )?;
                 Ok(run_on_runtime(invocation, cx))
             }
@@ -4675,44 +4759,35 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
-    /// The busy terminals of a pending confirmation, mapped to tab titles.
-    /// Quit covers other windows' tabs too; those are read through their
-    /// view entities.
+    /// The busy terminals of a pending confirmation, mapped to the tab titles
+    /// the window model publishes. Quit covers every open window's tabs.
     fn close_dialog_input(
         &self,
         target: &CloseTarget,
-        cx: &Context<'_, Self>,
+        cx: &App,
     ) -> CloseDialogInput {
-        let mut titles = self.tab_titles(self.config.tabs, cx);
-        if matches!(target, CloseTarget::Application) {
-            for view in cx
-                .global::<Desktop>()
-                .windows
-                .iter()
-                .filter_map(WeakEntity::upgrade)
-                .filter(|view| view.entity_id() != cx.entity_id())
-            {
-                let view = view.read(cx);
-                titles.extend(view.tab_titles(view.config.tabs, cx));
-            }
-        }
+        let scope = if matches!(target, CloseTarget::Application) {
+            TitleScope::Open
+        } else {
+            TitleScope::Window(self.window)
+        };
+        let titles: Vec<TabTitle> = cx
+            .global::<Desktop>()
+            .windows
+            .tab_titles(scope)
+            .into_iter()
+            .map(|entry| TabTitle {
+                tab: entry.id,
+                terminal: entry.terminal,
+                title: entry.title.clone(),
+            })
+            .collect();
         let jobs = self
             .close
             .assessment
             .iter()
             .flat_map(CloseAssessment::terminal_jobs);
         close_dialog_input(target, jobs, &titles)
-    }
-
-    fn tab_titles(&self, tabs: TabsConfig, cx: &App) -> Vec<TabTitle> {
-        self.tabs
-            .iter()
-            .map(|tab| TabTitle {
-                tab: tab.id,
-                terminal: tab.record.terminal_id,
-                title: tab.title(tabs, cx),
-            })
-            .collect()
     }
 }
 
@@ -4820,7 +4895,7 @@ impl WorkspaceView {
         self.check_available(false)?;
         self.cancel_reorder(window, cx);
         self.resizing_sidebar = false;
-        if let Some(terminal) = self.active_view() {
+        if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let facts = BuildFacts::current(display_backend(window));
@@ -4850,10 +4925,11 @@ impl WorkspaceView {
     /// changes, so tab switches and title changes reach window managers and
     /// switchers without resetting an unchanged title every frame.
     fn sync_window_title(&mut self, window: &mut Window, cx: &App) {
+        let active_tab = self.active_tab(cx);
         let active = self
             .tabs
             .iter()
-            .find(|tab| Some(tab.id) == self.active)
+            .find(|tab| Some(tab.id) == active_tab)
             .map(|tab| tab.title(self.config.tabs, cx));
         let title = window_title(active.as_deref());
         if title != self.window_title {
@@ -5087,9 +5163,7 @@ impl WorkspaceView {
                 .filter(|_| self.fullscreen.chrome_hidden)
                 .and_then(crate::native_fullscreen::Adapter::notch_shelves);
         }
-        if self.quake.is_none() {
-            self.bounds = self.fullscreen.restorable_bounds();
-        }
+        self.publish_restorable_bounds(cx);
         if previous
             != (
                 self.fullscreen.chrome_hidden,
@@ -5192,6 +5266,7 @@ impl WorkspaceView {
         quit_after: bool,
     ) {
         quake_windows::close(self, cx);
+        cx.global_mut::<Desktop>().windows.begin_close(self.window);
         self.fullscreen_work.wake.stop();
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
@@ -5231,13 +5306,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.tabs.iter().any(|tab| tab.id == id) {
+        if !cx.global_mut::<Desktop>().windows.select(self.window, id) {
             return;
         }
-        self.active = Some(id);
-        record_tab_activation(&mut self.history, id);
         self.sync_tab_layout(window, cx);
-        self.reveal_active(window);
+        self.reveal_active(window, cx);
         let visible = self.quake_visible();
         for tab in &self.tabs {
             tab.view.update(cx, |view, cx| {
@@ -5265,7 +5338,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let changed = self.active != Some(id);
+        let changed = self.active_tab(cx) != Some(id);
         self.select(id, window, cx);
         if changed {
             self.reveal_tab_activity(window, cx);
@@ -5277,10 +5350,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.check_navigation_available()?;
-        let next = recent_tab(&self.history, self.active, |id| {
-            self.tabs.iter().any(|tab| tab.id == id)
-        });
+        self.check_navigation_available(cx)?;
+        let next = cx.global::<Desktop>().windows.recent_tab(self.window);
         if let Some(next) = next {
             self.select_from_command(next, window, cx);
         }
@@ -5304,11 +5375,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.check_navigation_available()?;
+        self.check_navigation_available(cx)?;
+        let active = self.active_tab(cx);
         let index = self
             .tabs
             .iter()
-            .position(|tab| Some(tab.id) == self.active)
+            .position(|tab| Some(tab.id) == active)
             .unwrap_or(0);
         let next = if forward {
             (index + 1) % self.tabs.len()
@@ -5373,18 +5445,6 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
-    fn restore_window(&self) -> Option<WindowRestore> {
-        Some(WindowRestore {
-            attachment: self.attachment?,
-            workspace: self.workspace,
-            active: self.active,
-            bounds: self.bounds,
-            tab_position: self.config.tabs.position,
-            sidebar_width: self.sidebar_width,
-            quake_profile: self.quake.as_ref().map(|state| state.name.clone()),
-        })
-    }
-
     fn request_close(
         &mut self,
         target: CloseTarget,
@@ -5407,14 +5467,14 @@ impl WorkspaceView {
         let request = match &target {
             CloseTarget::Application => CloseRequest::Application,
             CloseTarget::Window => {
-                let Some(attachment) = self.attachment else {
+                let Some(attachment) = self.attachment_id(cx) else {
                     self.remove_window(window, cx, false);
                     return;
                 };
                 CloseRequest::Window(attachment)
             }
             CloseTarget::Tab(tab) => {
-                let Some(workspace) = self.workspace else {
+                let Some(workspace) = self.workspace_id(cx) else {
                     return;
                 };
                 CloseRequest::Tab {
@@ -5423,7 +5483,7 @@ impl WorkspaceView {
                 }
             }
             CloseTarget::Tabs(tabs) => {
-                let Some(workspace) = self.workspace else {
+                let Some(workspace) = self.workspace_id(cx) else {
                     return;
                 };
                 CloseRequest::Tabs {
@@ -5513,7 +5573,7 @@ impl WorkspaceView {
             native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
         }
-        if let Some(tab) = self.active_view() {
+        if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
         }
@@ -5553,18 +5613,10 @@ impl WorkspaceView {
         self.close.current = Some(target.clone());
         self.busy = true;
         let generation = self.close.generation;
-        if self.quake.is_none() {
-            self.bounds = self.fullscreen.restorable_bounds();
-        }
+        self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
-            let mut records = capture_other_windows(cx, Some(cx.entity_id()));
-            // The dispatching view is borrowed; capture it directly below.
-            if let Some(record) = self.restore_window() {
-                records.retain(|saved| saved.attachment != record.attachment);
-                records.push(record);
-            }
-            Some(records)
+            Some(capture_windows(cx))
         } else {
             None
         };
@@ -5580,10 +5632,7 @@ impl WorkspaceView {
                 }
                 view.busy = false;
                 view.close.current = None;
-                if matches!(
-                    result,
-                    Err(MuxError::StaleClose | MuxError::ConfirmationRequired)
-                ) {
+                if close_commit_retries(&result) {
                     view.request_close(target, window, cx);
                     return;
                 }
@@ -5599,6 +5648,11 @@ impl WorkspaceView {
                             view.close.pending,
                             Some(CloseTarget::Application)
                         );
+                        // The runtime detached the attachment or deleted its
+                        // session, even when terminal teardown then failed.
+                        cx.global_mut::<Desktop>()
+                            .windows
+                            .detach_attachment(view.window);
                         view.remove_window(window, cx, quit_after);
                     }
                     CloseTarget::Tab(id) => {
@@ -5622,14 +5676,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        for &id in ids {
-            remove_tab(&mut self.tabs, &mut self.active, id, |tab| tab.id);
-            prune_tab_history(&mut self.history, id);
-        }
+        self.drop_tab_views(ids, cx);
         // Fit widths are index-based; refresh them before the reveal below
         // reads them.
         self.measure_tab_widths(window, cx);
-        if let Some(active) = self.active {
+        if let Some(active) = self.active_tab(cx) {
             self.select(active, window, cx);
             self.reveal_tab_activity(window, cx);
         }
@@ -5722,7 +5773,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(tab) = self.active_view() {
+        if let Some(tab) = self.active_view(cx) {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
@@ -5780,6 +5831,7 @@ impl WorkspaceView {
                     cx.notify();
                 });
             }
+            self.publish_tab_titles(cx);
         }
         self.replace_diagnostics(diagnostics, window, cx);
         self.reload_palette(cx);
@@ -6359,6 +6411,7 @@ impl Render for WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let active_tab = self.active_tab(cx);
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
         self.refresh_tab_visibility(window, cx);
@@ -6662,7 +6715,7 @@ impl Render for WorkspaceView {
                         let strip_title = self
                             .tabs
                             .iter()
-                            .find(|tab| Some(tab.id) == self.active)
+                            .find(|tab| Some(tab.id) == active_tab)
                             .map_or_else(
                                 || "Huterm".to_owned(),
                                 |tab| tab.title(self.config.tabs, cx),
@@ -6680,7 +6733,7 @@ impl Render for WorkspaceView {
                     }),
             );
         }
-        if let Some(tab) = self.active_view() {
+        if let Some(tab) = self.active_view(cx) {
             root = root.child(
                 div()
                     .absolute()
@@ -6856,10 +6909,10 @@ impl Render for WorkspaceView {
                     index,
                     title,
                     status,
-                    activity: if Some(tab.id) == self.active {
+                    activity: if Some(tab.id) == active_tab {
                         Activity::Active
                     } else if index > 0
-                        && Some(self.tabs[index - 1].id) == self.active
+                        && Some(self.tabs[index - 1].id) == active_tab
                     {
                         Activity::FollowsActive
                     } else {
@@ -7165,7 +7218,7 @@ impl Render for WorkspaceView {
                 && self
                     .tabs
                     .first()
-                    .is_some_and(|tab| Some(tab.id) == self.active);
+                    .is_some_and(|tab| Some(tab.id) == active_tab);
             // Only a titlebar joins the column through a line and corner; a
             // fullscreen safe area lets the column run to the screen top.
             if self.presentation() == Presentation::Reserved
@@ -7421,7 +7474,7 @@ impl WorkspaceView {
     }
 
     fn window_menu_input(&self, cx: &App) -> WindowMenuInput {
-        let selection = self.active_view().is_some_and(|terminal| {
+        let selection = self.active_view(cx).is_some_and(|terminal| {
             terminal.read(cx).command_availability(ids::COPY).is_ok()
         });
         WindowMenuInput::for_build(selection, self.notices.contents().len())
@@ -7450,7 +7503,7 @@ impl WorkspaceView {
             ));
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        if let Some(terminal) = self.active_view() {
+        if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let contexts = window.context_stack();
@@ -7511,7 +7564,7 @@ impl WorkspaceView {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        if let Some(terminal) = self.active_view() {
+        if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let contexts = window.context_stack();
@@ -7539,14 +7592,14 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(tab) = self.active else {
+        let Some(tab) = self.active_tab(cx) else {
             return;
         };
         if self.check_available(true).is_err() || self.palette.is_some() {
             return;
         }
         self.close_menu(MenuFocusReturn::Keep, window, cx);
-        if let Some(terminal) = self.active_view() {
+        if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let contexts = window.context_stack();
@@ -7577,7 +7630,8 @@ impl WorkspaceView {
         // A right-click closes any open menu in the capture phase before
         // the terminal sees it, so an open menu here was opened after the
         // click; a lookup that finished late must not replace it.
-        if self.active_view().as_ref() == Some(terminal) && self.menu.is_none()
+        if self.active_view(cx).as_ref() == Some(terminal)
+            && self.menu.is_none()
         {
             self.open_terminal_menu(
                 request.position,
@@ -7599,10 +7653,10 @@ impl WorkspaceView {
         let MenuKind::Terminal { tab, link } = kind else {
             return None;
         };
-        if self.active != Some(*tab) {
+        if self.active_tab(cx) != Some(*tab) {
             return None;
         }
-        let terminal = self.active_view()?.read(cx);
+        let terminal = self.active_view(cx)?.read(cx);
         let directory = match terminal.metadata.directory() {
             None => DirectoryState::Unknown,
             Some(directory) if directory.is_local() => DirectoryState::Local,
@@ -7638,7 +7692,7 @@ impl WorkspaceView {
             platform: Platform::current(),
             index,
             count: self.tabs.len(),
-            active: self.active == Some(tab),
+            active: self.active_tab(cx) == Some(tab),
             vertical: self.layout_tabs().position.vertical(),
             directory_known,
         };
@@ -7732,7 +7786,7 @@ impl WorkspaceView {
     }
 
     fn focus_terminal(&self, window: &mut Window, cx: &mut App) {
-        if let Some(terminal) = self.active_view() {
+        if let Some(terminal) = self.active_view(cx) {
             let focus = terminal.read(cx).focus.clone();
             focus.focus(window, cx);
         } else {
@@ -7812,7 +7866,7 @@ impl WorkspaceView {
                 let invocation = CommandInvocation::new(spec.id, args);
                 let result = match spec.scope {
                     CommandScope::Terminal => self
-                        .active_view()
+                        .active_view(cx)
                         .ok_or_else(|| {
                             CommandError::Unavailable(
                                 "window has no active terminal".to_owned(),
@@ -7853,7 +7907,7 @@ impl WorkspaceView {
     ) -> bool {
         match id {
             terminal_menu::OPEN_LINK => {
-                if let Some(terminal) = self.active_view() {
+                if let Some(terminal) = self.active_view(cx) {
                     terminal.update(cx, |terminal, cx| {
                         (terminal.open_link)(link, cx);
                     });
@@ -8434,14 +8488,27 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
         .flatten()
         .is_some_and(|root| {
             root.read(cx)
-                .active_view()
+                .active_view(cx)
                 .is_some_and(|view| !view.read(cx).composition.is_empty())
         })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::model::remove_tab;
     use super::*;
+
+    #[test]
+    fn close_commits_retry_only_when_the_runtime_refused_them() {
+        assert!(close_commit_retries(&Err(MuxError::StaleClose)));
+        assert!(close_commit_retries(&Err(MuxError::ConfirmationRequired)));
+        // An accepted close detaches its attachment even when terminal
+        // teardown then fails.
+        assert!(!close_commit_retries(&Ok(())));
+        assert!(!close_commit_retries(&Err(MuxError::Runtime(
+            huterm_core::RuntimeError::ShutdownTimedOut
+        ))));
+    }
 
     #[test]
     fn the_window_title_names_the_active_tab_before_huterm() {

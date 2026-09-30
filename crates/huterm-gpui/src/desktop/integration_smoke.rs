@@ -100,7 +100,7 @@ fn reset_link_diagnostics(cx: &mut gpui::App) -> anyhow::Result<()> {
             .map_err(|_| anyhow::anyhow!("window is not a workspace"))?;
         let terminal = workspace
             .read(cx)
-            .active_view()
+            .active_view(cx)
             .context("workspace has no active terminal")?;
         terminal.update(cx, |view, _| {
             view.link_requests = 0;
@@ -151,12 +151,13 @@ fn read_state(cx: &mut gpui::App) -> String {
                 .iter()
                 .filter(|tab| tab.view.read(cx).bell.unseen)
                 .count();
-            let label = workspace.tabs.iter().find(|tab| Some(tab.id) == workspace.active).map_or_else(String::new, |tab| tab.label(workspace.config.tabs, cx).0);
+            let active_tab = workspace.active_tab(cx);
+            let label = workspace.tabs.iter().find(|tab| Some(tab.id) == active_tab).map_or_else(String::new, |tab| tab.label(workspace.config.tabs, cx).0);
             // Window notices, newest first: `notices=<n>` then
             // `notice<i>=<severity>|<source>|<message>` (see
             // `NoticeContent::smoke_line`).
             state.push_str(&super::notices::smoke_lines("", workspace.notices.contents()));
-            let Some(terminal) = workspace.active_view() else { return; };
+            let Some(terminal) = workspace.active_view(cx) else { return; };
             terminal.update(cx, |view, _| {
                 view.open_link = record_open;
                 let bounds = view.content_bounds(window);

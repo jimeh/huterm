@@ -76,7 +76,8 @@ pub(super) enum TitleScope {
 }
 
 // In-memory input for a future restore writer. No serialization/version contract.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 #[cfg_attr(
     not(test),
     expect(
@@ -291,6 +292,18 @@ impl WindowModel {
                     .is_some_and(|quake| quake.profile == name)
             })
             .map(|record| record.id)
+    }
+
+    /// Every open quake window with the profile it serves.
+    pub(super) fn quake_windows(
+        &self,
+    ) -> impl Iterator<Item = (&str, WindowId)> + '_ {
+        self.open_records().filter_map(|record| {
+            record
+                .quake
+                .as_ref()
+                .map(|quake| (quake.profile.as_str(), record.id))
+        })
     }
 
     /// Profile `name`'s desired visibility and tab count, when a window

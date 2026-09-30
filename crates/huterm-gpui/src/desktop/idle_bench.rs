@@ -65,7 +65,7 @@ fn startup_progress(cx: &mut App) -> String {
                 return "no workspace root".into();
             };
             let view = root.read(cx);
-            let terminal = view.active_view().map_or_else(
+            let terminal = view.active_view(cx).map_or_else(
                 || "none".into(),
                 |terminal| terminal_progress(terminal.read(cx)),
             );
@@ -148,7 +148,7 @@ fn advance(
             );
             adapters += usize::from(view.native_fullscreen.is_some());
             ensure_no_notices(view)?;
-            let ready = view.active_view().is_some_and(|terminal| {
+            let ready = view.active_view(cx).is_some_and(|terminal| {
                 terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
                     snapshot
                         .cells()
@@ -157,7 +157,7 @@ fn advance(
                         .contains("HUTERM_IDLE_READY")
                 })
             });
-            if !ready && let Some(terminal) = view.active_view() {
+            if !ready && let Some(terminal) = view.active_view(cx) {
                 // Fixture initialization must finish even when AppKit occludes
                 // this window and stops native frames. Grant one startup credit
                 // through normal admission; never change the refresh policy.

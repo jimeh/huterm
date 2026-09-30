@@ -319,7 +319,7 @@ fn read_state(cx: &mut App) -> String {
                     Err(error)=>writeln!(output,"w{index}.native_error={error}").unwrap(),
                 }
             }
-            if let Some(terminal)=view.active_view() {
+            if let Some(terminal)=view.active_view(cx) {
                 let terminal=terminal.read(cx);
                 let bounds = terminal.content_bounds(window);
                 writeln!(output, "w{index}.tab_presentation={:?}\nw{index}.tab_reveal={}\nw{index}.tab_height={}\nw{index}.terminal_top={}\nw{index}.safe_top={}", terminal.tab_presentation, view.reveal.progress, f32::from(view.tab_strip(window).bounds.size.height), f32::from(bounds.origin.y), f32::from(view.fullscreen_insets.top)).unwrap();

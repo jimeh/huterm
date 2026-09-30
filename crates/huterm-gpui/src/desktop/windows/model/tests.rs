@@ -379,6 +379,10 @@ fn every_reader_answers_from_the_model_alone() {
 
     assert!(model.record(window(1)).is_some());
     assert_eq!(model.quake_window("logs"), Some(window(2)));
+    assert_eq!(
+        model.quake_windows().collect::<Vec<_>>(),
+        [("logs", window(2))]
+    );
     assert_eq!(model.quake_state("logs"), Some((false, 1)));
     assert_eq!(
         model.palette_tab_order(window(1)),

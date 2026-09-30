@@ -90,7 +90,7 @@ fn read_state(cx: &mut App) -> String {
                 writeln!(
                     output,
                     "tab{index}.active={}",
-                    Some(tab.id) == workspace.active
+                    Some(tab.id) == workspace.active_tab(cx)
                 )
                 .unwrap();
                 writeln!(output, "tab{index}.visible={}", terminal.visible)

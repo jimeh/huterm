@@ -529,9 +529,7 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
             let pending_wake = tab.view.read(cx).pending_work.clone();
             // Drop the production TabView, including its owned activity task. Keep
             // the core tab alive, so shutdown or a later event cannot rescue a leak.
-            super::remove_tab(&mut view.tabs, &mut view.active, id, |tab| {
-                tab.id
-            });
+            view.drop_tab_views(&[id], cx);
             (id, weak, client, pending_wake)
         })
     })?;

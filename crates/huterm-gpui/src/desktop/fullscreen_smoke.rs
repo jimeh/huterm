@@ -252,7 +252,7 @@ fn read_state(cx: &mut App) -> String {
                     && terminal.tab_presentation == view.presentation();
             }
             writeln!(output, "w{index}.retained={consistent}").unwrap();
-            if let Some(terminal) = view.active_view() {
+            if let Some(terminal) = view.active_view(cx) {
                 let terminal = terminal.read(cx);
                 writeln!(output, "w{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.resize_indicators, terminal.owns_pointer_gesture()).unwrap();
                 let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();

@@ -74,11 +74,15 @@ fn read_state(cx: &mut gpui::App) -> String {
     let policy = format!("{:?}", desktop.config.terminal.macos_option_as_alt);
     let reloading = desktop.reloading;
     let bindings = desktop.config.keybindings.len();
-    let view = desktop.windows.first().and_then(gpui::WeakEntity::upgrade);
+    // Smoke state is read from an App update with no window on the stack.
+    let view = cx
+        .windows()
+        .first()
+        .and_then(gpui::AnyWindowHandle::downcast::<super::WorkspaceView>)
+        .and_then(|handle| handle.read(cx).ok());
     let (tabs, selection, exited, ready, active) =
         view.map_or((0, false, false, false, 0), |view| {
-            let view = view.read(cx);
-            let terminal = view.active_view();
+            let terminal = view.active_view(cx);
             let terminal = terminal.as_ref().map(|tab| tab.read(cx));
             let selected = terminal.is_some_and(|tab| {
                 tab.selection
@@ -98,7 +102,7 @@ fn read_state(cx: &mut gpui::App) -> String {
             let active = view
                 .tabs
                 .iter()
-                .position(|tab| Some(tab.id) == view.active)
+                .position(|tab| Some(tab.id) == view.active_tab(cx))
                 .unwrap_or(0);
             (view.tabs.len(), selected, exited, ready, active)
         });
