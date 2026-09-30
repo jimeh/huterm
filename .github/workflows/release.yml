@@ -101,7 +101,7 @@ jobs:
         with:
           cache: false
           install_args: bun
-          minimum_release_age: 3d
+          version: 2026.9.14
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -156,7 +156,7 @@ jobs:
         with:
           cache: false
           install_args: bun zig syft pipx:spdx-tools
-          minimum_release_age: 3d
+          version: 2026.9.14
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -256,7 +256,7 @@ jobs:
         with:
           cache: false
           install_args: bun zig
-          minimum_release_age: 3d
+          version: 2026.9.14
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -350,7 +350,7 @@ jobs:
         with:
           cache: false
           install_args: bun zig
-          minimum_release_age: 3d
+          version: 2026.9.14
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -429,7 +429,7 @@ jobs:
         with:
           cache: false
           install_args: bun
-          minimum_release_age: 3d
+          version: 2026.9.14
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain

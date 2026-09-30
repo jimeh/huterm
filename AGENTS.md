@@ -265,8 +265,14 @@ direct runtime dependencies deliberately. Use `mise run actions:update` to
 refresh action pins and `mise run tools:update` to refresh project tools
 without accepting releases inside the cooldown window.
 Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
-`.github/dependabot.yml`, `.github/workflows/ci.yml`, and `zizmor.yml` aligned
-when changing the policy.
+`.github/dependabot.yml`, and `zizmor.yml` aligned when changing the policy.
+Every `jdx/mise-action` step pins the same explicit mise `version`. Without
+a pin, a restored Mise cache holding an older binary makes the action run
+`mise self-update`, whose GitHub API lookup was rate limited (403).
+`scripts/ci-toolchain.test.ts` enforces one shared pin, but not release age:
+choose a release older than three days by hand. Dependabot does not update
+action inputs, so bump every pin together.
+`scripts/linux/Dockerfile` pins its own checksummed mise release.
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.6 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.98.
@@ -838,6 +844,22 @@ stop matching main. The smoke key must name any such workflow value itself.
 CI Linux packaging retries once with retained Cargo and Zig caches because
 Ghostty's native dependency downloads can fail transiently. A second failure
 remains authoritative.
+CI installs Zig through `.github/actions/setup-zig`, which reads the version
+from `mise.toml` and runs `mlugg/setup-zig`; keep `zig` out of CI's Mise install
+lists. Mise's `core:zig` fetches the `.minisig` only from the mirror that served
+the tarball, so one rate-limited mirror (HTTP 429) failed the job. The action
+falls through to the next mirror and then ziglang.org, but a stalled mirror
+holds it for about 14 minutes: three 3-minute attempts, then a slow exit.
+Jobs bound the step to 4 minutes and retry once within 6 minutes, which
+reshuffles the mirrors; a stall in both attempts fails the job.
+This only matters when the tarball cache misses. It always sets
+`ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` to `.zig-cache` in the
+checkout, so the wrapper moves them under `RUNNER_TEMP`. Release jobs keep
+Mise's Zig install: the action's tarball cache cannot be disabled and a cache
+hit skips signature verification, while release installs never use the Actions
+cache. Reference local actions as `./.github/actions/...` with a
+`zizmor: ignore[self-repository]` comment: actionlint rejects GitHub's `$/`
+self-repository syntax.
 Keep the aggregate `ci:smoke:build` targets aligned with the binaries consumed
 by `ci:smoke:run`.
 
