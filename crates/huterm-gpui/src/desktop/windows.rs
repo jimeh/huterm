@@ -69,6 +69,14 @@ const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "window model consumers arrive with the rest of the client window model plan"
+    )
+)]
+mod model;
 mod tab_bar;
 mod tab_menu;
 mod tab_position;
@@ -87,6 +95,10 @@ use button_layout::{
 };
 use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
+};
+use model::{
+    WindowRestore, apply_tab_order, prune_tab_history, record_tab_activation,
+    remove_tab,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -488,21 +500,6 @@ impl DesktopRuntime {
     }
 }
 
-// In-memory input for a future restore writer. No serialization/version contract.
-#[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "retained restore aggregate awaits the persistence stage"
-)]
-struct WindowRestore {
-    attachment: AttachmentId,
-    workspace: Option<WorkspaceId>,
-    active: Option<TabId>,
-    bounds: WindowBounds,
-    tab_position: TabPosition,
-    sidebar_width: Pixels,
-    tab_scroll: Pixels,
-}
 #[derive(Debug)]
 #[cfg_attr(
     not(test),
@@ -2630,55 +2627,6 @@ impl CloseState {
             target => Some(target),
         }
     }
-}
-
-fn apply_tab_order<T>(
-    tabs: &mut [T],
-    order: &[TabId],
-    id: impl Fn(&T) -> TabId,
-) -> bool {
-    if tabs.len() != order.len()
-        || order
-            .iter()
-            .enumerate()
-            .any(|(index, tab)| order[..index].contains(tab))
-        || tabs.iter().any(|tab| !order.contains(&id(tab)))
-    {
-        return false;
-    }
-    tabs.sort_by_key(|tab| {
-        order
-            .iter()
-            .position(|candidate| *candidate == id(tab))
-            .unwrap_or(usize::MAX)
-    });
-    true
-}
-
-// Update navigation together with removal, before another close can interrupt
-// completion or open a confirmation dialog.
-fn remove_tab<T>(
-    tabs: &mut Vec<T>,
-    active: &mut Option<TabId>,
-    closed: TabId,
-    id: impl Fn(&T) -> TabId,
-) {
-    let Some(index) = tabs.iter().position(|tab| id(tab) == closed) else {
-        return;
-    };
-    tabs.remove(index);
-    if *active == Some(closed) {
-        *active = tabs.get(index.min(tabs.len().saturating_sub(1))).map(id);
-    }
-}
-
-fn record_tab_activation(history: &mut Vec<TabId>, id: TabId) {
-    history.retain(|recorded| *recorded != id);
-    history.insert(0, id);
-}
-
-fn prune_tab_history(history: &mut Vec<TabId>, id: TabId) {
-    history.retain(|recorded| *recorded != id);
 }
 
 fn recent_tab(
@@ -5433,7 +5381,7 @@ impl WorkspaceView {
             bounds: self.bounds,
             tab_position: self.config.tabs.position,
             sidebar_width: self.sidebar_width,
-            tab_scroll: self.tab_scroll,
+            quake_profile: self.quake.as_ref().map(|state| state.name.clone()),
         })
     }
 
@@ -9124,37 +9072,6 @@ mod tests {
     }
 
     #[test]
-    fn applying_canonical_order_retains_view_state_and_rejects_stale_reply() {
-        let a = TabId::new(1);
-        let b = TabId::new(2);
-        let c = TabId::new(3);
-        let active = b;
-        let mut views = vec![
-            (a, "selection-a", 123),
-            (b, "selection-b", 456),
-            (c, "selection-c", 789),
-        ];
-        assert!(apply_tab_order(&mut views, &[c, a, b], |view| view.0));
-        assert_eq!(
-            views,
-            [
-                (c, "selection-c", 789),
-                (a, "selection-a", 123),
-                (b, "selection-b", 456)
-            ]
-        );
-        assert_eq!(views.iter().find(|view| view.0 == active).unwrap().2, 456);
-        let before = views.clone();
-        assert!(!apply_tab_order(&mut views, &[a, a, c], |view| view.0));
-        assert!(!apply_tab_order(
-            &mut views,
-            &[a, b, TabId::new(4)],
-            |view| view.0
-        ));
-        assert_eq!(views, before);
-    }
-
-    #[test]
     fn application_mouse_coordinates_follow_all_tab_placements() {
         use crate::config::TabPosition;
         let cell = size(px(8.0), px(16.0));
@@ -9376,7 +9293,7 @@ mod tests {
             bounds,
             tab_position: TabPosition::Left,
             sidebar_width: px(220.0),
-            tab_scroll: px(24.0),
+            quake_profile: None,
         }];
         let assessment = runtime.assess(CloseRequest::Application).unwrap();
         runtime.commit(&assessment, false, Some(windows)).unwrap();
@@ -9396,7 +9313,6 @@ mod tests {
         assert_eq!(restore.windows.len(), 1);
         assert_eq!(restore.windows[0].workspace, Some(workspace));
         assert_eq!(restore.windows[0].sidebar_width, px(220.0));
-        assert_eq!(restore.windows[0].tab_scroll, px(24.0));
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
     }
 
@@ -9666,44 +9582,6 @@ mod tests {
         close.cancel();
         assert_eq!(active, Some(second));
         assert!(tabs.contains(&active.unwrap()));
-    }
-
-    #[test]
-    fn activation_history_tracks_selection_and_prunes_closed_tabs() {
-        let (first, second, third) =
-            (TabId::new(1), TabId::new(2), TabId::new(3));
-        let mut history = Vec::new();
-
-        record_tab_activation(&mut history, first);
-        record_tab_activation(&mut history, second);
-        record_tab_activation(&mut history, third);
-        record_tab_activation(&mut history, first);
-        assert_eq!(history, [first, third, second]);
-
-        prune_tab_history(&mut history, third);
-        assert_eq!(history, [first, second]);
-    }
-
-    #[test]
-    fn select_recent_tab_toggles_between_two_tabs_and_is_a_no_op_alone() {
-        let (first, second) = (TabId::new(1), TabId::new(2));
-        let tabs = [first, second];
-        let mut active = Some(second);
-        let mut history = vec![second, first];
-
-        let selected = recent_tab(&history, active, |id| tabs.contains(&id));
-        assert_eq!(selected, Some(first));
-        active = selected;
-        record_tab_activation(&mut history, first);
-
-        let selected = recent_tab(&history, active, |id| tabs.contains(&id));
-        assert_eq!(selected, Some(second));
-        active = selected;
-        record_tab_activation(&mut history, second);
-
-        assert_eq!(active, Some(second));
-        assert_eq!(history, [second, first]);
-        assert_eq!(recent_tab(&[first], Some(first), |id| id == first), None);
     }
 
     #[test]
