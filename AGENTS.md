@@ -625,12 +625,12 @@ member, taken from the manifest: foreign writes may leave padding
 uninitialized. The
 build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
 ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
-`MACOSX_DEPLOYMENT_TARGET`, and `ZIG`, and reruns only when those, itself, or
-`scripts/ghostty-source.json` change; `scripts/ghostty-build.test.ts` runs its
-unit tests. The crate's contract tests pin each C behavior the engine relies
-on, and the ABI test checks every emitted FFI type against
-`ghostty_type_json()`. After a pin bump, fix a failing contract test's
-assumption before changing engine code. Allocator vtable
+`MACOSX_DEPLOYMENT_TARGET`, `ZIG`, and `HUTERM_GHOSTTY_ARTIFACT_CACHE`, and
+reruns only when those, itself, or `scripts/ghostty-source.json` change;
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
+tests pin each C behavior the engine relies on, and the ABI test checks every
+emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a
+failing contract test's assumption before changing engine code. Allocator vtable
 callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
 Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
 budget and reports actual retained rows.
@@ -720,8 +720,18 @@ can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
 Cargo forces `HUTERM_GHOSTTY_CPU=baseline` for portable native instructions and
 `HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast`. Local builds retain warm native artifacts.
-The pinned CI cache action prunes path dependencies inside the repository, so CI
-rebuilds `huterm-ghostty`'s native library.
+The pinned CI cache action prunes path dependencies inside the repository, so
+`huterm-ghostty`'s build script reruns in every CI job. With
+`HUTERM_GHOSTTY_ARTIFACT_CACHE` set, it links a cached `libghostty-vt.a` whose
+fingerprint matches the build and otherwise builds from source and stores the
+result. The fingerprint covers the source manifest, Zig version and arguments,
+target, and the host libc or macOS SDK: Linux host builds stay native, so an
+archive built against a newer glibc must never reach a 2.35-ceiling package.
+CI jobs restore and save `.native/ghostty-prebuilt` through the
+`restore-ghostty` and `save-ghostty` actions, keyed per job and by a hash of the
+stored fingerprints, so a changed input saves a new entry instead of leaving a
+stale one. Release workflows leave the variable unset and always build from
+the verified source.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
 

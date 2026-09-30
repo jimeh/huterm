@@ -3,6 +3,7 @@
 *.swp
 .DS_Store
 /.native/ghostty/
+/.native/ghostty-prebuilt/
 /.native/sparkle/
 /.native/vendor/
 /node_modules/
