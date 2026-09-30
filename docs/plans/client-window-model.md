@@ -437,18 +437,18 @@ Native smoke coverage:
   activation. The overlays fixture already provides `busy` and `title`
   commands and configures `tabs.label = "title"`.
   1. Run `open-second` and wait until window 1's terminal is focused. Type
-     `busy` and `title sibling-1` into it, and wait for its window title.
+     `busy` and `title siblingone` into it, and wait for its window title.
   2. Activate window 0 and wait for its `active` state. Invoke `quit` against
      window 0, which defers `request_quit` to the active window. Wait for
      `w0.confirming=true`, assert that `w0.dialog_groups` holds window 1's
-     terminal ID with the title `sibling-1`, and cancel. Window 0 hosts the
+     terminal ID with the title `siblingone`, and cancel. Window 0 hosts the
      dialog, so that title can only come from window 1's record.
-  3. Activate window 1, type `title sibling-2`, wait for its window title, and
-     repeat step 2 expecting `sibling-2`. Only `refresh_tab` publication
+  3. Activate window 1, type `title siblingtwo`, wait for its window title, and
+     repeat step 2 expecting `siblingtwo`. Only `refresh_tab` publication
      supplies the new title.
   4. Rewrite the config with `tabs.label = "directory"` and reload. Assert that
      `reload_titles` shows window 1's tab with a label different from
-     `sibling-2`. Only reload publication writes that record, so later
+     `siblingtwo`. Only reload publication writes that record, so later
      `refresh_tab` activity cannot mask a missing one. The fixture script is
      named `shell`, which `huterm-procinfo` does not recognize as a shell, so
      only a label mode that ignores the title proves a change. If directory

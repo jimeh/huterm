@@ -617,12 +617,12 @@ label = "title"
       await key("escape");
       await state("w0.confirming=false", "w0.terminal_focused=true");
     };
-    await siblingTitle("sibling-1");
-    await quitNames("sibling-1");
+    await siblingTitle("siblingone");
+    await quitNames("siblingone");
     await command("activate\t1");
     await state("w1.active=true", "w1.terminal_focused=true");
-    await siblingTitle("sibling-2");
-    await quitNames("sibling-2");
+    await siblingTitle("siblingtwo");
+    await quitNames("siblingtwo");
     const reloadedTitles = async (document: string) => {
       const before = Number(/(?:^|\s)reloads=(\d+)/.exec(await current())?.[1]);
       await writeFile(config, document);
@@ -634,7 +634,7 @@ label = "title"
     const directory = await reloadedTitles(configDocument.replace('label = "title"', 'label = "directory"'));
     // The record is taken when reload republication ends, so later terminal
     // activity cannot supply a title reload failed to publish.
-    if (directory.reload.length !== published.length || directory.reload.includes("sibling-2")) {
+    if (directory.reload.length !== published.length || directory.reload.includes("siblingtwo")) {
       throw new Error(`${engine}: reload did not republish directory labels: before ${JSON.stringify(published)}, after ${JSON.stringify(directory.reload)}`);
     }
     await reloadedTitles(configDocument);
