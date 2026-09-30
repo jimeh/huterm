@@ -38,6 +38,16 @@ async function waitFor(
   }
 }
 
+/** Quake picker rows (`name` to detail) from `window`'s open palette state. */
+export function profileRows(state: string, window: string): Record<string, string> {
+  const start = state.indexOf(`${window}.palette_state=`);
+  const rows = start < 0 ? undefined : /profile_rows="([^"]*)"/.exec(state.slice(start))?.[1];
+  return Object.fromEntries((rows ?? "").split(";").filter(Boolean).map((row) => {
+    const split = row.indexOf("=");
+    return [row.slice(0, split), row.slice(split + 1)];
+  }));
+}
+
 async function checkPalette(
   executable: string,
   engine: string,
@@ -574,7 +584,14 @@ command = "select_tab"
     await typeText("toggle q");
     await state("w1.palette_state=commands selected=toggle_quake");
     await key("tab");
-    await state("w1.palette_state=slots command=toggle_quake", "picker=2");
+    const insideQuake = profileRows(
+      await state("w1.palette_state=slots command=toggle_quake", "picker=2"),
+      "w1",
+    );
+    // The summoning window reports itself from the window model.
+    if (!insideQuake.default?.endsWith("· visible") || !insideQuake.logs?.endsWith("· not summoned yet")) {
+      throw new Error(`${engine}: quake picker rows inside the quake window: ${JSON.stringify(insideQuake)}`);
+    }
     await key("escape");
     await key("escape");
     await state("w1.palette=false", "w1.terminal_focused=true");
@@ -585,12 +602,23 @@ command = "select_tab"
     await typeText("toggle q");
     await state("selected=toggle_quake");
     await key("tab");
-    await state(
-      "w0.palette_state=slots command=toggle_quake",
-      "active=profile",
-      "picker=2",
-      "profile:prefilled",
+    const fromOrdinary = profileRows(
+      await state(
+        "w0.palette_state=slots command=toggle_quake",
+        "active=profile",
+        "picker=2",
+        "profile:prefilled",
+      ),
+      "w0",
     );
+    // Activating window 0 may auto-hide the quake window before the palette
+    // opens; either way its one tab is reported.
+    if (
+      !(fromOrdinary.default?.endsWith("· visible") || fromOrdinary.default?.endsWith("· hidden · 1 tab"))
+      || !fromOrdinary.logs?.endsWith("· not summoned yet")
+    ) {
+      throw new Error(`${engine}: quake picker rows from window 0: ${JSON.stringify(fromOrdinary)}`);
+    }
     await key("escape");
     await state("w0.palette_state=commands", 'query="toggle q"');
     await key("escape");

@@ -304,6 +304,15 @@ fn read_state(cx: &mut App) -> String {
             let view=root.read(cx);
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
             writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden()).unwrap();
+            // The window model's summary beside the view's own state, so the
+            // harness can cross-check every publication on each state read.
+            let record = cx.global::<Desktop>().windows.record(view.window);
+            let model_quake = record.and_then(|record| record.quake.as_ref()).map_or_else(|| "none".to_owned(), |quake| format!("{}:{}", quake.profile, quake.visible));
+            let ids = |tabs: &mut dyn Iterator<Item = TabId>| tabs.map(|tab| tab.get().to_string()).collect::<Vec<_>>().join(",");
+            let model_tabs = record.map_or_else(String::new, |record| ids(&mut record.tabs.iter().map(|entry| entry.id)));
+            let view_tabs = ids(&mut view.tabs.iter().map(|tab| tab.id));
+            let model_active = ids(&mut record.and_then(|record| record.active).into_iter());
+            writeln!(output,"w{index}.model_quake={model_quake}\nw{index}.model_tabs={model_tabs}\nw{index}.view_tabs={view_tabs}\nw{index}.model_active={model_active}").unwrap();
             // Window notices, newest first, in the same form as `desktop.`.
             output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
             writeln!(output, "w{index}.ordinary_fullscreen={:?}\nw{index}.ordinary_pending={}", view.fullscreen.observed, view.fullscreen.is_pending()).unwrap();

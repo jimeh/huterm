@@ -4759,6 +4759,22 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// The showing close dialog's quoted title and its busy groups' tab
+    /// headings, for smoke state.
+    fn dialog_smoke_fields(&self, cx: &App) -> (String, String) {
+        let Some(target) = &self.close.confirmation else {
+            return ("none".to_owned(), String::new());
+        };
+        let input = self.close_dialog_input(target, cx);
+        let groups = input
+            .groups
+            .iter()
+            .filter_map(|group| group.tab_title.clone())
+            .collect::<Vec<_>>()
+            .join(";");
+        (format!("{:?}", build_close_dialog(&input).title), groups)
+    }
+
     /// The busy terminals of a pending confirmation, mapped to the tab titles
     /// the window model publishes. Quit covers every open window's tabs.
     fn close_dialog_input(
@@ -5757,6 +5773,7 @@ fn reload(cx: &mut App) -> Result<CommandOutcome, CommandError> {
                     }
                 });
             }
+            palette_smoke::record_reload_titles(cx);
         });
     })
     .detach();
@@ -8312,16 +8329,7 @@ impl WorkspaceView {
             DialogFocus::Primary => "primary",
             DialogFocus::Cancel => "cancel",
         };
-        let dialog_title = self.close.confirmation.as_ref().map_or_else(
-            || "none".to_owned(),
-            |target| {
-                format!(
-                    "{:?}",
-                    build_close_dialog(&self.close_dialog_input(target, cx))
-                        .title
-                )
-            },
-        );
+        let (dialog_title, dialog_groups) = self.dialog_smoke_fields(cx);
         let painted = |cell: &Cell<Option<Bounds<Pixels>>>| {
             cell.get().map_or_else(
                 || "none".to_owned(),
@@ -8370,7 +8378,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.notice_focus.is_focused(window),
             self.window_title,

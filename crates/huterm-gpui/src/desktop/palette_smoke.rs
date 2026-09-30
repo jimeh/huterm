@@ -13,9 +13,51 @@ use huterm_protocol::{
 
 use super::{Desktop, WorkspaceView, open_window};
 
+/// The window model's tab titles as the last config reload left them, taken
+/// synchronously when its republication finished, before any later terminal
+/// activity could change them.
+#[derive(Default)]
+pub(super) struct ReloadTitles {
+    reloads: u64,
+    titles: Vec<String>,
+}
+
+impl gpui::Global for ReloadTitles {}
+
+/// Records the published titles after a reload, under the palette smoke only.
+pub(super) fn record_reload_titles(cx: &mut App) {
+    if !cx.has_global::<ReloadTitles>() {
+        return;
+    }
+    let titles = model_titles(cx);
+    let reloads = cx.global::<ReloadTitles>().reloads + 1;
+    cx.set_global(ReloadTitles { reloads, titles });
+}
+
+/// `activate\t<index>` activates the window at `index` in GPUI's order.
+fn activate_window(cx: &mut App, index: &str) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let handle = *cx.windows().get(index).context("smoke window index")?;
+    handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        cx.activate(true);
+    })?;
+    Ok(format!("window {index} activated"))
+}
+
+fn model_titles(cx: &App) -> Vec<String> {
+    cx.global::<Desktop>()
+        .windows
+        .tab_titles(super::TitleScope::Open)
+        .into_iter()
+        .map(|entry| entry.title.clone())
+        .collect()
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory = PathBuf::from(std::env::var("HUTERM_PALETTE_SMOKE")?);
     super::run_with_startup(move |cx| {
+        cx.set_global(ReloadTitles::default());
         cx.spawn(async move |cx| {
             let mut sequence = 0;
             loop {
@@ -117,6 +159,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     if command == "quit" {
         super::approved_quit(cx);
         return Ok("approved quit requested".to_owned());
+    }
+    if let Some(index) = command.strip_prefix("activate\t") {
+        return activate_window(cx, index);
     }
     let handle = *cx.windows().first().context("palette smoke window")?;
     if let Some(id) = command.strip_prefix("invoke\t") {
@@ -365,13 +410,16 @@ fn read_state(cx: &mut App) -> String {
     // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
     let mut output = format!(
-        "windows={} config.warning={:?} {}\n",
+        "windows={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
         desktop.config.warning,
         smoke_notices(
             "desktop.",
             desktop.diagnostics.iter().chain(&desktop.latched)
-        )
+        ),
+        model_titles(cx).join(";"),
+        cx.global::<ReloadTitles>().reloads,
+        cx.global::<ReloadTitles>().titles.join(";"),
     );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
