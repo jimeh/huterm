@@ -1,7 +1,7 @@
 # Client window model
 
-Status: planned for [issue #97][issue-97] and [issue #96][issue-96], delivered
-in one PR.
+Status: implemented for [issue #97][issue-97] and [issue #96][issue-96] in one
+PR.
 
 Give the desktop client one model of its own windows. The model holds each
 window's attachment, session, workspace, tabs with their terminal IDs and
@@ -541,7 +541,7 @@ inventory; record the result in the PR.
   layouts and panel placement are not yet part of them.
 - `docs/plans/quake-profiles-global-hotkeys.md`: point the registry description
   at the window model.
-- This plan: set its status when the PR lands.
+- This plan: mark it implemented.
 
 ## Risks
 

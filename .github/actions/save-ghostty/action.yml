@@ -24,8 +24,12 @@ runs:
       run: |
         set -euo pipefail
         shopt -s nullglob
-        # The glob skips the dot-named staging directories of failed stores.
-        slots=(.native/ghostty-prebuilt/*/)
+        # Only slots with a fingerprint are complete. The glob also skips the
+        # dot-named staging directories of interrupted stores.
+        slots=()
+        for fingerprint in .native/ghostty-prebuilt/*/fingerprint; do
+          slots+=("$(dirname "$fingerprint")")
+        done
         if [ "${#slots[@]}" -eq 0 ]; then
           echo "key=" >> "$GITHUB_OUTPUT"
           exit 0

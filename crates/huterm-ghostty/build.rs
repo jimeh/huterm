@@ -366,10 +366,10 @@ fn reuse_cached(
         }
     };
     let archive = slot.join("lib").join(ARCHIVE);
-    if recorded != fingerprint
-        || !archive.is_file()
-        || !slot.join("include").is_dir()
-    {
+    // An empty archive would otherwise surface only as a link error.
+    let usable = fs::metadata(&archive)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    if recorded != fingerprint || !usable || !slot.join("include").is_dir() {
         return Ok(false);
     }
     replace_dir(install)?;
@@ -1079,7 +1079,9 @@ mod tests {
         );
         assert!(fs::read_dir(&untouched).unwrap().next().is_none());
 
-        // A slot whose archive went missing is rebuilt, not linked.
+        // A slot whose archive is empty or missing is rebuilt, not linked.
+        fs::write(slot.join("lib").join(ARCHIVE), "").unwrap();
+        assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
         fs::remove_file(slot.join("lib").join(ARCHIVE)).unwrap();
         assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
 
