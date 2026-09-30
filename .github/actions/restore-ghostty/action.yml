@@ -1,14 +1,15 @@
 name: Restore prebuilt Ghostty
 description: >-
-  Restore this job's newest cached libghostty-vt archives and point the
+  Restore the namespace's newest cached libghostty-vt archives and point the
   huterm-ghostty build script at them. The build script links an archive only
   when its fingerprint matches the current build, and stores fresh builds
   there. Pair with save-ghostty after the job's builds.
 inputs:
-  job:
+  namespace:
     description: >-
-      Cache namespace. Jobs on different runner images build against different
-      libcs, so each job keeps its own archives.
+      Cache namespace. Jobs that build the same archives on the same runner
+      image share one; a different image (libc or SDK) or set of build modes
+      needs its own, because a restore takes the namespace's newest entry.
     required: true
 outputs:
   prefix:
@@ -24,11 +25,11 @@ runs:
       id: key
       shell: bash
       env:
-        JOB: ${{ inputs.job }}
-      run: echo "prefix=huterm-ghostty-v1-$JOB-$RUNNER_OS-$RUNNER_ARCH" >> "$GITHUB_OUTPUT"
+        NAMESPACE: ${{ inputs.namespace }}
+      run: echo "prefix=huterm-ghostty-v1-$NAMESPACE-$RUNNER_OS-$RUNNER_ARCH" >> "$GITHUB_OUTPUT"
 
-    # Keys end in a hash of the stored fingerprints, so the prefix alone
-    # restores the newest archives saved for this job.
+    # Keys end in a hash of the stored slots, so the prefix alone restores
+    # the newest archives saved for this namespace.
     - name: Restore cached archives
       id: restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

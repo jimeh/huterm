@@ -2659,15 +2659,20 @@ impl WorkspaceView {
         self.debug_assert_tabs_aligned(cx);
     }
 
-    /// Applies canonical order to the tab views and model entries; returns
+    /// Applies canonical order to the model entries and tab views; returns
     /// false and changes neither when `order` does not match the tabs.
     fn apply_tab_view_order(&mut self, order: &[TabId], cx: &mut App) -> bool {
-        if !apply_tab_order(&mut self.tabs, order, |tab| tab.id) {
+        // The model decides, so a rejected order can never leave the tab bar
+        // reordered while palette order and Quit capture keep the old one.
+        if !cx
+            .global_mut::<Desktop>()
+            .windows
+            .apply_order(self.window, order)
+        {
             return false;
         }
-        cx.global_mut::<Desktop>()
-            .windows
-            .apply_order(self.window, order);
+        let applied = apply_tab_order(&mut self.tabs, order, |tab| tab.id);
+        debug_assert!(applied, "tab views rejected an order the model took");
         self.debug_assert_tabs_aligned(cx);
         true
     }

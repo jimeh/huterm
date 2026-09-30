@@ -5,7 +5,8 @@ full scenario matrix now runs unconditionally against Ghostty.
 
 Issue #96 later moved the profile-to-window association and each profile's
 desired visibility into the client window model
-([plan](client-window-model.md)). The registry described below keeps the
+([plan](client-window-model.md)). The registry ownership, delivery, and
+lifecycle sections below predate that move. The registry now keeps only the
 native platform, hotkey registrations, return focus, the failed-spawn latch,
 and the smoke journal.
 

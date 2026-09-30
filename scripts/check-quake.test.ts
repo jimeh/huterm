@@ -19,4 +19,7 @@ test("the window model must match each window's own state", () => {
   expect(modelMismatch({ ...quake, "w0.model_quake": "default:false" })).toContain("w0.model_quake");
   expect(modelMismatch({ ...quake, "w1.model_tabs": "3,2" })).toContain("w1.model_tabs");
   expect(modelMismatch({ ...quake, "w1.model_quake": undefined as unknown as string })).toContain("w1.model_quake");
+  const { "w1.desired": _, ...undesired } = quake;
+  expect(modelMismatch(undesired)).toContain("w1.desired");
+  expect(modelMismatch({ ...undesired, "w1.native_error": "frame unavailable" })).toBeUndefined();
 });

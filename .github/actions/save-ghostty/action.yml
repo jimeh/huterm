@@ -1,9 +1,10 @@
 name: Save prebuilt Ghostty
 description: >-
   Save the job's libghostty-vt archives when the build stored any the restore
-  did not already hold. The key hashes every stored fingerprint, so a changed
-  source pin, Zig version, libc, or SDK saves a new entry instead of leaving a
-  stale one in place.
+  did not already hold. The key hashes every stored slot, fingerprint and
+  archive alike, so a changed source pin, Zig version, libc, or SDK saves a new
+  entry instead of leaving a stale one in place, and so does a slot rebuilt
+  because its restored archive was unusable.
 inputs:
   prefix:
     description: The prefix output of restore-ghostty.
@@ -15,19 +16,22 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Hash the stored fingerprints
+    - name: Hash the stored slots
       id: key
       shell: bash
       env:
         PREFIX: ${{ inputs.prefix }}
       run: |
+        set -euo pipefail
         shopt -s nullglob
-        fingerprints=(.native/ghostty-prebuilt/*/fingerprint)
-        if [ "${#fingerprints[@]}" -eq 0 ]; then
+        # The glob skips the dot-named staging directories of failed stores.
+        slots=(.native/ghostty-prebuilt/*/)
+        if [ "${#slots[@]}" -eq 0 ]; then
           echo "key=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        hash="$(cat "${fingerprints[@]}" | shasum -a 256 | cut -c1-64)"
+        hash="$(find "${slots[@]}" -type f -print0 | LC_ALL=C sort -z \
+          | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-64)"
         echo "key=$PREFIX-$hash" >> "$GITHUB_OUTPUT"
 
     - name: Save cached archives

@@ -145,7 +145,8 @@ order: tab ID, terminal ID, and published title. Three view helpers are the only
 code that changes either list, and each updates both in one call:
 
 - `push_tab_view` after a successful spawn;
-- `apply_tab_order` for canonical reorder;
+- `apply_tab_view_order` for canonical reorder, which the model accepts or
+  rejects before any view moves;
 - `drop_tab_views(ids)`, which removes tab views and model entries for one or
   several tabs, applying the current next-active rule per removed tab and
   pruning history.
@@ -252,9 +253,9 @@ registrations, return focus, failed-spawn latch, and smoke journal.
 - The `on_window_closed` callback drops the record for the `WindowId` it
   receives, then keeps its current `maybe_exit` call. This also covers windows
   removed without `remove_window`, such as a failed quake creation.
-- `record(cx)` returns an empty record when no record exists. That happens only
-  after the window has been removed, when a queued weak-entity update still
-  runs.
+- `record(cx)` returns `None` when no record exists, and callers treat that as
+  absent state rather than a fallback record. That happens only after the
+  window has been removed, when a queued weak-entity update still runs.
 
 ### Session
 
@@ -326,9 +327,11 @@ applied per removed tab, and prunes history), `set_tab_title`,
 `begin_close`, and `remove`.
 
 Readers, each a function of `&WindowModel` plus configuration: `record`,
-`quake_window(name)`, `profile_rows(&profiles)`, `palette_tab_order(id)`,
+`quake_window(name)`, `quake_state(name)`, `palette_tab_order(id)`,
 `recent_tab(id)`, `tab_titles(scope)` (one window, or every open window for
-Quit), and `restore_windows(tab_position)`.
+Quit), and `restore_windows(tab_position)`. `quake_windows::profile_rows(cx)`
+is an adapter, not a model reader: it combines the configured profiles with
+`quake_state`.
 
 `Desktop` holds `windows: WindowModel`. The weak view list moves behind the
 broadcast API above.
@@ -425,7 +428,9 @@ Native smoke coverage:
   and confirm it explicitly. After each removal, assert the surviving tab IDs,
   order, count, and that the profile association remains. The existing steps
   already drive summon, hide, auto-hide, fullscreen, regular conversion,
-  profile removal, and close.
+  profile removal, and close. The quake smoke keeps only the model cross-check
+  and tab-count steps, which add no activation cycles to its focus-sensitive
+  steps.
 - Overlays check, Quit dialog titles: serialize the close dialog's job groups,
   with their terminal IDs and mapped titles, as `wN.dialog_groups` in the
   palette smoke state. Add an `activate\t<index>` palette smoke command
@@ -455,9 +460,6 @@ Native smoke coverage:
      metadata is missing, the label falls back to the title and the step fails
      with that diagnostic rather than passing without evidence. Restore the
      original config and reload.
-
-  The quake smoke keeps only the model cross-check and tab-count steps, which
-  add no activation cycles to its focus-sensitive steps.
 - Fullscreen smokes: emit the model's layout bounds and sidebar width as
   `wN.model_restore` and `wN.model_sidebar` in `fullscreen_smoke`, next to the
   existing `wN.restore` (the controller's restorable bounds). Add a smoke
@@ -465,10 +467,11 @@ Native smoke coverage:
   `scripts/check-fullscreen.ts`, inside the default-mode block that already
   runs `checkReserved` (skipped for `noWm`, `frameProbe`, `fallback`, and
   `schedulerOnly`): record the initial `w0.restore`, resize, wait until
-  `w0.restore` differs from it, and assert that `w0.model_restore` equals the
-  new value. That block runs before the script captures its `original` state
-  and Linux `originalGeometry` baselines, so the existing restoration
-  comparisons measure against the resized window. The resize reaches the model
+  `w0.restore` reports the new size, and assert that `w0.model_restore` equals
+  it. Then resize back to the initial size and check again. Hosted macOS 15
+  restored native fullscreen to the launch frame rather than the resized one,
+  so the existing restoration baselines stay at the launch size. The resize
+  reaches the model
   only through the bounds observer, the fullscreen work wake, and
   `observe_fullscreen`, so a missing publication leaves the old value and
   fails. Repeat the equality check after entering and leaving fullscreen, and

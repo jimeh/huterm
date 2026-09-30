@@ -355,11 +355,14 @@ fn reuse_cached(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(false);
         }
+        // Like a failed store, an unreadable entry only costs a rebuild.
         Err(error) => {
-            return Err(BuildError::Io(
-                format!("reading {}", slot.display()),
-                error,
-            ));
+            println!(
+                "cargo:warning=could not read the cached libghostty-vt in {}: \
+                 {error}",
+                slot.display()
+            );
+            return Ok(false);
         }
     };
     let archive = slot.join("lib").join(ARCHIVE);
@@ -1079,6 +1082,12 @@ mod tests {
         // A slot whose archive went missing is rebuilt, not linked.
         fs::remove_file(slot.join("lib").join(ARCHIVE)).unwrap();
         assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
+
+        // So is one whose fingerprint cannot be read.
+        fs::remove_file(slot.join("fingerprint")).unwrap();
+        fs::create_dir(slot.join("fingerprint")).unwrap();
+        assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
+        assert!(fs::read_dir(&untouched).unwrap().next().is_none());
     }
 
     #[test]

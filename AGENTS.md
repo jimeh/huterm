@@ -466,9 +466,9 @@ capture, go through the client window model in `Desktop::windows`, which
 never touches the window stack. `views::broadcast` is only for updates that
 reach every window; never read another window's view entity or
 `AnyWindowHandle` for facts. The model owns each window's attachment,
-workspace, active tab, and history; `WorkspaceView` keeps only its tab
-entities, aligned with the model through `push_tab_view`,
-`apply_tab_view_order`, and `drop_tab_views`.
+workspace, active tab, and history. `WorkspaceView` keeps its tab entities
+aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
+`drop_tab_views`.
 
 Ghostty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Read its active behavior through the retained native probe
@@ -728,9 +728,11 @@ result. The fingerprint covers the source manifest, Zig version and arguments,
 target, and the host libc or macOS SDK: Linux host builds stay native, so an
 archive built against a newer glibc must never reach a 2.35-ceiling package.
 CI jobs restore and save `.native/ghostty-prebuilt` through the
-`restore-ghostty` and `save-ghostty` actions, keyed per job and by a hash of the
-stored fingerprints, so a changed input saves a new entry instead of leaving a
-stale one. Release workflows leave the variable unset and always build from
+`restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash
+of the stored slots, so a changed input or rebuilt slot saves a new entry
+instead of leaving a stale one. A restore takes the namespace's newest entry,
+so jobs share a namespace only when they build the same slots on the same
+runner image. Release workflows leave the variable unset and always build from
 the verified source.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.

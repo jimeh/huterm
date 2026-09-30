@@ -49,6 +49,10 @@ export function modelMismatch(value: State): string | undefined {
     const prefix = key.slice(0, -"profile".length);
     const model = value[`${prefix}model_quake`];
     const desired = value[`${prefix}desired`];
+    // A quake window reports `desired` unless its native inspection failed.
+    if (name !== "ordinary" && desired === undefined && value[`${prefix}native_error`] === undefined) {
+      return `${prefix}desired is missing for profile ${name}`;
+    }
     if (name === "ordinary" ? model !== "none" : desired !== undefined && model !== `${name}:${desired}`) {
       return `${prefix}model_quake=${model} for profile ${name} with desired=${desired}`;
     }

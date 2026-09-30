@@ -164,7 +164,7 @@ jobs:
         id: ghostty
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
-          job: checks
+          namespace: test
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -306,7 +306,7 @@ jobs:
         id: ghostty
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
-          job: smoke
+          namespace: test
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -499,7 +499,7 @@ jobs:
         id: ghostty
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
-          job: benchmarks
+          namespace: test
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -563,7 +563,7 @@ jobs:
         id: ghostty
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
-          job: releasesafe
+          namespace: releasesafe
 
       - name: Run tests against ReleaseSafe Ghostty
         run: mise run ci:test:ghostty-releasesafe
@@ -680,7 +680,7 @@ jobs:
         id: ghostty
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
-          job: package
+          namespace: package
 
       - name: Check platform prerequisites
         run: mise run doctor
