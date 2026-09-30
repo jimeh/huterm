@@ -101,7 +101,7 @@ test("every Mise action step pins the same explicit mise release", () => {
   type Step = { uses?: string; with?: { version?: unknown; minimum_release_age?: unknown } };
   type Workflow = { jobs?: Record<string, { steps?: Step[] }>; runs?: { steps: Step[] } };
   const root = join(import.meta.dir, "..");
-  const files = [".github/workflows/*.yml", ".github/actions/*/action.yml"]
+  const files = [".github/workflows/*.{yml,yaml}", ".github/actions/*/action.{yml,yaml}"]
     .flatMap(pattern => [...new Bun.Glob(pattern).scanSync({ cwd: root, dot: true })]).sort();
   const pins = new Set<string>();
   for (const file of files) {
@@ -116,6 +116,6 @@ test("every Mise action step pins the same explicit mise release", () => {
       }
     }
   }
-  expect(files).toContain(".github/actions/prepare-release-candidate/action.yml");
+  expect(files).toEqual(expect.arrayContaining([".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/actions/prepare-release-candidate/action.yml"]));
   expect([...pins]).toHaveLength(1);
 });

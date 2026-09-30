@@ -266,11 +266,12 @@ refresh action pins and `mise run tools:update` to refresh project tools
 without accepting releases inside the cooldown window.
 Keep the cooldown values in `mise.toml`, `.pinact.yaml`,
 `.github/dependabot.yml`, and `zizmor.yml` aligned when changing the policy.
-Every `jdx/mise-action` step pins the same explicit mise `version`, chosen
-from releases older than three days; `scripts/ci-toolchain.test.ts` enforces
-this. Without it, a restored Mise cache holding an older binary makes the
-action run `mise self-update`, whose GitHub API lookup was rate limited (403).
-Dependabot does not update action inputs, so bump every pin together.
+Every `jdx/mise-action` step pins the same explicit mise `version`. Without
+a pin, a restored Mise cache holding an older binary makes the action run
+`mise self-update`, whose GitHub API lookup was rate limited (403).
+`scripts/ci-toolchain.test.ts` enforces one shared pin, but not release age:
+choose a release older than three days by hand. Dependabot does not update
+action inputs, so bump every pin together.
 `scripts/linux/Dockerfile` pins its own checksummed mise release.
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.6 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
