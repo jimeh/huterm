@@ -13,9 +13,51 @@ use huterm_protocol::{
 
 use super::{Desktop, WorkspaceView, open_window};
 
+/// The window model's tab titles as the last config reload left them, taken
+/// synchronously when its republication finished, before any later terminal
+/// activity could change them.
+#[derive(Default)]
+pub(super) struct ReloadTitles {
+    reloads: u64,
+    titles: Vec<String>,
+}
+
+impl gpui::Global for ReloadTitles {}
+
+/// Records the published titles after a reload, under the palette smoke only.
+pub(super) fn record_reload_titles(cx: &mut App) {
+    if !cx.has_global::<ReloadTitles>() {
+        return;
+    }
+    let titles = model_titles(cx);
+    let reloads = cx.global::<ReloadTitles>().reloads + 1;
+    cx.set_global(ReloadTitles { reloads, titles });
+}
+
+/// `activate\t<index>` activates the window at `index` in GPUI's order.
+fn activate_window(cx: &mut App, index: &str) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let handle = *cx.windows().get(index).context("smoke window index")?;
+    handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        cx.activate(true);
+    })?;
+    Ok(format!("window {index} activated"))
+}
+
+fn model_titles(cx: &App) -> Vec<String> {
+    cx.global::<Desktop>()
+        .windows
+        .tab_titles(super::TitleScope::Open)
+        .into_iter()
+        .map(|entry| entry.title.clone())
+        .collect()
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory = PathBuf::from(std::env::var("HUTERM_PALETTE_SMOKE")?);
     super::run_with_startup(move |cx| {
+        cx.set_global(ReloadTitles::default());
         cx.spawn(async move |cx| {
             let mut sequence = 0;
             loop {
@@ -118,6 +160,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
         super::approved_quit(cx);
         return Ok("approved quit requested".to_owned());
     }
+    if let Some(index) = command.strip_prefix("activate\t") {
+        return activate_window(cx, index);
+    }
     let handle = *cx.windows().first().context("palette smoke window")?;
     if let Some(id) = command.strip_prefix("invoke\t") {
         return invoke_catalog(cx, handle, id);
@@ -167,7 +212,7 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             }
             "focus-terminal" => {
                 let focus = view
-                    .active_view()
+                    .active_view(cx)
                     .context("active terminal")?
                     .read(cx)
                     .focus
@@ -176,7 +221,7 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 Ok("terminal focused".to_owned())
             }
             "input-barrier" => {
-                view.active_view()
+                view.active_view(cx)
                     .context("active terminal")?
                     .read(cx)
                     .client
@@ -184,7 +229,7 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 Ok("input barrier queued".to_owned())
             }
             "open-explicit" => {
-                let tab = view.active.context("active tab")?;
+                let tab = view.active_tab(cx).context("active tab")?;
                 let invocation = CommandInvocation::new(
                     ids::RENAME_TAB,
                     vec![
@@ -261,7 +306,7 @@ fn report_terminal_failure(
             .downcast::<WorkspaceView>()
             .map_err(|_| anyhow::anyhow!("workspace root"))?;
         let terminal =
-            view.read(cx).active_view().context("active terminal")?;
+            view.read(cx).active_view(cx).context("active terminal")?;
         let queued = terminal.update(cx, |terminal, _| {
             terminal.report_failure(
                 super::notices::Severity::Error,
@@ -293,9 +338,7 @@ fn invoke_catalog(
 
 fn quake_state(cx: &App) -> anyhow::Result<String> {
     let mut output = String::new();
-    // Smoke commands run from an App update with no window on the stack.
-    let viewpoint = super::quake_windows::Viewpoint::Outside;
-    for row in super::quake_windows::profile_rows(cx, &viewpoint) {
+    for row in super::quake_windows::profile_rows(cx) {
         let state = match row.state {
             super::quake_windows::ProfileState::NotSummoned => "not-summoned",
             super::quake_windows::ProfileState::Hidden { .. } => "hidden",
@@ -323,7 +366,7 @@ fn window_target(
 ) -> anyhow::Result<(Option<WorkspaceId>, Option<TabId>)> {
     let view = workspace_view(cx, index)?;
     let view = view.read(cx);
-    Ok((view.workspace, view.active))
+    Ok((view.workspace_id(cx), view.active_tab(cx)))
 }
 
 fn core_state(
@@ -367,13 +410,16 @@ fn read_state(cx: &mut App) -> String {
     // theirs as `w<i>.notices=` and `w<i>.notice<j>=` on their line.
     let desktop = cx.global::<Desktop>();
     let mut output = format!(
-        "windows={} config.warning={:?} {}\n",
+        "windows={} config.warning={:?} {} model_titles={:?} reloads={} reload_titles={:?}\n",
         cx.windows().len(),
         desktop.config.warning,
         smoke_notices(
             "desktop.",
             desktop.diagnostics.iter().chain(&desktop.latched)
-        )
+        ),
+        model_titles(cx).join(";"),
+        cx.global::<ReloadTitles>().reloads,
+        cx.global::<ReloadTitles>().titles.join(";"),
     );
     for (index, handle) in cx.windows().into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
@@ -386,7 +432,7 @@ fn read_state(cx: &mut App) -> String {
             let palette_focused = palette.is_some_and(|palette| {
                 palette.read(cx).focus_handle(cx).is_focused(window)
             });
-            let terminal = view.active_view();
+            let terminal = view.active_view(cx);
             let terminal_focused = terminal.as_ref().is_some_and(|terminal| {
                 terminal.read(cx).focus.is_focused(window)
             });
@@ -417,7 +463,7 @@ fn read_state(cx: &mut App) -> String {
             let active_index = view
                 .tabs
                 .iter()
-                .position(|tab| Some(tab.id) == view.active)
+                .position(|tab| Some(tab.id) == view.active_tab(cx))
                 .map_or_else(|| "none".to_owned(), |index| index.to_string());
             writeln!(
                 output,
@@ -459,7 +505,7 @@ fn ui_state(
 ) -> String {
     let prefix = format!("w{index}.");
     entity.update(cx, |view, cx| {
-        let terminal_line = view.active_view().map_or_else(
+        let terminal_line = view.active_view(cx).map_or_else(
             || {
                 format!(
                     "{prefix}terminal_bounds=none {prefix}scrolled=0 {prefix}scroll_pill=false {prefix}grid=0,0 {prefix}grid_bounds=none {prefix}cell=0,0 {prefix}selection=false {prefix}selecting=false {prefix}history=0"

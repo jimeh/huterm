@@ -460,11 +460,15 @@ the active window fails with `window not found` even though it remains open.
 Reading any window handle, or the root view entity of the dispatching window,
 from inside that window's action handler panics inside GPUI with `attempted
 to read a window that is already on the stack`, and the panic aborts because
-AppKit's selector callback cannot unwind. Cross-window reads such as quake
-profile rows take a `Viewpoint` naming the calling view with its own state;
-read other windows through their view entities, never through
-`AnyWindowHandle`, and pass `Outside` only from async tasks or smoke commands
-with no window update in progress.
+AppKit's selector callback cannot unwind. Cross-window and application reads
+of window facts, such as quake profile rows, Quit dialog titles, and Quit
+capture, go through the client window model in `Desktop::windows`, which
+never touches the window stack. `views::broadcast` is only for updates that
+reach every window; never read another window's view entity or
+`AnyWindowHandle` for facts. The model owns each window's attachment,
+workspace, active tab, and history. `WorkspaceView` keeps its tab entities
+aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
+`drop_tab_views`.
 
 Ghostty treats mouse encodings 1005 and 1006 as mutually exclusive; the last
 enabled format wins. Read its active behavior through the retained native probe
@@ -621,12 +625,12 @@ member, taken from the manifest: foreign writes may leave padding
 uninitialized. The
 build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
 ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
-`MACOSX_DEPLOYMENT_TARGET`, and `ZIG`, and reruns only when those, itself, or
-`scripts/ghostty-source.json` change; `scripts/ghostty-build.test.ts` runs its
-unit tests. The crate's contract tests pin each C behavior the engine relies
-on, and the ABI test checks every emitted FFI type against
-`ghostty_type_json()`. After a pin bump, fix a failing contract test's
-assumption before changing engine code. Allocator vtable
+`MACOSX_DEPLOYMENT_TARGET`, `ZIG`, and `HUTERM_GHOSTTY_ARTIFACT_CACHE`, and
+reruns only when those, itself, or `scripts/ghostty-source.json` change;
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
+tests pin each C behavior the engine relies on, and the ABI test checks every
+emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a
+failing contract test's assumption before changing engine code. Allocator vtable
 callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
 Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
 budget and reports actual retained rows.
@@ -716,8 +720,20 @@ can stall on Linux when writing the live HTTPS response directly, even though
 local HTTP fixtures pass. Verify download changes with a cold preparation run.
 Cargo forces `HUTERM_GHOSTTY_CPU=baseline` for portable native instructions and
 `HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast`. Local builds retain warm native artifacts.
-The pinned CI cache action prunes path dependencies inside the repository, so CI
-rebuilds `huterm-ghostty`'s native library.
+The pinned CI cache action prunes path dependencies inside the repository, so
+`huterm-ghostty`'s build script reruns in every CI job. With
+`HUTERM_GHOSTTY_ARTIFACT_CACHE` set, it links a cached `libghostty-vt.a` whose
+fingerprint matches the build and otherwise builds from source and stores the
+result. The fingerprint covers the source manifest, Zig version and arguments,
+target, and the host libc or macOS SDK: Linux host builds stay native, so an
+archive built against a newer glibc must never reach a 2.35-ceiling package.
+CI jobs restore and save `.native/ghostty-prebuilt` through the
+`restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash
+of the stored slots, so a changed input or rebuilt slot saves a new entry
+instead of leaving a stale one. A restore takes the namespace's newest entry,
+so jobs share a namespace only when they build the same slots on the same
+runner image. Release workflows leave the variable unset and always build from
+the verified source.
 Preserve upstream formatting in vendored crates. The staged Rust formatter
 excludes `third-party/vendor`; Cargo still compiles it as a dependency.
 

@@ -160,6 +160,12 @@ jobs:
           key: checks-debug-${{ runner.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Restore prebuilt Ghostty
+        id: ghostty
+        uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
+        with:
+          namespace: test
+
       - name: Check platform prerequisites
         run: mise run doctor
 
@@ -193,6 +199,13 @@ jobs:
         with:
           name: check-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-check-evidence
+
+      - name: Save prebuilt Ghostty
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ghostty # zizmor: ignore[self-repository]
+        with:
+          prefix: ${{ steps.ghostty.outputs.prefix }}
+          matched-key: ${{ steps.ghostty.outputs.matched-key }}
 
   smoke:
     name: Rust smoke (${{ matrix.label }})
@@ -288,6 +301,12 @@ jobs:
           cache-workspace-crates: true
           cache-directories: .native/ghostty
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Restore prebuilt Ghostty
+        id: ghostty
+        uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
+        with:
+          namespace: test
 
       - name: Check platform prerequisites
         run: mise run doctor
@@ -421,6 +440,13 @@ jobs:
           name: smoke-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-smoke-evidence
 
+      - name: Save prebuilt Ghostty
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ghostty # zizmor: ignore[self-repository]
+        with:
+          prefix: ${{ steps.ghostty.outputs.prefix }}
+          matched-key: ${{ steps.ghostty.outputs.matched-key }}
+
   benchmarks:
     name: Scroll benchmarks
     runs-on: ubuntu-24.04
@@ -469,11 +495,24 @@ jobs:
           key: benchmarks-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Restore prebuilt Ghostty
+        id: ghostty
+        uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
+        with:
+          namespace: test
+
       - name: Check platform prerequisites
         run: mise run doctor
 
       - name: Verify Ghostty scroll and link budgets
         run: mise run ci:benchmarks
+
+      - name: Save prebuilt Ghostty
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ghostty # zizmor: ignore[self-repository]
+        with:
+          prefix: ${{ steps.ghostty.outputs.prefix }}
+          matched-key: ${{ steps.ghostty.outputs.matched-key }}
 
   releasesafe:
     # Normal builds link Ghostty in ReleaseFast, where a bounds, overflow, or
@@ -520,8 +559,21 @@ jobs:
           key: ghostty-releasesafe
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Restore prebuilt Ghostty
+        id: ghostty
+        uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
+        with:
+          namespace: releasesafe
+
       - name: Run tests against ReleaseSafe Ghostty
         run: mise run ci:test:ghostty-releasesafe
+
+      - name: Save prebuilt Ghostty
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ghostty # zizmor: ignore[self-repository]
+        with:
+          prefix: ${{ steps.ghostty.outputs.prefix }}
+          matched-key: ${{ steps.ghostty.outputs.matched-key }}
 
   package:
     name: Package ${{ matrix.label }}
@@ -624,6 +676,12 @@ jobs:
           key: package-release-${{ runner.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Restore prebuilt Ghostty
+        id: ghostty
+        uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
+        with:
+          namespace: package
+
       - name: Check platform prerequisites
         run: mise run doctor
 
@@ -637,6 +695,13 @@ jobs:
           name: package-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: dist/linux/${{ matrix.machine }}/package-evidence
           if-no-files-found: ignore
+
+      - name: Save prebuilt Ghostty
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ghostty # zizmor: ignore[self-repository]
+        with:
+          prefix: ${{ steps.ghostty.outputs.prefix }}
+          matched-key: ${{ steps.ghostty.outputs.matched-key }}
 
   verify:
     # Preserve the required check names configured in the repository ruleset.

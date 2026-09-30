@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { field, parseRect, scrollPillCentre } from "./check-overlays";
+import { field, parseRect, quoted, scrollPillCentre } from "./check-overlays";
 
 const state = `windows=1 config.warning=None desktop.notices=0
 w0.palette=false w0.tabs=3 w0.text="READY busy"
@@ -23,4 +23,12 @@ test("rects parse four finite numbers and reject anything else", () => {
 
 test("the scroll pill centre sits at the terminal's bottom centre above the 12-point margin", () => {
   expect(scrollPillCentre({ x: 0, y: 34, w: 1208, h: 520 })).toEqual({ x: 604, y: 527 });
+});
+
+test("quoted state values keep escaped quotes and match the exact field", () => {
+  const state = 'w0.text="say \\"hi\\"" w1.text="READY BUSY" model_titles="a;sibling-1"';
+  expect(quoted(state, "w0.text")).toBe('say "hi"');
+  expect(quoted(state, "w1.text")).toBe("READY BUSY");
+  expect(quoted(state, "model_titles")).toBe("a;sibling-1");
+  expect(quoted(state, "w2.text")).toBeUndefined();
 });

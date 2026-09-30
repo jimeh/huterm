@@ -238,6 +238,12 @@ done
     const result = await command(text);
     if (result.includes("Err") || result.startsWith("error")) throw new Error(`${text}: ${result}`);
   };
+  // `observe_fullscreen` publishes the controller's restorable bounds to the
+  // window model; `finish_close` writes them again only at close.
+  const modelRestored = (label: string) => waitFor(async () => {
+    const current = await state();
+    return current["w0.model_restore"] === current["w0.restore"];
+  }, `window model restorable bounds ${label}`);
   const input = async (text: string) => {
     if (macos) {
       for (const char of text) await accepted(`native\t0\t0\t${char}\t${char}`);
@@ -299,6 +305,7 @@ done
           run(["xdotool", "mousemove", "--window", focused, String(grabX), String(grabY), "mousedown", "1", "mousemove", "--window", focused, "260", String(grabY), "mouseup", "1"]);
         }
         await waitFor(async () => Math.abs(Number((await state())["w0.tab_bounds"]!.split(",")[2]) - 260) < 1, "preferred sidebar width");
+        await waitFor(async () => { const current = await state(); return current["w0.model_sidebar"] === current["w0.sidebar_width"]; }, "window model sidebar width");
         // Dragging the sidebar is a resize the user made.
         await waitFor(async () => Number((await state())["w0.resize_indicators"]) > Number(beforeDrag), "sidebar drag raises the size panel");
         await accepted("0 new_tab");
@@ -491,6 +498,19 @@ done
       await checkReserved();
       await checkTitlebar();
       await checkQuietChrome();
+      // Only the bounds observer, the fullscreen wake, and
+      // `observe_fullscreen` carry a resize to the window model. Return to
+      // the launch size afterwards: hosted macOS 15 restored native
+      // fullscreen to the launch frame rather than the resized one.
+      const initialRestore = (await state())["w0.restore"]!;
+      const [, , width, height] = initialRestore.split(",").map(Number) as [number, number, number, number];
+      const resizeTo = async (target: string, label: string) => {
+        await accepted(`0 resize:${target}`);
+        await waitFor(async () => { const current = await state(); return current["w0.restore"]!.split(",").slice(2).join("x") === target && current["w0.pending"] === "false"; }, `${label} restorable bounds`);
+        await modelRestored(label);
+      };
+      await resizeTo(`${Math.round(width - 40)}x${Math.round(height - 30)}`, "after resize");
+      await resizeTo(`${width}x${height}`, "after resizing back");
     }
     const original = await stable("Windowed");
     if (!fallback) { await quiet(); console.log("FULLSCREEN_SMOKE settled-task-no-timer"); }
@@ -613,6 +633,7 @@ done
       if (macos) await accepted(`native\t36\t${1 << 20}\t\r\t\r`);
       else run(["xdotool", "key", "F11"]);
       const full = await stable("Native");
+      await modelRestored("in native fullscreen");
       if (full["w0.focused"] !== "true" || full["w0.retained"] !== "true") throw new Error("native mode lost focus or retained chrome");
       if (macos) {
         if ((Number(full["w0.style"]) & (1 << 14)) === 0) throw new Error("AppKit native fullscreen bit is absent");
@@ -626,6 +647,7 @@ done
       await accepted("0 toggle_native_fullscreen");
       await stable("Windowed");
       await waitForRestored(original, macos, macos);
+      await modelRestored("after native exit");
       if (!macos) {
         const restoredGeometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]);
         if (restoredGeometry !== originalGeometry) throw new Error(`X11 geometry did not restore: ${originalGeometry} -> ${restoredGeometry}`);

@@ -38,6 +38,29 @@ async function publishCommand(file: string, text: string): Promise<void> {
 async function collectStream(stream: ReadableStream<Uint8Array>, append: (text: string) => void): Promise<void> {
   for await (const chunk of stream) append(Buffer.from(chunk).toString());
 }
+/**
+ * How the window model disagrees with a window's own state, if it does: every
+ * quake window's model summary must match its desired visibility, an
+ * ordinary window must have none, and model and view tab orders must match.
+ */
+export function modelMismatch(value: State): string | undefined {
+  for (const [key, name] of Object.entries(value)) {
+    if (!key.endsWith(".profile")) continue;
+    const prefix = key.slice(0, -"profile".length);
+    const model = value[`${prefix}model_quake`];
+    const desired = value[`${prefix}desired`];
+    // A quake window reports `desired` unless its native inspection failed.
+    if (name !== "ordinary" && desired === undefined && value[`${prefix}native_error`] === undefined) {
+      return `${prefix}desired is missing for profile ${name}`;
+    }
+    if (name === "ordinary" ? model !== "none" : desired !== undefined && model !== `${name}:${desired}`) {
+      return `${prefix}model_quake=${model} for profile ${name} with desired=${desired}`;
+    }
+    if (value[`${prefix}model_tabs`] !== value[`${prefix}view_tabs`]) {
+      return `${prefix}model_tabs=${value[`${prefix}model_tabs`]} but view_tabs=${value[`${prefix}view_tabs`]}`;
+    }
+  }
+}
 function profile(state: State, name: string): State | undefined {
   const entry = Object.entries(state).find(([key, value]) => key.endsWith(".profile") && value === name);
   if (!entry) return;
@@ -146,7 +169,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     if (macos) { await native(`text\t${text}`);await native("key\t36\tdown\t0");await native("key\t36\tup\t0"); }
     else {run(["xdotool","type","--clearmodifiers",text]);run(["xdotool","key","Return"]);}
   };
-  const state = async () => parseState(await readFile(join(directory, "state"), "utf8"));
+  const state = async () => {
+    const value = parseState(await readFile(join(directory, "state"), "utf8"));
+    const mismatch = modelMismatch(value);
+    if (mismatch) throw new Error(`${engine}: window model disagrees with its window: ${mismatch}`);
+    return value;
+  };
   const current = async () => profile(await state(), "default");
   const checkIdle = async (label: string) => {
     await waitFor(async () => {
@@ -298,6 +326,44 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     if (second.native_id !== first.native_id || !second.text?.includes(`READY:${identity}`)) throw new Error("summon replaced the window or shell");
     await input("second-summon");
     await waitFor(async () => (await current())?.text?.includes(`ACK:second-summon:${identity}:`) ?? false, "PTY ACK after hide and resummon");
+    // Production tab opens and closes in the associated quake window change
+    // its tab count in the window model, including while it is hidden. The
+    // original tab and its shell survive for the later steps.
+    {
+      const original = (await current())!.model_tabs!;
+      const count = (value: State | undefined) => value?.model_tabs?.split(",").filter(Boolean).length;
+      const quakeTabs = (expected: number, label: string) => waitFor(async () => {
+        const value = await current();
+        return count(value) === expected && value?.model_quake?.startsWith("default:") === true;
+      }, label);
+      // A new shell may not have started its background job yet, so a close
+      // either confirms or completes directly.
+      const closeAndConfirm = async (commandText: string, remaining: number) => {
+        await command(commandText);
+        await waitFor(async () => { const value = await current(); return count(value) === remaining || value?.confirming === "true"; }, `${commandText} assessment`);
+        if ((await current())?.confirming === "true") await command("default confirm_close");
+        await quakeTabs(remaining, `${commandText} leaves ${remaining}`);
+      };
+      await command("default new_tab");
+      await quakeTabs(2, "second quake tab");
+      await command("default new_tab");
+      await quakeTabs(3, "third quake tab");
+      await command("default hide_quake");
+      await waitFor(async () => { const value = await current(); return value?.visible === "false" && value.stage === "Idle" && value.model_quake === "default:false"; }, "hidden quake keeps its three tabs");
+      if (count(await current()) !== 3) throw new Error(`${engine}: hidden quake tab count: ${(await current())?.model_tabs}`);
+      await command("default show_quake");
+      await waitFor(async () => { const value = await current(); return value?.visible === "true" && value.stage === "Idle"; }, "quake shown for tab removal");
+      await command("default previous_tab");
+      await command("default previous_tab");
+      await waitFor(async () => (await current())?.model_active === original, "original quake tab active");
+      await closeAndConfirm("default close_tabs_after", 1);
+      if ((await current())?.model_tabs !== original) throw new Error(`${engine}: close tabs after removed the original tab`);
+      await command("default new_tab");
+      await quakeTabs(2, "replacement quake tab");
+      await closeAndConfirm("default close_tab", 1);
+      const kept = (await current())!;
+      if (kept.model_tabs !== original || !kept.text?.includes(`READY:${identity}`)) throw new Error(`${engine}: single close did not keep the original tab: ${JSON.stringify(kept)}`);
+    }
     {
       const reload = async (settings: string, extra = "") => {
         await writeFile(config, configText(settings, extra));

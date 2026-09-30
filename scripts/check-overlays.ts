@@ -144,6 +144,13 @@ export function field(state: string, name: string): string {
   return value;
 }
 
+/** A Debug-quoted state value such as `w1.text="…"`, or undefined. */
+export function quoted(state: string, name: string): string | undefined {
+  const escaped = name.replaceAll(".", "\\.");
+  const value = new RegExp(`(?:^|\\s)${escaped}="((?:[^"\\\\]|\\\\.)*)"`).exec(state)?.[1];
+  return value?.replaceAll('\\"', '"');
+}
+
 /** Centre of the pill drawn 12 points above the terminal's bottom edge. */
 export function scrollPillCentre(terminal: { x: number; y: number; w: number; h: number }): { x: number; y: number } {
   return { x: terminal.x + terminal.w / 2, y: terminal.y + terminal.h - 12 - 15 };
@@ -582,6 +589,55 @@ label = "title"
     await key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
     await ack("ackcontextx");
+
+    // 10. Quit's confirmation names a sibling window's busy tab by the title
+    // the window model published. Window 0 hosts the dialog, so the title can
+    // only come from window 1's record. Titles follow OSC 0 under
+    // `label = "title"`; a reload to directory labels must republish them.
+    await command("open-second");
+    await state("windows=2", "w1.tabs=1", "w1.terminal_focused=true");
+    const siblingText = (text: string) => quoted(text, "w1.text") ?? "";
+    await stateWhere((text) => siblingText(text).includes("READY"), "sibling window shell");
+    await typeText("busy");
+    await key("enter");
+    await stateWhere((text) => siblingText(text).includes("BUSY"), "sibling busy job");
+    const siblingTitle = async (title: string) => {
+      await typeText(`title ${title}`);
+      await key("enter");
+      await state(`w1.window_title="${title} — Huterm"`);
+      await stateWhere((text) => (quoted(text, "model_titles") ?? "").split(";").includes(title), `${title} published`);
+    };
+    const quitNames = async (title: string) => {
+      await command("activate\t0");
+      await state("w0.active=true", "w0.terminal_focused=true");
+      await invoke("quit");
+      const dialog = await state("w0.confirming=true");
+      const groups = (quoted(dialog, "w0.dialog_groups") ?? "").split(";");
+      if (!groups.includes(title)) throw new Error(`${engine}: Quit dialog groups ${JSON.stringify(groups)} lack the sibling title ${title}`);
+      await key("escape");
+      await state("w0.confirming=false", "w0.terminal_focused=true");
+    };
+    await siblingTitle("siblingone");
+    await quitNames("siblingone");
+    await command("activate\t1");
+    await state("w1.active=true", "w1.terminal_focused=true");
+    await siblingTitle("siblingtwo");
+    await quitNames("siblingtwo");
+    const reloadedTitles = async (document: string) => {
+      const before = Number(/(?:^|\s)reloads=(\d+)/.exec(await current())?.[1]);
+      await writeFile(config, document);
+      await command("invoke-reload");
+      const after = await stateWhere((text) => Number(/(?:^|\s)reloads=(\d+)/.exec(text)?.[1]) > before, "reload title record");
+      return { model: (quoted(after, "model_titles") ?? "").split(";"), reload: (quoted(after, "reload_titles") ?? "").split(";") };
+    };
+    const published = (quoted(await current(), "model_titles") ?? "").split(";");
+    const directory = await reloadedTitles(configDocument.replace('label = "title"', 'label = "directory"'));
+    // The record is taken when reload republication ends, so later terminal
+    // activity cannot supply a title reload failed to publish.
+    if (directory.reload.length !== published.length || directory.reload.includes("siblingtwo")) {
+      throw new Error(`${engine}: reload did not republish directory labels: before ${JSON.stringify(published)}, after ${JSON.stringify(directory.reload)}`);
+    }
+    await reloadedTitles(configDocument);
 
     console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
     await command("quit");

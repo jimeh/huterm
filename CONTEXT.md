@@ -47,6 +47,12 @@ Detaching does not mean closing the workspace or its terminals.
 The saved arrangement of a client's views, workspace selections, and presentation
 preferences.
 
+**Window record**:
+A client's facts about one of its windows: its attachment, session, workspace,
+tabs, active tab, activation history, quake profile, and restorable layout.
+Client layouts are built from window records; pane layouts and panel placement
+are not part of them yet.
+
 **Restoration**:
 Recreating saved workspace structure and client layout after a restart, with
 fresh terminal processes when the previous runtime is no longer alive.

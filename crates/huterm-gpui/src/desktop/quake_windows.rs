@@ -3,7 +3,6 @@
 use super::*;
 use crate::quake::ProfileExt;
 use crate::quake::{self, Display, Profile, Rect, Transition, hotkeys, native};
-use gpui::EntityId;
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
@@ -13,7 +12,6 @@ use std::{
 pub(super) struct Registry {
     platform: Option<native::Platform>,
     registrations: Option<hotkeys::Registrations>,
-    windows: BTreeMap<String, AnyWindowHandle>,
     return_focus: Option<native::Focus>,
     pub(super) failed_spawn: Option<(String, String)>,
     smoke_journal: Option<SmokeJournal>,
@@ -24,7 +22,6 @@ impl Default for Registry {
         Self {
             platform: None,
             registrations: None,
-            windows: BTreeMap::new(),
             return_focus: None,
             failed_spawn: None,
             smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
@@ -49,53 +46,13 @@ pub(super) enum ProfileState {
     Visible,
 }
 
-/// Where a `profile_rows` call comes from.
-///
-/// GPUI takes a window out of its slot for the duration of an update, so
-/// reading the calling window, or its root view entity, from inside its own
-/// dispatch panics in GPUI. A caller inside a window therefore supplies its
-/// own quake state and is skipped; every other window is read through its
-/// view entity, which does not touch the window stack.
-pub(super) enum Viewpoint {
-    /// An update of the view with this id is in progress.
-    Window {
-        view: EntityId,
-        /// The caller's own profile name and visibility, when it is quake.
-        quake: Option<(String, bool)>,
-        tabs: usize,
-    },
-    /// No window update is on the stack: async tasks and smoke commands.
-    Outside,
-}
-
-/// Configured profiles with their live window state, sorted by name.
-pub(super) fn profile_rows(cx: &App, viewpoint: &Viewpoint) -> Vec<ProfileRow> {
+/// Configured profiles with their live window state, sorted by name. Reads
+/// only configuration and the window model, so it is safe from any context,
+/// including a quake window's own action handler.
+pub(super) fn profile_rows(cx: &App) -> Vec<ProfileRow> {
     let desktop = cx.global::<Desktop>();
-    let mut live: BTreeMap<String, (bool, usize)> = BTreeMap::new();
-    if let Viewpoint::Window {
-        quake: Some((name, visible)),
-        tabs,
-        ..
-    } = viewpoint
-    {
-        live.insert(name.clone(), (*visible, *tabs));
-    }
-    for weak in &desktop.windows {
-        if let Viewpoint::Window { view, .. } = viewpoint
-            && weak.entity_id() == *view
-        {
-            continue;
-        }
-        let Some(entity) = weak.upgrade() else {
-            continue;
-        };
-        let view = entity.read(cx);
-        if let Some(state) = &view.quake {
-            live.insert(state.name.clone(), (state.visible(), view.tabs.len()));
-        }
-    }
     build_profile_rows(&desktop.config.quake.profiles, |name| {
-        live.get(name).copied()
+        desktop.windows.quake_state(name)
     })
 }
 
@@ -513,7 +470,8 @@ fn invoke_now(
         .get(name)
         .cloned()
         .ok_or_else(|| format!("unknown quake profile {name:?}"))?;
-    let handle = cx.global::<Desktop>().quake.windows.get(name).copied();
+    let handle =
+        window_handle(cx, cx.global::<Desktop>().windows.quake_window(name));
     if handle.is_none() && command == ids::HIDE_QUAKE {
         return Ok(());
     }
@@ -576,7 +534,9 @@ fn invoke_now(
         match result {
             Ok(result) => return result,
             Err(_) => {
-                cx.global_mut::<Desktop>().quake.windows.remove(name);
+                cx.global_mut::<Desktop>()
+                    .windows
+                    .detach_quake(handle.window_id());
             }
         }
     }
@@ -589,7 +549,7 @@ fn invoke_now(
         Some((name.to_owned(), config, display)),
         reporter,
     );
-    if !cx.global::<Desktop>().quake.windows.contains_key(name) {
+    if cx.global::<Desktop>().windows.quake_window(name).is_none() {
         return Err(format!("could not create quake profile {name:?}"));
     }
     Ok(())
@@ -630,10 +590,6 @@ pub(super) fn attach(
     transition.retarget(true, now, Duration::ZERO);
     let work =
         Work::new(&native, &platform).map_err(|error| error.to_string())?;
-    cx.global_mut::<Desktop>()
-        .quake
-        .windows
-        .insert(name.clone(), window.window_handle());
     Ok(Presentation {
         name,
         reporter,
@@ -788,6 +744,19 @@ fn recover(
         .flatten()
 }
 
+/// Runs one quake transition step, then publishes the resulting visibility
+/// on every return path: `decide` can auto-hide before a later failure
+/// returns early.
+fn step(
+    view: &mut WorkspaceView,
+    window: &mut Window,
+    cx: &mut Context<'_, WorkspaceView>,
+) -> Option<NativeEffect> {
+    let effect = step_transition(view, window, cx);
+    view.publish_quake_visibility(cx);
+    effect
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one exhaustive native transition reducer keeps effect ordering visible"
@@ -796,7 +765,7 @@ fn recover(
     clippy::cast_possible_truncation,
     reason = "native screen coordinates become GPUI logical f32 pixels"
 )]
-fn step(
+fn step_transition(
     view: &mut WorkspaceView,
     window: &mut Window,
     cx: &mut Context<'_, WorkspaceView>,
@@ -817,7 +786,7 @@ fn step(
     if state.detach_requested && state.stage == Stage::Idle && !state.recovering
     {
         state.generation.set(state.generation.get() + 1);
-        cx.global_mut::<Desktop>().quake.windows.remove(&state.name);
+        cx.global_mut::<Desktop>().windows.detach_quake(view.window);
         view.quake.take();
         view.fullscreen_work.wake.signal();
         view.fullscreen = FullscreenController::new(
@@ -832,7 +801,9 @@ fn step(
             view.fullscreen.resume_generation(adapter.generation());
         }
         view.fullscreen.observe_native_flag(window.is_fullscreen());
-        view.bounds = window.window_bounds();
+        cx.global_mut::<Desktop>()
+            .windows
+            .set_layout_bounds(view.window, window.window_bounds());
         view.sync_quake_visibility(window, cx);
         return None;
     }
@@ -966,15 +937,15 @@ fn step(
     } else {
         Some(NativeEffect::for_state(state, operations))
     };
-    if state.regular {
-        view.bounds = window.window_bounds();
+    let bounds = if state.regular {
+        Some(window.window_bounds())
     } else if decision.settled && state.transition.visible() {
         let factor = if cfg!(target_os = "linux") {
             f64::from(window.scale_factor())
         } else {
             1.0
         };
-        view.bounds = WindowBounds::Windowed(Bounds::new(
+        Some(WindowBounds::Windowed(Bounds::new(
             point(
                 px((state.target.x / factor) as f32),
                 px((state.target.y / factor) as f32),
@@ -983,7 +954,14 @@ fn step(
                 px((state.target.width / factor) as f32),
                 px((state.target.height / factor) as f32),
             ),
-        ));
+        )))
+    } else {
+        None
+    };
+    if let Some(bounds) = bounds {
+        cx.global_mut::<Desktop>()
+            .windows
+            .set_layout_bounds(view.window, bounds);
     }
     view.sync_quake_visibility(window, cx);
     effect
@@ -1006,7 +984,7 @@ pub(super) fn close(
 ) {
     if let Some(state) = view.quake.take() {
         state.generation.set(state.generation.get() + 1);
-        cx.global_mut::<Desktop>().quake.windows.remove(&state.name);
+        cx.global_mut::<Desktop>().windows.detach_quake(view.window);
         #[cfg(target_os = "macos")]
         cx.foreground_executor()
             .spawn(async move {
@@ -1023,19 +1001,14 @@ pub(super) fn close(
 }
 
 pub(super) fn reconcile(cx: &mut App) {
-    let removed: Vec<_> = cx
-        .global::<Desktop>()
-        .quake
+    let desktop = cx.global::<Desktop>();
+    // A removed profile's window keeps its association until its detach
+    // completes, so a re-added profile cannot open a second window.
+    let removed: Vec<_> = desktop
         .windows
-        .iter()
-        .filter(|(name, _)| {
-            !cx.global::<Desktop>()
-                .config
-                .quake
-                .profiles
-                .contains_key(*name)
-        })
-        .map(|(_, handle)| *handle)
+        .quake_windows()
+        .filter(|(name, _)| !desktop.config.quake.profiles.contains_key(*name))
+        .filter_map(|(_, id)| window_handle(cx, Some(id)))
         .collect();
     for handle in removed {
         cx.defer(move |cx| {
@@ -1110,6 +1083,17 @@ impl WorkspaceView {
     pub(super) fn quake_visible(&self) -> bool {
         self.quake.as_ref().is_none_or(Presentation::visible)
     }
+    /// Copies this quake window's desired visibility into the window model.
+    fn publish_quake_visibility(&self, cx: &mut App) {
+        if let Some(state) = &self.quake {
+            publish_visibility(
+                &mut cx.global_mut::<Desktop>().windows,
+                self.window,
+                state,
+            );
+        }
+    }
+
     fn sync_quake_visibility(
         &mut self,
         window: &mut Window,
@@ -1129,10 +1113,12 @@ impl WorkspaceView {
             self.notch_shelves =
                 fullscreen.and_then(|state| state.native.notch_shelves());
         }
+        self.publish_quake_visibility(cx);
         self.sync_tab_layout(window, cx);
+        let active_tab = self.active_tab(cx);
         let mut changed_any = false;
         for tab in &self.tabs {
-            let active = visible && Some(tab.id) == self.active;
+            let active = visible && Some(tab.id) == active_tab;
             tab.view.update(cx, |terminal, cx| {
                 let changed = terminal.visible != active;
                 changed_any |= changed;
@@ -1220,16 +1206,36 @@ pub(super) fn inspect(state: &Presentation) -> anyhow::Result<String> {
     ))
 }
 
+/// Publishes a quake window's desired visibility from its policy model.
+fn publish_visibility(
+    windows: &mut WindowModel,
+    id: gpui::WindowId,
+    policy: &policy::Model,
+) {
+    windows.set_quake_visible(id, policy.transition.visible());
+}
+
 pub(super) fn take_for_quit(cx: &mut App) -> Vec<Presentation> {
-    cx.global_mut::<Desktop>().quake.windows.clear();
     let mut states = Vec::new();
-    for view in cx.global::<Desktop>().windows.clone() {
-        if let Ok(Some(state)) = view.update(cx, |view, _| view.quake.take()) {
+    broadcast(cx, |view, cx| {
+        if let Some(state) = view.quake.take() {
             state.generation.set(state.generation.get() + 1);
+            cx.global_mut::<Desktop>().windows.detach_quake(view.window);
             states.push(state);
         }
-    }
+    });
     states
+}
+
+/// The open window with `id`, including one whose update is in progress.
+fn window_handle(
+    cx: &App,
+    id: Option<gpui::WindowId>,
+) -> Option<AnyWindowHandle> {
+    let id = id?;
+    cx.windows()
+        .into_iter()
+        .find(|handle| handle.window_id() == id)
 }
 
 #[cfg(test)]

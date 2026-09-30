@@ -1160,8 +1160,16 @@ impl CommandPalette {
                         + geometry.thumb_size / 2.0,
                 )
             });
+        // Quake picker rows as `name=detail`, so smokes can check the live
+        // state each configured profile reported when the palette opened.
+        let profile_rows = self
+            .profiles
+            .iter()
+            .map(|row| format!("{}={}", row.label, row.detail))
+            .collect::<Vec<_>>()
+            .join(";");
         format!(
-            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={}",
+            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={} profile_rows={profile_rows:?}",
             self.input.read(cx).text(),
             self.diagnostic,
             self.scrollbar.dragging(),

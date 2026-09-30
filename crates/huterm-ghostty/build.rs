@@ -6,8 +6,17 @@
 //! copy under `OUT_DIR` and never touches the verified tree. Zig's caches sit
 //! beside that copy, or in Zig's global cache, so they survive a refresh.
 //!
-//! The staging and option parsing below are plain functions with unit tests;
-//! `scripts/ghostty-build.test.ts` compiles this file with `rustc --test`.
+//! With `HUTERM_GHOSTTY_ARTIFACT_CACHE` set, a build first looks there for an
+//! archive built from the same inputs and links it instead of running Zig.
+//! Otherwise it builds from source and stores the result for the next build.
+//! Each stored archive carries a fingerprint of everything that shapes it:
+//! the source manifest, the Zig version and arguments, the target, and the
+//! host libc or SDK. A different fingerprint means a rebuild, never reuse.
+//! CI sets the variable; release builds and local builds leave it unset.
+//!
+//! The staging, option parsing, and cache handling below are plain functions
+//! with unit tests; `scripts/ghostty-build.test.ts` compiles this file with
+//! `rustc --test`.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -21,6 +30,11 @@ const OPTIMIZE_VAR: &str = "HUTERM_GHOSTTY_OPTIMIZE";
 const CPU_VAR: &str = "HUTERM_GHOSTTY_CPU";
 const ZIG_VAR: &str = "ZIG";
 const DEPLOYMENT_VAR: &str = "MACOSX_DEPLOYMENT_TARGET";
+const CACHE_VAR: &str = "HUTERM_GHOSTTY_ARTIFACT_CACHE";
+
+/// Changes whenever the cached layout or the fingerprint format changes.
+const CACHE_FORMAT: &str = "huterm-ghostty prebuilt 1";
+const ARCHIVE: &str = "libghostty-vt.a";
 
 /// The pin's build replaces any requested macOS minimum with this floor.
 const GHOSTTY_MACOS_FLOOR: (u32, u32) = (13, 0);
@@ -274,6 +288,207 @@ fn symlink(_link: &Path, _to: &Path) -> io::Result<()> {
     ))
 }
 
+/// Reduces the native target Zig reports, such as
+/// `aarch64-linux.7.0.14...7.0.14-gnu.2.35`, to its architecture, OS, and
+/// libc: kernel and macOS versions do not shape the archive, but glibc does.
+fn host_target(native: &str) -> Option<String> {
+    let mut parts = native.split('-');
+    let arch = parts.next().filter(|arch| !arch.is_empty())?;
+    let os = parts
+        .next()?
+        .split('.')
+        .next()
+        .filter(|os| !os.is_empty())?;
+    let abi = parts.next().filter(|abi| !abi.is_empty())?;
+    parts.next().is_none().then(|| format!("{arch}-{os}-{abi}"))
+}
+
+/// The `.target` field of `zig env`'s ZON output.
+fn zig_env_target(output: &str) -> Option<&str> {
+    let start = output.find(".target = \"")? + ".target = \"".len();
+    let length = output[start..].find('"')?;
+    Some(&output[start..start + length])
+}
+
+/// Everything that shapes the archive, as one comparable text. Paths are
+/// placeholders because each build installs into its own `OUT_DIR`.
+fn fingerprint(
+    target: &str,
+    options: &Options,
+    zig_version: &str,
+    host: &str,
+    sdk: Option<&str>,
+    source_manifest: &str,
+) -> String {
+    let arguments = options
+        .zig_arguments(Path::new("<install>"), Path::new("<cache>"))
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{CACHE_FORMAT}\ntarget={target}\nzig={zig_version}\nhost={host}\n\
+         sdk={}\narguments={arguments}\nsource=\n{source_manifest}",
+        sdk.unwrap_or("none")
+    )
+}
+
+/// The cache entry for one target and build mode; a different fingerprint
+/// in the same slot is replaced, never reused.
+fn cache_slot(cache: &Path, target: &str, options: &Options) -> PathBuf {
+    cache.join(format!(
+        "{target}-{}-{}",
+        options.optimize.as_str(),
+        options.cpu
+    ))
+}
+
+/// Installs the slot's archive and headers when its fingerprint matches;
+/// returns false, leaving `install` alone, when it does not.
+fn reuse_cached(
+    slot: &Path,
+    fingerprint: &str,
+    install: &Path,
+) -> Result<bool, BuildError> {
+    let recorded = match fs::read_to_string(slot.join("fingerprint")) {
+        Ok(recorded) => recorded,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        // Like a failed store, an unreadable entry only costs a rebuild.
+        Err(error) => {
+            println!(
+                "cargo:warning=could not read the cached libghostty-vt in {}: \
+                 {error}",
+                slot.display()
+            );
+            return Ok(false);
+        }
+    };
+    let archive = slot.join("lib").join(ARCHIVE);
+    // An empty archive would otherwise surface only as a link error.
+    let usable = fs::metadata(&archive)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    if recorded != fingerprint || !usable || !slot.join("include").is_dir() {
+        return Ok(false);
+    }
+    replace_dir(install)?;
+    let library = install.join("lib");
+    fs::create_dir_all(&library).map_err(|error| {
+        BuildError::Io(format!("creating {}", library.display()), error)
+    })?;
+    fs::copy(&archive, library.join(ARCHIVE)).map_err(|error| {
+        BuildError::Io(format!("copying {}", archive.display()), error)
+    })?;
+    copy_tree(&slot.join("include"), &install.join("include"))?;
+    Ok(true)
+}
+
+/// Stores a fresh build in `slot`. It fills a private sibling first and
+/// writes the fingerprint last, then swaps it in, so an interrupted store
+/// never leaves a matching fingerprint beside a partial archive.
+fn store_cached(
+    slot: &Path,
+    fingerprint: &str,
+    install: &Path,
+) -> Result<(), BuildError> {
+    let name = slot.file_name().map_or_else(
+        || "slot".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let staging =
+        slot.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    replace_dir(&staging)?;
+    let library = staging.join("lib");
+    fs::create_dir_all(&library).map_err(|error| {
+        BuildError::Io(format!("creating {}", library.display()), error)
+    })?;
+    let archive = install.join("lib").join(ARCHIVE);
+    fs::copy(&archive, library.join(ARCHIVE)).map_err(|error| {
+        BuildError::Io(format!("copying {}", archive.display()), error)
+    })?;
+    copy_tree(&install.join("include"), &staging.join("include"))?;
+    fs::write(staging.join("fingerprint"), fingerprint).map_err(|error| {
+        BuildError::Io(format!("writing {}", staging.display()), error)
+    })?;
+    replace_dir(slot)?;
+    fs::remove_dir(slot).map_err(|error| {
+        BuildError::Io(format!("removing {}", slot.display()), error)
+    })?;
+    fs::rename(&staging, slot).map_err(|error| {
+        BuildError::Io(format!("storing {}", slot.display()), error)
+    })
+}
+
+/// Removes `path` if it exists and leaves an empty directory there.
+fn replace_dir(path: &Path) -> Result<(), BuildError> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(BuildError::Io(
+                format!("removing {}", path.display()),
+                error,
+            ));
+        }
+    }
+    fs::create_dir_all(path).map_err(|error| {
+        BuildError::Io(format!("creating {}", path.display()), error)
+    })
+}
+
+/// Output of a helper command, or `None` when it cannot run or fails.
+fn command_output(program: &OsString, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(arguments).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// The fingerprint for this build, or `None` with a warning when an input
+/// cannot be read, in which case the build neither reuses nor stores.
+fn current_fingerprint(
+    zig: &OsString,
+    target: &str,
+    options: &Options,
+    source_manifest: &Path,
+) -> Option<String> {
+    let manifest = fs::read_to_string(source_manifest).ok();
+    let version = command_output(zig, &["version"]);
+    let host = command_output(zig, &["env"])
+        .as_deref()
+        .and_then(zig_env_target)
+        .and_then(host_target);
+    let sdk = if target.ends_with("-apple-darwin") {
+        command_output(
+            &OsString::from("xcrun"),
+            &["--sdk", "macosx", "--show-sdk-version"],
+        )
+        .map(Some)
+    } else {
+        Some(None)
+    };
+    if let (Some(manifest), Some(version), Some(host), Some(sdk)) =
+        (manifest, version, host, sdk)
+    {
+        Some(fingerprint(
+            target,
+            options,
+            &version,
+            &host,
+            sdk.as_deref(),
+            &manifest,
+        ))
+    } else {
+        println!(
+            "cargo:warning={CACHE_VAR} ignored: could not read the Zig \
+             version, host target, SDK, or source manifest"
+        );
+        None
+    }
+}
+
 /// Paths used by one build, all under `OUT_DIR`.
 struct Layout {
     source: PathBuf,
@@ -382,24 +597,49 @@ fn build() -> Result<(), BuildError> {
 
     let out_dir = required_path("OUT_DIR")?;
     let layout = Layout::new(&out_dir);
-    stage_source(&source, &layout.source)?;
-    run_zig(&zig, &layout, &options)?;
+    let cache = optional(CACHE_VAR)
+        .filter(|cache| !cache.is_empty())
+        .and_then(|cache| {
+            let fingerprint =
+                current_fingerprint(&zig, &target, &options, &manifest)?;
+            Some((
+                cache_slot(Path::new(&cache), &target, &options),
+                fingerprint,
+            ))
+        });
+    if let Some((slot, fingerprint)) = &cache
+        && reuse_cached(slot, fingerprint, &layout.install)?
+    {
+        println!(
+            "cargo:warning=reused the cached libghostty-vt in {}",
+            slot.display()
+        );
+    } else {
+        stage_source(&source, &layout.source)?;
+        run_zig(&zig, &layout, &options)?;
+        if !layout.install.join("lib").join(ARCHIVE).is_file() {
+            return Err(BuildError::Zig(format!(
+                "zig build did not produce {}",
+                layout.install.join("lib").join(ARCHIVE).display()
+            )));
+        }
+        // The copy exists only for Zig; a rebuild stages a fresh one.
+        // Dropping it keeps each build directory about 650 MB smaller.
+        if let Err(error) = fs::remove_dir_all(&layout.source) {
+            println!(
+                "cargo:warning=could not remove {}: {error}",
+                layout.source.display()
+            );
+        }
+        // A failed store only costs the next build a rebuild.
+        if let Some((slot, fingerprint)) = &cache
+            && let Err(error) = store_cached(slot, fingerprint, &layout.install)
+        {
+            println!("cargo:warning=could not cache libghostty-vt: {error}");
+        }
+    }
 
     let library = layout.install.join("lib");
-    if !library.join("libghostty-vt.a").is_file() {
-        return Err(BuildError::Zig(format!(
-            "zig build did not produce {}",
-            library.join("libghostty-vt.a").display()
-        )));
-    }
-    // The copy exists only for Zig; a rebuild stages a fresh one. Dropping
-    // it keeps each build directory about 650 MB smaller.
-    if let Err(error) = fs::remove_dir_all(&layout.source) {
-        println!(
-            "cargo:warning=could not remove {}: {error}",
-            layout.source.display()
-        );
-    }
     println!("cargo:rustc-link-search=native={}", library.display());
     println!("cargo:rustc-link-lib=static=ghostty-vt");
     // The archive needs only libc, which Rust's standard library already
@@ -681,6 +921,208 @@ mod tests {
                 ("GIT_INDEX_FILE", None),
             ]
         );
+    }
+
+    #[test]
+    fn host_targets_keep_libc_and_drop_os_versions() {
+        assert_eq!(
+            host_target("aarch64-linux.7.0.14...7.0.14-gnu.2.35").as_deref(),
+            Some("aarch64-linux-gnu.2.35")
+        );
+        assert_eq!(
+            host_target("aarch64-macos.27.0...27.0-none").as_deref(),
+            Some("aarch64-macos-none")
+        );
+        for malformed in
+            ["", "aarch64", "aarch64-linux", "a-b-c-d", "-linux-gnu"]
+        {
+            assert_eq!(host_target(malformed), None, "{malformed:?}");
+        }
+        let env = ".{\n    .version = \"0.16.0\",\n    .target = \"x86_64-linux.6.8.0...6.8.0-gnu.2.39\",\n}";
+        assert_eq!(
+            zig_env_target(env),
+            Some("x86_64-linux.6.8.0...6.8.0-gnu.2.39")
+        );
+        assert_eq!(zig_env_target(".{ .version = \"0.16.0\" }"), None);
+    }
+
+    #[test]
+    fn fingerprints_change_with_every_input_that_shapes_the_archive() {
+        let target = "x86_64-unknown-linux-gnu";
+        let fast = options(Some("ReleaseFast"), Some("baseline"), target, None)
+            .unwrap();
+        let base = fingerprint(
+            target,
+            &fast,
+            "0.16.0",
+            "x86_64-linux-gnu.2.35",
+            None,
+            "{pin}",
+        );
+        let safe = options(Some("ReleaseSafe"), Some("baseline"), target, None)
+            .unwrap();
+        let variants = [
+            fingerprint(
+                "aarch64-unknown-linux-gnu",
+                &fast,
+                "0.16.0",
+                "x86_64-linux-gnu.2.35",
+                None,
+                "{pin}",
+            ),
+            fingerprint(
+                target,
+                &safe,
+                "0.16.0",
+                "x86_64-linux-gnu.2.35",
+                None,
+                "{pin}",
+            ),
+            fingerprint(
+                target,
+                &fast,
+                "0.16.1",
+                "x86_64-linux-gnu.2.35",
+                None,
+                "{pin}",
+            ),
+            fingerprint(
+                target,
+                &fast,
+                "0.16.0",
+                "x86_64-linux-gnu.2.39",
+                None,
+                "{pin}",
+            ),
+            fingerprint(
+                target,
+                &fast,
+                "0.16.0",
+                "x86_64-linux-gnu.2.35",
+                Some("26.0"),
+                "{pin}",
+            ),
+            fingerprint(
+                target,
+                &fast,
+                "0.16.0",
+                "x86_64-linux-gnu.2.35",
+                None,
+                "{new pin}",
+            ),
+        ];
+        for variant in &variants {
+            assert_ne!(variant, &base);
+        }
+        assert_eq!(
+            base,
+            fingerprint(
+                target,
+                &fast,
+                "0.16.0",
+                "x86_64-linux-gnu.2.35",
+                None,
+                "{pin}"
+            )
+        );
+        assert!(base.starts_with(CACHE_FORMAT));
+        assert!(!base.contains("/out"), "{base}");
+        assert_eq!(
+            cache_slot(Path::new("/cache"), target, &fast),
+            Path::new("/cache/x86_64-unknown-linux-gnu-ReleaseFast-baseline")
+        );
+    }
+
+    fn fake_install(root: &Path, archive: &str) -> PathBuf {
+        let install = root.join("install");
+        fs::create_dir_all(install.join("lib")).unwrap();
+        fs::create_dir_all(install.join("include/ghostty")).unwrap();
+        fs::write(install.join("lib").join(ARCHIVE), archive).unwrap();
+        fs::write(install.join("lib/libghostty-vt.dylib"), "shared").unwrap();
+        fs::write(install.join("include/ghostty/vt.h"), "header").unwrap();
+        install
+    }
+
+    #[test]
+    fn stored_archives_are_reused_only_for_the_same_fingerprint() {
+        let temp = TempDir::new("cache-reuse");
+        let slot = temp.0.join("cache/slot");
+        let built = fake_install(&temp.0.join("built"), "archive-one");
+        store_cached(&slot, "print-one", &built).unwrap();
+        // Only what Huterm links is kept: the static archive and headers.
+        assert!(!slot.join("lib/libghostty-vt.dylib").exists());
+
+        let reused = temp.0.join("reused");
+        fs::create_dir_all(&reused).unwrap();
+        fs::write(reused.join("stale"), "from an earlier build").unwrap();
+        assert!(reuse_cached(&slot, "print-one", &reused).unwrap());
+        assert_eq!(
+            fs::read_to_string(reused.join("lib").join(ARCHIVE)).unwrap(),
+            "archive-one"
+        );
+        assert_eq!(
+            fs::read_to_string(reused.join("include/ghostty/vt.h")).unwrap(),
+            "header"
+        );
+        assert!(!reused.join("stale").exists());
+
+        let untouched = temp.0.join("untouched");
+        fs::create_dir_all(&untouched).unwrap();
+        assert!(!reuse_cached(&slot, "print-two", &untouched).unwrap());
+        assert!(
+            !reuse_cached(
+                &temp.0.join("cache/absent"),
+                "print-one",
+                &untouched
+            )
+            .unwrap()
+        );
+        assert!(fs::read_dir(&untouched).unwrap().next().is_none());
+
+        // A slot whose archive is empty or missing is rebuilt, not linked.
+        fs::write(slot.join("lib").join(ARCHIVE), "").unwrap();
+        assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
+        fs::remove_file(slot.join("lib").join(ARCHIVE)).unwrap();
+        assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
+
+        // So is one whose fingerprint cannot be read.
+        fs::remove_file(slot.join("fingerprint")).unwrap();
+        fs::create_dir(slot.join("fingerprint")).unwrap();
+        assert!(!reuse_cached(&slot, "print-one", &untouched).unwrap());
+        assert!(fs::read_dir(&untouched).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn storing_replaces_the_previous_slot_without_leftovers() {
+        let temp = TempDir::new("cache-replace");
+        let slot = temp.0.join("cache/slot");
+        store_cached(
+            &slot,
+            "print-one",
+            &fake_install(&temp.0.join("first"), "archive-one"),
+        )
+        .unwrap();
+        fs::write(slot.join("leftover"), "old").unwrap();
+        store_cached(
+            &slot,
+            "print-two",
+            &fake_install(&temp.0.join("second"), "archive-two"),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(slot.join("fingerprint")).unwrap(),
+            "print-two"
+        );
+        assert_eq!(
+            fs::read_to_string(slot.join("lib").join(ARCHIVE)).unwrap(),
+            "archive-two"
+        );
+        assert!(!slot.join("leftover").exists());
+        let siblings: Vec<_> = fs::read_dir(temp.0.join("cache"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(siblings, ["slot"]);
     }
 
     #[test]

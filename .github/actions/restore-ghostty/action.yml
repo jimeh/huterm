@@ -1,0 +1,45 @@
+name: Restore prebuilt Ghostty
+description: >-
+  Restore the namespace's newest cached libghostty-vt archives and point the
+  huterm-ghostty build script at them. The build script links an archive only
+  when its fingerprint matches the current build, and stores fresh builds
+  there. Pair with save-ghostty after the job's builds.
+inputs:
+  namespace:
+    description: >-
+      Cache namespace. Jobs that build the same archives on the same runner
+      image share one; a different image (libc or SDK) or set of build modes
+      needs its own, because a restore takes the namespace's newest entry.
+    required: true
+outputs:
+  prefix:
+    description: Cache key prefix; save-ghostty appends a fingerprint hash.
+    value: ${{ steps.key.outputs.prefix }}
+  matched-key:
+    description: The key the restore matched, or empty on a miss.
+    value: ${{ steps.restore.outputs.cache-matched-key }}
+runs:
+  using: composite
+  steps:
+    - name: Name the cache
+      id: key
+      shell: bash
+      env:
+        NAMESPACE: ${{ inputs.namespace }}
+      run: echo "prefix=huterm-ghostty-v1-$NAMESPACE-$RUNNER_OS-$RUNNER_ARCH" >> "$GITHUB_OUTPUT"
+
+    # Keys end in a hash of the stored slots, so the prefix alone restores
+    # the newest archives saved for this namespace.
+    - name: Restore cached archives
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .native/ghostty-prebuilt
+        key: ${{ steps.key.outputs.prefix }}-restore
+        restore-keys: ${{ steps.key.outputs.prefix }}-
+
+    # Only a literal path in the checkout reaches GITHUB_ENV.
+    - name: Point the build script at the cache
+      shell: bash
+      run: | # zizmor: ignore[github-env]
+        echo "HUTERM_GHOSTTY_ARTIFACT_CACHE=$GITHUB_WORKSPACE/.native/ghostty-prebuilt" >> "$GITHUB_ENV"

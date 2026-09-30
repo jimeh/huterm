@@ -138,6 +138,18 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let mut outcomes = Vec::new();
     // Multiple commands in one file deliberately share a single GPUI turn.
     for name in fields {
+        if let Some(spec) = name.strip_prefix("resize:") {
+            let (width, height) = spec.split_once('x').context("resize WxH")?;
+            let requested =
+                gpui::size(gpui::px(width.parse()?), gpui::px(height.parse()?));
+            cx.windows()
+                .get(index)
+                .copied()
+                .context("resize window")?
+                .update(cx, |_, window, _| window.resize(requested))?;
+            outcomes.push("resize requested".to_owned());
+            continue;
+        }
         if name == "external_fullscreen" {
             // Request native/WM presentation without observing or mutating the
             // Huterm controller; only platform notifications can reconcile it.
@@ -235,6 +247,13 @@ fn read_state(cx: &mut App) -> String {
                 view.fullscreen.observed, view.fullscreen.is_pending(), view.fullscreen.chrome_hidden,
                 bounds(view.fullscreen.restorable_bounds()), f32::from(window.viewport_size().width), f32::from(window.viewport_size().height),
                 view.tabs.len(), view.close.confirmation.is_some()).unwrap();
+            // The window model's restorable layout beside the controller's
+            // own, so the harness can prove each publication.
+            let layout = cx.global::<Desktop>().windows.record(view.window).map(|record| record.layout);
+            writeln!(output, "w{index}.model_restore={}\nw{index}.model_sidebar={}\nw{index}.sidebar_width={}",
+                layout.map_or_else(|| "none".to_owned(), |layout| bounds(layout.bounds)),
+                layout.map_or(-1.0, |layout| f32::from(layout.sidebar_width)),
+                f32::from(view.sidebar_width)).unwrap();
             // Window notices, newest first: `w<i>.notices=<n>` then
             // `w<i>.notice<j>=<severity>|<source>|<message>`.
             output.push_str(&super::notices::smoke_lines(&format!("w{index}."), view.notices.contents()));
@@ -252,7 +271,7 @@ fn read_state(cx: &mut App) -> String {
                     && terminal.tab_presentation == view.presentation();
             }
             writeln!(output, "w{index}.retained={consistent}").unwrap();
-            if let Some(terminal) = view.active_view() {
+            if let Some(terminal) = view.active_view(cx) {
                 let terminal = terminal.read(cx);
                 writeln!(output, "w{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.resize_indicators, terminal.owns_pointer_gesture()).unwrap();
                 let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();

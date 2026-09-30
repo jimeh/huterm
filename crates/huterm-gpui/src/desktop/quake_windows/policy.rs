@@ -723,4 +723,73 @@ mod tests {
         );
         assert_eq!(model.stage, Stage::Animate);
     }
+
+    /// A window model holding one quake window for `policy`, published from
+    /// the policy model the way `sync_quake_visibility` and `step` do.
+    fn published(
+        policy: &Model,
+    ) -> crate::desktop::windows::model::WindowModel {
+        use crate::desktop::windows::model::{
+            QuakeRecord, WindowLayout, WindowModel,
+        };
+        let window = gpui::WindowId::from(1);
+        let mut windows = WindowModel::default();
+        windows.open(
+            window,
+            Some(QuakeRecord {
+                profile: "logs".to_owned(),
+                visible: false,
+            }),
+            WindowLayout {
+                bounds: gpui::WindowBounds::Windowed(gpui::Bounds::default()),
+                sidebar_width: gpui::px(180.0),
+            },
+        );
+        super::super::publish_visibility(&mut windows, window, policy);
+        windows
+    }
+
+    fn published_visibility(policy: &Model) -> Option<bool> {
+        published(policy)
+            .quake_state("logs")
+            .map(|(visible, _)| visible)
+    }
+
+    #[test]
+    fn summon_and_hide_requests_publish_desired_visibility() {
+        let now = Instant::now();
+        let (mut model, _) = visible(now);
+        model.request(false, false, now);
+        assert_eq!(published_visibility(&model), Some(false));
+        model.request(true, false, now);
+        assert_eq!(published_visibility(&model), Some(true));
+    }
+
+    #[test]
+    fn auto_hide_on_focus_loss_publishes_hidden() {
+        let now = Instant::now();
+        let (mut model, mut facts) = visible(now);
+        model.profile.hide_on_focus_loss = true;
+        facts.active = false;
+        facts.blurred = true;
+        model.decide(facts, model.suppress_blur, false).unwrap();
+        assert_eq!(published_visibility(&model), Some(false));
+    }
+
+    #[test]
+    fn fullscreen_toggle_and_recovery_publish_visible() {
+        let now = Instant::now();
+        let (mut model, _) = visible(now);
+        model.request(false, false, now);
+        // `quake_windows::toggle` flips presentation, then shows the window.
+        model.regular = !model.regular;
+        model.request(true, false, now);
+        assert_eq!(published_visibility(&model), Some(true));
+
+        model.request(false, false, now);
+        assert_eq!(published_visibility(&model), Some(false));
+        // `recover` restarts a failed transition as visible.
+        model.transition = Transition::new(true, now);
+        assert_eq!(published_visibility(&model), Some(true));
+    }
 }
