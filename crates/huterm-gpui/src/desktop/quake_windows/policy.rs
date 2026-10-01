@@ -576,6 +576,12 @@ mod tests {
         assert!(result.is_ok_and(|decision| decision.settled));
         model.stage = Stage::SettleVisible;
         facts.visible = true;
+        facts.native_idle = false;
+        assert!(model.decide(facts, model.deadline, false).is_err());
+        model.stage = Stage::Activate;
+        facts.native_idle = true;
+        assert!(model.decide(facts, model.deadline, false).is_err());
+        model.stage = Stage::SettleVisible;
         facts.frame.x += 50.0;
         assert!(model.decide(facts, model.deadline, false).is_err());
     }

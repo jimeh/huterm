@@ -304,15 +304,16 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   }
   // Native input and PTY output reach Huterm through separate channels. Wait
   // until the link owns the press before output or tab changes can race it.
-  // With `link`, the press must also hold that link: a link-state reset just
-  // before the press, such as a focus change, leaves an owned press with no
-  // target that no later lookup restores. Releasing such a press opens
-  // nothing and writes no PTY bytes, so it is retried from a fresh hover.
-  async function pressLink(column: number, row: number, label: string, link?: string) {
+  // The press must also hold `link`: a link-state reset just before the
+  // press, such as a focus change, leaves an owned press with no target that
+  // no later lookup restores, and cancellation checks would then pass
+  // without testing anything. Releasing such a press opens nothing and
+  // writes no PTY bytes, so it is retried from a fresh hover.
+  async function pressLink(column: number, row: number, label: string, link: string) {
     for (let attempt = 1; ; attempt++) {
       await mouse(1, column, row);
       const held = await waitForState((current) => current.owned === "true", label);
-      if (link === undefined || held.owned_link === link) return;
+      if (held.owned_link === link) return;
       assert(attempt < 3, `${label}: press holds ${JSON.stringify(held.owned_link)}, not ${link}; window_active=${held.window_active} focused=${held.focused}`);
       console.log(`DESKTOP_INTEGRATION ${engine} ${label} retry=${attempt} owned_link=${JSON.stringify(held.owned_link)} window_active=${held.window_active} focused=${held.focused}`);
       await mouse(2, column, row);
