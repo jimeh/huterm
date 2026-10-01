@@ -108,41 +108,6 @@ impl PresentationController {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use huterm_protocol::{CellSize, GridSize};
-
-    use super::*;
-
-    #[test]
-    fn queued_update_is_rejected_when_controller_is_revoked_before_apply() {
-        let initial = TerminalPresentation::default();
-        let mut engine = TerminalEngine::new(
-            TerminalId::new(1),
-            GridSize::clamped(80, 24),
-            CellSize {
-                width: 8,
-                height: 16,
-            },
-            initial.clone(),
-        )
-        .unwrap();
-        let registration = Arc::new(PresentationRegistration {
-            generation: 1,
-            attachment: AttachmentId::new(1),
-            active: Mutex::new(true),
-        });
-        let mut changed = initial.clone();
-        changed.foreground.red = 42;
-        let queued =
-            PresentationUpdate::new(Arc::clone(&registration), 1, changed);
-        registration.revoke();
-
-        assert!(!queued.apply(&mut engine).unwrap());
-        assert_eq!(engine.presentation(), &initial);
-    }
-}
-
 impl Drop for PresentationController {
     fn drop(&mut self) {
         self.registration.revoke();
@@ -216,5 +181,40 @@ impl PresentationAuthority {
                 true
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use huterm_protocol::{CellSize, GridSize};
+
+    use super::*;
+
+    #[test]
+    fn queued_update_is_rejected_when_controller_is_revoked_before_apply() {
+        let initial = TerminalPresentation::default();
+        let mut engine = TerminalEngine::new(
+            TerminalId::new(1),
+            GridSize::clamped(80, 24),
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+            initial.clone(),
+        )
+        .unwrap();
+        let registration = Arc::new(PresentationRegistration {
+            generation: 1,
+            attachment: AttachmentId::new(1),
+            active: Mutex::new(true),
+        });
+        let mut changed = initial.clone();
+        changed.foreground.red = 42;
+        let queued =
+            PresentationUpdate::new(Arc::clone(&registration), 1, changed);
+        registration.revoke();
+
+        assert!(!queued.apply(&mut engine).unwrap());
+        assert_eq!(engine.presentation(), &initial);
     }
 }

@@ -1376,6 +1376,50 @@ extern "C" fn screen_parameters(observer: &Object, _: Sel, _: *mut Object) {
     enqueue(observer, None);
 }
 
+/// Quake and ordinary non-native fullscreen share one presentation lease pool.
+/// The caller owns frame/style transitions; this owner changes only app options.
+#[derive(Default)]
+pub(crate) struct QuakeLease {
+    lease: RefCell<PresentationLease>,
+    ownership_changes: Cell<u64>,
+}
+impl QuakeLease {
+    pub fn set(&self, held: bool) -> anyhow::Result<()> {
+        let previous = self.held();
+        // SAFETY: Called only by the main-thread quake adapter, outside GPUI
+        // borrows. The shared lease reducer validates AppKit's option set.
+        unsafe {
+            let app = application()?;
+            let options: usize = msg_send![app, presentationOptions];
+            let next = LEASES
+                .with(|leases| {
+                    if held {
+                        self.lease
+                            .borrow_mut()
+                            .acquire(&mut leases.borrow_mut(), options)
+                    } else {
+                        self.lease
+                            .borrow_mut()
+                            .release(&mut leases.borrow_mut(), options)
+                    }
+                })
+                .map_err(anyhow::Error::msg)?;
+            let _: () = msg_send![app, setPresentationOptions: next];
+            crate::quake::native::work_area_changed();
+        }
+        if self.held() != previous {
+            self.ownership_changes.set(self.ownership_changes.get() + 1);
+        }
+        Ok(())
+    }
+    pub fn ownership_changes(&self) -> u64 {
+        self.ownership_changes.get()
+    }
+    pub fn held(&self) -> bool {
+        self.lease.borrow().held()
+    }
+}
+
 #[cfg(test)]
 mod retained_tests {
     use super::Retained;
@@ -1424,49 +1468,5 @@ mod retained_tests {
         let retained = unsafe { Retained::retain(std::ptr::null_mut()) };
         drop(retained);
         drop(Retained(std::ptr::null_mut()));
-    }
-}
-
-/// Quake and ordinary non-native fullscreen share one presentation lease pool.
-/// The caller owns frame/style transitions; this owner changes only app options.
-#[derive(Default)]
-pub(crate) struct QuakeLease {
-    lease: RefCell<PresentationLease>,
-    ownership_changes: Cell<u64>,
-}
-impl QuakeLease {
-    pub fn set(&self, held: bool) -> anyhow::Result<()> {
-        let previous = self.held();
-        // SAFETY: Called only by the main-thread quake adapter, outside GPUI
-        // borrows. The shared lease reducer validates AppKit's option set.
-        unsafe {
-            let app = application()?;
-            let options: usize = msg_send![app, presentationOptions];
-            let next = LEASES
-                .with(|leases| {
-                    if held {
-                        self.lease
-                            .borrow_mut()
-                            .acquire(&mut leases.borrow_mut(), options)
-                    } else {
-                        self.lease
-                            .borrow_mut()
-                            .release(&mut leases.borrow_mut(), options)
-                    }
-                })
-                .map_err(anyhow::Error::msg)?;
-            let _: () = msg_send![app, setPresentationOptions: next];
-            crate::quake::native::work_area_changed();
-        }
-        if self.held() != previous {
-            self.ownership_changes.set(self.ownership_changes.get() + 1);
-        }
-        Ok(())
-    }
-    pub fn ownership_changes(&self) -> u64 {
-        self.ownership_changes.get()
-    }
-    pub fn held(&self) -> bool {
-        self.lease.borrow().held()
     }
 }

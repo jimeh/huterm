@@ -88,6 +88,10 @@ depends = ["ghostty:prepare"]
 description = "Run Clippy with warnings denied"
 run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --features huterm-config/schema --locked -- -D warnings"
 
+[tasks."lint:test-order"]
+description = "Check that inline Rust test modules follow production items"
+run = "bun scripts/rust-test-order.ts"
+
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
 run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"
@@ -134,15 +138,15 @@ fi
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
+depends = ["format:check", "lint", "lint:test-order", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
 
 [tasks."check:rust"]
-description = "Run Rust formatting, Clippy compilation, and architecture checks"
-depends = ["format:check", "lint", "architecture"]
+description = "Run Rust formatting, Clippy compilation, test-order, and architecture checks"
+depends = ["format:check", "lint", "lint:test-order", "architecture"]
 
 [tasks."check:rust:analysis"]
 hide = true
-depends = ["lint", "architecture"]
+depends = ["lint", "lint:test-order", "architecture"]
 
 [tasks.test]
 description = "Run workspace and scripting tests"

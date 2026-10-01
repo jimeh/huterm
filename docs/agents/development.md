@@ -402,6 +402,52 @@ Reload applies placement, font, padding, and theme changes across all windows.
 Shell titles label tabs by default, with the launched program as fallback. The
 README describes directory and process labels and directory inheritance.
 
+## Rust test layout
+
+Unit tests stay in the crate as child modules of the code they test, so they
+keep private access. A small suite stays inline at the end of its module. A
+suite that dominates its file moves to an adjacent file without changing its
+module path:
+
+```rust
+// crates/huterm-gpui/src/scroll.rs
+#[cfg(test)]
+mod tests;
+```
+
+The body, without the `mod tests { ... }` wrapper, lives in
+`crates/huterm-gpui/src/scroll/tests.rs` and still starts with
+`use super::*;`. A `mod.rs` file puts it beside itself, as in
+`desktop/palette/tests.rs`. Named suites keep their names, such as
+`engine/clipboard_tests.rs` for `mod clipboard_tests;` in `engine.rs`. Keep
+every attribute, including `#[cfg(...)]`, on the declaration in the parent.
+
+When moving a suite:
+
+- Move the body verbatim and let rustfmt remove the outer indentation. A
+  textual dedent can change the contents of multi-line string literals.
+  rustfmt leaves statements containing over-long literals at their old
+  indentation, so fix those lines by hand. Its reflow can also shorten a test
+  enough to leave a `#[expect(clippy::too_many_lines)]` unfulfilled; remove
+  that expectation rather than adding `#[rustfmt::skip]`.
+- Relative `include_str!` and `include_bytes!` paths gain one `../` for each
+  added directory level.
+- A file loaded through `#[path]` resolves child modules as if it were a
+  `mod.rs`. Name the test file explicitly there, as
+  `desktop/quake_windows/policy.rs` does with
+  `#[path = "policy/tests.rs"]`.
+- Compare the sorted output of
+  `cargo test --workspace --all-targets --locked -- --list`, with and without
+  `--ignored`, before and after the move. Then run each moved module through
+  its path filter and check that the passed count matches the listed count.
+
+`mise run lint:test-order` runs `scripts/rust-test-order.ts` from `check`,
+`check:rust`, `ci:lint`, and the pre-commit hook. It rejects any item without
+a test-only cfg (`test`, or an `all(...)` containing it) that follows an inline
+test module in the same module. Out-of-line `mod tests;` declarations may sit
+anywhere. Clippy's `items_after_test_module` covers only an inline module
+named exactly `tests` with no later module.
+
 ## Validation ladder
 
 | Trigger | Command | Scope | Evidence owner |
@@ -409,7 +455,7 @@ README describes directory and process labels and directory inheritance.
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
-| Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
+| Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, test-module order, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
 | Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |

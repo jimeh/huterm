@@ -1039,6 +1039,133 @@ impl RawConfig {
         Ok(())
     }
 }
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeDefinition {
+    pub name: Option<String>,
+    pub extends: Option<String>,
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub cursor: Option<String>,
+    pub selection: Option<String>,
+    pub selection_foreground: Option<String>,
+    pub ansi: Option<Vec<String>>,
+    pub ansi_black: Option<String>,
+    pub ansi_red: Option<String>,
+    pub ansi_green: Option<String>,
+    pub ansi_yellow: Option<String>,
+    pub ansi_blue: Option<String>,
+    pub ansi_magenta: Option<String>,
+    pub ansi_cyan: Option<String>,
+    pub ansi_white: Option<String>,
+    pub ansi_bright_black: Option<String>,
+    pub ansi_bright_red: Option<String>,
+    pub ansi_bright_green: Option<String>,
+    pub ansi_bright_yellow: Option<String>,
+    pub ansi_bright_blue: Option<String>,
+    pub ansi_bright_magenta: Option<String>,
+    pub ansi_bright_cyan: Option<String>,
+    pub ansi_bright_white: Option<String>,
+    pub tab_bar_background: Option<String>,
+    pub tab_active_background: Option<String>,
+    pub tab_foreground: Option<String>,
+    pub tab_inactive_foreground: Option<String>,
+    pub tab_border: Option<String>,
+    pub tab_accent: Option<String>,
+    pub tab_hover_background: Option<String>,
+    pub scrollbar_thumb: Option<String>,
+    pub scrollbar_track: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFile {
+    pub theme: ThemeDefinition,
+}
+
+impl ThemeDefinition {
+    /// Applies color overrides to a resolved base theme.
+    ///
+    /// # Errors
+    /// Returns an error when the input violates the configuration contract.
+    pub fn apply(&self, mut theme: Theme) -> Result<Theme, ConfigError> {
+        if let Some(value) = &self.selection_foreground {
+            theme.selection_foreground = Some(parse_color(value)?);
+        }
+        for (target, value) in [
+            (&mut theme.tab_bar_background, &self.tab_bar_background),
+            (
+                &mut theme.tab_active_background,
+                &self.tab_active_background,
+            ),
+            (&mut theme.tab_foreground, &self.tab_foreground),
+            (
+                &mut theme.tab_inactive_foreground,
+                &self.tab_inactive_foreground,
+            ),
+            (&mut theme.tab_border, &self.tab_border),
+            (&mut theme.tab_accent, &self.tab_accent),
+        ] {
+            if let Some(value) = value {
+                *target = Some(parse_color(value)?);
+            }
+        }
+        for (target, value) in [
+            (&mut theme.tab_hover_background, &self.tab_hover_background),
+            (&mut theme.scrollbar_thumb, &self.scrollbar_thumb),
+            (&mut theme.scrollbar_track, &self.scrollbar_track),
+        ] {
+            if let Some(value) = value {
+                *target = Some(parse_color_alpha(value)?);
+            }
+        }
+        for (target, value) in [
+            (&mut theme.foreground, &self.foreground),
+            (&mut theme.background, &self.background),
+            (&mut theme.cursor, &self.cursor),
+            (&mut theme.selection, &self.selection),
+        ] {
+            if let Some(value) = value {
+                *target = parse_color(value)?;
+            }
+        }
+        if let Some(ansi) = &self.ansi {
+            if ansi.len() != 16 {
+                return Err(ConfigError::Invalid(
+                    "theme.ansi must contain 16 colors",
+                ));
+            }
+            for (target, value) in theme.ansi.iter_mut().zip(ansi) {
+                *target = parse_color(value)?;
+            }
+        }
+        for (target, value) in theme.ansi.iter_mut().zip([
+            &self.ansi_black,
+            &self.ansi_red,
+            &self.ansi_green,
+            &self.ansi_yellow,
+            &self.ansi_blue,
+            &self.ansi_magenta,
+            &self.ansi_cyan,
+            &self.ansi_white,
+            &self.ansi_bright_black,
+            &self.ansi_bright_red,
+            &self.ansi_bright_green,
+            &self.ansi_bright_yellow,
+            &self.ansi_bright_blue,
+            &self.ansi_bright_magenta,
+            &self.ansi_bright_cyan,
+            &self.ansi_bright_white,
+        ]) {
+            if let Some(value) = value {
+                *target = parse_color(value)?;
+            }
+        }
+        Ok(theme)
+    }
+}
 
 #[cfg(test)]
 mod update_tests {
@@ -1364,132 +1491,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-}
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields)]
-pub struct ThemeDefinition {
-    pub name: Option<String>,
-    pub extends: Option<String>,
-    pub foreground: Option<String>,
-    pub background: Option<String>,
-    pub cursor: Option<String>,
-    pub selection: Option<String>,
-    pub selection_foreground: Option<String>,
-    pub ansi: Option<Vec<String>>,
-    pub ansi_black: Option<String>,
-    pub ansi_red: Option<String>,
-    pub ansi_green: Option<String>,
-    pub ansi_yellow: Option<String>,
-    pub ansi_blue: Option<String>,
-    pub ansi_magenta: Option<String>,
-    pub ansi_cyan: Option<String>,
-    pub ansi_white: Option<String>,
-    pub ansi_bright_black: Option<String>,
-    pub ansi_bright_red: Option<String>,
-    pub ansi_bright_green: Option<String>,
-    pub ansi_bright_yellow: Option<String>,
-    pub ansi_bright_blue: Option<String>,
-    pub ansi_bright_magenta: Option<String>,
-    pub ansi_bright_cyan: Option<String>,
-    pub ansi_bright_white: Option<String>,
-    pub tab_bar_background: Option<String>,
-    pub tab_active_background: Option<String>,
-    pub tab_foreground: Option<String>,
-    pub tab_inactive_foreground: Option<String>,
-    pub tab_border: Option<String>,
-    pub tab_accent: Option<String>,
-    pub tab_hover_background: Option<String>,
-    pub scrollbar_thumb: Option<String>,
-    pub scrollbar_track: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct ThemeFile {
-    pub theme: ThemeDefinition,
-}
-
-impl ThemeDefinition {
-    /// Applies color overrides to a resolved base theme.
-    ///
-    /// # Errors
-    /// Returns an error when the input violates the configuration contract.
-    pub fn apply(&self, mut theme: Theme) -> Result<Theme, ConfigError> {
-        if let Some(value) = &self.selection_foreground {
-            theme.selection_foreground = Some(parse_color(value)?);
-        }
-        for (target, value) in [
-            (&mut theme.tab_bar_background, &self.tab_bar_background),
-            (
-                &mut theme.tab_active_background,
-                &self.tab_active_background,
-            ),
-            (&mut theme.tab_foreground, &self.tab_foreground),
-            (
-                &mut theme.tab_inactive_foreground,
-                &self.tab_inactive_foreground,
-            ),
-            (&mut theme.tab_border, &self.tab_border),
-            (&mut theme.tab_accent, &self.tab_accent),
-        ] {
-            if let Some(value) = value {
-                *target = Some(parse_color(value)?);
-            }
-        }
-        for (target, value) in [
-            (&mut theme.tab_hover_background, &self.tab_hover_background),
-            (&mut theme.scrollbar_thumb, &self.scrollbar_thumb),
-            (&mut theme.scrollbar_track, &self.scrollbar_track),
-        ] {
-            if let Some(value) = value {
-                *target = Some(parse_color_alpha(value)?);
-            }
-        }
-        for (target, value) in [
-            (&mut theme.foreground, &self.foreground),
-            (&mut theme.background, &self.background),
-            (&mut theme.cursor, &self.cursor),
-            (&mut theme.selection, &self.selection),
-        ] {
-            if let Some(value) = value {
-                *target = parse_color(value)?;
-            }
-        }
-        if let Some(ansi) = &self.ansi {
-            if ansi.len() != 16 {
-                return Err(ConfigError::Invalid(
-                    "theme.ansi must contain 16 colors",
-                ));
-            }
-            for (target, value) in theme.ansi.iter_mut().zip(ansi) {
-                *target = parse_color(value)?;
-            }
-        }
-        for (target, value) in theme.ansi.iter_mut().zip([
-            &self.ansi_black,
-            &self.ansi_red,
-            &self.ansi_green,
-            &self.ansi_yellow,
-            &self.ansi_blue,
-            &self.ansi_magenta,
-            &self.ansi_cyan,
-            &self.ansi_white,
-            &self.ansi_bright_black,
-            &self.ansi_bright_red,
-            &self.ansi_bright_green,
-            &self.ansi_bright_yellow,
-            &self.ansi_bright_blue,
-            &self.ansi_bright_magenta,
-            &self.ansi_bright_cyan,
-            &self.ansi_bright_white,
-        ]) {
-            if let Some(value) = value {
-                *target = parse_color(value)?;
-            }
-        }
-        Ok(theme)
     }
 }
