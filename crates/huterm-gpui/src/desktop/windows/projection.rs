@@ -86,8 +86,8 @@ pub(super) enum Drained {
     /// Events were lost or the stream diverged; replace the state from a
     /// fresh snapshot before reconciling anything.
     Resync,
-    /// Application teardown has committed, or its `Reset` arrived: nothing
-    /// more applies, and every waiter was cancelled.
+    /// Application teardown has committed, its `Reset` arrived, or the
+    /// stream closed: nothing more applies, and every waiter was cancelled.
     Frozen,
 }
 
@@ -199,9 +199,14 @@ impl Projection {
                     ApplyOutcome::ResyncRequired(_) => return Drained::Resync,
                 },
                 Err(HierarchyRecvError::Lagged) => return Drained::Resync,
-                // A dropped Mux sends nothing more; what applied stands.
-                Err(HierarchyRecvError::Empty | HierarchyRecvError::Closed) => {
+                Err(HierarchyRecvError::Empty) => {
                     return Drained::Current(touched);
+                }
+                // A dropped Mux sends nothing more: keep what applied and
+                // cancel waiters, which could otherwise park forever.
+                Err(HierarchyRecvError::Closed) => {
+                    self.freeze();
+                    return Drained::Frozen;
                 }
             }
         }

@@ -175,7 +175,7 @@ Core keeps `Mux::revision` for close-ticket validation unchanged.
 SessionCreated   { session: SessionInfo, index }
 SessionRenamed   { session, custom_name }
 SessionClosed    { session }                 cascades to workspaces and tabs
-WorkspaceCreated { workspace: WorkspaceInfo, index }
+WorkspaceCreated { session, workspace: WorkspaceInfo, index }
 WorkspaceRenamed { workspace, custom_name }
 WorkspaceMoved   { workspace, session, index }
 WorkspaceClosed  { workspace }               cascades to tabs

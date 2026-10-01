@@ -68,6 +68,34 @@ pub(super) struct PaletteTarget {
     pub(super) contexts: Vec<KeyContext>,
 }
 
+/// The window's current session, workspace, and active tab, which an open
+/// palette's window-scoped pickers and identity defaults follow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PaletteScope {
+    pub(super) session: Option<SessionId>,
+    pub(super) workspace: Option<WorkspaceId>,
+    pub(super) tab: Option<TabId>,
+}
+
+impl PaletteTarget {
+    /// Moves the target to the window's current scope; returns whether it
+    /// changed. Committed and prefilled slot values keep what they hold.
+    fn rescope(&mut self, scope: PaletteScope) -> bool {
+        let current = PaletteScope {
+            session: self.session,
+            workspace: self.workspace,
+            tab: self.tab,
+        };
+        if current == scope {
+            return false;
+        }
+        self.session = scope.session;
+        self.workspace = scope.workspace;
+        self.tab = scope.tab;
+        true
+    }
+}
+
 /// Height of one result or picker row in points. Fixed so the list's
 /// maximum height is a whole number of rows and native smokes can address
 /// rows by position.
@@ -691,11 +719,15 @@ impl CommandPalette {
     pub(super) fn set_hierarchy(
         &mut self,
         hierarchy: PaletteHierarchy,
+        scope: PaletteScope,
         seq: u64,
         cx: &mut Context<'_, Self>,
     ) {
         self.hierarchy_seq = seq;
-        if hierarchy == self.hierarchy {
+        // The window's active tab or workspace may have changed with the
+        // rebuild; window-scoped pickers and later defaults follow it.
+        let rescoped = self.target.rescope(scope);
+        if hierarchy == self.hierarchy && !rescoped {
             return;
         }
         let highlighted = self.picker_value();
@@ -2819,6 +2851,46 @@ mod tests {
         assert_eq!(
             entered_name_mode(NameText::Automatic, false, "typed"),
             NameText::Edited
+        );
+    }
+
+    #[test]
+    fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope()
+    {
+        let runtime = RuntimeId::new(9);
+        let session = SessionId::in_runtime(runtime, 1);
+        let rows =
+            PaletteHierarchy::from_projection(&projected(), |_| None, &[]);
+        // The palette opened while the window showed workspace 11, whose
+        // tabs have since gone; the window now shows workspace 10.
+        let mut target = PaletteTarget {
+            session: Some(session),
+            workspace: Some(WorkspaceId::in_runtime(runtime, 11)),
+            tab: Some(TabId::in_runtime(runtime, 7)),
+            ..target()
+        };
+        let current = PaletteScope {
+            session: Some(session),
+            workspace: Some(WorkspaceId::in_runtime(runtime, 10)),
+            tab: Some(TabId::in_runtime(runtime, 2)),
+        };
+        assert!(target.rescope(current));
+        assert!(!target.rescope(current), "an unchanged scope is no change");
+        let domain = DomainView {
+            hierarchy: &rows,
+            profiles: &[],
+            target: &target,
+            window_only: true,
+        };
+        assert_eq!(
+            domain.values(ArgumentKind::Tab),
+            [1, 2].map(|value| CommandValue::Tab(TabId::in_runtime(
+                runtime, value
+            )))
+        );
+        assert_eq!(
+            domain.default(ArgumentKind::Tab),
+            Some(CommandValue::Tab(TabId::in_runtime(runtime, 2)))
         );
     }
 

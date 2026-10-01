@@ -886,3 +886,38 @@ fn a_tab_moved_to_another_workspace_leaves_the_old_window() {
         Vec::<TabId>::new()
     );
 }
+
+#[test]
+fn a_closed_stream_cancels_waiters_and_freezes_the_projection() {
+    let mut mux = Mux::default();
+    let session_id = mux.create_session(None).unwrap();
+    let workspace_id = mux.create_workspace(session_id, None).unwrap();
+    let (state, subscription) = mux.subscribe_hierarchy();
+    let mut projection = Projection::new(state, subscription);
+    let applied = rename_workspace(&mut mux, workspace_id, "last");
+    let Wait::Pending(waiter) = projection.wait_for(applied + 1, false) else {
+        panic!("a sequence the stream never reaches must wait");
+    };
+    // The stream ends without teardown committing.
+    drop(mux);
+    assert_eq!(projection.sync(false), Drained::Frozen);
+    assert_eq!(waiter.try_recv(), Ok(Resolution::Cancelled));
+    assert_eq!(
+        projection.state().seq(),
+        applied,
+        "queued events still apply"
+    );
+    assert_eq!(
+        projection
+            .state()
+            .workspace(workspace_id)
+            .unwrap()
+            .display_name(),
+        "last"
+    );
+    assert!(matches!(
+        projection.wait_for(applied + 1, false),
+        Wait::Cancelled
+    ));
+    assert_eq!(projection.sync(false), Drained::Frozen);
+}

@@ -1037,6 +1037,12 @@ command = "select_tab"
     await state("w0.palette_state=commands");
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
+    // The external rename also reached the published titles, so the clear
+    // below starts from `live`, not a stale `remote`.
+    await waitFor(async () => {
+      const titles = (await quotedField("model_titles")).split(";");
+      return titles.includes("live") && !titles.includes("remote");
+    }, "external rename in model titles");
 
     // Clearing the name restores the terminal title in both places.
     await command("runtime-rename\t2\t");

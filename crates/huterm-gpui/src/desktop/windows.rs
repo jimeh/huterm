@@ -40,8 +40,8 @@ use super::notices::{
 use super::overlay::{OverlayColors, Swatch, TextTooltip};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
-    PaletteHierarchy, PaletteOpen, PaletteTarget, QuakeProfileRow,
-    RecentCommands,
+    PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
+    QuakeProfileRow, RecentCommands,
 };
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
@@ -1125,6 +1125,9 @@ fn start_hierarchy_drain(cx: &mut App) {
         while subscription.wait_for_activity().await.is_ok() {
             cx.update(sync_hierarchy);
         }
+        // The stream closed: drain once more so the projection freezes and
+        // cancels any waiter still parked on it.
+        cx.update(sync_hierarchy);
     });
     cx.global_mut::<Desktop>().hierarchy.set_drain_task(task);
 }
@@ -4382,8 +4385,19 @@ impl WorkspaceView {
             return;
         };
         let (hierarchy, seq) = self.palette_hierarchy(cx);
+        let workspace = self.workspace_id(cx);
+        let scope = PaletteScope {
+            session: workspace.and_then(|workspace| {
+                cx.global::<Desktop>()
+                    .hierarchy
+                    .state()
+                    .workspace_session(workspace)
+            }),
+            workspace,
+            tab: self.active_tab(cx),
+        };
         palette.update(cx, |palette, cx| {
-            palette.set_hierarchy(hierarchy, seq, cx);
+            palette.set_hierarchy(hierarchy, scope, seq, cx);
         });
     }
 

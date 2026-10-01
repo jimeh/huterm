@@ -76,7 +76,8 @@ impl HierarchyPublisher {
 /// A bounded, ordered feed of the hierarchy events that follow one snapshot.
 ///
 /// Dropping the subscription unregisters it. The publisher never waits for a
-/// subscriber: when the queue would overflow, it discards the queue and the
+/// subscriber to drain: queue access is a short constant-time critical
+/// section, and when the queue would overflow, it discards the queue and the
 /// subscription reports [`HierarchyRecvError::Lagged`] until it is replaced.
 #[derive(Debug)]
 pub struct HierarchySubscription {
