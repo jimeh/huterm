@@ -362,7 +362,6 @@ pub(super) fn windows_to_visit(
         .collect()
 }
 
-/// One window's views and model entries as reconcile changes them.
 /// The names a tab view last saw the projection hold for its tab. A view
 /// keeps showing them after the projection drops the tab, such as while a
 /// busy window's close commits, instead of falling back to the bare
@@ -406,6 +405,7 @@ pub(super) fn tab_names<'a>(
     )
 }
 
+/// One window's views and model entries as reconcile changes them.
 pub(super) trait ReconcileTarget {
     fn projection(&self) -> &HierarchyState;
     fn workspace(&self) -> Option<WorkspaceId>;

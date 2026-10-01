@@ -303,7 +303,8 @@ projection and converges the window's views and `WindowModel` record:
    clearing `busy`, so a deferred removal still applies. When a removal in a
    window that is not busy takes away its active tab, reconcile activates
    the new active tab through a deferred window update, as a completion
-   would, so the replacement becomes visible and takes focus.
+   would, so the replacement becomes visible. It takes keyboard focus unless
+   the palette, a close confirmation, a menu, or the About panel holds it.
 
    A projected tab with no installed view is tolerated without change. It
    is normal while the window's own spawn is in flight, because core emits
@@ -518,9 +519,10 @@ Each application compares first and writes only when the order differs.
 the spawn parameters the view needs. `TabView::label` looks the tab up in
 the projection by ID in constant time and borrows its custom and fallback
 names. Each view also keeps its last projected names, seeded at spawn and
-refreshed whenever reconcile sees the tab, so a tab the projection no longer
-holds, such as one whose close is still committing, keeps its label until
-its view is dropped. Label resolution allocates no more than it does today.
+refreshed whenever reconcile sees the tab touched and still held. A tab the
+projection no longer holds, such as one whose close is still committing,
+keeps its label until its view is dropped. Label resolution allocates no
+more than it does today.
 
 Titles still reach `WindowModel` through `set_tab_title`. `refresh_tab`
 publishes terminal-driven changes, and reconcile publishes rename-driven

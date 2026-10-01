@@ -1263,9 +1263,10 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     refresh_title_consumers(cx, true, &retitled);
 }
 
-/// Shows and focuses the tabs reconcile made active by removing the active
-/// tab, as `reconcile_own` does for a window's own completion. A window
-/// whose active tab changed again meanwhile is left alone.
+/// Shows the tabs reconcile made active by removing the active tab, as
+/// `reconcile_own` does for a window's own completion, and focuses them
+/// unless an overlay holds the window's focus. A window whose active tab
+/// changed again meanwhile is left alone.
 fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
     for &(id, tab) in tabs {
         let Some(handle) = cx
@@ -1281,8 +1282,15 @@ fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
             };
             view.update(cx, |view, cx| {
                 if view.active_tab(cx) == Some(tab) {
+                    // The palette, a close confirmation, a menu, or the
+                    // About panel keeps keyboard focus; the replacement is
+                    // still shown and snapshotted behind it.
+                    let focus = view.palette.is_none()
+                        && view.close.confirmation.is_none()
+                        && view.menu.is_none()
+                        && view.about.is_none();
                     view.measure_tab_widths(window, cx);
-                    view.select(tab, window, cx);
+                    view.select_tab(tab, focus, window, cx);
                 }
             });
         });
@@ -5885,6 +5893,18 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.select_tab(id, true, window, cx);
+    }
+
+    /// Activates `id`, showing it and hiding the others; `focus` moves
+    /// keyboard focus to its terminal.
+    fn select_tab(
+        &mut self,
+        id: TabId,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if !cx.global_mut::<Desktop>().windows.select(self.window, id) {
             return;
         }
@@ -5898,7 +5918,9 @@ impl WorkspaceView {
                 if view.visible {
                     view.bell.viewed(window.is_window_active());
                     view.resize_if_needed(window);
-                    view.focus.focus(window, cx);
+                    if focus {
+                        view.focus.focus(window, cx);
+                    }
                     view.start_initial_snapshot(cx);
                 } else {
                     view.hide(cx);
