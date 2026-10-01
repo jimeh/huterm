@@ -745,7 +745,10 @@ fn type_pointers(file: &syn::File, ty: &syn::Type) -> Pointers {
     match ty {
         syn::Type::Ptr(pointer) => Pointers {
             any: true,
-            mutable: pointer.mutability.is_some(),
+            mutable: matches!(
+                pointer.mutability,
+                syn::PointerMutability::Mut(_)
+            ),
         },
         syn::Type::Array(array) => type_pointers(file, &array.elem),
         syn::Type::Path(path) => match path.path.segments.last() {
