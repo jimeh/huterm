@@ -274,14 +274,22 @@ impl Model {
         {
             self.request(false, false, now);
         }
-        if self.stage != Stage::Idle && now >= self.deadline {
+        // A sample taken late, for example after a stalled main thread, can
+        // already show the settled window; only an unsettled one has failed.
+        if self.stage != Stage::Idle
+            && now >= self.deadline
+            && !self.settled_by(facts)
+        {
             return Err(format!(
-                "native quake transition {:?} timed out (frame {:?}, target {:?}, fullscreen {}, active {})",
+                "native quake transition {:?} timed out (frame {:?}, target {:?}, fullscreen {}, active {}, visible {}, activation seen {}, native idle {})",
                 self.stage,
                 facts.frame,
                 self.target,
                 facts.fullscreen,
-                facts.active
+                facts.active,
+                facts.visible,
+                self.activation.seen,
+                facts.native_idle
             ));
         }
         if self.stage != Stage::Idle && !facts.native_idle {
@@ -370,11 +378,7 @@ impl Model {
             }
             Stage::SettleVisible => {
                 let expected = self.profile.fullscreen && !self.regular;
-                if facts.visible
-                    && self.activation.seen
-                    && facts.fullscreen == expected
-                    && (self.regular || super::near(facts.frame, self.target))
-                {
+                if self.settled_by(facts) {
                     self.stage = Stage::Idle;
                     self.recovering = false;
                     result.settled = true;
@@ -393,7 +397,7 @@ impl Model {
                     }
                 }
             }
-            Stage::SettleHidden if !facts.visible => {
+            Stage::SettleHidden if self.settled_by(facts) => {
                 self.stage = Stage::Idle;
                 result.settled = true;
             }
@@ -408,6 +412,23 @@ impl Model {
             && self.stage == Stage::Idle
             && !self.recovering;
         Ok(result)
+    }
+    /// Whether `facts` complete the current settle stage.
+    fn settled_by(&self, facts: Facts) -> bool {
+        if !facts.native_idle {
+            return false;
+        }
+        match self.stage {
+            Stage::SettleVisible => {
+                facts.visible
+                    && self.activation.seen
+                    && facts.fullscreen
+                        == (self.profile.fullscreen && !self.regular)
+                    && (self.regular || super::near(facts.frame, self.target))
+            }
+            Stage::SettleHidden => !facts.visible,
+            _ => false,
+        }
     }
 }
 
@@ -541,6 +562,28 @@ mod tests {
             "reversal sampled paused wall time"
         );
         assert_eq!(model.deadline, requested + Duration::from_secs(3));
+    }
+    #[test]
+    fn settled_sample_at_the_deadline_settles_instead_of_failing() {
+        let now = Instant::now();
+        let (mut model, mut facts) = visible(now);
+        model.stage = Stage::SettleVisible;
+        let result = model.decide(facts, model.deadline, false);
+        assert!(result.is_ok_and(|decision| decision.settled));
+        model.stage = Stage::SettleHidden;
+        facts.visible = false;
+        let result = model.decide(facts, model.deadline, false);
+        assert!(result.is_ok_and(|decision| decision.settled));
+        model.stage = Stage::SettleVisible;
+        facts.visible = true;
+        facts.native_idle = false;
+        assert!(model.decide(facts, model.deadline, false).is_err());
+        model.stage = Stage::Activate;
+        facts.native_idle = true;
+        assert!(model.decide(facts, model.deadline, false).is_err());
+        model.stage = Stage::SettleVisible;
+        facts.frame.x += 50.0;
+        assert!(model.decide(facts, model.deadline, false).is_err());
     }
     #[test]
     fn quiet_settlement_requests_detach_continuation_without_native_effect() {

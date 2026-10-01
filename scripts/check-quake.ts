@@ -372,6 +372,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       };
       const settled = async (show: boolean, name = "default") => {
         await waitFor(async () => {const value = profile(await state(), name);return value?.stage === "Idle" && value.visible === String(show) && (!show || value.active === "true");}, `${name} ${show ? "visible" : "hidden"} endpoint`);
+        // A timed-out transition recovers to a regular window that also
+        // reaches Idle; report it here rather than at a later case.
+        if (profile(await state(),name)?.regular !== "false") throw new Error(`${name} ${show ? "visible" : "hidden"} endpoint: transition recovered to a regular window instead of settling quake`);
         if (profile(await state(),name)?.opacity !== "1") throw new Error("animation leaked native opacity");
         if (macos && profile(await state(),name)?.allows_offscreen !== "true") throw new Error("quake lost its per-window offscreen allowance");
         if (show) await checkLayout(profile(await state(),name)?.fullscreen === "true", name);

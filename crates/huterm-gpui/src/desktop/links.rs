@@ -28,6 +28,11 @@ impl Links {
     pub fn owns_press(&self) -> bool {
         self.press.is_some()
     }
+    /// The link a held press opens on release; `None` for a press that
+    /// started before its lookup matched or whose link was cancelled.
+    pub fn press_target(&self) -> Option<&TerminalLink> {
+        self.press.as_ref()?.target.as_ref()
+    }
     pub fn hover(&self) -> Option<&TerminalLink> {
         if !self.enabled {
             return None;

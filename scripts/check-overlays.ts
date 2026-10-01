@@ -313,7 +313,13 @@ label = "title"
     await state("FILLED");
     await busy();
     await key("close-tab");
-    const opened = await state("w0.confirming=true", "w0.dialog_focus=primary", "w0.terminal_focused=false");
+    // `confirming` comes from the model and can precede the dialog's first
+    // frame, while GPUI hit-tests presses against the last drawn frame.
+    // `dialog_drawn_groups` is set only while that frame renders, so once
+    // it leaves "none" the presses below land on the scrim.
+    const opened = await stateWhere((text) =>
+      ["w0.confirming=true", "w0.dialog_focus=primary", "w0.terminal_focused=false"].every((value) => text.includes(value))
+      && ![undefined, "none"].includes(quoted(text, "w0.dialog_drawn_groups")), "drawn close dialog");
     if (!field(opened, "dialog_title").startsWith('"Close')) throw new Error(`${engine}: single-tab dialog title: ${opened}`);
     // A middle press and, where synthetic wheel input exists, a wheel over
     // the scrim beside the panel: the terminal must neither take focus nor

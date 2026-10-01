@@ -221,10 +221,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     );
   }
   async function hover(value: string) {
-    await waitFor(
-      async () => (await state()).hover === value,
-      `hover ${value}`,
-    );
+    await waitForState((current) => current.hover === value, `hover ${value}`);
   }
   async function modifiers(value: number) {
     flags = value;
@@ -307,9 +304,23 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   }
   // Native input and PTY output reach Huterm through separate channels. Wait
   // until the link owns the press before output or tab changes can race it.
-  async function pressLink(column: number, row: number, label: string) {
-    await mouse(1, column, row);
-    await waitForState((current) => current.owned === "true", label);
+  // The press must also hold `link`: a link-state reset just before the
+  // press, such as a focus change, leaves an owned press with no target that
+  // no later lookup restores, and cancellation checks would then pass
+  // without testing anything. Releasing such a press opens nothing and
+  // writes no PTY bytes, so it is retried from a fresh hover.
+  async function pressLink(column: number, row: number, label: string, link: string) {
+    for (let attempt = 1; ; attempt++) {
+      await mouse(1, column, row);
+      const held = await waitForState((current) => current.owned === "true", label);
+      if (held.owned_link === link) return;
+      assert(attempt < 3, `${label}: press holds ${JSON.stringify(held.owned_link)}, not ${link}; window_active=${held.window_active} focused=${held.focused}`);
+      console.log(`DESKTOP_INTEGRATION ${engine} ${label} retry=${attempt} owned_link=${JSON.stringify(held.owned_link)} window_active=${held.window_active} focused=${held.focused}`);
+      await mouse(2, column, row);
+      await waitForState((current) => current.owned === "false", `${label} retry release`);
+      await modifiers(command);
+      await hover(link);
+    }
   }
   try {
     await waitFor(
@@ -490,10 +501,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await raw("plain-link-click-is-not-PTY-input");
     await modifiers(command);
     await hover(url);
-    await pressLink(2, 0, "link press owned before unrelated output");
+    await pressLink(2, 0, "link press owned before unrelated output", url);
     for (let i = 0; i < 3; i++) {
       await display(`\x1b[10;1Hunrelated ${i}`);
-      await hover(url);
+      await waitForState(
+        (current) => current.hover === url && current.owned_link === url,
+        `held link survives unrelated output ${i}`,
+      );
     }
     await mouse(2, 2, 0);
     await opened(2);
@@ -541,7 +555,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     );
     // The new tab changes hit-test geometry. Consume the native press first so
     // a delayed X11 event cannot land on the newly visible tab bar.
-    await pressLink(2, 0, "link press owned before tab switch");
+    await pressLink(2, 0, "link press owned before tab switch", url);
     await commandFile("new_tab");
     await waitFor(async () => {
       const current = await state();
@@ -598,7 +612,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await modifiers(command);
     await hover("https://first.test/");
     // A press handled after the replacement would own the new link and open it.
-    await pressLink(2, 0, "first OSC 8 link press owned before replacement");
+    await pressLink(2, 0, "first OSC 8 link press owned before replacement", "https://first.test/");
     await display("\x1b[H\x1b]8;;https://other.test/\x1b\\label\x1b]8;;\x1b\\");
     await mouse(2, 2, 0);
     await raw("OSC8-replacement-cancels-click");
