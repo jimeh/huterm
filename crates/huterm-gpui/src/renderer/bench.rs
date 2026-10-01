@@ -273,6 +273,8 @@ fn snapshot(
     Arc::new(TerminalSnapshot {
         terminal_id: TerminalId::new(1),
         generation: 1,
+        revision: 0,
+        geometry_revision: 0,
         size: GridSize::clamped(COLUMNS, ROWS),
         rows,
         cursor: Some(Cursor {

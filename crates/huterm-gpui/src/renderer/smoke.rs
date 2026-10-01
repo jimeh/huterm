@@ -376,6 +376,8 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
     TerminalSnapshot {
         terminal_id: TerminalId::new(1),
         generation: 1,
+        revision: 0,
+        geometry_revision: 0,
         size: GridSize::clamped(32, 33),
         rows,
         // The translucent block cursor must paint over the "n" of "normal".

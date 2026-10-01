@@ -152,7 +152,7 @@ fn send(cx: &mut App, label: &str) -> anyhow::Result<()> {
         view.tabs[0]
             .view
             .read(cx)
-            .client
+            .viewer
             .send_input(TerminalInput::Text(format!("{label}\n")))
     })??;
     Ok(())
@@ -191,13 +191,15 @@ async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 // Force the runtime-admission boundary busy once. The real
                 // pending worker must deliver this input without a redraw or
                 // another producer event to rescue it.
+                let stamp = terminal.viewer.stamp(None);
                 terminal.input_queue.enqueue(
                     TerminalInput::Text("PENDING_FIRST\n".into()),
+                    stamp,
                     false,
-                    |input| {
-                        Err(huterm_core::RefusedInput {
+                    |queued| {
+                        Err(crate::input_queue::Refused {
                             error: huterm_core::RuntimeError::Busy,
-                            input,
+                            queued,
                         })
                     },
                 )?;
@@ -520,19 +522,33 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let (id, weak, retained_client, pending_wake) = cx.update(|cx| {
+    let (id, weak, retained_viewer, pending_wake) = cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             let tab = &view.tabs[0];
             let id = tab.id;
             let weak = tab.view.downgrade();
-            let client = tab.view.read(cx).client.clone();
+            // A separate viewer outlives the dropped view, as another client
+            // would.
+            let desktop = cx.global::<super::Desktop>();
+            let attachment = desktop
+                .windows
+                .record(view.window)
+                .and_then(|record| record.attachment)
+                .context("window attachment")?;
+            let retained = desktop.runtime.lock().subscribe_terminal(
+                attachment,
+                tab.terminal,
+                huterm_core::ViewerOptions::new(
+                    huterm_protocol::ViewerCapabilities::NONE,
+                ),
+            )?;
             let pending_wake = tab.view.read(cx).pending_work.clone();
             // Drop the production TabView, including its owned activity task. Keep
             // the core tab alive, so shutdown or a later event cannot rescue a leak.
             view.drop_tab_views(&[id], cx);
-            (id, weak, client, pending_wake)
+            anyhow::Ok((id, weak, retained, pending_wake))
         })
-    })?;
+    })??;
     wait(cx, "idle task canceled without a runtime wake", |cx| {
         let stage = cx.global::<Probes>().0.borrow()[&id].get();
         Ok((
@@ -542,7 +558,7 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
     })
     .await?;
     // A successful owner-thread request proves detaching did not shut core down.
-    retained_client.request_snapshot()?.recv().await?;
+    retained_viewer.request_snapshot()?.recv().await?;
     eprintln!("REFRESH_SMOKE silent_task_cancellation passed");
 
     cx.update(|cx| workspace(cx, WorkspaceView::new_tab))??;

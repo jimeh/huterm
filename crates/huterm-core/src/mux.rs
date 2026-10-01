@@ -7,11 +7,8 @@ pub use lifecycle::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::presentation::PresentationAuthority;
-use crate::{
-    DesktopHostEffectClient, HostEffectRecipient, HostEffectRecipientOptions,
-    PresentationController, RuntimeClient, RuntimeError, TerminalRuntime,
-};
+use crate::terminal::RuntimeClient;
+use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
 use hierarchy::HierarchyPublisher;
 use huterm_protocol::{
     AttachmentId, HierarchyEvent, PaneId, RuntimeId, SessionId, TabId,
@@ -106,13 +103,12 @@ pub struct SelectionTarget {
     /// Selected tab, if any.
     pub tab: Option<TabId>,
 }
-/// A successfully published tab and its in-process terminal attachment.
+/// A successfully published tab. Clients display its terminal through
+/// [`Mux::subscribe_terminal`].
 #[derive(Debug)]
 pub struct OpenedTab {
     /// Canonical tab record.
     pub tab: Tab,
-    /// Terminal attachment. Dropping it does not close the terminal.
-    pub client: RuntimeClient,
 }
 
 /// Canonical session, workspace, and terminal owner.
@@ -133,7 +129,6 @@ pub struct Mux {
     sessions: Vec<Session>,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     terminals: BTreeMap<TerminalId, TerminalRuntime>,
-    presentation_authority: PresentationAuthority,
     hierarchy: HierarchyPublisher,
 }
 impl Default for Mux {
@@ -165,7 +160,6 @@ impl Mux {
             sessions: Vec::new(),
             workspaces: BTreeMap::new(),
             terminals: BTreeMap::new(),
-            presentation_authority: PresentationAuthority::default(),
             hierarchy: HierarchyPublisher::default(),
         })
     }
@@ -442,8 +436,11 @@ impl Mux {
                 .to_string_lossy()
                 .into_owned(),
         };
-        let runtime = TerminalRuntime::spawn(tab.terminal_id, command)?;
-        let client = runtime.client();
+        let runtime = TerminalRuntime::spawn_in(
+            self.runtime_id,
+            tab.terminal_id,
+            command,
+        )?;
         let tabs = &mut self
             .workspaces
             .get_mut(&workspace)
@@ -457,7 +454,7 @@ impl Mux {
             tab: tab.info(),
             index,
         });
-        Ok(OpenedTab { tab, client })
+        Ok(OpenedTab { tab })
     }
     /// Reorders a tab within its current workspace, before an anchor or at end.
     /// # Errors
@@ -610,38 +607,31 @@ impl Mux {
         });
         Ok(())
     }
-    /// Attaches to a terminal without transferring runtime ownership.
-    /// Events currently have one consumer; simultaneous clients need broadcast.
-    #[must_use]
-    pub fn attach(&self, terminal_id: TerminalId) -> Option<RuntimeClient> {
+    /// The crate-private client close assessment uses for job queries.
+    pub(crate) fn attach(
+        &self,
+        terminal_id: TerminalId,
+    ) -> Option<RuntimeClient> {
         self.terminals
             .get(&terminal_id)
             .map(TerminalRuntime::client)
     }
 
-    /// Clones the current terminal clients for one bounded host operation.
-    /// Callers must release the structural lock before using the handles and
-    /// must not retain them beyond that operation.
-    #[must_use]
-    pub fn runtime_clients(&self) -> Vec<RuntimeClient> {
-        self.terminals
-            .values()
-            .map(TerminalRuntime::client)
-            .collect()
-    }
-
-    /// Registers one validated attachment view to receive host effects from a terminal.
+    /// Registers a viewer of a terminal in the attachment's session.
+    ///
+    /// The viewer belongs to the attachment: detaching, retargeting, or
+    /// closing its session, or moving the terminal to another session,
+    /// revokes it.
     ///
     /// # Errors
-    /// Rejects missing attachments, terminals outside the attachment's session,
-    /// or exhausted bounded registration capacity.
-    pub fn register_host_effect_recipient(
+    /// Rejects missing attachments and terminals outside the attachment's
+    /// session, and reports a stopped terminal or a full viewer limit.
+    pub fn subscribe_terminal(
         &self,
         attachment: AttachmentId,
         terminal_id: TerminalId,
-        process: &DesktopHostEffectClient,
-        options: HostEffectRecipientOptions,
-    ) -> Result<HostEffectRecipient, MuxError> {
+        options: ViewerOptions,
+    ) -> Result<TerminalViewer, MuxError> {
         let session = self.attachment_session(attachment)?;
         let is_member = self.workspaces.values().any(|workspace| {
             workspace.session_id == session
@@ -650,73 +640,29 @@ impl Mux {
                     .iter()
                     .any(|tab| tab.terminal_id == terminal_id)
         });
-        if !is_member {
-            return Err(MuxError::TerminalNotInAttachment {
-                terminal: terminal_id,
-                attachment,
-            });
-        }
-        self.terminals
-            .get(&terminal_id)
-            .and_then(|runtime| {
-                runtime
-                    .host_effect_sink()
-                    .register(attachment, process, options)
-            })
-            .ok_or(MuxError::HostEffectRegistrationUnavailable)
-    }
-
-    /// Authorizes one validated attachment to publish retained presentation.
-    ///
-    /// A new controller supersedes the terminal's previous controller. Revoking
-    /// a controller retains the last presentation already accepted by runtime.
-    ///
-    /// # Errors
-    ///
-    /// Rejects missing attachments, terminals outside the attachment's session,
-    /// or exhausted controller generations.
-    pub fn register_presentation_controller(
-        &mut self,
-        attachment: AttachmentId,
-        terminal_id: TerminalId,
-    ) -> Result<PresentationController, MuxError> {
-        let session = self.attachment_session(attachment)?;
-        let is_member = self.workspaces.values().any(|workspace| {
-            workspace.session_id == session
-                && workspace
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.terminal_id == terminal_id)
-        });
-        if !is_member {
-            return Err(MuxError::TerminalNotInAttachment {
-                terminal: terminal_id,
-                attachment,
-            });
-        }
-        let client = self
+        let runtime = self
             .terminals
             .get(&terminal_id)
-            .map(TerminalRuntime::client)
-            .ok_or(MuxError::PresentationControllerUnavailable)?;
-        self.presentation_authority
-            .authorize(attachment, terminal_id, client)
-            .ok_or(MuxError::PresentationControllerUnavailable)
+            .filter(|_| is_member)
+            .ok_or(MuxError::TerminalNotInAttachment {
+                terminal: terminal_id,
+                attachment,
+            })?;
+        Ok(runtime.subscribe_for(Some(attachment), options)?)
     }
 
     fn invalidate_terminal_authority(&mut self, terminal_id: TerminalId) {
         if let Some(runtime) = self.terminals.get(&terminal_id) {
             runtime.host_effect_sink().invalidate_all();
+            runtime.registry().revoke_all();
         }
-        self.presentation_authority.invalidate_terminal(terminal_id);
     }
 
     fn invalidate_attachment_authority(&mut self, attachment: AttachmentId) {
         for runtime in self.terminals.values() {
             runtime.host_effect_sink().invalidate_attachment(attachment);
+            runtime.registry().revoke_attachment(attachment);
         }
-        self.presentation_authority
-            .invalidate_attachment(attachment);
     }
     /// Closes a tab and joins its terminal workers, leaving siblings intact.
     /// # Errors
@@ -740,8 +686,6 @@ impl Mux {
         let tab = record.tabs.remove(index);
         self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::TabClosed { tab: tab.id });
-        self.presentation_authority
-            .invalidate_terminal(tab.terminal_id);
         if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
             runtime.shutdown()?;
         }
@@ -809,7 +753,6 @@ impl Mux {
         terminals: Vec<TerminalId>,
     ) -> Result<(), MuxError> {
         for id in &terminals {
-            self.presentation_authority.invalidate_terminal(*id);
             if let Some(runtime) = self.terminals.get(id) {
                 let _ = runtime.client().close();
             }
@@ -830,7 +773,6 @@ impl Mux {
     pub fn shutdown(&mut self) -> Result<(), MuxError> {
         self.changed();
         self.attachments.clear();
-        self.presentation_authority.invalidate_all();
         let had_structure = !self.sessions.is_empty();
         self.sessions.clear();
         self.workspaces.clear();
@@ -845,6 +787,32 @@ impl Mux {
         self.terminals.len()
     }
 }
+/// A tab opened by a test with a full-capability viewer subscribed at
+/// spawn, so tests can read the terminal after it closes.
+#[cfg(test)]
+pub(crate) struct TestTab {
+    pub(crate) tab: Tab,
+    pub(crate) client: crate::test_support::TestClient,
+}
+
+#[cfg(test)]
+impl Mux {
+    pub(crate) fn open_test_tab(
+        &mut self,
+        workspace: WorkspaceId,
+        command: &TerminalCommand,
+    ) -> Result<TestTab, MuxError> {
+        let opened = self.open_tab(workspace, command)?;
+        let client = crate::test_support::TestClient::new(
+            &self.terminals[&opened.tab.terminal_id],
+        );
+        Ok(TestTab {
+            tab: opened.tab,
+            client,
+        })
+    }
+}
+
 /// Converts a structural position to the protocol's fixed width.
 fn position(index: usize) -> u32 {
     u32::try_from(index).expect("structural position exceeds u32")
@@ -872,12 +840,6 @@ pub enum MuxError {
         /// Validated attachment.
         attachment: AttachmentId,
     },
-    /// Bounded host-effect recipient registration could not be acquired.
-    #[error("host-effect recipient registration is unavailable")]
-    HostEffectRegistrationUnavailable,
-    /// Presentation controller registration could not be acquired.
-    #[error("presentation controller registration is unavailable")]
-    PresentationControllerUnavailable,
     /// Structure or job evidence changed since consent was requested.
     #[error("close assessment changed; assess again before closing")]
     StaleClose,

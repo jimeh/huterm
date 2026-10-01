@@ -55,12 +55,13 @@ use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_config::{TabStyle, TabWidth, TabsConfig};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
-    HierarchySubscription, HostEffectRecipientOptions, MuxError, OpenedTab,
+    HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
+    MuxError, OpenedTab, TerminalViewer, ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, SessionId,
-    TerminalId, Touched, WorkspaceId, catalog, resolve_tab_name, validate,
-    validate_supplied,
+    TerminalId, Touched, ViewerCapabilities, WorkspaceId, catalog,
+    resolve_tab_name, validate, validate_supplied,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -223,7 +224,7 @@ type Spawned = (
     WorkspaceId,
     OpenedTab,
     Option<AttachmentId>,
-    TerminalViewAuthority,
+    TerminalViewer,
 );
 
 impl DesktopRuntime {
@@ -296,53 +297,46 @@ impl DesktopRuntime {
                 } else {
                     None
                 };
-                let recipient_attachment = created_attachment.or(attachment);
-                let Some(recipient_attachment) = recipient_attachment else {
-                    let _ = mux.close_tab(id, tab.tab.id);
-                    return Err(MuxError::HostEffectRegistrationUnavailable);
-                };
-                let recipient = match mux.register_host_effect_recipient(
-                    recipient_attachment,
-                    tab.tab.terminal_id,
-                    &self.host_effects,
-                    HostEffectRecipientOptions::local_desktop(
-                        clipboard_allowed,
-                    ),
-                ) {
-                    Ok(recipient) => recipient,
+                let viewer_attachment = created_attachment.or(attachment);
+                let viewer = viewer_attachment
+                    .ok_or(MuxError::Runtime(RuntimeError::Invariant(
+                        "a spawn into an existing workspace needs its attachment",
+                    )))
+                    .and_then(|viewer_attachment| {
+                        mux.subscribe_terminal(
+                            viewer_attachment,
+                            tab.tab.terminal_id,
+                            ViewerOptions {
+                                host_effects: Some(HostEffectViewerOptions {
+                                    process: self.host_effects.clone(),
+                                    options:
+                                        HostEffectRecipientOptions::local_desktop(
+                                            clipboard_allowed,
+                                        ),
+                                }),
+                                geometry: Some((
+                                    command.grid_size,
+                                    command.cell_size,
+                                )),
+                                presentation: Some(command.presentation.clone()),
+                                spawned: true,
+                                ..ViewerOptions::new(ViewerCapabilities::ALL)
+                            },
+                        )
+                    });
+                match viewer {
+                    Ok(viewer) => {
+                        Ok((session, id, tab, created_attachment, viewer))
+                    }
                     Err(error) => {
                         if workspace.is_none() {
                             let _ = mux.close_session(session);
                         } else {
                             let _ = mux.close_tab(id, tab.tab.id);
                         }
-                        return Err(error);
+                        Err(error)
                     }
-                };
-                let presentation = match mux.register_presentation_controller(
-                    recipient_attachment,
-                    tab.tab.terminal_id,
-                ) {
-                    Ok(presentation) => presentation,
-                    Err(error) => {
-                        if workspace.is_none() {
-                            let _ = mux.close_session(session);
-                        } else {
-                            let _ = mux.close_tab(id, tab.tab.id);
-                        }
-                        return Err(error);
-                    }
-                };
-                Ok((
-                    session,
-                    id,
-                    tab,
-                    created_attachment,
-                    TerminalViewAuthority {
-                        presentation,
-                        host_effects: recipient,
-                    },
-                ))
+                }
             }
             Err(error) => {
                 if workspace.is_none() {
@@ -4135,7 +4129,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let (session, id, opened, attachment, authority) = spawned;
+        let (session, id, opened, attachment, viewer) = spawned;
         self.startup_reporter = None;
         cx.global_mut::<Desktop>().windows.attach(
             self.window,
@@ -4143,15 +4137,15 @@ impl WorkspaceView {
             session,
             id,
         );
-        authority
-            .host_effects
-            .set_allowed(self.config.terminal.clipboard_write.is_allowed());
-        let activity_client = opened.client.clone();
+        if let Some(recipient) = viewer.host_effects() {
+            recipient
+                .set_allowed(self.config.terminal.clipboard_write.is_allowed());
+        }
+        let activity = viewer.wake_handle();
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
         let terminal = cx.new(|cx| {
             let mut terminal = TerminalView::new(
-                opened.client,
-                authority,
+                viewer,
                 Rc::clone(&self.frame_clock),
                 &self.config,
                 self.family.clone(),
@@ -4178,7 +4172,7 @@ impl WorkspaceView {
         let failure_wakes = terminal.read(cx).failure_wakes.clone();
         let activity_task = Self::tab_activity_task(
             tab_id,
-            activity_client,
+            activity,
             failure_wakes,
             window,
             cx,
@@ -4222,7 +4216,7 @@ impl WorkspaceView {
     /// refreshes the tab in bounded batches.
     fn tab_activity_task(
         tab_id: TabId,
-        activity_client: RuntimeClient,
+        activity: ViewerWake,
         failure_wakes: async_channel::Receiver<()>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -4233,12 +4227,10 @@ impl WorkspaceView {
                 if let Some(probe) = &activity_probe {
                     probe.waiting(true);
                 }
-                let stopped = TerminalView::wait_for_activity(
-                    &activity_client,
-                    &failure_wakes,
-                )
-                .await
-                .is_err();
+                let stopped =
+                    TerminalView::wait_for_activity(&activity, &failure_wakes)
+                        .await
+                        .is_err();
                 if let Some(probe) = &activity_probe {
                     probe.waiting(false);
                 }
@@ -4794,7 +4786,7 @@ impl WorkspaceView {
                         "window has no active terminal".into(),
                     ))?;
                 let terminal = terminal.read(cx);
-                if Some(terminal.client.terminal_id()) != target.terminal {
+                if Some(terminal.viewer.terminal_id()) != target.terminal {
                     return Err(CommandError::StaleTarget);
                 }
                 terminal.command_availability(command)

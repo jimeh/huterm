@@ -151,15 +151,24 @@ impl PendingHostEffect {
     }
 }
 
+/// How a recipient's viewer wakes and how recently it was used.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RecipientLink {
+    /// Signalled when an effect is queued for this recipient.
+    pub(crate) activity: Option<async_channel::Sender<()>>,
+    /// The viewer's activity ordinal; the most recently used recipient wins.
+    pub(crate) ordinal: Arc<AtomicU64>,
+}
+
 #[derive(Debug)]
 struct Registration {
     id: HostEffectRecipientId,
     generation: AtomicU64,
     active: AtomicBool,
-    attachment: AttachmentId,
+    attachment: Option<AttachmentId>,
     options: HostEffectRecipientOptions,
     allowed: AtomicBool,
-    focus_ordinal: AtomicU64,
+    link: RecipientLink,
     order: u64,
     process_budget: Arc<Budget>,
     queue: Mutex<VecDeque<PendingHostEffect>>,
@@ -213,7 +222,6 @@ impl Registration {
 #[derive(Debug)]
 pub struct HostEffectRecipient {
     registration: Arc<Registration>,
-    sink: Weak<SinkInner>,
 }
 
 impl HostEffectRecipient {
@@ -227,23 +235,6 @@ impl HostEffectRecipient {
         } else {
             self.registration.revoke_permission();
         }
-    }
-
-    /// Records that this view most recently held focus.
-    pub fn note_focus(&self) {
-        let Some(sink) = self.sink.upgrade() else {
-            return;
-        };
-        let Ok(previous) = sink.next_focus.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |ordinal| ordinal.checked_add(1),
-        ) else {
-            return;
-        };
-        self.registration
-            .focus_ordinal
-            .store(previous + 1, Ordering::Release);
     }
 
     /// Removes and returns the next currently valid delivery without blocking.
@@ -287,11 +278,9 @@ struct SinkState {
 
 #[derive(Debug)]
 struct SinkInner {
-    activity: Option<Weak<async_channel::Sender<()>>>,
     terminal_id: TerminalId,
     closed: AtomicBool,
     terminal_budget: Arc<Budget>,
-    next_focus: AtomicU64,
     next_sequence: AtomicU64,
     state: Mutex<SinkState>,
 }
@@ -313,25 +302,15 @@ pub(crate) struct HostEffectSink {
 }
 
 impl HostEffectSink {
-    #[cfg(test)]
     pub(crate) fn new(terminal_id: TerminalId) -> Self {
-        Self::new_with_activity(terminal_id, None)
-    }
-
-    pub(crate) fn new_with_activity(
-        terminal_id: TerminalId,
-        activity: Option<Weak<async_channel::Sender<()>>>,
-    ) -> Self {
         Self {
             inner: Arc::new(SinkInner {
-                activity,
                 terminal_id,
                 closed: AtomicBool::new(false),
                 terminal_budget: Arc::new(Budget::new(
                     TERMINAL_EFFECT_LIMIT,
                     TERMINAL_BYTE_LIMIT,
                 )),
-                next_focus: AtomicU64::new(0),
                 next_sequence: AtomicU64::new(0),
                 state: Mutex::new(SinkState {
                     registrations: Vec::new(),
@@ -440,9 +419,7 @@ impl HostEffectSink {
             },
         });
         drop(queue);
-        if let Some(signal) =
-            self.inner.activity.as_ref().and_then(Weak::upgrade)
-        {
+        if let Some(signal) = &registration.link.activity {
             let _ = signal.try_send(());
         }
         HostEffectAdmission::Accepted
@@ -464,10 +441,11 @@ impl HostEffectSink {
             .filter_map(Weak::upgrade)
             .filter(|registration| registration.is_eligible())
             .max_by(|left, right| {
-                left.focus_ordinal
+                left.link
+                    .ordinal
                     .load(Ordering::Acquire)
-                    .cmp(&right.focus_ordinal.load(Ordering::Acquire))
-                    .then_with(|| right.order.cmp(&left.order))
+                    .cmp(&right.link.ordinal.load(Ordering::Acquire))
+                    .then_with(|| left.order.cmp(&right.order))
             })
         else {
             return Err(HostEffectAdmission::Denied);
@@ -484,7 +462,7 @@ impl HostEffectSink {
 
     pub(crate) fn invalidate_attachment(&self, attachment: AttachmentId) {
         self.invalidate_where(|registration| {
-            registration.attachment == attachment
+            registration.attachment == Some(attachment)
         });
     }
 
@@ -508,9 +486,10 @@ impl HostEffectSink {
 
     pub(crate) fn register(
         &self,
-        attachment: AttachmentId,
+        attachment: Option<AttachmentId>,
         process: &DesktopHostEffectClient,
         options: HostEffectRecipientOptions,
+        link: RecipientLink,
     ) -> Option<HostEffectRecipient> {
         let mut state = self
             .inner
@@ -532,16 +511,13 @@ impl HostEffectSink {
             attachment,
             options,
             allowed: AtomicBool::new(options.clipboard_allowed),
-            focus_ordinal: AtomicU64::new(0),
+            link,
             order: registration_order,
             process_budget: Arc::clone(&process.process_budget),
             queue: Mutex::new(VecDeque::new()),
         });
         state.registrations.push(Arc::downgrade(&registration));
-        Some(HostEffectRecipient {
-            registration,
-            sink: Arc::downgrade(&self.inner),
-        })
+        Some(HostEffectRecipient { registration })
     }
 }
 
@@ -563,9 +539,10 @@ pub(crate) fn test_fixture_with_clipboard(
     let process = DesktopHostEffectClient::new();
     let recipient = sink
         .register(
-            AttachmentId::new(1),
+            Some(AttachmentId::new(1)),
             &process,
             HostEffectRecipientOptions::local_desktop(clipboard_allowed),
+            RecipientLink::default(),
         )
         .expect("fresh test fixture should accept its first recipient");
     (sink, recipient)
@@ -581,8 +558,13 @@ mod tests {
         attachment: u64,
         options: HostEffectRecipientOptions,
     ) -> HostEffectRecipient {
-        sink.register(AttachmentId::new(attachment), process, options)
-            .expect("test registration should fit")
+        sink.register(
+            Some(AttachmentId::new(attachment)),
+            process,
+            options,
+            RecipientLink::default(),
+        )
+        .expect("test registration should fit")
     }
 
     fn text(pending: &PendingHostEffect) -> &str {
@@ -593,26 +575,38 @@ mod tests {
     }
 
     #[test]
-    fn admitted_effect_wakes_without_a_terminal_event_and_does_not_keep_signal_alive()
-     {
-        let (sender, signal) = async_channel::bounded(1);
-        let sender = Arc::new(sender);
-        let sink = HostEffectSink::new_with_activity(
-            TerminalId::new(1),
-            Some(Arc::downgrade(&sender)),
-        );
+    fn admitted_effect_wakes_only_the_selected_recipient() {
+        let sink = HostEffectSink::new(TerminalId::new(1));
         let process = DesktopHostEffectClient::new();
-        let recipient = recipient(
-            &sink,
-            &process,
-            1,
-            HostEffectRecipientOptions::local_desktop(true),
-        );
+        let link = |ordinal| {
+            let (activity, signal) = async_channel::bounded(1);
+            (
+                RecipientLink {
+                    activity: Some(activity),
+                    ordinal: Arc::new(AtomicU64::new(ordinal)),
+                },
+                signal,
+            )
+        };
+        let (active_link, active_signal) = link(2);
+        let (idle_link, idle_signal) = link(1);
+        let options = HostEffectRecipientOptions::local_desktop(true);
+        let active = sink
+            .register(
+                Some(AttachmentId::new(1)),
+                &process,
+                options,
+                active_link,
+            )
+            .unwrap();
+        let _idle = sink
+            .register(Some(AttachmentId::new(2)), &process, options, idle_link)
+            .unwrap();
+
         assert_eq!(sink.admit_borrowed("copy"), HostEffectAdmission::Accepted);
-        signal.try_recv().unwrap();
-        assert_eq!(text(&recipient.try_next().unwrap()), "copy");
-        drop(sender);
-        assert!(signal.is_closed());
+        active_signal.try_recv().unwrap();
+        assert!(idle_signal.try_recv().is_err());
+        assert_eq!(text(&active.try_next().unwrap()), "copy");
     }
 
     #[test]
@@ -763,39 +757,41 @@ mod tests {
     }
 
     #[test]
-    fn focus_selects_one_recipient_without_fallback_or_replay() {
+    fn activity_selects_one_recipient_without_fallback_or_replay() {
         let sink = HostEffectSink::new(TerminalId::new(3));
         let process = DesktopHostEffectClient::new();
-        let first = recipient(
-            &sink,
-            &process,
-            1,
-            HostEffectRecipientOptions::local_desktop(true),
-        );
-        let second = recipient(
-            &sink,
-            &process,
-            2,
-            HostEffectRecipientOptions::local_desktop(true),
-        );
+        let options = HostEffectRecipientOptions::local_desktop(true);
+        let first_ordinal = Arc::new(AtomicU64::new(0));
+        let first = sink
+            .register(
+                Some(AttachmentId::new(1)),
+                &process,
+                options,
+                RecipientLink {
+                    activity: None,
+                    ordinal: Arc::clone(&first_ordinal),
+                },
+            )
+            .unwrap();
+        let second = recipient(&sink, &process, 2, options);
 
-        assert_eq!(sink.admit_borrowed("first"), HostEffectAdmission::Accepted);
-        assert_eq!(
-            text(&first.try_next().expect("first registered wins tie")),
-            "first"
-        );
-        assert!(second.try_next().is_none());
-
-        second.note_focus();
         assert_eq!(
             sink.admit_borrowed("second"),
             HostEffectAdmission::Accepted
         );
-        drop(second);
+        assert_eq!(
+            text(&second.try_next().expect("latest registration wins tie")),
+            "second"
+        );
         assert!(first.try_next().is_none());
+
+        first_ordinal.store(1, Ordering::Release);
+        assert_eq!(sink.admit_borrowed("first"), HostEffectAdmission::Accepted);
+        drop(first);
+        assert!(second.try_next().is_none(), "no redirect after drop");
         assert_eq!(sink.admit_borrowed("again"), HostEffectAdmission::Accepted);
         assert_eq!(
-            text(&first.try_next().expect("future admission can use first")),
+            text(&second.try_next().expect("future admission can use second")),
             "again"
         );
     }

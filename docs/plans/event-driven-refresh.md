@@ -289,11 +289,10 @@ there is one terminal per tab; do not encode that as a scheduler invariant.
 Future split panes can have several visible terminal views sharing one window
 frame clock, with separate in-flight snapshot state.
 
-Cloned `RuntimeClient`s share both the destructive event receiver and activity
-signal. They are not independent subscriptions. This change retains one consumer
-per runtime stream. Before shared attachments are implemented, add a subscription
-or fan-out boundary so multiple windows cannot steal each other's events. Do not
-build that facility in this change or claim the new scheduler supplies it.
+Cloned `RuntimeClient`s shared both the destructive event receiver and
+activity signal, so they were not independent subscriptions. The
+[terminal viewers plan](terminal-viewers.md) later replaced them: each view
+holds its own viewer with its own wake and reads terminal status as state.
 
 ### One consumer of terminal events, at the window
 

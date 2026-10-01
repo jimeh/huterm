@@ -14,15 +14,12 @@ use gpui::{
     WindowControlArea, WindowOptions, canvas, div, point, prelude::*, px, size,
     svg,
 };
-use huterm_core::{
-    HostEffectRecipient, Mux, PresentationController, RuntimeClient,
-    RuntimeError,
-};
+use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalEvent, TerminalInput, TerminalMetadata,
-    TerminalPresentation, TerminalSnapshot, ids,
+    TerminalCommand, TerminalInput, TerminalMetadata, TerminalPresentation,
+    TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -37,6 +34,7 @@ use crate::config::{
 use crate::input_queue::buffered_input_bytes;
 use crate::input_queue::{
     Admission, InputQueue, PENDING_INPUT_BYTE_CAPACITY, PENDING_INPUT_CAPACITY,
+    Queued, Refused,
 };
 use crate::keymap::{
     self, CompiledKeymap, InstalledKeymap, Platform, ReservedKeys,
@@ -343,10 +341,8 @@ impl BellPresentation {
     reason = "terminal visibility, lifecycle, and pointer states are independent"
 )]
 struct TerminalView {
-    client: RuntimeClient,
-    presentation: PresentationController,
+    viewer: TerminalViewer,
     pending_presentation: Option<TerminalPresentation>,
-    host_effects: HostEffectRecipient,
     title: String,
     metadata: TerminalMetadata,
     metadata_revision: u64,
@@ -462,20 +458,10 @@ pub(super) struct TerminalFailure {
     pub(super) message: String,
 }
 
-struct TerminalViewAuthority {
-    presentation: PresentationController,
-    host_effects: HostEffectRecipient,
-}
-
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "terminal construction needs its window-owned frame clock"
-    )]
     fn new(
-        client: RuntimeClient,
-        authority: TerminalViewAuthority,
+        viewer: TerminalViewer,
         frame_clock: Rc<refresh::FrameClock>,
         config: &Config,
         font_family: String,
@@ -483,16 +469,12 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let TerminalViewAuthority {
-            presentation,
-            host_effects,
-        } = authority;
         frame_clock.observe(cx);
         let focus = cx.focus_handle();
         let theme = config.theme.clone();
         let initial_presentation = terminal_presentation(&theme);
         let (pending_presentation, presentation_failure) =
-            match presentation.update(initial_presentation.clone()) {
+            match viewer.update_presentation(initial_presentation.clone()) {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
                 Err(error) => (None, Some(error.to_string())),
@@ -511,10 +493,7 @@ impl TerminalView {
                     dialog.focus(window, cx);
                     return;
                 }
-                view.host_effects.note_focus();
-                if view.visible
-                    && view.enqueue_input(TerminalInput::Focus(true))
-                {
+                if view.visible && view.enqueue_focus(true) {
                     cx.notify();
                 }
             },
@@ -527,7 +506,7 @@ impl TerminalView {
                 view.pending_shortcuts.clear();
                 view.clear_composition(cx);
                 view.blur_mouse(cx);
-                if view.enqueue_input(TerminalInput::Focus(false)) {
+                if view.enqueue_focus(false) {
                     cx.notify();
                 }
             });
@@ -580,10 +559,8 @@ impl TerminalView {
             }
         });
         let mut view = TerminalView {
-            client,
-            presentation,
+            viewer,
             pending_presentation,
-            host_effects,
             input_queue: InputQueue::default(),
             pending_work,
             _pending_work_task: pending_work_task,
@@ -689,17 +666,13 @@ impl TerminalView {
         {
             eprintln!(
                 "huterm-engine engine=ghostty revision={} snapshot=shared-rows native_optimize=ReleaseFast compression=disabled",
-                self.client.engine_revision()
+                self.viewer.engine_revision()
             );
         }
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "admission, link lookups, and benchmark samples share one request"
-    )]
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
@@ -716,7 +689,7 @@ impl TerminalView {
         let (context_lookup, link_point) = self.link_lookup_point(link_intent);
         let link_started = Instant::now();
         self.link_requests += u64::from(link_intent.is_some());
-        let requested = self.client.request_snapshot_with_link(
+        let requested = self.viewer.request_snapshot_with_link(
             self.scroll.submitted_scroll(),
             link_point,
         );
@@ -724,11 +697,7 @@ impl TerminalView {
             Ok(request) => request,
             Err(error) => {
                 self.scroll.fail();
-                self.report_failure(
-                    Severity::Error,
-                    "Terminal error",
-                    error.to_string(),
-                );
+                self.report_viewer_failure(&error);
                 return;
             }
         };
@@ -796,11 +765,7 @@ impl TerminalView {
                         view.scroll.fail();
                         // The window's notice stack draws the failure; the
                         // terminal itself has nothing new to render.
-                        view.report_failure(
-                            Severity::Error,
-                            "Terminal error",
-                            error.to_string(),
-                        );
+                        view.report_viewer_failure(&error);
                         false
                     }
                 };
@@ -814,7 +779,7 @@ impl TerminalView {
     }
 
     /// Applies a snapshot and reports whether the view must render again.
-    fn apply_snapshot(&mut self, snapshot: TerminalSnapshot) -> bool {
+    fn apply_snapshot(&mut self, snapshot: Arc<TerminalSnapshot>) -> bool {
         let mut changed = self
             .snapshot
             .as_deref()
@@ -851,7 +816,7 @@ impl TerminalView {
             self.scroll.scroll_rows(self.selection_edge_direction);
             self.update_renderer_selection();
         }
-        self.snapshot = Some(Arc::new(snapshot));
+        self.snapshot = Some(snapshot);
         changed
     }
 
@@ -862,16 +827,18 @@ impl TerminalView {
     ) -> RefreshResult {
         let previously_exited = self.exited;
         let mut host_count = 0;
-        let mut event_count = 0;
-        for _ in 0..8 {
-            let Some(pending) = self.host_effects.try_next() else {
-                break;
-            };
-            host_count += 1;
-            if let HostEffect::ClipboardWrite(write) = pending.effect() {
-                let item = ClipboardItem::new_string(write.text().to_owned());
-                if self.host_effects.is_current(&pending) {
-                    cx.write_to_clipboard(item);
+        if let Some(recipient) = self.viewer.host_effects() {
+            for _ in 0..8 {
+                let Some(pending) = recipient.try_next() else {
+                    break;
+                };
+                host_count += 1;
+                if let HostEffect::ClipboardWrite(write) = pending.effect() {
+                    let item =
+                        ClipboardItem::new_string(write.text().to_owned());
+                    if recipient.is_current(&pending) {
+                        cx.write_to_clipboard(item);
+                    }
                 }
             }
         }
@@ -879,70 +846,60 @@ impl TerminalView {
             self.cancel_mouse();
         }
         let mut changed = self.retry_client_messages();
-        for _ in 0..64 {
-            let event = self.client.try_recv_event();
-            if matches!(event, Ok(Some(_))) {
-                event_count += 1;
+        let update = self.viewer.poll();
+        if let Some(generation) = update.invalidated {
+            if self
+                .selection
+                .is_some_and(|selection| selection.generation != generation)
+            {
+                self.clear_selection();
+                changed = true;
             }
-            match event {
-                Ok(Some(TerminalEvent::Invalidated { generation, .. })) => {
-                    if self.selection.is_some_and(|selection| {
-                        selection.generation != generation
-                    }) {
-                        self.clear_selection();
-                        changed = true;
-                    }
-                    self.scroll.invalidate();
-                }
-                Ok(Some(TerminalEvent::Ready(_))) => self.scroll.invalidate(),
-                // Applications often resend an unchanged title; only a new
-                // title needs to re-render the tab and window.
-                Ok(Some(TerminalEvent::TitleChanged { title, .. }))
-                    if title != self.title =>
-                {
-                    self.title = title;
-                    changed = true;
-                }
-                Ok(Some(TerminalEvent::MetadataChanged {
-                    revision,
-                    metadata,
-                    ..
-                })) => {
-                    if revision > self.metadata_revision {
-                        self.metadata_revision = revision;
-                        self.metadata = metadata;
-                        changed = true;
-                    }
-                }
-                Ok(Some(TerminalEvent::Bell(_))) => {
-                    let active = self.visible && window.is_window_active();
-                    if active && self.visual_bell {
-                        self.bell_flash_count =
-                            self.bell_flash_count.wrapping_add(1);
-                    }
-                    changed |= self.bell.ring(
-                        Instant::now(),
-                        active,
-                        self.visual_bell,
-                    );
-                }
-                Ok(Some(TerminalEvent::Exited { status, .. })) => {
-                    self.observe_exit(status.code, cx);
-                    changed = true;
-                }
-                Ok(Some(TerminalEvent::Failed { message, .. })) => {
-                    self.failed = true;
-                    self.report_failure(
-                        Severity::Error,
-                        "Terminal failed",
-                        message,
-                    );
-                    self.scroll.invalidate();
-                    changed = true;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) | Err(_) => break,
+            self.scroll.invalidate();
+        }
+        if let Some(status) = &update.status {
+            // Applications often resend an unchanged title; only a new
+            // title needs to re-render the tab and window.
+            if status.title != self.title {
+                self.title.clone_from(&status.title);
+                changed = true;
             }
+            if status.metadata_revision > self.metadata_revision {
+                self.metadata_revision = status.metadata_revision;
+                self.metadata = status.metadata.clone();
+                changed = true;
+            }
+        }
+        if update.bells > 0 {
+            let active = self.visible && window.is_window_active();
+            if active && self.visual_bell {
+                self.bell_flash_count = self.bell_flash_count.wrapping_add(1);
+            }
+            changed |= self.bell.ring(Instant::now(), active, self.visual_bell);
+        }
+        if let Some(status) = update.exited {
+            self.observe_exit(status.code, cx);
+            changed = true;
+        }
+        if update.missed_failures > 0 {
+            self.report_failure(
+                Severity::Error,
+                "Terminal failed",
+                format!(
+                    "{} earlier terminal failures were not shown",
+                    update.missed_failures
+                ),
+            );
+        }
+        for failure in update.failures {
+            self.failed = true;
+            self.report_failure(
+                Severity::Error,
+                "Terminal failed",
+                failure.message,
+            );
+            self.scroll.invalidate();
+            changed = true;
         }
         self.start_snapshot_if_needed(cx);
         if changed {
@@ -952,7 +909,7 @@ impl TerminalView {
             changed,
             exited: !previously_exited && self.exited,
             exit_code: self.exit_code,
-            more: host_count == 8 || event_count == 64,
+            more: host_count == 8,
             failures: std::mem::take(&mut self.failures),
         }
     }
@@ -998,10 +955,10 @@ impl TerminalView {
     /// runtime stopped; the failure channel outlives the view's drain, so it
     /// never closes first.
     pub(super) async fn wait_for_activity(
-        client: &RuntimeClient,
+        wake: &ViewerWake,
         failure_wakes: &async_channel::Receiver<()>,
     ) -> Result<(), RuntimeError> {
-        let mut activity = std::pin::pin!(client.wait_for_activity());
+        let mut activity = std::pin::pin!(wake.wait());
         let mut failure = std::pin::pin!(failure_wakes.recv());
         std::future::poll_fn(|context| {
             if let Poll::Ready(result) = activity.as_mut().poll(context) {
@@ -1057,8 +1014,9 @@ impl TerminalView {
         terminal: config::TerminalConfig,
         cx: &mut Context<'_, Self>,
     ) {
-        self.host_effects
-            .set_allowed(terminal.clipboard_write.is_allowed());
+        if let Some(recipient) = self.viewer.host_effects() {
+            recipient.set_allowed(terminal.clipboard_write.is_allowed());
+        }
         self.refresh_mode = terminal.refresh;
         self.start_snapshot_if_needed(cx);
         self.links.disable();
@@ -1077,16 +1035,12 @@ impl TerminalView {
 
     fn publish_presentation(&mut self, theme: &Theme) {
         let state = terminal_presentation(theme);
-        match self.presentation.update(state.clone()) {
+        match self.viewer.update_presentation(state.clone()) {
             Ok(()) => self.pending_presentation = None,
             Err(RuntimeError::Busy) => self.pending_presentation = Some(state),
             Err(error) => {
                 self.pending_presentation = None;
-                self.report_failure(
-                    Severity::Error,
-                    "Terminal error",
-                    error.to_string(),
-                );
+                self.report_viewer_failure(&error);
             }
         }
         self.wake_pending_work();
@@ -1418,9 +1372,9 @@ impl TerminalView {
             ids::SELECT_ALL => self.select_all(cx),
             ids::CLEAR_SCROLLBACK | ids::RESET_TERMINAL => {
                 let edited = if invocation.id == ids::CLEAR_SCROLLBACK {
-                    self.client.clear_history()
+                    self.viewer.clear_history()
                 } else {
-                    self.client.reset()
+                    self.viewer.reset()
                 };
                 edited.map_err(|error| {
                     CommandError::Runtime(error.to_string())
@@ -2092,14 +2046,10 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         let request =
-            match self.client.request_selection(selection.generation, range) {
+            match self.viewer.request_selection(selection.generation, range) {
                 Ok(request) => request,
                 Err(error) => {
-                    self.report_failure(
-                        Severity::Error,
-                        "Terminal error",
-                        error.to_string(),
-                    );
+                    self.report_viewer_failure(&error);
                     return;
                 }
             };
@@ -2128,11 +2078,7 @@ impl TerminalView {
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}
                     Err(error) => {
-                        view.report_failure(
-                            Severity::Error,
-                            "Terminal error",
-                            error.to_string(),
-                        );
+                        view.report_viewer_failure(&error);
                     }
                 }
                 cx.notify();
@@ -2316,27 +2262,49 @@ impl TerminalView {
         self.last_grid_size = size;
         self.last_cell_size = Some(cell);
         self.resize_requests += 1;
-        match self.client.resize(size, cell) {
+        match self.viewer.report_geometry(size, cell) {
             Ok(()) => self.pending_resize = None,
             Err(RuntimeError::Busy) => self.pending_resize = Some((size, cell)),
             Err(error) => {
                 self.pending_resize = None;
-                self.report_failure(
-                    Severity::Error,
-                    "Terminal error",
-                    error.to_string(),
-                );
+                self.report_viewer_failure(&error);
             }
         }
         self.wake_pending_work();
     }
 
-    /// Scrolls back to live output after queueing input. The caller starts the
-    /// snapshot, which is needed only when this moved the viewport: the
-    /// input's echo invalidates the terminal itself, and a snapshot requested
-    /// before the echo exists would spend the frame's allowance and delay it.
+    /// Typing returns the shared viewport to live output on the runtime,
+    /// which then invalidates every viewer; this view only drops its own
+    /// pending scroll intent.
     fn return_to_live_output(&mut self) {
-        self.scroll.bottom();
+        self.scroll.typed();
+    }
+
+    /// Reports this view's focus to the runtime in order with its input.
+    /// Returns whether a failure notice was raised.
+    fn enqueue_focus(&mut self, focused: bool) -> bool {
+        let viewer = &self.viewer;
+        let result = self
+            .input_queue
+            .enqueue_focus(focused, |queued| send_queued(viewer, queued));
+        self.wake_pending_work();
+        match result {
+            Ok(_) => false,
+            Err(error) => self.report_viewer_failure(&error),
+        }
+    }
+
+    /// Reports a failed runtime request. A revoked viewer is expected: its
+    /// window replaces or removes the view, so it raises no notice.
+    fn report_viewer_failure(&mut self, error: &RuntimeError) -> bool {
+        if matches!(error, RuntimeError::Revoked) {
+            return false;
+        }
+        self.report_failure(
+            Severity::Error,
+            "Terminal error",
+            error.to_string(),
+        )
     }
 
     fn enqueue_input(&mut self, input: TerminalInput) -> bool {
@@ -2354,14 +2322,16 @@ impl TerminalView {
         if self.exited {
             return (false, false);
         }
-        let result = match self.input_queue.enqueue(input, release, |input| self.client.offer_input(input)) {
+        let viewer = &self.viewer;
+        let stamp = viewer.stamp(None);
+        let result = match self.input_queue.enqueue(input, stamp, release, |queued| send_queued(viewer, queued)) {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
             Ok(Admission::Full) if quiet => (false, false),
             Ok(Admission::Full) => (false, self.report_failure(Severity::Warning, "Input rejected", format!("Input buffer full ({PENDING_INPUT_CAPACITY} events or {PENDING_INPUT_BYTE_CAPACITY} bytes); input rejected"))),
             Err(error) => {
                 self.mouse = MouseState::default();
-                (false, self.report_failure(Severity::Error, "Terminal error", error.to_string()))
+                (false, self.report_viewer_failure(&error))
             }
         };
         self.wake_pending_work();
@@ -2400,42 +2370,30 @@ impl TerminalView {
         if self.exited {
             self.input_queue.close();
         }
-        if let Err(error) = self
-            .input_queue
-            .retry(|input| self.client.offer_input(input))
+        let viewer = &self.viewer;
+        if let Err(error) =
+            self.input_queue.retry(|queued| send_queued(viewer, queued))
         {
             self.mouse = MouseState::default();
-            return self.report_failure(
-                Severity::Error,
-                "Terminal error",
-                error.to_string(),
-            );
+            return self.report_viewer_failure(&error);
         }
         if let Some((grid, cell)) = self.pending_resize {
-            match self.client.resize(grid, cell) {
+            match self.viewer.report_geometry(grid, cell) {
                 Ok(()) => self.pending_resize = None,
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_resize = None;
-                    return self.report_failure(
-                        Severity::Error,
-                        "Terminal error",
-                        error.to_string(),
-                    );
+                    return self.report_viewer_failure(&error);
                 }
             }
         }
         if let Some(presentation) = self.pending_presentation.clone() {
-            match self.presentation.update(presentation) {
+            match self.viewer.update_presentation(presentation) {
                 Ok(()) => self.pending_presentation = None,
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
                     self.pending_presentation = None;
-                    return self.report_failure(
-                        Severity::Error,
-                        "Terminal error",
-                        error.to_string(),
-                    );
+                    return self.report_viewer_failure(&error);
                 }
             }
         }
@@ -3106,6 +3064,21 @@ fn link_segments(
     segments
 }
 
+/// Sends one queued request through the viewer, returning it on refusal.
+fn send_queued(viewer: &TerminalViewer, queued: Queued) -> Result<(), Refused> {
+    match queued {
+        Queued::Input(input, stamp) => viewer
+            .offer_input(input, stamp)
+            .map_err(|refused| Refused::input(refused, stamp)),
+        Queued::Focus(focused) => {
+            viewer.set_focus(focused).map_err(|error| Refused {
+                error,
+                queued: Queued::Focus(focused),
+            })
+        }
+    }
+}
+
 /// Terminal scrollbar geometry in rows: `history` rows above `visible_rows`,
 /// with `displayed_offset` counted from the bottom.
 #[expect(
@@ -3551,6 +3524,8 @@ mod tests {
         let shown = TerminalSnapshot {
             terminal_id: huterm_protocol::TerminalId::new(1),
             generation: 1,
+            revision: 0,
+            geometry_revision: 0,
             size: GridSize::clamped(1, 2),
             rows: vec![row(), row()],
             cursor: None,
@@ -3786,8 +3761,10 @@ mod tests {
     fn buffered_input_bytes_should_include_owned_text() {
         assert_eq!(buffered_input_bytes(&TerminalInput::Text("abc".into())), 3);
         assert!(
-            buffered_input_bytes(&TerminalInput::Focus(true))
-                >= std::mem::size_of::<bool>()
+            buffered_input_bytes(&TerminalInput::Key {
+                key: huterm_protocol::TerminalKey::Enter,
+                modifiers: Modifiers::default(),
+            }) >= std::mem::size_of::<bool>()
         );
     }
     #[test]

@@ -43,6 +43,15 @@ A view's connection to a workspace, with independent workspace/tab selection and
 presentation state. Terminal scrolling uses the terminal's shared viewport.
 Detaching does not mean closing the workspace or its terminals.
 
+**Viewer**:
+A client's registration to display and interact with one terminal, with its own
+capabilities. One attachment can hold many viewers, one per displayed terminal.
+A viewer is not an attachment and does not affect session membership.
+
+**Controlling viewer**:
+The viewer whose geometry and presentation a terminal uses: the one that most
+recently gained focus or typed.
+
 **Client layout**:
 The saved arrangement of a client's views, workspace selections, and presentation
 preferences.

@@ -8,22 +8,24 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use huterm_protocol::TerminalPresentation;
 use huterm_protocol::{
-    BufferRange, CellSize, ExitStatus, GridSize, ScrollCommand,
-    TerminalCommand, TerminalEvent, TerminalId, TerminalInput,
+    AttachmentId, BufferRange, ExitStatus, InputStamp, RuntimeId,
+    ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
     TerminalMetadata, TerminalSnapshot,
 };
+#[cfg(test)]
+use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
 use thiserror::Error;
 
 use crate::engine::{EngineEffect, TerminalEngine};
-use crate::events::{EventPublisher, EventReceiver};
 use crate::foreground::{ProbeSchedule, Reports};
 use crate::host_effects::HostEffectSink;
-use crate::input::encode_input;
-use crate::presentation::PresentationUpdate;
+use crate::input::{encode_focus, encode_input};
 use crate::pty::{self, PtyProcess};
+use crate::viewer::{
+    Arbiter, Effects, Registry, Report, Slot, StatusPublisher, TerminalViewer,
+    ViewerOptions,
+};
 
 const MESSAGE_CAPACITY: usize = 64;
 /// Largest PTY output message: one read plus output the PTY already holds.
@@ -36,9 +38,11 @@ const WRITER_CAPACITY: usize = 64;
 const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// In-process client handle for one terminal runtime.
+/// Crate-private handle for one terminal runtime: viewers send through it,
+/// and close assessment and teardown use its control requests. Clients
+/// outside the crate hold a [`TerminalViewer`] instead.
 #[derive(Clone, Debug)]
-pub struct RuntimeClient {
+pub(crate) struct RuntimeClient {
     terminal_id: TerminalId,
     messages: crate::wake::SyncSender<RuntimeMessage>,
     #[cfg(test)]
@@ -46,46 +50,27 @@ pub struct RuntimeClient {
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
-    events: Arc<Mutex<EventReceiver>>,
-    activity: async_channel::Receiver<()>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     host_effect_sink: HostEffectSink,
+    registry: Arc<Registry>,
 }
 
 impl RuntimeClient {
-    /// Returns the terminal addressed by this client.
-    #[must_use]
-    pub fn terminal_id(&self) -> TerminalId {
+    pub(crate) fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }
 
-    /// Returns the immutable engine version used by this terminal.
-    #[must_use]
-    pub fn engine_revision(&self) -> &'static str {
-        crate::GHOSTTY_REVISION
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        Arc::clone(&self.registry)
     }
 
-    /// Sends structured input using emulator modes owned by the runtime.
-    /// Input queued after observed child exit is discarded; history remains readable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped.
-    pub fn send_input(&self, input: TerminalInput) -> Result<(), RuntimeError> {
-        self.offer_input(input).map_err(|refused| refused.error)
-    }
-
-    /// Sends input like [`Self::send_input`], but returns refused input to
-    /// the caller, which can then queue it for retry without copying it first.
-    ///
-    /// # Errors
-    ///
-    /// Returns the input with [`RuntimeError::Busy`] when the runtime cannot
-    /// accept it yet, or with [`RuntimeError::Stopped`] when the terminal has
-    /// stopped.
-    pub fn offer_input(
+    /// Sends a viewer's input, reserving its bytes against the shared input
+    /// budget until the runtime dequeues it.
+    pub(crate) fn offer_input(
         &self,
+        slot: Arc<Slot>,
         input: TerminalInput,
+        stamp: InputStamp,
     ) -> Result<(), RefusedInput> {
         let reserved_bytes = input_bytes(&input).max(1);
         if reserved_bytes > INPUT_BYTE_CAPACITY
@@ -105,7 +90,9 @@ impl RuntimeClient {
         }
         let (error, message) =
             match self.messages.try_send(RuntimeMessage::Input {
+                slot,
                 input,
+                stamp,
                 reserved_bytes,
             }) {
                 Ok(()) => return Ok(()),
@@ -124,187 +111,33 @@ impl RuntimeClient {
         Err(RefusedInput { error, input })
     }
 
-    /// Resizes both the PTY and canonical emulator grid.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped.
-    pub fn resize(
+    /// Sends an ordered client message without blocking.
+    pub(crate) fn send_message(
         &self,
-        grid: GridSize,
-        cell: CellSize,
+        message: RuntimeMessage,
     ) -> Result<(), RuntimeError> {
-        match self.messages.try_send(RuntimeMessage::Resize {
-            grid: GridSize::clamped(grid.columns, grid.rows),
-            cell,
-        }) {
+        match self.messages.try_send(message) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
             Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
         }
     }
 
-    /// Erases the scrollback and keeps the screen, after earlier input.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped or its client queue
-    /// is full.
-    pub fn clear_history(&self) -> Result<(), RuntimeError> {
-        self.send_edit(BufferEdit::ClearHistory)
-    }
-
-    /// Resets the emulator as RIS does, after earlier input. The PTY and
-    /// its processes are unaffected.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped or its client queue
-    /// is full.
-    pub fn reset(&self) -> Result<(), RuntimeError> {
-        self.send_edit(BufferEdit::Reset)
-    }
-
-    fn send_edit(&self, edit: BufferEdit) -> Result<(), RuntimeError> {
-        match self.messages.try_send(RuntimeMessage::Edit(edit)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
-            Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
-        }
-    }
-
-    /// Requests an immutable snapshot without waiting for the runtime owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped.
-    pub fn request_snapshot(&self) -> Result<SnapshotRequest, RuntimeError> {
-        self.snapshot_request(None, None)
-    }
-
-    /// Moves the shared viewport and reads it atomically on the runtime owner.
-    ///
-    /// # Errors
-    /// Returns an error when the terminal has stopped.
-    pub fn request_scrolled_snapshot(
+    /// Sends a priority control request.
+    pub(crate) fn send_control(
         &self,
-        scroll: ScrollCommand,
-    ) -> Result<SnapshotRequest, RuntimeError> {
-        self.snapshot_request(Some(scroll), None)
-    }
-
-    /// Requests a snapshot and optional link lookup in one engine-owner operation.
-    ///
-    /// # Errors
-    /// Returns an error when the terminal has stopped. Lookup failures remain
-    /// nonfatal outcomes in the successful snapshot reply.
-    pub fn request_snapshot_with_link(
-        &self,
-        scroll: Option<ScrollCommand>,
-        point: Option<huterm_protocol::MousePosition>,
-    ) -> Result<SnapshotRequest, RuntimeError> {
-        self.snapshot_request(scroll, point)
-    }
-
-    fn snapshot_request(
-        &self,
-        scroll: Option<ScrollCommand>,
-        point: Option<huterm_protocol::MousePosition>,
-    ) -> Result<SnapshotRequest, RuntimeError> {
-        let (reply, receiver) = async_channel::bounded(1);
+        control: RuntimeControl,
+    ) -> Result<(), RuntimeError> {
         self.controls
-            .send(RuntimeControl::Snapshot {
-                scroll,
-                point,
-                reply,
-                #[cfg(test)]
-                fail_lookup: false,
-            })
-            .map_err(|_| RuntimeError::Stopped)?;
-        Ok(SnapshotRequest { receiver })
-    }
-
-    /// Requests text extraction from canonical scrollback without blocking.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has stopped.
-    pub fn request_selection(
-        &self,
-        generation: u64,
-        range: BufferRange,
-    ) -> Result<SelectionRequest, RuntimeError> {
-        let (reply, receiver) = async_channel::bounded(1);
-        self.controls
-            .send(RuntimeControl::Selection {
-                generation,
-                range,
-                reply,
-            })
-            .map_err(|_| RuntimeError::Stopped)?;
-        Ok(SelectionRequest { receiver })
-    }
-
-    /// Reads an immutable snapshot of the shared terminal viewport.
-    ///
-    /// This blocking convenience is intended for worker threads and tests.
-    /// Interactive clients should await [`Self::request_snapshot`] instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the runtime is unavailable or does not answer.
-    pub fn read_snapshot(&self) -> Result<TerminalSnapshot, RuntimeError> {
-        self.request_snapshot()?
-            .recv_blocking()
-            .map(|reply| reply.snapshot)
-    }
-
-    /// Receives the next queued runtime event without blocking.
-    ///
-    /// Pending titles, metadata, invalidations, and bells coalesce to their
-    /// latest state. Lifecycle transitions remain observable under a flood.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if another client poisoned the shared event receiver.
-    pub fn try_recv_event(
-        &self,
-    ) -> Result<Option<TerminalEvent>, RuntimeError> {
-        let event = match self
-            .events
-            .lock()
-            .map_err(|_| RuntimeError::EventReceiverPoisoned)?
-            .try_recv()
-        {
-            Ok(event) => Some(event),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                return Err(RuntimeError::Stopped);
-            }
-        };
-        Ok(event)
-    }
-
-    /// Completes once the runtime has published events since the last call.
-    ///
-    /// The signal carries no data and coalesces: drain events with
-    /// [`Self::try_recv_event`]. Clones share one signal, so give it a single
-    /// waiter.
-    ///
-    /// # Errors
-    /// Returns an error when the terminal has stopped.
-    pub async fn wait_for_activity(&self) -> Result<(), RuntimeError> {
-        self.activity
-            .recv()
-            .await
+            .send(control)
             .map_err(|_| RuntimeError::Stopped)
     }
 
     /// Checks whether the PTY has a foreground job other than its shell.
-    ///
-    /// # Errors
-    /// Returns an error if the terminal stops before answering.
-    pub async fn has_foreground_job(&self) -> Result<bool, RuntimeError> {
+    #[cfg(test)]
+    pub(crate) async fn has_foreground_job(
+        &self,
+    ) -> Result<bool, RuntimeError> {
         let (reply, receiver) = async_channel::bounded(1);
         self.controls
             .send(RuntimeControl::ForegroundJob(reply))
@@ -347,26 +180,13 @@ impl RuntimeClient {
         self.host_effect_sink.clone()
     }
 
-    pub(crate) fn update_presentation(
-        &self,
-        update: PresentationUpdate,
-    ) -> Result<(), RuntimeError> {
-        match self
-            .messages
-            .try_send(RuntimeMessage::Presentation(Box::new(update)))
-        {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(RuntimeError::Busy),
-            Err(TrySendError::Disconnected(_)) => Err(RuntimeError::Stopped),
-        }
+    #[cfg(test)]
+    pub(crate) fn queued_input_bytes(&self) -> usize {
+        self.queued_input_bytes.load(Ordering::Acquire)
     }
 
     /// Requests orderly terminal shutdown.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal has already stopped.
-    pub fn close(&self) -> Result<(), RuntimeError> {
+    pub(crate) fn close(&self) -> Result<(), RuntimeError> {
         self.host_effect_sink.close();
         self.closing.store(true, Ordering::Release);
         self.controls
@@ -387,8 +207,9 @@ pub struct SnapshotRequest {
 /// not leak into the dependency-neutral wire protocol.
 #[derive(Debug)]
 pub struct SnapshotReply {
-    /// Immutable terminal snapshot.
-    pub snapshot: TerminalSnapshot,
+    /// Immutable terminal snapshot, shared by every viewer that reads the
+    /// same publication.
+    pub snapshot: Arc<TerminalSnapshot>,
     /// Optional link outcome resolved against this exact snapshot.
     pub link: Option<huterm_protocol::LinkLookup>,
     /// Elapsed owner-thread time spent on optional link inspection.
@@ -401,11 +222,18 @@ pub struct SnapshotReply {
     /// Monotonic instant when snapshot construction completed.
     pub completed_at: Instant,
     /// Monotonic instant of the earliest invalidation this snapshot is the
-    /// first to include. `None` when nothing changed since the last snapshot.
+    /// first to include for its viewer. `None` when nothing changed since
+    /// that viewer's last snapshot.
     pub invalidated_at: Option<Instant>,
 }
 
 impl SnapshotRequest {
+    pub(crate) fn new(
+        receiver: async_channel::Receiver<Result<SnapshotReply, RuntimeError>>,
+    ) -> Self {
+        Self { receiver }
+    }
+
     /// Polls the response without blocking the caller.
     ///
     /// # Errors
@@ -433,7 +261,7 @@ impl SnapshotRequest {
             .map_err(|_| RuntimeError::Stopped)?
     }
 
-    fn recv_blocking(self) -> Result<SnapshotReply, RuntimeError> {
+    pub(crate) fn recv_blocking(self) -> Result<SnapshotReply, RuntimeError> {
         self.recv_blocking_with_timeout(SNAPSHOT_RESPONSE_TIMEOUT)
     }
 
@@ -471,6 +299,12 @@ pub struct SelectionRequest {
 }
 
 impl SelectionRequest {
+    pub(crate) fn new(
+        receiver: async_channel::Receiver<Result<Option<String>, RuntimeError>>,
+    ) -> Self {
+        Self { receiver }
+    }
+
     /// Waits asynchronously for extracted text.
     ///
     /// A successful `None` means the terminal generation or range was stale.
@@ -482,6 +316,13 @@ impl SelectionRequest {
         self.receiver
             .recv()
             .await
+            .map_err(|_| RuntimeError::Stopped)?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recv_blocking(self) -> Result<Option<String>, RuntimeError> {
+        self.receiver
+            .recv_blocking()
             .map_err(|_| RuntimeError::Stopped)?
     }
 }
@@ -503,6 +344,15 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
+        Self::spawn_in(RuntimeId::new(0), terminal_id, command)
+    }
+
+    /// Starts a terminal whose viewer IDs are scoped to `runtime`.
+    pub(crate) fn spawn_in(
+        runtime: RuntimeId,
+        terminal_id: TerminalId,
+        command: &TerminalCommand,
+    ) -> Result<Self, RuntimeError> {
         let command = command.clone();
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
@@ -511,6 +361,8 @@ impl TerminalRuntime {
             mpsc::sync_channel(OUTPUT_CAPACITY);
         let (control_sender, control_receiver) = mpsc::channel();
         let wake = Arc::new(crate::wake::Wake::default());
+        let registry =
+            Arc::new(Registry::new(terminal_id, runtime, Arc::clone(&wake)));
         let message_sender =
             crate::wake::SyncSender::new(message_sender, Arc::clone(&wake));
         let output_sender =
@@ -518,17 +370,11 @@ impl TerminalRuntime {
         #[cfg(test)]
         let client_output = output_sender.clone();
         let control_sender = crate::wake::Sender::new(control_sender, wake);
-        let (event_sender, event_receiver, activity) =
-            EventPublisher::channel();
-        let invalidation_pending = Arc::new(AtomicBool::new(false));
-        let runtime_pending = Arc::clone(&invalidation_pending);
         let closing = Arc::new(AtomicBool::new(false));
         let queued_input_bytes = Arc::new(AtomicUsize::new(0));
-        let host_effect_sink = HostEffectSink::new_with_activity(
-            terminal_id,
-            Some(Arc::downgrade(&event_sender.activity)),
-        );
+        let host_effect_sink = HostEffectSink::new(terminal_id);
         let runtime_host_effect_sink = host_effect_sink.clone();
+        let runtime_registry = Arc::clone(&registry);
 
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
@@ -551,14 +397,18 @@ impl TerminalRuntime {
                     run_terminal(
                         terminal_id,
                         engine,
+                        Arbiter::new(
+                            command.grid_size,
+                            command.cell_size,
+                            command.presentation.clone(),
+                        ),
                         process,
                         message_receiver,
                         output_receiver,
                         output_sender,
                         control_receiver,
                         runtime_controls,
-                        event_sender,
-                        runtime_pending,
+                        &runtime_registry,
                         runtime_closing,
                         runtime_input_bytes,
                         runtime_groups,
@@ -566,6 +416,7 @@ impl TerminalRuntime {
                     )
                 })();
                 runtime_host_effect_sink.close();
+                runtime_registry.close();
                 if let Err(error) = &result {
                     let _ = startup_sender.send(Err(error.clone()));
                 }
@@ -588,10 +439,9 @@ impl TerminalRuntime {
             controls: control_sender,
             closing,
             queued_input_bytes,
-            events: Arc::new(Mutex::new(event_receiver)),
-            activity,
             shutdown_groups,
             host_effect_sink,
+            registry,
         };
         Ok(Self {
             client,
@@ -599,10 +449,33 @@ impl TerminalRuntime {
         })
     }
 
-    /// Returns a cloneable client handle.
-    #[must_use]
-    pub fn client(&self) -> RuntimeClient {
+    /// Registers a viewer of a terminal the caller owns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::Stopped`] once the terminal stopped, or
+    /// [`RuntimeError::ViewerLimit`] when it has no room for another viewer.
+    pub fn subscribe(
+        &self,
+        options: ViewerOptions,
+    ) -> Result<TerminalViewer, RuntimeError> {
+        self.subscribe_for(None, options)
+    }
+
+    pub(crate) fn subscribe_for(
+        &self,
+        attachment: Option<AttachmentId>,
+        options: ViewerOptions,
+    ) -> Result<TerminalViewer, RuntimeError> {
+        TerminalViewer::subscribe(self.client.clone(), attachment, options)
+    }
+
+    pub(crate) fn client(&self) -> RuntimeClient {
         self.client.clone()
+    }
+
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.client.registry()
     }
 
     pub(crate) fn host_effect_sink(&self) -> HostEffectSink {
@@ -667,9 +540,15 @@ pub enum RuntimeError {
     /// A synchronous request exceeded the bounded response timeout.
     #[error("terminal runtime request timed out")]
     TimedOut,
-    /// The event receiver mutex was poisoned.
-    #[error("terminal event receiver was poisoned")]
-    EventReceiverPoisoned,
+    /// The viewer lacks the capability the request needs.
+    #[error("this viewer may not make that terminal request")]
+    NotPermitted,
+    /// The viewer's authority was withdrawn, for example by detaching.
+    #[error("this terminal viewer was revoked")]
+    Revoked,
+    /// The terminal has no room for another viewer.
+    #[error("terminal has no room for another viewer")]
+    ViewerLimit,
 }
 
 /// Input a runtime did not accept, returned to its sender.
@@ -684,28 +563,37 @@ pub struct RefusedInput {
 /// Ordered client requests. Their queue is separate from PTY output so a
 /// flood cannot refuse input.
 #[derive(Debug)]
-enum RuntimeMessage {
+pub(crate) enum RuntimeMessage {
     Input {
+        slot: Arc<Slot>,
         input: TerminalInput,
+        stamp: InputStamp,
         reserved_bytes: usize,
     },
-    Resize {
-        grid: GridSize,
-        cell: CellSize,
+    Arbitration {
+        slot: Arc<Slot>,
+        report: Report,
     },
-    Presentation(Box<PresentationUpdate>),
-    Edit(BufferEdit),
+    Presentation {
+        slot: Arc<Slot>,
+        presentation: Box<huterm_protocol::TerminalPresentation>,
+    },
+    Edit {
+        slot: Arc<Slot>,
+        edit: BufferEdit,
+    },
 }
 
 /// Client changes to emulator state that bypass the PTY.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BufferEdit {
+pub(crate) enum BufferEdit {
     ClearHistory,
     Reset,
 }
 
 #[derive(Debug)]
-enum RuntimeControl {
+pub(crate) enum RuntimeControl {
+    #[cfg(test)]
     ForegroundJob(async_channel::Sender<bool>),
     JobContext(Sender<crate::jobs::JobContext>),
     #[cfg(test)]
@@ -721,13 +609,16 @@ enum RuntimeControl {
     },
     PtyEof,
     Snapshot {
-        scroll: Option<ScrollCommand>,
+        slot: Arc<Slot>,
+        /// A scroll and the viewer's number for it.
+        scroll: Option<(ScrollCommand, u64)>,
         point: Option<huterm_protocol::MousePosition>,
         #[cfg(test)]
         fail_lookup: bool,
         reply: async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
     },
     Selection {
+        slot: Arc<Slot>,
         generation: u64,
         range: BufferRange,
         reply: async_channel::Sender<Result<Option<String>, RuntimeError>>,
@@ -737,15 +628,99 @@ enum RuntimeControl {
     Wake,
 }
 
+/// The runtime's publication state: the revision that advances on every
+/// snapshot-affecting change, and the last snapshot built at a revision.
+#[derive(Debug, Default)]
+struct Publication {
+    revision: u64,
+    cache: Option<Arc<TerminalSnapshot>>,
+}
+
+impl Publication {
+    /// Advances the revision and notifies every viewer except `skip`.
+    fn publish(
+        &mut self,
+        registry: &Registry,
+        skip: Option<huterm_protocol::ViewerId>,
+        generation: u64,
+    ) {
+        self.revision += 1;
+        registry.publish(skip, generation);
+    }
+}
+
+/// Builds the snapshot a viewer requested, applying its scroll first.
+/// Reuses the last snapshot when nothing changed since it was built.
+#[cfg_attr(
+    test,
+    expect(
+        clippy::too_many_arguments,
+        reason = "the test-only lookup fault adds an argument"
+    )
+)]
+fn build_snapshot(
+    engine: &mut TerminalEngine,
+    publication: &mut Publication,
+    arbiter: &mut Arbiter,
+    registry: &Registry,
+    slot: &Slot,
+    scroll: Option<(ScrollCommand, u64)>,
+    point: Option<huterm_protocol::MousePosition>,
+    #[cfg(test)] fail_lookup: bool,
+) -> Result<SnapshotReply, RuntimeError> {
+    let started = Instant::now();
+    let requested_viewport =
+        engine.requested_viewport(scroll.map(|(command, _)| command))?;
+    if let Some((command, number)) = scroll {
+        let before = engine.viewport_offset()?;
+        engine.scroll(command)?;
+        arbiter.scrolled(slot, number);
+        if engine.viewport_offset()? != before {
+            publication.publish(registry, Some(slot.id), engine.generation());
+        }
+    }
+    let snapshot = match &publication.cache {
+        Some(cached) if cached.revision == publication.revision => {
+            Arc::clone(cached)
+        }
+        _ => {
+            let mut snapshot = engine.snapshot()?;
+            snapshot.revision = publication.revision;
+            snapshot.geometry_revision = arbiter.geometry_revision();
+            let snapshot = Arc::new(snapshot);
+            publication.cache = Some(Arc::clone(&snapshot));
+            snapshot
+        }
+    };
+    let invalidated_at = slot.snapshot_built();
+    let snapshot_duration = started.elapsed();
+    let lookup_started = Instant::now();
+    let link = point.map(|point| {
+        #[cfg(test)]
+        if fail_lookup {
+            return huterm_protocol::LinkLookup::Unavailable;
+        }
+        engine.lookup_link(&snapshot, point)
+    });
+    Ok(SnapshotReply {
+        link,
+        lookup_duration: lookup_started.elapsed(),
+        snapshot,
+        requested_viewport,
+        snapshot_duration,
+        completed_at: Instant::now(),
+        invalidated_at,
+    })
+}
+
 fn complete_snapshot_request(
     result: Result<SnapshotReply, RuntimeError>,
     reply: &async_channel::Sender<Result<SnapshotReply, RuntimeError>>,
-    events: &EventPublisher,
-    terminal_id: TerminalId,
+    status: &mut StatusPublisher,
     closing: &AtomicBool,
 ) {
     if let Err(error) = &result {
-        report_failure(events, terminal_id, error.to_string());
+        status.failure(error.to_string());
         closing.store(true, Ordering::Release);
     }
     let _ = reply.try_send(result);
@@ -754,6 +729,123 @@ fn complete_snapshot_request(
 #[derive(Debug)]
 enum WriterMessage {
     Write(Vec<u8>),
+}
+
+/// The PTY-facing state the runtime owner applies arbitration effects to.
+struct Owner<'a> {
+    engine: &'a mut TerminalEngine,
+    master: &'a dyn portable_pty::MasterPty,
+    writer: &'a async_channel::Sender<WriterMessage>,
+    pending_writes: &'a mut VecDeque<Vec<u8>>,
+    status: &'a mut StatusPublisher,
+    metadata: &'a mut PublishedMetadata,
+    publication: &'a mut Publication,
+    registry: &'a Registry,
+    child_exited: bool,
+}
+
+impl Owner<'_> {
+    /// Applies arbitration effects in order: resize, presentation, mouse
+    /// releases, then the focus report. Returns false when the runtime must
+    /// close.
+    fn apply(&mut self, effects: Effects) -> bool {
+        if effects.is_empty() {
+            return true;
+        }
+        if let Some((grid, cell)) = effects.resize {
+            if !self.child_exited
+                && self.master.resize(pty::pty_size(grid, cell)).is_err()
+            {
+                self.status.failure("failed to resize PTY".into());
+            }
+            let engine_effects = match self.engine.resize(grid, cell) {
+                Ok(effects) => effects,
+                Err(error) => {
+                    self.status.failure(error.to_string());
+                    return false;
+                }
+            };
+            if !self.handle_effects(
+                engine_effects,
+                "PTY writer stopped during resize",
+            ) {
+                return false;
+            }
+            self.publish();
+        }
+        if let Some(presentation) = effects.presentation {
+            if let Err(error) = self.engine.update_presentation(presentation) {
+                self.status.failure(error.to_string());
+                return false;
+            }
+            self.publish();
+        }
+        if self.child_exited
+            || (effects.releases.is_empty() && effects.focus.is_none())
+        {
+            return true;
+        }
+        let modes = match self.engine.modes() {
+            Ok(modes) => modes,
+            Err(error) => {
+                self.status.failure(error.to_string());
+                return false;
+            }
+        };
+        let size = self.engine.size();
+        for release in effects.releases {
+            let bytes =
+                encode_input(&TerminalInput::Mouse(release), modes, size);
+            if !self.write(bytes, "PTY writer stopped before a mouse release") {
+                return false;
+            }
+        }
+        if let Some(focused) = effects.focus {
+            let bytes = encode_focus(focused, modes).to_vec();
+            if !self.write(bytes, "PTY writer stopped before a focus report") {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn publish(&mut self) {
+        self.publication
+            .publish(self.registry, None, self.engine.generation());
+    }
+
+    fn write(&mut self, bytes: Vec<u8>, failure: &str) -> bool {
+        if bytes.is_empty()
+            || queue_write(bytes, self.writer, self.pending_writes)
+                != WriterQueueState::Disconnected
+        {
+            return true;
+        }
+        self.status.failure(failure.into());
+        false
+    }
+
+    fn handle_effects(
+        &mut self,
+        effects: Vec<EngineEffect>,
+        failure: &str,
+    ) -> bool {
+        for effect in effects {
+            if handle_effect(
+                effect,
+                self.writer,
+                self.pending_writes,
+                self.status,
+                self.metadata,
+                self.master,
+            ) == WriterQueueState::Disconnected
+            {
+                self.status.failure(failure.into());
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[expect(
@@ -765,27 +857,26 @@ enum WriterMessage {
 fn run_terminal(
     terminal_id: TerminalId,
     mut engine: TerminalEngine,
+    mut arbiter: Arbiter,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
     output: Receiver<Vec<u8>>,
     output_sender: crate::wake::SyncSender<Vec<u8>>,
     controls: Receiver<RuntimeControl>,
     control_sender: crate::wake::Sender<RuntimeControl>,
-    events: EventPublisher,
-    invalidation_pending: Arc<AtomicBool>,
+    registry: &Registry,
     closing: Arc<AtomicBool>,
     queued_input_bytes: Arc<AtomicUsize>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     startup: &SyncSender<Result<(), RuntimeError>>,
 ) -> Result<(), RuntimeError> {
     let wake = Arc::clone(&control_sender.wake);
+    let mut status = StatusPublisher::default();
     let parts = match process.into_parts() {
         Ok(parts) => parts,
         Err(error) => {
-            let _ = events.send(TerminalEvent::Failed {
-                terminal_id,
-                message: error.to_string(),
-            });
+            status.failure(error.to_string());
+            status.flush(registry);
             return Err(error);
         }
     };
@@ -829,7 +920,8 @@ fn run_terminal(
     ) {
         Ok(join) => join,
         Err(error) => {
-            report_failure(&events, terminal_id, error.to_string());
+            status.failure(error.to_string());
+            status.flush(registry);
             pty::record_foreground_group(master.as_ref(), &mut process_groups);
             pty::terminate_child(
                 child.as_mut(),
@@ -860,7 +952,8 @@ fn run_terminal(
     ) {
         Ok(join) => join,
         Err(error) => {
-            report_failure(&events, terminal_id, error.to_string());
+            status.failure(error.to_string());
+            status.flush(registry);
             closing.store(true, Ordering::Release);
             pty::record_foreground_group(master.as_ref(), &mut process_groups);
             pty::terminate_child(
@@ -878,15 +971,8 @@ fn run_terminal(
         }
     };
     let _ = startup.send(Ok(()));
-    let _ = events.send(TerminalEvent::Ready(terminal_id));
-    let mut invalidated_at = None;
-    publish_invalidation(
-        &events,
-        &invalidation_pending,
-        &mut invalidated_at,
-        terminal_id,
-        engine.generation(),
-    );
+    let mut publication = Publication::default();
+    publication.publish(registry, None, engine.generation());
 
     let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
     let mut child_exited = false;
@@ -897,23 +983,46 @@ fn run_terminal(
     let mut output_turn = false;
     let mut probes = ProbeSchedule::default();
     let root = child.process_id();
+    // Runs `$body` with an `Owner` borrowing the runtime's PTY-facing state.
+    macro_rules! owner {
+        (|$owner:ident| $body:expr) => {{
+            let mut $owner = Owner {
+                engine: &mut engine,
+                master: master.as_ref(),
+                writer: &writer_sender,
+                pending_writes: &mut pending_writes,
+                status: &mut status,
+                metadata: &mut metadata,
+                publication: &mut publication,
+                registry,
+                child_exited,
+            };
+            $body
+        }};
+    }
     while !closing.load(Ordering::Acquire) {
+        if registry.take_changed() {
+            let effects = arbiter.sync(registry);
+            if !owner!(|owner| owner.apply(effects)) {
+                closing.store(true, Ordering::Release);
+                continue;
+            }
+        }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
             &lifecycle,
-            terminal_id,
-            &events,
+            &mut status,
             &mut child_exited,
             &input_closed,
             &mut pending_writes,
         ) {
-            report_failure(&events, terminal_id, error);
+            status.failure(error);
             closing.store(true, Ordering::Release);
         }
         // Root exit clears the name; the exited terminal is never probed.
         if child_exited {
             probes.stop();
-            metadata.publish(None, terminal_id, &events);
+            metadata.publish(None, &mut status);
         } else {
             let now = Instant::now();
             if probes.due(now) {
@@ -923,9 +1032,10 @@ fn run_terminal(
                 );
                 probes.probed(now, probe.job);
                 metadata.reports.probed(probe.group, probe.directory);
-                metadata.publish(probe.name, terminal_id, &events);
+                metadata.publish(probe.name, &mut status);
             }
         }
+        status.flush(registry);
         let mut controls_drained = 0;
         while controls_drained < MESSAGE_CAPACITY {
             let Ok(control) = controls.try_recv() else {
@@ -937,80 +1047,69 @@ fn run_terminal(
             }
             match control {
                 RuntimeControl::Snapshot {
+                    slot,
                     scroll,
                     point,
                     reply,
                     #[cfg(test)]
                     fail_lookup,
                 } => {
-                    // Rearm on the owner thread at snapshot construction, not
-                    // when a client merely drains its notification. Hidden or
-                    // frame-blocked clients already know they are dirty and
-                    // must not wake again for every PTY chunk.
-                    invalidation_pending.store(false, Ordering::Release);
-                    let started = Instant::now();
-                    let result = (|| {
-                        let requested_viewport =
-                            engine.requested_viewport(scroll)?;
-                        if let Some(scroll) = scroll {
-                            engine.scroll(scroll)?;
-                        }
-                        let snapshot = engine.snapshot()?;
-                        let snapshot_duration = started.elapsed();
-                        let lookup_started = Instant::now();
-                        let link = point.map(|point| {
-                            #[cfg(test)]
-                            if fail_lookup {
-                                return huterm_protocol::LinkLookup::Unavailable;
-                            }
-                            engine.lookup_link(&snapshot, point)
-                        });
-                        Ok(SnapshotReply {
-                            link,
-                            lookup_duration: lookup_started.elapsed(),
-                            snapshot,
-                            requested_viewport,
-                            snapshot_duration,
-                            completed_at: Instant::now(),
-                            invalidated_at: invalidated_at.take(),
-                        })
-                    })();
+                    // Revocation answers only this viewer and never reaches
+                    // the fatal path below.
+                    if slot.is_revoked() {
+                        let _ = reply.try_send(Err(RuntimeError::Revoked));
+                        continue;
+                    }
+                    let result = build_snapshot(
+                        &mut engine,
+                        &mut publication,
+                        &mut arbiter,
+                        registry,
+                        &slot,
+                        scroll,
+                        point,
+                        #[cfg(test)]
+                        fail_lookup,
+                    );
                     complete_snapshot_request(
                         result,
                         &reply,
-                        &events,
-                        terminal_id,
+                        &mut status,
                         &closing,
                     );
                 }
                 RuntimeControl::Selection {
+                    slot,
                     generation,
                     range,
                     reply,
                 } => {
-                    let _ =
-                        reply.try_send(engine.extract_text(generation, range));
+                    let result = if slot.is_revoked() {
+                        Err(RuntimeError::Revoked)
+                    } else {
+                        engine.extract_text(generation, range)
+                    };
+                    let _ = reply.try_send(result);
                 }
                 RuntimeControl::WriterFailed(message) => {
                     // Exit may have happened since the loop's initial poll.
                     if let Err(error) = observe_child_exit(
                         child.as_mut(),
                         &lifecycle,
-                        terminal_id,
-                        &events,
+                        &mut status,
                         &mut child_exited,
                         &input_closed,
                         &mut pending_writes,
                     ) {
-                        report_failure(&events, terminal_id, error);
+                        status.failure(error);
                         closing.store(true, Ordering::Release);
                     } else if !child_exited {
-                        report_failure(&events, terminal_id, message);
+                        status.failure(message);
                         closing.store(true, Ordering::Release);
                     }
                 }
                 RuntimeControl::WorkerFailed(message) => {
-                    report_failure(&events, terminal_id, message);
+                    status.failure(message);
                     closing.store(true, Ordering::Release);
                 }
                 RuntimeControl::PtyEof => {
@@ -1052,6 +1151,7 @@ fn run_terminal(
                     let _ = entered.send(());
                     let _ = release.recv();
                 }
+                #[cfg(test)]
                 RuntimeControl::ForegroundJob(reply) => {
                     let busy = !child_exited && {
                         let shell = child
@@ -1087,15 +1187,14 @@ fn run_terminal(
         match writer_state {
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
+                status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
                 }
                 continue;
             }
             WriterQueueState::Disconnected => {
-                report_failure(
-                    &events,
-                    terminal_id,
+                status.failure(
                     "PTY writer stopped before queued input was written".into(),
                 );
                 closing.store(true, Ordering::Release);
@@ -1105,6 +1204,7 @@ fn run_terminal(
         let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
+                status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
                 }
@@ -1112,18 +1212,19 @@ fn run_terminal(
             }
             Err(TryRecvError::Disconnected) => break,
         };
-        match message {
+        let healthy = match message {
             NextMessage::Output(bytes) => {
                 let now = Instant::now();
                 probes.output(now);
                 let effects = match engine.process(&bytes) {
                     Ok(effects) => effects,
                     Err(error) => {
-                        report_failure(&events, terminal_id, error.to_string());
+                        status.failure(error.to_string());
                         closing.store(true, Ordering::Release);
                         continue;
                     }
                 };
+                let mut healthy = true;
                 for effect in effects {
                     if child_exited
                         && matches!(effect, EngineEffect::PtyWrite(_))
@@ -1139,167 +1240,93 @@ fn run_terminal(
                     }
                     if handle_effect(
                         effect,
-                        terminal_id,
                         &writer_sender,
                         &mut pending_writes,
-                        &events,
+                        &mut status,
                         &mut metadata,
                         master.as_ref(),
                     ) == WriterQueueState::Disconnected
                     {
-                        report_failure(
-                            &events,
-                            terminal_id,
+                        status.failure(
                             "PTY writer stopped before a terminal reply was written"
                                 .into(),
                         );
-                        closing.store(true, Ordering::Release);
+                        healthy = false;
                         break;
                     }
                 }
-                publish_invalidation(
-                    &events,
-                    &invalidation_pending,
-                    &mut invalidated_at,
-                    terminal_id,
-                    engine.generation(),
-                );
+                publication.publish(registry, None, engine.generation());
+                healthy
             }
             NextMessage::Client(RuntimeMessage::Input {
+                slot,
                 input,
+                stamp,
                 reserved_bytes,
             }) => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                if child_exited {
-                    continue;
-                }
-                let modes = match engine.modes() {
-                    Ok(modes) => modes,
-                    Err(error) => {
-                        report_failure(&events, terminal_id, error.to_string());
-                        closing.store(true, Ordering::Release);
-                        continue;
+                let healthy = if slot.is_revoked() || child_exited {
+                    true
+                } else {
+                    owner!(|owner| handle_input(
+                        &mut owner,
+                        &mut arbiter,
+                        &mut probes,
+                        &slot,
+                        &input,
+                        stamp,
+                    ))
+                };
+                slot.settled();
+                let effects = arbiter.settled(&slot, registry);
+                healthy && owner!(|owner| owner.apply(effects))
+            }
+            NextMessage::Client(RuntimeMessage::Arbitration {
+                slot,
+                report,
+            }) => {
+                let effects = arbiter.report(&slot, report);
+                owner!(|owner| owner.apply(effects))
+            }
+            NextMessage::Client(RuntimeMessage::Presentation {
+                slot,
+                presentation,
+            }) => {
+                let effects = arbiter.presentation(&slot, *presentation);
+                owner!(|owner| owner.apply(effects))
+            }
+            NextMessage::Client(RuntimeMessage::Edit { slot, edit }) => {
+                let healthy = slot.is_revoked() || {
+                    let effects = match edit {
+                        BufferEdit::ClearHistory => engine.clear_history(),
+                        BufferEdit::Reset => engine.reset(),
+                    };
+                    match effects {
+                        Ok(effects) => owner!(|owner| {
+                            let healthy = owner.handle_effects(
+                                effects,
+                                "PTY writer stopped during a buffer edit",
+                            );
+                            owner.publish();
+                            healthy
+                        }),
+                        Err(error) => {
+                            status.failure(error.to_string());
+                            false
+                        }
                     }
                 };
-                let bytes = encode_input(&input, modes, engine.size());
-                if probes.input(&bytes, Instant::now()) {
-                    metadata.reports.job_control_input();
-                }
-                if !bytes.is_empty()
-                    && queue_write(bytes, &writer_sender, &mut pending_writes)
-                        == WriterQueueState::Disconnected
-                {
-                    report_failure(
-                        &events,
-                        terminal_id,
-                        "PTY writer stopped before input was written".into(),
-                    );
-                    closing.store(true, Ordering::Release);
-                }
+                slot.settled();
+                let effects = arbiter.settled(&slot, registry);
+                healthy && owner!(|owner| owner.apply(effects))
             }
-            NextMessage::Client(RuntimeMessage::Resize { grid, cell }) => {
-                if !child_exited
-                    && master.resize(pty::pty_size(grid, cell)).is_err()
-                {
-                    let _ = events.send(TerminalEvent::Failed {
-                        terminal_id,
-                        message: "failed to resize PTY".into(),
-                    });
-                }
-                let effects = match engine.resize(grid, cell) {
-                    Ok(effects) => effects,
-                    Err(error) => {
-                        report_failure(&events, terminal_id, error.to_string());
-                        closing.store(true, Ordering::Release);
-                        continue;
-                    }
-                };
-                for effect in effects {
-                    if handle_effect(
-                        effect,
-                        terminal_id,
-                        &writer_sender,
-                        &mut pending_writes,
-                        &events,
-                        &mut metadata,
-                        master.as_ref(),
-                    ) == WriterQueueState::Disconnected
-                    {
-                        report_failure(
-                            &events,
-                            terminal_id,
-                            "PTY writer stopped during resize".into(),
-                        );
-                        closing.store(true, Ordering::Release);
-                        break;
-                    }
-                }
-                publish_invalidation(
-                    &events,
-                    &invalidation_pending,
-                    &mut invalidated_at,
-                    terminal_id,
-                    engine.generation(),
-                );
-            }
-            NextMessage::Client(RuntimeMessage::Edit(edit)) => {
-                let effects = match edit {
-                    BufferEdit::ClearHistory => engine.clear_history(),
-                    BufferEdit::Reset => engine.reset(),
-                };
-                let effects = match effects {
-                    Ok(effects) => effects,
-                    Err(error) => {
-                        report_failure(&events, terminal_id, error.to_string());
-                        closing.store(true, Ordering::Release);
-                        continue;
-                    }
-                };
-                for effect in effects {
-                    if handle_effect(
-                        effect,
-                        terminal_id,
-                        &writer_sender,
-                        &mut pending_writes,
-                        &events,
-                        &mut metadata,
-                        master.as_ref(),
-                    ) == WriterQueueState::Disconnected
-                    {
-                        report_failure(
-                            &events,
-                            terminal_id,
-                            "PTY writer stopped during a buffer edit".into(),
-                        );
-                        closing.store(true, Ordering::Release);
-                        break;
-                    }
-                }
-                publish_invalidation(
-                    &events,
-                    &invalidation_pending,
-                    &mut invalidated_at,
-                    terminal_id,
-                    engine.generation(),
-                );
-            }
-            NextMessage::Client(RuntimeMessage::Presentation(update)) => {
-                match update.apply(&mut engine) {
-                    Ok(true) => publish_invalidation(
-                        &events,
-                        &invalidation_pending,
-                        &mut invalidated_at,
-                        terminal_id,
-                        engine.generation(),
-                    ),
-                    Ok(false) => {}
-                    Err(error) => {
-                        report_failure(&events, terminal_id, error.to_string());
-                        closing.store(true, Ordering::Release);
-                    }
-                }
-            }
+        };
+        if !healthy {
+            closing.store(true, Ordering::Release);
         }
+        // A snapshot that shows this message's output is never ahead of the
+        // status the same output produced.
+        status.flush(registry);
     }
 
     closing.store(true, Ordering::Release);
@@ -1326,16 +1353,73 @@ fn run_terminal(
     reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
-    if pty::reap_child(child) {
+    let result = if pty::reap_child(child) {
         Ok(())
     } else {
-        report_failure(
-            &events,
-            terminal_id,
-            RuntimeError::ShutdownTimedOut.to_string(),
-        );
+        status.failure(RuntimeError::ShutdownTimedOut.to_string());
         Err(RuntimeError::ShutdownTimedOut)
+    };
+    status.flush(registry);
+    result
+}
+
+/// Handles one viewer's input: control and the return to live output come
+/// first, so the application sees the new size and viewport before the
+/// input. Returns false when the runtime must close.
+fn handle_input(
+    owner: &mut Owner<'_>,
+    arbiter: &mut Arbiter,
+    probes: &mut ProbeSchedule,
+    slot: &Slot,
+    input: &TerminalInput,
+    stamp: InputStamp,
+) -> bool {
+    let typing = matches!(
+        input,
+        TerminalInput::Key { .. }
+            | TerminalInput::Character { .. }
+            | TerminalInput::Text(_)
+            | TerminalInput::Paste(_)
+    );
+    if typing {
+        let effects = arbiter.typed(slot);
+        if !owner.apply(effects) {
+            return false;
+        }
+        if arbiter.may_return_to_live(slot, stamp) {
+            match owner.engine.viewport_offset() {
+                Ok(0) => {}
+                Ok(_) => {
+                    if let Err(error) = owner.engine.scroll(ScrollCommand::Live)
+                    {
+                        owner.status.failure(error.to_string());
+                        return false;
+                    }
+                    owner.publish();
+                }
+                Err(error) => {
+                    owner.status.failure(error.to_string());
+                    return false;
+                }
+            }
+        }
+    } else if let TerminalInput::Mouse(mouse) = input
+        && !arbiter.admit_mouse(slot, mouse, stamp)
+    {
+        return true;
     }
+    let modes = match owner.engine.modes() {
+        Ok(modes) => modes,
+        Err(error) => {
+            owner.status.failure(error.to_string());
+            return false;
+        }
+    };
+    let bytes = encode_input(input, modes, owner.engine.size());
+    if probes.input(&bytes, Instant::now()) {
+        owner.metadata.reports.job_control_input();
+    }
+    owner.write(bytes, "PTY writer stopped before input was written")
 }
 
 enum NextMessage {
@@ -1510,8 +1594,7 @@ fn read_ready(
 fn observe_child_exit(
     child: &mut dyn portable_pty::Child,
     lifecycle: &crate::jobs::JobLifecycle,
-    terminal_id: TerminalId,
-    events: &EventPublisher,
+    status: &mut StatusPublisher,
     exited: &mut bool,
     input_closed: &AtomicBool,
     pending_writes: &mut VecDeque<Vec<u8>>,
@@ -1519,18 +1602,15 @@ fn observe_child_exit(
     if *exited {
         return Ok(());
     }
-    let status = child.try_wait().map_err(|error| error.to_string())?;
-    if let Some(status) = status {
+    let exit = child.try_wait().map_err(|error| error.to_string())?;
+    if let Some(exit) = exit {
         *exited = true;
         lifecycle.observe_exit();
         input_closed.store(true, Ordering::Release);
         pending_writes.clear();
-        let _ = events.send(TerminalEvent::Exited {
-            terminal_id,
-            status: ExitStatus {
-                code: Some(status.exit_code()),
-                success: status.success(),
-            },
+        status.exit(ExitStatus {
+            code: Some(exit.exit_code()),
+            success: exit.success(),
         });
     }
     Ok(())
@@ -1678,10 +1758,9 @@ fn spawn_writer(
 
 fn handle_effect(
     effect: EngineEffect,
-    terminal_id: TerminalId,
     writer: &async_channel::Sender<WriterMessage>,
     pending_writes: &mut VecDeque<Vec<u8>>,
-    events: &EventPublisher,
+    status: &mut StatusPublisher,
     metadata: &mut PublishedMetadata,
     master: &dyn portable_pty::MasterPty,
 ) -> WriterQueueState {
@@ -1701,10 +1780,9 @@ fn handle_effect(
                 );
                 let process =
                     metadata.current.foreground_process().map(str::to_owned);
-                metadata.publish(process, terminal_id, events);
+                metadata.publish(process, status);
             }
-            let _ =
-                events.send(TerminalEvent::TitleChanged { terminal_id, title });
+            status.title(title);
             WriterQueueState::Drained
         }
         EngineEffect::Directory(directory) => {
@@ -1714,11 +1792,11 @@ fn handle_effect(
                 .report_directory(directory, master.process_group_leader());
             let process =
                 metadata.current.foreground_process().map(str::to_owned);
-            metadata.publish(process, terminal_id, events);
+            metadata.publish(process, status);
             WriterQueueState::Drained
         }
         EngineEffect::Bell => {
-            let _ = events.send(TerminalEvent::Bell(terminal_id));
+            status.bell();
             WriterQueueState::Drained
         }
     }
@@ -1738,8 +1816,7 @@ impl PublishedMetadata {
     fn publish(
         &mut self,
         process: Option<String>,
-        terminal_id: TerminalId,
-        events: &EventPublisher,
+        status: &mut StatusPublisher,
     ) {
         let replacement =
             TerminalMetadata::new(self.reports.directory(), process)
@@ -1749,11 +1826,7 @@ impl PublishedMetadata {
         }
         self.current = replacement;
         self.revision = self.revision.saturating_add(1);
-        let _ = events.send(TerminalEvent::MetadataChanged {
-            terminal_id,
-            revision: self.revision,
-            metadata: self.current.clone(),
-        });
+        status.metadata(self.revision, &self.current);
     }
 }
 
@@ -1806,48 +1879,13 @@ fn flush_pending_write(
     WriterQueueState::Drained
 }
 
-fn report_failure(
-    events: &EventPublisher,
-    terminal_id: TerminalId,
-    message: String,
-) {
-    let _ = events.send(TerminalEvent::Failed {
-        terminal_id,
-        message,
-    });
-}
-
 fn input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
         TerminalInput::Character { text, meta } => text
             .len()
             .saturating_add(usize::from(*meta && !text.is_empty())),
-        TerminalInput::Key { .. } | TerminalInput::Focus(_) => {
-            std::mem::size_of::<TerminalInput>()
-        }
         _ => std::mem::size_of::<TerminalInput>(),
-    }
-}
-
-fn publish_invalidation(
-    events: &EventPublisher,
-    pending: &AtomicBool,
-    invalidated_at: &mut Option<Instant>,
-    terminal_id: TerminalId,
-    generation: u64,
-) {
-    // Coalesced invalidations keep the earliest instant, so the next snapshot
-    // reports how long its oldest content waited.
-    invalidated_at.get_or_insert_with(Instant::now);
-    if pending
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        let _ = events.send(TerminalEvent::Invalidated {
-            terminal_id,
-            generation,
-        });
     }
 }
 

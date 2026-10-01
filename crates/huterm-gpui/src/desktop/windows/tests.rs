@@ -802,22 +802,22 @@ fn open_tab_returns_registered_host_effect_recipient() {
         "read value; printf '\\033]52;c;ZGVza3RvcABjbGlwYm9hcmQ=\\007'; read value"
             .into(),
     ];
-    let (session, _, opened, _, authority) =
+    let (session, _, _, _, viewer) =
         runtime.open_tab(None, None, &command, true).result.unwrap();
+    let recipient = viewer.host_effects().unwrap();
 
-    opened
-        .client
+    viewer
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let pending = loop {
-        if let Some(pending) = authority.host_effects.try_next() {
+        if let Some(pending) = recipient.try_next() {
             break pending;
         }
         assert!(Instant::now() < deadline, "clipboard effect not delivered");
         std::thread::sleep(Duration::from_millis(5));
     };
-    assert!(authority.host_effects.is_current(&pending));
+    assert!(recipient.is_current(&pending));
     let HostEffect::ClipboardWrite(write) = pending.effect() else {
         panic!("unexpected host effect");
     };
@@ -1010,9 +1010,9 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
     assert!(runtime.mux.lock().unwrap().sessions().is_empty());
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
     command.program = "/bin/sh".into();
-    let (session, workspace, first, attachment, _first_authority) =
+    let (session, workspace, first, attachment, first_viewer) =
         runtime.open_tab(None, None, &command, true).result.unwrap();
-    let (sibling, _, second, _, _second_authority) =
+    let (sibling, _, _, _, second_viewer) =
         runtime.open_tab(None, None, &command, true).result.unwrap();
     assert_ne!(session, sibling);
     command.program = "/huterm-nonexistent-shell".into();
@@ -1037,11 +1037,12 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
     runtime.mux.lock().unwrap().close_session(session).unwrap();
     assert!(runtime.mux.lock().unwrap().workspace(workspace).is_none());
     assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 1);
+    // Closing the session revoked its viewer and stopped its terminal.
     assert!(matches!(
-        first.client.read_snapshot(),
-        Err(RuntimeError::Stopped)
+        first_viewer.read_snapshot(),
+        Err(RuntimeError::Revoked | RuntimeError::Stopped)
     ));
-    assert!(second.client.read_snapshot().is_ok());
+    assert!(second_viewer.read_snapshot().is_ok());
     runtime.mux.lock().unwrap().close_session(sibling).unwrap();
     assert!(runtime.mux.lock().unwrap().sessions().is_empty());
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
@@ -1068,7 +1069,7 @@ fn native_termination_drains_existing_terminals_and_rejects_queued_spawns() {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
     };
-    let (_, _, opened, _, _authority) =
+    let (_, _, _, _, viewer) =
         runtime.open_tab(None, None, &command, true).result.unwrap();
     // Hold the structural lock as an already-running spawn would, then
     // queue another spawn and invoke the exact native-hook cleanup method.
@@ -1099,10 +1100,7 @@ fn native_termination_drains_existing_terminals_and_rejects_queued_spawns() {
     ));
     quit.join().unwrap();
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
-    assert!(matches!(
-        opened.client.read_snapshot(),
-        Err(RuntimeError::Stopped)
-    ));
+    assert!(matches!(viewer.read_snapshot(), Err(RuntimeError::Stopped)));
     runtime.terminate().unwrap();
 }
 

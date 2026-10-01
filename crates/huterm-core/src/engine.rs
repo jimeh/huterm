@@ -178,6 +178,11 @@ impl TerminalEngine {
         })
     }
 
+    /// Rows between the viewport bottom and the live bottom.
+    pub(crate) fn viewport_offset(&self) -> Result<usize, RuntimeError> {
+        Ok(self.inner.viewport_state()?.0)
+    }
+
     pub(crate) fn process(
         &mut self,
         bytes: &[u8],

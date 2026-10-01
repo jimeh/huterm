@@ -10,7 +10,7 @@ mod native_quit;
 
 #[cfg(target_os = "macos")]
 async fn acknowledge(
-    client: &huterm_core::RuntimeClient,
+    client: &huterm_core::TerminalViewer,
     probe: &str,
     cx: &gpui::AsyncApp,
 ) {
@@ -48,11 +48,14 @@ async fn acknowledge(
 
 #[cfg(target_os = "macos")]
 fn main() {
-    use huterm_core::{RuntimeError, TerminalRuntime};
-    use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalId};
+    use huterm_core::{RuntimeError, TerminalRuntime, ViewerOptions};
+    use huterm_protocol::{
+        CellSize, GridSize, TerminalCommand, TerminalId, ViewerCapabilities,
+    };
     use std::cell::RefCell;
     use std::io::Write as _;
     use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn marker(value: &str) {
@@ -74,11 +77,15 @@ fn main() {
         presentation: huterm_protocol::TerminalPresentation::default(),
     };
     let runtime = TerminalRuntime::spawn(TerminalId::new(1), &command).unwrap();
-    let client = runtime.client();
+    let client = Arc::new(
+        runtime
+            .subscribe(ViewerOptions::new(ViewerCapabilities::ALL))
+            .unwrap(),
+    );
     let runtime = Rc::new(RefCell::new(Some(runtime)));
     huterm_gpui::application_with_assets().run(move |cx| {
         let receiver = native_quit::install().unwrap();
-        let quit_client = client.clone();
+        let quit_client = Arc::clone(&client);
         cx.on_app_quit(move |_| {
             assert!(matches!(
                 quit_client.read_snapshot(),

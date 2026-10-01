@@ -2,10 +2,19 @@ use super::*;
 use crate::mouse::MouseState;
 use huterm_protocol::{Modifiers, MouseButton, MouseInput, MousePosition};
 
-fn busy(input: TerminalInput) -> Result<(), RefusedInput> {
-    Err(RefusedInput {
+const STAMP: InputStamp = InputStamp {
+    scrolls: 0,
+    geometry: None,
+};
+
+fn queued(input: TerminalInput) -> Queued {
+    Queued::Input(input, STAMP)
+}
+
+fn busy(queued: Queued) -> Result<(), Refused> {
+    Err(Refused {
         error: RuntimeError::Busy,
-        input,
+        queued,
     })
 }
 
@@ -15,6 +24,17 @@ fn mouse(action: MouseAction, column: u32) -> TerminalInput {
         position: MousePosition { column, row: 0 },
         modifiers: Modifiers::default(),
     })
+}
+
+fn drain(queue: &mut InputQueue) -> Vec<Queued> {
+    let mut sent = Vec::new();
+    queue
+        .retry(|queued| {
+            sent.push(queued);
+            Ok(())
+        })
+        .unwrap();
+    sent
 }
 
 #[test]
@@ -28,41 +48,44 @@ fn file_drop_paste_admission_is_atomic_at_full_and_closed_boundaries() {
     queue
         .enqueue(
             TerminalInput::Text("x".repeat(PENDING_INPUT_BYTE_CAPACITY)),
+            STAMP,
             false,
             busy,
         )
         .unwrap();
     assert_eq!(
         queue
-            .enqueue(TerminalInput::Paste(paste.clone()), false, |_| panic!(
-                "full drop reached runtime"
-            ))
+            .enqueue(
+                TerminalInput::Paste(paste.clone()),
+                STAMP,
+                false,
+                |_| panic!("full drop reached runtime")
+            )
             .unwrap(),
         Admission::Full
     );
-    assert_eq!(queue.inputs.len(), 1);
+    assert_eq!(queue.entries.len(), 1);
+    assert_eq!(drain(&mut queue).len(), 1);
     let mut sent = Vec::new();
-    queue
-        .retry(|input| {
-            sent.push(input);
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(sent.len(), 1);
     assert_eq!(
         queue
-            .enqueue(TerminalInput::Paste(paste.clone()), false, |input| {
-                sent.push(input);
-                Ok(())
-            })
+            .enqueue(
+                TerminalInput::Paste(paste.clone()),
+                STAMP,
+                false,
+                |queued| {
+                    sent.push(queued);
+                    Ok(())
+                }
+            )
             .unwrap(),
         Admission::Accepted
     );
-    assert_eq!(sent.last(), Some(&TerminalInput::Paste(paste.clone())));
+    assert_eq!(sent, [queued(TerminalInput::Paste(paste.clone()))]);
     queue.close();
     assert_eq!(
         queue
-            .enqueue(TerminalInput::Paste(paste), false, |_| panic!(
+            .enqueue(TerminalInput::Paste(paste), STAMP, false, |_| panic!(
                 "closed drop reached runtime"
             ))
             .unwrap(),
@@ -79,7 +102,9 @@ fn meta_prefix_counts_toward_queue_capacity() {
     };
     assert_eq!(
         queue
-            .enqueue(full, false, |_| panic!("oversized input reached runtime"))
+            .enqueue(full, STAMP, false, |_| panic!(
+                "oversized input reached runtime"
+            ))
             .unwrap(),
         Admission::Full
     );
@@ -88,7 +113,7 @@ fn meta_prefix_counts_toward_queue_capacity() {
         meta: true,
     };
     assert_eq!(
-        queue.enqueue(fits, false, busy).unwrap(),
+        queue.enqueue(fits, STAMP, false, busy).unwrap(),
         Admission::Accepted
     );
     assert_eq!(queue.bytes, PENDING_INPUT_BYTE_CAPACITY);
@@ -102,7 +127,7 @@ fn meta_prefix_counts_toward_queue_capacity() {
 }
 
 #[test]
-fn queued_characters_retain_policy_and_order_across_later_input() {
+fn queued_characters_retain_policy_stamp_and_order_across_later_input() {
     let mut queue = InputQueue::default();
     let inputs = vec![
         TerminalInput::Text("®".into()),
@@ -112,46 +137,50 @@ fn queued_characters_retain_policy_and_order_across_later_input() {
         },
         TerminalInput::Paste("r".into()),
     ];
-    for input in &inputs {
+    for (scrolls, input) in (0..).zip(&inputs) {
+        let stamp = InputStamp {
+            scrolls,
+            geometry: None,
+        };
         assert_eq!(
-            queue.enqueue(input.clone(), false, busy).unwrap(),
+            queue.enqueue(input.clone(), stamp, false, busy).unwrap(),
             Admission::Accepted
         );
     }
-    let mut drained = Vec::new();
-    queue
-        .retry(|input| {
-            drained.push(input);
-            Ok(())
+    let expected: Vec<_> = (0..)
+        .zip(inputs)
+        .map(|(scrolls, input)| {
+            Queued::Input(
+                input,
+                InputStamp {
+                    scrolls,
+                    geometry: None,
+                },
+            )
         })
-        .unwrap();
-    assert_eq!(drained, inputs);
+        .collect();
+    assert_eq!(drain(&mut queue), expected);
     assert_eq!(queue.bytes, 0);
 }
 
 #[test]
-fn exit_discards_pending_input_and_rejects_all_later_terminal_input() {
+fn exit_discards_pending_input_but_focus_changes_keep_flowing() {
     let mut queue = InputQueue::default();
     queue
-        .enqueue(TerminalInput::Text("queued".into()), false, |input| {
-            busy(input)
-        })
+        .enqueue(TerminalInput::Text("queued".into()), STAMP, false, busy)
         .unwrap();
+    queue.enqueue_focus(false, busy).unwrap();
     queue.close();
-    queue
-        .retry(|_| panic!("exited input reached runtime"))
-        .unwrap();
+    assert_eq!(drain(&mut queue), [Queued::Focus(false)]);
     for input in [
         TerminalInput::Text("key".into()),
         TerminalInput::Paste("paste".into()),
-        TerminalInput::Focus(true),
-        TerminalInput::Focus(false),
         mouse(MouseAction::Press(MouseButton::Left), 0),
         mouse(MouseAction::Release(MouseButton::Left), 0),
     ] {
         assert_eq!(
             queue
-                .enqueue(input, false, |_| panic!(
+                .enqueue(input, STAMP, false, |_| panic!(
                     "exited input reached runtime"
                 ))
                 .unwrap(),
@@ -159,7 +188,23 @@ fn exit_discards_pending_input_and_rejects_all_later_terminal_input() {
         );
     }
     assert_eq!(queue.bytes, 0);
-    assert!(queue.inputs.is_empty());
+    let mut sent = Vec::new();
+    for focused in [true, false] {
+        assert_eq!(
+            queue
+                .enqueue_focus(focused, |queued| {
+                    sent.push(queued);
+                    Ok(())
+                })
+                .unwrap(),
+            Admission::Accepted
+        );
+    }
+    assert_eq!(sent, [Queued::Focus(true), Queued::Focus(false)]);
+    // A refused focus change survives repeated closing and is retried.
+    queue.enqueue_focus(true, busy).unwrap();
+    queue.close();
+    assert_eq!(drain(&mut queue), [Queued::Focus(true)]);
 }
 
 #[test]
@@ -168,11 +213,12 @@ fn cancellation_progresses_without_paint_and_releases_precede_focus_out() {
     let mut state = MouseState::default();
     state.down(MouseButton::Left, true);
     let press = mouse(MouseAction::Press(MouseButton::Left), 0);
-    queue.enqueue(press.clone(), false, busy).unwrap();
+    queue.enqueue(press.clone(), STAMP, false, busy).unwrap();
     state.accepted(MouseButton::Left, MousePosition::default());
     queue
         .enqueue(
             mouse(MouseAction::Motion(Some(MouseButton::Left)), 1),
+            STAMP,
             false,
             |_| unreachable!(),
         )
@@ -180,26 +226,84 @@ fn cancellation_progresses_without_paint_and_releases_precede_focus_out() {
     queue.cancel_motion();
     for release in state.cancel() {
         queue
-            .enqueue(TerminalInput::Mouse(release), true, |_| unreachable!())
+            .enqueue(
+                TerminalInput::Mouse(release),
+                STAMP,
+                true,
+                |_| unreachable!(),
+            )
             .unwrap();
     }
     assert!(state.cancel().is_empty());
+    queue.enqueue_focus(false, |_| unreachable!()).unwrap();
+    assert_eq!(
+        drain(&mut queue),
+        [
+            queued(press),
+            queued(mouse(MouseAction::Release(MouseButton::Left), 0)),
+            Queued::Focus(false)
+        ]
+    );
+}
+
+#[test]
+fn focus_keeps_its_order_around_input_and_coalesces_only_when_adjacent() {
+    let mut queue = InputQueue::default();
+    queue.enqueue_focus(true, busy).unwrap();
     queue
-        .enqueue(TerminalInput::Focus(false), false, |_| unreachable!())
+        .enqueue(TerminalInput::Text("k".into()), STAMP, false, busy)
         .unwrap();
+    queue.enqueue_focus(false, busy).unwrap();
+    queue.enqueue_focus(true, busy).unwrap();
+    queue.enqueue_focus(false, busy).unwrap();
+    assert_eq!(
+        drain(&mut queue),
+        [
+            Queued::Focus(true),
+            queued(TerminalInput::Text("k".into())),
+            Queued::Focus(false),
+        ]
+    );
+}
+
+#[test]
+fn a_refused_focus_change_holds_back_later_input_and_ignores_capacity() {
+    let mut queue = InputQueue::default();
+    for _ in 0..PENDING_INPUT_CAPACITY {
+        queue
+            .enqueue(TerminalInput::Text("f".into()), STAMP, false, busy)
+            .unwrap();
+    }
+    assert_eq!(
+        queue
+            .enqueue(TerminalInput::Text("x".into()), STAMP, false, busy)
+            .unwrap(),
+        Admission::Full
+    );
+    assert_eq!(
+        queue.enqueue_focus(true, |_| unreachable!()).unwrap(),
+        Admission::Accepted,
+        "focus is never refused for capacity"
+    );
     let mut sent = Vec::new();
     queue
-        .retry(|input| {
-            sent.push(input);
+        .retry(|queued| {
+            if queued == Queued::Focus(true) {
+                return busy(queued);
+            }
+            sent.push(queued);
             Ok(())
         })
         .unwrap();
+    assert_eq!(sent.len(), PENDING_INPUT_CAPACITY);
+    queue
+        .enqueue(TerminalInput::Text("after".into()), STAMP, false, busy)
+        .unwrap();
     assert_eq!(
-        sent,
+        drain(&mut queue),
         [
-            press,
-            mouse(MouseAction::Release(MouseButton::Left), 0),
-            TerminalInput::Focus(false)
+            Queued::Focus(true),
+            queued(TerminalInput::Text("after".into()))
         ]
     );
 }
@@ -209,7 +313,7 @@ fn wheel_saturation_discards_unadmitted_steps_without_reordering() {
     let mut queue = InputQueue::default();
     for _ in 0..PENDING_INPUT_CAPACITY - 2 {
         queue
-            .enqueue(TerminalInput::Focus(true), false, busy)
+            .enqueue(TerminalInput::Text("f".into()), STAMP, false, busy)
             .unwrap();
     }
     let mut state = MouseState::default();
@@ -221,6 +325,7 @@ fn wheel_saturation_discards_unadmitted_steps_without_reordering() {
             queue
                 .enqueue(
                     mouse(MouseAction::Wheel(direction), 0),
+                    STAMP,
                     false,
                     |_| unreachable!(),
                 )
@@ -229,13 +334,13 @@ fn wheel_saturation_discards_unadmitted_steps_without_reordering() {
         );
     }
     assert_eq!(accepted, 2);
-    assert_eq!(queue.inputs.len(), PENDING_INPUT_CAPACITY);
+    assert_eq!(queue.entries.len(), PENDING_INPUT_CAPACITY);
     assert_eq!(
-        queue.inputs.back(),
-        Some(&mouse(
+        queue.entries.back(),
+        Some(&queued(mouse(
             MouseAction::Wheel(huterm_protocol::WheelDirection::Up),
             0
-        ))
+        )))
     );
     assert!(state.wheel(0.0, 0.0).is_empty());
 }
@@ -247,20 +352,23 @@ fn motion_coalesces_only_within_compatible_fifo_run() {
     for column in 0..10_000 {
         assert_eq!(
             queue
-                .enqueue(motion(column), false, |_| panic!(
+                .enqueue(motion(column), STAMP, false, |_| panic!(
                     "motion must wait for refresh"
                 ))
                 .unwrap(),
             Admission::Accepted
         );
     }
-    assert_eq!(queue.inputs.len(), 1);
+    assert_eq!(queue.entries.len(), 1);
     let keyboard = TerminalInput::Text("K".into());
-    queue.enqueue(keyboard.clone(), false, busy).unwrap();
-    queue.enqueue(motion(4), false, |_| unreachable!()).unwrap();
+    queue.enqueue(keyboard.clone(), STAMP, false, busy).unwrap();
+    queue
+        .enqueue(motion(4), STAMP, false, |_| unreachable!())
+        .unwrap();
     queue
         .enqueue(
             mouse(MouseAction::Press(MouseButton::Left), 4),
+            STAMP,
             false,
             |_| unreachable!(),
         )
@@ -268,6 +376,7 @@ fn motion_coalesces_only_within_compatible_fifo_run() {
     queue
         .enqueue(
             mouse(MouseAction::Motion(Some(MouseButton::Left)), 5),
+            STAMP,
             false,
             |_| unreachable!(),
         )
@@ -278,23 +387,21 @@ fn motion_coalesces_only_within_compatible_fifo_run() {
         motion(4),
         mouse(MouseAction::Press(MouseButton::Left), 4),
         mouse(MouseAction::Motion(Some(MouseButton::Left)), 5),
-    ];
+    ]
+    .map(queued);
     let mut sent = Vec::new();
     queue
-        .retry(|input| {
-            sent.push(input.clone());
-            if sent.len() == 2 { busy(input) } else { Ok(()) }
+        .retry(|queued| {
+            sent.push(queued.clone());
+            if sent.len() == 2 {
+                busy(queued)
+            } else {
+                Ok(())
+            }
         })
         .unwrap();
     assert_eq!(sent, expected[..2]);
-    let mut retried = Vec::new();
-    queue
-        .retry(|input| {
-            retried.push(input);
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(retried, expected[1..]);
+    assert_eq!(drain(&mut queue), expected[1..]);
     assert_eq!(queue.bytes, 0);
 }
 
@@ -306,23 +413,38 @@ fn three_owned_releases_survive_event_saturation_without_allowing_new_cycles() {
         state.down(button, true);
         assert_eq!(
             queue
-                .enqueue(mouse(MouseAction::Press(button), 0), false, busy)
+                .enqueue(
+                    mouse(MouseAction::Press(button), 0),
+                    STAMP,
+                    false,
+                    busy
+                )
                 .unwrap(),
             Admission::Accepted
         );
         state.accepted(button, MousePosition::default());
     }
-    while queue.inputs.len() < PENDING_INPUT_CAPACITY {
+    while queue.entries.len() < PENDING_INPUT_CAPACITY {
         queue
-            .enqueue(TerminalInput::Focus(true), false, |_| unreachable!())
+            .enqueue(
+                TerminalInput::Text("f".into()),
+                STAMP,
+                false,
+                |_| unreachable!(),
+            )
             .unwrap();
     }
     for release in state.cancel() {
         queue
-            .enqueue(TerminalInput::Mouse(release), true, |_| unreachable!())
+            .enqueue(
+                TerminalInput::Mouse(release),
+                STAMP,
+                true,
+                |_| unreachable!(),
+            )
             .unwrap();
     }
-    assert_eq!(queue.inputs.len(), PENDING_INPUT_CAPACITY + 3);
+    assert_eq!(queue.entries.len(), PENDING_INPUT_CAPACITY + 3);
     assert!(state.cancel().is_empty());
     for _ in 0..100 {
         state.release(
@@ -335,6 +457,7 @@ fn three_owned_releases_survive_event_saturation_without_allowing_new_cycles() {
             queue
                 .enqueue(
                     mouse(MouseAction::Press(MouseButton::Left), 0),
+                    STAMP,
                     false,
                     |_| unreachable!()
                 )
@@ -351,20 +474,17 @@ fn three_owned_releases_survive_event_saturation_without_allowing_new_cycles() {
                 .is_none()
         );
     }
-    assert_eq!(queue.inputs.len(), PENDING_INPUT_CAPACITY + 3);
-    let mut sent = Vec::new();
-    queue
-        .retry(|input| {
-            sent.push(input);
-            Ok(())
-        })
-        .unwrap();
+    assert_eq!(queue.entries.len(), PENDING_INPUT_CAPACITY + 3);
+    let sent = drain(&mut queue);
     assert!(matches!(
         sent[PENDING_INPUT_CAPACITY],
-        TerminalInput::Mouse(MouseInput {
-            action: MouseAction::Release(MouseButton::Left),
-            ..
-        })
+        Queued::Input(
+            TerminalInput::Mouse(MouseInput {
+                action: MouseAction::Release(MouseButton::Left),
+                ..
+            }),
+            _
+        )
     ));
 }
 
@@ -373,12 +493,13 @@ fn byte_saturation_counts_overflow_and_disconnect_clears_everything() {
     let mut queue = InputQueue::default();
     let press = mouse(MouseAction::Press(MouseButton::Left), 0);
     let size = buffered_input_bytes(&press);
-    queue.enqueue(press, false, busy).unwrap();
+    queue.enqueue(press, STAMP, false, busy).unwrap();
     queue
         .enqueue(
             TerminalInput::Paste(
                 "p".repeat(PENDING_INPUT_BYTE_CAPACITY - size),
             ),
+            STAMP,
             false,
             |_| unreachable!(),
         )
@@ -386,13 +507,19 @@ fn byte_saturation_counts_overflow_and_disconnect_clears_everything() {
     assert_eq!(queue.bytes, PENDING_INPUT_BYTE_CAPACITY);
     assert_eq!(
         queue
-            .enqueue(TerminalInput::Text("x".into()), false, |_| unreachable!())
+            .enqueue(
+                TerminalInput::Text("x".into()),
+                STAMP,
+                false,
+                |_| unreachable!()
+            )
             .unwrap(),
         Admission::Full
     );
     queue
         .enqueue(
             mouse(MouseAction::Release(MouseButton::Left), 0),
+            STAMP,
             true,
             |_| unreachable!(),
         )
@@ -400,21 +527,25 @@ fn byte_saturation_counts_overflow_and_disconnect_clears_everything() {
     assert_eq!(queue.bytes, PENDING_INPUT_BYTE_CAPACITY + size);
     assert_eq!(
         queue
-            .enqueue(TerminalInput::Text("x".into()), false, |_| unreachable!())
+            .enqueue(
+                TerminalInput::Text("x".into()),
+                STAMP,
+                false,
+                |_| unreachable!()
+            )
             .unwrap(),
         Admission::Full
     );
-    let error = queue.retry(busy);
-    assert!(error.is_ok());
-    assert_eq!(queue.inputs.len(), 3);
+    assert!(queue.retry(busy).is_ok());
+    assert_eq!(queue.entries.len(), 3);
     assert!(matches!(
-        queue.retry(|input| Err(RefusedInput {
+        queue.retry(|queued| Err(Refused {
             error: RuntimeError::Stopped,
-            input,
+            queued,
         })),
         Err(RuntimeError::Stopped)
     ));
-    assert!(queue.inputs.is_empty());
+    assert!(queue.entries.is_empty());
     assert_eq!(queue.bytes, 0);
     assert!(!queue.motion_run);
 }
@@ -426,22 +557,24 @@ fn immediate_press_and_buffered_release_keep_acceptance_distinct() {
         queue
             .enqueue(
                 mouse(MouseAction::Press(MouseButton::Left), 0),
+                STAMP,
                 false,
                 |_| Ok(())
             )
             .unwrap(),
         Admission::Accepted
     );
-    assert!(queue.inputs.is_empty());
+    assert!(queue.entries.is_empty());
     assert_eq!(
         queue
             .enqueue(
                 mouse(MouseAction::Release(MouseButton::Left), 0),
+                STAMP,
                 true,
                 busy
             )
             .unwrap(),
         Admission::Accepted
     );
-    assert_eq!(queue.inputs.len(), 1);
+    assert_eq!(queue.entries.len(), 1);
 }

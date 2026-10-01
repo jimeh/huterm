@@ -556,6 +556,9 @@ impl TerminalEngine {
         Ok(TerminalSnapshot {
             terminal_id: self.id,
             generation: self.generation,
+            // The runtime stamps both revisions when it publishes.
+            revision: 0,
+            geometry_revision: 0,
             size: self.size,
             rows: built,
             cursor: snapshot_cursor(cursor),
