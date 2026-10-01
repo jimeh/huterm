@@ -88,7 +88,8 @@ pub(super) enum Drained {
     Resync,
     /// Application teardown has committed, its `Reset` arrived, or the
     /// stream closed: nothing more applies, and every waiter was cancelled.
-    Frozen,
+    /// The summary names what applied before the freeze; reconcile it.
+    Frozen(Touched),
 }
 
 /// The outcome of installing a resync snapshot.
@@ -99,9 +100,10 @@ pub(super) enum Install {
     Current,
     /// The new subscription lagged again; resubscribe without reconciling.
     Lagged,
-    /// Application teardown has committed, or its `Reset` arrived; nothing
-    /// more applies, and every waiter was cancelled.
-    Frozen,
+    /// Application teardown has committed, its `Reset` arrived, or the
+    /// stream closed; nothing more applies, and every waiter was cancelled.
+    /// The summary names what changed; reconcile it.
+    Frozen(Touched),
 }
 
 /// What a completion learns when it asks for its committed sequence.
@@ -164,7 +166,7 @@ impl Projection {
     pub(super) fn sync(&mut self, terminating: bool) -> Drained {
         if terminating || self.frozen {
             self.freeze();
-            Drained::Frozen
+            Drained::Frozen(Touched::default())
         } else {
             self.drain()
         }
@@ -191,7 +193,7 @@ impl Projection {
                         && matches!(envelope.event, HierarchyEvent::Reset) =>
                 {
                     self.freeze();
-                    return Drained::Frozen;
+                    return Drained::Frozen(touched);
                 }
                 Ok(envelope) => match self.state.apply(envelope) {
                     ApplyOutcome::Applied(changed) => touched.merge(changed),
@@ -206,7 +208,7 @@ impl Projection {
                 // cancel waiters, which could otherwise park forever.
                 Err(HierarchyRecvError::Closed) => {
                     self.freeze();
-                    return Drained::Frozen;
+                    return Drained::Frozen(touched);
                 }
             }
         }
@@ -228,7 +230,7 @@ impl Projection {
     ) -> Install {
         if terminating || self.frozen {
             self.freeze();
-            return Install::Frozen;
+            return Install::Frozen(Touched::default());
         }
         self.state = state;
         self.subscription = Rc::new(subscription);
@@ -239,7 +241,8 @@ impl Projection {
                 Install::Current
             }
             Drained::Resync => Install::Lagged,
-            Drained::Frozen => Install::Frozen,
+            // The snapshot replaced the state before the freeze.
+            Drained::Frozen(_) => Install::Frozen(Touched::everything()),
         }
     }
 

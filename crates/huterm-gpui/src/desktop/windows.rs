@@ -1150,7 +1150,9 @@ fn sync_hierarchy(cx: &mut App) {
             settle_waiters(cx);
         }
         Drained::Resync => resync_hierarchy(cx),
-        Drained::Frozen => {}
+        // Events applied before the freeze still reach views; reconcile
+        // skips membership once teardown has committed.
+        Drained::Frozen(touched) => reconcile(cx, &touched),
     }
 }
 
@@ -1212,7 +1214,10 @@ fn install_hierarchy(
     ) {
         Install::Current => {}
         Install::Lagged => return false,
-        Install::Frozen => return true,
+        Install::Frozen(touched) => {
+            reconcile(cx, &touched);
+            return true;
+        }
     }
     start_hierarchy_drain(cx);
     reconcile(cx, &Touched::everything());

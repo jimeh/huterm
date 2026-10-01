@@ -95,7 +95,13 @@ impl HierarchySubscription {
         let mut queue =
             self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         if queue.lagged {
-            return Err(HierarchyRecvError::Lagged);
+            // Overflow already emptied the queue; a dropped Mux ends the
+            // stream instead of inviting another resubscription.
+            return Err(if self.wake.is_closed() {
+                HierarchyRecvError::Closed
+            } else {
+                HierarchyRecvError::Lagged
+            });
         }
         queue.events.pop_front().ok_or_else(|| {
             if self.wake.is_closed() {
@@ -471,7 +477,6 @@ mod tests {
         assert_eq!(second.try_recv(), Err(HierarchyRecvError::Lagged));
 
         let (recovered, third) = mux.subscribe_hierarchy();
-        drop(second);
         state = recovered;
         let workspace = mux.create_workspace(session, None).unwrap();
         mux.rename_workspace(workspace, Some("after")).unwrap();
@@ -480,6 +485,10 @@ mod tests {
             state.session(session).unwrap().display_name(),
             format!("name {HIERARCHY_QUEUE_CAPACITY}")
         );
+        // A lagged subscription reports the end of the stream once the Mux
+        // is gone, so its client stops resubscribing.
+        drop(mux);
+        assert_eq!(second.try_recv(), Err(HierarchyRecvError::Closed));
     }
 
     #[test]

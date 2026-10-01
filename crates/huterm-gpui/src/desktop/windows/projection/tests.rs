@@ -755,13 +755,13 @@ fn a_reset_queued_after_teardown_is_not_applied_and_labels_keep_custom_names() {
 
     // Teardown commits first, then shutdown queues `Reset`.
     mux.shutdown().unwrap();
-    assert_eq!(projection.sync(true), Drained::Frozen);
+    assert_eq!(projection.sync(true), Drained::Frozen(Touched::default()));
     assert_eq!(*projection.state(), before);
     assert_eq!(waiter.try_recv(), Ok(Resolution::Cancelled));
     let (empty, resubscription) = mux.subscribe_hierarchy();
     assert_eq!(
         projection.install(empty, resubscription, true),
-        Install::Frozen
+        Install::Frozen(Touched::default())
     );
     assert_eq!(*projection.state(), before);
 
@@ -837,7 +837,36 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
     // `Reset`; the `Reset` itself freezes the projection.
     mux.rename_tab(opened.tab.id, Some("late")).unwrap();
     mux.shutdown().unwrap();
-    assert_eq!(projection.sync(false), Drained::Frozen);
+    let Drained::Frozen(touched) = projection.sync(false) else {
+        panic!("a dequeued Reset freezes the projection");
+    };
+    // The rename applied before the freeze still reaches the window.
+    assert!(touched.contains_tab(opened.tab.id));
+    let mut model = WindowModel::default();
+    model.open(window(1), None, layout());
+    model.attach(window(1), None, session_id, workspace_id);
+    let mut fake = FakeWindow {
+        id: window(1),
+        workspace: workspace_id,
+        views: Vec::new(),
+        busy: false,
+    };
+    fake.views.push(View {
+        tab: opened.tab.id,
+        committed: before.seq(),
+        terminal_title: "sh".into(),
+    });
+    model.open_tab(
+        window(1),
+        TabEntry {
+            id: opened.tab.id,
+            terminal: opened.tab.terminal_id,
+            title: "custom".into(),
+        },
+    );
+    let change = reconcile(&mut fake, &mut model, projection.state(), &touched);
+    assert!(change.titles);
+    assert_eq!(model.record(window(1)).unwrap().tabs[0].title, "late");
     assert_eq!(
         projection
             .state()
@@ -848,7 +877,7 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
     );
     assert_eq!(projection.state().sessions(), before.sessions());
     let frozen = projection.state().clone();
-    assert_eq!(projection.sync(false), Drained::Frozen);
+    assert_eq!(projection.sync(false), Drained::Frozen(Touched::default()));
     assert_eq!(*projection.state(), frozen);
     assert!(matches!(
         projection.wait_for(frozen.seq() + 1, false),
@@ -900,7 +929,11 @@ fn a_closed_stream_cancels_waiters_and_freezes_the_projection() {
     };
     // The stream ends without teardown committing.
     drop(mux);
-    assert_eq!(projection.sync(false), Drained::Frozen);
+    let Drained::Frozen(touched) = projection.sync(false) else {
+        panic!("a closed stream freezes the projection");
+    };
+    // The rename applied before the stream ended still reconciles.
+    assert!(touched.names_changed());
     assert_eq!(waiter.try_recv(), Ok(Resolution::Cancelled));
     assert_eq!(
         projection.state().seq(),
@@ -919,5 +952,5 @@ fn a_closed_stream_cancels_waiters_and_freezes_the_projection() {
         projection.wait_for(applied + 1, false),
         Wait::Cancelled
     ));
-    assert_eq!(projection.sync(false), Drained::Frozen);
+    assert_eq!(projection.sync(false), Drained::Frozen(Touched::default()));
 }
