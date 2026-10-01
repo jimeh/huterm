@@ -86,6 +86,22 @@ pub(super) enum Drained {
     /// Events were lost or the stream diverged; replace the state from a
     /// fresh snapshot before reconciling anything.
     Resync,
+    /// Application teardown has committed: nothing applied, and every
+    /// waiter was cancelled.
+    Frozen,
+}
+
+/// The outcome of installing a resync snapshot.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Install {
+    /// The snapshot and its drained subscription are current; reconcile
+    /// everything.
+    Current,
+    /// The new subscription lagged again; resubscribe without reconciling.
+    Lagged,
+    /// Application teardown has committed; nothing was installed, and every
+    /// waiter was cancelled.
+    Frozen,
 }
 
 /// What a completion learns when it asks for its committed sequence.
@@ -138,8 +154,28 @@ impl Projection {
         self.drain_task = Some(task);
     }
 
+    /// Applies every queued event unless application teardown has
+    /// committed. From then on the projection keeps its last pre-teardown
+    /// state, so the `Reset` that teardown emits never empties it and labels
+    /// keep their names while Quit tears down.
+    pub(super) fn sync(&mut self, terminating: bool) -> Drained {
+        if terminating {
+            self.freeze();
+            Drained::Frozen
+        } else {
+            self.drain()
+        }
+    }
+
+    /// Stops following the stream after teardown: cancels every waiter and
+    /// any pending resubscription.
+    fn freeze(&mut self) {
+        self.waiters.cancel_all();
+        self.resyncing = false;
+    }
+
     /// Applies every queued event in order.
-    pub(super) fn drain(&mut self) -> Drained {
+    fn drain(&mut self) -> Drained {
         let mut touched = Touched::default();
         loop {
             match self.subscription.try_recv() {
@@ -164,21 +200,26 @@ impl Projection {
 
     /// Replaces the state and subscription together, then drains the new
     /// subscription so events committed after the snapshot apply before
-    /// anything reconciles. Returns false when the new subscription lagged
-    /// again; the caller must resubscribe instead of reconciling.
+    /// anything reconciles. After teardown it installs nothing.
     pub(super) fn install(
         &mut self,
         state: HierarchyState,
         subscription: HierarchySubscription,
-    ) -> bool {
+        terminating: bool,
+    ) -> Install {
+        if terminating {
+            self.freeze();
+            return Install::Frozen;
+        }
         self.state = state;
         self.subscription = Rc::new(subscription);
         self.drain_task = None;
-        let current = matches!(self.drain(), Drained::Current(_));
-        if current {
+        if matches!(self.drain(), Drained::Current(_)) {
             self.resyncing = false;
+            Install::Current
+        } else {
+            Install::Lagged
         }
-        current
     }
 
     /// Whether a resubscription is still pending.
@@ -234,6 +275,7 @@ pub(super) fn installed_order(
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(super) struct Membership {
     /// Views whose tabs the projection has applied and no longer holds.
+    /// Empty while the window is busy: its own completion removes them.
     pub(super) remove: Vec<TabId>,
     /// A projected tab with no view while the window has no spawn in flight:
     /// the unsupported external-open flow.
@@ -242,7 +284,9 @@ pub(super) struct Membership {
 
 /// Decides membership for one window. `installed` pairs each view's tab
 /// with the sequence it committed at; a view the projection has not caught
-/// up with is never removed. Nothing changes once teardown owns removal.
+/// up with is never removed. A busy window keeps its views: its structural
+/// completion drops them and refocuses in one update, then reconciles. Nothing
+/// changes once teardown owns removal.
 pub(super) fn membership(
     state: &HierarchyState,
     workspace: Option<WorkspaceId>,
@@ -253,13 +297,17 @@ pub(super) fn membership(
     if terminating {
         return Membership::default();
     }
-    let remove = installed
-        .iter()
-        .filter(|(tab, committed)| {
-            state.seq() >= *committed && state.tab(*tab).is_none()
-        })
-        .map(|(tab, _)| *tab)
-        .collect();
+    let remove = if busy {
+        Vec::new()
+    } else {
+        installed
+            .iter()
+            .filter(|(tab, committed)| {
+                state.seq() >= *committed && state.tab(*tab).is_none()
+            })
+            .map(|(tab, _)| *tab)
+            .collect()
+    };
     let unexpected = if busy {
         None
     } else {

@@ -97,8 +97,8 @@ use model::{
     WindowRestore, apply_tab_order,
 };
 use projection::{
-    Drained, Projection, ReconcileTarget, Resolution, TitleConsumers, Wait,
-    WindowChange, installed_order, reconcile_window, windows_to_visit,
+    Drained, Install, Projection, ReconcileTarget, Resolution, TitleConsumers,
+    Wait, WindowChange, installed_order, reconcile_window, windows_to_visit,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -1133,17 +1133,21 @@ fn start_hierarchy_drain(cx: &mut App) {
 /// and releases the sequence waiters the projection now satisfies. Lost
 /// events start a resubscription instead; nothing reconciles against a
 /// state that missed events.
+/// After teardown commits, nothing more applies: the projection keeps its
+/// last state and every waiter is cancelled.
 fn sync_hierarchy(cx: &mut App) {
+    let terminating = terminating(cx);
     let projection = &mut cx.global_mut::<Desktop>().hierarchy;
-    if projection.resyncing() {
+    if projection.resyncing() && !terminating {
         return;
     }
-    match projection.drain() {
+    match projection.sync(terminating) {
         Drained::Current(touched) => {
             reconcile(cx, &touched);
             settle_waiters(cx);
         }
         Drained::Resync => resync_hierarchy(cx),
+        Drained::Frozen => {}
     }
 }
 
@@ -1190,18 +1194,22 @@ fn resync_hierarchy(cx: &mut App) {
 /// Installs a resync snapshot: replaces the state and subscription
 /// together, drains the new subscription, reconciles every window, then
 /// releases waiters. Returns false, reconciling nothing, when the new
-/// subscription lagged again.
+/// subscription lagged again. After teardown it installs nothing and ends
+/// the resubscription.
 fn install_hierarchy(
     cx: &mut App,
     state: HierarchyState,
     subscription: HierarchySubscription,
 ) -> bool {
-    if !cx
-        .global_mut::<Desktop>()
-        .hierarchy
-        .install(state, subscription)
-    {
-        return false;
+    let terminating = terminating(cx);
+    match cx.global_mut::<Desktop>().hierarchy.install(
+        state,
+        subscription,
+        terminating,
+    ) {
+        Install::Current => {}
+        Install::Lagged => return false,
+        Install::Frozen => return true,
     }
     start_hierarchy_drain(cx);
     reconcile(cx, &Touched::everything());
@@ -2958,6 +2966,29 @@ impl WorkspaceView {
         order != current && self.apply_tab_view_order(&order, cx)
     }
 
+    /// Reconciles this window once its own structural completion has
+    /// cleared `busy`, applying removals reconcile deferred meanwhile. A
+    /// removed active tab hands selection and focus to the new active tab in
+    /// the same update, so no keystroke lands without a focused terminal.
+    fn reconcile_own(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let active = self.active_tab(cx);
+        let change = self.reconcile(&Touched::default(), terminating(cx), cx);
+        if !change.changed {
+            return;
+        }
+        if let Some(next) = self.active_tab(cx)
+            && Some(next) != active
+        {
+            self.measure_tab_widths(window, cx);
+            self.select(next, window, cx);
+        }
+        cx.notify();
+    }
+
     /// Brings this window in line with the projection for `touched`.
     fn reconcile(
         &mut self,
@@ -3787,6 +3818,7 @@ impl WorkspaceView {
                         cx,
                     );
                 }
+                view.reconcile_own(window, cx);
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);
                 cx.notify();
@@ -3955,6 +3987,7 @@ impl WorkspaceView {
                         }
                     }
                 }
+                view.reconcile_own(window, cx);
                 view.resume_close(window, cx);
                 cx.notify();
             });
@@ -5934,6 +5967,7 @@ impl WorkspaceView {
                     return;
                 }
                 view.busy = false;
+                view.reconcile_own(window, cx);
                 let assessment = match result {
                     Ok(assessment) => assessment,
                     Err(error) => {
@@ -6080,6 +6114,7 @@ impl WorkspaceView {
                 }
                 if resolution == Resolution::Cancelled {
                     // Teardown owns removal; publish nothing.
+                    view.reconcile_own(window, cx);
                     view.resume_close(window, cx);
                     cx.notify();
                     return;
@@ -6123,6 +6158,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.drop_tab_views(ids, cx);
+        // Removals deferred while this window was busy apply now, before
+        // the new active tab takes focus below.
+        self.reconcile(&Touched::default(), terminating(cx), cx);
         // Fit widths are index-based; refresh them before the reveal below
         // reads them.
         self.measure_tab_widths(window, cx);

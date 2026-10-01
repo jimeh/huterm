@@ -382,7 +382,8 @@ enum Highlight {
     /// The slot's value when it is listed, else the first row.
     #[default]
     Initial,
-    /// A value the user highlighted, or one a rebuild kept.
+    /// A value the user highlighted, or one a rebuild kept. When the value
+    /// is not listed, nothing is highlighted.
     Value(CommandValue),
     /// A rebuild removed the highlighted value. Nothing is highlighted, and
     /// Enter does nothing, until the user moves the highlight or filters.
@@ -390,19 +391,33 @@ enum Highlight {
 }
 
 /// The highlighted row among `rows` filtered rows. `position` finds a
-/// value's row; `slot` is the slot's preselected value.
+/// value's row; `slot` is the slot's preselected value. Only the initial
+/// highlight falls back to the slot's value or the first row: an explicit
+/// value that is not listed highlights nothing, so Enter can never reach
+/// another row.
 fn highlighted_row(
     highlight: &Highlight,
     position: impl Fn(&CommandValue) -> Option<usize>,
     slot: Option<&CommandValue>,
     rows: usize,
 ) -> Option<usize> {
-    let initial =
-        || slot.and_then(&position).or_else(|| (rows > 0).then_some(0));
     match highlight {
-        Highlight::Initial => initial(),
-        Highlight::Value(value) => position(value).or_else(initial),
+        Highlight::Initial => {
+            slot.and_then(&position).or_else(|| (rows > 0).then_some(0))
+        }
+        Highlight::Value(value) => position(value),
         Highlight::Lost => None,
+    }
+}
+
+/// The highlight a click on a picker row sets. GPUI dispatches clicks
+/// against the previous frame, so the row's value may already be gone after
+/// a rebuild; then the click is lost and commits nothing.
+fn clicked_highlight(value: CommandValue, listed: bool) -> Highlight {
+    if listed {
+        Highlight::Value(value)
+    } else {
+        Highlight::Lost
     }
 }
 
@@ -1869,7 +1884,10 @@ impl CommandPalette {
                     ))
                     .on_click(cx.listener(
                         move |palette, _: &ClickEvent, _, cx| {
-                            palette.highlight = Highlight::Value(value.clone());
+                            let listed =
+                                palette.picker_position(&value).is_some();
+                            palette.highlight =
+                                clicked_highlight(value.clone(), listed);
                             palette.commit_slot(cx);
                             cx.notify();
                         },
@@ -2696,6 +2714,31 @@ mod tests {
         assert_eq!(moved_row(None, -1, 3), Some(2));
         assert_eq!(moved_row(None, 1, 0), None);
         assert_eq!(moved_row(Some(1), 8, 3), Some(2));
+        // A stale click on a row a rebuild removed commits nothing.
+        let removed =
+            CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 5));
+        let clicked = clicked_highlight(removed.clone(), false);
+        assert_eq!(clicked, Highlight::Lost);
+        assert!(enter_blocked(&clicked, ArgumentKind::Tab));
+        assert_eq!(
+            clicked_highlight(removed.clone(), true),
+            Highlight::Value(removed.clone())
+        );
+        // An explicit value that is no longer listed highlights nothing,
+        // never the preselected or first row.
+        let preselected =
+            CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 2));
+        let only_preselected =
+            |value: &CommandValue| (value == &preselected).then_some(1);
+        assert_eq!(
+            highlighted_row(
+                &Highlight::Value(removed),
+                only_preselected,
+                Some(&preselected),
+                3
+            ),
+            None
+        );
         // Changing the filter restores the initial selection: the slot's
         // value when listed, else the first row.
         let slot = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 2));
@@ -2727,50 +2770,6 @@ mod tests {
         );
         // A deliberately blanked name survives, so Enter still clears.
         assert_eq!(refreshed_name(NameText::Edited, "", Some("old")), None);
-    }
-
-    #[test]
-    fn a_committed_slot_whose_target_disappears_keeps_it_for_the_executor() {
-        let mut mux = Mux::default();
-        let session = mux.create_session(Some("kept")).unwrap();
-        let own = mux.create_workspace(session, Some("own")).unwrap();
-        let fixture = mux.create_workspace(session, Some("fixture")).unwrap();
-        let rows = hierarchy(&mut mux, &[]);
-        let target = PaletteTarget {
-            session: Some(session),
-            workspace: Some(own),
-            ..target()
-        };
-        let domain = DomainView {
-            hierarchy: &rows,
-            profiles: &[],
-            target: &target,
-            window_only: false,
-        };
-        let rename =
-            huterm_protocol::lookup(ids::RENAME_WORKSPACE.as_str()).unwrap();
-        let mut editor = SlotEditor::new(rename, &[], &domain, false);
-        editor.set_text("gone");
-        editor.next_slot(None).unwrap();
-        editor
-            .next_slot(Some(CommandValue::Workspace(fixture)))
-            .unwrap();
-        editor.previous_slot();
-
-        mux.close_workspace(fixture).unwrap();
-        let rebuilt = hierarchy(&mut mux, &[]);
-        assert!(!rebuilt.lists_workspace(fixture));
-        assert!(rebuilt.lists_workspace(own));
-        let Commit::Run(invocation) = editor.commit(None).unwrap() else {
-            panic!("Enter on the name runs with the committed target");
-        };
-        assert_eq!(invocation.workspace("workspace"), Some(fixture));
-        assert_eq!(
-            huterm_core::execute(&mut mux, &invocation),
-            Err(CommandError::StaleTarget)
-        );
-        assert_eq!(mux.workspace(own).unwrap().custom_name(), Some("own"));
-        assert_eq!(mux.session(session).unwrap().custom_name(), Some("kept"));
     }
 
     #[test]

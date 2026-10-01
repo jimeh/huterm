@@ -340,7 +340,6 @@ fn a_view_the_projection_has_not_caught_up_with_is_never_dropped() {
     // the projection not holding its tab proves nothing yet.
     let ahead = feed.state.seq() + 2;
     push(&mut fake, &mut model, &feed.state, 1, ahead);
-    fake.busy = true;
     let change =
         reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
     assert!(!change.changed);
@@ -393,12 +392,12 @@ fn membership_waits_for_teardown_to_own_removal() {
     // Quit pending, assessing, confirming, or cancelled leaves `terminating`
     // clear, so reconcile still removes; only committed teardown skips.
     assert_eq!(
-        membership(&feed.state, Some(workspace(10)), &installed, true, false)
+        membership(&feed.state, Some(workspace(10)), &installed, false, false)
             .remove,
         [tab(1)]
     );
     assert_eq!(
-        membership(&feed.state, Some(workspace(10)), &installed, true, true),
+        membership(&feed.state, Some(workspace(10)), &installed, false, true),
         Membership::default()
     );
 }
@@ -561,7 +560,7 @@ fn a_completion_proceeds_at_once_or_waits_for_the_next_drain() {
 
     // Already applied: the completion continues on the same turn.
     let applied = rename_workspace(&mut mux, workspace_id, "one");
-    assert!(matches!(projection.drain(), Drained::Current(_)));
+    assert!(matches!(projection.sync(false), Drained::Current(_)));
     assert!(matches!(projection.wait_for(applied, false), Wait::Ready));
 
     // A result that arrives before its event waits; the next ordinary
@@ -571,7 +570,7 @@ fn a_completion_proceeds_at_once_or_waits_for_the_next_drain() {
         panic!("a result ahead of the projection must wait");
     };
     assert!(waiter.try_recv().is_err());
-    assert!(matches!(projection.drain(), Drained::Current(_)));
+    assert!(matches!(projection.sync(false), Drained::Current(_)));
     projection.settle_waiters(false);
     assert_eq!(waiter.try_recv(), Ok(Resolution::Ready));
     assert_eq!(
@@ -616,7 +615,7 @@ fn a_waiter_behind_a_resync_is_released_by_installation() {
     let (state, subscription) = mux.subscribe_hierarchy();
     let mut projection = Projection::new(state, subscription);
     overflow(&mut mux, workspace_id);
-    assert_eq!(projection.drain(), Drained::Resync);
+    assert_eq!(projection.sync(false), Drained::Resync);
     assert!(projection.begin_resync());
     assert!(!projection.begin_resync(), "one resubscription at a time");
     let committed = mux.hierarchy_seq();
@@ -627,12 +626,18 @@ fn a_waiter_behind_a_resync_is_released_by_installation() {
     // A lagged new subscription installs nothing reconcilable.
     let (state, subscription) = mux.subscribe_hierarchy();
     overflow(&mut mux, workspace_id);
-    assert!(!projection.install(state, subscription));
+    assert_eq!(
+        projection.install(state, subscription, false),
+        Install::Lagged
+    );
     assert!(projection.resyncing());
     assert!(waiter.try_recv().is_err());
 
     let (state, subscription) = mux.subscribe_hierarchy();
-    assert!(projection.install(state, subscription));
+    assert_eq!(
+        projection.install(state, subscription, false),
+        Install::Current
+    );
     assert!(!projection.resyncing());
     projection.settle_waiters(false);
     assert_eq!(waiter.try_recv(), Ok(Resolution::Ready));
@@ -662,7 +667,7 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
     let (state, subscription) = mux.subscribe_hierarchy();
     let mut projection = Projection::new(state, subscription);
     overflow(&mut mux, workspace_id);
-    assert_eq!(projection.drain(), Drained::Resync);
+    assert_eq!(projection.sync(false), Drained::Resync);
     // The worker takes its snapshot before a spawn commits; the spawn's
     // view is installed before the snapshot is.
     let (snapshot, resubscription) = mux.subscribe_hierarchy();
@@ -692,7 +697,13 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
     );
     assert!(snapshot.tab(opened.tab.id).is_none());
 
-    assert!(projection.install(snapshot, resubscription));
+    assert_eq!(
+        projection.install(snapshot, resubscription, false),
+        Install::Current
+    );
+    // The view is kept because the drained subscription added its tab.
+    assert!(projection.state().tab(opened.tab.id).is_some());
+    assert_eq!(projection.state().seq(), committed);
     let change = reconcile_window(
         &mut Target {
             window: &mut fake,
@@ -705,4 +716,83 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
     assert!(!change.changed);
     assert_eq!(view_order(&fake), [opened.tab.id]);
     mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_reset_queued_after_teardown_is_not_applied_and_labels_keep_custom_names() {
+    let mut mux = Mux::default();
+    let session_id = mux.create_session(None).unwrap();
+    let workspace_id = mux.create_workspace(session_id, None).unwrap();
+    let opened = mux.open_tab(workspace_id, &idle_shell()).unwrap();
+    let committed = mux.hierarchy_seq();
+    let (state, subscription) = mux.subscribe_hierarchy();
+    let mut projection = Projection::new(state, subscription);
+    mux.rename_tab(opened.tab.id, Some("custom")).unwrap();
+    assert!(matches!(projection.sync(false), Drained::Current(_)));
+    let before = projection.state().clone();
+    let Wait::Pending(waiter) = projection.wait_for(before.seq() + 1, false)
+    else {
+        panic!("a later sequence must wait");
+    };
+
+    // Teardown commits first, then shutdown queues `Reset`.
+    mux.shutdown().unwrap();
+    assert_eq!(projection.sync(true), Drained::Frozen);
+    assert_eq!(*projection.state(), before);
+    assert_eq!(waiter.try_recv(), Ok(Resolution::Cancelled));
+    let (empty, resubscription) = mux.subscribe_hierarchy();
+    assert_eq!(
+        projection.install(empty, resubscription, true),
+        Install::Frozen
+    );
+    assert_eq!(*projection.state(), before);
+
+    let mut model = WindowModel::default();
+    model.open(window(1), None, layout());
+    model.attach(window(1), None, session_id, workspace_id);
+    let mut fake = FakeWindow {
+        id: window(1),
+        workspace: workspace_id,
+        views: vec![View {
+            tab: opened.tab.id,
+            committed,
+            terminal_title: "sh".into(),
+        }],
+        busy: false,
+    };
+    let target = Target {
+        window: &mut fake,
+        model: &mut model,
+        state: projection.state(),
+    };
+    assert_eq!(target.title(opened.tab.id), "custom");
+}
+
+#[test]
+fn a_busy_window_keeps_removed_views_until_its_completion_reconciles() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = open_window(&mut model, 1, workspace(10));
+    for value in [1, 2, 3] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    feed.move_tab(3, workspace(10), 0);
+    feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
+    // The wake-driven drain reconciles while the window's own close is in
+    // flight: order applies, but the closed view, which may hold focus,
+    // stays for the completion to drop and refocus in one update.
+    fake.busy = true;
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(view_order(&fake), [tab(3), tab(1), tab(2)]);
+    assert_eq!(model_order(&model, &fake), view_order(&fake));
+
+    // The completion clears `busy` and reconciles its own window with no
+    // summary; the deferred removal applies then.
+    fake.busy = false;
+    let change =
+        reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert!(change.changed);
+    assert_eq!(view_order(&fake), [tab(3), tab(1)]);
+    assert_eq!(model_order(&model, &fake), view_order(&fake));
 }

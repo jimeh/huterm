@@ -1,6 +1,6 @@
 # Hierarchy projection
 
-Status: planned for [issue #98][issue-98].
+Status: implemented for [issue #98][issue-98] in PR #199.
 
 Core publishes an ordered stream of structural events for sessions,
 workspaces, and tabs. The desktop client keeps one projection of that
@@ -286,7 +286,11 @@ projection and converges the window's views and `WindowModel` record:
    holds, through `drop_tab_views`. A view records the sequence its tab
    committed at; a tab is removed only when the projection has applied that
    sequence and no longer holds it. A view the projection has not caught up
-   with is never dropped.
+   with is never dropped. While the window is busy, removal waits: the
+   window's own structural completion owns that aftermath, and dropping a
+   focused view on a separate drain turn would lose keystrokes until the
+   completion refocuses. Each completion reconciles its own window after
+   clearing `busy`, so a deferred removal still applies.
 
    A projected tab with no installed view is normal while the window's own
    spawn is in flight: core emits `TabOpened` before the worker returns, and
@@ -423,11 +427,12 @@ only the projection. The committed-sequence wait guarantees the projection
 holds the tab before the view is pushed, and the view records that sequence
 for the membership rule above.
 
-For removal and order, reconcile is authoritative. A window's own close
-completion runs reconcile first, through its drain, then keeps the aftermath
-it already owns in `remove_closed_tabs`: selecting the next tab, revealing
-activity, resuming queued closes, and closing an emptied window. Its own
-`drop_tab_views` call becomes a no-op.
+For order, reconcile is authoritative; for removal, it is authoritative
+except in a busy window, whose completion removes. A window's own close
+completion keeps the aftermath it already owns in `remove_closed_tabs`:
+dropping the closed views, then selecting and focusing the next tab in the
+same update, reconciling the rest of the window, resuming queued closes,
+and closing an emptied window.
 
 Drag reorder no longer needs the worker to return an order.
 `DesktopRuntime::reorder_tab` returns the committed sequence, and the
