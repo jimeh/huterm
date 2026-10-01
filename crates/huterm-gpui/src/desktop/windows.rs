@@ -2855,6 +2855,25 @@ impl CloseState {
             Some(CloseDecision::Close(target))
         }
     }
+    /// Starts committing `target`: takes the assessment and ends the
+    /// confirmation, so a later cancel cannot reach the commit. Returns the
+    /// assessment and whether the user confirmed this target, or `None`
+    /// when there is no assessment to commit.
+    fn begin_commit(
+        &mut self,
+        target: &CloseTarget,
+    ) -> Option<(CloseAssessment, bool)> {
+        let confirmed = self.confirmation.as_ref() == Some(target);
+        let assessment = self.assessment.take()?;
+        self.confirmation = None;
+        self.current = Some(target.clone());
+        Some((assessment, confirmed))
+    }
+    /// Whether a confirmation is showing for its Cancel button or Escape to
+    /// cancel; false once its commit has begun.
+    fn can_cancel_confirmation(&self) -> bool {
+        self.confirmation.is_some()
+    }
     fn cancel(&mut self) -> Option<CloseTarget> {
         self.generation += 1;
         self.assessment = None;
@@ -4960,7 +4979,7 @@ impl WorkspaceView {
                 self.finish_close(target, window, cx);
             }
             (ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL, _) => {
-                self.cancel_close(window, cx);
+                self.cancel_confirmation(window, cx);
             }
             (ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS, focus) => {
                 self.close.dialog_focus = focus.toggled();
@@ -6025,12 +6044,26 @@ impl WorkspaceView {
         }
     }
 
+    /// Cancels the showing confirmation from its Cancel button or Escape.
+    /// A stale press, dispatched against a frame drawn before Confirm began
+    /// the commit, finds no confirmation and must not cancel the commit.
+    fn cancel_confirmation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.close.can_cancel_confirmation() {
+            self.cancel_close(window, cx);
+        }
+    }
+
     fn cancel_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         self.busy = false;
+        self.reconcile_own(window, cx);
         if matches!(self.close.cancel(), Some(CloseTarget::Application)) {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
@@ -6067,13 +6100,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let confirmed = self.close.confirmation.as_ref() == Some(&target);
-        let Some(assessment) = self.close.assessment.take() else {
+        let Some((assessment, confirmed)) = self.close.begin_commit(&target)
+        else {
             self.request_close(target, window, cx);
             return;
         };
-        self.close.confirmation = None;
-        self.close.current = Some(target.clone());
         self.busy = true;
         let generation = self.close.generation;
         self.publish_restorable_bounds(cx);
@@ -6104,6 +6135,7 @@ impl WorkspaceView {
                 view.busy = false;
                 view.close.current = None;
                 if close_commit_retries(&result) {
+                    view.reconcile_own(window, cx);
                     view.request_close(target, window, cx);
                     return;
                 }
@@ -7833,7 +7865,7 @@ impl Render for WorkspaceView {
                 Swatch::from_theme(&self.config.theme),
                 self.config.window.shortcut_hints,
                 cx.listener(|view, _, window, cx| {
-                    view.cancel_close(window, cx);
+                    view.cancel_confirmation(window, cx);
                 }),
                 cx.listener(move |view, _, window, cx| {
                     view.finish_close(target.clone(), window, cx);
@@ -9023,6 +9055,26 @@ mod tests {
         assert!(quit_pending);
         assert!(settle_spawn(&mut pending_spawns, &mut quit_pending));
         assert!(!settle_spawn(&mut pending_spawns, &mut quit_pending));
+    }
+
+    #[test]
+    fn a_stale_cancel_after_confirm_cannot_reach_the_commit() {
+        let runtime = DesktopRuntime::default();
+        let session = runtime.lock().create_session(None).unwrap();
+        let mut close = CloseState::default();
+        let target = close.begin_check(CloseTarget::Window);
+        close.assessment =
+            Some(runtime.assess(CloseRequest::Session(session)).unwrap());
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(target.clone()))
+        );
+        assert!(close.can_cancel_confirmation());
+        let (_, confirmed) = close.begin_commit(&target).unwrap();
+        assert!(confirmed);
+        // A Cancel or Escape drawn before Confirm now finds nothing to cancel.
+        assert!(!close.can_cancel_confirmation());
+        assert_eq!(close.current, Some(target));
     }
 
     #[test]

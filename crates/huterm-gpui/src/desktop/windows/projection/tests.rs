@@ -373,33 +373,45 @@ fn a_projected_tab_without_a_view_is_tolerated_while_its_spawn_is_in_flight() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "has no view in a window with no spawn in flight")]
-fn a_projected_tab_without_a_view_asserts_when_no_spawn_is_in_flight() {
+fn a_projected_tab_without_a_view_is_tolerated_in_an_idle_window() {
+    // Destroying a view only detaches it; the tab lives on in the
+    // projection, and reconcile neither asserts nor installs a view.
     let mut feed = Feed::new();
     let mut model = WindowModel::default();
     let mut fake = open_window(&mut model, 1, workspace(10));
-    feed.open(workspace(10), 1);
-    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    let seq = feed.open(workspace(10), 1);
+    push(&mut fake, &mut model, &feed.state, 1, seq);
+    feed.open(workspace(10), 2);
+    assert!(!fake.busy);
+    let change =
+        reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert!(!change.changed);
+    assert_eq!(view_order(&fake), [tab(1)]);
+    assert_eq!(model_order(&model, &fake), [tab(1)]);
 }
 
 #[test]
-fn membership_waits_for_teardown_to_own_removal() {
+fn removal_waits_for_teardown_to_own_it() {
     let mut feed = Feed::new();
     let seq = feed.open(workspace(10), 1);
     feed.apply(HierarchyEvent::TabClosed { tab: tab(1) });
     let installed = [(tab(1), seq)];
     // Quit pending, assessing, confirming, or cancelled leaves `terminating`
     // clear, so reconcile still removes; only committed teardown skips.
-    assert_eq!(
-        membership(&feed.state, Some(workspace(10)), &installed, false, false)
-            .remove,
-        [tab(1)]
-    );
-    assert_eq!(
-        membership(&feed.state, Some(workspace(10)), &installed, false, true),
-        Membership::default()
-    );
+    assert_eq!(removals(&feed.state, &installed, false, false), [tab(1)]);
+    assert!(removals(&feed.state, &installed, false, true).is_empty());
+}
+
+#[test]
+fn unheld_tabs_keep_their_slots_while_held_tabs_follow_the_projection() {
+    let (a, b, c) = (tab(1), tab(2), tab(3));
+    // A just-pushed tab lands at its projected position.
+    assert_eq!(installed_order(&[a, c, b], &[a, b, c]), [a, c, b]);
+    // A closed tab the window still shows keeps its slot.
+    assert_eq!(installed_order(&[a, c], &[a, b, c]), [a, b, c]);
+    assert_eq!(installed_order(&[c, a], &[a, b, c]), [c, b, a]);
+    // Projected tabs without views do not take slots.
+    assert_eq!(installed_order(&[b, tab(4), a], &[a, b]), [b, a]);
 }
 
 #[test]
@@ -777,14 +789,19 @@ fn a_busy_window_keeps_removed_views_until_its_completion_reconciles() {
         let seq = feed.open(workspace(10), value);
         push(&mut fake, &mut model, &feed.state, value, seq);
     }
-    feed.move_tab(3, workspace(10), 0);
     feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
     // The wake-driven drain reconciles while the window's own close is in
-    // flight: order applies, but the closed view, which may hold focus,
-    // stays for the completion to drop and refocus in one update.
+    // flight: the closed view, which may hold focus, stays in its slot for
+    // the completion to drop and refocus in one update.
     fake.busy = true;
+    let change =
+        reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert!(!change.changed);
+    assert_eq!(view_order(&fake), [tab(1), tab(2), tab(3)]);
+    // Order still applies around it.
+    feed.move_tab(3, workspace(10), 0);
     reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
-    assert_eq!(view_order(&fake), [tab(3), tab(1), tab(2)]);
+    assert_eq!(view_order(&fake), [tab(3), tab(2), tab(1)]);
     assert_eq!(model_order(&model, &fake), view_order(&fake));
 
     // The completion clears `busy` and reconciles its own window with no
@@ -795,4 +812,39 @@ fn a_busy_window_keeps_removed_views_until_its_completion_reconciles() {
     assert!(change.changed);
     assert_eq!(view_order(&fake), [tab(3), tab(1)]);
     assert_eq!(model_order(&model, &fake), view_order(&fake));
+}
+
+#[test]
+fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
+    let mut mux = Mux::default();
+    let session_id = mux.create_session(None).unwrap();
+    let workspace_id = mux.create_workspace(session_id, None).unwrap();
+    let opened = mux.open_tab(workspace_id, &idle_shell()).unwrap();
+    let (state, subscription) = mux.subscribe_hierarchy();
+    let mut projection = Projection::new(state, subscription);
+    mux.rename_tab(opened.tab.id, Some("custom")).unwrap();
+    assert!(matches!(projection.sync(false), Drained::Current(_)));
+    let before = projection.state().clone();
+
+    // The drain sampled `terminating` before a worker set it and queued
+    // `Reset`; the `Reset` itself freezes the projection.
+    mux.rename_tab(opened.tab.id, Some("late")).unwrap();
+    mux.shutdown().unwrap();
+    assert_eq!(projection.sync(false), Drained::Frozen);
+    assert_eq!(
+        projection
+            .state()
+            .tab(opened.tab.id)
+            .and_then(|tab| tab.custom_name.as_deref()),
+        Some("late"),
+        "events before the Reset still apply"
+    );
+    assert_eq!(projection.state().sessions(), before.sessions());
+    let frozen = projection.state().clone();
+    assert_eq!(projection.sync(false), Drained::Frozen);
+    assert_eq!(*projection.state(), frozen);
+    assert!(matches!(
+        projection.wait_for(frozen.seq() + 1, false),
+        Wait::Cancelled
+    ));
 }

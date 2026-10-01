@@ -292,15 +292,11 @@ projection and converges the window's views and `WindowModel` record:
    completion refocuses. Each completion reconciles its own window after
    clearing `busy`, so a deferred removal still applies.
 
-   A projected tab with no installed view is normal while the window's own
-   spawn is in flight: core emits `TabOpened` before the worker returns, and
-   both the wake-driven drain and the completion's own drain reconcile
-   before `push_tab_view` runs. The window's existing `busy` flag is set for
-   the whole spawn and cleared only inside the completion's view update, so
-   reconcile leaves such tabs alone while the window is busy. A projected
-   tab with no view in a window that is not busy is the unsupported
-   external-open flow: leave it and fire a `debug_assert`. Reconcile never
-   installs views.
+   A projected tab with no installed view is tolerated without change. It
+   is normal while the window's own spawn is in flight, because core emits
+   `TabOpened` before the worker returns, and after a view is destroyed,
+   which only detaches it. Reconcile never installs views; installing views
+   for tabs the window did not spawn belongs to [#22][issue-22].
 2. **Order.** Compute the installed order (see "Tab order follows the
    projection") and apply it only when it differs from the current order.
 3. **Titles.** Recompute labels for touched tabs and publish them through
@@ -444,8 +440,8 @@ local completion, or a `TabOpened` in a shown workspace without a local
 spawn, cannot happen yet. Reconcile still removes the view in the first case,
 because removal is derived from state; the window's aftermath for an
 externally emptied window belongs to [#21][issue-21]. The second case leaves
-the projection correct, installs nothing, and fires a `debug_assert` until
-[#22][issue-22] defines it.
+the projection correct and installs nothing until [#22][issue-22] defines
+it.
 
 The palette smoke's `delete-target` command
 (`crates/huterm-gpui/src/desktop/palette_smoke.rs`) closes a displayed tab
@@ -476,12 +472,13 @@ applying the workspace's full projection order `[B, A, C]` to installed
 views `[A, B]` is rejected, and a later append of C would leave `[A, B, C]`
 for good.
 
-The window's installed order is the projection's tab order for its
-workspace, filtered to the tabs the window has installed, followed by any
-installed tab the projection does not hold, in their current order. It is
-always a permutation of the installed views, so `apply_tab_view_order`
-accepts it. A tab can be missing from the projection only briefly, while a
-resync is pending, or through an unsupported flow.
+In the window's installed order, installed tabs the projection does not
+hold keep their current slots, and the installed tabs it holds fill the
+remaining slots in the projection's order for the workspace. A closed tab
+whose view a busy window keeps until its close completion therefore stays
+in place instead of moving to the end. The order is always a permutation of
+the installed views, so `apply_tab_view_order` accepts it, and a just-pushed
+tab lands at its projected position.
 
 Every membership change re-applies the installed order:
 
@@ -658,9 +655,8 @@ Client checks:
     windows outside the summary are not visited.
   - A view whose committed sequence the projection has not applied is never
     dropped.
-  - The real spawn path, draining before `push_tab_view`, reconciles a
-    projected tab with no view in a busy window without asserting; the same
-    state in a window that is not busy asserts in debug builds.
+  - A projected tab with no view, in a busy or idle window, changes
+    nothing.
 - Installed-order unit tests:
   - A projection order that already contains a tab whose view is not pushed
     yet, followed by the spawn completion, converges on the projection's
@@ -689,7 +685,7 @@ Client checks:
 - Resync installation tests:
   - A snapshot taken before a spawn commits, installed after that spawn's
     view: draining the new subscription adds the tab, so reconcile removes
-    nothing and fires no assertion.
+    nothing.
   - A new subscription that lags again before reconciling triggers another
     resync instead of a membership pass.
   - The membership skip applies only once `terminating` is set. Cover

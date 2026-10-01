@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui::{Task, WindowId};
 use huterm_core::{HierarchyRecvError, HierarchySubscription};
 use huterm_protocol::{
-    ApplyOutcome, HierarchyState, TabId, Touched, WorkspaceId,
+    ApplyOutcome, HierarchyEvent, HierarchyState, TabId, Touched, WorkspaceId,
 };
 
 use super::model::WindowModel;
@@ -86,8 +86,8 @@ pub(super) enum Drained {
     /// Events were lost or the stream diverged; replace the state from a
     /// fresh snapshot before reconciling anything.
     Resync,
-    /// Application teardown has committed: nothing applied, and every
-    /// waiter was cancelled.
+    /// Application teardown has committed, or its `Reset` arrived: nothing
+    /// more applies, and every waiter was cancelled.
     Frozen,
 }
 
@@ -99,8 +99,8 @@ pub(super) enum Install {
     Current,
     /// The new subscription lagged again; resubscribe without reconciling.
     Lagged,
-    /// Application teardown has committed; nothing was installed, and every
-    /// waiter was cancelled.
+    /// Application teardown has committed, or its `Reset` arrived; nothing
+    /// more applies, and every waiter was cancelled.
     Frozen,
 }
 
@@ -122,6 +122,8 @@ pub(super) struct Projection {
     waiters: SequenceWaiters,
     /// A resubscription worker is running; drains defer to it.
     resyncing: bool,
+    /// Teardown froze the projection at its last pre-teardown state.
+    frozen: bool,
     /// The application task woken by the current subscription. Replacing
     /// it drops, and so cancels, the previous subscription's task.
     drain_task: Option<Task<()>>,
@@ -137,6 +139,7 @@ impl Projection {
             subscription: Rc::new(subscription),
             waiters: SequenceWaiters::default(),
             resyncing: false,
+            frozen: false,
             drain_task: None,
         }
     }
@@ -159,7 +162,7 @@ impl Projection {
     /// state, so the `Reset` that teardown emits never empties it and labels
     /// keep their names while Quit tears down.
     pub(super) fn sync(&mut self, terminating: bool) -> Drained {
-        if terminating {
+        if terminating || self.frozen {
             self.freeze();
             Drained::Frozen
         } else {
@@ -168,17 +171,28 @@ impl Projection {
     }
 
     /// Stops following the stream after teardown: cancels every waiter and
-    /// any pending resubscription.
+    /// any pending resubscription, and applies nothing more.
     fn freeze(&mut self) {
+        self.frozen = true;
         self.waiters.cancel_all();
         self.resyncing = false;
     }
 
-    /// Applies every queued event in order.
+    /// Applies every queued event in order. Only shutdown emits `Reset`,
+    /// after teardown has committed, so a dequeued `Reset` freezes the
+    /// projection instead of applying, even when the caller sampled the
+    /// teardown flag before the worker set it.
     fn drain(&mut self) -> Drained {
         let mut touched = Touched::default();
         loop {
             match self.subscription.try_recv() {
+                Ok(envelope)
+                    if envelope.stream == self.state.stream()
+                        && matches!(envelope.event, HierarchyEvent::Reset) =>
+                {
+                    self.freeze();
+                    return Drained::Frozen;
+                }
                 Ok(envelope) => match self.state.apply(envelope) {
                     ApplyOutcome::Applied(changed) => touched.merge(changed),
                     ApplyOutcome::Stale => {}
@@ -207,18 +221,20 @@ impl Projection {
         subscription: HierarchySubscription,
         terminating: bool,
     ) -> Install {
-        if terminating {
+        if terminating || self.frozen {
             self.freeze();
             return Install::Frozen;
         }
         self.state = state;
         self.subscription = Rc::new(subscription);
         self.drain_task = None;
-        if matches!(self.drain(), Drained::Current(_)) {
-            self.resyncing = false;
-            Install::Current
-        } else {
-            Install::Lagged
+        match self.drain() {
+            Drained::Current(_) => {
+                self.resyncing = false;
+                Install::Current
+            }
+            Drained::Resync => Install::Lagged,
+            Drained::Frozen => Install::Frozen,
         }
     }
 
@@ -230,7 +246,7 @@ impl Projection {
     /// Asks for `seq`: ready when applied, cancelled after teardown, and a
     /// one-shot waiter otherwise.
     pub(super) fn wait_for(&mut self, seq: u64, terminating: bool) -> Wait {
-        if terminating {
+        if terminating || self.frozen {
             Wait::Cancelled
         } else if self.state.seq() >= seq {
             Wait::Ready
@@ -255,72 +271,56 @@ impl Projection {
     }
 }
 
-/// The window's installed order: the projection's order for its workspace,
-/// filtered to installed tabs, then any installed tab the projection does
-/// not hold, in current order. Always a permutation of `installed`.
+/// The window's installed order. Installed tabs the projection does not
+/// hold, such as a closed tab whose view a busy window keeps, stay in their
+/// current slots; the projected installed tabs fill the remaining slots in
+/// the projection's order for the workspace. Always a permutation of
+/// `installed`, and a just-pushed tab the projection holds lands at its
+/// projected position.
 pub(super) fn installed_order(
     projected: &[TabId],
     installed: &[TabId],
 ) -> Vec<TabId> {
-    let mut order: Vec<TabId> = projected
+    let mut held = projected
         .iter()
         .copied()
-        .filter(|tab| installed.contains(tab))
-        .collect();
-    order.extend(installed.iter().filter(|tab| !projected.contains(tab)));
-    order
+        .filter(|tab| installed.contains(tab));
+    installed
+        .iter()
+        .map(|tab| {
+            if projected.contains(tab) {
+                held.next().unwrap_or(*tab)
+            } else {
+                *tab
+            }
+        })
+        .collect()
 }
 
-/// How one window's installed views differ from the projection.
-#[derive(Debug, Default, Eq, PartialEq)]
-pub(super) struct Membership {
-    /// Views whose tabs the projection has applied and no longer holds.
-    /// Empty while the window is busy: its own completion removes them.
-    pub(super) remove: Vec<TabId>,
-    /// A projected tab with no view while the window has no spawn in flight:
-    /// the unsupported external-open flow.
-    pub(super) unexpected: Option<TabId>,
-}
-
-/// Decides membership for one window. `installed` pairs each view's tab
-/// with the sequence it committed at; a view the projection has not caught
-/// up with is never removed. A busy window keeps its views: its structural
-/// completion drops them and refocuses in one update, then reconciles. Nothing
-/// changes once teardown owns removal.
-pub(super) fn membership(
+/// The views reconcile removes from one window: those whose tabs the
+/// projection has applied and no longer holds. `installed` pairs each
+/// view's tab with the sequence it committed at; a view the projection has
+/// not caught up with is never removed. A busy window keeps its views: its
+/// structural completion drops them and refocuses in one update, then
+/// reconciles. Nothing is removed once teardown owns removal. A projected
+/// tab without a view, detached or not yet installed, is not a removal and
+/// never installs a view.
+pub(super) fn removals(
     state: &HierarchyState,
-    workspace: Option<WorkspaceId>,
     installed: &[(TabId, u64)],
     busy: bool,
     terminating: bool,
-) -> Membership {
-    if terminating {
-        return Membership::default();
+) -> Vec<TabId> {
+    if terminating || busy {
+        return Vec::new();
     }
-    let remove = if busy {
-        Vec::new()
-    } else {
-        installed
-            .iter()
-            .filter(|(tab, committed)| {
-                state.seq() >= *committed && state.tab(*tab).is_none()
-            })
-            .map(|(tab, _)| *tab)
-            .collect()
-    };
-    let unexpected = if busy {
-        None
-    } else {
-        workspace
-            .and_then(|workspace| state.workspace_tabs(workspace))
-            .and_then(|projected| {
-                projected
-                    .iter()
-                    .copied()
-                    .find(|tab| !installed.iter().any(|(id, _)| id == tab))
-            })
-    };
-    Membership { remove, unexpected }
+    installed
+        .iter()
+        .filter(|(tab, committed)| {
+            state.seq() >= *committed && state.tab(*tab).is_none()
+        })
+        .map(|(tab, _)| *tab)
+        .collect()
 }
 
 /// Windows a summary concerns: those showing a touched workspace or tab.
@@ -385,21 +385,11 @@ pub(super) fn reconcile_window(
     terminating: bool,
 ) -> WindowChange {
     let installed = target.installed();
-    let plan = membership(
-        target.projection(),
-        target.workspace(),
-        &installed,
-        target.busy(),
-        terminating,
-    );
-    debug_assert!(
-        plan.unexpected.is_none(),
-        "projected tab {:?} has no view in a window with no spawn in flight",
-        plan.unexpected
-    );
+    let remove =
+        removals(target.projection(), &installed, target.busy(), terminating);
     let mut change = WindowChange::default();
-    if !plan.remove.is_empty() {
-        target.drop_tabs(&plan.remove);
+    if !remove.is_empty() {
+        target.drop_tabs(&remove);
         change.changed = true;
     }
     let current: Vec<TabId> =
