@@ -398,8 +398,14 @@ fn removal_waits_for_teardown_to_own_it() {
     let installed = [(tab(1), seq)];
     // Quit pending, assessing, confirming, or cancelled leaves `terminating`
     // clear, so reconcile still removes; only committed teardown skips.
-    assert_eq!(removals(&feed.state, &installed, false, false), [tab(1)]);
-    assert!(removals(&feed.state, &installed, false, true).is_empty());
+    assert_eq!(
+        removals(&feed.state, Some(workspace(10)), &installed, false, false),
+        [tab(1)]
+    );
+    assert!(
+        removals(&feed.state, Some(workspace(10)), &installed, false, true)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -810,6 +816,7 @@ fn a_busy_window_keeps_removed_views_until_its_completion_reconciles() {
     let change =
         reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
     assert!(change.changed);
+    assert!(change.titles, "a removed title must redraw title consumers");
     assert_eq!(view_order(&fake), [tab(3), tab(1)]);
     assert_eq!(model_order(&model, &fake), view_order(&fake));
 }
@@ -847,4 +854,35 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
         projection.wait_for(frozen.seq() + 1, false),
         Wait::Cancelled
     ));
+}
+
+#[test]
+fn a_tab_moved_to_another_workspace_leaves_the_old_window() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut first = open_window(&mut model, 1, workspace(10));
+    let second = open_window(&mut model, 2, workspace(11));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut first, &mut model, &feed.state, value, seq);
+    }
+    feed.move_tab(2, workspace(11), 0);
+    let change =
+        reconcile(&mut first, &mut model, &feed.state, &Touched::everything());
+    assert!(change.changed && change.titles);
+    assert_eq!(view_order(&first), [tab(1)]);
+    assert_eq!(model_order(&model, &first), [tab(1)]);
+    // The destination window installs nothing: creating views for tabs it
+    // did not spawn belongs to #22.
+    assert!(model_order(&model, &second).is_empty());
+    assert_eq!(
+        removals(
+            &feed.state,
+            Some(workspace(11)),
+            &[(tab(2), feed.state.seq())],
+            false,
+            false
+        ),
+        Vec::<TabId>::new()
+    );
 }

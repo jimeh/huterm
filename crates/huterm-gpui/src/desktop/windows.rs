@@ -4010,7 +4010,10 @@ impl WorkspaceView {
                 view.resume_close(window, cx);
                 cx.notify();
             });
-            if update.is_err() {
+            // With the window gone, clean up a successful spawn unless
+            // teardown has committed and owns every terminal, as
+            // `spawn_disposition` decides for a cancelled wait.
+            if update.is_err() && !app.update(|cx| terminating(cx)) {
                 unpublished = result.take().and_then(Result::ok);
             }
             if let Some((session, workspace, opened, attachment, authority)) =

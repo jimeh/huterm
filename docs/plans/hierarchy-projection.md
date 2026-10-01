@@ -98,10 +98,12 @@ between them:
   the existing earliest-deadline pattern for genuine deadlines.
 - **Idle costs nothing.** With no structural change there is no wake, task
   turn, or render.
-- **Work scales with the change.** A drained batch records what it touched,
-  and reconciliation visits only the windows showing touched workspaces or
-  tabs. Every client write compares before writing, and a view is notified
-  only when something it renders changed. A no-op batch causes no render.
+- **Work scales with the change.** A drained batch records what it touched.
+  Finding the affected windows scans the window records, a handful per
+  client, and only the windows showing touched workspaces or tabs are
+  reconciled and notified. Every client write compares before writing, and
+  a view is notified only when something it renders changed. A no-op batch
+  causes no render.
 - **Hot-path reads are constant time.** The tab bar resolves every tab's
   label on every render. The projection indexes tabs by ID, and label
   resolution borrows names from the projection without allocating more than
@@ -211,7 +213,9 @@ subscription atomically under `&mut Mux`. No event falls between the
 snapshot and the stream. The subscription has a bounded queue and a
 coalescing wake, matching the shape of `EventPublisher`:
 
-- `try_recv` returns the next event, `Empty`, or `Lagged`.
+- `try_recv` returns the next event, `Empty`, `Lagged`, or `Closed` once the
+  Mux was dropped and nothing remains queued. `wait_for_activity` reports
+  `Closed` as well.
 - When the queue would overflow, the publisher discards the queue and marks
   the subscription lagged. The subscriber resubscribes from a worker, which
   replaces its state and subscription together.
@@ -283,9 +287,10 @@ appear in the summary. For each one it derives the desired state from the
 projection and converges the window's views and `WindowModel` record:
 
 1. **Membership.** Drop installed views whose tabs the projection no longer
-   holds, through `drop_tab_views`. A view records the sequence its tab
-   committed at; a tab is removed only when the projection has applied that
-   sequence and no longer holds it. A view the projection has not caught up
+   holds, or holds in another workspace, through `drop_tab_views`. A view
+   records the sequence its tab committed at; a tab is removed only when the
+   projection has applied that sequence and no longer holds it in the
+   window's workspace. A view the projection has not caught up
    with is never dropped. While the window is busy, removal waits: the
    window's own structural completion owns that aftermath, and dropping a
    focused view on a separate drain turn would lose keystrokes until the

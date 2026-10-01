@@ -524,7 +524,8 @@ accidental aliasing, not deliberately fabricated IDs.
 Keep session/workspace automatic names tied to immutable per-kind creation
 ordinals, not membership positions. `None` clears an override; blank custom names
 are invalid. Names come from `Desktop.hierarchy`, the client's projection of
-core's sequenced hierarchy events; the UI thread never locks Mux for structure.
+core's sequenced hierarchy events. The UI thread takes the Mux lock for
+structure only once, at startup before any window exists, to subscribe.
 Tab labels look tabs up there by ID and combine them with the live terminal
 title. Structural results carry the hierarchy sequence they committed at, and
 completions wait for the projection to apply it before acting. Client effects

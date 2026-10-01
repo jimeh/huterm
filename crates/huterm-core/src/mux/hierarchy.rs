@@ -41,9 +41,14 @@ impl HierarchyPublisher {
     /// Drops subscribers whose subscription was dropped and reports whether
     /// any remain.
     fn has_subscribers(&mut self) -> bool {
+        self.prune();
+        !self.subscribers.is_empty()
+    }
+
+    /// Forgets subscribers whose subscription was dropped.
+    fn prune(&mut self) {
         self.subscribers
             .retain(|subscriber| subscriber.queue.strong_count() > 0);
-        !self.subscribers.is_empty()
     }
 
     fn publish(&self, envelope: &HierarchyEnvelope) {
@@ -172,6 +177,9 @@ impl Mux {
         .expect("canonical hierarchy has unique, scoped identities");
         let queue = Arc::new(Mutex::new(Queue::default()));
         let (wake, signal) = async_channel::bounded(1);
+        // Repeated resubscription while idle must not accumulate dropped
+        // subscriptions until the next emission.
+        self.hierarchy.prune();
         self.hierarchy.subscribers.push(Subscriber {
             queue: Arc::downgrade(&queue),
             wake,
@@ -489,7 +497,13 @@ mod tests {
         assert_eq!(mux.hierarchy.built, 0);
         assert!(mux.hierarchy.subscribers.is_empty());
 
+        // Resubscribing while idle replaces dropped subscriptions instead of
+        // accumulating them until the next emission.
+        for _ in 0..3 {
+            drop(mux.subscribe_hierarchy());
+        }
         let (_, subscription) = mux.subscribe_hierarchy();
+        assert_eq!(mux.hierarchy.subscribers.len(), 1);
         mux.close_session(session).unwrap();
         assert_eq!(mux.hierarchy.built, 1);
         drop(mux);

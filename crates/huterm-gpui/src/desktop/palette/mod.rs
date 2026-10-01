@@ -468,6 +468,18 @@ enum NameText {
     Edited,
 }
 
+/// The name slot's mode when the slot is entered or redrawn. A committed
+/// value or typed text is the user's; an empty, uncommitted slot keeps its
+/// mode, so a name the user deliberately blanked stays blank, and Enter
+/// still clears it, instead of being prefilled again.
+fn entered_name_mode(mode: NameText, committed: bool, text: &str) -> NameText {
+    if committed || !text.is_empty() {
+        NameText::Edited
+    } else {
+        mode
+    }
+}
+
 /// The text a rebuild writes into the name slot, if any: automatic text
 /// follows the target's current custom name; edited text stays.
 fn refreshed_name(
@@ -697,7 +709,23 @@ impl CommandPalette {
             self.scroll.scroll_to_item(index);
         }
         self.refresh_automatic_name(cx);
+        self.refresh_placeholder(cx);
         cx.notify();
+    }
+
+    /// Updates the slot placeholder, which can name the rename target, when
+    /// a rebuild changed it.
+    fn refresh_placeholder(&mut self, cx: &mut Context<'_, Self>) {
+        let Stage::Slots(editor) = &self.stage else {
+            return;
+        };
+        let placeholder = self.placeholder(editor);
+        self.input.update(cx, |input, cx| {
+            if input.placeholder() != placeholder {
+                input.set_placeholder(placeholder);
+                cx.notify();
+            }
+        });
     }
 
     /// The projection sequence the identity rows reflect.
@@ -874,6 +902,8 @@ impl CommandPalette {
         }
         self.stage = Stage::Slots(editor);
         self.highlight = Highlight::Initial;
+        // Each command's name slot starts with its target's current name.
+        self.name_text = NameText::Automatic;
         self.sync_input(cx);
     }
 
@@ -1071,12 +1101,14 @@ impl CommandPalette {
         if slot.spec.kind != ArgumentKind::Text {
             return;
         }
-        if slot.value.is_some() || !editor.text().is_empty() {
-            self.name_text = NameText::Edited;
-            return;
+        self.name_text = entered_name_mode(
+            self.name_text,
+            slot.value.is_some(),
+            editor.text(),
+        );
+        if self.name_text == NameText::Automatic {
+            self.refresh_automatic_name(cx);
         }
-        self.name_text = NameText::Automatic;
-        self.refresh_automatic_name(cx);
     }
 
     /// Writes the target's current custom name into an automatic name
@@ -2770,6 +2802,24 @@ mod tests {
         );
         // A deliberately blanked name survives, so Enter still clears.
         assert_eq!(refreshed_name(NameText::Edited, "", Some("old")), None);
+        // Navigating back to a blanked, uncommitted name slot keeps it
+        // edited instead of seeding it again; an untouched slot still seeds.
+        assert_eq!(
+            entered_name_mode(NameText::Edited, false, ""),
+            NameText::Edited
+        );
+        assert_eq!(
+            entered_name_mode(NameText::Automatic, false, ""),
+            NameText::Automatic
+        );
+        assert_eq!(
+            entered_name_mode(NameText::Automatic, true, ""),
+            NameText::Edited
+        );
+        assert_eq!(
+            entered_name_mode(NameText::Automatic, false, "typed"),
+            NameText::Edited
+        );
     }
 
     #[test]

@@ -281,7 +281,7 @@ command = "select_tab"
   /** Every core custom name by `kind.id`, from a `core-state` dump. */
   function coreNames(current: string): Map<string, string> {
     return new Map(
-      [...current.matchAll(/ ((?:session|workspace|tab)\.\d+)\.name=(\S+)/g)]
+      [...current.matchAll(/ ((?:session|workspace|tab)\.\d+)\.name=(None|Some\("(?:[^"\\]|\\.)*"\))/g)]
         .map((match) => [match[1]!, match[2]!]),
     );
   }

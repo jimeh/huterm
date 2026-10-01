@@ -298,15 +298,17 @@ pub(super) fn installed_order(
 }
 
 /// The views reconcile removes from one window: those whose tabs the
-/// projection has applied and no longer holds. `installed` pairs each
-/// view's tab with the sequence it committed at; a view the projection has
-/// not caught up with is never removed. A busy window keeps its views: its
-/// structural completion drops them and refocuses in one update, then
-/// reconciles. Nothing is removed once teardown owns removal. A projected
-/// tab without a view, detached or not yet installed, is not a removal and
-/// never installs a view.
+/// projection has applied and no longer holds, or holds in a workspace other
+/// than the window's `workspace`, such as a tab moved elsewhere. `installed`
+/// pairs each view's tab with the sequence it committed at; a view the
+/// projection has not caught up with is never removed. A busy window keeps
+/// its views: its structural completion drops them and refocuses in one
+/// update, then reconciles. Nothing is removed once teardown owns removal. A
+/// projected tab without a view, detached or not yet installed, is not a
+/// removal and never installs a view.
 pub(super) fn removals(
     state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
     installed: &[(TabId, u64)],
     busy: bool,
     terminating: bool,
@@ -317,7 +319,11 @@ pub(super) fn removals(
     installed
         .iter()
         .filter(|(tab, committed)| {
-            state.seq() >= *committed && state.tab(*tab).is_none()
+            state.seq() >= *committed
+                && match state.tab_workspace(*tab) {
+                    None => true,
+                    Some(owner) => workspace.is_some_and(|own| own != owner),
+                }
         })
         .map(|(tab, _)| *tab)
         .collect()
@@ -385,12 +391,20 @@ pub(super) fn reconcile_window(
     terminating: bool,
 ) -> WindowChange {
     let installed = target.installed();
-    let remove =
-        removals(target.projection(), &installed, target.busy(), terminating);
+    let remove = removals(
+        target.projection(),
+        target.workspace(),
+        &installed,
+        target.busy(),
+        terminating,
+    );
     let mut change = WindowChange::default();
     if !remove.is_empty() {
         target.drop_tabs(&remove);
+        // The removed tabs' published titles are gone too, so title
+        // consumers such as a Quit dialog elsewhere must redraw.
         change.changed = true;
+        change.titles = true;
     }
     let current: Vec<TabId> =
         target.installed().into_iter().map(|(tab, _)| tab).collect();
