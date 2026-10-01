@@ -108,6 +108,7 @@ struct View {
     tab: TabId,
     committed: u64,
     terminal_title: String,
+    names: TabNames,
 }
 
 /// One window's views and model entries, with the label rule `TabView`
@@ -117,6 +118,8 @@ struct FakeWindow {
     workspace: WorkspaceId,
     views: Vec<View>,
     busy: bool,
+    /// Every title publication, in order.
+    published: Vec<TabId>,
 }
 
 struct Target<'a> {
@@ -159,6 +162,15 @@ impl ReconcileTarget for Target<'_> {
         true
     }
 
+    fn remember_names(&mut self, tab: TabId) {
+        if let Some(info) = self.state.tab(tab)
+            && let Some(view) =
+                self.window.views.iter_mut().find(|view| view.tab == tab)
+        {
+            view.names.remember(info);
+        }
+    }
+
     fn title(&self, tab: TabId) -> String {
         let view = self
             .window
@@ -166,13 +178,17 @@ impl ReconcileTarget for Target<'_> {
             .iter()
             .find(|view| view.tab == tab)
             .unwrap();
-        self.state.tab(tab).map_or_else(
-            || view.terminal_title.clone(),
-            |info| info.display_name(&view.terminal_title).to_owned(),
+        let (custom, fallback) = tab_names(self.state, tab, &view.names);
+        huterm_protocol::resolve_tab_name(
+            custom,
+            &view.terminal_title,
+            fallback,
         )
+        .to_owned()
     }
 
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool {
+        self.window.published.push(tab);
         self.model.set_tab_title(self.window.id, tab, title)
     }
 }
@@ -199,6 +215,7 @@ fn open_window(
         workspace: workspace_id,
         views: Vec::new(),
         busy: false,
+        published: Vec::new(),
     }
 }
 
@@ -215,6 +232,10 @@ fn push(
         tab: tab(value),
         committed,
         terminal_title: format!("title {value}"),
+        names: state
+            .tab(tab(value))
+            .map(TabNames::from_info)
+            .unwrap_or_default(),
     });
     model.open_tab(
         fake.id,
@@ -701,11 +722,13 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
         workspace: workspace_id,
         views: Vec::new(),
         busy: false,
+        published: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
         committed,
         terminal_title: "sh".into(),
+        names: TabNames::default(),
     });
     model.open_tab(
         window(1),
@@ -777,8 +800,10 @@ fn a_reset_queued_after_teardown_is_not_applied_and_labels_keep_custom_names() {
             tab: opened.tab.id,
             committed,
             terminal_title: "sh".into(),
+            names: TabNames::default(),
         }],
         busy: false,
+        published: Vec::new(),
     };
     let target = Target {
         window: &mut fake,
@@ -852,11 +877,13 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
         workspace: workspace_id,
         views: Vec::new(),
         busy: false,
+        published: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
         committed: before.seq(),
         terminal_title: "sh".into(),
+        names: TabNames::default(),
     });
     model.open_tab(
         window(1),
@@ -955,4 +982,68 @@ fn a_closed_stream_cancels_waiters_and_freezes_the_projection() {
         Wait::Cancelled
     ));
     assert_eq!(projection.sync(false), Drained::Frozen(Touched::default()));
+}
+
+#[test]
+fn a_closing_tab_keeps_its_custom_name_until_its_view_is_dropped() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = open_window(&mut model, 1, workspace(10));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    let touched = feed.rename(1, Some("custom"));
+    reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert_eq!(model_title(&model, &fake, 1), "custom");
+    // The shell has set no title of its own.
+    fake.views[0].terminal_title = String::new();
+
+    // Core emits the close before joining the terminal; the drain applies it
+    // while the window's own close is still busy.
+    fake.busy = true;
+    fake.published.clear();
+    let touched = feed.apply(HierarchyEvent::TabClosed { tab: tab(1) });
+    assert!(touched.contains_tab(tab(1)));
+    let change = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert!(!change.titles);
+    assert!(
+        !fake.published.contains(&tab(1)),
+        "a tab the projection dropped is not republished"
+    );
+    assert_eq!(model_title(&model, &fake, 1), "custom");
+    // Its view still resolves the name it last saw, not a blank title.
+    let target = Target {
+        window: &mut fake,
+        model: &mut model,
+        state: &feed.state,
+    };
+    assert_eq!(target.title(tab(1)), "custom");
+
+    // The completion drops it.
+    fake.busy = false;
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert_eq!(view_order(&fake), [tab(2)]);
+}
+
+#[test]
+fn removing_an_idle_windows_active_tab_activates_its_replacement() {
+    assert_eq!(reactivation(Some(tab(2)), Some(tab(1))), Some(tab(1)));
+    assert_eq!(reactivation(Some(tab(1)), Some(tab(1))), None);
+    assert_eq!(reactivation(Some(tab(1)), None), None);
+
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = open_window(&mut model, 1, workspace(10));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    let before = model.record(fake.id).unwrap().active;
+    assert_eq!(before, Some(tab(2)));
+    // Another client closes the active tab; this window is idle.
+    feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    let after = model.record(fake.id).unwrap().active;
+    assert_eq!(reactivation(before, after), Some(tab(1)));
 }

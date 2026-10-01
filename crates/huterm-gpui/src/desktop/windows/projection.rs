@@ -12,7 +12,8 @@ use std::rc::Rc;
 use gpui::{Task, WindowId};
 use huterm_core::{HierarchyRecvError, HierarchySubscription};
 use huterm_protocol::{
-    ApplyOutcome, HierarchyEvent, HierarchyState, TabId, Touched, WorkspaceId,
+    ApplyOutcome, HierarchyEvent, HierarchyState, TabId, TabInfo, Touched,
+    WorkspaceId,
 };
 
 use super::model::WindowModel;
@@ -362,6 +363,49 @@ pub(super) fn windows_to_visit(
 }
 
 /// One window's views and model entries as reconcile changes them.
+/// The names a tab view last saw the projection hold for its tab. A view
+/// keeps showing them after the projection drops the tab, such as while a
+/// busy window's close commits, instead of falling back to the bare
+/// terminal title.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct TabNames {
+    custom: Option<String>,
+    fallback: String,
+}
+
+impl TabNames {
+    pub(super) fn from_info(info: &TabInfo) -> Self {
+        Self {
+            custom: info.custom_name.clone(),
+            fallback: info.fallback_name.clone(),
+        }
+    }
+
+    /// Copies the projection's names when they differ.
+    pub(super) fn remember(&mut self, info: &TabInfo) {
+        if self.custom != info.custom_name {
+            self.custom.clone_from(&info.custom_name);
+        }
+        if self.fallback != info.fallback_name {
+            self.fallback.clone_from(&info.fallback_name);
+        }
+    }
+}
+
+/// The custom and fallback names a tab's label resolves from: the
+/// projection's while it holds the tab, else the view's remembered names.
+/// One hash lookup and no allocation.
+pub(super) fn tab_names<'a>(
+    state: &'a HierarchyState,
+    tab: TabId,
+    remembered: &'a TabNames,
+) -> (Option<&'a str>, &'a str) {
+    state.tab(tab).map_or(
+        (remembered.custom.as_deref(), remembered.fallback.as_str()),
+        |info| (info.custom_name.as_deref(), info.fallback_name.as_str()),
+    )
+}
+
 pub(super) trait ReconcileTarget {
     fn projection(&self) -> &HierarchyState;
     fn workspace(&self) -> Option<WorkspaceId>;
@@ -375,10 +419,22 @@ pub(super) trait ReconcileTarget {
     /// Applies an installed order to views and model entries; returns
     /// whether anything moved.
     fn apply_order(&mut self, order: &[TabId]) -> bool;
+    /// Remembers the names the projection holds for `tab` on its view.
+    fn remember_names(&mut self, tab: TabId);
     /// The tab's current display title.
     fn title(&self, tab: TabId) -> String;
     /// Publishes a title; returns whether it changed.
     fn publish_title(&mut self, tab: TabId, title: &str) -> bool;
+}
+
+/// The tab a window must activate after reconcile: its new active tab when
+/// a removal moved the active tab. The model moved it, but the view still
+/// has to show, snapshot, and focus it.
+pub(super) fn reactivation(
+    before: Option<TabId>,
+    after: Option<TabId>,
+) -> Option<TabId> {
+    after.filter(|_| after != before)
 }
 
 /// What reconciling one window changed.
@@ -424,13 +480,27 @@ pub(super) fn reconcile_window(
     if order != current {
         change.changed |= target.apply_order(&order);
     }
+    // A tab the projection no longer holds in this window's workspace keeps
+    // its last published title until its view is dropped; republishing it
+    // now would lose its name while a busy window's close commits.
+    let workspace = target.workspace();
+    let held: Vec<TabId> = current
+        .iter()
+        .copied()
+        .filter(|tab| {
+            workspace.is_some()
+                && target.projection().tab_workspace(*tab) == workspace
+        })
+        .collect();
     for tab in current {
-        if touched.contains_tab(tab) {
-            let title = target.title(tab);
-            if target.publish_title(tab, &title) {
-                change.changed = true;
-                change.titles = true;
-            }
+        if !touched.contains_tab(tab) || !held.contains(&tab) {
+            continue;
+        }
+        target.remember_names(tab);
+        let title = target.title(tab);
+        if target.publish_title(tab, &title) {
+            change.changed = true;
+            change.titles = true;
         }
     }
     change

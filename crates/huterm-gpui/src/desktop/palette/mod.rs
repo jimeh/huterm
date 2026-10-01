@@ -68,30 +68,35 @@ pub(super) struct PaletteTarget {
     pub(super) contexts: Vec<KeyContext>,
 }
 
-/// The window's current session, workspace, and active tab, which an open
-/// palette's window-scoped pickers and identity defaults follow.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The window's current session, workspace, active tab, and that tab's
+/// terminal, which an open palette's window-scoped pickers, identity
+/// defaults, and Terminal-scope commands follow.
+#[derive(Clone)]
 pub(super) struct PaletteScope {
     pub(super) session: Option<SessionId>,
     pub(super) workspace: Option<WorkspaceId>,
     pub(super) tab: Option<TabId>,
+    pub(super) terminal: Option<TerminalId>,
+    pub(super) terminal_view: Option<WeakEntity<TerminalView>>,
 }
 
 impl PaletteTarget {
     /// Moves the target to the window's current scope; returns whether it
     /// changed. Committed and prefilled slot values keep what they hold.
     fn rescope(&mut self, scope: PaletteScope) -> bool {
-        let current = PaletteScope {
-            session: self.session,
-            workspace: self.workspace,
-            tab: self.tab,
-        };
-        if current == scope {
+        if self.session == scope.session
+            && self.workspace == scope.workspace
+            && self.tab == scope.tab
+            && self.terminal == scope.terminal
+            && self.terminal_view == scope.terminal_view
+        {
             return false;
         }
         self.session = scope.session;
         self.workspace = scope.workspace;
         self.tab = scope.tab;
+        self.terminal = scope.terminal;
+        self.terminal_view = scope.terminal_view;
         true
     }
 }
@@ -449,6 +454,15 @@ fn clicked_highlight(value: CommandValue, listed: bool) -> Highlight {
     }
 }
 
+/// The row a hierarchy rebuild scrolls to: the highlighted row, only when
+/// its index changed. A rebuild otherwise leaves the scroll offset alone.
+fn rebuild_scroll(
+    before: Option<usize>,
+    after: Option<usize>,
+) -> Option<usize> {
+    after.filter(|_| after != before)
+}
+
 /// The row a selection move lands on. With no highlight, moving down
 /// selects the first row and moving up the last.
 fn moved_row(
@@ -731,13 +745,16 @@ impl CommandPalette {
             return;
         }
         let highlighted = self.picker_value();
+        let before = self.picker_index();
         self.hierarchy = hierarchy;
-        self.refresh_picker_rows();
+        self.filter_picker_rows();
         self.highlight =
             rebuilt_highlight(&self.highlight, highlighted, |value| {
                 self.picker_position(value).is_some()
             });
-        if let Some(index) = self.picker_index() {
+        // Keep the user's scroll position and leave the scrollbar hidden:
+        // a rebuild scrolls only when the highlighted row moved.
+        if let Some(index) = rebuild_scroll(before, self.picker_index()) {
             self.scroll.scroll_to_item(index);
         }
         self.refresh_automatic_name(cx);
@@ -844,7 +861,18 @@ impl CommandPalette {
         }
     }
 
+    /// Refilters the picker after a filter change or slot navigation,
+    /// revealing the highlighted row and the scrollbar.
     fn refresh_picker_rows(&mut self) {
+        self.filter_picker_rows();
+        if let Some(index) = self.picker_index() {
+            self.scroll.scroll_to_item(index);
+        }
+        self.show_scrollbar();
+    }
+
+    /// Recomputes the filtered picker rows without scrolling.
+    fn filter_picker_rows(&mut self) {
         let Stage::Slots(editor) = &self.stage else {
             self.picker.clear();
             return;
@@ -861,10 +889,6 @@ impl CommandPalette {
             .map(|row| (row.label.clone(), row.detail.clone()))
             .collect::<Vec<_>>();
         self.picker = self.matcher.filter(editor.text(), rows.into_iter());
-        if let Some(index) = self.picker_index() {
-            self.scroll.scroll_to_item(index);
-        }
-        self.show_scrollbar();
     }
 
     /// The filtered picker row that lists `value`.
@@ -2754,6 +2778,18 @@ mod tests {
     }
 
     #[test]
+    fn a_rebuild_scrolls_only_when_the_highlighted_row_moves() {
+        // An unrelated title change keeps the user's scroll position.
+        assert_eq!(rebuild_scroll(Some(4), Some(4)), None);
+        assert_eq!(rebuild_scroll(None, None), None);
+        // A reorder that moves the highlighted row follows it.
+        assert_eq!(rebuild_scroll(Some(4), Some(1)), Some(1));
+        assert_eq!(rebuild_scroll(None, Some(0)), Some(0));
+        // A lost highlight scrolls nowhere.
+        assert_eq!(rebuild_scroll(Some(2), None), None);
+    }
+
+    #[test]
     fn removing_the_highlighted_value_leaves_no_highlight_until_moved_or_filtered()
      {
         let gone = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 7));
@@ -2873,9 +2909,13 @@ mod tests {
             session: Some(session),
             workspace: Some(WorkspaceId::in_runtime(runtime, 10)),
             tab: Some(TabId::in_runtime(runtime, 2)),
+            terminal: Some(TerminalId::new(2)),
+            terminal_view: None,
         };
-        assert!(target.rescope(current));
+        assert!(target.rescope(current.clone()));
         assert!(!target.rescope(current), "an unchanged scope is no change");
+        // Terminal-scope commands follow the active tab's terminal too.
+        assert_eq!(target.terminal, Some(TerminalId::new(2)));
         let domain = DomainView {
             hierarchy: &rows,
             profiles: &[],

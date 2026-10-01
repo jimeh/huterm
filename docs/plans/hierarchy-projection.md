@@ -167,7 +167,10 @@ event. The reducer validates the envelope's stream for every variant,
 including `Reset`, which has no IDs of its own, and rejects a mismatch like a
 gap.
 
-Core keeps `Mux::revision` for close-ticket validation unchanged.
+Core keeps `Mux::revision` for close-ticket validation. It now advances only
+for actual changes: a move to an item's current position and a rename to its
+current name are no-ops that emit nothing and leave the revision, and so any
+pending close assessment, untouched.
 
 ### Small, state-like events with absolute positions
 
@@ -219,8 +222,10 @@ coalescing wake, matching the shape of `EventPublisher`:
 - When the queue would overflow, the publisher discards the queue and marks
   the subscription lagged. The subscriber resubscribes from a worker, which
   replaces its state and subscription together.
-- Dropping the subscription unregisters it. A publisher never blocks on a
-  subscriber.
+- Dropping the subscription unregisters it, and subscribing prunes dropped
+  subscriptions. The publisher never waits for a subscriber to drain: queue
+  access is a short constant-time critical section, and a full queue lags
+  that subscriber instead.
 
 Installing a resync snapshot has three steps:
 
@@ -295,7 +300,10 @@ projection and converges the window's views and `WindowModel` record:
    window's own structural completion owns that aftermath, and dropping a
    focused view on a separate drain turn would lose keystrokes until the
    completion refocuses. Each completion reconciles its own window after
-   clearing `busy`, so a deferred removal still applies.
+   clearing `busy`, so a deferred removal still applies. When a removal in a
+   window that is not busy takes away its active tab, reconcile activates
+   the new active tab through a deferred window update, as a completion
+   would, so the replacement becomes visible and takes focus.
 
    A projected tab with no installed view is tolerated without change. It
    is normal while the window's own spawn is in flight, because core emits
@@ -304,8 +312,10 @@ projection and converges the window's views and `WindowModel` record:
    for tabs the window did not spawn belongs to [#22][issue-22].
 2. **Order.** Compute the installed order (see "Tab order follows the
    projection") and apply it only when it differs from the current order.
-3. **Titles.** Recompute labels for touched tabs and publish them through
-   `set_tab_title`, which reports whether anything changed.
+3. **Titles.** Recompute labels for touched tabs the projection still holds
+   in the window's workspace and publish them through `set_tab_title`, which
+   reports whether anything changed. A tab whose removal is still pending
+   keeps its published title until its view is dropped.
 4. **Notify.** Notify the window only if a step changed something it
    renders.
 
@@ -319,12 +329,18 @@ windows to examine; a missed event cannot leave a reconciled window wrong.
 This one function serves normal batches, recovery, and every completion, and
 replaces the per-event effects table of earlier drafts.
 
-After application teardown commits, which the runtime's existing
-`terminating` gate records, reconcile skips membership changes: Quit owns
-teardown. `Reset` arrives only then. Before that point, including while Quit
-assesses, confirms, or is cancelled, reconcile runs normally:
-`Desktop.quitting` is set as soon as Quit is requested and does not mean
-teardown has begun.
+Teardown and the end of the stream freeze the projection. The runtime's
+existing `terminating` gate is set before `shutdown` emits `Reset`. Once that
+gate is set, or when a drain dequeues a same-stream `Reset` or the
+subscription reports `Closed`, the projection stops applying events and keeps
+its last state, so labels keep their names while windows close, and every
+sequence waiter is cancelled. `Reset` itself is never applied. Events applied
+earlier in the same batch are still reconciled. After teardown commits,
+reconcile skips membership changes: Quit owns teardown. Before that point,
+including while Quit assesses, confirms, or is cancelled, reconcile runs
+normally: `Desktop.quitting` is set as soon as Quit is requested and does
+not mean teardown has begun. A stream that closes without teardown, which
+only #44 can produce, reconciles membership normally.
 
 ### Title consumers
 
@@ -501,8 +517,10 @@ Each application compares first and writes only when the order differs.
 `TabView.record` becomes `terminal: TerminalId` plus the committed sequence,
 the spawn parameters the view needs. `TabView::label` looks the tab up in
 the projection by ID in constant time and borrows its custom and fallback
-names. A tab missing from the projection resolves to the live terminal title
-alone. Label resolution allocates no more than it does today.
+names. Each view also keeps its last projected names, seeded at spawn and
+refreshed whenever reconcile sees the tab, so a tab the projection no longer
+holds, such as one whose close is still committing, keeps its label until
+its view is dropped. Label resolution allocates no more than it does today.
 
 Titles still reach `WindowModel` through `set_tab_title`. `refresh_tab`
 publishes terminal-driven changes, and reconcile publishes rename-driven
@@ -525,6 +543,15 @@ either order. Rebuilding replaces `refresh_palette`'s availability-only
 update for this purpose. Pickers keep the selected value when it still
 exists. A committed slot whose target disappears keeps its value, so Enter
 still reaches the executor and fails with `StaleTarget`.
+
+A rebuild also rescopes the palette's target to the window's current
+workspace, active tab, and that tab's terminal, so window-scoped pickers,
+default fills, and Terminal-scope commands never act on stale IDs.
+Committed slot values never change, and the rename placeholder follows its
+target's current name. A rebuild keeps the picker's scroll offset and does
+not flash its scrollbar; it scrolls only when the highlighted row's index
+changed, so title changes elsewhere do not disturb a user scrolling a long
+list.
 
 A highlighted row whose value disappears must not hand Enter to another
 target. Today `picker_index` falls back to row 0 when the highlighted value

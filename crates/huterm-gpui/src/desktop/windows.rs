@@ -59,7 +59,8 @@ use huterm_core::{
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, SessionId,
-    TerminalId, Touched, WorkspaceId, catalog, validate, validate_supplied,
+    TerminalId, Touched, WorkspaceId, catalog, resolve_tab_name, validate,
+    validate_supplied,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -97,8 +98,9 @@ use model::{
     WindowRestore, apply_tab_order,
 };
 use projection::{
-    Drained, Install, Projection, ReconcileTarget, Resolution, TitleConsumers,
-    Wait, WindowChange, installed_order, reconcile_window, windows_to_visit,
+    Drained, Install, Projection, ReconcileTarget, Resolution, TabNames,
+    TitleConsumers, Wait, WindowChange, installed_order, reactivation,
+    reconcile_window, tab_names, windows_to_visit,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -1239,8 +1241,13 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
     let mut retitled = HashSet::new();
+    let mut activate = Vec::new();
     update_windows(cx, &windows, |view, cx| {
+        let before = view.active_tab(cx);
         let change = view.reconcile(touched, terminating, cx);
+        if let Some(tab) = reactivation(before, view.active_tab(cx)) {
+            activate.push((view.window, tab));
+        }
         if change.titles {
             retitled.insert(view.window);
         }
@@ -1248,7 +1255,38 @@ fn reconcile(cx: &mut App, touched: &Touched) {
             cx.notify();
         }
     });
+    if !activate.is_empty() {
+        // Selecting needs the window, which reconcile does not have here;
+        // a deferred update runs once no window is on GPUI's update stack.
+        cx.defer(move |cx| activate_reconciled_tabs(cx, &activate));
+    }
     refresh_title_consumers(cx, true, &retitled);
+}
+
+/// Shows and focuses the tabs reconcile made active by removing the active
+/// tab, as `reconcile_own` does for a window's own completion. A window
+/// whose active tab changed again meanwhile is left alone.
+fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
+    for &(id, tab) in tabs {
+        let Some(handle) = cx
+            .windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == id)
+        else {
+            continue;
+        };
+        let _ = handle.update(cx, |root, window, cx| {
+            let Ok(view) = root.downcast::<WorkspaceView>() else {
+                return;
+            };
+            view.update(cx, |view, cx| {
+                if view.active_tab(cx) == Some(tab) {
+                    view.measure_tab_widths(window, cx);
+                    view.select(tab, window, cx);
+                }
+            });
+        });
+    }
 }
 
 /// Refreshes the views that show titles they do not own. A structural batch
@@ -2289,6 +2327,9 @@ struct TabView {
     /// the view only once the projection has applied it and no longer holds
     /// the tab.
     committed: u64,
+    /// The names the projection last held for this tab, used while it no
+    /// longer does, such as during a close commit.
+    names: TabNames,
     view: Entity<TerminalView>,
     _activity_task: Task<()>,
 }
@@ -2303,19 +2344,21 @@ impl TabView {
 
     /// Returns the display name without status text, and the status its
     /// indicator reports. Names come from the hierarchy projection by
-    /// identity; a tab the projection does not hold uses the live terminal
-    /// title alone.
+    /// identity; a tab the projection no longer holds keeps the names it
+    /// last held.
     fn label(
         &self,
         tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> (String, TabStatus) {
         let terminal = self.view.read(cx);
-        let info = cx.global::<Desktop>().hierarchy.state().tab(self.id);
-        let fallback = info.map_or(terminal.title.as_str(), |info| {
-            info.display_name(&terminal.title)
-        });
-        let label = if info.is_some_and(|info| info.custom_name.is_some()) {
+        let (custom, fallback) = tab_names(
+            cx.global::<Desktop>().hierarchy.state(),
+            self.id,
+            &self.names,
+        );
+        let fallback = resolve_tab_name(custom, &terminal.title, fallback);
+        let label = if custom.is_some() {
             fallback.to_owned()
         } else {
             resolve_tab_label(
@@ -3154,6 +3197,18 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
 
     fn apply_order(&mut self, order: &[TabId]) -> bool {
         self.view.apply_tab_view_order(order, self.cx)
+    }
+
+    fn remember_names(&mut self, tab: TabId) {
+        let Some(info) = self.cx.global::<Desktop>().hierarchy.state().tab(tab)
+        else {
+            return;
+        };
+        if let Some(view) =
+            self.view.tabs.iter_mut().find(|view| view.id == tab)
+        {
+            view.names.remember(info);
+        }
     }
 
     fn title(&self, tab: TabId) -> String {
@@ -4104,6 +4159,14 @@ impl WorkspaceView {
         cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
             .detach();
         let tab_id = opened.tab.id;
+        // The completion drained first, so the projection holds the tab.
+        let names = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab_id)
+            .map(TabNames::from_info)
+            .unwrap_or_default();
         let failure_wakes = terminal.read(cx).failure_wakes.clone();
         let activity_task = Self::tab_activity_task(
             tab_id,
@@ -4117,6 +4180,7 @@ impl WorkspaceView {
                 id: tab_id,
                 terminal: opened.tab.terminal_id,
                 committed,
+                names,
                 view: terminal,
                 _activity_task: activity_task,
             },
@@ -4396,6 +4460,7 @@ impl WorkspaceView {
         };
         let (hierarchy, seq) = self.palette_hierarchy(cx);
         let workspace = self.workspace_id(cx);
+        let active = self.active_tab(cx);
         let scope = PaletteScope {
             session: workspace.and_then(|workspace| {
                 cx.global::<Desktop>()
@@ -4404,7 +4469,13 @@ impl WorkspaceView {
                     .workspace_session(workspace)
             }),
             workspace,
-            tab: self.active_tab(cx),
+            tab: active,
+            terminal: self
+                .tabs
+                .iter()
+                .find(|tab| Some(tab.id) == active)
+                .map(|tab| tab.terminal),
+            terminal_view: self.active_view(cx).map(|view| view.downgrade()),
         };
         palette.update(cx, |palette, cx| {
             palette.set_hierarchy(hierarchy, scope, seq, cx);
@@ -4700,7 +4771,7 @@ impl WorkspaceView {
                     }
                     ids::RENAME_SESSION if target.session.is_none() => {
                         Err(CommandError::Unavailable(
-                            "loading command target".into(),
+                            "window has no session".into(),
                         ))
                     }
                     _ => Ok(()),
