@@ -618,7 +618,9 @@ fn teardown_cancels_waiters_and_later_waits() {
     assert!(matches!(projection.wait_for(ahead, true), Wait::Cancelled));
 }
 
-/// Renames until the subscription's bounded queue overflows.
+/// Renames until the subscription's bounded queue overflows. The count must
+/// exceed huterm-core's crate-private `HIERARCHY_QUEUE_CAPACITY` (1024); raise
+/// it with that constant, or the resync tests stop seeing `Drained::Resync`.
 fn overflow(mux: &mut Mux, workspace_id: WorkspaceId) {
     for index in 0..2_000 {
         rename_workspace(mux, workspace_id, &format!("name {index}"));

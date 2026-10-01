@@ -1082,6 +1082,9 @@ pub(super) fn run_with_startup(
             desktop.windows.remove(window);
             desktop.title_consumers.set_host(window, false);
             desktop.views.prune();
+            // The closed window's titles left the model; Quit dialogs and
+            // palettes elsewhere still list them until they refresh.
+            mark_titles_changed(window, cx);
             maybe_exit(cx);
         })
         .detach();
@@ -2973,6 +2976,7 @@ impl WorkspaceView {
         cx.global_mut::<Desktop>()
             .windows
             .open_tab(self.window, entry);
+        mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
         self.sync_tab_order(cx);
     }
@@ -3060,6 +3064,7 @@ impl WorkspaceView {
         cx.global_mut::<Desktop>()
             .windows
             .close_tabs(self.window, ids);
+        mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
         self.sync_tab_order(cx);
     }
