@@ -4,10 +4,17 @@
  * item list, each later item in that list must also be test-only. Clippy's
  * `items_after_test_module` only covers a module named exactly `tests`.
  *
+ * A module counts as a test module when an outer `#[cfg]` or a leading inner
+ * `#![cfg]` in its body is test-only: bare `test`, or `all(..)` containing one.
+ *
  * Known limitations: items are recognised from tokens, not a full Rust parser.
- * A brace group before an item's body, such as a const-generic default
- * `fn f<const N: usize = { 1 }>()`, ends the item early. Doc comments are
- * skipped like other comments, which is safe because they cannot gate items.
+ * Any brace group before an item's body ends the item early, for example a
+ * const-generic default `fn f<const N: usize = { 1 }>()` or a braced
+ * const-generic argument `impl Foo<{ N }> {}`. The rest of that item is then
+ * read as further items, which can report false positives but never hides a
+ * violation. `cfg_attr(.., cfg(test))` and `any(test)` are not recognised as
+ * test-only. Doc comments are skipped like other comments, which is safe
+ * because they cannot gate items.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -136,7 +143,7 @@ function matchDelimiters(tokens: Token[]): Map<number, number> {
   return matches;
 }
 
-interface Predicate { name: string; args?: Predicate[] }
+interface Predicate { name: string; value?: string; args?: Predicate[] }
 
 function parsePredicates(tokens: Token[], from: number, to: number): Predicate[] {
   const predicates: Predicate[] = [];
@@ -144,7 +151,11 @@ function parsePredicates(tokens: Token[], from: number, to: number): Predicate[]
   while (i < to) {
     const name = tokens[i]!.text;
     i++;
-    if (tokens[i]?.text === "=") i += 2;
+    let value: string | undefined;
+    if (tokens[i]?.text === "=") {
+      value = tokens[i + 1]?.text;
+      i += 2;
+    }
     let args: Predicate[] | undefined;
     if (tokens[i]?.text === "(") {
       let depth = 0;
@@ -156,14 +167,14 @@ function parsePredicates(tokens: Token[], from: number, to: number): Predicate[]
       args = parsePredicates(tokens, i + 1, close);
       i = close + 1;
     }
-    predicates.push({ name, args });
+    predicates.push({ name, value, args });
     if (tokens[i]?.text === ",") i++;
   }
   return predicates;
 }
 
 function testOnly(predicate: Predicate): boolean {
-  if (predicate.name === "test") return predicate.args === undefined;
+  if (predicate.name === "test") return predicate.args === undefined && predicate.value === undefined;
   return predicate.name === "all" && (predicate.args ?? []).some(testOnly);
 }
 
@@ -208,7 +219,13 @@ export function findViolations(source: string): Violation[] {
     for (let i = keyword; i < limit; i = (matches.get(i) ?? i) + 1) {
       if (text(i) === ";") return [item, i + 1];
       if (text(i) === "{" && !semicolonOnly) {
-        if (first === "mod") item.body = [i + 1, matches.get(i)!];
+        if (first === "mod") {
+          item.body = [i + 1, matches.get(i)!];
+          // Leading inner attributes such as `#![cfg(test)]` gate the module itself.
+          for (let j = i + 1; text(j) === "#" && text(j + 1) === "!" && text(j + 2) === "["; j = matches.get(j + 2)! + 1) {
+            if (isTestCfg(tokens.slice(j + 3, matches.get(j + 2)!))) item.testOnly = true;
+          }
+        }
         return [item, matches.get(i)! + 1];
       }
     }

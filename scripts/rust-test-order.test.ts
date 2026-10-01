@@ -109,6 +109,44 @@ fn production() {}
 `)).toEqual([6]);
 });
 
+test("a cfg named test with a value is not test-only", () => {
+  expect(findViolations(`
+#[cfg(test = "x")]
+mod valued {}
+#[cfg(all(unix, test = "x"))]
+mod valued_in_all {}
+fn production() {}
+`)).toEqual([]);
+});
+
+test("leading inner test-only cfg attributes gate an inline module", () => {
+  expect(lines(`
+mod tests {
+    //! Inner docs before the attribute.
+    #![cfg(test)]
+    fn helper() {}
+}
+fn production() {}
+`)).toEqual([7]);
+  expect(lines(`
+mod unix_tests {
+    #![allow(dead_code)]
+    #![cfg(all(test, unix))]
+}
+fn production() {}
+`)).toEqual([6]);
+  expect(findViolations(`
+mod shared {
+    #![cfg(any(test, feature = "x"))]
+}
+mod later {
+    fn body() {}
+    #![cfg(test)]
+}
+fn production() {}
+`)).toEqual([]);
+});
+
 test("test-only items after a test module are allowed", () => {
   expect(findViolations(`
 #[cfg(test)]
@@ -194,6 +232,23 @@ impl Type {
 test("unterminated literals are reported as errors", () => {
   expect(() => findViolations(`fn broken() { let _ = "open; }`)).toThrow("unterminated string");
   expect(() => findViolations(`/* open`)).toThrow("unterminated block comment");
+  expect(() => findViolations(`const RAW: &str = r#"open"; fn after() {}`)).toThrow("unterminated raw string");
+  expect(() => findViolations(`fn broken() { let _ = '\\n; }`)).toThrow("unterminated character literal");
+});
+
+test("tree walk reports lex and parse errors as problems", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-test-order-"));
+  try {
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "src", "lex.rs"), "fn broken() {\n    let _ = \"open;\n}\n");
+    await writeFile(join(root, "src", "parse.rs"), "fn unclosed() {\n");
+    expect(checkTree(root)).toEqual({
+      files: 2,
+      reports: ["src/lex.rs: line 2: unterminated string", "src/parse.rs: line 1: unclosed {"],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("tree walk skips generated and hidden directories", async () => {
