@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/jimeh/huterm/compare/v0.15.1...v0.16.0) (2026-10-01)
+
+
+### Features
+
+* project runtime hierarchy events into the desktop client ([#199](https://github.com/jimeh/huterm/issues/199)) ([e87c608](https://github.com/jimeh/huterm/commit/e87c60846edb66f51319f71ef860a560c49622c2))
+
+
+### Bug Fixes
+
+* remove races behind intermittent Linux desktop smoke failures ([#203](https://github.com/jimeh/huterm/issues/203)) ([7f8f239](https://github.com/jimeh/huterm/commit/7f8f239b4cfeb6e74435df3c03d6678d955323c4))
+
 ## [0.15.1](https://github.com/jimeh/huterm/compare/v0.15.0...v0.15.1) (2026-09-29)
 
 
