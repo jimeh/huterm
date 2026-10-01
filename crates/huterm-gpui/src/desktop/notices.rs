@@ -152,11 +152,6 @@ impl NoticeContent {
         }
     }
 
-    pub(crate) fn severity(mut self, severity: Severity) -> Self {
-        self.severity = severity;
-        self
-    }
-
     pub(crate) fn location(mut self, location: impl Into<String>) -> Self {
         self.location = Some(location.into());
         self

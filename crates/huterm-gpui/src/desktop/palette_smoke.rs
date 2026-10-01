@@ -24,6 +24,12 @@ pub(super) struct ReloadTitles {
 
 impl gpui::Global for ReloadTitles {}
 
+/// A workspace `fixture-create` made through Mux, which no window displays.
+#[derive(Default)]
+struct FixtureWorkspace(Option<WorkspaceId>);
+
+impl gpui::Global for FixtureWorkspace {}
+
 /// Records the published titles after a reload, under the palette smoke only.
 pub(super) fn record_reload_titles(cx: &mut App) {
     if !cx.has_global::<ReloadTitles>() {
@@ -45,6 +51,29 @@ fn activate_window(cx: &mut App, index: &str) -> anyhow::Result<String> {
     Ok(format!("window {index} activated"))
 }
 
+/// `open-rename-for\t<index>` opens window 0's palette on `rename_tab` with
+/// the active tab of the window at `index` as its target, prompting only for
+/// the name.
+fn open_rename_for(cx: &mut App, index: &str) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let (_, tab) = window_target(cx, index)?;
+    let tab = tab.context("tab target")?;
+    let handle = *cx.windows().first().context("palette smoke window")?;
+    handle.update(cx, |root, window, cx| -> anyhow::Result<String> {
+        let view = root
+            .downcast::<WorkspaceView>()
+            .map_err(|_| anyhow::anyhow!("workspace root"))?;
+        let invocation = CommandInvocation::new(
+            ids::RENAME_TAB,
+            vec![CommandArgument::new("tab", CommandValue::Tab(tab))],
+        );
+        view.update(cx, |view, cx| {
+            view.open_palette_request(Some(&invocation), window, cx)
+        })?;
+        Ok(format!("rename palette opened for window {index}"))
+    })?
+}
+
 fn model_titles(cx: &App) -> Vec<String> {
     cx.global::<Desktop>()
         .windows
@@ -58,6 +87,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let directory = PathBuf::from(std::env::var("HUTERM_PALETTE_SMOKE")?);
     super::run_with_startup(move |cx| {
         cx.set_global(ReloadTitles::default());
+        cx.set_global(FixtureWorkspace::default());
         cx.spawn(async move |cx| {
             let mut sequence = 0;
             loop {
@@ -117,26 +147,75 @@ async fn execute(
             .await;
     }
 
+    // `fixture-create` makes a session and workspace through Mux that no
+    // window displays; `delete-target` closes that workspace the same way,
+    // as another client would.
+    if command == "fixture-create" {
+        let runtime =
+            cx.update(|cx| Arc::clone(&cx.global::<Desktop>().runtime));
+        let workspace = cx
+            .background_executor()
+            .spawn(async move {
+                let mut mux = runtime.lock();
+                let session = mux.create_session(Some("fixture-session"))?;
+                mux.create_workspace(session, Some("fixture-target"))
+            })
+            .await?;
+        cx.update(|cx| cx.set_global(FixtureWorkspace(Some(workspace))));
+        return Ok(format!("fixture {workspace:?}"));
+    }
+
     if command == "delete-target" {
-        let (runtime, workspace, tab) = cx.update(|cx| {
-            let (workspace, tab) = window_target(cx, 0)?;
+        let (runtime, workspace) = cx.update(|cx| {
             Ok::<_, anyhow::Error>((
                 Arc::clone(&cx.global::<Desktop>().runtime),
-                workspace.context("workspace target")?,
-                tab.context("tab target")?,
+                cx.global::<FixtureWorkspace>()
+                    .0
+                    .context("fixture workspace")?,
             ))
         })?;
         return cx
             .background_executor()
             .spawn(async move {
-                let mut mux = runtime
-                    .mux
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                mux.close_tab(workspace, tab)?;
+                runtime.lock().close_workspace(workspace)?;
                 Ok("target deleted".to_owned())
             })
             .await;
+    }
+
+    // `runtime-rename\t<window>\t<name>` renames a window's active tab on a
+    // worker, as another client would; a blank name clears the custom name.
+    if let Some(arguments) = command.strip_prefix("runtime-rename\t") {
+        let (index, name) = arguments
+            .split_once('\t')
+            .context("window index and name")?;
+        let index: usize = index.parse().context("window index")?;
+        let (runtime, tab) = cx.update(|cx| {
+            let (_, tab) = window_target(cx, index)?;
+            Ok::<_, anyhow::Error>((
+                Arc::clone(&cx.global::<Desktop>().runtime),
+                tab.context("tab target")?,
+            ))
+        })?;
+        let invocation = CommandInvocation::new(
+            ids::RENAME_TAB,
+            vec![
+                CommandArgument::new(
+                    "name",
+                    CommandValue::Text(name.to_owned()),
+                ),
+                CommandArgument::new("tab", CommandValue::Tab(tab)),
+            ],
+        );
+        let outcome = cx
+            .background_executor()
+            .spawn(async move { runtime.execute(&invocation).result })
+            .await;
+        return Ok(format!("{outcome:?}"));
+    }
+
+    if let Some(index) = command.strip_prefix("open-rename-for\t") {
+        return cx.update(|cx| open_rename_for(cx, index));
     }
 
     if command == "remove-shell" {
@@ -374,15 +453,30 @@ fn core_state(
     workspace: Option<WorkspaceId>,
     tab: Option<TabId>,
 ) -> anyhow::Result<String> {
-    let hierarchy = runtime
-        .mux
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .capture_hierarchy();
+    let hierarchy = runtime.lock().capture_hierarchy();
     let mut output = format!("workspace={workspace:?} tab={tab:?}");
+    for session in &hierarchy.sessions {
+        write!(
+            output,
+            " session.{}.name={:?}",
+            session.id.get(),
+            session.custom_name()
+        )?;
+    }
     for workspace in hierarchy.workspaces {
+        write!(
+            output,
+            " workspace.{}.name={:?}",
+            workspace.id.get(),
+            workspace.custom_name()
+        )?;
         for tab in workspace.tabs {
-            write!(output, " tab.{:?}.name={:?}", tab.id, tab.custom_name())?;
+            write!(
+                output,
+                " tab.{}.name={:?}",
+                tab.id.get(),
+                tab.custom_name()
+            )?;
         }
     }
     Ok(output)
@@ -478,10 +572,16 @@ fn read_state(cx: &mut App) -> String {
             .unwrap();
             writeln!(output, "{ui}").unwrap();
             if let Some(palette) = palette {
+                let palette = palette.read(cx);
+                let fixture = cx.global::<FixtureWorkspace>().0.map_or_else(
+                    || "none".to_owned(),
+                    |workspace| palette.lists_workspace(workspace).to_string(),
+                );
                 writeln!(
                     output,
-                    "w{index}.palette_state={}",
-                    palette.read(cx).smoke_state(cx)
+                    "w{index}.palette_state={}\nw{index}.palette_hierarchy_seq={} w{index}.palette_fixture_listed={fixture}",
+                    palette.smoke_state(cx),
+                    palette.hierarchy_seq(),
                 )
                 .unwrap();
             }

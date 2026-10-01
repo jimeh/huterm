@@ -203,6 +203,7 @@ command = "select_tab"
       | "select-all"
       | "backspace"
       | "tab"
+      | "shift-tab"
       | "down"
       | "up",
   ): Promise<void> {
@@ -211,6 +212,7 @@ command = "select_tab"
       else if (name === "escape") await nativeKey(53, 0, "\x1b");
       else if (name === "select-all") await nativeKey(0, commandFlag, "a");
       else if (name === "tab") await nativeKey(48, 0, "\\t");
+      else if (name === "shift-tab") await nativeKey(48, shiftFlag, "\\t");
       else if (name === "down") await nativeKey(125, 0, "", "");
       else if (name === "up") await nativeKey(126, 0, "", "");
       // macOS Backspace delivers DEL (0x7f); GPUI names the key from it.
@@ -222,6 +224,7 @@ command = "select_tab"
         "select-all": "ctrl+a",
         backspace: "BackSpace",
         tab: "Tab",
+        "shift-tab": "shift+Tab",
         down: "Down",
         up: "Up",
       }[name];
@@ -271,13 +274,37 @@ command = "select_tab"
     }
   }
 
+  /** Core tabs in a `core-state` dump; sessions and workspaces are listed too. */
+  const coreTabCount = (current: string) =>
+    current.match(/ tab\.\d+\.name=/g)?.length ?? 0;
+
+  /** Every core custom name by `kind.id`, from a `core-state` dump. */
+  function coreNames(current: string): Map<string, string> {
+    return new Map(
+      [...current.matchAll(/ ((?:session|workspace|tab)\.\d+)\.name=(\S+)/g)]
+        .map((match) => [match[1]!, match[2]!]),
+    );
+  }
+
+  /** Waits for a quoted `w<index>.<field>` state value and returns it. */
+  async function quotedField(name: string): Promise<string> {
+    const pattern = new RegExp(`(?:^|\\s)${name.replaceAll(".", "\\.")}="((?:[^"\\\\]|\\\\.)*)"`);
+    let value: string | undefined;
+    await waitFor(async () => {
+      const current = await readFile(join(directory, "state"), "utf8").catch(() => "");
+      value = pattern.exec(current)?.[1];
+      return value !== undefined;
+    }, `state field ${name}`);
+    return value!;
+  }
+
   async function coreState(
     tabCount: number,
     required: string[] = [],
     forbidden: string[] = [],
   ): Promise<string> {
     const current = await command("core-state");
-    const actualCount = current.match(/\.name=/g)?.length ?? 0;
+    const actualCount = coreTabCount(current);
     if (actualCount !== tabCount) {
       throw new Error(
         `${engine}: expected ${tabCount} core tabs, got ${actualCount}: ${current}`,
@@ -299,7 +326,7 @@ command = "select_tab"
   async function waitForCoreTabCount(tabCount: number): Promise<void> {
     await waitFor(async () => {
       const current = await command("core-state");
-      return (current.match(/\.name=/g)?.length ?? 0) === tabCount;
+      return coreTabCount(current) === tabCount;
     }, `${tabCount} core tabs`);
   }
 
@@ -634,6 +661,13 @@ command = "select_tab"
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(2, ['name=Some("once")']);
+    // The tab bar label, the published model title, and the rendered native
+    // title follow the rename without any input to the terminal.
+    await state('w0.window_title="once — Huterm"');
+    await waitFor(
+      async () => (await quotedField("model_titles")).split(";").includes("once"),
+      "renamed model title",
+    );
     await typeText("B");
     await terminalBytes("B");
 
@@ -907,25 +941,112 @@ command = "select_tab"
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");
 
+    // A committed, inactive target that disappears stays committed, so the
+    // executor refuses it. The fixture workspace has no window, so the
+    // palette's live domain is the only evidence its removal arrived.
+    await command("fixture-create");
     await shortcut("palette");
-    await typeText("rename tab");
+    await typeText("rename workspace");
+    await state("selected=rename_workspace");
     await key("enter");
-    await typeText("gone");
+    await state("slots command=rename_workspace", "active=name");
     await key("tab");
-    await state("active=tab", "name:committed");
+    await state("slots command=rename_workspace", "active=workspace");
+    await typeText("fixture");
+    await state('input="fixture"', "picker=1", "w0.palette_fixture_listed=true");
+    await key("tab");
+    await state("active=workspace", "workspace:committed");
+    // Navigating back does not commit, so the Tab above came first.
+    await key("shift-tab");
+    await state(
+      "slots command=rename_workspace",
+      "active=name",
+      "workspace:committed",
+      'input="fixture-target"',
+    );
+    const namesBefore = coreNames(await coreState(3));
     await command("delete-target");
+    // The automatic prefill follows the vanished target to blank.
+    await state(
+      "w0.palette_fixture_listed=false",
+      "active=name",
+      "workspace:committed",
+      'input=""',
+    );
     await key("enter");
     await state(
       "w0.palette=false",
       "w0.terminal_focused=true",
       "command target no longer exists",
     );
-    await coreState(2, [], ['name=Some("gone")']);
+    const namesAfter = coreNames(await coreState(3));
+    const removed = [...namesBefore].filter(([key]) => !namesAfter.has(key));
+    if (
+      removed.length !== 1 ||
+      removed[0]![1] !== 'Some("fixture-target")' ||
+      [...namesAfter].some(([key, name]) => namesBefore.get(key) !== name)
+    ) {
+      throw new Error(
+        `${engine}: stale rename changed surviving names: before ${JSON.stringify([...namesBefore])}, after ${JSON.stringify([...namesAfter])}`,
+      );
+    }
 
-    // 11. A post-dispatch failure lands in the originating window's notices.
     await command("open-second");
     await state("windows=3", "w2.tabs=1");
-    await coreState(3, [], ['name=Some("gone")']);
+    await coreState(4);
+
+    // 11. Renames from window 0 reach window 2, which receives no input:
+    // its rendered native title and published model title follow.
+    await command("activate-first");
+    await state("w0.active=true", "w0.terminal_focused=true");
+    const siblingTitle = await quotedField("w2.window_title");
+    await command("open-rename-for\t2");
+    await state(
+      "w0.palette_state=slots command=rename_tab",
+      "active=name",
+      "tab:explicit",
+    );
+    await typeText("remote");
+    await key("enter");
+    await state("w0.palette=false", 'w2.window_title="remote — Huterm"');
+    await waitFor(
+      async () => (await quotedField("model_titles")).split(";").includes("remote"),
+      "remote model title",
+    );
+
+    // An open tab picker follows a rename made elsewhere without reopening.
+    await shortcut("palette");
+    await typeText("rename tab");
+    await state("selected=rename_tab");
+    await key("enter");
+    await state("slots command=rename_tab", "active=name");
+    await key("tab");
+    await state("slots command=rename_tab", "active=tab");
+    const pickerRows = async () => {
+      const current = await readFile(join(directory, "state"), "utf8").catch(() => "");
+      const rows = /w0\.palette_state=slots command=rename_tab[^\n]* picker_rows="((?:[^"\\]|\\.)*)"/.exec(current)?.[1];
+      return rows?.split(";") ?? [];
+    };
+    await waitFor(async () => (await pickerRows()).includes("remote"), "renamed sibling tab in the picker");
+    await command("runtime-rename\t2\tlive");
+    await waitFor(async () => {
+      const rows = await pickerRows();
+      return rows.includes("live") && !rows.includes("remote");
+    }, "live picker row after an external rename");
+    await key("escape");
+    await state("w0.palette_state=commands");
+    await key("escape");
+    await state("w0.palette=false", "w0.terminal_focused=true");
+
+    // Clearing the name restores the terminal title in both places.
+    await command("runtime-rename\t2\t");
+    await state(`w2.window_title="${siblingTitle}"`);
+    await waitFor(
+      async () => !(await quotedField("model_titles")).split(";").includes("live"),
+      "cleared model title",
+    );
+
+    // 12. A post-dispatch failure lands in the originating window's notices.
     await command("activate-first");
     await command("remove-shell");
     await shortcut("palette");
@@ -941,7 +1062,7 @@ command = "select_tab"
     if (!reported.includes("windows=4")) {
       throw new Error("failed window was not published");
     }
-    await coreState(3, [], ['name=Some("gone")']);
+    await coreState(4);
     await command("activate-first");
     await state("w0.terminal_focused=true", "w0.palette=false");
 
@@ -960,12 +1081,12 @@ command = "select_tab"
       'w0.notice0="error|command|Cannot open tab:',
       "w1.notices=0",
     );
-    await coreState(3, [], ['name=Some("gone")']);
+    await coreState(4);
     await command("activate-first");
     await state("w0.terminal_focused=true", "w0.palette=false");
 
     console.log(
-      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click scrollbar=click-outside-drag wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable blank=clears recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused origin=window-0 accepted=new_window quake-startup=window-0`,
+      `PALETTE_SMOKE ${engine} native=${process.platform} fuzzy=tfs quake=default profiles=2 rename=once,targeted prompt=select-tab retained=query mouse=hover-click scrollbar=click-outside-drag wheel=${process.platform === "linux" ? "blocked" : "manual"} copy=unavailable blank=clears recent=toggle isolation=AeB modal=window-runtime pointer=blocked cancel-focus=acknowledged external-rename=accepted explicit=explicit stale=refused live-rename=window-title,picker origin=window-0 accepted=new_window quake-startup=window-0`,
     );
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");

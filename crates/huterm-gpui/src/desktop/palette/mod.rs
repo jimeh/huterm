@@ -22,11 +22,10 @@ use gpui::{
     prelude::*, px,
 };
 use huterm_config::PalettePlacement;
-use huterm_core::HierarchySnapshot;
 use huterm_protocol::{
     ArgumentKind, CommandArgument, CommandError, CommandId, CommandInvocation,
-    CommandOutcome, CommandScope, CommandSpec, CommandValue, SessionId, TabId,
-    TerminalId, WorkspaceId, catalog, ids,
+    CommandOutcome, CommandScope, CommandSpec, CommandValue, HierarchyState,
+    SessionId, TabId, TerminalId, WorkspaceId, catalog, ids,
 };
 use search::{CommandHistory, CommandMatch, CommandSearch, PickerMatcher};
 use slots::{
@@ -137,11 +136,13 @@ pub(super) struct PaletteOpen<'a> {
     pub(super) request: Option<&'a CommandInvocation>,
     /// A query retained from a recent cancellation.
     pub(super) retained_query: Option<String>,
-    /// Tabs in most-recently-used order with the active tab last.
-    pub(super) tab_order: Vec<TabId>,
+    /// Identity rows built from the window's hierarchy projection.
+    pub(super) hierarchy: PaletteHierarchy,
+    /// The projection sequence `hierarchy` reflects.
+    pub(super) hierarchy_seq: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct IdentityRow {
     value: CommandValue,
     label: String,
@@ -167,88 +168,80 @@ fn profile_rows(profiles: Vec<QuakeProfileRow>) -> Vec<IdentityRow> {
         .collect()
 }
 
-#[derive(Clone, Debug, Default)]
-struct PaletteHierarchy {
+/// Session, workspace, and tab rows for identity pickers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct PaletteHierarchy {
     sessions: Vec<IdentityRow>,
     workspaces: Vec<IdentityRow>,
     tabs: Vec<IdentityRow>,
 }
 
 impl PaletteHierarchy {
-    fn from_snapshot(
-        snapshot: &HierarchySnapshot,
-        live_titles: &HashMap<TabId, String>,
+    /// Builds rows from a hierarchy projection, in session, workspace, and
+    /// tab order. A tab is labelled by its custom name, then `title`, the
+    /// title its window published, then its fallback name. Tabs follow
+    /// `tab_order`, most recently used first; tabs it omits keep their
+    /// structural order after the ordered ones.
+    pub(super) fn from_projection<'t>(
+        state: &HierarchyState,
+        title: impl Fn(TabId) -> Option<&'t str>,
         tab_order: &[TabId],
     ) -> Self {
-        let session_names: HashMap<_, _> = snapshot
-            .sessions
-            .iter()
-            .map(|session| (session.id, session.display_name().to_owned()))
-            .collect();
-        let workspace_names: HashMap<_, _> = snapshot
-            .workspaces
-            .iter()
-            .map(|workspace| {
-                (workspace.id, workspace.display_name().to_owned())
-            })
-            .collect();
-        let sessions = snapshot
-            .sessions
-            .iter()
-            .map(|session| IdentityRow {
-                value: CommandValue::Session(session.id),
+        let mut sessions = Vec::new();
+        let mut workspaces = Vec::new();
+        let mut tabs = Vec::new();
+        for &session_id in state.sessions() {
+            let Some(session) = state.session(session_id) else {
+                continue;
+            };
+            sessions.push(IdentityRow {
+                value: CommandValue::Session(session_id),
                 label: session.display_name().to_owned(),
                 detail: "session".to_owned(),
                 position: None,
                 workspace: None,
-                custom_name: session.custom_name().is_some(),
-            })
-            .collect();
-        let workspaces = snapshot
-            .workspaces
-            .iter()
-            .map(|workspace| IdentityRow {
-                value: CommandValue::Workspace(workspace.id),
-                label: workspace.display_name().to_owned(),
-                detail: session_names
-                    .get(&workspace.session_id)
-                    .map_or("unknown session", String::as_str)
-                    .to_owned(),
-                position: None,
-                workspace: Some(workspace.id),
-                custom_name: workspace.custom_name().is_some(),
-            })
-            .collect();
-        let mut tabs: Vec<IdentityRow> = snapshot
-            .workspaces
-            .iter()
-            .flat_map(|workspace| {
-                workspace.tabs.iter().enumerate().map(|(index, tab)| {
-                    IdentityRow {
-                        value: CommandValue::Tab(tab.id),
-                        // Window tab records are initial snapshots, so a
-                        // custom name set later is only in the hierarchy.
+                custom_name: session.custom_name.is_some(),
+            });
+            for &workspace_id in
+                state.session_workspaces(session_id).unwrap_or_default()
+            {
+                let Some(workspace) = state.workspace(workspace_id) else {
+                    continue;
+                };
+                workspaces.push(IdentityRow {
+                    value: CommandValue::Workspace(workspace_id),
+                    label: workspace.display_name().to_owned(),
+                    detail: session.display_name().to_owned(),
+                    position: None,
+                    workspace: Some(workspace_id),
+                    custom_name: workspace.custom_name.is_some(),
+                });
+                let members =
+                    state.workspace_tabs(workspace_id).unwrap_or_default();
+                for (index, &tab_id) in members.iter().enumerate() {
+                    let Some(tab) = state.tab(tab_id) else {
+                        continue;
+                    };
+                    tabs.push(IdentityRow {
+                        value: CommandValue::Tab(tab_id),
                         label: tab
-                            .custom_name()
-                            .map(str::to_owned)
-                            .or_else(|| live_titles.get(&tab.id).cloned())
-                            .unwrap_or_else(|| tab.display_name("").to_owned()),
+                            .custom_name
+                            .as_deref()
+                            .or_else(|| title(tab_id))
+                            .unwrap_or(&tab.fallback_name)
+                            .to_owned(),
                         detail: format!(
                             "{} › {}",
-                            session_names
-                                .get(&workspace.session_id)
-                                .map_or("unknown session", String::as_str),
-                            workspace_names
-                                .get(&workspace.id)
-                                .map_or("unknown workspace", String::as_str),
+                            session.display_name(),
+                            workspace.display_name(),
                         ),
                         position: i64::try_from(index + 1).ok(),
-                        workspace: Some(workspace.id),
-                        custom_name: tab.custom_name().is_some(),
-                    }
-                })
-            })
-            .collect();
+                        workspace: Some(workspace_id),
+                        custom_name: tab.custom_name.is_some(),
+                    });
+                }
+            }
+        }
         // Most recently used first; tabs the window never activated keep
         // their structural order after the ordered ones.
         let rank = |value: &CommandValue| match value {
@@ -266,6 +259,13 @@ impl PaletteHierarchy {
         }
     }
 
+    /// Whether the workspace domain lists `workspace`.
+    pub(super) fn lists_workspace(&self, workspace: WorkspaceId) -> bool {
+        self.workspaces
+            .iter()
+            .any(|row| row.value == CommandValue::Workspace(workspace))
+    }
+
     fn rows(&self, kind: ArgumentKind) -> &[IdentityRow] {
         match kind {
             ArgumentKind::Session => &self.sessions,
@@ -276,10 +276,10 @@ impl PaletteHierarchy {
     }
 }
 
-/// The slot editor's view of identity domains: the hierarchy snapshot for
+/// The slot editor's view of identity domains: the hierarchy projection for
 /// sessions, workspaces, and tabs; configured profiles for quake commands.
 struct DomainView<'a> {
-    hierarchy: Option<&'a PaletteHierarchy>,
+    hierarchy: &'a PaletteHierarchy,
     profiles: &'a [IdentityRow],
     target: &'a PaletteTarget,
     /// Window-scoped commands can only act on this window's tabs.
@@ -287,25 +287,24 @@ struct DomainView<'a> {
 }
 
 impl DomainView<'_> {
-    /// Rows for `kind` in domain order; `None` while the hierarchy loads.
-    fn rows(&self, kind: ArgumentKind) -> Option<Vec<&IdentityRow>> {
+    /// Rows for `kind` in domain order.
+    fn rows(&self, kind: ArgumentKind) -> Vec<&IdentityRow> {
         match kind {
-            ArgumentKind::QuakeProfile => Some(self.profiles.iter().collect()),
+            ArgumentKind::QuakeProfile => self.profiles.iter().collect(),
             ArgumentKind::Session
             | ArgumentKind::Workspace
-            | ArgumentKind::Tab => Some(
-                self.hierarchy?
-                    .rows(kind)
-                    .iter()
-                    .filter(|row| {
-                        !(self.window_only && kind == ArgumentKind::Tab)
-                            || row.workspace == self.target.workspace
-                    })
-                    .collect(),
-            ),
+            | ArgumentKind::Tab => self
+                .hierarchy
+                .rows(kind)
+                .iter()
+                .filter(|row| {
+                    !(self.window_only && kind == ArgumentKind::Tab)
+                        || row.workspace == self.target.workspace
+                })
+                .collect(),
             ArgumentKind::Bool
             | ArgumentKind::Integer { .. }
-            | ArgumentKind::Text => Some(Vec::new()),
+            | ArgumentKind::Text => Vec::new(),
         }
     }
 
@@ -314,7 +313,7 @@ impl DomainView<'_> {
         kind: ArgumentKind,
         value: &CommandValue,
     ) -> Option<String> {
-        self.rows(kind)?
+        self.rows(kind)
             .into_iter()
             .find(|row| &row.value == value)
             .map(|row| row.label.clone())
@@ -322,9 +321,11 @@ impl DomainView<'_> {
 }
 
 impl SlotDomain for DomainView<'_> {
-    fn values(&self, kind: ArgumentKind) -> Option<Vec<CommandValue>> {
+    fn values(&self, kind: ArgumentKind) -> Vec<CommandValue> {
         self.rows(kind)
-            .map(|rows| rows.into_iter().map(|row| row.value.clone()).collect())
+            .into_iter()
+            .map(|row| row.value.clone())
+            .collect()
     }
 
     fn default(&self, kind: ArgumentKind) -> Option<CommandValue> {
@@ -375,13 +376,92 @@ enum Stage {
     Slots(SlotEditor),
 }
 
-/// What Enter was waiting on when an identity domain had not loaded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pending {
-    /// Enter on a command row whose prompting decision needs the domain.
-    Confirm,
-    /// Enter in an identity slot whose rows have not arrived.
-    Commit,
+/// What an identity picker highlights.
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Highlight {
+    /// The slot's value when it is listed, else the first row.
+    #[default]
+    Initial,
+    /// A value the user highlighted, or one a rebuild kept.
+    Value(CommandValue),
+    /// A rebuild removed the highlighted value. Nothing is highlighted, and
+    /// Enter does nothing, until the user moves the highlight or filters.
+    Lost,
+}
+
+/// The highlighted row among `rows` filtered rows. `position` finds a
+/// value's row; `slot` is the slot's preselected value.
+fn highlighted_row(
+    highlight: &Highlight,
+    position: impl Fn(&CommandValue) -> Option<usize>,
+    slot: Option<&CommandValue>,
+    rows: usize,
+) -> Option<usize> {
+    let initial =
+        || slot.and_then(&position).or_else(|| (rows > 0).then_some(0));
+    match highlight {
+        Highlight::Initial => initial(),
+        Highlight::Value(value) => position(value).or_else(initial),
+        Highlight::Lost => None,
+    }
+}
+
+/// The row a selection move lands on. With no highlight, moving down
+/// selects the first row and moving up the last.
+fn moved_row(
+    current: Option<usize>,
+    delta: isize,
+    rows: usize,
+) -> Option<usize> {
+    let last = rows.checked_sub(1)?;
+    Some(match current {
+        Some(index) => index.saturating_add_signed(delta).min(last),
+        None if delta < 0 => last,
+        None => 0,
+    })
+}
+
+/// Whether Enter does nothing: a rebuild removed the highlighted target of
+/// an identity picker, and Enter must never hand the command to another row.
+fn enter_blocked(highlight: &Highlight, kind: ArgumentKind) -> bool {
+    *highlight == Highlight::Lost && is_identity(kind)
+}
+
+/// The highlight after a rebuild: the highlighted value stays when it is
+/// still listed, and is lost, never replaced by another row, when it is not.
+fn rebuilt_highlight(
+    current: &Highlight,
+    highlighted: Option<CommandValue>,
+    listed: impl Fn(&CommandValue) -> bool,
+) -> Highlight {
+    match highlighted {
+        Some(value) if listed(&value) => Highlight::Value(value),
+        Some(_) => Highlight::Lost,
+        None => current.clone(),
+    }
+}
+
+/// Whether a name slot's text is the automatic prefill or the user's own.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum NameText {
+    /// The current custom name of the rename's target, or empty; rebuilds
+    /// refresh it.
+    #[default]
+    Automatic,
+    /// Typed, edited, or committed by the user, including an edited blank;
+    /// rebuilds never touch it.
+    Edited,
+}
+
+/// The text a rebuild writes into the name slot, if any: automatic text
+/// follows the target's current custom name; edited text stays.
+fn refreshed_name(
+    mode: NameText,
+    text: &str,
+    current: Option<&str>,
+) -> Option<String> {
+    let current = current.unwrap_or_default();
+    (mode == NameText::Automatic && text != current).then(|| current.to_owned())
 }
 
 #[derive(Clone, Debug)]
@@ -404,20 +484,22 @@ pub(super) struct CommandPalette {
     matcher: PickerMatcher,
     history: OwnedHistory,
     listed: Vec<&'static CommandSpec>,
-    hierarchy: Option<PaletteHierarchy>,
+    hierarchy: PaletteHierarchy,
+    /// The projection sequence `hierarchy` reflects.
+    hierarchy_seq: u64,
     profiles: Vec<IdentityRow>,
-    tab_order: Vec<TabId>,
     availability: HashMap<CommandId, String>,
     keymap: InstalledKeymap,
     colors: OverlayColors,
     placement: PalettePlacement,
     diagnostic: Option<String>,
-    pending: Option<Pending>,
     /// Filtered row indices for the active identity slot.
     picker: Vec<usize>,
-    /// The identity the user last highlighted in the picker, so selection
-    /// survives reordering and refresh.
-    picker_selected: Option<CommandValue>,
+    /// What the picker highlights, kept by value so it survives reordering
+    /// and rebuilds.
+    highlight: Highlight,
+    /// Whether the name slot's text is automatic or the user's.
+    name_text: NameText,
     hover: Option<usize>,
     scroll: ScrollHandle,
     /// Fading overlay scrollbar on the list; shown after list changes and
@@ -443,7 +525,8 @@ impl CommandPalette {
             profiles,
             request,
             retained_query,
-            tab_order,
+            hierarchy,
+            hierarchy_seq,
         } = open;
         let input = cx
             .new(|cx| TextField::new("Search commands", colors.foreground, cx));
@@ -478,17 +561,17 @@ impl CommandPalette {
             matcher: PickerMatcher::new(),
             history,
             listed,
-            hierarchy: None,
+            hierarchy,
+            hierarchy_seq,
             profiles: profile_rows(profiles),
-            tab_order,
             availability,
             keymap,
             colors,
             placement,
             diagnostic: None,
-            pending: None,
             picker: Vec::new(),
-            picker_selected: None,
+            highlight: Highlight::Initial,
+            name_text: NameText::Automatic,
             hover: None,
             scroll: scroll.clone(),
             scrollbar: ListScrollbar::new(scroll),
@@ -574,55 +657,47 @@ impl CommandPalette {
         cx.notify();
     }
 
+    /// Replaces the identity rows from a newer projection. Rows that did not
+    /// change notify nothing. The highlighted value stays when it is still
+    /// listed and is otherwise lost, committed slot values stay for the
+    /// executor to validate, and automatic name text follows its target.
     pub(super) fn set_hierarchy(
         &mut self,
-        target: huterm_core::SelectionTarget,
-        snapshot: &HierarchySnapshot,
-        live_titles: &HashMap<TabId, String>,
+        hierarchy: PaletteHierarchy,
+        seq: u64,
         cx: &mut Context<'_, Self>,
     ) {
-        self.target.session = Some(target.session);
-        self.target.workspace = target.workspace;
-        self.target.tab = target.tab;
-        self.hierarchy = Some(PaletteHierarchy::from_snapshot(
-            snapshot,
-            live_titles,
-            &self.tab_order,
-        ));
-        let domain = DomainView {
-            hierarchy: self.hierarchy.as_ref(),
-            profiles: &self.profiles,
-            target: &self.target,
-            window_only: self.window_only(),
-        };
-        if let Stage::Slots(editor) = &mut self.stage {
-            editor.fill_defaults(&domain);
+        self.hierarchy_seq = seq;
+        if hierarchy == self.hierarchy {
+            return;
         }
-        self.diagnostic = None;
+        let highlighted = self.picker_value();
+        self.hierarchy = hierarchy;
         self.refresh_picker_rows();
-        self.prefill_name(cx);
-        match self.pending.take() {
-            Some(Pending::Confirm) => self.confirm_search(cx),
-            Some(Pending::Commit) => self.commit_slot(cx),
-            None => {}
+        self.highlight =
+            rebuilt_highlight(&self.highlight, highlighted, |value| {
+                self.picker_position(value).is_some()
+            });
+        if let Some(index) = self.picker_index() {
+            self.scroll.scroll_to_item(index);
         }
+        self.refresh_automatic_name(cx);
         cx.notify();
     }
 
-    /// The hierarchy request failed; commands that need no identity still
-    /// run, and any pending Enter is dropped.
-    pub(super) fn hierarchy_failed(
-        &mut self,
-        error: impl Into<String>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.pending = None;
-        self.set_error(error, cx);
+    /// The projection sequence the identity rows reflect.
+    pub(super) fn hierarchy_seq(&self) -> u64 {
+        self.hierarchy_seq
+    }
+
+    /// Whether the workspace picker domain lists `workspace`.
+    pub(super) fn lists_workspace(&self, workspace: WorkspaceId) -> bool {
+        self.hierarchy.lists_workspace(workspace)
     }
 
     fn domain_for(&self, spec: &CommandSpec) -> DomainView<'_> {
         DomainView {
-            hierarchy: self.hierarchy.as_ref(),
+            hierarchy: &self.hierarchy,
             profiles: &self.profiles,
             target: &self.target,
             window_only: spec.scope == CommandScope::Window,
@@ -640,7 +715,7 @@ impl CommandPalette {
     /// The domain for the slot stage's command.
     fn domain(&self) -> DomainView<'_> {
         DomainView {
-            hierarchy: self.hierarchy.as_ref(),
+            hierarchy: &self.hierarchy,
             profiles: &self.profiles,
             target: &self.target,
             window_only: self.window_only(),
@@ -681,12 +756,14 @@ impl CommandPalette {
 
     fn input_changed(&mut self, text: &str) {
         self.diagnostic = None;
-        self.pending = None;
         match &mut self.stage {
             Stage::Search(_) => self.rank(text),
             Stage::Slots(editor) => {
+                if editor.active().spec.kind == ArgumentKind::Text {
+                    self.name_text = NameText::Edited;
+                }
                 editor.set_text(text);
-                self.picker_selected = None;
+                self.highlight = Highlight::Initial;
                 self.refresh_picker_rows();
             }
         }
@@ -705,12 +782,9 @@ impl CommandPalette {
         let rows = self
             .domain()
             .rows(slot.spec.kind)
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|row| (row.label.clone(), row.detail.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            .into_iter()
+            .map(|row| (row.label.clone(), row.detail.clone()))
+            .collect::<Vec<_>>();
         self.picker = self.matcher.filter(editor.text(), rows.into_iter());
         if let Some(index) = self.picker_index() {
             self.scroll.scroll_to_item(index);
@@ -718,23 +792,29 @@ impl CommandPalette {
         self.show_scrollbar();
     }
 
+    /// The filtered picker row that lists `value`.
+    fn picker_position(&self, value: &CommandValue) -> Option<usize> {
+        let Stage::Slots(editor) = &self.stage else {
+            return None;
+        };
+        let domain = self.domain();
+        let rows = domain.rows(editor.active().spec.kind);
+        self.picker.iter().position(|index| {
+            rows.get(*index).map(|row| &row.value) == Some(value)
+        })
+    }
+
     /// Row index into the filtered picker that is currently highlighted.
     fn picker_index(&self) -> Option<usize> {
         let Stage::Slots(editor) = &self.stage else {
             return None;
         };
-        let domain = self.domain();
-        let rows = domain.rows(editor.active().spec.kind)?;
-        let position = |value: &CommandValue| {
-            self.picker.iter().position(|index| {
-                rows.get(*index).map(|row| &row.value) == Some(value)
-            })
-        };
-        self.picker_selected
-            .as_ref()
-            .and_then(position)
-            .or_else(|| editor.active().value.as_ref().and_then(position))
-            .or_else(|| (!self.picker.is_empty()).then_some(0))
+        highlighted_row(
+            &self.highlight,
+            |value| self.picker_position(value),
+            editor.active().value.as_ref(),
+            self.picker.len(),
+        )
     }
 
     fn picker_value_at(&self, row: usize) -> Option<CommandValue> {
@@ -742,7 +822,7 @@ impl CommandPalette {
             return None;
         };
         let domain = self.domain();
-        let rows = domain.rows(editor.active().spec.kind)?;
+        let rows = domain.rows(editor.active().spec.kind);
         rows.get(*self.picker.get(row)?)
             .map(|row| row.value.clone())
     }
@@ -752,7 +832,6 @@ impl CommandPalette {
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         self.diagnostic = None;
         match &mut self.stage {
             Stage::Search(search) => {
@@ -760,11 +839,12 @@ impl CommandPalette {
                 self.scroll.scroll_to_item(search.selected);
             }
             Stage::Slots(_) => {
-                if let Some(index) = self.picker_index() {
-                    let next = index
-                        .saturating_add_signed(delta)
-                        .min(self.picker.len().saturating_sub(1));
-                    self.picker_selected = self.picker_value_at(next);
+                if let Some(next) =
+                    moved_row(self.picker_index(), delta, self.picker.len())
+                {
+                    self.highlight = self
+                        .picker_value_at(next)
+                        .map_or(Highlight::Initial, Highlight::Value);
                     self.scroll.scroll_to_item(next);
                 }
             }
@@ -778,13 +858,12 @@ impl CommandPalette {
             self.return_query = Some(search.query.clone());
         }
         self.stage = Stage::Slots(editor);
-        self.picker_selected = None;
+        self.highlight = Highlight::Initial;
         self.sync_input(cx);
     }
 
     /// Enter on a command row.
     fn confirm_search(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         let Stage::Search(search) = &self.stage else {
             return;
         };
@@ -807,23 +886,17 @@ impl CommandPalette {
             )));
             return;
         }
-        match slots::runs_without_prompt(spec, &self.domain_for(spec)) {
-            Some(true) => {
-                let editor =
-                    SlotEditor::new(spec, &[], &self.domain_for(spec), false);
-                match editor.invocation() {
-                    Ok(invocation) => {
-                        cx.emit(PaletteEvent::Execute(invocation));
-                    }
-                    Err(error) => {
-                        self.diagnostic = Some(SlotEditor::humanize(&error));
-                        cx.notify();
-                    }
-                }
+        if !slots::runs_without_prompt(spec, &self.domain_for(spec)) {
+            self.expand_search(cx);
+            return;
+        }
+        let editor = SlotEditor::new(spec, &[], &self.domain_for(spec), false);
+        match editor.invocation() {
+            Ok(invocation) => {
+                cx.emit(PaletteEvent::Execute(invocation));
             }
-            Some(false) => self.expand_search(cx),
-            None => {
-                self.pending = Some(Pending::Confirm);
+            Err(error) => {
+                self.diagnostic = Some(SlotEditor::humanize(&error));
                 cx.notify();
             }
         }
@@ -831,7 +904,6 @@ impl CommandPalette {
 
     /// Tab on a command row: open its slots even when Enter would run it.
     fn expand_search(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         let Stage::Search(search) = &self.stage else {
             return;
         };
@@ -856,28 +928,22 @@ impl CommandPalette {
 
     /// Enter in a slot.
     fn commit_slot(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
+        if let Stage::Slots(editor) = &self.stage
+            && enter_blocked(&self.highlight, editor.active().spec.kind)
+        {
+            return;
+        }
         let picked = self.picker_value();
-        let domain = DomainView {
-            hierarchy: self.hierarchy.as_ref(),
-            profiles: &self.profiles,
-            target: &self.target,
-            window_only: self.window_only(),
-        };
         let Stage::Slots(editor) = &mut self.stage else {
             return;
         };
-        match editor.commit(picked, &domain) {
+        match editor.commit(picked) {
             Ok(Commit::Run(invocation)) => {
                 cx.emit(PaletteEvent::Execute(invocation));
             }
             Ok(Commit::Next) => {
-                self.picker_selected = None;
+                self.highlight = Highlight::Initial;
                 self.sync_input(cx);
-            }
-            Ok(Commit::Pending) => {
-                self.pending = Some(Pending::Commit);
-                cx.notify();
             }
             Err(message) => {
                 self.diagnostic = Some(message);
@@ -888,20 +954,13 @@ impl CommandPalette {
 
     /// Tab in a slot.
     fn next_slot(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         let picked = self.picker_value();
-        let domain = DomainView {
-            hierarchy: self.hierarchy.as_ref(),
-            profiles: &self.profiles,
-            target: &self.target,
-            window_only: self.window_only(),
-        };
         let Stage::Slots(editor) = &mut self.stage else {
             return;
         };
-        match editor.next_slot(picked, &domain) {
+        match editor.next_slot(picked) {
             Ok(()) => {
-                self.picker_selected = None;
+                self.highlight = Highlight::Initial;
                 self.sync_input(cx);
             }
             Err(message) => {
@@ -912,10 +971,9 @@ impl CommandPalette {
     }
 
     fn previous_slot(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         if let Stage::Slots(editor) = &mut self.stage {
             editor.previous_slot();
-            self.picker_selected = None;
+            self.highlight = Highlight::Initial;
             self.sync_input(cx);
         }
     }
@@ -932,7 +990,6 @@ impl CommandPalette {
     }
 
     fn back(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         match &self.stage {
             Stage::Search(search) => {
                 let query =
@@ -947,13 +1004,12 @@ impl CommandPalette {
     }
 
     fn pop(&mut self, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         let Stage::Slots(editor) = &mut self.stage else {
             return;
         };
         match editor.pop() {
             None => {
-                self.picker_selected = None;
+                self.highlight = Highlight::Initial;
                 self.sync_input(cx);
             }
             Some(exit) => self.leave_slots(exit, cx),
@@ -961,10 +1017,9 @@ impl CommandPalette {
     }
 
     fn edit_slot(&mut self, index: usize, cx: &mut Context<'_, Self>) {
-        self.pending = None;
         if let Stage::Slots(editor) = &mut self.stage {
             editor.edit(index);
-            self.picker_selected = None;
+            self.highlight = Highlight::Initial;
             self.diagnostic = None;
             self.sync_input(cx);
         }
@@ -991,22 +1046,41 @@ impl CommandPalette {
     }
 
     /// Seeds an untouched rename name slot with the target's current custom
-    /// name, selected so typing replaces it and Enter keeps it. Does nothing
-    /// once the user has typed or committed a name.
+    /// name, selected so typing replaces it and Enter keeps it. A slot
+    /// reopened with a committed value holds the user's text instead.
     fn prefill_name(&mut self, cx: &mut Context<'_, Self>) {
         let Stage::Slots(editor) = &self.stage else {
             return;
         };
         let slot = editor.active();
-        if slot.spec.kind != ArgumentKind::Text
-            || slot.value.is_some()
-            || !editor.text().is_empty()
-        {
+        if slot.spec.kind != ArgumentKind::Text {
             return;
         }
-        let Some(name) = self.current_name(editor) else {
+        if slot.value.is_some() || !editor.text().is_empty() {
+            self.name_text = NameText::Edited;
+            return;
+        }
+        self.name_text = NameText::Automatic;
+        self.refresh_automatic_name(cx);
+    }
+
+    /// Writes the target's current custom name into an automatic name
+    /// slot when it differs, selected; edited text is never touched.
+    fn refresh_automatic_name(&mut self, cx: &mut Context<'_, Self>) {
+        let Stage::Slots(editor) = &self.stage else {
             return;
         };
+        if editor.active().spec.kind != ArgumentKind::Text {
+            return;
+        }
+        let current = self.current_name(editor);
+        let Some(name) =
+            refreshed_name(self.name_text, editor.text(), current.as_deref())
+        else {
+            return;
+        };
+        // The editor takes the text first, so the field's change event sees
+        // no edit.
         if let Stage::Slots(editor) = &mut self.stage {
             editor.set_text(&name);
         }
@@ -1078,7 +1152,6 @@ impl CommandPalette {
                 self.pop(cx);
             }
             id if FORWARDED_TEXT_COMMANDS.contains(&id) => {
-                self.pending = None;
                 self.input.update(cx, |field, cx| {
                     field.run(invocation, window, cx)
                 })?;
@@ -1110,6 +1183,19 @@ impl CommandPalette {
         }
     }
 
+    /// The filtered picker rows' labels, in display order.
+    fn picker_labels(&self) -> Vec<String> {
+        let Stage::Slots(editor) = &self.stage else {
+            return Vec::new();
+        };
+        let domain = self.domain();
+        let rows = domain.rows(editor.active().spec.kind);
+        self.picker
+            .iter()
+            .filter_map(|index| rows.get(*index).map(|row| row.label.clone()))
+            .collect()
+    }
+
     pub(super) fn smoke_state(&self, cx: &App) -> String {
         let stage = match &self.stage {
             Stage::Search(search) => format!(
@@ -1125,7 +1211,7 @@ impl CommandPalette {
                 self.hover,
             ),
             Stage::Slots(editor) => format!(
-                "slots command={} requested={} active={} picker={} selected={:?} chips={} pending={}",
+                "slots command={} requested={} active={} picker={} selected={:?} chips={} picker_rows={:?}",
                 editor.spec().id,
                 editor.requested(),
                 editor.active().spec.name,
@@ -1147,7 +1233,7 @@ impl CommandPalette {
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
-                self.pending.is_some(),
+                self.picker_labels().join(";"),
             ),
         };
         let scroll_offset = -f32::from(self.scroll.offset().y);
@@ -1169,11 +1255,12 @@ impl CommandPalette {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={} profile_rows={profile_rows:?}",
+            "{stage} input={:?} diagnostic={:?} scroll_offset={scroll_offset:.1} scrollbar_drag={} scrollbar_x={scrollbar_x:.1} scrollbar_thumb_y={scrollbar_thumb_y:.1} wheel_events={} profile_rows={profile_rows:?} hierarchy_seq={}",
             self.input.read(cx).text(),
             self.diagnostic,
             self.scrollbar.dragging(),
             self.wheel_events,
+            self.hierarchy_seq,
         )
     }
 
@@ -1253,7 +1340,7 @@ fn current_custom_name(
         .find(|slot| slot.spec.name == argument)?;
     let value = slot.value.as_ref()?;
     domain
-        .rows(slot.spec.kind)?
+        .rows(slot.spec.kind)
         .into_iter()
         .find(|row| &row.value == value)
         .filter(|row| row.custom_name)
@@ -1435,9 +1522,7 @@ impl CommandPalette {
             let hovered = self.hover == Some(row);
             let badge = if spec.args.is_empty() {
                 None
-            } else if slots::runs_without_prompt(spec, &self.domain_for(spec))
-                == Some(true)
-            {
+            } else if slots::runs_without_prompt(spec, &self.domain_for(spec)) {
                 Some((
                     KeyHint::keys(&["tab"], Platform::current())
                         .with_suffix(" options"),
@@ -1539,15 +1624,11 @@ impl CommandPalette {
         if let Some(message) = &self.diagnostic {
             below.push(band(message.clone(), swatch, true));
         }
-        if self.pending.is_some() {
-            below.push(band("Loading targets…".to_owned(), swatch, false));
-        }
         let selected_spec = search.selected().map(|matched| matched.spec);
         let has_args = selected_spec.is_some_and(|spec| !spec.args.is_empty());
         let runs = selected_spec.is_some_and(|spec| {
             spec.args.is_empty()
                 || slots::runs_without_prompt(spec, &self.domain_for(spec))
-                    == Some(true)
         });
         let platform = Platform::current();
         let mut hints = vec![
@@ -1710,9 +1791,6 @@ impl CommandPalette {
         if let Some(message) = &self.diagnostic {
             below.push(band(message.clone(), swatch, true));
         }
-        if self.pending.is_some() {
-            below.push(band("Loading targets…".to_owned(), swatch, false));
-        }
         let slot = editor.active();
         let mut list = div()
             .id("palette-results")
@@ -1731,14 +1809,7 @@ impl CommandPalette {
             let selected_index = self.picker_index();
             let domain = self.domain();
             let rows = domain.rows(slot.spec.kind);
-            if rows.is_none() {
-                list = list.child(
-                    div()
-                        .p(px(18.0))
-                        .text_color(swatch.dim)
-                        .child("Loading targets…"),
-                );
-            } else if self.picker.is_empty() {
+            if self.picker.is_empty() {
                 list = list.child(
                     div()
                         .p(px(18.0))
@@ -1749,18 +1820,14 @@ impl CommandPalette {
             }
             let select_tab = huterm_protocol::lookup(ids::SELECT_TAB.as_str());
             for (row, index) in self.picker.iter().enumerate() {
-                let Some(item) =
-                    rows.as_ref().and_then(|rows| rows.get(*index).copied())
-                else {
+                let Some(item) = rows.get(*index).copied() else {
                     continue;
                 };
                 let selected = selected_index == Some(row);
                 let hovered = self.hover == Some(row);
                 let key = item.position.and_then(|position| {
-                    let index = select_tab_shortcut_index(
-                        position,
-                        rows.as_ref()?.len(),
-                    )?;
+                    let index =
+                        select_tab_shortcut_index(position, rows.len())?;
                     self.shortcut_keys(
                         select_tab?,
                         Some(&[CommandArgument::new(
@@ -1802,7 +1869,7 @@ impl CommandPalette {
                     ))
                     .on_click(cx.listener(
                         move |palette, _: &ClickEvent, _, cx| {
-                            palette.picker_selected = Some(value.clone());
+                            palette.highlight = Highlight::Value(value.clone());
                             palette.commit_slot(cx);
                             cx.notify();
                         },
@@ -2066,6 +2133,12 @@ mod tests {
         }
     }
 
+    /// Palette rows from a fresh projection of `mux`.
+    fn hierarchy(mux: &mut Mux, tab_order: &[TabId]) -> PaletteHierarchy {
+        let (state, _) = mux.subscribe_hierarchy();
+        PaletteHierarchy::from_projection(&state, |_| None, tab_order)
+    }
+
     fn terminal_command() -> TerminalCommand {
         TerminalCommand {
             program: "/bin/sh".into(),
@@ -2194,11 +2267,7 @@ mod tests {
         let first = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
         let second = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
         let third = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
-        let hierarchy = PaletteHierarchy::from_snapshot(
-            &mux.capture_hierarchy(),
-            &HashMap::new(),
-            &[third.id, first.id, second.id],
-        );
+        let hierarchy = hierarchy(&mut mux, &[third.id, first.id, second.id]);
         let order: Vec<_> = hierarchy
             .tabs
             .iter()
@@ -2223,11 +2292,7 @@ mod tests {
         let other = mux.create_workspace(session, None).unwrap();
         let mine = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
         let theirs = mux.open_tab(other, &terminal_command()).unwrap().tab;
-        let hierarchy = PaletteHierarchy::from_snapshot(
-            &mux.capture_hierarchy(),
-            &HashMap::new(),
-            &[],
-        );
+        let hierarchy = hierarchy(&mut mux, &[]);
         let target = PaletteTarget {
             session: Some(session),
             workspace: Some(workspace),
@@ -2235,23 +2300,20 @@ mod tests {
             ..target()
         };
         let window_only = DomainView {
-            hierarchy: Some(&hierarchy),
+            hierarchy: &hierarchy,
             profiles: &[],
             target: &target,
             window_only: true,
         };
         assert_eq!(
             window_only.values(ArgumentKind::Tab),
-            Some(vec![CommandValue::Tab(mine.id)])
+            vec![CommandValue::Tab(mine.id)]
         );
         let runtime = DomainView {
             window_only: false,
             ..window_only
         };
-        assert_eq!(
-            runtime.values(ArgumentKind::Tab).map(|values| values.len()),
-            Some(2)
-        );
+        assert_eq!(runtime.values(ArgumentKind::Tab).len(), 2);
         assert!(
             runtime
                 .label(ArgumentKind::Tab, &CommandValue::Tab(theirs.id))
@@ -2271,11 +2333,7 @@ mod tests {
         let second_workspace = mux
             .create_workspace(second_session, Some("duplicate"))
             .unwrap();
-        let hierarchy = PaletteHierarchy::from_snapshot(
-            &mux.capture_hierarchy(),
-            &HashMap::new(),
-            &[],
-        );
+        let hierarchy = hierarchy(&mut mux, &[]);
         assert_eq!(hierarchy.sessions[0].label, hierarchy.sessions[1].label);
         assert_ne!(hierarchy.sessions[0].value, hierarchy.sessions[1].value);
         assert!(
@@ -2296,17 +2354,17 @@ mod tests {
             ..target()
         };
         let domain = DomainView {
-            hierarchy: Some(&hierarchy),
+            hierarchy: &hierarchy,
             profiles: &[],
             target: &target,
             window_only: false,
         };
         let mut editor = SlotEditor::new(rename, &[], &domain, false);
         editor.set_text("chosen");
-        editor.next_slot(None, &domain).unwrap();
+        editor.next_slot(None).unwrap();
         assert_eq!(editor.active().spec.name, "workspace");
         let commit = editor
-            .commit(Some(CommandValue::Workspace(second_workspace)), &domain)
+            .commit(Some(CommandValue::Workspace(second_workspace)))
             .unwrap();
         let Commit::Run(invocation) = commit else {
             panic!("picking the workspace runs the rename");
@@ -2316,81 +2374,48 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_fills_only_unresolved_identity_defaults() {
+    fn rename_targets_prefill_from_the_projected_session_and_workspace() {
         let mut mux = Mux::default();
         let session = mux.create_session(Some("named session")).unwrap();
         let workspace = mux
             .create_workspace(session, Some("named workspace"))
             .unwrap();
-        let hierarchy = PaletteHierarchy::from_snapshot(
-            &mux.capture_hierarchy(),
-            &HashMap::new(),
-            &[],
-        );
-
-        let unresolved_target = target();
-        let loading = DomainView {
-            hierarchy: None,
-            profiles: &[],
-            target: &unresolved_target,
-            window_only: false,
-        };
-        let rename_session =
-            huterm_protocol::lookup(ids::RENAME_SESSION.as_str()).unwrap();
-        let mut session_editor =
-            SlotEditor::new(rename_session, &[], &loading, false);
-        let session_slot = session_editor
-            .slots()
-            .iter()
-            .position(|slot| slot.spec.kind == ArgumentKind::Session)
-            .unwrap();
-        assert_eq!(
-            session_editor.slots()[session_slot].state,
-            SlotState::Empty
-        );
-
-        let resolved_target = PaletteTarget {
-            session: Some(session),
+        let (state, _) = mux.subscribe_hierarchy();
+        let hierarchy =
+            PaletteHierarchy::from_projection(&state, |_| None, &[]);
+        // The window knows its workspace; the projection supplies its session.
+        let target = PaletteTarget {
+            session: state.workspace_session(workspace),
             workspace: Some(workspace),
             ..target()
         };
-        let resolved = DomainView {
-            hierarchy: Some(&hierarchy),
+        let domain = DomainView {
+            hierarchy: &hierarchy,
             profiles: &[],
-            target: &resolved_target,
+            target: &target,
             window_only: false,
         };
-        session_editor.fill_defaults(&resolved);
-        assert_eq!(
-            session_editor.slots()[session_slot].state,
-            SlotState::Prefilled
-        );
-        assert_eq!(
-            current_custom_name(&session_editor, &resolved).as_deref(),
-            Some("named session")
-        );
-
-        let rename_workspace =
-            huterm_protocol::lookup(ids::RENAME_WORKSPACE.as_str()).unwrap();
-        let mut workspace_editor =
-            SlotEditor::new(rename_workspace, &[], &resolved, false);
-        let workspace_slot = workspace_editor
-            .slots()
-            .iter()
-            .position(|slot| slot.spec.kind == ArgumentKind::Workspace)
-            .unwrap();
-        let before = workspace_editor.slots()[workspace_slot].clone();
-        workspace_editor.fill_defaults(&resolved);
-        assert_eq!(
-            workspace_editor.slots()[workspace_slot].state,
-            before.state
-        );
-        assert_eq!(
-            workspace_editor.slots()[workspace_slot].value,
-            before.value
-        );
-
-        mux.close_session(session).unwrap();
+        for (command, kind, name) in [
+            (ids::RENAME_SESSION, ArgumentKind::Session, "named session"),
+            (
+                ids::RENAME_WORKSPACE,
+                ArgumentKind::Workspace,
+                "named workspace",
+            ),
+        ] {
+            let spec = huterm_protocol::lookup(command.as_str()).unwrap();
+            let editor = SlotEditor::new(spec, &[], &domain, false);
+            let slot = editor
+                .slots()
+                .iter()
+                .find(|slot| slot.spec.kind == kind)
+                .unwrap();
+            assert_eq!(slot.state, SlotState::Prefilled);
+            assert_eq!(
+                current_custom_name(&editor, &domain).as_deref(),
+                Some(name)
+            );
+        }
     }
 
     #[test]
@@ -2402,11 +2427,7 @@ mod tests {
         let second = mux.open_tab(workspace, &terminal_command()).unwrap().tab;
         mux.rename_tab(first.id, Some("duplicate")).unwrap();
         mux.rename_tab(second.id, Some("duplicate")).unwrap();
-        let hierarchy = PaletteHierarchy::from_snapshot(
-            &mux.capture_hierarchy(),
-            &HashMap::new(),
-            &[],
-        );
+        let hierarchy = hierarchy(&mut mux, &[]);
 
         let rename = huterm_protocol::lookup(ids::RENAME_TAB.as_str()).unwrap();
         let target = PaletteTarget {
@@ -2416,15 +2437,14 @@ mod tests {
             ..target()
         };
         let domain = DomainView {
-            hierarchy: Some(&hierarchy),
+            hierarchy: &hierarchy,
             profiles: &[],
             target: &target,
             window_only: false,
         };
         let mut editor = SlotEditor::new(rename, &[], &domain, false);
         editor.set_text("chosen");
-        let Commit::Run(invocation) = editor.commit(None, &domain).unwrap()
-        else {
+        let Commit::Run(invocation) = editor.commit(None).unwrap() else {
             panic!("one Enter runs the rename with the prefilled tab");
         };
         assert_eq!(
@@ -2456,15 +2476,16 @@ mod tests {
             },
         ]);
         let target = target();
+        let hierarchy = PaletteHierarchy::default();
         let domain = DomainView {
-            hierarchy: None,
+            hierarchy: &hierarchy,
             profiles: &profiles,
             target: &target,
             window_only: false,
         };
         let toggle =
             huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
-        assert_eq!(slots::runs_without_prompt(toggle, &domain), Some(true));
+        assert!(slots::runs_without_prompt(toggle, &domain));
         let editor = SlotEditor::new(toggle, &[], &domain, false);
         assert_eq!(editor.slots()[0].state, SlotState::Prefilled);
         assert_eq!(
@@ -2474,12 +2495,282 @@ mod tests {
         let mut picking = SlotEditor::new(toggle, &[], &domain, false);
         picking.edit(0);
         let Commit::Run(invocation) = picking
-            .commit(Some(CommandValue::Text("logs".into())), &domain)
+            .commit(Some(CommandValue::Text("logs".into())))
             .unwrap()
         else {
             panic!("picking a profile runs the command");
         };
         assert_eq!(invocation.text("profile"), Some("logs"));
+    }
+
+    /// Session 1 holds workspaces 10 and 11; workspace 10 holds tabs 1 and
+    /// 2, which carry no custom names.
+    fn projected() -> HierarchyState {
+        use huterm_protocol::{
+            HierarchyEvent, PaneId, SessionInfo, StreamId, TabInfo,
+            WorkspaceInfo,
+        };
+        let runtime = RuntimeId::new(9);
+        let mut state = HierarchyState::new(StreamId::new(runtime));
+        let session = SessionId::in_runtime(runtime, 1);
+        let mut events = vec![HierarchyEvent::SessionCreated {
+            session: SessionInfo {
+                id: session,
+                custom_name: None,
+                automatic_name: "Session 1".into(),
+            },
+            index: 0,
+        }];
+        for (index, value) in [10, 11].into_iter().enumerate() {
+            events.push(HierarchyEvent::WorkspaceCreated {
+                session,
+                workspace: WorkspaceInfo {
+                    id: WorkspaceId::in_runtime(runtime, value),
+                    custom_name: None,
+                    automatic_name: format!("Workspace {value}"),
+                },
+                index: u32::try_from(index).unwrap(),
+            });
+        }
+        for (index, value) in [1, 2].into_iter().enumerate() {
+            events.push(HierarchyEvent::TabOpened {
+                workspace: WorkspaceId::in_runtime(runtime, 10),
+                tab: TabInfo {
+                    id: TabId::in_runtime(runtime, value),
+                    pane_id: PaneId::new(value),
+                    terminal_id: TerminalId::new(value),
+                    custom_name: None,
+                    fallback_name: "sh".into(),
+                },
+                index: u32::try_from(index).unwrap(),
+            });
+        }
+        for event in events {
+            apply(&mut state, event);
+        }
+        state
+    }
+
+    fn apply(
+        state: &mut HierarchyState,
+        event: huterm_protocol::HierarchyEvent,
+    ) {
+        let envelope = huterm_protocol::HierarchyEnvelope {
+            stream: state.stream(),
+            seq: state.seq() + 1,
+            event,
+        };
+        assert!(matches!(
+            state.apply(envelope),
+            huterm_protocol::ApplyOutcome::Applied(_)
+        ));
+    }
+
+    fn tab_rows(
+        hierarchy: &PaletteHierarchy,
+    ) -> Vec<(CommandValue, String, Option<i64>, String)> {
+        hierarchy
+            .tabs
+            .iter()
+            .map(|row| {
+                (
+                    row.value.clone(),
+                    row.label.clone(),
+                    row.position,
+                    row.detail.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tab_rows_prefer_custom_names_then_published_titles_then_fallbacks() {
+        let mut state = projected();
+        let runtime = RuntimeId::new(9);
+        let (first, second) =
+            (TabId::in_runtime(runtime, 1), TabId::in_runtime(runtime, 2));
+        let published = |tab: TabId| (tab == first).then_some("vim");
+        let rows = PaletteHierarchy::from_projection(&state, published, &[]);
+        let labels: Vec<_> =
+            tab_rows(&rows).into_iter().map(|row| row.1).collect();
+        assert_eq!(labels, ["vim", "sh"]);
+        apply(
+            &mut state,
+            huterm_protocol::HierarchyEvent::TabRenamed {
+                tab: second,
+                custom_name: Some("logs".into()),
+            },
+        );
+        let rows = PaletteHierarchy::from_projection(&state, published, &[]);
+        let labels: Vec<_> =
+            tab_rows(&rows).into_iter().map(|row| row.1).collect();
+        assert_eq!(labels, ["vim", "logs"]);
+    }
+
+    #[test]
+    fn a_move_rebuilds_order_positions_and_parents_and_keeps_the_highlight() {
+        let mut state = projected();
+        let runtime = RuntimeId::new(9);
+        let first = CommandValue::Tab(TabId::in_runtime(runtime, 1));
+        let second = CommandValue::Tab(TabId::in_runtime(runtime, 2));
+        let before = PaletteHierarchy::from_projection(&state, |_| None, &[]);
+        assert_eq!(
+            tab_rows(&before),
+            [
+                (
+                    first.clone(),
+                    "sh".into(),
+                    Some(1),
+                    "Session 1 › Workspace 10".into()
+                ),
+                (
+                    second.clone(),
+                    "sh".into(),
+                    Some(2),
+                    "Session 1 › Workspace 10".into()
+                ),
+            ]
+        );
+        apply(
+            &mut state,
+            huterm_protocol::HierarchyEvent::TabMoved {
+                tab: TabId::in_runtime(runtime, 1),
+                workspace: WorkspaceId::in_runtime(runtime, 11),
+                index: 0,
+            },
+        );
+        let after = PaletteHierarchy::from_projection(&state, |_| None, &[]);
+        assert_ne!(before, after, "a reorder with no rename still rebuilds");
+        assert_eq!(
+            tab_rows(&after),
+            [
+                (
+                    second.clone(),
+                    "sh".into(),
+                    Some(1),
+                    "Session 1 › Workspace 10".into()
+                ),
+                (
+                    first.clone(),
+                    "sh".into(),
+                    Some(1),
+                    "Session 1 › Workspace 11".into()
+                ),
+            ]
+        );
+        // The highlighted identity stays highlighted at its new row.
+        let highlight = rebuilt_highlight(
+            &Highlight::Initial,
+            Some(first.clone()),
+            |value| after.tabs.iter().any(|row| &row.value == value),
+        );
+        assert_eq!(highlight, Highlight::Value(first.clone()));
+        let position = |value: &CommandValue| {
+            after.tabs.iter().position(|row| &row.value == value)
+        };
+        assert_eq!(highlighted_row(&highlight, position, None, 2), Some(1));
+    }
+
+    #[test]
+    fn removing_the_highlighted_value_leaves_no_highlight_until_moved_or_filtered()
+     {
+        let gone = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 7));
+        let highlight = rebuilt_highlight(
+            &Highlight::Value(gone.clone()),
+            Some(gone),
+            |_| false,
+        );
+        assert_eq!(highlight, Highlight::Lost);
+        let position = |_: &CommandValue| Some(0);
+        assert_eq!(highlighted_row(&highlight, position, None, 3), None);
+        assert!(enter_blocked(&highlight, ArgumentKind::Tab));
+        assert!(!enter_blocked(&highlight, ArgumentKind::Text));
+        assert!(!enter_blocked(&Highlight::Initial, ArgumentKind::Tab));
+        // A lost highlight stays lost through a later rebuild.
+        assert_eq!(
+            rebuilt_highlight(&highlight, None, |_| true),
+            Highlight::Lost
+        );
+        // Down selects the first row and Up the last.
+        assert_eq!(moved_row(None, 1, 3), Some(0));
+        assert_eq!(moved_row(None, -1, 3), Some(2));
+        assert_eq!(moved_row(None, 1, 0), None);
+        assert_eq!(moved_row(Some(1), 8, 3), Some(2));
+        // Changing the filter restores the initial selection: the slot's
+        // value when listed, else the first row.
+        let slot = CommandValue::Tab(TabId::in_runtime(RuntimeId::new(9), 2));
+        let listed = |value: &CommandValue| (value == &slot).then_some(1);
+        assert_eq!(
+            highlighted_row(&Highlight::Initial, listed, Some(&slot), 3),
+            Some(1)
+        );
+        assert_eq!(
+            highlighted_row(&Highlight::Initial, |_| None, None, 3),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn automatic_name_text_follows_its_target_and_edited_text_stays() {
+        // Another window's rename makes a nonempty prefill stale.
+        assert_eq!(
+            refreshed_name(NameText::Automatic, "old", Some("new")).as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            refreshed_name(NameText::Automatic, "old", None).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            refreshed_name(NameText::Automatic, "same", Some("same")),
+            None
+        );
+        // A deliberately blanked name survives, so Enter still clears.
+        assert_eq!(refreshed_name(NameText::Edited, "", Some("old")), None);
+    }
+
+    #[test]
+    fn a_committed_slot_whose_target_disappears_keeps_it_for_the_executor() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(Some("kept")).unwrap();
+        let own = mux.create_workspace(session, Some("own")).unwrap();
+        let fixture = mux.create_workspace(session, Some("fixture")).unwrap();
+        let rows = hierarchy(&mut mux, &[]);
+        let target = PaletteTarget {
+            session: Some(session),
+            workspace: Some(own),
+            ..target()
+        };
+        let domain = DomainView {
+            hierarchy: &rows,
+            profiles: &[],
+            target: &target,
+            window_only: false,
+        };
+        let rename =
+            huterm_protocol::lookup(ids::RENAME_WORKSPACE.as_str()).unwrap();
+        let mut editor = SlotEditor::new(rename, &[], &domain, false);
+        editor.set_text("gone");
+        editor.next_slot(None).unwrap();
+        editor
+            .next_slot(Some(CommandValue::Workspace(fixture)))
+            .unwrap();
+        editor.previous_slot();
+
+        mux.close_workspace(fixture).unwrap();
+        let rebuilt = hierarchy(&mut mux, &[]);
+        assert!(!rebuilt.lists_workspace(fixture));
+        assert!(rebuilt.lists_workspace(own));
+        let Commit::Run(invocation) = editor.commit(None).unwrap() else {
+            panic!("Enter on the name runs with the committed target");
+        };
+        assert_eq!(invocation.workspace("workspace"), Some(fixture));
+        assert_eq!(
+            huterm_core::execute(&mut mux, &invocation),
+            Err(CommandError::StaleTarget)
+        );
+        assert_eq!(mux.workspace(own).unwrap().custom_name(), Some("own"));
+        assert_eq!(mux.session(session).unwrap().custom_name(), Some("kept"));
     }
 
     #[test]
