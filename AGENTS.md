@@ -96,8 +96,9 @@ Run `mise tasks` to discover the full task set.
 
 - `mise run doctor` checks host prerequisites; `mise run dev` starts the native
   macOS or Linux client.
-- `mise run check` runs the fast format, Clippy compilation, docs, and
-  architecture gate; `mise run typecheck` remains available independently.
+- `mise run check` runs the fast format, Clippy compilation, test-module
+  order, docs, and architecture gate; `mise run typecheck` remains available
+  independently.
 - `mise run test` runs unit and PTY integration tests.
 - `mise run test:ghostty-releasesafe` reruns the `huterm-ghostty` and
   `huterm-core` tests against a ReleaseSafe Ghostty build in
@@ -239,6 +240,17 @@ handoff. GitHub Actions is the source of truth for macOS arm64 compilation and
 runs the same checks plus an Xvfb smoke on Linux x86_64. Linux development
 requires the XKB packages documented in
 [the development guide](docs/agents/development.md).
+
+Keep small Rust unit-test suites inline, after every production item in their
+module; `mise run lint:test-order` enforces that order. Move a suite into an
+adjacent child-module file when it dominates its source file or gets in the way
+of reading the implementation. This is a judgment call, not a line count.
+Extraction keeps module names, test paths, private access, and cfgs; a separate
+file does not make a unit test an integration test. Read the relevant tests when
+investigating or changing behavior, wherever they live. Leave unrelated tests in
+place during routine fixes and move them only in an explicitly scoped refactor.
+Each test covers one coherent behavior with as many assertions as that behavior
+needs. See [Rust test layout](docs/agents/development.md#rust-test-layout).
 
 For desktop behavior, run the relevant automated smoke tests before using
 computer use. Discover them with `mise tasks`; native input coverage lives in
