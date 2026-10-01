@@ -403,7 +403,9 @@ mod tests {
         assert!(mux.close_tab(workspace, stale_tab).is_err());
         assert!(mux.close_workspace(stale_workspace).is_err());
         assert!(mux.close_session(stale_session).is_err());
-        // Unchanged positions and names.
+        // Unchanged positions and names, which must not make pending close
+        // assessments stale either.
+        let revision = mux.revision;
         mux.reorder_tab(workspace, tab, None).unwrap();
         mux.reorder_tab(workspace, tab, Some(tab)).unwrap();
         mux.move_workspace(session, workspace, session, None)
@@ -411,12 +413,15 @@ mod tests {
         mux.rename_session(session, None).unwrap();
         mux.rename_workspace(workspace, None).unwrap();
         mux.rename_tab(tab, None).unwrap();
+        assert_eq!(mux.revision, revision);
         mux.rename_tab(tab, Some("same")).unwrap();
         assert_eq!(mux.hierarchy_seq(), seq + 1);
         assert!(subscription.try_recv().is_ok());
         assert!(subscription.take_wake());
+        let revision = mux.revision;
         mux.rename_tab(tab, Some("same")).unwrap();
 
+        assert_eq!(mux.revision, revision);
         assert_eq!(mux.hierarchy_seq(), seq + 1);
         assert_eq!(subscription.try_recv(), Err(HierarchyRecvError::Empty));
         assert!(!subscription.take_wake());

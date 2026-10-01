@@ -352,7 +352,6 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_session(id)?;
         validate_name(name)?;
-        self.changed();
         let record = self
             .sessions
             .iter_mut()
@@ -362,6 +361,7 @@ impl Mux {
             return Ok(());
         }
         record.custom_name = name.map(str::to_owned);
+        self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::SessionRenamed {
             session: id,
             custom_name: name.map(str::to_owned),
@@ -378,7 +378,6 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_workspace(id)?;
         validate_name(name)?;
-        self.changed();
         let record = self
             .workspaces
             .get_mut(&id)
@@ -387,6 +386,7 @@ impl Mux {
             return Ok(());
         }
         record.custom_name = name.map(str::to_owned);
+        self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::WorkspaceRenamed {
             workspace: id,
             custom_name: name.map(str::to_owned),
@@ -403,7 +403,6 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_tab(id)?;
         validate_name(name)?;
-        self.changed();
         let record = self
             .workspaces
             .values_mut()
@@ -414,6 +413,7 @@ impl Mux {
             return Ok(());
         }
         record.custom_name = name.map(str::to_owned);
+        self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::TabRenamed {
             tab: id,
             custom_name: name.map(str::to_owned),
