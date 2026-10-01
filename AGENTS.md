@@ -523,9 +523,15 @@ IPC needs incarnation identity across processes/restarts. Scope checks prevent
 accidental aliasing, not deliberately fabricated IDs.
 Keep session/workspace automatic names tied to immutable per-kind creation
 ordinals, not membership positions. `None` clears an override; blank custom names
-are invalid. Tab title resolution uses the current client title cache without
-locking Mux on the UI thread. Desktop tab records are initial snapshots;
-propagating later core renames to views belongs with the deferred rename UI.
+are invalid. Names come from `Desktop.hierarchy`, the client's projection of
+core's sequenced hierarchy events. The UI thread takes the Mux lock for
+structure only once, at startup before any window exists, to subscribe.
+Tab labels look tabs up there by ID and combine them with the live terminal
+title. Structural results carry the hierarchy sequence they committed at, and
+completions wait for the projection to apply it before acting. Client effects
+derive from projection state through `reconcile`, which removes views, orders
+tabs, and publishes titles but never installs views. See
+[the hierarchy projection plan](docs/plans/hierarchy-projection.md).
 Moves retain empty parents and never change terminal lifetime. Desktop windows
 retain their attachment identity for assessed close. Orphaned spawn cleanup
 must preserve resources adopted by another attachment or moved elsewhere. Roll

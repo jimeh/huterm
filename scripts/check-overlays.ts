@@ -623,6 +623,22 @@ label = "title"
     await state("w1.active=true", "w1.terminal_focused=true");
     await siblingTitle("siblingtwo");
     await quitNames("siblingtwo");
+    // An open Quit dialog follows a rename of the sibling's busy tab made
+    // after it opened. The recomputed `dialog_groups` would pass even if the
+    // dialog never redrew, so assert the groups the last render drew.
+    await command("activate\t0");
+    await state("w0.active=true", "w0.terminal_focused=true");
+    await invoke("quit");
+    const drawnGroups = (text: string) => (quoted(text, "w0.dialog_drawn_groups") ?? "").split(";");
+    await stateWhere((text) => drawnGroups(text).includes("siblingtwo"), "Quit dialog drawn with the sibling title");
+    await command("runtime-rename\t1\trenamed");
+    await stateWhere((text) => drawnGroups(text).includes("renamed") && !drawnGroups(text).includes("siblingtwo"), "Quit dialog redrawn after the rename");
+    await state("w0.confirming=true");
+    await key("escape");
+    await state("w0.confirming=false", "w0.terminal_focused=true");
+    // Clearing the name restores the OSC title the reload checks below use.
+    await command("runtime-rename\t1\t");
+    await stateWhere((text) => (quoted(text, "model_titles") ?? "").split(";").includes("siblingtwo"), "sibling title restored");
     const reloadedTitles = async (document: string) => {
       const before = Number(/(?:^|\s)reloads=(\d+)/.exec(await current())?.[1]);
       await writeFile(config, document);
@@ -639,7 +655,7 @@ label = "title"
     }
     await reloadedTitles(configDocument);
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

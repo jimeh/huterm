@@ -12,8 +12,8 @@ use huterm_protocol::{
 
 /// What the client knows about identity domains and captured defaults.
 pub(super) trait SlotDomain {
-    /// Every value an identity kind can take, or `None` while loading.
-    fn values(&self, kind: ArgumentKind) -> Option<Vec<CommandValue>>;
+    /// Every value an identity kind can take.
+    fn values(&self, kind: ArgumentKind) -> Vec<CommandValue>;
     /// The captured target for an identity kind, when one exists.
     fn default(&self, kind: ArgumentKind) -> Option<CommandValue>;
 }
@@ -53,8 +53,6 @@ pub(super) enum Commit {
     Run(CommandInvocation),
     /// Moved to the next slot that needs input.
     Next,
-    /// The identity domain has not loaded; retry when it does.
-    Pending,
 }
 
 /// Where leaving the slot stage goes.
@@ -86,22 +84,15 @@ pub(super) fn is_identity(kind: ArgumentKind) -> bool {
 }
 
 /// Whether Enter on this command runs it without opening slots: every
-/// required prompted argument resolves to exactly one value. `None` while an
-/// identity domain the decision depends on is still loading.
+/// required prompted argument resolves to exactly one value.
 pub(super) fn runs_without_prompt(
     spec: &CommandSpec,
     domain: &dyn SlotDomain,
-) -> Option<bool> {
+) -> bool {
     let empty = CommandInvocation::new(spec.id, Vec::new());
-    for argument in spec.missing_prompted(&empty) {
-        if !is_identity(argument.kind) {
-            return Some(false);
-        }
-        if domain.values(argument.kind)?.len() != 1 {
-            return Some(false);
-        }
-    }
-    Some(true)
+    spec.missing_prompted(&empty).into_iter().all(|argument| {
+        is_identity(argument.kind) && domain.values(argument.kind).len() == 1
+    })
 }
 
 impl SlotEditor {
@@ -153,11 +144,11 @@ impl SlotEditor {
                             // Required identities carry no preselection: the
                             // picker's first row (most recently used) is the
                             // likeliest choice.
-                            match domain.values(argument.kind) {
-                                Some(values) if values.len() == 1 => {
-                                    (values.into_iter().next(), SlotState::Sole)
-                                }
-                                _ => (None, SlotState::Empty),
+                            let values = domain.values(argument.kind);
+                            if values.len() == 1 {
+                                (values.into_iter().next(), SlotState::Sole)
+                            } else {
+                                (None, SlotState::Empty)
                             }
                         }
                         (_, false) => (None, SlotState::Empty),
@@ -209,22 +200,6 @@ impl SlotEditor {
     }
     pub(super) fn requested(&self) -> bool {
         self.requested
-    }
-
-    /// Fills optional identity slots that had no captured target when the
-    /// editor was created.
-    pub(super) fn fill_defaults(&mut self, domain: &dyn SlotDomain) {
-        for slot in &mut self.slots {
-            if slot.state == SlotState::Empty
-                && slot.value.is_none()
-                && is_identity(slot.spec.kind)
-                && slot.spec.required == Requirement::Optional
-                && let Some(value) = domain.default(slot.spec.kind)
-            {
-                slot.value = Some(value);
-                slot.state = SlotState::Prefilled;
-            }
-        }
     }
 
     /// Whether the command can run right now with the values held.
@@ -292,11 +267,8 @@ impl SlotEditor {
     pub(super) fn commit(
         &mut self,
         picked: Option<CommandValue>,
-        domain: &dyn SlotDomain,
     ) -> Result<Commit, String> {
-        if !self.store_active(picked, domain)? {
-            return Ok(Commit::Pending);
-        }
+        self.store_active(picked)?;
         self.finish_commit()
     }
 
@@ -317,27 +289,22 @@ impl SlotEditor {
         }
     }
 
-    /// Stores the active slot's value. Returns `Ok(false)` when an identity
-    /// domain is still loading and nothing could be stored.
+    /// Stores the active slot's value.
     fn store_active(
         &mut self,
         picked: Option<CommandValue>,
-        domain: &dyn SlotDomain,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         let slot = &self.slots[self.active];
         let name = slot.spec.name;
         let label = label(name);
         if is_identity(slot.spec.kind) {
             let Some(value) = picked else {
-                if domain.values(slot.spec.kind).is_none() {
-                    return Ok(false);
-                }
                 return Err(format!("No matching {name}"));
             };
             let slot = &mut self.slots[self.active];
             slot.value = Some(value);
             slot.state = SlotState::Committed;
-            return Ok(true);
+            return Ok(());
         }
         let text = self.text.trim();
         // Blank text is a value for text arguments: renames clear the custom
@@ -358,7 +325,7 @@ impl SlotEditor {
         let slot = &mut self.slots[self.active];
         slot.value = value;
         slot.state = SlotState::Committed;
-        Ok(true)
+        Ok(())
     }
 
     /// Tab: commit valid text or the highlighted picker row, then move to the
@@ -369,7 +336,6 @@ impl SlotEditor {
     pub(super) fn next_slot(
         &mut self,
         picked: Option<CommandValue>,
-        domain: &dyn SlotDomain,
     ) -> Result<(), String> {
         let slot = &self.slots[self.active];
         if is_identity(slot.spec.kind) {
@@ -379,7 +345,7 @@ impl SlotEditor {
                 slot.state = SlotState::Committed;
             }
         } else if !self.text.trim().is_empty() {
-            self.store_active(None, domain)?;
+            self.store_active(None)?;
         }
         if let Some(next) = self.editable_after(self.active) {
             self.edit(next);
@@ -528,32 +494,27 @@ mod tests {
     use huterm_protocol::{RuntimeId, TabId, WorkspaceId, catalog, ids};
 
     struct Domain {
-        tabs: Option<Vec<TabId>>,
-        workspaces: Option<Vec<WorkspaceId>>,
+        tabs: Vec<TabId>,
+        workspaces: Vec<WorkspaceId>,
         active_tab: Option<TabId>,
     }
 
     impl SlotDomain for Domain {
-        fn values(&self, kind: ArgumentKind) -> Option<Vec<CommandValue>> {
+        fn values(&self, kind: ArgumentKind) -> Vec<CommandValue> {
             match kind {
-                ArgumentKind::Tab => Some(
-                    self.tabs
-                        .clone()?
-                        .into_iter()
-                        .map(CommandValue::Tab)
-                        .collect(),
-                ),
-                ArgumentKind::Workspace => Some(
-                    self.workspaces
-                        .clone()?
-                        .into_iter()
-                        .map(CommandValue::Workspace)
-                        .collect(),
-                ),
-                ArgumentKind::QuakeProfile => {
-                    Some(vec![CommandValue::Text("default".into())])
+                ArgumentKind::Tab => {
+                    self.tabs.iter().copied().map(CommandValue::Tab).collect()
                 }
-                _ => Some(Vec::new()),
+                ArgumentKind::Workspace => self
+                    .workspaces
+                    .iter()
+                    .copied()
+                    .map(CommandValue::Workspace)
+                    .collect(),
+                ArgumentKind::QuakeProfile => {
+                    vec![CommandValue::Text("default".into())]
+                }
+                _ => Vec::new(),
             }
         }
         fn default(&self, kind: ArgumentKind) -> Option<CommandValue> {
@@ -561,7 +522,6 @@ mod tests {
                 ArgumentKind::Tab => self.active_tab.map(CommandValue::Tab),
                 ArgumentKind::Workspace => self
                     .workspaces
-                    .as_ref()?
                     .first()
                     .copied()
                     .map(CommandValue::Workspace),
@@ -579,11 +539,8 @@ mod tests {
 
     fn with_tabs(tabs: &[u64]) -> Domain {
         Domain {
-            tabs: Some(tabs.iter().map(|n| tab(*n)).collect()),
-            workspaces: Some(vec![WorkspaceId::in_runtime(
-                RuntimeId::new(1),
-                1,
-            )]),
+            tabs: tabs.iter().map(|n| tab(*n)).collect(),
+            workspaces: vec![WorkspaceId::in_runtime(RuntimeId::new(1), 1)],
             active_tab: tabs.first().map(|n| tab(*n)),
         }
     }
@@ -600,7 +557,7 @@ mod tests {
         assert_eq!(editor.active().spec.name, "name");
         assert_eq!(editor.slots()[1].state, SlotState::Prefilled);
         editor.set_text("work");
-        let Ok(Commit::Run(invocation)) = editor.commit(None, &domain) else {
+        let Ok(Commit::Run(invocation)) = editor.commit(None) else {
             panic!("rename should run after the name");
         };
         assert_eq!(invocation.text("name"), Some("work"));
@@ -613,7 +570,7 @@ mod tests {
         let mut editor =
             SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
         editor.set_text("  ");
-        let Ok(Commit::Run(invocation)) = editor.commit(None, &domain) else {
+        let Ok(Commit::Run(invocation)) = editor.commit(None) else {
             panic!("a blank name runs the rename, which clears the name");
         };
         assert_eq!(invocation.text("name"), Some(""));
@@ -624,25 +581,19 @@ mod tests {
             false,
         );
         assert_eq!(select.active().spec.name, "tab");
-        assert_eq!(
-            select.commit(None, &with_tabs(&[1, 2])),
-            Err("No matching tab".into())
-        );
+        assert_eq!(select.commit(None), Err("No matching tab".into()));
     }
 
     #[test]
     fn select_tab_prompts_only_for_tab_and_runs_on_pick() {
         let domain = with_tabs(&[1, 2, 3]);
-        assert_eq!(
-            runs_without_prompt(spec(ids::SELECT_TAB), &domain),
-            Some(false)
-        );
+        assert!(!runs_without_prompt(spec(ids::SELECT_TAB), &domain));
         let mut editor =
             SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true);
         assert_eq!(editor.slots().len(), 1, "index is unprompted");
         assert!(editor.requested());
         let Ok(Commit::Run(invocation)) =
-            editor.commit(Some(CommandValue::Tab(tab(3))), &domain)
+            editor.commit(Some(CommandValue::Tab(tab(3))))
         else {
             panic!("picking a tab runs select_tab");
         };
@@ -653,29 +604,11 @@ mod tests {
     #[test]
     fn optional_only_and_sole_domain_commands_run_without_prompting() {
         let domain = with_tabs(&[1]);
-        assert_eq!(
-            runs_without_prompt(spec(ids::TOGGLE_QUAKE), &domain),
-            Some(true)
-        );
-        assert_eq!(
-            runs_without_prompt(spec(ids::NEW_TAB), &domain),
-            Some(true)
-        );
-        assert_eq!(
-            runs_without_prompt(spec(ids::RENAME_TAB), &domain),
-            Some(false)
-        );
-        let loading = Domain {
-            tabs: None,
-            workspaces: None,
-            active_tab: None,
-        };
-        assert_eq!(runs_without_prompt(spec(ids::SELECT_TAB), &loading), None);
-        // Two tabs: select_tab still prompts; one tab would be the sole value.
-        assert_eq!(
-            runs_without_prompt(spec(ids::SELECT_TAB), &domain),
-            Some(true)
-        );
+        assert!(runs_without_prompt(spec(ids::TOGGLE_QUAKE), &domain));
+        assert!(runs_without_prompt(spec(ids::NEW_TAB), &domain));
+        assert!(!runs_without_prompt(spec(ids::RENAME_TAB), &domain));
+        // One tab is the sole value; two would prompt.
+        assert!(runs_without_prompt(spec(ids::SELECT_TAB), &domain));
         let editor =
             SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, false);
         assert_eq!(editor.slots()[0].state, SlotState::Sole);
@@ -688,7 +621,7 @@ mod tests {
         let mut editor =
             SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
         editor.set_text("work");
-        editor.next_slot(None, &domain).unwrap();
+        editor.next_slot(None).unwrap();
         assert_eq!(editor.active().spec.name, "tab");
         assert_eq!(editor.slots()[0].state, SlotState::Committed);
         assert_eq!(editor.slots()[1].state, SlotState::Empty);
@@ -697,13 +630,13 @@ mod tests {
             Some(CommandValue::Tab(tab(1))),
             "preselection kept"
         );
-        editor.next_slot(None, &domain).unwrap();
+        editor.next_slot(None).unwrap();
         assert_eq!(editor.active().spec.name, "tab", "last slot stays");
         editor.previous_slot();
         assert_eq!(editor.active().spec.name, "name");
         assert_eq!(editor.text(), "work");
         editor.set_text("");
-        editor.next_slot(None, &domain).unwrap();
+        editor.next_slot(None).unwrap();
         assert_eq!(editor.slots()[0].state, SlotState::Empty);
         assert_eq!(
             editor.slots()[0].value,
@@ -711,7 +644,7 @@ mod tests {
         );
         assert!(!editor.remaining_required_satisfied());
         assert_eq!(
-            editor.commit(Some(CommandValue::Tab(tab(2))), &domain),
+            editor.commit(Some(CommandValue::Tab(tab(2)))),
             Ok(Commit::Next)
         );
         assert_eq!(editor.active().spec.name, "name");
@@ -743,7 +676,7 @@ mod tests {
         let mut editor =
             SlotEditor::new(spec(ids::RENAME_TAB), &[], &domain, false);
         editor.set_text("work");
-        editor.next_slot(None, &domain).unwrap();
+        editor.next_slot(None).unwrap();
         assert_eq!(editor.pop(), None);
         assert_eq!(editor.active().spec.name, "name");
         assert_eq!(editor.text(), "work");
@@ -751,18 +684,6 @@ mod tests {
         let requested =
             SlotEditor::new(spec(ids::SELECT_TAB), &[], &domain, true);
         assert_eq!(requested.exit(), Exit::Close);
-    }
-
-    #[test]
-    fn pending_domain_defers_the_commit() {
-        let loading = Domain {
-            tabs: None,
-            workspaces: None,
-            active_tab: None,
-        };
-        let mut editor =
-            SlotEditor::new(spec(ids::SELECT_TAB), &[], &loading, true);
-        assert_eq!(editor.commit(None, &loading), Ok(Commit::Pending));
     }
 
     #[test]

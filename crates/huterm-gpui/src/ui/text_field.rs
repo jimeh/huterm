@@ -237,6 +237,10 @@ impl TextField {
         self.buffer.content.is_empty()
     }
 
+    pub(crate) fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     pub(crate) fn set_placeholder(&mut self, placeholder: impl Into<String>) {
         self.placeholder = placeholder.into();
     }

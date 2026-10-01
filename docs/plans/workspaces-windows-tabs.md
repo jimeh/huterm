@@ -51,9 +51,9 @@ siblings. Spawn/close waits run behind the existing background structural owner.
 The default logical socket name is `default`; core creates no IPC endpoint.
 Desktop windows create a private session and workspace, rolling both back if
 initial creation fails. Window close and orphaned spawn cleanup delete that
-window's initial private session. Tab records cached in GPUI are initial
-snapshots; title resolution uses the existing live title cache without locking
-Mux during rendering. Core rename propagation and UI, shared views, session and
+window's initial private session. Names and tab structure reach GPUI through
+the [hierarchy projection](hierarchy-projection.md), so core renames update
+labels without locking Mux during rendering. Shared views, session and
 workspace switching, drag transfers, persistence, and revised close policies
 remain deferred to the roadmap follow-ups.
 

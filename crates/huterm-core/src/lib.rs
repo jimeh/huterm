@@ -27,8 +27,9 @@ mod wake;
 
 pub use mux::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
-    DEFAULT_SOCKET_NAME, HierarchySnapshot, Mux, MuxError, OpenedTab,
-    SelectionTarget, Session, Tab, Workspace,
+    DEFAULT_SOCKET_NAME, HierarchyRecvError, HierarchySnapshot,
+    HierarchySubscription, Mux, MuxError, OpenedTab, SelectionTarget, Session,
+    Tab, Workspace,
 };
 pub use presentation::PresentationController;
 pub use terminal::{

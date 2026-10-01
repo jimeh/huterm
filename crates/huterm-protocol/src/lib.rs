@@ -7,11 +7,17 @@ use std::sync::Arc;
 
 mod cell_text;
 mod command;
+mod hierarchy;
 pub use cell_text::CellText;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
     CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
     Requirement, catalog, ids, lookup, validate, validate_supplied,
+};
+pub use hierarchy::{
+    ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
+    ResyncReason, SessionInfo, StreamId, TabInfo, Touched, WorkspaceInfo,
+    resolve_tab_name,
 };
 
 macro_rules! opaque_id {

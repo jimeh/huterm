@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+mod hierarchy;
 mod lifecycle;
+pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
 pub use lifecycle::{
     CloseAssessment, CloseEffect, CloseRequest, CloseTicket, HierarchySnapshot,
 };
@@ -10,9 +12,10 @@ use crate::{
     DesktopHostEffectClient, HostEffectRecipient, HostEffectRecipientOptions,
     PresentationController, RuntimeClient, RuntimeError, TerminalRuntime,
 };
+use hierarchy::HierarchyPublisher;
 use huterm_protocol::{
-    AttachmentId, PaneId, RuntimeId, SessionId, TabId, TerminalCommand,
-    TerminalId, WorkspaceId,
+    AttachmentId, HierarchyEvent, PaneId, RuntimeId, SessionId, TabId,
+    TerminalCommand, TerminalId, WorkspaceId,
 };
 use thiserror::Error;
 
@@ -44,13 +47,11 @@ impl Tab {
         &'a self,
         current_terminal_title: &'a str,
     ) -> &'a str {
-        self.custom_name.as_deref().unwrap_or_else(|| {
-            if current_terminal_title.trim().is_empty() {
-                &self.fallback_name
-            } else {
-                current_terminal_title
-            }
-        })
+        huterm_protocol::resolve_tab_name(
+            self.custom_name.as_deref(),
+            current_terminal_title,
+            &self.fallback_name,
+        )
     }
 }
 
@@ -133,6 +134,7 @@ pub struct Mux {
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     terminals: BTreeMap<TerminalId, TerminalRuntime>,
     presentation_authority: PresentationAuthority,
+    hierarchy: HierarchyPublisher,
 }
 impl Default for Mux {
     fn default() -> Self {
@@ -164,6 +166,7 @@ impl Mux {
             workspaces: BTreeMap::new(),
             terminals: BTreeMap::new(),
             presentation_authority: PresentationAuthority::default(),
+            hierarchy: HierarchyPublisher::default(),
         })
     }
     /// Returns the runtime incarnation used to validate structural targets.
@@ -290,6 +293,11 @@ impl Mux {
             automatic_name: format!("Session {ordinal}"),
         });
         self.session_ordinal = ordinal;
+        let index = position(self.sessions.len() - 1);
+        self.emit_hierarchy(|mux| HierarchyEvent::SessionCreated {
+            session: mux.sessions[mux.sessions.len() - 1].info(),
+            index,
+        });
         Ok(id)
     }
     /// Appends an empty workspace to a session.
@@ -318,13 +326,20 @@ impl Mux {
                 automatic_name: format!("Workspace {ordinal}"),
             },
         );
-        self.sessions
+        let siblings = &mut self
+            .sessions
             .iter_mut()
             .find(|s| s.id == session)
             .ok_or(MuxError::UnknownSession(session))?
-            .workspaces
-            .push(id);
+            .workspaces;
+        siblings.push(id);
+        let index = position(siblings.len() - 1);
         self.workspace_ordinal = ordinal;
+        self.emit_hierarchy(|mux| HierarchyEvent::WorkspaceCreated {
+            session,
+            workspace: mux.workspaces[&id].info(),
+            index,
+        });
         Ok(id)
     }
     /// Sets a session's custom name; `None` resumes automatic naming.
@@ -337,12 +352,20 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_session(id)?;
         validate_name(name)?;
-        self.changed();
-        self.sessions
+        let record = self
+            .sessions
             .iter_mut()
             .find(|s| s.id == id)
-            .ok_or(MuxError::UnknownSession(id))?
-            .custom_name = name.map(str::to_owned);
+            .ok_or(MuxError::UnknownSession(id))?;
+        if record.custom_name.as_deref() == name {
+            return Ok(());
+        }
+        record.custom_name = name.map(str::to_owned);
+        self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::SessionRenamed {
+            session: id,
+            custom_name: name.map(str::to_owned),
+        });
         Ok(())
     }
     /// Sets a workspace's custom name; `None` resumes automatic naming.
@@ -355,11 +378,19 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_workspace(id)?;
         validate_name(name)?;
-        self.changed();
-        self.workspaces
+        let record = self
+            .workspaces
             .get_mut(&id)
-            .ok_or(MuxError::UnknownWorkspace(id))?
-            .custom_name = name.map(str::to_owned);
+            .ok_or(MuxError::UnknownWorkspace(id))?;
+        if record.custom_name.as_deref() == name {
+            return Ok(());
+        }
+        record.custom_name = name.map(str::to_owned);
+        self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::WorkspaceRenamed {
+            workspace: id,
+            custom_name: name.map(str::to_owned),
+        });
         Ok(())
     }
     /// Sets a tab's custom name; `None` resumes the current terminal title.
@@ -372,13 +403,21 @@ impl Mux {
     ) -> Result<(), MuxError> {
         self.select_tab(id)?;
         validate_name(name)?;
-        self.changed();
-        self.workspaces
+        let record = self
+            .workspaces
             .values_mut()
             .flat_map(|w| &mut w.tabs)
             .find(|t| t.id == id)
-            .ok_or(MuxError::UnknownTab(id))?
-            .custom_name = name.map(str::to_owned);
+            .ok_or(MuxError::UnknownTab(id))?;
+        if record.custom_name.as_deref() == name {
+            return Ok(());
+        }
+        record.custom_name = name.map(str::to_owned);
+        self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::TabRenamed {
+            tab: id,
+            custom_name: name.map(str::to_owned),
+        });
         Ok(())
     }
     /// Creates and appends a tab only after PTY creation succeeds.
@@ -405,12 +444,19 @@ impl Mux {
         };
         let runtime = TerminalRuntime::spawn(tab.terminal_id, command)?;
         let client = runtime.client();
-        self.workspaces
+        let tabs = &mut self
+            .workspaces
             .get_mut(&workspace)
             .ok_or(MuxError::UnknownWorkspace(workspace))?
-            .tabs
-            .push(tab.clone());
+            .tabs;
+        tabs.push(tab.clone());
+        let index = position(tabs.len() - 1);
         self.terminals.insert(tab.terminal_id, runtime);
+        self.emit_hierarchy(|_| HierarchyEvent::TabOpened {
+            workspace,
+            tab: tab.info(),
+            index,
+        });
         Ok(OpenedTab { tab, client })
     }
     /// Reorders a tab within its current workspace, before an anchor or at end.
@@ -456,6 +502,9 @@ impl Mux {
                     .ok_or(MuxError::UnknownTab(anchor))
             },
         )?;
+        // The final position, after removing the item from its own parent.
+        let target_index = target_index
+            - usize::from(source == destination && source_index < target_index);
         if source == destination && source_index == target_index {
             return Ok(());
         }
@@ -473,13 +522,16 @@ impl Mux {
             .ok_or(MuxError::UnknownWorkspace(source))?
             .tabs
             .remove(source_index);
-        let target_index = target_index
-            - usize::from(source == destination && source_index < target_index);
         self.workspaces
             .get_mut(&destination)
             .ok_or(MuxError::UnknownWorkspace(destination))?
             .tabs
             .insert(target_index, record);
+        self.emit_hierarchy(|_| HierarchyEvent::TabMoved {
+            tab,
+            workspace: destination,
+            index: position(target_index),
+        });
         Ok(())
     }
     /// Atomically transfers a workspace before an anchor or to a session's end.
@@ -524,6 +576,9 @@ impl Mux {
                     .ok_or(MuxError::UnknownWorkspace(anchor))
             },
         )?;
+        // The final position, after removing the item from its own parent.
+        let target_index = target_index
+            - usize::from(source == destination && source_index < target_index);
         if source == destination && source_index == target_index {
             return Ok(());
         }
@@ -541,8 +596,6 @@ impl Mux {
         self.sessions[source_session]
             .workspaces
             .remove(source_index);
-        let target_index = target_index
-            - usize::from(source == destination && source_index < target_index);
         self.sessions[target_session]
             .workspaces
             .insert(target_index, workspace);
@@ -550,6 +603,11 @@ impl Mux {
             .get_mut(&workspace)
             .ok_or(MuxError::UnknownWorkspace(workspace))?
             .session_id = destination;
+        self.emit_hierarchy(|_| HierarchyEvent::WorkspaceMoved {
+            workspace,
+            session: destination,
+            index: position(target_index),
+        });
         Ok(())
     }
     /// Attaches to a terminal without transferring runtime ownership.
@@ -681,6 +739,7 @@ impl Mux {
             .ok_or(MuxError::UnknownTab(tab))?;
         let tab = record.tabs.remove(index);
         self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::TabClosed { tab: tab.id });
         self.presentation_authority
             .invalidate_terminal(tab.terminal_id);
         if let Some(runtime) = self.terminals.remove(&tab.terminal_id) {
@@ -704,6 +763,7 @@ impl Mux {
         for session in &mut self.sessions {
             session.workspaces.retain(|id| *id != workspace);
         }
+        self.emit_hierarchy(|_| HierarchyEvent::WorkspaceClosed { workspace });
         self.close_terminals(
             record.tabs.into_iter().map(|t| t.terminal_id).collect(),
         )
@@ -741,6 +801,7 @@ impl Mux {
             .flat_map(|w| w.tabs)
             .map(|t| t.terminal_id)
             .collect();
+        self.emit_hierarchy(|_| HierarchyEvent::SessionClosed { session });
         self.close_terminals(terminals)
     }
     fn close_terminals(
@@ -770,8 +831,12 @@ impl Mux {
         self.changed();
         self.attachments.clear();
         self.presentation_authority.invalidate_all();
+        let had_structure = !self.sessions.is_empty();
         self.sessions.clear();
         self.workspaces.clear();
+        if had_structure {
+            self.emit_hierarchy(|_| HierarchyEvent::Reset);
+        }
         self.close_terminals(self.terminals.keys().copied().collect())
     }
     /// Returns the number of owned terminals, including exited shells.
@@ -779,6 +844,10 @@ impl Mux {
     pub fn terminal_count(&self) -> usize {
         self.terminals.len()
     }
+}
+/// Converts a structural position to the protocol's fixed width.
+fn position(index: usize) -> u32 {
+    u32::try_from(index).expect("structural position exceeds u32")
 }
 fn validate_name(name: Option<&str>) -> Result<(), MuxError> {
     if name.is_some_and(|name| name.trim().is_empty()) {
@@ -1339,7 +1408,7 @@ mod tests {
         mux.shutdown().unwrap();
     }
 
-    fn command(script: &str) -> TerminalCommand {
+    pub(super) fn command(script: &str) -> TerminalCommand {
         TerminalCommand {
             program: "/bin/sh".into(),
             arguments: vec!["-c".into(), script.into()],

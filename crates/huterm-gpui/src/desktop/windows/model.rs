@@ -6,9 +6,12 @@
 //! ephemeral interaction state, such as focus, hover, selection, drag state,
 //! tab-strip scrolling, and animation progress.
 //!
+//! Names and structure are not stored here: they come from the hierarchy
+//! projection on `Desktop`, and reconcile republishes titles and tab order
+//! into the model when the runtime changes them, such as after a rename.
+//!
 //! Not yet covered, for later extension: pane layouts (#28), panel placement
-//! (#27), and durable layout records (#42). Structural changes made through
-//! the runtime, such as core renames, reach the model with #98.
+//! (#27), and durable layout records (#42).
 
 use crate::config::TabPosition;
 use gpui::{Pixels, WindowBounds, WindowId};
@@ -280,6 +283,23 @@ impl WindowModel {
 
     pub(super) fn record(&self, id: WindowId) -> Option<&WindowRecord> {
         self.records.iter().find(|record| record.id == id)
+    }
+
+    /// Every window, including closing ones, in opening order.
+    pub(super) fn records(&self) -> impl Iterator<Item = &WindowRecord> {
+        self.records.iter()
+    }
+
+    /// Every window's published tab titles.
+    pub(super) fn published_titles(
+        &self,
+    ) -> impl Iterator<Item = (TabId, &str)> {
+        self.records.iter().flat_map(|record| {
+            record
+                .tabs
+                .iter()
+                .map(|entry| (entry.id, entry.title.as_str()))
+        })
     }
 
     /// The open window serving quake profile `name`.

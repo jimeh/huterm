@@ -40,7 +40,8 @@ use super::notices::{
 use super::overlay::{OverlayColors, Swatch, TextTooltip};
 use super::palette::{
     CommandFrequency, CommandPalette, HistoryView, OwnedHistory, PaletteEvent,
-    PaletteOpen, PaletteTarget, QuakeProfileRow, RecentCommands,
+    PaletteHierarchy, PaletteOpen, PaletteScope, PaletteTarget,
+    QuakeProfileRow, RecentCommands,
 };
 use super::*;
 use crate::commands::{Route, fill_rename_target, route, select_tab_slot};
@@ -54,11 +55,12 @@ use gpui::{AnyWindowHandle, Entity, Global, WeakEntity};
 use huterm_config::{TabStyle, TabWidth, TabsConfig};
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
-    HostEffectRecipientOptions, MuxError, OpenedTab,
+    HierarchySubscription, HostEffectRecipientOptions, MuxError, OpenedTab,
 };
 use huterm_protocol::{
-    AttachmentId, CommandArgument, CommandScope, SessionId, TerminalId,
-    WorkspaceId, catalog, validate, validate_supplied,
+    AttachmentId, CommandArgument, CommandScope, HierarchyState, SessionId,
+    TerminalId, Touched, WorkspaceId, catalog, resolve_tab_name, validate,
+    validate_supplied,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -70,6 +72,7 @@ pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
 mod model;
+mod projection;
 mod tab_bar;
 mod tab_menu;
 mod tab_position;
@@ -94,6 +97,11 @@ use model::{
     QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel, WindowRecord,
     WindowRestore, apply_tab_order,
 };
+use projection::{
+    Drained, Install, Projection, ReconcileTarget, Resolution, TabNames,
+    TitleConsumers, Wait, WindowChange, installed_order, reactivation,
+    reconcile_window, tab_names, windows_to_visit,
+};
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
     TabColors, TabItem, TabStatus, VERTICAL_ROW_MARGIN_X,
@@ -104,7 +112,7 @@ use tab_position::{TabHost, resolve_tab_position};
 use tab_strip::{TabExtents, TabStrip};
 use tab_visibility::{Presentation, Reveal};
 use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu_model};
-use views::{Views, broadcast};
+use views::{Views, broadcast, update_windows};
 use window_menu::{
     MenuButtonPlacement, WindowMenuInput, menu_button_placement,
     split_new_tab_row, window_menu_model,
@@ -201,27 +209,33 @@ struct DesktopRuntime {
     restore: Mutex<Option<RestoreSnapshot>>,
 }
 
+/// A structural result with the hierarchy sequence read under the same
+/// lock before releasing it, whether the operation succeeded or failed after
+/// committing. Completions wait for the projection to reach `seq`.
+struct Committed<T> {
+    result: T,
+    seq: u64,
+}
+
+/// What `DesktopRuntime::open_tab` publishes to the spawning window.
+type Spawned = (
+    SessionId,
+    WorkspaceId,
+    OpenedTab,
+    Option<AttachmentId>,
+    TerminalViewAuthority,
+);
+
 impl DesktopRuntime {
-    fn palette_snapshot(
-        &self,
-        workspace: Option<WorkspaceId>,
-        tab: Option<TabId>,
-    ) -> Result<
-        Option<(huterm_core::SelectionTarget, HierarchySnapshot)>,
-        MuxError,
-    > {
-        let mux = self
-            .mux
+    fn lock(&self) -> std::sync::MutexGuard<'_, Mux> {
+        self.mux
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let target = if let Some(tab) = tab {
-            mux.select_tab(tab)?
-        } else if let Some(workspace) = workspace {
-            mux.select_workspace(workspace)?
-        } else {
-            return Ok(None);
-        };
-        Ok(Some((target, mux.capture_hierarchy())))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Captures the hierarchy and subscribes to every later event.
+    fn subscribe_hierarchy(&self) -> (HierarchyState, HierarchySubscription) {
+        self.lock().subscribe_hierarchy()
     }
 
     fn open_tab(
@@ -230,20 +244,29 @@ impl DesktopRuntime {
         attachment: Option<AttachmentId>,
         command: &TerminalCommand,
         clipboard_allowed: bool,
-    ) -> Result<
-        (
-            SessionId,
-            WorkspaceId,
-            OpenedTab,
-            Option<AttachmentId>,
-            TerminalViewAuthority,
-        ),
-        MuxError,
-    > {
-        let mut mux = self
-            .mux
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ) -> Committed<Result<Spawned, MuxError>> {
+        let mut mux = self.lock();
+        let result = self.open_tab_locked(
+            &mut mux,
+            workspace,
+            attachment,
+            command,
+            clipboard_allowed,
+        );
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
+    }
+
+    fn open_tab_locked(
+        &self,
+        mux: &mut Mux,
+        workspace: Option<WorkspaceId>,
+        attachment: Option<AttachmentId>,
+        command: &TerminalCommand,
+        clipboard_allowed: bool,
+    ) -> Result<Spawned, MuxError> {
         if self.terminating.load(Ordering::Acquire) {
             return Err(RuntimeError::Stopped.into());
         }
@@ -331,17 +354,16 @@ impl DesktopRuntime {
         }
     }
 
+    /// Removes an unpublished spawn's resources; returns the sequence the
+    /// cleanup committed at.
     fn cleanup_spawn(
         &self,
         original_session: SessionId,
         workspace: WorkspaceId,
         tab: TabId,
         attachment: Option<AttachmentId>,
-    ) {
-        let mut mux = self
-            .mux
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ) -> u64 {
+        let mut mux = self.lock();
         // Never tear down a resource another attachment has adopted, including
         // a tab moved to another session while its UI publication was pending.
         if let Some(attachment) = attachment {
@@ -364,6 +386,7 @@ impl DesktopRuntime {
                 let _ = mux.close_tab(workspace, tab);
             }
         }
+        mux.hierarchy_seq()
     }
 
     fn assess(
@@ -383,18 +406,20 @@ impl DesktopRuntime {
         assessment: &CloseAssessment,
         confirmed: bool,
         windows: Option<Vec<WindowRestore>>,
-    ) -> Result<(), MuxError> {
+    ) -> Committed<Result<(), MuxError>> {
         let current = assessment.recheck();
-        let mut mux = self
-            .mux
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mux.commit_close_with(assessment, &current, confirmed, |mux| {
-            if let Some(windows) = windows {
-                self.terminating.store(true, Ordering::Release);
-                self.capture(mux, windows);
-            }
-        })
+        let mut mux = self.lock();
+        let result =
+            mux.commit_close_with(assessment, &current, confirmed, |mux| {
+                if let Some(windows) = windows {
+                    self.terminating.store(true, Ordering::Release);
+                    self.capture(mux, windows);
+                }
+            });
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
     }
 
     fn capture(&self, mux: &Mux, windows: Vec<WindowRestore>) {
@@ -411,12 +436,25 @@ impl DesktopRuntime {
     fn execute(
         &self,
         invocation: &CommandInvocation,
+    ) -> Committed<Result<CommandOutcome, CommandError>> {
+        let mut mux = self.lock();
+        let result = Self::execute_locked(
+            &mut mux,
+            invocation,
+            self.terminating.load(Ordering::Acquire),
+        );
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
+    }
+
+    fn execute_locked(
+        mux: &mut Mux,
+        invocation: &CommandInvocation,
+        terminating: bool,
     ) -> Result<CommandOutcome, CommandError> {
-        let mut mux = self
-            .mux
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.terminating.load(Ordering::Acquire) {
+        if terminating {
             return Err(CommandError::Unavailable(
                 "runtime is terminating".to_owned(),
             ));
@@ -447,7 +485,7 @@ impl DesktopRuntime {
                 .args
                 .retain(|argument| argument.name != "workspace");
         }
-        huterm_core::execute(&mut mux, &invocation)
+        huterm_core::execute(mux, &invocation)
     }
 
     fn reorder_tab(
@@ -455,22 +493,17 @@ impl DesktopRuntime {
         workspace: WorkspaceId,
         tab: TabId,
         before: Option<TabId>,
-    ) -> Result<Vec<TabId>, MuxError> {
-        let mut mux = self
-            .mux
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.terminating.load(Ordering::Acquire) {
-            return Err(RuntimeError::Stopped.into());
+    ) -> Committed<Result<(), MuxError>> {
+        let mut mux = self.lock();
+        let result = if self.terminating.load(Ordering::Acquire) {
+            Err(RuntimeError::Stopped.into())
+        } else {
+            mux.reorder_tab(workspace, tab, before)
+        };
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
         }
-        mux.reorder_tab(workspace, tab, before)?;
-        Ok(mux
-            .workspace(workspace)
-            .ok_or(MuxError::UnknownWorkspace(workspace))?
-            .tabs
-            .iter()
-            .map(|tab| tab.id)
-            .collect())
     }
 
     fn terminate(&self) -> Result<(), MuxError> {
@@ -521,6 +554,12 @@ struct Desktop {
     latched: Vec<NoticeContent>,
     /// Client-owned facts about every window; read window facts here.
     windows: WindowModel,
+    /// The runtime structure every window and palette reads names, tab
+    /// membership, and order from. The UI thread never locks Mux for it.
+    hierarchy: Projection,
+    /// Open palettes and close confirmations, which show titles they do not
+    /// own, and the windows whose titles changed since their last refresh.
+    title_consumers: TitleConsumers,
     /// Open windows' views, for updates that reach every window.
     views: Views,
     keymap: InstalledKeymap,
@@ -972,6 +1011,10 @@ pub(super) fn run_with_startup(
         eprintln!("Huterm configuration warning: {warning}");
     }
     let runtime = Arc::new(DesktopRuntime::default());
+    // Subscribe before any window or worker exists, so this is the only
+    // time the UI thread takes the Mux lock for structure.
+    let (hierarchy, subscription) = runtime.subscribe_hierarchy();
+    let hierarchy = Projection::new(hierarchy, subscription);
     let app_runtime = Arc::clone(&runtime);
     let application = crate::assets::application();
     application.on_reopen(|cx| {
@@ -993,6 +1036,8 @@ pub(super) fn run_with_startup(
             latched: Vec::new(),
             config_path: loaded.path,
             windows: WindowModel::default(),
+            hierarchy,
+            title_consumers: TitleConsumers::default(),
             views: Views::default(),
             keymap,
             frequency: CommandFrequency::default(),
@@ -1005,6 +1050,7 @@ pub(super) fn run_with_startup(
             #[cfg(all(target_os = "macos", feature = "macos-updater"))]
             updater,
         });
+        start_hierarchy_drain(cx);
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
         install_native_quit(cx);
@@ -1019,6 +1065,7 @@ pub(super) fn run_with_startup(
             {
                 eprintln!("Native quit cleanup failed: {error}");
             }
+            cx.global_mut::<Desktop>().hierarchy.settle_waiters(true);
             async {}
         })
         .detach();
@@ -1035,7 +1082,11 @@ pub(super) fn run_with_startup(
         cx.on_window_closed(|cx, window| {
             let desktop = cx.global_mut::<Desktop>();
             desktop.windows.remove(window);
+            desktop.title_consumers.set_host(window, false);
             desktop.views.prune();
+            // The closed window's titles left the model; Quit dialogs and
+            // palettes elsewhere still list them until they refresh.
+            mark_titles_changed(window, cx);
             maybe_exit(cx);
         })
         .detach();
@@ -1067,6 +1118,286 @@ fn follow_button_layout(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Starts the application task the current hierarchy subscription wakes.
+/// Each wake drains every queued event in one batch on the UI thread, then
+/// reconciles; replacing the subscription replaces, and so cancels, the
+/// previous task.
+fn start_hierarchy_drain(cx: &mut App) {
+    let subscription = cx.global::<Desktop>().hierarchy.subscription();
+    let task = cx.spawn(async move |cx| {
+        while subscription.wait_for_activity().await.is_ok() {
+            cx.update(sync_hierarchy);
+        }
+        // The stream closed: drain once more so the projection freezes and
+        // cancels any waiter still parked on it.
+        cx.update(sync_hierarchy);
+    });
+    cx.global_mut::<Desktop>().hierarchy.set_drain_task(task);
+}
+
+/// Applies queued hierarchy events, reconciles the windows they touched,
+/// and releases the sequence waiters the projection now satisfies. Lost
+/// events start a resubscription instead; nothing reconciles against a
+/// state that missed events.
+/// After teardown commits, nothing more applies: the projection keeps its
+/// last state and every waiter is cancelled.
+fn sync_hierarchy(cx: &mut App) {
+    let terminating = terminating(cx);
+    let projection = &mut cx.global_mut::<Desktop>().hierarchy;
+    if projection.resyncing() && !terminating {
+        return;
+    }
+    match projection.sync(terminating) {
+        Drained::Current(touched) => {
+            reconcile(cx, &touched);
+            settle_waiters(cx);
+        }
+        Drained::Resync => resync_hierarchy(cx),
+        // Events applied before the freeze still reach views; reconcile
+        // skips membership once teardown has committed.
+        Drained::Frozen(touched) => reconcile(cx, &touched),
+    }
+}
+
+/// Whether application teardown has committed.
+fn terminating(cx: &App) -> bool {
+    cx.global::<Desktop>()
+        .runtime
+        .terminating
+        .load(Ordering::Acquire)
+}
+
+/// Releases satisfied sequence waiters, or cancels every waiter once
+/// application teardown has committed.
+fn settle_waiters(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
+    desktop.hierarchy.settle_waiters(terminating);
+}
+
+/// Replaces the projection from a fresh snapshot taken on a worker. The
+/// worker takes the Mux lock, which recovers from poisoning, so in process
+/// resubscription cannot fail; it retries while the new subscription lags
+/// again before installation finishes.
+fn resync_hierarchy(cx: &mut App) {
+    if !cx.global_mut::<Desktop>().hierarchy.begin_resync() {
+        return;
+    }
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    cx.spawn(async move |cx| {
+        loop {
+            let worker = Arc::clone(&runtime);
+            let (state, subscription) = cx
+                .background_executor()
+                .spawn(async move { worker.subscribe_hierarchy() })
+                .await;
+            if cx.update(|cx| install_hierarchy(cx, state, subscription)) {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Installs a resync snapshot: replaces the state and subscription
+/// together, drains the new subscription, reconciles every window, then
+/// releases waiters. Returns false, reconciling nothing, when the new
+/// subscription lagged again. After teardown it installs nothing and ends
+/// the resubscription.
+fn install_hierarchy(
+    cx: &mut App,
+    state: HierarchyState,
+    subscription: HierarchySubscription,
+) -> bool {
+    let terminating = terminating(cx);
+    match cx.global_mut::<Desktop>().hierarchy.install(
+        state,
+        subscription,
+        terminating,
+    ) {
+        Install::Current => {}
+        Install::Lagged => return false,
+        Install::Frozen(touched) => {
+            reconcile(cx, &touched);
+            return true;
+        }
+    }
+    start_hierarchy_drain(cx);
+    reconcile(cx, &Touched::everything());
+    settle_waiters(cx);
+    true
+}
+
+/// Brings the windows showing touched workspaces or tabs in line with the
+/// projection, notifying each only when something it renders changed, then
+/// refreshes title consumers. Never installs views.
+fn reconcile(cx: &mut App, touched: &Touched) {
+    if touched.is_empty() {
+        return;
+    }
+    let desktop = cx.global::<Desktop>();
+    let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
+    let windows = windows_to_visit(&desktop.windows, touched);
+    let mut retitled = HashSet::new();
+    let mut activate = Vec::new();
+    update_windows(cx, &windows, |view, cx| {
+        let before = view.active_tab(cx);
+        let change = view.reconcile(touched, terminating, cx);
+        if let Some(tab) = reactivation(before, view.active_tab(cx)) {
+            activate.push((view.window, tab));
+        }
+        if change.titles {
+            retitled.insert(view.window);
+        }
+        if change.changed {
+            cx.notify();
+        }
+    });
+    if !activate.is_empty() {
+        // Selecting needs the window, which reconcile does not have here;
+        // a deferred update runs once no window is on GPUI's update stack.
+        cx.defer(move |cx| activate_reconciled_tabs(cx, &activate));
+    }
+    refresh_title_consumers(cx, true, &retitled);
+}
+
+/// Shows the tabs reconcile made active by removing the active tab, as
+/// `reconcile_own` does for a window's own completion, and focuses them
+/// unless an overlay holds the window's focus. A window whose active tab
+/// changed again meanwhile is left alone.
+fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
+    for &(id, tab) in tabs {
+        let Some(handle) = cx
+            .windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == id)
+        else {
+            continue;
+        };
+        let _ = handle.update(cx, |root, window, cx| {
+            let Ok(view) = root.downcast::<WorkspaceView>() else {
+                return;
+            };
+            view.update(cx, |view, cx| {
+                if view.active_tab(cx) == Some(tab) {
+                    // The palette, a close confirmation, a menu, or the
+                    // About panel keeps keyboard focus; the replacement is
+                    // still shown and snapshotted behind it.
+                    let focus = view.palette.is_none()
+                        && view.close.confirmation.is_none()
+                        && view.menu.is_none()
+                        && view.about.is_none();
+                    view.measure_tab_widths(window, cx);
+                    view.select_tab(tab, focus, window, cx);
+                }
+            });
+        });
+    }
+}
+
+/// Refreshes the views that show titles they do not own. A structural batch
+/// or any title change rebuilds open palettes, which compare their rows
+/// before notifying; a confirmation redraws when a title in its scope
+/// changed. It never changes a confirmation's assessment or focus.
+fn refresh_title_consumers(
+    cx: &mut App,
+    structural: bool,
+    retitled: &HashSet<gpui::WindowId>,
+) {
+    let hosts = cx.global::<Desktop>().title_consumers.hosts();
+    if hosts.is_empty() || (!structural && retitled.is_empty()) {
+        return;
+    }
+    update_windows(cx, &hosts, |view, cx| {
+        if view.palette.is_some() {
+            view.refresh_palette_hierarchy(cx);
+        }
+        let in_scope = match &view.close.confirmation {
+            Some(CloseTarget::Application) => !retitled.is_empty(),
+            Some(_) => retitled.contains(&view.window),
+            None => false,
+        };
+        if in_scope {
+            cx.notify();
+        }
+    });
+}
+
+/// Notes a terminal-driven title change in `window`. With a title consumer
+/// open, defers one application-level refresh per turn; otherwise it does
+/// nothing. Callers may be inside a view update, which a direct refresh
+/// would re-lease.
+fn mark_titles_changed(window: gpui::WindowId, cx: &mut App) {
+    if cx.global_mut::<Desktop>().title_consumers.mark(window) {
+        cx.defer(|cx| {
+            let retitled =
+                cx.global_mut::<Desktop>().title_consumers.take_dirty();
+            refresh_title_consumers(cx, false, &retitled);
+        });
+    }
+}
+
+/// Waits until the projection has applied `seq`, the sequence a structural
+/// result committed at. It drains in application context first, which in
+/// process always suffices, so the completion continues on the same turn;
+/// otherwise it parks on a one-shot waiter that resolves exactly once.
+async fn projected(cx: &gpui::AsyncApp, seq: u64) -> Resolution {
+    let wait = cx.update(|cx| {
+        sync_hierarchy(cx);
+        let desktop = cx.global_mut::<Desktop>();
+        let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
+        desktop.hierarchy.wait_for(seq, terminating)
+    });
+    match wait {
+        Wait::Ready => Resolution::Ready,
+        Wait::Cancelled => Resolution::Cancelled,
+        Wait::Pending(receiver) => {
+            receiver.recv().await.unwrap_or(Resolution::Cancelled)
+        }
+    }
+}
+
+/// What a spawn completion does after its sequence wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpawnDisposition {
+    /// Publish the result as before: install the view or report failure.
+    Publish,
+    /// The wait was cancelled: publish nothing. Clean up a successful spawn
+    /// unless teardown, which owns every terminal, has committed, and report
+    /// a failure only while the application is not terminating.
+    Abandon { cleanup: bool, notify: bool },
+}
+
+fn spawn_disposition(
+    resolution: Resolution,
+    terminating: bool,
+) -> SpawnDisposition {
+    match resolution {
+        Resolution::Ready => SpawnDisposition::Publish,
+        Resolution::Cancelled => SpawnDisposition::Abandon {
+            cleanup: !terminating,
+            notify: !terminating,
+        },
+    }
+}
+
+/// Settles one spawn: Quit deferred behind pending spawns resumes when the
+/// last one settles. Returns whether it resumes.
+fn settle_spawn(pending_spawns: &mut usize, quit_pending: &mut bool) -> bool {
+    *pending_spawns = pending_spawns.saturating_sub(1);
+    *pending_spawns == 0 && std::mem::take(quit_pending)
+}
+
+/// Whether Quit may proceed now; otherwise it waits for pending spawns to
+/// publish or fail.
+fn quit_now(pending_spawns: usize, quit_pending: &mut bool) -> bool {
+    if pending_spawns > 0 {
+        *quit_pending = true;
+        return false;
+    }
+    true
 }
 
 fn observe_keystroke(
@@ -1114,8 +1445,8 @@ fn observe_keystroke(
 }
 
 fn request_quit(cx: &mut App) {
-    if cx.global::<Desktop>().pending_spawns > 0 {
-        cx.global_mut::<Desktop>().quit_pending = true;
+    let desktop = cx.global_mut::<Desktop>();
+    if !quit_now(desktop.pending_spawns, &mut desktop.quit_pending) {
         return;
     }
     if let Some(handle) = cx
@@ -1516,7 +1847,6 @@ fn open_window_with_profile(
                 focused_notice: None,
                 hovered_notices: HashSet::new(),
                 palette: None,
-                palette_generation: 0,
                 palette_refresh_state: None,
                 retained_query: None,
                 recent: RecentCommands::default(),
@@ -1533,6 +1863,7 @@ fn open_window_with_profile(
                 // trip that can queue the window's MapNotify where the event
                 // loop never sees it, so no later frame is ever requested.
                 window_title: window_title(None),
+                drawn_dialog_groups: None,
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
@@ -1559,6 +1890,7 @@ fn open_window_with_profile(
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
                     view.refresh_menu(window, cx);
+                    view.sync_title_consumer(cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -1599,7 +1931,9 @@ fn open_window_with_profile(
                 });
                 false
             });
-            cx.global_mut::<Desktop>().views.push(view.downgrade());
+            cx.global_mut::<Desktop>()
+                .views
+                .push(window_id, view.downgrade());
             view.update(cx, |view, cx| {
                 view.focus.focus(window, cx);
                 if launch_shell
@@ -1996,7 +2330,14 @@ impl WorkspaceView {
 
 struct TabView {
     id: TabId,
-    record: huterm_core::Tab,
+    terminal: TerminalId,
+    /// The hierarchy sequence the tab's spawn committed at. Reconcile drops
+    /// the view only once the projection has applied it and no longer holds
+    /// the tab.
+    committed: u64,
+    /// The names the projection last held for this tab, used while it no
+    /// longer does, such as during a close commit.
+    names: TabNames,
     view: Entity<TerminalView>,
     _activity_task: Task<()>,
 }
@@ -2010,15 +2351,22 @@ impl TabView {
     }
 
     /// Returns the display name without status text, and the status its
-    /// indicator reports.
+    /// indicator reports. Names come from the hierarchy projection by
+    /// identity; a tab the projection no longer holds keeps the names it
+    /// last held.
     fn label(
         &self,
         tabs: huterm_config::TabsConfig,
         cx: &App,
     ) -> (String, TabStatus) {
         let terminal = self.view.read(cx);
-        let fallback = self.record.display_name(&terminal.title);
-        let label = if self.record.custom_name().is_some() {
+        let (custom, fallback) = tab_names(
+            cx.global::<Desktop>().hierarchy.state(),
+            self.id,
+            &self.names,
+        );
+        let fallback = resolve_tab_name(custom, &terminal.title, fallback);
+        let label = if custom.is_some() {
             fallback.to_owned()
         } else {
             resolve_tab_label(
@@ -2262,7 +2610,6 @@ struct WorkspaceView {
     /// Toasts under the pointer; ids of dismissed toasts are ignored.
     hovered_notices: HashSet<NoticeId>,
     palette: Option<Entity<CommandPalette>>,
-    palette_generation: u64,
     palette_refresh_state: Option<PaletteRefreshState>,
     /// A cancelled search query and when it was cancelled.
     retained_query: Option<(String, Instant)>,
@@ -2290,6 +2637,9 @@ struct WorkspaceView {
     about: Option<AboutDetails>,
     /// The native window title last set, so unchanged titles are not reset.
     window_title: String,
+    /// The close dialog's group headings as the last render drew them, for
+    /// smoke state; `None` while no dialog was drawn.
+    drawn_dialog_groups: Option<String>,
 }
 
 /// Which menu is open, and what its picks act on.
@@ -2567,6 +2917,25 @@ impl CloseState {
             Some(CloseDecision::Close(target))
         }
     }
+    /// Starts committing `target`: takes the assessment and ends the
+    /// confirmation, so a later cancel cannot reach the commit. Returns the
+    /// assessment and whether the user confirmed this target, or `None`
+    /// when there is no assessment to commit.
+    fn begin_commit(
+        &mut self,
+        target: &CloseTarget,
+    ) -> Option<(CloseAssessment, bool)> {
+        let confirmed = self.confirmation.as_ref() == Some(target);
+        let assessment = self.assessment.take()?;
+        self.confirmation = None;
+        self.current = Some(target.clone());
+        Some((assessment, confirmed))
+    }
+    /// Whether a confirmation is showing for its Cancel button or Escape to
+    /// cancel; false once its commit has begun.
+    fn can_cancel_confirmation(&self) -> bool {
+        self.confirmation.is_some()
+    }
     fn cancel(&mut self) -> Option<CloseTarget> {
         self.generation += 1;
         self.assessment = None;
@@ -2645,18 +3014,75 @@ impl WorkspaceView {
         self.record(cx).and_then(|record| record.attachment)
     }
 
-    /// Appends a spawned tab's view and model entry, and activates it.
+    /// Appends a spawned tab's view and model entry, activates it, then
+    /// applies the installed order, so a tab the projection placed earlier
+    /// lands in its position.
     fn push_tab_view(&mut self, tab: TabView, cx: &mut App) {
         let entry = TabEntry {
             id: tab.id,
-            terminal: tab.record.terminal_id,
+            terminal: tab.terminal,
             title: tab.title(self.config.tabs, cx),
         };
         self.tabs.push(tab);
         cx.global_mut::<Desktop>()
             .windows
             .open_tab(self.window, entry);
+        mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
+        self.sync_tab_order(cx);
+    }
+
+    /// Applies the installed order (see [`installed_order`]) to the views
+    /// and model entries when it differs from the current order; returns
+    /// whether anything moved.
+    fn sync_tab_order(&mut self, cx: &mut App) -> bool {
+        let current: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
+        let order = {
+            let state = cx.global::<Desktop>().hierarchy.state();
+            let projected = self
+                .workspace_id(cx)
+                .and_then(|workspace| state.workspace_tabs(workspace))
+                .unwrap_or(&[]);
+            installed_order(projected, &current)
+        };
+        order != current && self.apply_tab_view_order(&order, cx)
+    }
+
+    /// Reconciles this window once its own structural completion has
+    /// cleared `busy`, applying removals reconcile deferred meanwhile. A
+    /// removed active tab hands selection and focus to the new active tab in
+    /// the same update, so no keystroke lands without a focused terminal.
+    fn reconcile_own(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let active = self.active_tab(cx);
+        let change = self.reconcile(&Touched::default(), terminating(cx), cx);
+        if !change.changed {
+            return;
+        }
+        if let Some(next) = self.active_tab(cx)
+            && Some(next) != active
+        {
+            self.measure_tab_widths(window, cx);
+            self.select(next, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Brings this window in line with the projection for `touched`.
+    fn reconcile(
+        &mut self,
+        touched: &Touched,
+        terminating: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> WindowChange {
+        reconcile_window(
+            &mut WindowReconcile { view: self, cx },
+            touched,
+            terminating,
+        )
     }
 
     /// Applies canonical order to the model entries and tab views; returns
@@ -2678,13 +3104,20 @@ impl WorkspaceView {
     }
 
     /// Drops tab views and their model entries without closing anything; the
-    /// model moves the active tab as closing would.
+    /// model moves the active tab as closing would. The installed order is
+    /// applied afterwards, so a removal that follows a missed reorder still
+    /// converges.
     fn drop_tab_views(&mut self, ids: &[TabId], cx: &mut App) {
+        if !self.tabs.iter().any(|tab| ids.contains(&tab.id)) {
+            return;
+        }
         self.tabs.retain(|tab| !ids.contains(&tab.id));
         cx.global_mut::<Desktop>()
             .windows
             .close_tabs(self.window, ids);
+        mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
+        self.sync_tab_order(cx);
     }
 
     /// Records the bounds this window reopens with, unless quake owns its
@@ -2707,9 +3140,22 @@ impl WorkspaceView {
             .map(|tab| (tab.id, tab.title(self.config.tabs, cx)))
             .collect();
         let windows = &mut cx.global_mut::<Desktop>().windows;
+        let mut changed = false;
         for (tab, title) in titles {
-            windows.set_tab_title(self.window, tab, &title);
+            changed |= windows.set_tab_title(self.window, tab, &title);
         }
+        if changed {
+            mark_titles_changed(self.window, cx);
+        }
+    }
+
+    /// Records whether this window shows a title consumer: an open palette
+    /// or a close confirmation.
+    fn sync_title_consumer(&self, cx: &mut App) {
+        let host = self.palette.is_some() || self.close.confirmation.is_some();
+        cx.global_mut::<Desktop>()
+            .title_consumers
+            .set_host(self.window, host);
     }
 
     fn debug_assert_tabs_aligned(&self, cx: &App) {
@@ -2723,6 +3169,71 @@ impl WorkspaceView {
             }),
             "tab views and window model entries diverged"
         );
+    }
+}
+
+/// A window's views and model entries as [`reconcile_window`] changes them.
+struct WindowReconcile<'a, 'b> {
+    view: &'a mut WorkspaceView,
+    cx: &'a mut Context<'b, WorkspaceView>,
+}
+
+impl ReconcileTarget for WindowReconcile<'_, '_> {
+    fn projection(&self) -> &HierarchyState {
+        self.cx.global::<Desktop>().hierarchy.state()
+    }
+
+    fn workspace(&self) -> Option<WorkspaceId> {
+        self.view.workspace_id(self.cx)
+    }
+
+    fn installed(&self) -> Vec<(TabId, u64)> {
+        self.view
+            .tabs
+            .iter()
+            .map(|tab| (tab.id, tab.committed))
+            .collect()
+    }
+
+    fn busy(&self) -> bool {
+        self.view.busy
+    }
+
+    fn drop_tabs(&mut self, tabs: &[TabId]) {
+        self.view.drop_tab_views(tabs, self.cx);
+    }
+
+    fn apply_order(&mut self, order: &[TabId]) -> bool {
+        self.view.apply_tab_view_order(order, self.cx)
+    }
+
+    fn remember_names(&mut self, tab: TabId) {
+        let Some(info) = self.cx.global::<Desktop>().hierarchy.state().tab(tab)
+        else {
+            return;
+        };
+        if let Some(view) =
+            self.view.tabs.iter_mut().find(|view| view.id == tab)
+        {
+            view.names.remember(info);
+        }
+    }
+
+    fn title(&self, tab: TabId) -> String {
+        self.view
+            .tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map(|view| view.title(self.view.config.tabs, self.cx))
+            .unwrap_or_default()
+    }
+
+    fn publish_title(&mut self, tab: TabId, title: &str) -> bool {
+        self.cx.global_mut::<Desktop>().windows.set_tab_title(
+            self.view.window,
+            tab,
+            title,
+        )
     }
 }
 
@@ -3385,31 +3896,24 @@ impl WorkspaceView {
         let task = cx.background_executor().spawn(async move {
             runtime.reorder_tab(drag.source.workspace, drag.source.tab, before)
         });
+        let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
-            let result = task.await;
+            let Committed { result, seq } = task.await;
+            // Reconcile applies the committed order while draining; this
+            // completion only restores focus and reports failure.
+            projected(&app, seq).await;
             let _ = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
-                match result {
-                    Ok(order) => {
-                        if !view.apply_tab_view_order(&order, cx) {
-                            view.notify(
-                                NoticeContent::command_failure(
-                                    "Reorder tab",
-                                    "Tab order changed before reorder completed",
-                                )
-                                .severity(Severity::Warning),
-                                cx,
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        view.report_failure(
-                            "Reorder tab",
-                            format!("Cannot reorder tab: {error}"),
-                            cx,
-                        );
-                    }
+                if let Err(error) = result
+                    && !terminating(cx)
+                {
+                    view.report_failure(
+                        "Reorder tab",
+                        format!("Cannot reorder tab: {error}"),
+                        cx,
+                    );
                 }
+                view.reconcile_own(window, cx);
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);
                 cx.notify();
@@ -3440,11 +3944,13 @@ impl WorkspaceView {
         let (title, status) = tab.label(self.config.tabs, cx);
         // Title, metadata, and exit changes all arrive through this drain;
         // the model only records a title that actually changed.
-        cx.global_mut::<Desktop>().windows.set_tab_title(
+        if cx.global_mut::<Desktop>().windows.set_tab_title(
             self.window,
             tab_id,
             &with_status_suffix(title.clone(), status),
-        );
+        ) {
+            mark_titles_changed(self.window, cx);
+        }
         if !result.failures.is_empty() {
             // A tab is one keyed source: its latest failures replace the
             // earlier ones, so a flooding tab cannot fill the stack. The
@@ -3527,202 +4033,67 @@ impl WorkspaceView {
         let cleanup_runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
-            let result: Result<
-                (
-                    SessionId,
-                    WorkspaceId,
-                    OpenedTab,
-                    Option<AttachmentId>,
-                    TerminalViewAuthority,
-                ),
-                huterm_core::MuxError,
-            > = task.await;
-            app.update(|cx| {
-                cx.global_mut::<Desktop>().pending_spawns -= 1;
-                if cx.global::<Desktop>().pending_spawns == 0
-                    && cx.global::<Desktop>().quit_pending
-                {
-                    cx.global_mut::<Desktop>().quit_pending = false;
-                    cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
-                }
-            });
+            let Committed { result, seq } = task.await;
+            let resolution = projected(&app, seq).await;
+            // A spawn the window never published; cleaned up exactly once
+            // below, whichever path left it here.
+            let mut unpublished = None;
             let mut result = Some(result);
             let update = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
+                let terminating = cx
+                    .global::<Desktop>()
+                    .runtime
+                    .terminating
+                    .load(Ordering::Acquire);
                 if let Some(result) = result.take() {
-                    match result {
-                        Ok((session, id, opened, attachment, authority)) => {
-                            view.startup_reporter = None;
-                            cx.global_mut::<Desktop>().windows.attach(
-                                view.window,
-                                attachment,
-                                session,
-                                id,
-                            );
-                            authority.host_effects.set_allowed(
-                                view.config
-                                    .terminal
-                                    .clipboard_write
-                                    .is_allowed(),
-                            );
-                            let activity_client = opened.client.clone();
-                            let scroll_key = scroll_to_bottom_key(
-                                &cx.global::<Desktop>().keymap,
-                            );
-                            let terminal = cx.new(|cx| {
-                                let mut terminal = TerminalView::new(
-                                    opened.client,
-                                    authority,
-                                    Rc::clone(&view.frame_clock),
-                                    &view.config,
-                                    view.family.clone(),
-                                    view.metrics
-                                        .at_scale(window.scale_factor()),
-                                    window,
-                                    cx,
-                                );
-                                terminal.set_scroll_to_bottom_key(
-                                    scroll_key, cx,
-                                );
-                                terminal.tabs_config = view.layout_tabs();
-                                terminal.window_frame = view.window_frame();
-                                terminal
-                            });
-                            cx.subscribe_in(
-                                &terminal,
-                                window,
-                                Self::handle_context_menu_request,
-                            )
-                            .detach();
-                            let tab_id = opened.tab.id;
-                            let failure_wakes =
-                                terminal.read(cx).failure_wakes.clone();
-                            let activity_probe =
-                                refresh_smoke::ActivityProbe::new(tab_id, cx);
-                            let activity_task =
-                                cx.spawn_in(window, async move |view, cx| {
-                                    loop {
-                                        if let Some(probe) = &activity_probe {
-                                            probe.waiting(true);
-                                        }
-                                        let stopped =
-                                            TerminalView::wait_for_activity(
-                                                &activity_client,
-                                                &failure_wakes,
-                                            )
-                                            .await
-                                            .is_err();
-                                        if let Some(probe) = &activity_probe {
-                                            probe.waiting(false);
-                                        }
-                                        loop {
-                                            let more = view.update_in(
-                                                cx,
-                                                |view, window, cx| {
-                                                    view.refresh_tab(
-                                                        tab_id, window, cx,
-                                                    )
-                                                },
-                                            );
-                                            match more {
-                                                Ok(Some(true)) => {
-                                                    cx.background_executor()
-                                                        .timer(Duration::from_millis(1))
-                                                        .await;
-                                                }
-                                                Ok(Some(false)) => break,
-                                                _ => return,
-                                            }
-                                        }
-                                        if stopped {
-                                            return;
-                                        }
-                                        // Bound metadata floods independently of frame delivery.
-                                        cx.background_executor()
-                                            .timer(Duration::from_millis(1))
-                                            .await;
-                                    }
-                                });
-                            view.push_tab_view(
-                                TabView {
-                                    id: tab_id,
-                                    record: opened.tab,
-                                    view: terminal,
-                                    _activity_task: activity_task,
-                                },
-                                cx,
-                            );
-                            view.select(tab_id, window, cx);
-                            view.reveal_tab_activity(window, cx);
-                            if let Some(state) = &view.quake {
-                                // This profile's earlier failed spawn no
-                                // longer applies; drop its latched notice.
-                                let desktop = cx.global_mut::<Desktop>();
-                                if desktop
-                                    .quake
-                                    .failed_spawn
-                                    .as_ref()
-                                    .is_some_and(|(name, _)| {
-                                        name == &state.name
-                                    })
-                                    && let Some((_, message)) =
-                                        desktop.quake.failed_spawn.take()
-                                {
-                                    desktop.latched.retain(|content| {
-                                        content.message != message
-                                    });
-                                    if view.notices.dismiss_where(|content| {
-                                        content.message == message
-                                    }) {
-                                        view.reconcile_notices(window, cx);
-                                    }
-                                }
+                    match (spawn_disposition(resolution, terminating), result) {
+                        (SpawnDisposition::Publish, Ok(spawned)) => {
+                            view.publish_spawn(spawned, seq, window, cx);
+                        }
+                        (SpawnDisposition::Publish, Err(error)) => {
+                            if view.spawn_failed(&error, window, cx) {
+                                return;
                             }
                         }
-                        Err(error) => {
-                            let message = format!("Cannot open tab: {error}");
-                            view.notify(
-                                NoticeContent::command_failure(
-                                    "Cannot open tab",
-                                    message.clone(),
-                                )
-                                .action("Try Again", bare(ids::NEW_TAB)),
-                                cx,
-                            );
-                            if let Some(reporter) = view.startup_reporter.take()
-                            {
-                                report_deferred_failure(
+                        (
+                            SpawnDisposition::Abandon { cleanup, notify },
+                            result,
+                        ) => {
+                            if notify {
+                                let reason = result.as_ref().map_or_else(
+                                    ToString::to_string,
+                                    |_| {
+                                        "runtime structure is unavailable"
+                                            .to_owned()
+                                    },
+                                );
+                                view.notify(
+                                    NoticeContent::command_failure(
+                                        "Cannot open tab",
+                                        format!("Cannot open tab: {reason}"),
+                                    ),
                                     cx,
-                                    Some(reporter),
-                                    message.clone(),
                                 );
                             }
-                            if view.quake.is_some() && view.tabs.is_empty() {
-                                latch_failure(cx, &message);
-                                if let Some(state) = &view.quake {
-                                    cx.global_mut::<Desktop>()
-                                        .quake
-                                        .failed_spawn =
-                                        Some((state.name.clone(), message));
-                                }
-                                eprintln!("Cannot start quake shell: {error}");
-                                view.remove_window(window, cx, false);
-                                return;
+                            if cleanup {
+                                unpublished = result.ok();
                             }
                         }
                     }
                 }
+                view.reconcile_own(window, cx);
                 view.resume_close(window, cx);
                 cx.notify();
             });
-            if update.is_err()
-                && let Some(Ok((
-                    session,
-                    workspace,
-                    opened,
-                    attachment,
-                    authority,
-                ))) = result
+            // With the window gone, clean up a successful spawn unless
+            // teardown has committed and owns every terminal, as
+            // `spawn_disposition` decides for a cancelled wait.
+            if update.is_err() && !app.update(|cx| terminating(cx)) {
+                unpublished = result.take().and_then(Result::ok);
+            }
+            if let Some((session, workspace, opened, attachment, authority)) =
+                unpublished
             {
                 drop(authority);
                 cx.background_executor()
@@ -3732,14 +4103,198 @@ impl WorkspaceView {
                             workspace,
                             opened.tab.id,
                             attachment,
-                        );
+                        )
                     })
                     .await;
             }
+            // The spawn stays pending through its wait and publication, so
+            // Quit requested meanwhile resumes only after it settles.
+            app.update(|cx| {
+                let desktop = cx.global_mut::<Desktop>();
+                if settle_spawn(
+                    &mut desktop.pending_spawns,
+                    &mut desktop.quit_pending,
+                ) {
+                    cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
+                } else if desktop.pending_spawns == 0 {
+                    maybe_exit(cx);
+                }
+            });
         })
         .detach();
         cx.notify();
         Ok(CommandOutcome::Accepted)
+    }
+
+    /// Installs a published spawn's terminal view, activates it, and records
+    /// the sequence its tab committed at.
+    fn publish_spawn(
+        &mut self,
+        spawned: Spawned,
+        committed: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (session, id, opened, attachment, authority) = spawned;
+        self.startup_reporter = None;
+        cx.global_mut::<Desktop>().windows.attach(
+            self.window,
+            attachment,
+            session,
+            id,
+        );
+        authority
+            .host_effects
+            .set_allowed(self.config.terminal.clipboard_write.is_allowed());
+        let activity_client = opened.client.clone();
+        let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
+        let terminal = cx.new(|cx| {
+            let mut terminal = TerminalView::new(
+                opened.client,
+                authority,
+                Rc::clone(&self.frame_clock),
+                &self.config,
+                self.family.clone(),
+                self.metrics.at_scale(window.scale_factor()),
+                window,
+                cx,
+            );
+            terminal.set_scroll_to_bottom_key(scroll_key, cx);
+            terminal.tabs_config = self.layout_tabs();
+            terminal.window_frame = self.window_frame();
+            terminal
+        });
+        cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
+            .detach();
+        let tab_id = opened.tab.id;
+        // The completion drained first, so the projection holds the tab.
+        let names = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab_id)
+            .map(TabNames::from_info)
+            .unwrap_or_default();
+        let failure_wakes = terminal.read(cx).failure_wakes.clone();
+        let activity_task = Self::tab_activity_task(
+            tab_id,
+            activity_client,
+            failure_wakes,
+            window,
+            cx,
+        );
+        self.push_tab_view(
+            TabView {
+                id: tab_id,
+                terminal: opened.tab.terminal_id,
+                committed,
+                names,
+                view: terminal,
+                _activity_task: activity_task,
+            },
+            cx,
+        );
+        self.select(tab_id, window, cx);
+        self.reveal_tab_activity(window, cx);
+        if let Some(state) = &self.quake {
+            // This profile's earlier failed spawn no
+            // longer applies; drop its latched notice.
+            let desktop = cx.global_mut::<Desktop>();
+            if desktop
+                .quake
+                .failed_spawn
+                .as_ref()
+                .is_some_and(|(name, _)| name == &state.name)
+                && let Some((_, message)) = desktop.quake.failed_spawn.take()
+            {
+                desktop.latched.retain(|content| content.message != message);
+                if self
+                    .notices
+                    .dismiss_where(|content| content.message == message)
+                {
+                    self.reconcile_notices(window, cx);
+                }
+            }
+        }
+    }
+
+    /// The tab's activity drain: waits for terminal events or failures and
+    /// refreshes the tab in bounded batches.
+    fn tab_activity_task(
+        tab_id: TabId,
+        activity_client: RuntimeClient,
+        failure_wakes: async_channel::Receiver<()>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Task<()> {
+        let activity_probe = refresh_smoke::ActivityProbe::new(tab_id, cx);
+        cx.spawn_in(window, async move |view, cx| {
+            loop {
+                if let Some(probe) = &activity_probe {
+                    probe.waiting(true);
+                }
+                let stopped = TerminalView::wait_for_activity(
+                    &activity_client,
+                    &failure_wakes,
+                )
+                .await
+                .is_err();
+                if let Some(probe) = &activity_probe {
+                    probe.waiting(false);
+                }
+                loop {
+                    let more = view.update_in(cx, |view, window, cx| {
+                        view.refresh_tab(tab_id, window, cx)
+                    });
+                    match more {
+                        Ok(Some(true)) => {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1))
+                                .await;
+                        }
+                        Ok(Some(false)) => break,
+                        _ => return,
+                    }
+                }
+                if stopped {
+                    return;
+                }
+                // Bound metadata floods independently of frame delivery.
+                cx.background_executor()
+                    .timer(Duration::from_millis(1))
+                    .await;
+            }
+        })
+    }
+
+    /// Reports a failed spawn. Returns true when the failure removed the
+    /// window, a quake window whose shell never started.
+    fn spawn_failed(
+        &mut self,
+        error: &MuxError,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let message = format!("Cannot open tab: {error}");
+        self.notify(
+            NoticeContent::command_failure("Cannot open tab", message.clone())
+                .action("Try Again", bare(ids::NEW_TAB)),
+            cx,
+        );
+        if let Some(reporter) = self.startup_reporter.take() {
+            report_deferred_failure(cx, Some(reporter), message.clone());
+        }
+        if self.quake.is_some() && self.tabs.is_empty() {
+            latch_failure(cx, &message);
+            if let Some(state) = &self.quake {
+                cx.global_mut::<Desktop>().quake.failed_spawn =
+                    Some((state.name.clone(), message));
+            }
+            eprintln!("Cannot start quake shell: {error}");
+            self.remove_window(window, cx, false);
+            return true;
+        }
+        false
     }
 
     fn invoke_interactive(
@@ -3833,15 +4388,21 @@ impl WorkspaceView {
             terminal.update(cx, TerminalView::clear_composition);
         }
         let active = self.active_tab(cx);
+        let workspace = self.workspace_id(cx);
         let target = PaletteTarget {
-            session: None,
-            workspace: self.workspace_id(cx),
+            session: workspace.and_then(|workspace| {
+                cx.global::<Desktop>()
+                    .hierarchy
+                    .state()
+                    .workspace_session(workspace)
+            }),
+            workspace,
             tab: active,
             terminal: self
                 .tabs
                 .iter()
                 .find(|tab| Some(tab.id) == active)
-                .map(|tab| tab.record.terminal_id),
+                .map(|tab| tab.terminal),
             terminal_view: terminal.map(|terminal| terminal.downgrade()),
             contexts: window.context_stack(),
         };
@@ -3853,10 +4414,7 @@ impl WorkspaceView {
         } else {
             self.take_retained_query()
         };
-        let tab_order = cx
-            .global::<Desktop>()
-            .windows
-            .palette_tab_order(self.window);
+        let (hierarchy, hierarchy_seq) = self.palette_hierarchy(cx);
         let open = PaletteOpen {
             target,
             keymap,
@@ -3867,10 +4425,9 @@ impl WorkspaceView {
             profiles: quake_profile_rows(cx),
             request,
             retained_query,
-            tab_order,
+            hierarchy,
+            hierarchy_seq,
         };
-        self.palette_generation = self.palette_generation.wrapping_add(1);
-        let generation = self.palette_generation;
         let palette = cx.new(|cx| {
             self.frame_clock.observe(cx);
             CommandPalette::open(open, cx)
@@ -3881,61 +4438,56 @@ impl WorkspaceView {
         self.palette_refresh_state =
             Some(self.current_palette_refresh_state(cx));
         palette.read(cx).focus_handle(cx).focus(window, cx);
-
-        self.load_palette_hierarchy(palette, generation, cx);
+        // Its rows copy titles, so register before any title can change.
+        self.sync_title_consumer(cx);
         cx.notify();
         Ok(CommandOutcome::Completed)
     }
 
-    fn load_palette_hierarchy(
-        &self,
-        palette: Entity<CommandPalette>,
-        generation: u64,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    /// The palette's identity rows from the projection, with each tab
+    /// labelled by its custom name, the title its window published, or its
+    /// fallback name, and this window's tabs most recently used first.
+    fn palette_hierarchy(&self, cx: &App) -> (PaletteHierarchy, u64) {
+        let desktop = cx.global::<Desktop>();
+        let titles: HashMap<TabId, &str> =
+            desktop.windows.published_titles().collect();
+        let state = desktop.hierarchy.state();
+        let hierarchy = PaletteHierarchy::from_projection(
+            state,
+            |tab| titles.get(&tab).copied(),
+            &desktop.windows.palette_tab_order(self.window),
+        );
+        (hierarchy, state.seq())
+    }
+
+    /// Rebuilds an open palette's identity rows from the projection; the
+    /// palette notifies only when its rows changed.
+    fn refresh_palette_hierarchy(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(palette) = self.palette.clone() else {
+            return;
+        };
+        let (hierarchy, seq) = self.palette_hierarchy(cx);
         let workspace = self.workspace_id(cx);
-        let tab = self.active_tab(cx);
-        let live_titles = self
-            .tabs
-            .iter()
-            .map(|tab| (tab.id, tab.title(self.config.tabs, cx)))
-            .collect();
-        let task = cx
-            .background_executor()
-            .spawn(async move { runtime.palette_snapshot(workspace, tab) });
-        cx.spawn(async move |view, cx| {
-            let result = task.await;
-            let _ = view.update(cx, |view, cx| {
-                if view.palette.is_none()
-                    || view.palette_generation != generation
-                {
-                    return;
-                }
-                match result {
-                    Ok(Some((target, hierarchy))) => {
-                        palette.update(cx, |palette, cx| {
-                            palette.set_hierarchy(
-                                target,
-                                &hierarchy,
-                                &live_titles,
-                                cx,
-                            );
-                        });
-                        view.palette_refresh_state = None;
-                        view.refresh_palette(cx);
-                    }
-                    Ok(None) => {}
-                    Err(error) => palette.update(cx, |palette, cx| {
-                        palette.hierarchy_failed(
-                            format!("Cannot load command targets: {error}"),
-                            cx,
-                        );
-                    }),
-                }
-            });
-        })
-        .detach();
+        let active = self.active_tab(cx);
+        let scope = PaletteScope {
+            session: workspace.and_then(|workspace| {
+                cx.global::<Desktop>()
+                    .hierarchy
+                    .state()
+                    .workspace_session(workspace)
+            }),
+            workspace,
+            tab: active,
+            terminal: self
+                .tabs
+                .iter()
+                .find(|tab| Some(tab.id) == active)
+                .map(|tab| tab.terminal),
+            terminal_view: self.active_view(cx).map(|view| view.downgrade()),
+        };
+        palette.update(cx, |palette, cx| {
+            palette.set_hierarchy(hierarchy, scope, seq, cx);
+        });
     }
 
     fn handle_palette_event(
@@ -4227,7 +4779,7 @@ impl WorkspaceView {
                     }
                     ids::RENAME_SESSION if target.session.is_none() => {
                         Err(CommandError::Unavailable(
-                            "loading command target".into(),
+                            "window has no session".into(),
                         ))
                     }
                     _ => Ok(()),
@@ -4533,7 +5085,7 @@ impl WorkspaceView {
                 self.finish_close(target, window, cx);
             }
             (ids::DIALOG_CONFIRM | ids::DIALOG_CANCEL, _) => {
-                self.cancel_close(window, cx);
+                self.cancel_confirmation(window, cx);
             }
             (ids::DIALOG_FOCUS_NEXT | ids::DIALOG_FOCUS_PREVIOUS, focus) => {
                 self.close.dialog_focus = focus.toggled();
@@ -4771,13 +5323,10 @@ impl WorkspaceView {
             return ("none".to_owned(), String::new());
         };
         let input = self.close_dialog_input(target, cx);
-        let groups = input
-            .groups
-            .iter()
-            .filter_map(|group| group.tab_title.clone())
-            .collect::<Vec<_>>()
-            .join(";");
-        (format!("{:?}", build_close_dialog(&input).title), groups)
+        (
+            format!("{:?}", build_close_dialog(&input).title),
+            dialog_group_titles(&input),
+        )
     }
 
     /// The busy terminals of a pending confirmation, mapped to the tab titles
@@ -4810,6 +5359,16 @@ impl WorkspaceView {
             .flat_map(CloseAssessment::terminal_jobs);
         close_dialog_input(target, jobs, &titles)
     }
+}
+
+/// The busy groups' tab headings, `;`-separated, for smoke state.
+fn dialog_group_titles(input: &CloseDialogInput) -> String {
+    input
+        .groups
+        .iter()
+        .filter_map(|group| group.tab_title.clone())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 /// A tab's display title with the identities the close evidence uses.
@@ -5032,7 +5591,14 @@ fn run_on_runtime(
         .background_executor()
         .spawn(async move { runtime.execute(&invocation) });
     cx.spawn(async move |view, cx| {
-        if let Err(error) = task.await {
+        let Committed { result, seq } = task.await;
+        // Reconcile publishes renamed titles while draining; the completion
+        // reports failure only after the projection holds its result.
+        let resolution = projected(cx, seq).await;
+        if let Err(error) = result
+            && (resolution == Resolution::Ready
+                || !cx.update(|cx| terminating(cx)))
+        {
             let _ = view.update(cx, |view, cx| {
                 view.notify(
                     NoticeContent::command_failure(
@@ -5327,6 +5893,18 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.select_tab(id, true, window, cx);
+    }
+
+    /// Activates `id`, showing it and hiding the others; `focus` moves
+    /// keyboard focus to its terminal.
+    fn select_tab(
+        &mut self,
+        id: TabId,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if !cx.global_mut::<Desktop>().windows.select(self.window, id) {
             return;
         }
@@ -5340,7 +5918,9 @@ impl WorkspaceView {
                 if view.visible {
                     view.bell.viewed(window.is_window_active());
                     view.resize_if_needed(window);
-                    view.focus.focus(window, cx);
+                    if focus {
+                        view.focus.focus(window, cx);
+                    }
                     view.start_initial_snapshot(cx);
                 } else {
                     view.hide(cx);
@@ -5526,6 +6106,7 @@ impl WorkspaceView {
                     return;
                 }
                 view.busy = false;
+                view.reconcile_own(window, cx);
                 let assessment = match result {
                     Ok(assessment) => assessment,
                     Err(error) => {
@@ -5583,12 +6164,26 @@ impl WorkspaceView {
         }
     }
 
+    /// Cancels the showing confirmation from its Cancel button or Escape.
+    /// A stale press, dispatched against a frame drawn before Confirm began
+    /// the commit, finds no confirmation and must not cancel the commit.
+    fn cancel_confirmation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.close.can_cancel_confirmation() {
+            self.cancel_close(window, cx);
+        }
+    }
+
     fn cancel_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         self.busy = false;
+        self.reconcile_own(window, cx);
         if matches!(self.close.cancel(), Some(CloseTarget::Application)) {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
@@ -5625,13 +6220,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let confirmed = self.close.confirmation.as_ref() == Some(&target);
-        let Some(assessment) = self.close.assessment.take() else {
+        let Some((assessment, confirmed)) = self.close.begin_commit(&target)
+        else {
             self.request_close(target, window, cx);
             return;
         };
-        self.close.confirmation = None;
-        self.close.current = Some(target.clone());
         self.busy = true;
         let generation = self.close.generation;
         self.publish_restorable_bounds(cx);
@@ -5645,8 +6238,16 @@ impl WorkspaceView {
         let task = cx.background_executor().spawn(async move {
             runtime.commit(&assessment, confirmed, windows)
         });
+        let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
-            let result = task.await;
+            let Committed { result, seq } = task.await;
+            // Application close commits teardown itself, which cancels every
+            // waiter, so it keeps today's flow without waiting.
+            let resolution = if matches!(target, CloseTarget::Application) {
+                Resolution::Ready
+            } else {
+                projected(&app, seq).await
+            };
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
                     return;
@@ -5654,6 +6255,7 @@ impl WorkspaceView {
                 view.busy = false;
                 view.close.current = None;
                 if close_commit_retries(&result) {
+                    view.reconcile_own(window, cx);
                     view.request_close(target, window, cx);
                     return;
                 }
@@ -5662,8 +6264,18 @@ impl WorkspaceView {
                     eprintln!("{message}");
                     view.report_failure("Close", message, cx);
                 }
+                if resolution == Resolution::Cancelled {
+                    // Teardown owns removal; publish nothing.
+                    view.reconcile_own(window, cx);
+                    view.resume_close(window, cx);
+                    cx.notify();
+                    return;
+                }
                 match target {
-                    CloseTarget::Application => approved_quit(cx),
+                    CloseTarget::Application => {
+                        settle_waiters(cx);
+                        approved_quit(cx);
+                    }
                     CloseTarget::Window => {
                         let quit_after = matches!(
                             view.close.pending,
@@ -5698,6 +6310,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.drop_tab_views(ids, cx);
+        // Removals deferred while this window was busy apply now, before
+        // the new active tab takes focus below.
+        self.reconcile(&Touched::default(), terminating(cx), cx);
         // Fit widths are index-based; refresh them before the reveal below
         // reads them.
         self.measure_tab_widths(window, cx);
@@ -7358,9 +7973,11 @@ impl Render for WorkspaceView {
             );
             root = root.child(modal_layer(about, &layout));
         }
+        self.drawn_dialog_groups = None;
         if let Some(target) = self.close.confirmation.clone() {
-            let model =
-                build_close_dialog(&self.close_dialog_input(&target, cx));
+            let input = self.close_dialog_input(&target, cx);
+            self.drawn_dialog_groups = Some(dialog_group_titles(&input));
+            let model = build_close_dialog(&input);
             let dialog = render_close_dialog(
                 &model,
                 self.close.dialog_focus,
@@ -7368,7 +7985,7 @@ impl Render for WorkspaceView {
                 Swatch::from_theme(&self.config.theme),
                 self.config.window.shortcut_hints,
                 cx.listener(|view, _, window, cx| {
-                    view.cancel_close(window, cx);
+                    view.cancel_confirmation(window, cx);
                 }),
                 cx.listener(move |view, _, window, cx| {
                     view.finish_close(target.clone(), window, cx);
@@ -8383,8 +9000,9 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
+            self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),
             self.window_title,
             self.title_row_moves.get(),
@@ -8510,6 +9128,74 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 mod tests {
     use super::model::remove_tab;
     use super::*;
+
+    #[test]
+    fn a_cancelled_spawn_publishes_nothing_and_cleans_up_only_before_teardown()
+    {
+        assert_eq!(
+            spawn_disposition(Resolution::Ready, false),
+            SpawnDisposition::Publish
+        );
+        assert_eq!(
+            spawn_disposition(Resolution::Cancelled, false),
+            SpawnDisposition::Abandon {
+                cleanup: true,
+                notify: true
+            }
+        );
+        // Teardown owns every terminal and the application is leaving.
+        assert_eq!(
+            spawn_disposition(Resolution::Cancelled, true),
+            SpawnDisposition::Abandon {
+                cleanup: false,
+                notify: false
+            }
+        );
+    }
+
+    #[test]
+    fn quit_from_a_sibling_waits_for_a_spawn_still_waiting_on_the_projection() {
+        let mut pending_spawns = 0;
+        let mut quit_pending = false;
+        assert!(quit_now(pending_spawns, &mut quit_pending));
+        assert!(!quit_pending);
+        // A spawn is pending from its start through its sequence wait and
+        // publication.
+        pending_spawns += 1;
+        assert!(!quit_now(pending_spawns, &mut quit_pending));
+        assert!(quit_pending);
+        assert!(!can_open_window(true, false, quit_pending));
+        assert!(settle_spawn(&mut pending_spawns, &mut quit_pending));
+        assert_eq!((pending_spawns, quit_pending), (0, false));
+
+        // With two spawns, Quit resumes only after the last settles.
+        pending_spawns = 2;
+        assert!(!quit_now(pending_spawns, &mut quit_pending));
+        assert!(!settle_spawn(&mut pending_spawns, &mut quit_pending));
+        assert!(quit_pending);
+        assert!(settle_spawn(&mut pending_spawns, &mut quit_pending));
+        assert!(!settle_spawn(&mut pending_spawns, &mut quit_pending));
+    }
+
+    #[test]
+    fn a_stale_cancel_after_confirm_cannot_reach_the_commit() {
+        let runtime = DesktopRuntime::default();
+        let session = runtime.lock().create_session(None).unwrap();
+        let mut close = CloseState::default();
+        let target = close.begin_check(CloseTarget::Window);
+        close.assessment =
+            Some(runtime.assess(CloseRequest::Session(session)).unwrap());
+        assert_eq!(
+            close.checked(true),
+            Some(CloseDecision::Confirm(target.clone()))
+        );
+        assert!(close.can_cancel_confirmation());
+        let (_, confirmed) = close.begin_commit(&target).unwrap();
+        assert!(confirmed);
+        // A Cancel or Escape drawn before Confirm now finds nothing to cancel.
+        assert!(!close.can_cancel_confirmation());
+        assert_eq!(close.current, Some(target));
+    }
 
     #[test]
     fn close_commits_retry_only_when_the_runtime_refused_them() {
@@ -9237,7 +9923,9 @@ mod tests {
         let runtime = DesktopRuntime::default();
         runtime.mux.lock().unwrap().reserve_through(u64::MAX - 5);
         assert!(matches!(
-            runtime.open_tab(None, None, &lifecycle_command(), true),
+            runtime
+                .open_tab(None, None, &lifecycle_command(), true)
+                .result,
             Err(MuxError::IdExhausted)
         ));
         let mux = runtime.mux.lock().unwrap();
@@ -9255,7 +9943,7 @@ mod tests {
                 .into(),
         ];
         let (session, _, opened, _, authority) =
-            runtime.open_tab(None, None, &command, true).unwrap();
+            runtime.open_tab(None, None, &command, true).result.unwrap();
 
         opened
             .client
@@ -9287,6 +9975,7 @@ mod tests {
         let runtime = DesktopRuntime::default();
         let (session, workspace, opened, attachment, _authority) = runtime
             .open_tab(None, None, &lifecycle_command(), true)
+            .result
             .unwrap();
         let second =
             runtime.mux.lock().unwrap().attach_session(session).unwrap();
@@ -9304,6 +9993,7 @@ mod tests {
         let (source, source_workspace, transferred, initial, _authority) =
             runtime
                 .open_tab(None, None, &lifecycle_command(), true)
+                .result
                 .unwrap();
         runtime
             .mux
@@ -9332,6 +10022,7 @@ mod tests {
         let runtime = DesktopRuntime::default();
         let (source, workspace, opened, attachment, _authority) = runtime
             .open_tab(None, None, &lifecycle_command(), true)
+            .result
             .unwrap();
         let destination = runtime
             .mux
@@ -9376,7 +10067,10 @@ mod tests {
             quake_profile: None,
         }];
         let assessment = runtime.assess(CloseRequest::Application).unwrap();
-        runtime.commit(&assessment, false, Some(windows)).unwrap();
+        runtime
+            .commit(&assessment, false, Some(windows))
+            .result
+            .unwrap();
         runtime.terminate().unwrap();
         let restore = runtime.restore.lock().unwrap();
         let restore = restore.as_ref().unwrap();
@@ -9408,7 +10102,7 @@ mod tests {
             .create_session(Some("new survivor"))
             .unwrap();
         assert!(matches!(
-            runtime.commit(&assessment, false, Some(Vec::new())),
+            runtime.commit(&assessment, false, Some(Vec::new())).result,
             Err(MuxError::StaleClose)
         ));
         assert!(!runtime.terminating.load(Ordering::Acquire));
@@ -9417,6 +10111,7 @@ mod tests {
         let assessment = runtime.assess(CloseRequest::Application).unwrap();
         runtime
             .commit(&assessment, false, Some(Vec::new()))
+            .result
             .unwrap();
         assert!(runtime.terminating.load(Ordering::Acquire));
         assert_eq!(
@@ -9459,20 +10154,21 @@ mod tests {
             },
             presentation: huterm_protocol::TerminalPresentation::default(),
         };
-        assert!(runtime.open_tab(None, None, &command, true).is_err());
+        assert!(runtime.open_tab(None, None, &command, true).result.is_err());
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         command.program = "/bin/sh".into();
         let (session, workspace, first, attachment, _first_authority) =
-            runtime.open_tab(None, None, &command, true).unwrap();
+            runtime.open_tab(None, None, &command, true).result.unwrap();
         let (sibling, _, second, _, _second_authority) =
-            runtime.open_tab(None, None, &command, true).unwrap();
+            runtime.open_tab(None, None, &command, true).result.unwrap();
         assert_ne!(session, sibling);
         command.program = "/huterm-nonexistent-shell".into();
-        assert!(runtime.open_tab(None, None, &command, true).is_err());
+        assert!(runtime.open_tab(None, None, &command, true).result.is_err());
         assert!(
             runtime
                 .open_tab(Some(workspace), attachment, &command, true)
+                .result
                 .is_err()
         );
         assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 2);
@@ -9499,7 +10195,7 @@ mod tests {
         assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
         runtime.mux.lock().unwrap().reserve_through(u64::MAX - 1);
         assert!(matches!(
-            runtime.open_tab(None, None, &command, true),
+            runtime.open_tab(None, None, &command, true).result,
             Err(MuxError::IdExhausted)
         ));
         assert!(runtime.mux.lock().unwrap().sessions().is_empty());
@@ -9522,13 +10218,13 @@ mod tests {
             presentation: huterm_protocol::TerminalPresentation::default(),
         };
         let (_, _, opened, _, _authority) =
-            runtime.open_tab(None, None, &command, true).unwrap();
+            runtime.open_tab(None, None, &command, true).result.unwrap();
         // Hold the structural lock as an already-running spawn would, then
         // queue another spawn and invoke the exact native-hook cleanup method.
         let guard = runtime.mux.lock().unwrap();
         let spawn_runtime = Arc::clone(&runtime);
         let spawn = std::thread::spawn(move || {
-            spawn_runtime.open_tab(None, None, &command, true)
+            spawn_runtime.open_tab(None, None, &command, true).result
         });
         let quit_runtime = Arc::clone(&runtime);
         let (finished, completion) = std::sync::mpsc::channel();
@@ -9573,7 +10269,7 @@ mod tests {
         close.begin_check(CloseTarget::Window);
         close.current = Some(CloseTarget::Window);
         close.queue(CloseTarget::Application);
-        runtime.commit(&assessment, false, None).unwrap();
+        runtime.commit(&assessment, false, None).result.unwrap();
         assert_eq!(
             close.take_pending(|_| false),
             Some(CloseTarget::Application)
