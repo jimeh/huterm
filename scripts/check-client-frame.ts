@@ -70,6 +70,8 @@ function openXlib() {
     XCreateSimpleWindow: { args: ["ptr", "u64", "i32", "i32", "u32", "u32", "u32", "u64", "u64"], returns: "u64" },
     XSetSelectionOwner: { args: ["ptr", "u64", "u64", "u64"], returns: "i32" },
     XSendEvent: { args: ["ptr", "u64", "i32", "i64", "ptr"], returns: "i32" },
+    XGrabKeyboard: { args: ["ptr", "u64", "i32", "i32", "i32", "u64"], returns: "i32" },
+    XUngrabKeyboard: { args: ["ptr", "u64"], returns: "i32" },
     XSync: { args: ["ptr", "i32"], returns: "i32" },
     XCloseDisplay: { args: ["ptr"], returns: "i32" },
   });
@@ -136,6 +138,27 @@ export async function withCompositor(check: (compositor: X11Process) => Promise<
     if (text) process.stderr.write(text);
   }
   await waitFor(async () => !compositorOwnsScreen(), "compositor selection release");
+}
+
+/**
+ * Whether another client holds an active keyboard grab, as Openbox does
+ * while it moves a window. X11 has no query for this, so the probe tries
+ * the grab itself and releases it at once. It grabs on `windowId`, the
+ * focused Huterm window, so the server reports no focus change to it.
+ */
+function keyboardGrabbed(windowId: string): boolean {
+  return withXlib((x11, display) => {
+    const GrabModeAsync = 1;
+    const CurrentTime = 0n;
+    const GrabSuccess = 0;
+    const AlreadyGrabbed = 1;
+    const status = x11.XGrabKeyboard(display, BigInt(windowId), 0, GrabModeAsync, GrabModeAsync, CurrentTime);
+    if (status === AlreadyGrabbed) return true;
+    if (status !== GrabSuccess) throw new Error(`XGrabKeyboard returned ${status}`);
+    x11.XUngrabKeyboard(display, CurrentTime);
+    x11.XSync(display, 0);
+    return false;
+  });
 }
 
 /** An `_XSETTINGS_SETTINGS` property holding one string setting, little endian. */
@@ -517,6 +540,9 @@ done
       const moved = geometry(windowId);
       return moved.x >= beforeDrag.x + 40 && moved.y >= beforeDrag.y + 25 && moved.width === beforeDrag.width && moved.height === beforeDrag.height;
     }, `window move by drag from ${JSON.stringify(beforeDrag)}`);
+    // The window moves before Openbox handles the release; until then its
+    // move grab holds the keyboard and swallows typed keys.
+    await waitFor(async () => !keyboardGrabbed(windowId), "window manager keyboard grab release");
     await state("w0.maximized=false", "w0.frame_inset=10", "w0.terminal_focused=true");
     await ack("ackdragx");
 

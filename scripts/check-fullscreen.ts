@@ -789,7 +789,8 @@ done
     try { process.stderr.write(`FULLSCREEN_SMOKE last state\n${await readFile(join(directory, "state"), "utf8")}\n`); } catch {}
     throw error;
   } finally {
-    if (rawRecording && app.exitCode === null) {
+    // A recorder that never started cannot report stopping.
+    if (rawRecording && app.exitCode === null && await Bun.file(rawReady).exists()) {
       await writeFile(rawStop, "stop");
       await waitFor(async () => app.exitCode !== null || await Bun.file(rawStopped).exists(), "raw recorder failure cleanup", 3_000)
         .catch(error => process.stderr.write(`Recorder cleanup before app teardown: ${error}\n`));

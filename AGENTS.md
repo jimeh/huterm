@@ -809,6 +809,10 @@ fires and the terminal keeps focus. Keys that arrive before the terminal is in
 a drawn frame are dropped: after focusing a window, input smokes repeat a probe
 key until the fixture reads one, then send a release byte, instead of typing
 immediately or sleeping.
+Smoke state is sampled from the model, which can run ahead of the drawn frame.
+Before a smoke presses on a newly opened overlay, wait for a field set during
+render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the
+model flag.
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
 group, so accepted terminal input never reaches the fixture reader.
@@ -1392,6 +1396,10 @@ that changes. Smoke state publishes the new layout order before the next paint
 moves `window_buttons` rects, so poll for settled geometry.
 Start a title-row move on the first drag motion, not the press: the window
 manager's move grab otherwise swallows the second click of a double-click.
+Openbox also grabs the keyboard for a move and releases it only after it
+handles the button release, which can come after the window reaches its new
+position. Smokes probe with `XGrabKeyboard` until the grab is free before
+typing; a key typed earlier is lost.
 GPUI's X11 setters such as `set_title` and `set_client_inset` wait for a
 checked reply, which reads pending events into x11rb's queue. calloop watches
 only the socket, so an event queued this way, such as a new window's
