@@ -43,14 +43,21 @@ pre-commit:
       glob: "{mise.toml,mise.lock,lefthook.yml,rustfmt.toml,deny.toml}"
       run: mise tasks >/dev/null && lefthook validate
 
-    - name: script-types
-      glob: "{scripts/*.ts,scripts/**/*.ts,package.json,bun.lock,tsconfig.json}"
-      run: mise run typecheck:scripts
+    # Both tasks depend on scripts:install. Concurrent `bun install` runs race
+    # while linking packages (EEXIST), so these two run one after the other.
+    - name: scripts
+      group:
+        parallel: false
+        jobs:
+          - name: script-types
+            glob: "{scripts/*.ts,scripts/**/*.ts,package.json,bun.lock,tsconfig.json}"
+            run: mise run typecheck:scripts
 
-    # Fast, targeted tests only; implementers run the relevant suites themselves.
-    # Unfiltered because tests can inspect workflows, tasks, and docs too.
-    - name: script-tests
-      run: mise run test:scripts:affected --fast {staged_files}
+          # Fast, targeted tests only; implementers run the relevant suites
+          # themselves. Unfiltered because tests can inspect workflows, tasks,
+          # and docs too.
+          - name: script-tests
+            run: mise run test:scripts:affected --fast {staged_files}
 
     - name: shell-syntax
       glob: "{scripts/*.sh,scripts/**/*.sh}"
