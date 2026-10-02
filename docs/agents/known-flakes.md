@@ -22,16 +22,20 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   Idle only after activation is seen, so the quake was active and the newly
   launched witness took activation back. `trace.jsonl` records animation
   samples but not focus, so the reactivation mechanism is unconfirmed.
-- **Hypothesis (deferred):** `scripts/quake-witness.swift` calls
-  `NSApp.activate(ignoringOtherApps:)` both at launch and on the `focus`
-  command. Under cooperative activation the departed witness may apply a queued
-  second activation after Huterm has seen its own, and Huterm deliberately does
-  not re-arm activation retries after that. Confirming it needs witness
-  activation timestamps and Huterm activation observations in `trace.jsonl`,
-  then a witness launch without self-activation. Expect about ten macOS CI runs
-  to gather evidence at the current rate.
-- **Triage:** a failure at these labels is this flake; rerun. Investigate
-  failures at other quake labels. The hosted runner's work area is 1024x686,
+- **Hypothesis and mitigation (2026-10-02):** the departed witness requested
+  activation at launch and again on the `focus` command. Under cooperative
+  activation a queued second request may apply after Huterm has seen its own
+  activation, and Huterm deliberately does not re-arm activation retries after
+  that. The departed witness now launches with `--no-launch-activation`, so the
+  awaited `focus` command is its only request. Every witness also logs
+  activation requests and active/resign notifications with uptime to
+  `witness-events`, and departed-block failures print that log.
+- **Triage:** if the label recurs, read the "departed witness activation
+  events" in the failure. A `became_active` after Huterm summoned the quake
+  confirms a late activation; its absence refutes the hypothesis. Remove this
+  entry after about ten clean macOS smoke runs, the rate at which it used to
+  fail at least once. Otherwise a failure at these labels is this flake; rerun.
+  Investigate failures at other quake labels. The hosted runner's work area is 1024x686,
   so the quarter-height quake grid has only 8 rows: a new step that prints
   rows before the geometry section scrolls `READY:` out of view and fails
   "resize replaced retained window or shell" only in CI.

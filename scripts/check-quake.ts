@@ -515,7 +515,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         if ((await current())?.active !== "true") throw new Error("visible unfocused toggle did not raise");
         const departedDirectory = join(directory, "departed-witness");
         await mkdir(departedDirectory);
-        const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "ignore"});
+        // Without a launch activation, the explicit focus command below is the
+        // departed witness's only activation request.
+        const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory, "--no-launch-activation"] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "ignore"});
         try {
           let departedTarget = String(departed.pid);
           if (macos) {
@@ -571,6 +573,11 @@ async function check(executable: string, engine: string, witnessExecutable?: str
               && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes("Quake: smoke dead reporter")));
           }, "dead reporter global and active-window fallback");
           console.log(`QUAKE_REPORTER ${engine} live=window dead=global-and-active-window fallback=${fallbackId}`);
+        } catch (error) {
+          // The witness's activation log shows whether a late request took focus back.
+          const events = macos ? await readFile(join(departedDirectory, "witness-events"), "utf8").catch(() => "none") : "";
+          if (!events) throw error;
+          throw new Error(`${error instanceof Error ? error.message : String(error)}\ndeparted witness activation events:\n${events}`, { cause: error });
         } finally {if (departed.exitCode === null) departed.kill();await departed.exited;}
         await reload('hide_on_focus_loss = false\nanimation = "fade"\nanimation_ms = 1000');
         const focusDuringShow = await retryInconclusiveOnce(async attempt => {
