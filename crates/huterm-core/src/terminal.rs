@@ -9,9 +9,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseTracking,
-    RuntimeId, ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
-    TerminalMetadata, TerminalSnapshot,
+    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseAction,
+    MouseTracking, RuntimeId, ScrollCommand, TerminalCommand, TerminalId,
+    TerminalInput, TerminalMetadata, TerminalSnapshot,
 };
 #[cfg(test)]
 use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
@@ -694,8 +694,11 @@ fn build_snapshot(
 ) -> Result<SnapshotReply, RuntimeError> {
     let started = Instant::now();
     // A scroll this viewer sent before typing that already returned the
-    // viewport to live would move it back into history.
-    let scroll = scroll.filter(|&(_, number)| !slot.scroll_superseded(number));
+    // viewport to live would move it back into history, and one from a
+    // closed view would move it for every remaining viewer.
+    let scroll = scroll.filter(|&(_, number)| {
+        !slot.is_dropped() && !slot.scroll_superseded(number)
+    });
     let requested_viewport =
         engine.requested_viewport(scroll.map(|(command, _)| command))?;
     if let Some((command, number)) = scroll {
@@ -1411,6 +1414,9 @@ fn run_terminal(
     }
 
     closing.store(true, Ordering::Release);
+    // A failure that ended the loop reaches viewers now, not after the
+    // bounded teardown below.
+    status.flush(registry);
     lifecycle.retire();
     if child_exited {
         // Root exit completes the terminal. Never signal historical groups
@@ -1526,6 +1532,11 @@ fn handle_input(
         // must not take a gesture: its view never sends that release.
         if modes.mouse_tracking == MouseTracking::Disabled {
             arbiter.tracking_disabled();
+            // A release still ends its owner's gesture, though nothing is
+            // written, so finalization never releases that button again.
+            if matches!(mouse.action, MouseAction::Release(_)) {
+                arbiter.admit_mouse(slot, mouse, stamp);
+            }
             return true;
         }
         if !arbiter.admit_mouse(slot, mouse, stamp) {

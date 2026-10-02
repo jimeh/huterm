@@ -378,15 +378,27 @@ fn directory_metadata_survives_exit_in_its_replacement_event() {
     )
     .unwrap();
     let client = test_client(&runtime);
-    wait_for_exit(&client);
-    assert_eq!(
-        client
-            .status()
+    // Exit can be observed before the final output is parsed, so wait for
+    // both rather than treating exit as the end of output.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let status = client.status();
+        let directory = status
             .metadata
             .directory()
-            .map(huterm_protocol::TerminalDirectory::path),
-        Some("/tmp/final")
-    );
+            .map(huterm_protocol::TerminalDirectory::path);
+        if matches!(status.lifecycle, TerminalLifecycle::Exited(_))
+            && directory == Some("/tmp/final")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "exit and directory: {:?}, {directory:?}",
+            status.lifecycle
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     runtime.shutdown().unwrap();
 }
 

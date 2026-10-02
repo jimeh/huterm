@@ -125,13 +125,19 @@ impl InputQueue {
         if motion
             && self.motion_run
             && let (
-                Some(Queued::Input(TerminalInput::Mouse(previous), _)),
-                Queued::Input(TerminalInput::Mouse(next), _),
+                Some(Queued::Input(
+                    TerminalInput::Mouse(previous),
+                    previous_stamp,
+                )),
+                Queued::Input(TerminalInput::Mouse(next), next_stamp),
             ) = (self.entries.back_mut(), &queued)
             && previous.action == next.action
             && previous.modifiers == next.modifiers
         {
+            // The newer position was computed against the newer grid, so
+            // it keeps the newer stamp.
             *previous = *next;
+            *previous_stamp = *next_stamp;
             return Ok(Admission::Accepted);
         }
         self.boundary();

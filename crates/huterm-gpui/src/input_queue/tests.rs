@@ -346,6 +346,34 @@ fn wheel_saturation_discards_unadmitted_steps_without_reordering() {
 }
 
 #[test]
+fn coalesced_motion_keeps_the_newer_stamp() {
+    let mut queue = InputQueue::default();
+    let stamped = |geometry| InputStamp {
+        scrolls: 0,
+        geometry: Some(geometry),
+    };
+    for (column, geometry) in [(1, 1), (2, 2)] {
+        queue
+            .enqueue(
+                mouse(MouseAction::Motion(None), column),
+                stamped(geometry),
+                false,
+                |_| panic!("motion must wait for refresh"),
+            )
+            .unwrap();
+    }
+    // The newer position was computed against the newer grid; the older
+    // stamp would let the runtime discard valid motion as stale.
+    assert_eq!(
+        drain(&mut queue),
+        [Queued::Input(
+            mouse(MouseAction::Motion(None), 2),
+            stamped(2)
+        )]
+    );
+}
+
+#[test]
 fn motion_coalesces_only_within_compatible_fifo_run() {
     let mut queue = InputQueue::default();
     let motion = |column| mouse(MouseAction::Motion(None), column);

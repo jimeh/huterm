@@ -2300,6 +2300,9 @@ impl TerminalView {
         self.wake_pending_work();
         match result {
             Ok(_) => false,
+            // An exited tab's runtime stops when the tab closes; a blur on
+            // the way out is not a failure.
+            Err(RuntimeError::Stopped) if self.exited => false,
             Err(error) => self.report_viewer_failure(&error),
         }
     }

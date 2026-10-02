@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
     MouseAction, MouseButton, MouseInput, MousePosition, ScrollCommand,
-    TerminalCommand, TerminalId, TerminalInput, TerminalLifecycle,
-    TerminalPresentation, TerminalSnapshot, ViewerCapabilities,
+    TerminalCommand, TerminalFailure, TerminalId, TerminalInput,
+    TerminalLifecycle, TerminalPresentation, TerminalSnapshot,
+    ViewerCapabilities,
 };
 
 use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
@@ -320,7 +321,13 @@ fn a_host_effect_wakes_its_viewer_while_a_snapshot_is_due() {
     // and wakes it no further: only the host effect can.
     assert!(recipient.poll().invalidated.is_some());
     while recipient.wake_pending() {}
+    let revision = runtime.registry().status().revision;
     copy("two");
+    assert_eq!(
+        runtime.registry().status().revision,
+        revision,
+        "no status change could have woken the recipient instead"
+    );
     assert!(recipient.wake_pending(), "the write woke its recipient");
     assert!(recipient.host_effects().unwrap().try_next().is_some());
     runtime.shutdown().unwrap();
@@ -599,10 +606,11 @@ fn a_revoked_viewer_with_a_queued_snapshot_harms_no_one() {
 }
 
 /// Enables SGR mouse tracking, reads `first` bytes, stops tracking, and
-/// resumes it after one more byte; then prints the next press it receives.
-fn tracking_script(first: usize) -> String {
+/// resumes it after one more byte; then prints the hex of the next `last`
+/// bytes it receives.
+fn tracking_script(first: usize, last: usize) -> String {
     format!(
-        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; dd bs=1 count={first} >/dev/null 2>&1; printf '\\033[?1000lOFF'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1000hON'; bytes=$(dd bs=1 count=9 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:END' \"$bytes\""
+        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; dd bs=1 count={first} >/dev/null 2>&1; printf '\\033[?1000lOFF'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1000hON'; bytes=$(dd bs=1 count={last} 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:END' \"$bytes\""
     )
 }
 
@@ -902,7 +910,7 @@ fn an_initial_geometry_is_clamped_like_a_reported_one() {
 
 #[test]
 fn a_gesture_ends_when_the_application_stops_tracking_the_mouse() {
-    let runtime = spawn(223, &tracking_script(9));
+    let runtime = spawn(223, &tracking_script(9, 9));
     let first = viewer(&runtime);
     let second = viewer(&runtime);
     wait_for_text(&first, "READY");
@@ -919,7 +927,7 @@ fn a_gesture_ends_when_the_application_stops_tracking_the_mouse() {
 
 #[test]
 fn a_press_dequeued_after_tracking_stops_takes_no_gesture() {
-    let runtime = spawn(226, &tracking_script(1));
+    let runtime = spawn(226, &tracking_script(1, 9));
     let first = viewer(&runtime);
     let second = viewer(&runtime);
     wait_for_text(&first, "READY");
@@ -1043,7 +1051,7 @@ fn reconciliation_waits_while_writes_are_backed_up_and_resumes_after() {
 
 #[test]
 fn a_release_survives_tracking_turning_off_and_on_again() {
-    let runtime = spawn(232, &tracking_script(9));
+    let runtime = spawn(232, &tracking_script(9, 9));
     let only = viewer(&runtime);
     wait_for_text(&only, "READY");
     only.send_input(press(MouseButton::Left, 2)).unwrap();
@@ -1198,6 +1206,174 @@ fn a_runtime_panic_closes_every_wake() {
     });
     assert!(matches!(ready(only.wait()), Err(RuntimeError::Stopped)));
     assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
+}
+
+#[test]
+fn polls_report_new_bells_and_failures_once_without_replay() {
+    let runtime = spawn(235, "read l");
+    let early = viewer(&runtime);
+    let registry = runtime.registry();
+    // An idle shell publishes nothing, so this stands in for a status the
+    // runtime published: three bells and failures 1 to 10, of which the
+    // bounded log kept the last eight.
+    let mut status = (*registry.status()).clone();
+    status.revision += 100;
+    status.bells += 3;
+    status.failures = (3..=10)
+        .map(|sequence| TerminalFailure {
+            sequence,
+            message: format!("failure {sequence}"),
+        })
+        .collect();
+    registry.publish_status(Arc::new(status));
+    let update = early.poll();
+    assert_eq!(update.bells, 3);
+    assert_eq!(
+        update
+            .failures
+            .iter()
+            .map(|failure| failure.sequence)
+            .collect::<Vec<_>>(),
+        (3..=10).collect::<Vec<_>>()
+    );
+    assert_eq!(update.missed_failures, 2, "failures 1 and 2 were dropped");
+    let again = early.poll();
+    assert!(again.status.is_none());
+    assert_eq!((again.bells, again.failures.len()), (0, 0));
+    // The next status reports only what is new since this viewer's poll.
+    let mut next = (*registry.status()).clone();
+    next.revision += 1;
+    next.bells += 1;
+    next.failures.remove(0);
+    next.failures.push(TerminalFailure {
+        sequence: 11,
+        message: "failure 11".into(),
+    });
+    registry.publish_status(Arc::new(next));
+    let next = early.poll();
+    assert_eq!(next.bells, 1);
+    assert_eq!(
+        next.failures
+            .iter()
+            .map(|failure| failure.sequence)
+            .collect::<Vec<_>>(),
+        [11]
+    );
+    assert_eq!(next.missed_failures, 0);
+    // A later viewer starts from the current status and replays none of it.
+    let late = viewer(&runtime).poll();
+    assert!(late.status.is_some());
+    assert_eq!(
+        (late.bells, late.failures.len(), late.missed_failures),
+        (0, 0, 0)
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn dropping_the_controller_with_queued_input_resizes_once() {
+    let runtime = spawn(236, SIZE_SCRIPT);
+    let remaining = sized_viewer(&runtime, 40, 8);
+    let probe = prober(&runtime);
+    wait_for_text(&remaining, "READY");
+    let closing = sized_viewer(&runtime, 70, 14);
+    assert_eq!(pty_size(&probe, "taken"), "14 70");
+    // The geometry revision advances with every canonical resize.
+    let before = remaining.read_snapshot().unwrap().geometry_revision;
+    let resume = pause(&runtime);
+    // Typing while dropped must not hand control back to the closing view
+    // between the drop and its finalization.
+    closing.send_input(TerminalInput::Text("x".into())).unwrap();
+    drop(closing);
+    resume.send(()).unwrap();
+    assert_eq!(pty_size(&probe, "left"), "8 40");
+    assert_eq!(
+        remaining.read_snapshot().unwrap().geometry_revision,
+        before + 1,
+        "the PTY changed size more than once"
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_repeated_title_flood_wakes_a_hidden_viewer_no_further() {
+    let runtime = spawn(
+        237,
+        "stty -echo; printf '\\033]2;flood\\007READY'; read l; read l; i=0; while [ $i -lt 500 ]; do printf '\\033]2;flood\\007.'; i=$((i+1)); done; printf DONE; read l",
+    );
+    // Never builds a snapshot, so output leaves it notified and only a
+    // status publication can wake it.
+    let hidden = viewer(&runtime);
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let registry = runtime.registry();
+    // A first line's probe publishes the shell's metadata.
+    typist
+        .send_input(TerminalInput::Text("warm\n".into()))
+        .unwrap();
+    wait_until("title and probed metadata", || {
+        let status = registry.status();
+        status.title == "flood" && status.metadata.directory().is_some()
+    });
+    assert!(hidden.poll().invalidated.is_some());
+    while hidden.wake_pending() {}
+    let revision = registry.status().revision;
+    typist
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait_for_text(&typist, "DONE");
+    assert_eq!(registry.status().revision, revision);
+    assert!(!hidden.wake_pending(), "an unchanged title woke the viewer");
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_release_while_tracking_is_off_ends_the_gesture_for_good() {
+    let runtime = spawn(238, &tracking_script(9, 1));
+    let reader = runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+        .unwrap();
+    let owner = viewer(&runtime);
+    let other = prober(&runtime);
+    wait_for_text(&reader, "READY");
+    owner.send_input(press(MouseButton::Left, 2)).unwrap();
+    wait_for_text(&reader, "OFF");
+    // This view had not yet seen tracking stop, so it still sends its
+    // release, which ends the gesture though nothing is written.
+    owner
+        .send_input(TerminalInput::Mouse(MouseInput {
+            position: MousePosition { column: 2, row: 0 },
+            action: MouseAction::Release(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    other.send_input(TerminalInput::Text("y".into())).unwrap();
+    wait_for_text(&reader, "ON");
+    // Finalization must not release the button a second time.
+    drop(owner);
+    other.send_input(TerminalInput::Text("Z".into())).unwrap();
+    wait_for_text(&reader, &format!("HEX:{}:END", hex(b"Z")));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_closed_view_s_queued_scroll_moves_no_one() {
+    let runtime = spawn(
+        239,
+        "i=0; while [ $i -lt 40 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf READY; read l",
+    );
+    let closing = viewer(&runtime);
+    let remaining = viewer(&runtime);
+    wait_for_text(&remaining, "READY");
+    let resume = pause(&runtime);
+    let scrolled = closing
+        .request_scrolled_snapshot(ScrollCommand::Relative(10))
+        .unwrap();
+    drop(closing);
+    resume.send(()).unwrap();
+    let _ = scrolled.recv_blocking();
+    assert_eq!(remaining.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
 }
 
 /// Polls a future that must already be ready.

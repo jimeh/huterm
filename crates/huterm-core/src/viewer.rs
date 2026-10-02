@@ -863,9 +863,11 @@ impl TerminalViewer {
         if self.slot.notified.load(Ordering::Acquire) {
             update.invalidated = Some(self.registry.generation());
         }
-        let status = self.registry.status();
+        // The baseline lock covers reading the status, so concurrent polls
+        // cannot commit an older revision over a newer one.
         let mut baseline =
             self.baseline.lock().unwrap_or_else(PoisonError::into_inner);
+        let status = self.registry.status();
         if baseline.revision == Some(status.revision) {
             return update;
         }

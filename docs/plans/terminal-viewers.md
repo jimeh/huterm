@@ -597,17 +597,16 @@ its mouse gesture, recomputes the controller, and frees its slot.
 Finalization is idempotent, so a viewer that is dropped and revoked at once
 is finalized only once.
 
-- **Revocation** withdraws authority. Mux revokes viewers wherever it
-  revokes host-effect recipients today: `detach_session`,
-  `retarget_attachment`, `close_session`, and cross-session `move_tab` and
-  `move_workspace`. Terminal close and `shutdown` stop the runtime instead,
-  so its viewers' requests return `Stopped`. Revocation marks the slot
-  and sends a control message, so an idle owner thread wakes and finalizes
-  at once. Queued requests from the viewer are discarded at dequeue, and its
-  requests return `Revoked`.
-- **Dropping** a viewer marks the slot dropped and sends a control message
-  on the unbounded control channel. It never blocks and never takes the Mux
-  lock, so it is safe from `on_app_quit`. The viewer stops being a control
+- **Revocation** withdraws authority. Mux revokes viewers wherever it revokes
+  host-effect recipients today: `detach_session`, `retarget_attachment`,
+  `close_session`, and cross-session `move_tab` and `move_workspace`. Terminal
+  close and `shutdown` stop the runtime instead, so its viewers' requests return
+  `Stopped`. Revocation marks the slot, flags the registry as changed, and wakes
+  the owner thread, so an idle owner thread finalizes at once. Queued requests
+  from the viewer are discarded at dequeue, and its requests return `Revoked`.
+- **Dropping** a viewer marks the slot dropped, flags the registry as
+  changed, and wakes the owner thread. It never blocks and never takes the
+  Mux lock, so it is safe from `on_app_quit`. The viewer stops being a control
   candidate immediately. Its queued input, buffer edits, and arbitration
   reports were admitted with valid authority, so they still run in order;
   a focus change queued before input still reaches the application before
@@ -923,8 +922,10 @@ stated:
   `ESC [ O`.
 - A clipboard write reaches exactly one recipient across focus handoff,
   hiding, dropping, and revocation, and wakes that recipient's viewer.
-- History eviction and alternate-screen entry while a viewer is scrolled
-  keep both viewers' viewports equal.
+- Alternate-screen entry while a viewer is scrolled keeps both viewers'
+  viewports equal. History eviction is not automated: the engine retains
+  16 MiB of history, so evicting it needs more output than a unit test
+  should produce, and the engine anchors one shared viewport either way.
 - A title-only change is visible through status without a new snapshot.
 - The 33rd subscription fails, and succeeds again after one viewer is
   finalized.
@@ -1048,8 +1049,9 @@ afterwards. Run `mise run verify` before handoff.
 
 - `AGENTS.md`: replace the single-consumer event and activity rules with the
   viewer rules: per-viewer rearm at snapshot construction, status as state,
-  capability checks at dequeue, viewer errors never fatal, arbitration
-  reports exempt from input limits and never overtaking earlier input,
+  capability checks at dequeue, viewer errors never fatal, focus changes
+  exempt from input limits and never overtaking earlier input while
+  geometry stays latest-wins,
   accepted gestures always ending, and the controller deciding size and
   presentation.
 - `CONTEXT.md`: add Viewer and Controlling viewer.
