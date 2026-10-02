@@ -24,6 +24,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 const SOURCE_VAR: &str = "GHOSTTY_SOURCE_DIR";
 const OPTIMIZE_VAR: &str = "HUTERM_GHOSTTY_OPTIMIZE";
@@ -506,7 +507,14 @@ impl Layout {
     }
 }
 
-/// The Zig build command, run from the private copy.
+/// Pauses between attempts to fetch Ghostty's Zig packages. Upstream package
+/// hosts have returned 503 during builds, and in CI one such response failed
+/// every compiling job of a run.
+const FETCH_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_secs(5), Duration::from_secs(20)];
+
+/// The Zig build command, run from the private copy. With `fetch`, it only
+/// fetches the packages that exact build needs into Zig's global cache.
 ///
 /// Commit hooks export repository paths that would point Ghostty's version
 /// probe at Huterm, so every inherited `GIT_*` variable is removed, and the
@@ -515,12 +523,17 @@ fn zig_command(
     zig: &OsString,
     layout: &Layout,
     options: &Options,
+    fetch: bool,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Command {
+    let mut arguments =
+        options.zig_arguments(&layout.install, &layout.local_cache);
+    if fetch {
+        // `zig build` stays first; `--fetch` applies to the same options.
+        arguments.insert(1, "--fetch".into());
+    }
     let mut command = Command::new(zig);
-    command
-        .current_dir(&layout.source)
-        .args(options.zig_arguments(&layout.install, &layout.local_cache));
+    command.current_dir(&layout.source).args(arguments);
     for (key, _) in inherited {
         if key.to_str().is_some_and(|key| key.starts_with("GIT_")) {
             command.env_remove(key);
@@ -532,12 +545,38 @@ fn zig_command(
     command
 }
 
+/// Runs `action` until it succeeds, pausing for each delay in turn, and
+/// returns the last error once the delays run out.
+fn retry<T>(
+    delays: &[Duration],
+    mut pause: impl FnMut(Duration),
+    mut action: impl FnMut() -> Result<T, BuildError>,
+) -> Result<T, BuildError> {
+    let mut delays = delays.iter();
+    loop {
+        match action() {
+            Ok(value) => return Ok(value),
+            Err(error) => match delays.next() {
+                Some(delay) => {
+                    println!(
+                        "cargo:warning={error}; retrying in {}s",
+                        delay.as_secs()
+                    );
+                    pause(*delay);
+                }
+                None => return Err(error),
+            },
+        }
+    }
+}
+
 fn run_zig(
     zig: &OsString,
     layout: &Layout,
     options: &Options,
+    fetch: bool,
 ) -> Result<(), BuildError> {
-    let status = zig_command(zig, layout, options, std::env::vars_os())
+    let status = zig_command(zig, layout, options, fetch, std::env::vars_os())
         .status()
         .map_err(|error| {
             BuildError::Io(
@@ -549,8 +588,13 @@ fn run_zig(
             )
         })?;
     if !status.success() {
+        let step = if fetch {
+            "zig build --fetch"
+        } else {
+            "zig build"
+        };
         return Err(BuildError::Zig(format!(
-            "zig build failed with {status} in {}",
+            "{step} failed with {status} in {}",
             layout.source.display()
         )));
     }
@@ -616,7 +660,12 @@ fn build() -> Result<(), BuildError> {
         );
     } else {
         stage_source(&source, &layout.source)?;
-        run_zig(&zig, &layout, &options)?;
+        // Fetch first, with retries, so a transient package-host failure
+        // cannot fail the build itself.
+        retry(&FETCH_RETRY_DELAYS, std::thread::sleep, || {
+            run_zig(&zig, &layout, &options, true)
+        })?;
+        run_zig(&zig, &layout, &options, false)?;
         if !layout.install.join("lib").join(ARCHIVE).is_file() {
             return Err(BuildError::Zig(format!(
                 "zig build did not produce {}",
@@ -900,8 +949,13 @@ mod tests {
             ("HOME", "/home/user"),
         ]
         .map(|(key, value)| (OsString::from(key), OsString::from(value)));
-        let command =
-            zig_command(&OsString::from("zig"), &layout, &parsed, inherited);
+        let command = zig_command(
+            &OsString::from("zig"),
+            &layout,
+            &parsed,
+            false,
+            inherited,
+        );
         assert_eq!(command.get_current_dir(), Some(layout.source.as_path()));
         let mut environment: Vec<_> = command
             .get_envs()
@@ -1131,5 +1185,61 @@ mod tests {
         assert!(!layout.local_cache.starts_with(&layout.source));
         assert!(!layout.install.starts_with(&layout.source));
         assert_eq!(layout.source.parent(), Some(Path::new("/out")));
+    }
+
+    #[test]
+    fn fetch_runs_the_build_arguments_with_fetch_after_build() {
+        let parsed = options(
+            Some("ReleaseFast"),
+            Some("baseline"),
+            "aarch64-apple-darwin",
+            None,
+        )
+        .unwrap();
+        let layout = Layout::new(Path::new("/out"));
+        let arguments = |fetch| -> Vec<OsString> {
+            zig_command(&OsString::from("zig"), &layout, &parsed, fetch, [])
+                .get_args()
+                .map(OsString::from)
+                .collect()
+        };
+        let mut expected = arguments(false);
+        assert_eq!(expected[0], "build");
+        expected.insert(1, "--fetch".into());
+        assert_eq!(arguments(true), expected);
+    }
+
+    #[test]
+    fn retry_pauses_between_failures_and_returns_the_last_error() {
+        let delays = [Duration::from_secs(5), Duration::from_secs(20)];
+        let mut pauses = Vec::new();
+        let mut calls = 0;
+        let result = retry(
+            &delays,
+            |delay| pauses.push(delay),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(BuildError::Zig(format!("attempt {calls}")))
+                } else {
+                    Ok(calls)
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(pauses, delays);
+
+        let mut pauses = Vec::new();
+        let mut calls = 0;
+        let result: Result<(), _> = retry(
+            &delays,
+            |delay| pauses.push(delay),
+            || {
+                calls += 1;
+                Err(BuildError::Zig(format!("attempt {calls}")))
+            },
+        );
+        assert_eq!(result.unwrap_err().to_string(), "attempt 3");
+        assert_eq!(pauses, delays);
     }
 }

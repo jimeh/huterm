@@ -4,7 +4,8 @@ description: >-
   did not already hold. The key hashes every stored slot, fingerprint and
   archive alike, so a changed source pin, Zig version, libc, or SDK saves a new
   entry instead of leaving a stale one in place, and so does a slot rebuilt
-  because its restored archive was unusable.
+  because its restored archive was unusable. Also saves Zig's package cache
+  when restore-ghostty did not already restore it.
 inputs:
   prefix:
     description: The prefix output of restore-ghostty.
@@ -44,3 +45,33 @@ runs:
       with:
         path: .native/ghostty-prebuilt
         key: ${{ steps.key.outputs.key }}
+
+    # setup-zig points ZIG_GLOBAL_CACHE_DIR at RUNNER_TEMP/zig-global-cache.
+    # Its p directory holds Ghostty's pinned Zig packages, which
+    # ghostty:prepare fetches; keeping them spares upstream package hosts.
+    - name: Name the Zig package cache
+      id: packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        hash="$(shasum -a 256 scripts/ghostty-source.json | cut -c1-16)"
+        echo "key=huterm-zig-packages-v1-$RUNNER_OS-$RUNNER_ARCH-$hash" >> "$GITHUB_OUTPUT"
+
+    - name: Check whether the Zig packages need saving
+      id: packages-needed
+      shell: bash
+      env:
+        KEY: ${{ steps.packages.outputs.key }}
+      run: |
+        set -euo pipefail
+        restored="$(cat "$RUNNER_TEMP/huterm-zig-packages-restored" 2>/dev/null || true)"
+        if [ "$restored" != "$KEY" ] && [ -n "$(ls -A "$RUNNER_TEMP/zig-global-cache/p" 2>/dev/null)" ]; then
+          echo "save=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save Zig packages
+      if: steps.packages-needed.outputs.save == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/zig-global-cache/p
+        key: ${{ steps.packages.outputs.key }}

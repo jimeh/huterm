@@ -239,6 +239,16 @@ result. The fingerprint covers the source manifest, Zig version and arguments,
 target, and the host libc or macOS SDK: Linux host builds stay native, so an
 archive built against a newer glibc must never reach a 2.35-ceiling package.
 
+Before `zig build`, the build script runs `zig build --fetch` with the same
+arguments and retries it after 5 and 20 seconds. Ghostty's Zig packages come
+from upstream hosts such as codeberg.org, and one 503 from them once failed
+every compiling CI job in a run. Fetch with the build's exact arguments: a
+separate prefetch with default options missed lazy packages, such as
+`pixels`, that the real build needs. Zig keeps fetched packages as tarballs in
+its global cache's `p` directory, which is enough for a later offline build;
+`restore-ghostty` and `save-ghostty` persist that directory in CI, keyed by OS,
+architecture, and `scripts/ghostty-source.json`.
+
 CI jobs restore and save `.native/ghostty-prebuilt` through the
 `restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash
 of the stored slots, so a changed input or rebuilt slot saves a new entry
