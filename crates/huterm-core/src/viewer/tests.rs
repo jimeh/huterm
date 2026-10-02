@@ -779,11 +779,16 @@ fn both_viewers_keep_one_viewport_across_the_alternate_screen() {
     let first = viewer(&runtime);
     let second = viewer(&runtime);
     wait_for_text(&first, "READY");
-    first
+    let scrolled = first
         .request_scrolled_snapshot(ScrollCommand::Relative(5))
         .unwrap()
         .recv_blocking()
-        .unwrap();
+        .unwrap()
+        .snapshot;
+    assert_eq!(scrolled.viewport.bottom_offset, 5);
+    // The second viewer is up to date before the screen switches.
+    assert_eq!(second.read_snapshot().unwrap().viewport.bottom_offset, 5);
+    assert!(second.poll().invalidated.is_none());
     // Reading text input from the second viewer would return to live, so
     // the reader without viewport control sends it.
     let reader = runtime
@@ -798,12 +803,13 @@ fn both_viewers_keep_one_viewport_across_the_alternate_screen() {
     wait_until("alternate screen", || {
         first.read_snapshot().unwrap().modes.alternate_screen
     });
-    let (one, two) = (
-        first.read_snapshot().unwrap(),
-        second.read_snapshot().unwrap(),
-    );
-    assert_eq!(one.viewport, two.viewport);
-    assert_eq!(one.history_size, two.history_size);
+    // The alternate screen has no history, so the shared viewport is at
+    // live for both viewers, and the switch woke the one not reading.
+    assert!(second.poll().invalidated.is_some());
+    let two = second.read_snapshot().unwrap();
+    assert!(two.modes.alternate_screen);
+    assert_eq!(two.viewport.bottom_offset, 0);
+    assert_eq!(two.history_size, 0);
     runtime.shutdown().unwrap();
 }
 

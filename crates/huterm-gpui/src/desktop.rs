@@ -2303,17 +2303,18 @@ impl TerminalView {
         self.wake_pending_work();
         match result {
             Ok(_) => false,
-            // An exited tab's runtime stops when the tab closes; a blur on
-            // the way out is not a failure.
-            Err(RuntimeError::Stopped) if self.exited => false,
             Err(error) => self.report_viewer_failure(&error),
         }
     }
 
     /// Reports a failed runtime request. A revoked viewer is expected: its
-    /// window replaces or removes the view, so it raises no notice.
+    /// window replaces or removes the view. So is a stopped runtime behind
+    /// an exited tab, which stops when the tab closes; a focus change or
+    /// retry on the way out is not a failure. Neither raises a notice.
     fn report_viewer_failure(&mut self, error: &RuntimeError) -> bool {
-        if matches!(error, RuntimeError::Revoked) {
+        if matches!(error, RuntimeError::Revoked)
+            || (self.exited && matches!(error, RuntimeError::Stopped))
+        {
             return false;
         }
         self.report_failure(
