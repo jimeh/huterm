@@ -37,7 +37,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun actionlint markdownlint-cli2 pinact zizmor
+          install_args: bun actionlint markdownlint-cli2 pinact taplo zizmor
           version: 2026.9.14
 
       - name: Materialize Rust toolchain
@@ -47,24 +47,43 @@ jobs:
         run: mise install --locked cargo:cargo-deny
 
       - name: Cache Cargo dependencies and build artifacts
+        id: policy-setup
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: policy
           # PRs restore main's caches; per-PR copies overflow the repository limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Verify repository policy
+      # Each check below runs once setup succeeds, even after an earlier check
+      # fails, so one run reports every failing check.
+      - name: Lint Markdown
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run lint:docs
+
+      - name: Check agent guides
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run lint:agents
+
+      - name: Check workflows and action pins
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         env:
           PINACT_GITHUB_TOKEN: ${{ github.token }}
-        run: mise run verify:policy
+        run: mise run ci:workflows
+
+      - name: Smoke config schema in Taplo
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run smoke:schema-editor
 
       - name: Verify patched vendor sources
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run vendor:check
 
       - name: Audit Cargo dependencies
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run license
 
       - name: Audit scripting dependencies
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run audit:scripts
 
   checks:
@@ -167,15 +186,21 @@ jobs:
           namespace: test
 
       - name: Check platform prerequisites
+        id: checks-setup
         run: mise run doctor
 
+      # Each check below runs once setup succeeds, even after an earlier check
+      # fails, so one run reports every failing check.
       - name: Check Rust formatting
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run format:check
 
       - name: Run Clippy and architecture checks
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run ci:lint
 
       - name: Check schema generation on this platform
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run schema:check
 
       # The task loads libclang from the selected Xcode, the runner image's
@@ -184,13 +209,15 @@ jobs:
       # platform suffices; the Linux runners would load whichever unpinned
       # LLVM their image ships.
       - name: Check generated Ghostty bindings
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' && runner.os == 'macOS' }}
         run: mise run ghostty:bindings:check
 
       - name: Check repository scripts
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run check:scripts
 
       - name: Run Rust tests
+        if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run ci:test
 
       - name: Upload Linux check failure evidence
@@ -329,13 +356,19 @@ jobs:
           echo "HUTERM_SMOKE_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Prepare desktop smoke dependencies
+        id: smoke-prepare
         run: |
           mise run ghostty:prepare
-          mise run terminfo:check
+          mise run terminfo:prepare
           mise run sparkle:prepare
+
+      - name: Check terminfo entry and tmux RGB output
+        if: ${{ !cancelled() && steps.smoke-prepare.outcome == 'success' }}
+        run: mise run terminfo:check
 
       - name: Compile desktop smoke binaries
         id: smoke-build
+        if: ${{ !cancelled() && steps.smoke-prepare.outcome == 'success' }}
         run: mise run ci:smoke:build
 
       - name: Smoke renderer

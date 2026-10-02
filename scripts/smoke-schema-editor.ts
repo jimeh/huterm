@@ -1,4 +1,4 @@
-/** Exercise the installed Taplo language server against the committed schema. */
+/** Exercise the pinned Taplo language server against the committed schema. */
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,7 +14,7 @@ type Message = {
   error?: unknown;
 };
 const version = Bun.spawnSync(["taplo", "--version"]);
-if (version.exitCode !== 0) throw new Error("Install Taplo to run this optional editor smoke.");
+if (version.exitCode !== 0) throw new Error("Taplo is missing; run `mise install` for the pinned version.");
 console.log(version.stdout.toString().trim());
 const directory = await mkdtemp(join(tmpdir(), "huterm-schema-editor-"));
 const server = spawn("taplo", ["lsp", "stdio"], { stdio: "pipe", cwd: directory });
@@ -76,17 +76,22 @@ try {
   await request("initialize", { processId: process.pid, rootUri: pathToFileURL(directory).href, workspaceFolders: [{ uri: pathToFileURL(directory).href, name: "schema smoke" }], capabilities: { workspace: { configuration: true } } });
   send({ method: "initialized", params: {} });
   let version = 0;
-  for (const [command, argument] of [["select_tab", "index"], ["rename_tab", "name"], ["select_tab", "index"]]) {
+  // Prompted arguments are optional, so check each command's own argument constraint.
+  for (const [command, args, expected] of [
+    ["select_tab", "index = 0", "less than the minimum of 1"],
+    ["rename_tab", "name = 1", "is not of type \"string\""],
+    ["select_tab", "index = 0", "less than the minimum of 1"],
+  ]) {
     version++;
-    const text = `#:schema ${schema}\n[[keybinding]]\nkey = "ctrl-1"\ncommand = "${command}"\nargs = {  }\n`;
+    const text = `#:schema ${schema}\n[[keybinding]]\nkey = "ctrl-1"\ncommand = "${command}"\nargs = { ${args} }\n`;
     await writeFile(join(directory, "config.toml"), text);
-    const diagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === uri && (message.params.diagnostics?.some(item => item.message.includes(`"${argument}" is a required property`)) ?? false), `${command} argument diagnostic`);
+    const diagnostic = waitFor(message => message.method === "textDocument/publishDiagnostics" && message.params?.uri === uri && (message.params.diagnostics?.some(item => item.message.includes(expected!)) ?? false), `${command} argument diagnostic`);
     if (version === 1) send({ method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "toml", version, text } } });
     else send({ method: "textDocument/didChange", params: { textDocument: { uri, version }, contentChanges: [{ text }] } });
     await diagnostic;
     const labels = await completions(uri, 3, 13);
     requireLabels(labels, ["select_tab", "rename_tab", "copy", "unbind"]);
-    console.log(`${command}: required ${argument} diagnostic; ${labels.length} command completions`);
+    console.log(`${command}: argument diagnostic; ${labels.length} command completions`);
     console.log(`${command}: argument completions ${JSON.stringify(await completions(uri, 4, 9))}`);
   }
   const globalUri = pathToFileURL(join(directory, "global.toml")).href;

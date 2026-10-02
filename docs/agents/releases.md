@@ -272,6 +272,86 @@ metadata, and icon under the corresponding `$XDG_DATA_HOME` paths. Record any
 physical-GPU or native-Wayland evidence separately; CI covers X11 under Xvfb
 with Mesa software Vulkan.
 
+## Packaging and release rules
+
+### macOS packaging
+
+Universal macOS packaging combines both architecture executables before signing.
+Keep static Ghostty linkage inspection in the Bun package verifier, where an
+`otool` failure aborts verification. An `if otool ... | rg ...` shell condition
+silently passed on release runners without `rg`, bypassing the linkage check.
+Inspect only indented dependency records from `otool -L`; its section headers
+repeat the inspected executable path and may be absolute.
+
+Verify each slice with a separate `lipo -verify_arch` call: the macOS 27 system
+tool rejects multiple requested architectures, while Xcode 26's tool accepts
+them. Cross-compilation and Rosetta tests do not replace native Intel UI QA.
+
+Release signing must finish before notarization. Submit a temporary ZIP, staple
+the accepted ticket to the app, verify without re-signing, and only then create
+the public ZIP. Re-signing after stapling invalidates the notarized artifact.
+Release checks must cover every Mach-O plus the app's exact Developer ID team,
+Hardened Runtime flag, secure timestamp, and approved entitlements.
+
+Syft's macOS application scan can emit an empty `versionInfo`; normalize that
+to an omitted field because SPDX 2.3 makes package versions optional. Keep exact
+version checks for Huterm's required runtime components.
+
+Normal builds and `package:macos` exclude Sparkle, its menu item, and its plist
+metadata. `package:macos-release` enables the updater, copies the verified
+framework and license, and injects the committed public key and production feed
+before signing. Remove only the package copy's unused XPC services. Sign
+Autoupdate and Updater inside out before `Sparkle.framework`, then sign Huterm.
+
+Only the protected publication job receives the EdDSA private key and
+attestation authority. It consumes the assembled cross-platform candidate by
+exact Actions artifact ID and digest.
+
+### Release workflow
+
+The sections above define the release path, environments, tag rulesets,
+manual verification, and recovery; keep workflow changes within them.
+
+Release Please requires a scalar `package.version` in the root and every member
+manifest. Keep internal exact versions centralized in `workspace.dependencies`
+and annotate those lines with `# x-release-please-version`; the generic extra
+Cargo.toml updater advances them with the package versions. Do not forward
+secrets through `workflow_call`.
+
+Draft release listings require push access even though the API accepts read-only
+tokens. Use a contents-write bot token for draft validation; keep the job token
+read-only and mint a fresh publishing token after the build.
+
+### Linux packaging
+
+On Linux, `freetype-sys` 0.20.1 uses a system FreeType only when pkg-config
+reports version 24.3.18 or newer; otherwise it compiles the bundled FreeType C
+source. Package verification must reject an unexpected `libfreetype.so.6`
+dependency and ship the FreeType License notice when that static fallback is
+present.
+
+Canonicalize `ldd` paths before passing them to `dpkg-query -S`. Ubuntu's
+usrmerged loader can report `/lib/...` while dpkg records only `/usr/lib/...`.
+
+Keep the Linux package builder on Ubuntu 22.04 while the published ABI ceiling
+is glibc 2.35. Ubuntu 24.04's `libxkbcommon.so.0` requires the C23
+`strtol`/`strtoul` symbols from GLIBC_2.38, so bundling it breaks that contract
+even when the Huterm executable itself stays within the ceiling.
+
+The pinned AppImage type-2 runtime 20251108 statically contains musl 1.2.5,
+libfuse 3.15.0, squashfuse 0.5.2, zstd 1.5.6, zlib 1.3.1, and mimalloc 2.1.7.
+Keep their exact-tag notices in the declared AppImage envelope outside `usr`;
+the neutral tarball must not contain them.
+
+The AppImage type-2 launcher can hand execution to another PID. PID-bound X11
+package smokes must resolve the real process from the isolated Huterm window;
+`xdotool --pid` cannot reliably follow a direct AppImage launch.
+
+Run AppImages through private executable copies that clear the `AI\x02` marker
+at ELF offsets 8 through 10. Standard QEMU binfmt masks require zero padding
+there and reject foreign-architecture AppImages before starting the emulator.
+Never alter the cached download or public artifact.
+
 ## Privacy and hardware checks
 
 The package includes privacy descriptions for protected macOS resources that
@@ -279,6 +359,7 @@ Huterm or a child process may request. The release signature carries the seven
 terminal-host entitlements for Apple Events, microphone, camera, contacts,
 calendars, location, and Photos. It does not allow JIT, library-validation
 bypass, DYLD environment variables, application groups, or keychain groups.
+Do not add any of these exceptions without a demonstrated need.
 
 Automated packaging proves both executable slices, signing structure,
 notarization, stapling, and Gatekeeper acceptance. It does not prove the native

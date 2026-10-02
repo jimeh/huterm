@@ -14,6 +14,7 @@ pinact = "5.0.0"
 rust = { version = "1.98.1", components = ["clippy", "rustfmt"], profile = "minimal" }
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.52.0"
+taplo = "0.10.0"
 zig = "0.16.0"
 zizmor = "1.30.1"
 
@@ -92,9 +93,17 @@ run = "bash scripts/build-exec.sh cargo clippy --workspace --all-targets --featu
 description = "Check that inline Rust test modules follow production items"
 run = "bun scripts/rust-test-order.ts"
 
+[tasks."lint:test-order:files"]
+description = "Check test-module order in the given Rust files"
+run = "bun scripts/rust-test-order.ts --files"
+
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
 run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"
+
+[tasks."lint:agents"]
+description = "Check the AGENTS.md line budget and agent-guide routing and links"
+run = "bun scripts/agent-guides.ts"
 
 [tasks."lint:docs:files"]
 description = "Lint selected Markdown files"
@@ -138,7 +147,7 @@ fi
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:test-order", "lint:docs", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
+depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, test-order, and architecture checks"
@@ -406,6 +415,19 @@ run = "cargo deny --locked check"
 description = "Validate and secure GitHub Actions workflows"
 run = ["actionlint", "zizmor --offline .github", "pinact run --check --verify-comment"]
 
+[tasks."ci:workflows:staged"]
+description = "Validate workflows, verifying only staged action pins unless pinact's config is staged"
+run = '''
+set -eu
+actionlint
+zizmor --offline .github
+if git diff --cached --quiet -- .pinact.yaml; then
+  git diff --cached --no-ext-diff -U0 -- .github | pinact run --check --verify-comment --diff-file -
+else
+  pinact run --check --verify-comment
+fi
+'''
+
 [tasks."verify:toolchain"]
 description = "Materialize the pinned Rust toolchain before parallel checks"
 run = ["rustc --version", "cargo --version", "rustfmt --version", "cargo clippy --version"]
@@ -426,10 +448,6 @@ depends = ["check:rust", "check:scripts", "test"]
 description = "Run platform-specific Rust validation"
 depends = ["verify:toolchain"]
 run = "mise run verify:platform:parallel"
-
-[tasks."verify:policy"]
-description = "Run platform-independent repository policy checks"
-depends = ["lint:docs", "ci:workflows"]
 
 [tasks.verify]
 description = "Run the broad CI-equivalent validation"
@@ -561,6 +579,11 @@ run = "bun node_modules/typescript/bin/tsc --noEmit"
 description = "Test repository tooling with Bun"
 depends = ["scripts:install"]
 run = "bun test ./scripts"
+
+[tasks."test:scripts:affected"]
+description = "Run the Bun tooling tests affected by the given changed paths; --fast skips slow suites"
+depends = ["scripts:install"]
+run = "bun scripts/affected-tests.ts"
 
 [tasks."check:shell"]
 description = "Check shell script syntax"
@@ -1169,7 +1192,7 @@ description = "Check committed config and theme schema bytes without rewriting f
 run = "cargo run --locked -p huterm-config --features schema --bin huterm-schema -- --check"
 
 [tasks."smoke:schema-editor"]
-description = "Verify command completion and argument diagnostics with installed Taplo"
+description = "Verify config schema completion and diagnostics in the pinned Taplo language server"
 depends = ["schema:check"]
 run = "bun scripts/smoke-schema-editor.ts"
 

@@ -453,11 +453,11 @@ named exactly `tests` with no later module.
 | Trigger | Command | Scope | Evidence owner |
 | --- | --- | --- | --- |
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
-| Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
+| Pre-commit | Lefthook change-aware jobs | Staged files where checks work per file; affected script tests; whole-project analysis only for matching inputs | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, test-module order, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
-| Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
+| Pull request | `mise run lint:docs`, `lint:agents`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and a raw Ghostty PTY | CI or implementer |
 | Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
@@ -477,7 +477,10 @@ named exactly `tests` with no later module.
 CI groups format, static analysis, scripts, and Rust tests into one job per
 platform so their setup and debug artifacts are reused. Native desktop smokes,
 Linux release benchmarks, and macOS packaging remain separate because combining
-them would lengthen the workflow's slowest path. The final
+them would lengthen the workflow's slowest path. Within the Checks and Policy
+jobs, each validation step runs once setup succeeds even if an earlier check
+failed, so one run reports every failing check under its own step name. The
+final
 `Verify Linux x86_64` and `Verify macOS arm64` jobs are the stable required
 checks; both require every validation job to pass, including native aarch64
 Linux checks and smoke coverage.
@@ -543,14 +546,33 @@ as the next non-native entry begins. The adapter records it, then lets the
 main-thread display identity and frame checks distinguish notification noise
 from a real display change. Non-native macOS and Linux restoration remain exact.
 
-The pre-commit hook runs independent jobs in parallel. Markdown and Rust
-formatting receive only matching staged paths. Clippy compilation and the
-protocol boundary remain whole-workspace checks, but run only when staged Rust
-or Cargo inputs can affect them. Workflow policy runs only for staged Actions
-or policy configuration, and harness configuration validates its own task and
-hook definitions. Keep the representative warm path below the project's
-10-second hook budget. Dependency audits remain in handoff and CI because they
-are broader and may refresh advisory data.
+The pre-commit hook catches what an implementer may have missed, mainly
+formatting and lint, plus fast targeted tests. It does not replace running the
+relevant tests before committing. Its independent jobs run in parallel and check
+staged paths wherever a check can work file by file:
+
+- Rust formatting, Rust test-module order, and Markdown lint receive only the
+  matching staged files.
+- `mise run test:scripts:affected --fast` runs only the Bun tests whose
+  imports, named scripts, or mentioned paths include a staged file. It skips
+  the suites listed in `SLOW_SUITES` and never runs the whole suite, even for
+  Bun package or compiler configuration; run `mise run test:scripts` for those.
+- Workflow checks verify only the action pins on staged lines
+  (`ci:workflows:staged`), which avoids pinact's GitHub API lookup for every
+  pin. Staging `.pinact.yaml` verifies all pins.
+- Shell syntax checks parse only staged scripts.
+
+Some checks stay whole-project because a staged file can break unstaged ones.
+They run only when a matching input is staged: Clippy for Rust or Cargo
+inputs, the protocol boundary for Cargo manifests, TypeScript for scripts,
+`lint:agents` for agent guides, and the icon, Sparkle, and vendor checks for
+their own inputs. Warm Clippy took 2.5 to 2.8 seconds after an edit in any
+crate, because Cargo rechecks only changed crates and their dependents. Harness
+configuration validates its own task and hook definitions. Keep the
+representative warm path below the project's 10-second hook budget. The hook
+reads the working tree, so unstaged edits in the same files can hide or cause a
+failure. Dependency audits remain in handoff and CI because they are broader
+and may refresh advisory data.
 
 Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
@@ -645,6 +667,14 @@ the source or generation script requires regeneration. The manifest records
 the Xcode, Icon Composer, and macOS versions used, since Apple rendering can
 change between releases. `package:macos` also verifies the packaged icon
 metadata and exact resource bytes before release signing.
+
+`assets/Huterm.icon` is the icon source. Refresh its committed ICNS, 1024-pixel
+PNG, and macOS Assets.car with `mise run icons:generate` using Xcode 27.
+Normal builds only run the portable `icons:check`; include `assets/icons.json`
+with every regeneration. Xcode 26.3 cannot read this document and actool can
+exit zero without producing files. Require fresh outputs from a temporary
+directory. Render the PNG with Icon Composer's bundled `ictool`, not xcrun's
+unrelated entry point or the compiler's ICNS, which only contains up to 256 pixels.
 
 ## Terminal engine
 
@@ -749,3 +779,98 @@ selection colors, Powerline joins on colored backgrounds, geometric triangles,
 and ordinary text. Close it with the window close button or
 interrupt the process. A passing smoke proves that native preparation and
 painting ran; it does not replace checking the resulting pixels.
+
+## Repository scripts and local builds
+
+Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
+or require changes to `~/.rustfmt.toml`.
+
+Use separate Cargo target directories when comparing baseline and feature
+worktrees. Reusing release artifacts across them can retain baseline protocol
+metadata; clean the affected local crates if a rebuild reports missing symbols
+that exist in the current source.
+
+Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
+Git. Commit hooks export repository and index paths that override a fixture's
+working directory and can redirect its commits into the caller's worktree.
+
+Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
+build wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
+keep bunfig.toml's minimum release age aligned with the three-day policy.
+
+Run `mise run check:scripts` for tooling edits. Native source preparation uses
+Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
+exit and the existing top-down source-tree hash order. Test changes to extraction
+and locking on macOS and Linux. The Linux FFI library is glibc, matching
+Ubuntu CI.
+
+Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
+can stall on Linux when writing the live HTTPS response directly, even though
+local HTTP fixtures pass. Verify download changes with a cold preparation run.
+
+Make Bun test tasks that import packages depend directly on `scripts:install`.
+A sibling typecheck's install dependency does not order parallel test startup.
+
+Lefthook's `**/*.md` glob skips root Markdown files. Include `*.md` explicitly
+so staged README and agent-guide edits receive the same checks as nested docs.
+
+## Tart VM rules
+
+Tart macOS VMs run host-built binaries; the guest never compiles. Stage new
+host-built helpers in `scripts/macos-vm/guest.sh`. Stage the
+read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
+for extended attributes on symlinks, so `ditto` and `cp` fail on
+`Sparkle.framework`. `tart list` fails while any VM with an ASIF disk is
+running, so cleanup cannot enumerate VMs then; `tart get` fails only for the
+running VM itself. Background
+processes started through `tart exec` die when exec returns; keep guest
+commands in the foreground. Virtualization.framework refuses a third running
+macOS guest, so runs share two host-wide slot locks.
+
+Smokes and `exec` use disposable clones; `dev` keeps a per-worktree VM. Flush a
+kept guest with `tart exec <vm> sync` before stopping it, or recent writes are
+lost. `tart clone` onto an existing name silently replaces that VM, so clone only
+after `tart get` reports its specific not-found error: `tart get` also fails
+for a VM that is merely running, and reading that as absence destroys a kept
+guest. Changing the provisioning inputs renames the image and
+leaves the previous one on disk until `vm:{macos,linux}:clean` removes it.
+
+Both dev sessions keep one guest instance under host control, with `r` to
+rebuild and relaunch, `w` to toggle watching, and `q` to quit. Their Mise tasks
+set `raw = true`: Mise otherwise pipes task stdio to prefix output, so the
+runner sees no terminal and those keys never arrive. `tart exec` can outlive the
+guest process it started, so close the host side after asking the app to stop or
+the session hangs on quit. Route SIGINT and SIGTERM through the session, settle
+an in-flight rebuild before completing a quit, and let whichever command leaves
+last stop a shared VM, whether or not it booted that VM.
+
+Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
+GNOME aborts its Wayland session with "No GSettings schemas are installed"
+unless provisioning runs `glib-compile-schemas` after installing the desktop,
+and GDM then falls back to Xorg silently. GDM selects the session from the
+autologin user's AccountsService record, so set it together with WaylandEnable
+and restart gdm3. Apple's virtio GPU is not PCI, so Ubuntu's 61-gdm.rules
+virtual-GPU checks never match. X can start without working GL while mutter
+cannot, which makes a silent Xorg fallback the normal symptom of a broken
+Wayland session. Unref a `tart run` child that is deliberately left running, or
+Bun's event loop keeps the finished command alive.
+
+Ubuntu desktop ships `/usr/lib/netplan/00-network-manager-all.yaml`, so the
+guest needs `network-manager` explicitly under `--no-install-recommends` or
+netplan leaves every interface unmanaged and the VM has no network at all.
+Shared NAT is sufficient; bridged networking is not required. End guest
+provisioning with `sync`, because the image is published as soon as the script
+exits and unflushed writes are lost. Prefer regular files under `/etc` for
+provisioned overrides: a `systemctl mask` symlink did not survive cloning,
+while a unit drop-in did. Bound `systemd-networkd-wait-online`, whose
+two-minute timeout otherwise delays every boot before the guest agent answers.
+
+## Docker rules
+
+Mise's Rust install points at `/root/.cargo/bin` in the image; changing
+`CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
+and Git downloads separately while retaining the image's Cargo home.
+
+The local Linux runner omits Git metadata because linked worktrees reference
+paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
+benchmark metadata must use that value before falling back to Git.
