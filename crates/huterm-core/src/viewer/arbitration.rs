@@ -330,6 +330,7 @@ impl Arbiter {
                     entry.slot.capabilities.size
                         && entry.geometry.is_some()
                         && !entry.slot.is_dropped()
+                        && !entry.slot.is_revoked()
                 })
                 .map(|entry| Candidate {
                     id: entry.slot.id,

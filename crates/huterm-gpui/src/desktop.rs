@@ -2293,6 +2293,9 @@ impl TerminalView {
     /// Reports this view's focus to the runtime in order with its input.
     /// Returns whether a failure notice was raised.
     fn enqueue_focus(&mut self, focused: bool) -> bool {
+        // A focus change ends the current run of coalesced mouse reports, as
+        // any other input does.
+        self.mouse.boundary();
         let viewer = &self.viewer;
         let result = self
             .input_queue

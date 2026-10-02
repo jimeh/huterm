@@ -204,6 +204,29 @@ fn a_dropped_viewer_leaves_candidacy_at_once_and_finalizes_after_its_queue() {
 }
 
 #[test]
+fn a_revoked_viewer_cannot_take_control_before_it_is_reconciled() {
+    let mut fixture = Fixture::new();
+    let revoked = fixture.sized(120);
+    let leaving = fixture.sized(100);
+    fixture.arbiter.report(&revoked, Report::Focus(true));
+    fixture.arbiter.report(&leaving, Report::Focus(true));
+    assert_eq!(fixture.arbiter.canonical.0, grid(100));
+    // Revoked on another thread after this turn reconciled, then the
+    // controller is finalized after its last queued message.
+    revoked
+        .revoked
+        .store(true, std::sync::atomic::Ordering::Release);
+    leaving.queue();
+    leaving
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(leaving.settled());
+    let effects = fixture.arbiter.settled(&leaving, &fixture.registry);
+    assert_eq!(effects.resize, None, "the revoked viewer took control");
+    assert_eq!(fixture.arbiter.canonical.0, grid(100));
+}
+
+#[test]
 fn a_dropped_viewer_cannot_take_control_before_it_is_reconciled() {
     let mut fixture = Fixture::new();
     let controller = fixture.sized(100);

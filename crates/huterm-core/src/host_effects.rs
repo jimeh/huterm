@@ -500,7 +500,14 @@ impl HostEffectSink {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.registrations.retain(|weak| weak.strong_count() != 0);
+        // A permanently revoked registration can outlive its viewer's
+        // finalization while the viewer's handle is still held; it no longer
+        // counts toward the limit, as its finalized viewer slot does not.
+        state.registrations.retain(|weak| {
+            weak.upgrade().is_some_and(|registration| {
+                registration.active.load(Ordering::Acquire)
+            })
+        });
         if self.inner.closed.load(Ordering::Acquire)
             || state.registrations.len() >= TERMINAL_RECIPIENT_LIMIT
         {
@@ -611,6 +618,33 @@ mod tests {
         active_signal.try_recv().unwrap();
         assert!(idle_signal.try_recv().is_err());
         assert_eq!(text(&active.try_next().unwrap()), "copy");
+    }
+
+    #[test]
+    fn permanently_revoked_registrations_free_their_place_in_the_limit() {
+        let sink = HostEffectSink::new(TerminalId::new(1));
+        let process = DesktopHostEffectClient::new();
+        let options = HostEffectRecipientOptions::local_desktop(true);
+        let register = |attachment| {
+            sink.register(
+                Some(AttachmentId::new(attachment)),
+                &process,
+                options,
+                RecipientLink::default(),
+            )
+        };
+        let limit = u64::try_from(TERMINAL_RECIPIENT_LIMIT).unwrap();
+        // Revoked viewers can still hold their recipients.
+        let held: Vec<_> = (1..=limit)
+            .map(|attachment| register(attachment).unwrap())
+            .collect();
+        assert!(register(limit + 1).is_none());
+        sink.invalidate_all();
+        assert!(
+            register(limit + 1).is_some(),
+            "revoked registrations no longer count"
+        );
+        drop(held);
     }
 
     #[test]
