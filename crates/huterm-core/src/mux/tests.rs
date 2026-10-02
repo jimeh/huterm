@@ -886,8 +886,33 @@ fn presentation_follows_the_controlling_viewer_without_failing_others() {
     .unwrap();
     wait_for_presentation(&opened.client, &theme(2));
     // A viewer that does not control still submits without failing.
+    let prober = mux
+        .subscribe_terminal(
+            attachment,
+            opened.tab.terminal_id,
+            ViewerOptions::new(ViewerCapabilities {
+                input: true,
+                ..ViewerCapabilities::NONE
+            }),
+        )
+        .unwrap();
     first.update_presentation(theme(3)).unwrap();
-    second.read_snapshot().unwrap();
+    // Controls overtake queued messages, so the barrier is input queued
+    // behind the submission: once its bytes are released, a control round
+    // trip follows the turn that processed both. Motion, unlike typing,
+    // recomputes nothing that could reapply the controller's presentation.
+    prober
+        .send_input(TerminalInput::Mouse(huterm_protocol::MouseInput {
+            position: huterm_protocol::MousePosition { column: 0, row: 0 },
+            action: huterm_protocol::MouseAction::Motion(None),
+            modifiers: huterm_protocol::Modifiers::default(),
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while opened.client.control.queued_input_bytes() != 0 {
+        assert!(Instant::now() < deadline, "input was not processed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(opened.client.control.presentation().unwrap().0, theme(2));
     // Focus hands control, and the presentation it submitted, back.
     second.set_focus(false).unwrap();

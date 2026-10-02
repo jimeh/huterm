@@ -35,6 +35,10 @@ use crate::terminal::{
 /// Live viewers one terminal admits.
 pub(crate) const VIEWER_LIMIT: usize = 32;
 
+/// Numbers viewers across every terminal in the process, so a viewer ID
+/// names one registration within its runtime scope.
+static NEXT_VIEWER: AtomicU64 = AtomicU64::new(1);
+
 /// Host-effect registration for a viewer that can receive effects such as
 /// clipboard writes.
 #[derive(Clone, Debug)]
@@ -224,7 +228,10 @@ impl Registry {
         state.next += 1;
         let (wake, signal) = async_channel::bounded(1);
         let slot = Arc::new(Slot {
-            id: ViewerId::in_runtime(self.runtime, state.next),
+            id: ViewerId::in_runtime(
+                self.runtime,
+                NEXT_VIEWER.fetch_add(1, Ordering::Relaxed),
+            ),
             order: state.next,
             attachment,
             capabilities,
@@ -259,9 +266,17 @@ impl Registry {
         self.state().slots.clone()
     }
 
-    /// Frees a finalized slot so it no longer counts toward the limit.
+    /// Frees a finalized slot so it no longer counts toward the limit, and
+    /// closes its wake: a revoked viewer's waiter receives the pending
+    /// revocation signal, then stops.
     pub(crate) fn remove(&self, id: ViewerId) {
-        self.state().slots.retain(|slot| slot.id != id);
+        self.state().slots.retain(|slot| {
+            let keep = slot.id != id;
+            if !keep {
+                slot.wake.close();
+            }
+            keep
+        });
     }
 
     /// Withdraws the authority of every viewer `matches` selects. Their
@@ -375,7 +390,8 @@ impl ViewerWake {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::Stopped`] once the terminal stopped.
+    /// Returns [`RuntimeError::Stopped`] once the terminal stopped or the
+    /// revoked viewer was finalized.
     pub async fn wait(&self) -> Result<(), RuntimeError> {
         self.wake.recv().await.map_err(|_| RuntimeError::Stopped)
     }
@@ -422,7 +438,9 @@ impl TerminalViewer {
                 capabilities,
                 Initial {
                     focused: options.focused,
-                    geometry: options.geometry,
+                    geometry: options.geometry.map(|(grid, cell)| {
+                        (GridSize::clamped(grid.columns, grid.rows), cell)
+                    }),
                     presentation: options.presentation,
                 },
             )
@@ -750,7 +768,8 @@ impl TerminalViewer {
     /// # Errors
     ///
     /// Returns [`RuntimeError::Stopped`] once the terminal stopped and the
-    /// final status has been signalled.
+    /// final status has been signalled, or once a revoked viewer was
+    /// finalized after its revocation was signalled.
     pub async fn wait(&self) -> Result<(), RuntimeError> {
         self.wake.recv().await.map_err(|_| RuntimeError::Stopped)
     }

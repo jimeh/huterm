@@ -1190,10 +1190,11 @@ impl TerminalView {
         let Some(input) = input else {
             return false;
         };
-        if self.enqueue_input(input) {
+        let (accepted, changed) = self.enqueue_input(input);
+        if changed {
             cx.notify();
         }
-        self.return_to_live_output();
+        self.return_to_live_output(accepted);
         // Recognized chords stay consumed even when the bounded queue rejects
         // them. Falling through would send Option text through AppKit instead.
         true
@@ -1391,10 +1392,12 @@ impl TerminalView {
                 if let Some(text) =
                     cx.read_from_clipboard().and_then(|item| item.text())
                 {
-                    if self.enqueue_input(TerminalInput::Paste(text)) {
+                    let (accepted, changed) =
+                        self.enqueue_input(TerminalInput::Paste(text));
+                    if changed {
                         cx.notify();
                     }
-                    self.return_to_live_output();
+                    self.return_to_live_output(accepted);
                     self.start_snapshot_if_needed(cx);
                 }
             }
@@ -1522,7 +1525,7 @@ impl TerminalView {
                     self.admit_input(TerminalInput::Paste(text), false, false);
                 if accepted {
                     self.focus.focus(window, cx);
-                    self.return_to_live_output();
+                    self.return_to_live_output(true);
                     self.start_snapshot_if_needed(cx);
                 }
             }
@@ -2273,11 +2276,17 @@ impl TerminalView {
         self.wake_pending_work();
     }
 
-    /// Typing returns the shared viewport to live output on the runtime,
-    /// which then invalidates every viewer; this view only drops its own
-    /// pending scroll intent.
-    fn return_to_live_output(&mut self) {
-        self.scroll.typed();
+    /// Typing returns the shared viewport to live output. Accepted input
+    /// moves it on the runtime, which then invalidates every viewer, so this
+    /// view only drops its own pending scroll intent. Input the queue refused,
+    /// for example in an exited tab, never reaches the runtime, so the view
+    /// requests the move itself.
+    fn return_to_live_output(&mut self, accepted: bool) {
+        if accepted {
+            self.scroll.typed();
+        } else {
+            self.scroll.bottom();
+        }
     }
 
     /// Reports this view's focus to the runtime in order with its input.
@@ -2307,10 +2316,10 @@ impl TerminalView {
         )
     }
 
-    fn enqueue_input(&mut self, input: TerminalInput) -> bool {
+    /// Returns whether the input was accepted and whether a notice changed.
+    fn enqueue_input(&mut self, input: TerminalInput) -> (bool, bool) {
         self.mouse.boundary();
-        let (_, changed) = self.admit_input(input, false, false);
-        changed
+        self.admit_input(input, false, false)
     }
 
     fn admit_input(

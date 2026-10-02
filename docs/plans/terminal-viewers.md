@@ -218,7 +218,11 @@ Registration inserts the slot into the terminal's registry under the same
 short lock the owner thread takes to publish, and the slot starts notified
 with its wake signalled. A viewer therefore cannot miss a publication that
 lands between subscription and its first poll, and it reads its status
-baseline after it is registered.
+baseline after it is registered. The owner thread reconciles its viewer
+table before each viewer request as well as on each turn, so reports a new
+viewer queues before the owner's next turn still find its entry. Viewer IDs
+are numbered across the process, so no two terminals in one runtime scope
+issue the same ID. Initial geometry is clamped like a reported one.
 
 A terminal admits at most 32 live viewers, the existing
 `TERMINAL_RECIPIENT_LIMIT`; past that, subscription fails with a
@@ -233,9 +237,11 @@ caller owns that runtime, so it is the authority. The migration covers GPUI
 scroll tests, benchmarks, `crates/huterm-core/tests/descriptor_limits.rs`,
 and `crates/huterm-gpui/examples/native_quit_smoke.rs`.
 
-When the runtime stops, it closes every viewer's wake explicitly, so a
-viewer's wait ends with `Stopped` even while its handle, the registry, or the
-host-effect sink still holds the channel.
+When the runtime stops, including by a panic on its thread, it closes every
+viewer's wake explicitly, so a viewer's wait ends with `Stopped` even while
+its handle, the registry, or the host-effect sink still holds the channel.
+Finalizing a revoked viewer closes its wake the same way, after the
+revocation signal, so its activity task ends.
 
 ### The runtime checks capabilities on every request
 
@@ -258,12 +264,14 @@ never controls size. A CLI connection that only reads snapshots holds no
 flags, so it never controls the viewport or size.
 
 The handle rejects a request it lacks the capability for with a new
-`RuntimeError::NotPermitted`, before reserving input bytes or queueing. In
-process, capabilities are immutable, so the owner thread's own check
-matters for revocation: it discards requests from a revoked viewer at
-dequeue and releases their byte reservation. Over [#44][issue-44] the
-server repeats the capability check per message, so enforcement does not
-depend on client code.
+`RuntimeError::NotPermitted`, before reserving input bytes or queueing. The
+owner thread checks again at dequeue: it discards input, edits, and
+arbitration reports from a revoked viewer or one whose capabilities do not
+permit them, releasing their byte reservation, and answers a refused
+scroll with `NotPermitted`. In process, capabilities are immutable, so the
+handle's check normally decides and the dequeue check matters for
+revocation. Over [#44][issue-44] the server repeats the capability check
+per message, so enforcement does not depend on client code.
 
 `NotPermitted` and `Revoked` are viewer errors. Snapshot and selection
 controls from a revoked viewer are answered with `Revoked` through their
@@ -538,6 +546,11 @@ A `MouseArbiter` on the owner thread holds the policy:
   does today. Accepted gestures therefore always end.
 - When the owner viewer is finalized with buttons held, the runtime writes
   releases for those buttons at the owner's last reported position.
+- When the application turns mouse tracking off during a gesture, the
+  runtime ends the gesture without releases. Clients stop reporting then,
+  so the owner's release would never arrive and every other viewer's
+  presses would stay discarded after the application tracks the mouse
+  again.
 
 A view whose press was discarded keeps its local ownership state until its
 own release and gets no feedback; that is acceptable for the default. The
@@ -575,9 +588,11 @@ is finalized only once.
 - **Dropping** a viewer marks the slot dropped and sends a control message
   on the unbounded control channel. It never blocks and never takes the Mux
   lock, so it is safe from `on_app_quit`. The viewer stops being a control
-  candidate immediately. Its queued input and buffer edits were admitted
-  with valid authority, so they still run; its queued arbitration reports
-  are discarded at dequeue. The slot counts its queued input and edit
+  candidate immediately. Its queued input, buffer edits, and arbitration
+  reports were admitted with valid authority, so they still run in order;
+  a focus change queued before input still reaches the application before
+  that input, but no report makes the viewer a candidate again. The slot
+  counts its queued input and edit
   messages, incrementing before each send and decrementing when a send is
   refused or a message is processed, and the owner thread finalizes a
   dropped viewer once that count reaches zero. A press queued before the

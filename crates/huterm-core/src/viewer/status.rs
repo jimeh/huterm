@@ -78,3 +78,69 @@ impl StatusPublisher {
         registry.publish_status(Arc::new(self.status.clone()));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use huterm_protocol::{
+        RuntimeId, TERMINAL_FAILURE_CAPACITY, TerminalId, ViewerCapabilities,
+    };
+
+    use super::StatusPublisher;
+    use crate::viewer::{Initial, Registry};
+
+    #[test]
+    fn only_changes_publish_a_revision_and_wake_viewers() {
+        let registry = Registry::new(
+            TerminalId::new(1),
+            RuntimeId::new(0),
+            Arc::new(crate::wake::Wake::default()),
+        );
+        let (_slot, wake) = registry
+            .register(
+                None,
+                ViewerCapabilities::ALL,
+                Initial {
+                    focused: false,
+                    geometry: None,
+                    presentation: None,
+                },
+            )
+            .unwrap();
+        while wake.try_recv().is_ok() {}
+        let mut status = StatusPublisher::default();
+        status.title("title".into());
+        status.bell();
+        status.bell();
+        status.flush(&registry);
+        assert!(wake.try_recv().is_ok());
+        let published = registry.status();
+        assert_eq!((published.revision, published.bells), (1, 2));
+        // A program that re-sends its title on every chunk costs nothing.
+        for _ in 0..100 {
+            status.title("title".into());
+            status.flush(&registry);
+        }
+        assert!(wake.try_recv().is_err(), "an unchanged title wakes no one");
+        assert_eq!(registry.status().revision, 1);
+    }
+
+    #[test]
+    fn failures_keep_a_bounded_numbered_log_without_repeats() {
+        let mut status = StatusPublisher::default();
+        status.failure("same".into());
+        status.failure("same".into());
+        assert_eq!(status.status.failures.len(), 1, "a repeat is dropped");
+        for index in 0..TERMINAL_FAILURE_CAPACITY {
+            status.failure(format!("failure {index}"));
+        }
+        let failures = &status.status.failures;
+        assert_eq!(failures.len(), TERMINAL_FAILURE_CAPACITY);
+        assert_eq!(failures[0].sequence, 2, "the oldest was dropped");
+        assert_eq!(
+            status.status.last_failure(),
+            u64::try_from(TERMINAL_FAILURE_CAPACITY).unwrap() + 1
+        );
+    }
+}

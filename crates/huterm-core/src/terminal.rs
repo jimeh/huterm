@@ -9,8 +9,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    AttachmentId, BufferRange, ExitStatus, InputStamp, RuntimeId,
-    ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
+    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseTracking,
+    RuntimeId, ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
     TerminalMetadata, TerminalSnapshot,
 };
 #[cfg(test)]
@@ -327,6 +327,21 @@ impl SelectionRequest {
     }
 }
 
+/// Closes the host-effect sink and the viewer registry when the runtime
+/// thread ends, including by unwinding, so no viewer waits on a stopped
+/// terminal.
+struct CloseOnExit {
+    host_effects: HostEffectSink,
+    registry: Arc<Registry>,
+}
+
+impl Drop for CloseOnExit {
+    fn drop(&mut self) {
+        self.host_effects.close();
+        self.registry.close();
+    }
+}
+
 /// Owner of one terminal's runtime thread and cleanup path.
 #[derive(Debug)]
 pub struct TerminalRuntime {
@@ -384,6 +399,10 @@ impl TerminalRuntime {
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
+                let close = CloseOnExit {
+                    host_effects: runtime_host_effect_sink.clone(),
+                    registry: Arc::clone(&runtime_registry),
+                };
                 let result = (|| {
                     let mut engine = TerminalEngine::new(
                         terminal_id,
@@ -415,8 +434,7 @@ impl TerminalRuntime {
                         &startup_sender,
                     )
                 })();
-                runtime_host_effect_sink.close();
-                runtime_registry.close();
+                drop(close);
                 if let Err(error) = &result {
                     let _ = startup_sender.send(Err(error.clone()));
                 }
@@ -607,6 +625,9 @@ pub(crate) enum RuntimeControl {
         entered: Sender<()>,
         release: Receiver<()>,
     },
+    /// Panics on the runtime owner.
+    #[cfg(test)]
+    Panic,
     PtyEof,
     Snapshot {
         slot: Arc<Slot>,
@@ -1000,13 +1021,23 @@ fn run_terminal(
             $body
         }};
     }
-    while !closing.load(Ordering::Acquire) {
-        if registry.take_changed() {
-            let effects = arbiter.sync(registry);
-            if !owner!(|owner| owner.apply(effects)) {
-                closing.store(true, Ordering::Release);
-                continue;
+    // Reconciles the viewer table. Viewers register and drop at any time,
+    // so this runs before every viewer request as well as each turn: a new
+    // viewer's first report must find its entry.
+    macro_rules! reconcile {
+        () => {
+            if registry.take_changed() {
+                let effects = arbiter.sync(registry);
+                if !owner!(|owner| owner.apply(effects)) {
+                    closing.store(true, Ordering::Release);
+                }
             }
+        };
+    }
+    while !closing.load(Ordering::Acquire) {
+        reconcile!();
+        if closing.load(Ordering::Acquire) {
+            continue;
         }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
@@ -1054,12 +1085,17 @@ fn run_terminal(
                     #[cfg(test)]
                     fail_lookup,
                 } => {
-                    // Revocation answers only this viewer and never reaches
-                    // the fatal path below.
+                    // Revocation and refused scrolls answer only this viewer
+                    // and never reach the fatal path below.
                     if slot.is_revoked() {
                         let _ = reply.try_send(Err(RuntimeError::Revoked));
                         continue;
                     }
+                    if scroll.is_some() && !slot.capabilities.viewport {
+                        let _ = reply.try_send(Err(RuntimeError::NotPermitted));
+                        continue;
+                    }
+                    reconcile!();
                     let result = build_snapshot(
                         &mut engine,
                         &mut publication,
@@ -1152,6 +1188,8 @@ fn run_terminal(
                     let _ = release.recv();
                 }
                 #[cfg(test)]
+                RuntimeControl::Panic => panic!("injected runtime panic"),
+                #[cfg(test)]
                 RuntimeControl::ForegroundJob(reply) => {
                     let busy = !child_exited && {
                         let shell = child
@@ -1212,6 +1250,9 @@ fn run_terminal(
             }
             Err(TryRecvError::Disconnected) => break,
         };
+        if matches!(message, NextMessage::Client(_)) {
+            reconcile!();
+        }
         let healthy = match message {
             NextMessage::Output(bytes) => {
                 let now = Instant::now();
@@ -1257,6 +1298,7 @@ fn run_terminal(
                 }
                 publication.publish(registry, None, engine.generation());
                 healthy
+                    && end_untracked_gesture(&engine, &mut arbiter, &mut status)
             }
             NextMessage::Client(RuntimeMessage::Input {
                 slot,
@@ -1265,7 +1307,10 @@ fn run_terminal(
                 reserved_bytes,
             }) => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                let healthy = if slot.is_revoked() || child_exited {
+                let healthy = if slot.is_revoked()
+                    || !slot.capabilities.input
+                    || child_exited
+                {
                     true
                 } else {
                     owner!(|owner| handle_input(
@@ -1296,20 +1341,30 @@ fn run_terminal(
                 owner!(|owner| owner.apply(effects))
             }
             NextMessage::Client(RuntimeMessage::Edit { slot, edit }) => {
-                let healthy = slot.is_revoked() || {
+                let healthy = if slot.is_revoked() || !slot.capabilities.input {
+                    true
+                } else {
                     let effects = match edit {
                         BufferEdit::ClearHistory => engine.clear_history(),
                         BufferEdit::Reset => engine.reset(),
                     };
                     match effects {
-                        Ok(effects) => owner!(|owner| {
-                            let healthy = owner.handle_effects(
-                                effects,
-                                "PTY writer stopped during a buffer edit",
-                            );
-                            owner.publish();
+                        Ok(effects) => {
+                            let healthy = owner!(|owner| {
+                                let healthy = owner.handle_effects(
+                                    effects,
+                                    "PTY writer stopped during a buffer edit",
+                                );
+                                owner.publish();
+                                healthy
+                            });
                             healthy
-                        }),
+                                && end_untracked_gesture(
+                                    &engine,
+                                    &mut arbiter,
+                                    &mut status,
+                                )
+                        }
                         Err(error) => {
                             status.failure(error.to_string());
                             false
@@ -1361,6 +1416,30 @@ fn run_terminal(
     };
     status.flush(registry);
     result
+}
+
+/// Ends a mouse gesture the application stopped tracking. Returns false when
+/// the runtime must close.
+fn end_untracked_gesture(
+    engine: &TerminalEngine,
+    arbiter: &mut Arbiter,
+    status: &mut StatusPublisher,
+) -> bool {
+    if !arbiter.gesture_held() {
+        return true;
+    }
+    match engine.modes() {
+        Ok(modes) => {
+            if modes.mouse_tracking == MouseTracking::Disabled {
+                arbiter.tracking_disabled();
+            }
+            true
+        }
+        Err(error) => {
+            status.failure(error.to_string());
+            false
+        }
+    }
 }
 
 /// Handles one viewer's input: control and the return to live output come

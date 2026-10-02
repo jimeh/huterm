@@ -110,6 +110,11 @@ fn pty_size(prober: &TerminalViewer, name: &str) -> String {
     prober
         .send_input(TerminalInput::Text(format!("{name}\n")))
         .unwrap();
+    read_size(prober, name)
+}
+
+/// Reads the size the shell printed for `name`.
+fn read_size(prober: &TerminalViewer, name: &str) -> String {
     let marker = format!("{name}=");
     let mut size = None;
     wait_until(&marker, || {
@@ -164,6 +169,9 @@ fn every_viewer_wakes_and_a_stalled_viewer_blocks_no_one() {
     let active = viewer(&runtime);
     let stalled = viewer(&runtime);
     wait_for_text(&active, "READY");
+    stalled.read_snapshot().unwrap();
+    while stalled.wake_pending() {}
+    assert!(stalled.poll().invalidated.is_none());
     for index in 0..50 {
         active
             .send_input(TerminalInput::Text(format!("{index}\n")))
@@ -172,6 +180,7 @@ fn every_viewer_wakes_and_a_stalled_viewer_blocks_no_one() {
     // The stalled viewer never asks for a snapshot. Parsing and the
     // active viewer continue regardless.
     wait_for_text(&active, "GOT:49.");
+    assert!(stalled.wake_pending(), "the stalled viewer was woken");
     assert!(stalled.poll().invalidated.is_some());
     // When it finally asks, its snapshot is complete and current.
     let snapshot = stalled.read_snapshot().unwrap();
@@ -474,6 +483,16 @@ fn a_revoked_viewer_with_a_queued_snapshot_harms_no_one() {
     resume.send(()).unwrap();
     assert!(matches!(queued.recv_blocking(), Err(RuntimeError::Revoked)));
     assert!(revoked.poll().revoked);
+    // Once finalized, the revoked viewer's waiter stops instead of hanging.
+    wait_until("finalized slot", || {
+        runtime
+            .registry()
+            .slots()
+            .iter()
+            .all(|slot| slot.id != revoked.id())
+    });
+    while revoked.wake_pending() {}
+    assert!(matches!(ready(revoked.wait()), Err(RuntimeError::Stopped)));
     assert!(matches!(
         revoked.send_input(TerminalInput::Text("x".into())),
         Err(RuntimeError::Revoked)
@@ -539,9 +558,9 @@ fn a_dropped_viewer_writes_its_queued_press_before_the_release() {
         .unwrap();
     let dropped = viewer(&runtime);
     wait_for_text(&reader, "READY");
-    dropped.set_focus(true).unwrap();
-    runtime.client().job_context().unwrap();
+    // Every request is queued before the drop and dequeued after it.
     let resume = pause(&runtime);
+    dropped.set_focus(true).unwrap();
     dropped.send_input(press(MouseButton::Left, 4)).unwrap();
     dropped.send_input(TerminalInput::Text("x".into())).unwrap();
     drop(dropped);
@@ -700,6 +719,161 @@ fn closing_with_live_viewers_reaps_the_child_and_closes_their_wakes() {
         let _ = viewer.poll();
         assert!(viewer.read_snapshot().is_err());
     }
+}
+
+#[test]
+fn a_viewer_registered_mid_turn_keeps_its_first_reports() {
+    let runtime = spawn(219, SIZE_SCRIPT);
+    let first = sized_viewer(&runtime, 40, 8);
+    let probe = prober(&runtime);
+    wait_for_text(&first, "READY");
+    // The owner is held inside a turn that has already reconciled its
+    // viewers, so the new viewer's reports are dequeued before the next.
+    let resume = pause(&runtime);
+    let late = viewer(&runtime);
+    late.report_geometry(GridSize::clamped(70, 14), cell())
+        .unwrap();
+    late.set_focus(true).unwrap();
+    probe
+        .send_input(TerminalInput::Text("late\n".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    // A snapshot request would reconcile ahead of the queued reports, so
+    // wait for the probe's input, queued behind them, without one.
+    let client = runtime.client();
+    wait_until("queued input", || client.queued_input_bytes() == 0);
+    assert_eq!(read_size(&probe, "late"), "14 70");
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn viewer_ids_are_unique_across_terminals_in_one_scope() {
+    let first = spawn(220, "read l");
+    let second = spawn(221, "read l");
+    let (one, two) = (viewer(&first), viewer(&second));
+    assert_ne!(one.id(), two.id());
+    first.shutdown().unwrap();
+    second.shutdown().unwrap();
+}
+
+#[test]
+fn an_initial_geometry_is_clamped_like_a_reported_one() {
+    let runtime = spawn(222, "printf READY; read l");
+    let only = runtime
+        .subscribe(ViewerOptions {
+            focused: true,
+            geometry: Some((
+                GridSize {
+                    columns: 0,
+                    rows: 0,
+                },
+                cell(),
+            )),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    wait_until("clamped resize", || {
+        only.read_snapshot().unwrap().size == GridSize::clamped(1, 1)
+    });
+    assert!(
+        runtime
+            .client()
+            .job_context()
+            .is_some_and(|job| !job.exited),
+        "the terminal keeps running"
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_gesture_ends_when_the_application_stops_tracking_the_mouse() {
+    // Reads one press, stops tracking, and resumes it after one more byte;
+    // then prints the next press it receives.
+    let runtime = spawn(
+        223,
+        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; dd bs=1 count=9 >/dev/null 2>&1; printf '\\033[?1000lOFF'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1000hON'; bytes=$(dd bs=1 count=9 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:END' \"$bytes\"",
+    );
+    let first = viewer(&runtime);
+    let second = viewer(&runtime);
+    wait_for_text(&first, "READY");
+    // The application quits tracking while the first viewer holds Left,
+    // so that viewer never sends its release.
+    first.send_input(press(MouseButton::Left, 2)).unwrap();
+    wait_for_text(&first, "OFF");
+    second.send_input(TerminalInput::Text("y".into())).unwrap();
+    wait_for_text(&first, "ON");
+    second.send_input(press(MouseButton::Left, 4)).unwrap();
+    wait_for_text(&first, &format!("HEX:{}:END", hex(b"\x1b[<0;5;1M")));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn the_owner_rechecks_capabilities_at_dequeue() {
+    let runtime = spawn(
+        224,
+        "stty -echo; printf READY; while IFS= read -r l; do printf '[%s]' \"$l\"; done",
+    );
+    let reader = runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+        .unwrap();
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    // Forged requests that skip the handle's checks.
+    let slot = reader.slot();
+    let client = runtime.client();
+    slot.queue();
+    client
+        .offer_input(
+            Arc::clone(&slot),
+            TerminalInput::Text("forged\n".into()),
+            reader.stamp(None),
+        )
+        .unwrap();
+    let (reply, scrolled) = async_channel::bounded(1);
+    client
+        .send_control(RuntimeControl::Snapshot {
+            slot,
+            scroll: Some((ScrollCommand::Relative(1), 1)),
+            point: None,
+            reply,
+            fail_lookup: false,
+        })
+        .unwrap();
+    assert!(matches!(
+        scrolled.recv_blocking().unwrap(),
+        Err(RuntimeError::NotPermitted)
+    ));
+    typist
+        .send_input(TerminalInput::Text("allowed\n".into()))
+        .unwrap();
+    let text = text(&wait_for_text(&typist, "[allowed]"));
+    assert!(!text.contains("forged"), "{text}");
+    assert!(
+        runtime
+            .client()
+            .job_context()
+            .is_some_and(|job| !job.exited),
+        "a refused request is not fatal"
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_runtime_panic_closes_every_wake() {
+    let runtime = spawn(225, "printf READY; read l");
+    let only = viewer(&runtime);
+    wait_for_text(&only, "READY");
+    runtime
+        .client()
+        .send_control(RuntimeControl::Panic)
+        .unwrap();
+    // Shutting down first would close the runtime before the panic.
+    wait_until("closed wake", || {
+        while only.wake_pending() {}
+        only.wake.is_closed()
+    });
+    assert!(matches!(ready(only.wait()), Err(RuntimeError::Stopped)));
+    assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
 }
 
 /// Polls a future that must already be ready.

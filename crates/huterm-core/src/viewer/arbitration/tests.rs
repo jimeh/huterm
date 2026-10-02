@@ -202,6 +202,55 @@ fn a_dropped_viewer_leaves_candidacy_at_once_and_finalizes_after_its_queue() {
 }
 
 #[test]
+fn a_dropped_viewer_cannot_take_control_before_it_is_reconciled() {
+    let mut fixture = Fixture::new();
+    let controller = fixture.sized(100);
+    let closing = fixture.sized(120);
+    fixture.arbiter.report(&controller, Report::Focus(true));
+    assert_eq!(fixture.arbiter.canonical.0, grid(100));
+    // Dropped after this turn reconciled, with input and a report queued.
+    closing.queue();
+    closing
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(fixture.arbiter.typed(&closing).resize.is_none());
+    assert!(
+        fixture
+            .arbiter
+            .report(&closing, Report::Focus(true))
+            .resize
+            .is_none()
+    );
+    assert_eq!(fixture.arbiter.canonical.0, grid(100));
+}
+
+#[test]
+fn a_gesture_the_application_stopped_tracking_admits_other_viewers() {
+    let mut fixture = Fixture::new();
+    let owner = fixture.sized(80);
+    let other = fixture.sized(80);
+    let left = MouseButton::Left;
+    assert!(fixture.arbiter.admit_mouse(
+        &owner,
+        &mouse(MouseAction::Press(left), 1),
+        stamp(None)
+    ));
+    assert!(fixture.arbiter.gesture_held());
+    fixture.arbiter.tracking_disabled();
+    assert!(!fixture.arbiter.gesture_held());
+    assert!(fixture.arbiter.admit_mouse(
+        &other,
+        &mouse(MouseAction::Press(left), 2),
+        stamp(None)
+    ));
+    // The ended gesture leaves nothing to release on finalization.
+    owner
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(fixture.arbiter.sync(&fixture.registry).releases.is_empty());
+}
+
+#[test]
 fn revocation_and_drop_together_finalize_once() {
     let mut fixture = Fixture::new();
     let (slot, effects) = fixture.viewer(
@@ -322,7 +371,8 @@ fn stale_geometry_discards_new_reports_but_never_owned_releases() {
         stamp(Some(current))
     ));
     // The grid changes mid-gesture; motion and the release still count.
-    fixture.arbiter.report(&first, Report::Focus(true));
+    assert!(fixture.arbiter.typed(&first).resize.is_some());
+    assert!(fixture.arbiter.geometry_revision() > current);
     assert!(fixture.arbiter.admit_mouse(
         &second,
         &mouse(MouseAction::Motion(Some(left)), 2),

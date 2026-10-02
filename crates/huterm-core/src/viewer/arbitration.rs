@@ -61,7 +61,6 @@ struct Entry {
     activity: u64,
     /// The number of this viewer's latest scroll the runtime applied.
     applied_scroll: u64,
-    dropped: bool,
 }
 
 /// A viewer that may control the terminal.
@@ -125,8 +124,9 @@ impl Arbiter {
     }
 
     /// Reconciles the table with the registry: adds new viewers with their
-    /// initial state, finalizes revoked ones, and retires dropped ones from
-    /// control, finalizing them once their queued messages have run.
+    /// initial state and finalizes revoked ones and dropped ones whose queued
+    /// messages have run. A dropped viewer leaves control as soon as it is
+    /// dropped, whether or not this has run.
     pub(crate) fn sync(&mut self, registry: &Registry) -> Effects {
         let mut effects = Effects::default();
         for slot in registry.slots() {
@@ -146,7 +146,6 @@ impl Arbiter {
                 presentation: None,
                 activity: 0,
                 applied_scroll: 0,
-                dropped: false,
             });
             if let Some(initial) = initial {
                 self.entries[index].geometry = initial.geometry;
@@ -162,9 +161,6 @@ impl Arbiter {
             if slot.is_revoked() || (slot.is_dropped() && slot.queued() == 0) {
                 effects.merge(self.finalize(index, registry));
                 continue;
-            }
-            if slot.is_dropped() {
-                self.entries[index].dropped = true;
             }
             index += 1;
         }
@@ -236,20 +232,30 @@ impl Arbiter {
         effects
     }
 
-    /// Applies one viewer's arbitration report. Reports from dropped or
-    /// unknown viewers are ignored.
+    /// Applies one viewer's arbitration report. Reports from revoked or
+    /// unknown viewers, and reports the viewer's capabilities do not
+    /// permit, are ignored. A dropped viewer's queued reports still apply in
+    /// order with its input, but it can no longer control.
     pub(crate) fn report(&mut self, slot: &Slot, report: Report) -> Effects {
         let Some(index) = self.index(slot) else {
             return Effects::default();
         };
-        if self.entries[index].dropped || slot.is_revoked() {
+        if slot.is_revoked() {
             return Effects::default();
         }
+        let capabilities = slot.capabilities;
         let mut effects = match report {
-            Report::Focus(focused) => self.set_focus(index, focused),
-            Report::Geometry(grid, cell) => {
+            Report::Focus(focused)
+                if capabilities.input || capabilities.size =>
+            {
+                self.set_focus(index, focused)
+            }
+            Report::Geometry(grid, cell) if capabilities.size => {
                 self.entries[index].geometry = Some((grid, cell));
                 Effects::default()
+            }
+            Report::Focus(_) | Report::Geometry(..) => {
+                return Effects::default();
             }
         };
         effects.merge(self.recompute());
@@ -265,7 +271,7 @@ impl Arbiter {
         let Some(index) = self.index(slot) else {
             return Effects::default();
         };
-        if self.entries[index].dropped || slot.is_revoked() {
+        if slot.is_revoked() {
             return Effects::default();
         }
         self.entries[index].presentation = Some(presentation);
@@ -313,6 +319,19 @@ impl Arbiter {
             .admit(slot.id, mouse, stamp.geometry, self.geometry_revision)
     }
 
+    /// Whether a viewer owns a mouse gesture.
+    pub(crate) fn gesture_held(&self) -> bool {
+        self.mouse.owner.is_some()
+    }
+
+    /// Ends the current gesture without releases, once the application has
+    /// stopped tracking the mouse. Clients stop reporting then, so the owner's
+    /// release would never arrive and other viewers' presses would stay
+    /// refused.
+    pub(crate) fn tracking_disabled(&mut self) {
+        self.mouse = MouseArbiter::default();
+    }
+
     /// Chooses the controller and returns the resize and presentation
     /// changes its state requires.
     fn recompute(&mut self) -> Effects {
@@ -323,7 +342,7 @@ impl Arbiter {
                 .filter(|entry| {
                     entry.slot.capabilities.size
                         && entry.geometry.is_some()
-                        && !entry.dropped
+                        && !entry.slot.is_dropped()
                 })
                 .map(|entry| Candidate {
                     id: entry.slot.id,

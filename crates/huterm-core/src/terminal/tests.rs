@@ -1273,13 +1273,33 @@ fn publications_wake_each_viewer_once_until_its_snapshot_is_built() {
 fn runtime_wakes_its_viewer_for_status_changes() {
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(98),
-        &command("printf '\\033]2;titled\\007READY'; IFS= read -r line"),
+        &command(
+            "printf READY; IFS= read -r line; printf X; IFS= read -r line; printf '\\033]2;titled\\007'; IFS= read -r line",
+        ),
     )
     .expect("runtime should spawn");
     let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    client
+        .send_input(TerminalInput::Text("a\n".into()))
+        .unwrap();
+    // Output now leaves a snapshot due, so further output publications
+    // do not wake the viewer; only status publications can.
     let deadline = Instant::now() + Duration::from_secs(3);
+    while client.poll().invalidated.is_none() {
+        assert!(Instant::now() < deadline, "no output after READY");
+        thread::sleep(Duration::from_millis(5));
+    }
+    while client.viewer.wake_pending() {}
+    client
+        .send_input(TerminalInput::Text("b\n".into()))
+        .unwrap();
     loop {
-        while client.viewer.wake_pending() {}
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !client.viewer.wake_pending() {
+            assert!(Instant::now() < deadline, "no status wake");
+            thread::sleep(Duration::from_millis(5));
+        }
         if client
             .poll()
             .status
@@ -1287,8 +1307,6 @@ fn runtime_wakes_its_viewer_for_status_changes() {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "runtime published no title");
-        thread::sleep(Duration::from_millis(5));
     }
     runtime.shutdown().unwrap();
 }
