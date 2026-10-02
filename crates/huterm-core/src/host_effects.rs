@@ -455,6 +455,10 @@ impl HostEffectSink {
         Ok((registration, selected_generation))
     }
 
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
     pub(crate) fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
         self.invalidate_all();

@@ -47,8 +47,10 @@ impl Fixture {
         capabilities: ViewerCapabilities,
         initial: Initial,
     ) -> (Arc<Slot>, Effects) {
-        let (slot, _) =
-            self.registry.register(None, capabilities, initial).unwrap();
+        let (slot, _) = self
+            .registry
+            .register_with_wake(None, capabilities, initial)
+            .unwrap();
         let effects = self.arbiter.sync(&self.registry);
         (slot, effects)
     }
@@ -428,18 +430,18 @@ fn typing_returns_to_live_only_without_a_later_scroll_from_the_same_viewer() {
         geometry: None,
     };
     fixture.arbiter.scrolled(&viewer, 1);
-    assert!(
-        !fixture
-            .arbiter
-            .may_return_to_live(&viewer, typed_before_scroll)
-    );
-    assert!(fixture.arbiter.may_return_to_live(
+    assert!(!fixture.arbiter.return_to_live(&viewer, typed_before_scroll));
+    assert!(!fixture.arbiter.scroll_superseded(&viewer, 1));
+    assert!(fixture.arbiter.return_to_live(
         &viewer,
         InputStamp {
-            scrolls: 1,
+            scrolls: 2,
             geometry: None,
         }
     ));
+    // Scrolls sent before that typing can no longer move the viewport.
+    assert!(fixture.arbiter.scroll_superseded(&viewer, 2));
+    assert!(!fixture.arbiter.scroll_superseded(&viewer, 3));
     let (watcher, _) = fixture.viewer(
         ViewerCapabilities {
             viewport: false,
@@ -450,19 +452,32 @@ fn typing_returns_to_live_only_without_a_later_scroll_from_the_same_viewer() {
     assert!(
         !fixture
             .arbiter
-            .may_return_to_live(&watcher, typed_before_scroll),
+            .return_to_live(&watcher, typed_before_scroll),
         "typing moves the shared viewport only with viewport control"
     );
 }
 
 #[test]
-fn a_refused_send_does_not_leave_a_viewer_queued() {
-    let fixture = Fixture::new();
-    let (slot, _) = fixture
-        .registry
-        .register(None, ViewerCapabilities::ALL, blank())
-        .unwrap();
-    slot.queue();
-    assert!(slot.settled(), "the refusal settles the only message");
-    assert_eq!(slot.queued(), 0);
+fn initial_focus_needs_input_or_size() {
+    let mut fixture = Fixture::new();
+    let focused = Initial {
+        focused: true,
+        geometry: None,
+        presentation: None,
+    };
+    let (effects_only, effects) = fixture.viewer(
+        ViewerCapabilities {
+            host_effects: true,
+            ..ViewerCapabilities::NONE
+        },
+        focused,
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        effects_only
+            .activity
+            .load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "no activity to outrank other host-effect recipients"
+    );
 }

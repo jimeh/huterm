@@ -27,7 +27,7 @@ use crate::viewer::{
     ViewerOptions,
 };
 
-const MESSAGE_CAPACITY: usize = 64;
+pub(crate) const MESSAGE_CAPACITY: usize = 64;
 /// Largest PTY output message: one read plus output the PTY already holds.
 const READ_BATCH_BYTES: usize = 16 * 1024;
 /// Queued output messages, bounding output read ahead of the parser to 1 MiB.
@@ -628,6 +628,9 @@ pub(crate) enum RuntimeControl {
     /// Panics on the runtime owner.
     #[cfg(test)]
     Panic,
+    /// Reports how many writes wait behind a full writer queue.
+    #[cfg(test)]
+    PendingWrites(Sender<usize>),
     PtyEof,
     Snapshot {
         slot: Arc<Slot>,
@@ -690,6 +693,10 @@ fn build_snapshot(
     #[cfg(test)] fail_lookup: bool,
 ) -> Result<SnapshotReply, RuntimeError> {
     let started = Instant::now();
+    // A scroll this viewer sent before typing that already returned the
+    // viewport to live would move it back into history.
+    let scroll =
+        scroll.filter(|&(_, number)| !arbiter.scroll_superseded(slot, number));
     let requested_viewport =
         engine.requested_viewport(scroll.map(|(command, _)| command))?;
     if let Some((command, number)) = scroll {
@@ -1023,10 +1030,13 @@ fn run_terminal(
     }
     // Reconciles the viewer table. Viewers register and drop at any time,
     // so this runs before every viewer request as well as each turn: a new
-    // viewer's first report must find its entry.
+    // viewer's first report must find its entry. While writes are backed up
+    // it waits: the focus reports and releases it writes would queue behind
+    // them anyway, and because finalization frees slots, subscribe-and-drop
+    // churn could otherwise grow the backlog without bound.
     macro_rules! reconcile {
         () => {
-            if registry.take_changed() {
+            if pending_writes.is_empty() && registry.take_changed() {
                 let effects = arbiter.sync(registry);
                 if !owner!(|owner| owner.apply(effects)) {
                     closing.store(true, Ordering::Release);
@@ -1177,6 +1187,10 @@ fn run_terminal(
                         engine.size(),
                         engine.cell_size(),
                     ));
+                }
+                #[cfg(test)]
+                RuntimeControl::PendingWrites(reply) => {
+                    let _ = reply.send(pending_writes.len());
                 }
                 #[cfg(test)]
                 RuntimeControl::ProbeArmed(reply) => {
@@ -1330,14 +1344,18 @@ fn run_terminal(
                 slot,
                 report,
             }) => {
-                let effects = arbiter.report(&slot, report);
+                let mut effects = arbiter.report(&slot, report);
+                slot.settled();
+                effects.merge(arbiter.settled(&slot, registry));
                 owner!(|owner| owner.apply(effects))
             }
             NextMessage::Client(RuntimeMessage::Presentation {
                 slot,
                 presentation,
             }) => {
-                let effects = arbiter.presentation(&slot, *presentation);
+                let mut effects = arbiter.presentation(&slot, *presentation);
+                slot.settled();
+                effects.merge(arbiter.settled(&slot, registry));
                 owner!(|owner| owner.apply(effects))
             }
             NextMessage::Client(RuntimeMessage::Edit { slot, edit }) => {
@@ -1465,7 +1483,7 @@ fn handle_input(
         if !owner.apply(effects) {
             return false;
         }
-        if arbiter.may_return_to_live(slot, stamp) {
+        if arbiter.return_to_live(slot, stamp) {
             match owner.engine.viewport_offset() {
                 Ok(0) => {}
                 Ok(_) => {
@@ -1482,10 +1500,6 @@ fn handle_input(
                 }
             }
         }
-    } else if let TerminalInput::Mouse(mouse) = input
-        && !arbiter.admit_mouse(slot, mouse, stamp)
-    {
-        return true;
     }
     let modes = match owner.engine.modes() {
         Ok(modes) => modes,
@@ -1494,6 +1508,17 @@ fn handle_input(
             return false;
         }
     };
+    if let TerminalInput::Mouse(mouse) = input {
+        // A report the application no longer tracks writes nothing, so it
+        // must not take a gesture: its view never sends that release.
+        if modes.mouse_tracking == MouseTracking::Disabled {
+            arbiter.tracking_disabled();
+            return true;
+        }
+        if !arbiter.admit_mouse(slot, mouse, stamp) {
+            return true;
+        }
+    }
     let bytes = encode_input(input, modes, owner.engine.size());
     if probes.input(&bytes, Instant::now()) {
         owner.metadata.reports.job_control_input();

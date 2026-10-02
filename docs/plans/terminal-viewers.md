@@ -209,7 +209,7 @@ A `TerminalViewer` holds:
 - the capabilities;
 - the host-effect options (origin and clipboard permission);
 - the viewer's initial focus, geometry, and presentation, any of which may
-  be empty;
+  be empty; initial focus needs `input` or `size`, like a focus report;
 - `spawned`, set only by the client that created the terminal, which gives
   the viewer a running lifecycle baseline (see "Terminal status is
   revisioned state").
@@ -222,7 +222,10 @@ baseline after it is registered. The owner thread reconciles its viewer
 table before each viewer request as well as on each turn, so reports a new
 viewer queues before the owner's next turn still find its entry. Viewer IDs
 are numbered across the process, so no two terminals in one runtime scope
-issue the same ID. Initial geometry is clamped like a reported one.
+issue the same ID. Initial geometry is clamped like a reported one. A
+viewer with host effects registers its recipient before its slot, so a
+failed registration never leaves a slot whose initial focus and size the
+owner thread could apply; a closed terminal answers `Stopped`.
 
 A terminal admits at most 32 live viewers, the existing
 `TERMINAL_RECIPIENT_LIMIT`; past that, subscription fails with a
@@ -386,6 +389,11 @@ in history after typing:
   assigned itself, so it works unchanged when the viewer is a remote client.
   A race between one viewer's typing and another viewer's scroll resolves in
   runtime order.
+- The opposite order needs the same rule. A scroll that arrives after a turn
+  drains its controls can be dequeued after a key the user typed later, so
+  typing that returns to live records the scroll number it carries, and a
+  later-applied scroll from that viewer numbered at or below it does not
+  move the viewport. Its snapshot still answers.
 - On typing, the view clears its own pending scroll intent, desired offset,
   and wheel remainder, as `ScrollController::bottom` does today, but submits
   no `Live` command. An older snapshot that completes afterwards then has no
@@ -550,7 +558,8 @@ A `MouseArbiter` on the owner thread holds the policy:
   runtime ends the gesture without releases. Clients stop reporting then,
   so the owner's release would never arrive and every other viewer's
   presses would stay discarded after the application tracks the mouse
-  again.
+  again. A report dequeued while tracking is off, such as a press computed
+  against an older display, writes nothing and takes no gesture.
 
 A view whose press was discarded keeps its local ownership state until its
 own release and gets no feedback; that is acceptable for the default. The
@@ -592,17 +601,21 @@ is finalized only once.
   reports were admitted with valid authority, so they still run in order;
   a focus change queued before input still reaches the application before
   that input, but no report makes the viewer a candidate again. The slot
-  counts its queued input and edit
-  messages, incrementing before each send and decrementing when a send is
-  refused or a message is processed, and the owner thread finalizes a
-  dropped viewer once that count reaches zero. A press queued before the
-  drop is therefore written before the synthetic release, never after.
+  counts its queued input, edit, arbitration, and presentation messages,
+  incrementing before each send and decrementing when a send is refused or
+  a message is processed, and the owner thread finalizes a dropped viewer
+  once that count reaches zero. A press queued before the drop is therefore
+  written before the synthetic release, never after, and a focus handoff
+  queued before a window closes writes no spurious focus out and in.
 
 While the application stops reading its PTY, the owner thread dequeues no
-messages, so a dropped viewer's finalization and the release of its slot
-wait for that backpressure to clear. The release bytes would wait behind the
-same backpressure anyway. A full 32-viewer limit during such a stall
-refuses new viewers instead of growing.
+messages and does not reconcile its viewer table, so a dropped viewer's
+finalization and the release of its slot wait for that backpressure to
+clear. The release bytes would wait behind the same backpressure anyway. A
+full 32-viewer limit during such a stall refuses new viewers instead of
+growing, which bounds the focus reports and releases reconciliation can
+queue: if finalization freed slots during the stall, subscribe-and-drop
+churn could queue them without limit.
 
 A viewer never keeps its runtime alive. Teardown order, child reaping, and
 bounded shutdown are unchanged. Close tickets use the crate-private client,
@@ -805,6 +818,11 @@ room so [#44][issue-44] adds messages instead of changing semantics:
 3. Add owed exit-closes and claims.
 4. Add the smoke fixture and `check-viewers.ts`, and wire them into the
    macOS and Linux palette smokes.
+5. Let typing after root exit still move control: the runtime skips exited
+   input before `Arbiter::typed`, which only matters once two windows show
+   one exited terminal.
+6. Give `ScrollController` a way to clear its latched failure, or skip it
+   for `Revoked`, so an in-place viewer replacement resumes snapshots.
 
 ### Follow-up issue: sizing policies ([#207][issue-207])
 

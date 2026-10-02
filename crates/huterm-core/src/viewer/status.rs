@@ -98,7 +98,7 @@ mod tests {
             Arc::new(crate::wake::Wake::default()),
         );
         let (_slot, wake) = registry
-            .register(
+            .register_with_wake(
                 None,
                 ViewerCapabilities::ALL,
                 Initial {

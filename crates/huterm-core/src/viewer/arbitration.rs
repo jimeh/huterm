@@ -35,7 +35,7 @@ impl Effects {
         *self == Self::default()
     }
 
-    fn merge(&mut self, later: Self) {
+    pub(crate) fn merge(&mut self, later: Self) {
         if later.resize.is_some() {
             self.resize = later.resize;
         }
@@ -61,6 +61,9 @@ struct Entry {
     activity: u64,
     /// The number of this viewer's latest scroll the runtime applied.
     applied_scroll: u64,
+    /// Scrolls up to this number were sent before typing that returned the
+    /// viewport to live.
+    live_through: u64,
 }
 
 /// A viewer that may control the terminal.
@@ -146,11 +149,15 @@ impl Arbiter {
                 presentation: None,
                 activity: 0,
                 applied_scroll: 0,
+                live_through: 0,
             });
             if let Some(initial) = initial {
+                let capabilities = self.entries[index].slot.capabilities;
                 self.entries[index].geometry = initial.geometry;
                 self.entries[index].presentation = initial.presentation;
-                if initial.focused {
+                // Initial focus needs the same capabilities as a report.
+                if initial.focused && (capabilities.input || capabilities.size)
+                {
                     effects.merge(self.set_focus(index, true));
                 }
             }
@@ -295,17 +302,35 @@ impl Arbiter {
         }
     }
 
-    /// Whether typing stamped with `stamp` may return the shared viewport
-    /// to live: not when the same viewer has a later scroll applied.
-    pub(crate) fn may_return_to_live(
-        &self,
+    /// Whether typing stamped with `stamp` returns the shared viewport to
+    /// live: not when the same viewer has a later scroll applied. When it
+    /// does, the viewer's scrolls sent before that typing are superseded.
+    pub(crate) fn return_to_live(
+        &mut self,
         slot: &Slot,
         stamp: InputStamp,
     ) -> bool {
-        slot.capabilities.viewport
-            && self.index(slot).is_none_or(|index| {
-                self.entries[index].applied_scroll <= stamp.scrolls
-            })
+        if !slot.capabilities.viewport {
+            return false;
+        }
+        let Some(index) = self.index(slot) else {
+            return true;
+        };
+        let entry = &mut self.entries[index];
+        if entry.applied_scroll > stamp.scrolls {
+            return false;
+        }
+        entry.live_through = entry.live_through.max(stamp.scrolls);
+        true
+    }
+
+    /// Whether a viewer's scroll was sent before typing that has already
+    /// returned the viewport to live. Scrolls are controls and typing is a
+    /// message, so a scroll that arrives after a turn drains its controls
+    /// can be applied after typing the user produced later.
+    pub(crate) fn scroll_superseded(&self, slot: &Slot, number: u64) -> bool {
+        self.index(slot)
+            .is_some_and(|index| number <= self.entries[index].live_through)
     }
 
     /// Whether a mouse report from this viewer reaches the application.

@@ -1238,10 +1238,10 @@ fn publications_wake_each_viewer_once_until_its_snapshot_is_built() {
         presentation: None,
     };
     let (first, first_wake) = registry
-        .register(None, ViewerCapabilities::ALL, initial())
+        .register_with_wake(None, ViewerCapabilities::ALL, initial())
         .unwrap();
     let (second, second_wake) = registry
-        .register(None, ViewerCapabilities::ALL, initial())
+        .register_with_wake(None, ViewerCapabilities::ALL, initial())
         .unwrap();
     // A new slot starts notified with its wake signalled.
     assert!(first_wake.try_recv().is_ok());
@@ -1584,7 +1584,7 @@ fn queued_client_messages_alternate_with_output_until_both_disconnect() {
         Arc::new(crate::wake::Wake::default()),
     );
     let (slot, _wake) = registry
-        .register(
+        .register_with_wake(
             None,
             ViewerCapabilities::ALL,
             crate::viewer::Initial {

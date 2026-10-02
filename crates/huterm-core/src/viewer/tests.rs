@@ -193,8 +193,12 @@ fn every_viewer_wakes_and_a_stalled_viewer_blocks_no_one() {
 fn a_late_viewer_reads_current_status_and_a_complete_snapshot() {
     let runtime = spawn(201, "printf '\\033]2;late title\\007OUTPUT'; exit 3");
     let first = viewer(&runtime);
-    wait_until("exit", || {
-        runtime.registry().status().lifecycle != TerminalLifecycle::Running
+    // Exit can be observed before the final output is parsed.
+    wait_for_text(&first, "OUTPUT");
+    wait_until("exit and title", || {
+        let status = runtime.registry().status();
+        status.lifecycle != TerminalLifecycle::Running
+            && status.title == "late title"
     });
     let late = viewer(&runtime);
     let update = late.poll();
@@ -368,8 +372,11 @@ fn concurrent_input_from_two_viewers_arrives_intact() {
             });
         }
     });
-    let snapshot = wait_for_text(&first, "[b4b]");
-    let text = text(&snapshot);
+    let mut text = String::new();
+    wait_until("both final markers", || {
+        text = self::text(&first.read_snapshot().unwrap());
+        text.contains("[a4a]") && text.contains("[b4b]")
+    });
     for name in ['a', 'b'] {
         for index in 0..5 {
             assert!(text.contains(&format!("[{name}{index}{name}]")), "{text}");
@@ -461,11 +468,17 @@ fn only_the_controlling_viewer_resizes_the_pty() {
 fn a_hidden_single_viewer_still_resizes_the_pty() {
     let runtime = spawn(210, SIZE_SCRIPT);
     let only = sized_viewer(&runtime, 40, 8);
+    let probe = prober(&runtime);
     wait_for_text(&only, "READY");
     only.set_focus(false).unwrap();
     only.report_geometry(GridSize::clamped(44, 10), cell())
         .unwrap();
-    assert_eq!(pty_size(&only, "hidden"), "10 44");
+    // The report alone resizes: typing, even through a viewer that cannot
+    // control, would recompute the controller.
+    wait_until("resize from the report", || {
+        only.read_snapshot().unwrap().size == GridSize::clamped(44, 10)
+    });
+    assert_eq!(pty_size(&probe, "hidden"), "10 44");
     runtime.shutdown().unwrap();
 }
 
@@ -506,6 +519,14 @@ fn a_revoked_viewer_with_a_queued_snapshot_harms_no_one() {
         "the terminal keeps running"
     );
     runtime.shutdown().unwrap();
+}
+
+/// Enables SGR mouse tracking, reads `first` bytes, stops tracking, and
+/// resumes it after one more byte; then prints the next press it receives.
+fn tracking_script(first: usize) -> String {
+    format!(
+        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; dd bs=1 count={first} >/dev/null 2>&1; printf '\\033[?1000lOFF'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1000hON'; bytes=$(dd bs=1 count=9 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:END' \"$bytes\""
+    )
 }
 
 /// Reports focus and SGR mouse input, then prints the hex of the first
@@ -586,7 +607,7 @@ fn a_single_viewer_reports_each_focus_change_once() {
 fn a_clipboard_write_reaches_exactly_one_recipient() {
     let runtime = spawn(
         215,
-        "stty -echo; printf READY; while IFS= read -r l; do printf '\\033]52;c;%s\\007' \"$(printf '%s' \"$l\" | base64)\"; done",
+        "stty -echo; printf READY; while IFS= read -r l; do printf '\\033]52;c;%s\\007<%s>' \"$(printf '%s' \"$l\" | base64)\" \"$l\"; done",
     );
     let process = DesktopHostEffectClient::new();
     let clipboard = || {
@@ -642,7 +663,8 @@ fn a_clipboard_write_reaches_exactly_one_recipient() {
     typist
         .send_input(TerminalInput::Text("four\n".into()))
         .unwrap();
-    drained(&runtime);
+    // The marker follows the clipboard write in the same output.
+    wait_for_text(&typist, "<four>");
     assert!(copied(&second).is_none());
     runtime.shutdown().unwrap();
 }
@@ -787,12 +809,7 @@ fn an_initial_geometry_is_clamped_like_a_reported_one() {
 
 #[test]
 fn a_gesture_ends_when_the_application_stops_tracking_the_mouse() {
-    // Reads one press, stops tracking, and resumes it after one more byte;
-    // then prints the next press it receives.
-    let runtime = spawn(
-        223,
-        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY'; dd bs=1 count=9 >/dev/null 2>&1; printf '\\033[?1000lOFF'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1000hON'; bytes=$(dd bs=1 count=9 2>/dev/null | od -An -tx1 | tr -d ' \\n'); printf 'HEX:%s:END' \"$bytes\"",
-    );
+    let runtime = spawn(223, &tracking_script(9));
     let first = viewer(&runtime);
     let second = viewer(&runtime);
     wait_for_text(&first, "READY");
@@ -805,6 +822,177 @@ fn a_gesture_ends_when_the_application_stops_tracking_the_mouse() {
     second.send_input(press(MouseButton::Left, 4)).unwrap();
     wait_for_text(&first, &format!("HEX:{}:END", hex(b"\x1b[<0;5;1M")));
     runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_press_dequeued_after_tracking_stops_takes_no_gesture() {
+    let runtime = spawn(226, &tracking_script(1));
+    let first = viewer(&runtime);
+    let second = viewer(&runtime);
+    wait_for_text(&first, "READY");
+    second.send_input(TerminalInput::Text("y".into())).unwrap();
+    wait_for_text(&first, "OFF");
+    // Computed against a display that still showed tracking, so its view
+    // never sends the release.
+    first.send_input(press(MouseButton::Left, 2)).unwrap();
+    second.send_input(TerminalInput::Text("z".into())).unwrap();
+    wait_for_text(&first, "ON");
+    second.send_input(press(MouseButton::Left, 4)).unwrap();
+    wait_for_text(&first, &format!("HEX:{}:END", hex(b"\x1b[<0;5;1M")));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn typing_supersedes_an_earlier_scroll_that_is_applied_late() {
+    let runtime = spawn(
+        227,
+        "stty -echo; i=0; while [ $i -lt 40 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf READY; read l; read l",
+    );
+    let viewer = viewer(&runtime);
+    wait_for_text(&viewer, "READY");
+    let resume = pause(&runtime);
+    // Filling the paused turn's control budget leaves the scroll for the
+    // next turn, after the typing the user produced once it was sent.
+    let client = runtime.client();
+    for _ in 1..crate::terminal::MESSAGE_CAPACITY {
+        client.send_control(RuntimeControl::Wake).unwrap();
+    }
+    let scrolled = viewer
+        .request_scrolled_snapshot(ScrollCommand::Relative(10))
+        .unwrap();
+    viewer.send_input(TerminalInput::Text("x".into())).unwrap();
+    resume.send(()).unwrap();
+    assert_eq!(
+        scrolled
+            .recv_blocking()
+            .unwrap()
+            .snapshot
+            .viewport
+            .bottom_offset,
+        0
+    );
+    drained(&runtime);
+    assert_eq!(viewer.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn reconciliation_waits_while_writes_are_backed_up() {
+    let runtime =
+        spawn(228, "stty raw -echo; printf '\\033[?1004hREADY'; sleep 30");
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let client = runtime.client();
+    let pending = || {
+        let (reply, receiver) = mpsc::channel();
+        client
+            .send_control(RuntimeControl::PendingWrites(reply))
+            .unwrap();
+        receiver.recv_timeout(DEADLINE).unwrap()
+    };
+    // The application never reads, so writes back up behind the PTY.
+    let chunk = "x".repeat(4096);
+    wait_until("backed-up writes", || {
+        match typist.send_input(TerminalInput::Text(chunk.clone())) {
+            Ok(()) | Err(RuntimeError::Busy) => {}
+            Err(error) => panic!("input failed: {error}"),
+        }
+        pending() > 0
+    });
+    let backlog = pending();
+    // Reconciling and then finalizing a focused viewer writes a focus
+    // report each time; churn must not grow the backlog.
+    let mut refused = false;
+    for _ in 0..2 * super::VIEWER_LIMIT {
+        match runtime.subscribe(ViewerOptions {
+            focused: true,
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        }) {
+            Ok(churned) => {
+                churned.read_snapshot().unwrap();
+            }
+            Err(RuntimeError::ViewerLimit) => {
+                refused = true;
+                break;
+            }
+            Err(error) => panic!("subscription failed: {error}"),
+        }
+    }
+    assert!(
+        refused,
+        "dropped viewers stay registered during the backlog"
+    );
+    assert_eq!(pending(), backlog);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_dropped_viewer_s_focus_reports_run_before_it_is_finalized() {
+    let expected = b"\x1b[Ix";
+    let runtime = spawn(229, &reporting_script(expected.len()));
+    let reader = runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+        .unwrap();
+    wait_for_text(&reader, "READY");
+    let leaving = runtime
+        .subscribe(ViewerOptions {
+            focused: true,
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    let arriving = viewer(&runtime);
+    // Reconciles both viewers, writing the first focus in.
+    leaving.read_snapshot().unwrap();
+    let resume = pause(&runtime);
+    // Focus moves to the other window, then the first window closes; the
+    // application stays focused throughout.
+    arriving.set_focus(true).unwrap();
+    leaving.set_focus(false).unwrap();
+    drop(leaving);
+    arriving
+        .send_input(TerminalInput::Text("x".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_closed_host_effect_sink_refuses_a_viewer_without_registering_it() {
+    let runtime = spawn(230, "read l");
+    let _first = viewer(&runtime);
+    runtime.host_effect_sink().close();
+    let refused = runtime.subscribe(ViewerOptions {
+        host_effects: Some(HostEffectViewerOptions {
+            process: DesktopHostEffectClient::new(),
+            options: HostEffectRecipientOptions::local_desktop(true),
+        }),
+        focused: true,
+        ..ViewerOptions::new(ViewerCapabilities::ALL)
+    });
+    assert!(matches!(refused, Err(RuntimeError::Stopped)));
+    assert_eq!(runtime.registry().slots().len(), 1);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn refused_requests_leave_nothing_queued() {
+    let runtime = spawn(231, "read l");
+    let only = viewer(&runtime);
+    let slot = only.slot();
+    runtime.shutdown().unwrap();
+    assert!(only.send_input(TerminalInput::Text("x".into())).is_err());
+    assert!(only.clear_history().is_err());
+    assert!(only.set_focus(true).is_err());
+    assert!(
+        only.report_geometry(GridSize::clamped(10, 4), cell())
+            .is_err()
+    );
+    assert!(
+        only.update_presentation(TerminalPresentation::default())
+            .is_err()
+    );
+    assert_eq!(slot.queued(), 0);
 }
 
 #[test]

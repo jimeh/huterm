@@ -105,7 +105,7 @@ pub(crate) struct Slot {
     invalidated_at: Mutex<Option<Instant>>,
     revoked: AtomicBool,
     dropped: AtomicBool,
-    /// Input and edit messages sent but not yet processed or refused.
+    /// Ordered messages sent but not yet processed or refused.
     queued: AtomicUsize,
     /// The viewer's activity ordinal, shared with its host-effect recipient.
     pub(crate) activity: Arc<AtomicU64>,
@@ -211,13 +211,16 @@ impl Registry {
 
     /// Registers a slot that starts notified with its wake signalled, so the
     /// viewer cannot miss a publication between registration and its first
-    /// poll.
+    /// poll. The wake and activity ordinal are created by the caller, so a
+    /// host-effect recipient can share them before the slot exists.
     pub(crate) fn register(
         &self,
         attachment: Option<AttachmentId>,
         capabilities: ViewerCapabilities,
         initial: Initial,
-    ) -> Result<(Arc<Slot>, async_channel::Receiver<()>), RegisterError> {
+        wake: async_channel::Sender<()>,
+        activity: Arc<AtomicU64>,
+    ) -> Result<Arc<Slot>, RegisterError> {
         let mut state = self.state();
         if state.closed {
             return Err(RegisterError::Closed);
@@ -226,7 +229,6 @@ impl Registry {
             return Err(RegisterError::Full);
         }
         state.next += 1;
-        let (wake, signal) = async_channel::bounded(1);
         let slot = Arc::new(Slot {
             id: ViewerId::in_runtime(
                 self.runtime,
@@ -241,14 +243,27 @@ impl Registry {
             revoked: AtomicBool::new(false),
             dropped: AtomicBool::new(false),
             queued: AtomicUsize::new(0),
-            activity: Arc::new(AtomicU64::new(0)),
+            activity,
             initial: Mutex::new(Some(initial)),
         });
         slot.signal();
         state.slots.push(Arc::clone(&slot));
         drop(state);
         self.mark_changed();
-        Ok((slot, signal))
+        Ok(slot)
+    }
+
+    /// Registers a slot with its own wake, returning the wake's receiver.
+    #[cfg(test)]
+    pub(crate) fn register_with_wake(
+        &self,
+        attachment: Option<AttachmentId>,
+        capabilities: ViewerCapabilities,
+        initial: Initial,
+    ) -> Result<(Arc<Slot>, async_channel::Receiver<()>), RegisterError> {
+        let (wake, signal) = async_channel::bounded(1);
+        self.register(attachment, capabilities, initial, wake, Arc::default())
+            .map(|slot| (slot, signal))
     }
 
     /// Asks the owner thread to reconcile its viewer table.
@@ -432,7 +447,32 @@ impl TerminalViewer {
             host_effects: options.host_effects.is_some(),
             ..options.capabilities
         };
-        let (slot, wake) = registry
+        let (wake_sender, wake) = async_channel::bounded(1);
+        let activity = Arc::new(AtomicU64::new(0));
+        // The recipient registers first: a slot the owner thread could see
+        // must never need undoing, or its initial focus and size would apply
+        // and then be withdrawn.
+        let host_effects = match options.host_effects {
+            Some(host) => {
+                let sink = client.host_effect_sink();
+                let recipient = sink.register(
+                    attachment,
+                    &host.process,
+                    host.options,
+                    crate::host_effects::RecipientLink {
+                        activity: Some(wake_sender.clone()),
+                        ordinal: Arc::clone(&activity),
+                    },
+                );
+                Some(recipient.ok_or(if sink.is_closed() {
+                    RuntimeError::Stopped
+                } else {
+                    RuntimeError::ViewerLimit
+                })?)
+            }
+            None => None,
+        };
+        let slot = registry
             .register(
                 attachment,
                 capabilities,
@@ -443,31 +483,13 @@ impl TerminalViewer {
                     }),
                     presentation: options.presentation,
                 },
+                wake_sender,
+                activity,
             )
             .map_err(|error| match error {
                 RegisterError::Closed => RuntimeError::Stopped,
                 RegisterError::Full => RuntimeError::ViewerLimit,
             })?;
-        let host_effects = match options.host_effects {
-            Some(host) => {
-                let recipient = client.host_effect_sink().register(
-                    attachment,
-                    &host.process,
-                    host.options,
-                    crate::host_effects::RecipientLink {
-                        activity: Some(slot.wake.clone()),
-                        ordinal: Arc::clone(&slot.activity),
-                    },
-                );
-                if recipient.is_none() {
-                    slot.dropped.store(true, Ordering::Release);
-                    registry.mark_changed();
-                    return Err(RuntimeError::ViewerLimit);
-                }
-                recipient
-            }
-            None => None,
-        };
         let status = registry.status();
         let baseline = if options.spawned {
             Baseline {
@@ -589,7 +611,7 @@ impl TerminalViewer {
     pub fn set_focus(&self, focused: bool) -> Result<(), RuntimeError> {
         let capabilities = self.slot.capabilities;
         self.check(capabilities.input || capabilities.size)?;
-        self.client.send_message(RuntimeMessage::Arbitration {
+        self.send_counted(RuntimeMessage::Arbitration {
             slot: Arc::clone(&self.slot),
             report: Report::Focus(focused),
         })
@@ -606,7 +628,7 @@ impl TerminalViewer {
         cell: CellSize,
     ) -> Result<(), RuntimeError> {
         self.check(self.slot.capabilities.size)?;
-        self.client.send_message(RuntimeMessage::Arbitration {
+        self.send_counted(RuntimeMessage::Arbitration {
             slot: Arc::clone(&self.slot),
             report: Report::Geometry(
                 GridSize::clamped(grid.columns, grid.rows),
@@ -626,7 +648,7 @@ impl TerminalViewer {
         presentation: TerminalPresentation,
     ) -> Result<(), RuntimeError> {
         self.check(true)?;
-        self.client.send_message(RuntimeMessage::Presentation {
+        self.send_counted(RuntimeMessage::Presentation {
             slot: Arc::clone(&self.slot),
             presentation: Box::new(presentation),
         })
@@ -655,15 +677,22 @@ impl TerminalViewer {
 
     fn send_edit(&self, edit: BufferEdit) -> Result<(), RuntimeError> {
         self.check(self.slot.capabilities.input)?;
+        self.send_counted(RuntimeMessage::Edit {
+            slot: Arc::clone(&self.slot),
+            edit,
+        })
+    }
+
+    /// Sends an ordered message counted toward this viewer's queue, so a
+    /// dropped viewer is finalized only after the message runs.
+    fn send_counted(
+        &self,
+        message: RuntimeMessage,
+    ) -> Result<(), RuntimeError> {
         self.slot.queue();
-        self.client
-            .send_message(RuntimeMessage::Edit {
-                slot: Arc::clone(&self.slot),
-                edit,
-            })
-            .inspect_err(|_| {
-                self.slot.settled();
-            })
+        self.client.send_message(message).inspect_err(|_| {
+            self.slot.settled();
+        })
     }
 
     /// Requests a snapshot of the shared viewport without waiting.
