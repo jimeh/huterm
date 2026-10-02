@@ -32,7 +32,7 @@ pre-commit:
       run: mise run lint:docs:files {staged_files}
 
     - name: agent-guides
-      glob: "{AGENTS.md,docs/agents/*.md}"
+      glob: "{AGENTS.md,docs/agents/*.md,docs/plans/*.md}"
       run: mise run lint:agents
 
     - name: workflows
@@ -55,9 +55,10 @@ pre-commit:
 
           # Fast, targeted tests only; implementers run the relevant suites
           # themselves. Unfiltered because tests can inspect workflows, tasks,
-          # and docs too.
+          # and docs too. --staged reads staged paths from Git, including the
+          # deletions that {staged_files} omits.
           - name: script-tests
-            run: mise run test:scripts:affected --fast {staged_files}
+            run: mise run test:scripts:affected --fast --staged
 
     - name: shell-syntax
       glob: "{scripts/*.sh,scripts/**/*.sh}"

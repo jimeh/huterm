@@ -546,7 +546,8 @@ fn zig_command(
 }
 
 /// Runs `action` until it succeeds, pausing for each delay in turn, and
-/// returns the last error once the delays run out.
+/// returns the last error once the delays run out. Only failures Zig reports
+/// are retried; an I/O error such as a missing `zig` cannot clear itself.
 fn retry<T>(
     delays: &[Duration],
     mut pause: impl FnMut(Duration),
@@ -556,7 +557,7 @@ fn retry<T>(
     loop {
         match action() {
             Ok(value) => return Ok(value),
-            Err(error) => match delays.next() {
+            Err(error @ BuildError::Zig(_)) => match delays.next() {
                 Some(delay) => {
                     println!(
                         "cargo:warning={error}; retrying in {}s",
@@ -566,6 +567,7 @@ fn retry<T>(
                 }
                 None => return Err(error),
             },
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1241,5 +1243,19 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().to_string(), "attempt 3");
         assert_eq!(pauses, delays);
+
+        let mut pauses = Vec::new();
+        let result: Result<(), _> = retry(
+            &delays,
+            |delay| pauses.push(delay),
+            || {
+                Err(BuildError::Io(
+                    "running zig".into(),
+                    io::Error::from(io::ErrorKind::NotFound),
+                ))
+            },
+        );
+        assert!(matches!(result, Err(BuildError::Io(..))));
+        assert!(pauses.is_empty());
     }
 }

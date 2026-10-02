@@ -9,11 +9,16 @@
  * `scripts/`, such as a workflow or `mise.toml` it inspects. Changes to Bun's
  * package, lockfile, or compiler configuration select every test.
  *
+ * A deleted or renamed script still counts through the names and relative
+ * imports that refer to it, so the tests that still use it are selected.
+ *
  * File-name matching can select extra tests, which is safe. A test that builds
  * a path from separate segments is not matched; CI runs the full suite.
  *
  * `--fast` is the pre-commit scope. It never selects every test and skips the
  * suites in `SLOW_SUITES`, leaving them to `mise run test:scripts` and CI.
+ * `--staged` reads the staged paths from Git, including deletions, which
+ * lefthook's `{staged_files}` omits.
  */
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -48,10 +53,11 @@ function scriptFiles(root: string, directory = "scripts"): string[] {
 export function affectedTests(root: string, changed: readonly string[], options: { fast?: boolean } = {}): string[] {
   const files = scriptFiles(root);
   const tests = files.filter((file) => file.endsWith(".test.ts") && !(options.fast && SLOW_SUITES.has(file)));
-  if (changed.some((path) => everyTestInputs.has(path))) {
-    if (!options.fast) return tests;
-    changed = changed.filter((path) => !everyTestInputs.has(path));
-  }
+  // Fast mode skips only this shortcut; tests that read these files by name
+  // are still selected below.
+  if (!options.fast && changed.some((path) => everyTestInputs.has(path))) return tests;
+  const existing = new Set(files);
+  const removedScripts = changed.filter((path) => path.startsWith("scripts/") && !existing.has(path));
 
   // Bun resolves imports to real paths, so compare them against the real root.
   const realRoot = realpathSync(root);
@@ -65,10 +71,14 @@ export function affectedTests(root: string, changed: readonly string[], options:
       try {
         direct.add(relative(realRoot, Bun.resolveSync(path, join(realRoot, dirname(file)))).split(sep).join("/"));
       } catch {
-        // An unresolved import fails in the test run itself.
+        // The target may be a deleted script; keep the edge so a staged
+        // deletion still selects this file. Extensionless imports name a .ts.
+        const target = join(dirname(file), path).split(sep).join("/");
+        direct.add(target);
+        direct.add(`${target}.ts`);
       }
     }
-    for (const other of files) if (other !== file && source.includes(basename(other))) direct.add(other);
+    for (const other of [...files, ...removedScripts]) if (other !== file && source.includes(basename(other))) direct.add(other);
     dependencies.set(file, direct);
   }
 
@@ -88,8 +98,13 @@ export function affectedTests(root: string, changed: readonly string[], options:
 if (import.meta.main) {
   const root = join(import.meta.dir, "..");
   const args = Bun.argv.slice(2);
-  const fast = args[0] === "--fast";
-  const changed = fast ? args.slice(1) : args;
+  const fast = args.includes("--fast");
+  const changed = args.filter((arg) => arg !== "--fast" && arg !== "--staged");
+  if (args.includes("--staged")) {
+    const staged = Bun.spawnSync(["git", "diff", "--cached", "--name-only", "--no-renames", "-z"], { cwd: root });
+    if (staged.exitCode !== 0) throw new Error(`git diff --cached failed: ${staged.stderr.toString()}`);
+    changed.push(...staged.stdout.toString().split("\0").filter(Boolean));
+  }
   const tests = affectedTests(root, changed, { fast });
   if (fast) {
     const skipped = affectedTests(root, changed).filter((test) => !tests.includes(test));

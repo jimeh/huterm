@@ -402,10 +402,11 @@ staged paths wherever a check can work file by file:
 
 - Rust formatting, Rust test-module order, and Markdown lint receive only the
   matching staged files.
-- `mise run test:scripts:affected --fast` runs only the Bun tests whose
-  imports, named scripts, or mentioned paths include a staged file. It skips
-  the suites listed in `SLOW_SUITES` and never runs the whole suite, even for
-  Bun package or compiler configuration; run `mise run test:scripts` for those.
+- `mise run test:scripts:affected --fast --staged` runs only the Bun tests
+  whose imports, named scripts, or mentioned paths include a staged path,
+  including deleted and renamed scripts. It skips the suites listed in
+  `SLOW_SUITES` and never runs the whole suite, even for Bun package or
+  compiler configuration; run `mise run test:scripts` for those.
 - Workflow checks verify only the action pins on staged lines
   (`ci:workflows:staged`), which avoids pinact's GitHub API lookup for every
   pin. Staging `.pinact.yaml` verifies all pins.

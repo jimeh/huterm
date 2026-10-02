@@ -58,3 +58,17 @@ test("fast mode skips slow suites and never selects every test", () => {
 test("every slow suite still exists", () => {
   for (const suite of SLOW_SUITES) expect(existsSync(join(import.meta.dir, "..", suite)), suite).toBe(true);
 });
+
+test("fast mode still selects tests that read a Bun configuration file", () => {
+  const root = fixture();
+  writeFileSync(join(root, "scripts/cooldown.test.ts"), `const config = "bunfig.toml";\n`);
+  expect(affectedTests(root, ["bunfig.toml"], { fast: true })).toEqual(["scripts/cooldown.test.ts"]);
+});
+
+test("deleting a script selects the tests that still import or name it", () => {
+  const root = fixture();
+  rmSync(join(root, "scripts/tool.ts"));
+  rmSync(join(root, "scripts/vm/run.sh"));
+  expect(affectedTests(root, ["scripts/tool.ts"])).toEqual(["scripts/tool.test.ts"]);
+  expect(affectedTests(root, ["scripts/vm/run.sh"])).toEqual(["scripts/spawn.test.ts"]);
+});
