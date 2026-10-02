@@ -762,10 +762,7 @@ fn viewer_authority_tracks_attachment_and_terminal_membership() {
     let closing = last.host_effects().unwrap().try_next().unwrap();
     mux.close_session(first_session).unwrap();
     assert!(!last.host_effects().unwrap().is_current(&closing));
-    assert!(matches!(
-        last.read_snapshot(),
-        Err(RuntimeError::Revoked | RuntimeError::Stopped)
-    ));
+    assert!(matches!(last.read_snapshot(), Err(RuntimeError::Revoked)));
 }
 
 #[test]
@@ -921,7 +918,7 @@ fn presentation_follows_the_controlling_viewer_without_failing_others() {
     mux.close_session(session).unwrap();
     assert!(matches!(
         second.update_presentation(theme(4)),
-        Err(RuntimeError::Revoked | RuntimeError::Stopped)
+        Err(RuntimeError::Revoked)
     ));
 }
 

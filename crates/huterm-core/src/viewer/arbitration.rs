@@ -59,11 +59,6 @@ struct Entry {
     focused: bool,
     presentation: Option<TerminalPresentation>,
     activity: u64,
-    /// The number of this viewer's latest scroll the runtime applied.
-    applied_scroll: u64,
-    /// Scrolls up to this number were sent before typing that returned the
-    /// viewport to live.
-    live_through: u64,
 }
 
 /// A viewer that may control the terminal.
@@ -148,8 +143,6 @@ impl Arbiter {
                 focused: false,
                 presentation: None,
                 activity: 0,
-                applied_scroll: 0,
-                live_through: 0,
             });
             if let Some(initial) = initial {
                 let capabilities = self.entries[index].slot.capabilities;
@@ -294,45 +287,6 @@ impl Arbiter {
         self.recompute()
     }
 
-    /// Records the number of a viewer's scroll the runtime applied.
-    pub(crate) fn scrolled(&mut self, slot: &Slot, number: u64) {
-        if let Some(index) = self.index(slot) {
-            let applied = &mut self.entries[index].applied_scroll;
-            *applied = (*applied).max(number);
-        }
-    }
-
-    /// Whether typing stamped with `stamp` returns the shared viewport to
-    /// live: not when the same viewer has a later scroll applied. When it
-    /// does, the viewer's scrolls sent before that typing are superseded.
-    pub(crate) fn return_to_live(
-        &mut self,
-        slot: &Slot,
-        stamp: InputStamp,
-    ) -> bool {
-        if !slot.capabilities.viewport {
-            return false;
-        }
-        let Some(index) = self.index(slot) else {
-            return true;
-        };
-        let entry = &mut self.entries[index];
-        if entry.applied_scroll > stamp.scrolls {
-            return false;
-        }
-        entry.live_through = entry.live_through.max(stamp.scrolls);
-        true
-    }
-
-    /// Whether a viewer's scroll was sent before typing that has already
-    /// returned the viewport to live. Scrolls are controls and typing is a
-    /// message, so a scroll that arrives after a turn drains its controls
-    /// can be applied after typing the user produced later.
-    pub(crate) fn scroll_superseded(&self, slot: &Slot, number: u64) -> bool {
-        self.index(slot)
-            .is_some_and(|index| number <= self.entries[index].live_through)
-    }
-
     /// Whether a mouse report from this viewer reaches the application.
     pub(crate) fn admit_mouse(
         &mut self,
@@ -344,17 +298,20 @@ impl Arbiter {
             .admit(slot.id, mouse, stamp.geometry, self.geometry_revision)
     }
 
-    /// Whether a viewer owns a mouse gesture.
+    /// Whether a viewer owns a gesture that still blocks other viewers.
     pub(crate) fn gesture_held(&self) -> bool {
-        self.mouse.owner.is_some()
+        self.mouse.owner.is_some() && !self.mouse.untracked
     }
 
-    /// Ends the current gesture without releases, once the application has
-    /// stopped tracking the mouse. Clients stop reporting then, so the owner's
-    /// release would never arrive and other viewers' presses would stay
-    /// refused.
+    /// Stops the current gesture from blocking other viewers once the
+    /// application has stopped tracking the mouse. A client that saw
+    /// tracking stop never sends its release, so other viewers' presses
+    /// would otherwise stay refused; one that did not still sends it, and
+    /// the owner's release is still written.
     pub(crate) fn tracking_disabled(&mut self) {
-        self.mouse = MouseArbiter::default();
+        if self.mouse.owner.is_some() {
+            self.mouse.untracked = true;
+        }
     }
 
     /// Chooses the controller and returns the resize and presentation
@@ -404,6 +361,9 @@ struct MouseArbiter {
     owner: Option<ViewerId>,
     held: Vec<MouseButton>,
     last: Option<(MousePosition, Modifiers)>,
+    /// The application stopped tracking during the gesture, so it blocks
+    /// no other viewer, and any press starts a new gesture.
+    untracked: bool,
 }
 
 impl MouseArbiter {
@@ -415,7 +375,11 @@ impl MouseArbiter {
         geometry: u64,
     ) -> bool {
         let stale = stamp.is_some_and(|revision| revision != geometry);
-        let foreign = self.owner.is_some_and(|owner| owner != viewer);
+        if self.untracked && matches!(mouse.action, MouseAction::Press(_)) {
+            *self = Self::default();
+        }
+        let foreign =
+            !self.untracked && self.owner.is_some_and(|owner| owner != viewer);
         let admitted = match mouse.action {
             MouseAction::Press(button) => {
                 if foreign || stale {
@@ -440,7 +404,7 @@ impl MouseArbiter {
                 };
                 self.held.remove(index);
                 if self.held.is_empty() {
-                    self.owner = None;
+                    *self = Self::default();
                 }
                 true
             }
@@ -461,9 +425,9 @@ impl MouseArbiter {
         if self.owner != Some(viewer) {
             return Vec::new();
         }
-        self.owner = None;
         let (position, modifiers) = self.last.unwrap_or_default();
-        std::mem::take(&mut self.held)
+        std::mem::take(self)
+            .held
             .into_iter()
             .map(|button| MouseInput {
                 position,

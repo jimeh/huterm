@@ -1040,7 +1040,7 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
     // Closing the session revoked its viewer and stopped its terminal.
     assert!(matches!(
         first_viewer.read_snapshot(),
-        Err(RuntimeError::Revoked | RuntimeError::Stopped)
+        Err(RuntimeError::Revoked)
     ));
     assert!(second_viewer.read_snapshot().is_ok());
     runtime.mux.lock().unwrap().close_session(sibling).unwrap();

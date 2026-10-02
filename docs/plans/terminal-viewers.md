@@ -393,7 +393,9 @@ in history after typing:
   drains its controls can be dequeued after a key the user typed later, so
   typing that returns to live records the scroll number it carries, and a
   later-applied scroll from that viewer numbered at or below it does not
-  move the viewport. Its snapshot still answers.
+  move the viewport. Its snapshot still answers. Both scroll numbers live
+  on the viewer's slot, which every request carries, so they hold before
+  the owner thread first reconciles the viewer and after it finalizes it.
 - On typing, the view clears its own pending scroll intent, desired offset,
   and wheel remainder, as `ScrollController::bottom` does today, but submits
   no `Live` command. An older snapshot that completes afterwards then has no
@@ -555,11 +557,14 @@ A `MouseArbiter` on the owner thread holds the policy:
 - When the owner viewer is finalized with buttons held, the runtime writes
   releases for those buttons at the owner's last reported position.
 - When the application turns mouse tracking off during a gesture, the
-  runtime ends the gesture without releases. Clients stop reporting then,
-  so the owner's release would never arrive and every other viewer's
-  presses would stay discarded after the application tracks the mouse
-  again. A report dequeued while tracking is off, such as a press computed
-  against an older display, writes nothing and takes no gesture.
+  gesture stops blocking other viewers, and the next press from any viewer
+  starts a new one. A view that saw tracking stop never sends its release,
+  so other viewers' presses would otherwise stay discarded once the
+  application tracks the mouse again. A view that did not see it, because
+  tracking came back on before its next snapshot, still sends the release,
+  and the runtime still writes it. A report dequeued while tracking is
+  off, such as a press computed against an older display, writes nothing
+  and takes no gesture.
 
 A view whose press was discarded keeps its local ownership state until its
 own release and gets no feedback; that is acceptable for the default. The
@@ -615,7 +620,10 @@ clear. The release bytes would wait behind the same backpressure anyway. A
 full 32-viewer limit during such a stall refuses new viewers instead of
 growing, which bounds the focus reports and releases reconciliation can
 queue: if finalization freed slots during the stall, subscribe-and-drop
-churn could queue them without limit.
+churn could queue them without limit. Once the writes drain, the owner
+thread reconciles before it next waits. The notification that asked for
+the reconcile was consumed during the backlog, so nothing else is
+guaranteed to wake it.
 
 A viewer never keeps its runtime alive. Teardown order, child reaping, and
 bounded shutdown are unchanged. Close tickets use the crate-private client,
@@ -809,6 +817,10 @@ room so [#44][issue-44] adds messages instead of changing semantics:
    pending arbitration state, scroll intent on typing, GPUI tests,
    benchmarks, and examples to one viewer per view.
 5. Documentation: AGENTS.md, CONTEXT.md, and the plan references below.
+6. `pty::spawn` serializes PTY creation with a process-wide lock.
+   Concurrent `openpty` calls in one process failed on macOS 27 under the
+   new parallel PTY tests. Mux already serializes production spawns, so
+   the lock costs nothing there.
 
 ### PR 2: desktop multi-viewer ([#206][issue-206])
 

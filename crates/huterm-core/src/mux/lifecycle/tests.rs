@@ -431,9 +431,17 @@ fn exited_holder() {
     );
     let current = assessment.recheck();
     assert_eq!(current.jobs(), &[JobState::Idle]);
-    assert!(
-        opened.client.poll().exited.is_none(),
-        "reaping reported a second exit"
+    // Status is state, so a second exit cannot be published; reaping must
+    // leave the published exit as it was.
+    assert_eq!(
+        opened.client.status().lifecycle,
+        huterm_protocol::TerminalLifecycle::Exited(
+            huterm_protocol::ExitStatus {
+                code: Some(1),
+                success: false
+            }
+        ),
+        "reaping changed the published exit"
     );
     assert!(opened.client.read_snapshot().is_ok());
     mux.commit_close(&current, &current.recheck(), false)

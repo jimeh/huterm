@@ -695,14 +695,13 @@ fn build_snapshot(
     let started = Instant::now();
     // A scroll this viewer sent before typing that already returned the
     // viewport to live would move it back into history.
-    let scroll =
-        scroll.filter(|&(_, number)| !arbiter.scroll_superseded(slot, number));
+    let scroll = scroll.filter(|&(_, number)| !slot.scroll_superseded(number));
     let requested_viewport =
         engine.requested_viewport(scroll.map(|(command, _)| command))?;
     if let Some((command, number)) = scroll {
         let before = engine.viewport_offset()?;
         engine.scroll(command)?;
-        arbiter.scrolled(slot, number);
+        slot.scrolled(number);
         if engine.viewport_offset()? != before {
             publication.publish(registry, Some(slot.id), engine.generation());
         }
@@ -1256,6 +1255,12 @@ fn run_terminal(
         let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
+                // Writes have drained, so a reconcile deferred behind them
+                // runs now: its notification was consumed during the
+                // backlog, and nothing else may wake this thread again.
+                if registry.has_pending_change() {
+                    continue;
+                }
                 status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
@@ -1436,8 +1441,8 @@ fn run_terminal(
     result
 }
 
-/// Ends a mouse gesture the application stopped tracking. Returns false when
-/// the runtime must close.
+/// Stops a gesture the application no longer tracks from blocking other
+/// viewers. Returns false when the runtime must close.
 fn end_untracked_gesture(
     engine: &TerminalEngine,
     arbiter: &mut Arbiter,
@@ -1483,7 +1488,7 @@ fn handle_input(
         if !owner.apply(effects) {
             return false;
         }
-        if arbiter.return_to_live(slot, stamp) {
+        if slot.return_to_live(stamp) {
             match owner.engine.viewport_offset() {
                 Ok(0) => {}
                 Ok(_) => {

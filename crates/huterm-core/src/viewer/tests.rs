@@ -555,7 +555,7 @@ fn press(button: MouseButton, column: u32) -> TerminalInput {
 
 #[test]
 fn revoking_an_idle_viewer_releases_its_button_then_reports_focus_out() {
-    let expected = b"\x1b[I\x1b[<0;3;1M\x1b[<0;3;1m\x1b[O";
+    let expected = b"\x1b[I\x1b[<0;3;1M\x1b[<0;3;1m\x1b[OZ";
     let runtime = spawn(212, &reporting_script(expected.len()));
     let viewer = viewer(&runtime);
     wait_for_text(&viewer, "READY");
@@ -566,17 +566,23 @@ fn revoking_an_idle_viewer_releases_its_button_then_reports_focus_out() {
     let reader = runtime
         .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
         .unwrap();
+    // The terminator follows finalization, so no stray report hides
+    // behind the expected bytes.
+    prober(&runtime)
+        .send_input(TerminalInput::Text("Z".into()))
+        .unwrap();
     wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
     runtime.shutdown().unwrap();
 }
 
 #[test]
 fn a_dropped_viewer_writes_its_queued_press_before_the_release() {
-    let expected = b"\x1b[I\x1b[<0;5;1Mx\x1b[<0;5;1m\x1b[O";
+    let expected = b"\x1b[I\x1b[<0;5;1Mx\x1b[<0;5;1m\x1b[OZ";
     let runtime = spawn(213, &reporting_script(expected.len()));
     let reader = runtime
         .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
         .unwrap();
+    let finisher = prober(&runtime);
     let dropped = viewer(&runtime);
     wait_for_text(&reader, "READY");
     // Every request is queued before the drop and dequeued after it.
@@ -585,6 +591,11 @@ fn a_dropped_viewer_writes_its_queued_press_before_the_release() {
     dropped.send_input(press(MouseButton::Left, 4)).unwrap();
     dropped.send_input(TerminalInput::Text("x".into())).unwrap();
     drop(dropped);
+    // Queued behind the dropped viewer's requests, so it follows the
+    // finalization they release.
+    finisher
+        .send_input(TerminalInput::Text("Z".into()))
+        .unwrap();
     resume.send(()).unwrap();
     wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
     runtime.shutdown().unwrap();
@@ -592,13 +603,15 @@ fn a_dropped_viewer_writes_its_queued_press_before_the_release() {
 
 #[test]
 fn a_single_viewer_reports_each_focus_change_once() {
-    let expected = b"\x1b[I\x1b[O\x1b[I";
+    let expected = b"\x1b[I\x1b[O\x1b[IZ";
     let runtime = spawn(214, &reporting_script(expected.len()));
     let only = viewer(&runtime);
     wait_for_text(&only, "READY");
     for focused in [true, true, false, false, true] {
         only.set_focus(focused).unwrap();
     }
+    // A duplicate report would precede the terminator.
+    only.send_input(TerminalInput::Text("Z".into())).unwrap();
     wait_for_text(&only, &format!("HEX:{}:END", hex(expected)));
     runtime.shutdown().unwrap();
 }
@@ -738,7 +751,7 @@ fn closing_with_live_viewers_reaps_the_child_and_closes_their_wakes() {
         while viewer.wake_pending() {}
         assert!(matches!(ready(viewer.wait()), Err(RuntimeError::Stopped)));
         // The final status stays readable after the wake closes.
-        let _ = viewer.poll();
+        assert!(viewer.poll().status.is_some());
         assert!(viewer.read_snapshot().is_err());
     }
 }
@@ -877,9 +890,19 @@ fn typing_supersedes_an_earlier_scroll_that_is_applied_late() {
 }
 
 #[test]
-fn reconciliation_waits_while_writes_are_backed_up() {
-    let runtime =
-        spawn(228, "stty raw -echo; printf '\\033[?1004hREADY'; sleep 30");
+fn reconciliation_waits_while_writes_are_backed_up_and_resumes_after() {
+    let flag = std::env::temp_dir()
+        .join(format!("huterm-viewer-drain-{}", std::process::id()));
+    let _ = std::fs::remove_file(&flag);
+    // The application reads nothing until the flag exists, then drains its
+    // input silently, so no output or probe wakes the runtime afterwards.
+    let runtime = spawn(
+        228,
+        &format!(
+            "stty raw -echo; printf '\\033[?1004hREADY'; while [ ! -e '{}' ]; do sleep 0.05; done; cat >/dev/null",
+            flag.display()
+        ),
+    );
     let typist = prober(&runtime);
     wait_for_text(&typist, "READY");
     let client = runtime.client();
@@ -890,13 +913,16 @@ fn reconciliation_waits_while_writes_are_backed_up() {
             .unwrap();
         receiver.recv_timeout(DEADLINE).unwrap()
     };
-    // The application never reads, so writes back up behind the PTY.
+    // Writes back up behind the PTY. Each input is processed before the
+    // next is sent, so no request is left queued once they do: a queued
+    // request would itself reconcile when the backlog clears.
     let chunk = "x".repeat(4096);
     wait_until("backed-up writes", || {
         match typist.send_input(TerminalInput::Text(chunk.clone())) {
             Ok(()) | Err(RuntimeError::Busy) => {}
             Err(error) => panic!("input failed: {error}"),
         }
+        wait_until("processed input", || client.queued_input_bytes() == 0);
         pending() > 0
     });
     let backlog = pending();
@@ -923,6 +949,36 @@ fn reconciliation_waits_while_writes_are_backed_up() {
         "dropped viewers stay registered during the backlog"
     );
     assert_eq!(pending(), backlog);
+    // Once the backlog drains, the deferred reconciliation finalizes the
+    // dropped viewers without any further request. Reading the registry
+    // wakes nothing.
+    std::fs::write(&flag, b"").unwrap();
+    let registry = runtime.registry();
+    wait_until("dropped viewers finalized after the backlog", || {
+        registry.slots().len() == 1
+    });
+    let _ = std::fs::remove_file(&flag);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_release_survives_tracking_turning_off_and_on_again() {
+    let runtime = spawn(232, &tracking_script(9));
+    let only = viewer(&runtime);
+    wait_for_text(&only, "READY");
+    only.send_input(press(MouseButton::Left, 2)).unwrap();
+    wait_for_text(&only, "OFF");
+    only.send_input(TerminalInput::Text("y".into())).unwrap();
+    wait_for_text(&only, "ON");
+    // The view never applied a snapshot with tracking off, so it still
+    // sends the release, which the application tracking again must get.
+    only.send_input(TerminalInput::Mouse(MouseInput {
+        position: MousePosition { column: 2, row: 0 },
+        action: MouseAction::Release(MouseButton::Left),
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+    wait_for_text(&only, &format!("HEX:{}:END", hex(b"\x1b[<0;3;1m")));
     runtime.shutdown().unwrap();
 }
 

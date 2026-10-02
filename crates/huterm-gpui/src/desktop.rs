@@ -873,7 +873,8 @@ impl TerminalView {
         if update.bells > 0 {
             let active = self.visible && window.is_window_active();
             if active && self.visual_bell {
-                self.bell_flash_count = self.bell_flash_count.wrapping_add(1);
+                self.bell_flash_count =
+                    self.bell_flash_count.wrapping_add(update.bells);
             }
             changed |= self.bell.ring(Instant::now(), active, self.visual_bell);
         }

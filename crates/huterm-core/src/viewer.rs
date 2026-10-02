@@ -109,6 +109,14 @@ pub(crate) struct Slot {
     queued: AtomicUsize,
     /// The viewer's activity ordinal, shared with its host-effect recipient.
     pub(crate) activity: Arc<AtomicU64>,
+    /// The number of this viewer's latest scroll the owner thread applied.
+    /// Scroll bookkeeping lives on the slot, which every request carries,
+    /// so it holds before the viewer is reconciled and after it is
+    /// finalized.
+    applied_scroll: AtomicU64,
+    /// Scrolls up to this number were sent before typing that returned the
+    /// viewport to live.
+    live_through: AtomicU64,
     initial: Mutex<Option<Initial>>,
 }
 
@@ -155,6 +163,32 @@ impl Slot {
 
     fn signal(&self) {
         let _ = self.wake.try_send(());
+    }
+
+    /// Records the number of a scroll the owner thread applied.
+    pub(crate) fn scrolled(&self, number: u64) {
+        self.applied_scroll.fetch_max(number, Ordering::AcqRel);
+    }
+
+    /// Whether typing stamped with `stamp` returns the shared viewport to
+    /// live: not when this viewer has a later scroll applied. When it does,
+    /// the viewer's scrolls sent before that typing are superseded.
+    pub(crate) fn return_to_live(&self, stamp: InputStamp) -> bool {
+        if !self.capabilities.viewport
+            || self.applied_scroll.load(Ordering::Acquire) > stamp.scrolls
+        {
+            return false;
+        }
+        self.live_through.fetch_max(stamp.scrolls, Ordering::AcqRel);
+        true
+    }
+
+    /// Whether a scroll was sent before typing that has already returned
+    /// the viewport to live. Scrolls are controls and typing is a message,
+    /// so a scroll that arrives after a turn drains its controls can be
+    /// applied after typing the user produced later.
+    pub(crate) fn scroll_superseded(&self, number: u64) -> bool {
+        number <= self.live_through.load(Ordering::Acquire)
     }
 }
 
@@ -244,6 +278,8 @@ impl Registry {
             dropped: AtomicBool::new(false),
             queued: AtomicUsize::new(0),
             activity,
+            applied_scroll: AtomicU64::new(0),
+            live_through: AtomicU64::new(0),
             initial: Mutex::new(Some(initial)),
         });
         slot.signal();
@@ -270,6 +306,10 @@ impl Registry {
     fn mark_changed(&self) {
         self.changed.store(true, Ordering::Release);
         self.owner.notify();
+    }
+
+    pub(crate) fn has_pending_change(&self) -> bool {
+        self.changed.load(Ordering::Acquire)
     }
 
     pub(crate) fn take_changed(&self) -> bool {

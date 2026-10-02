@@ -227,29 +227,36 @@ fn a_dropped_viewer_cannot_take_control_before_it_is_reconciled() {
 }
 
 #[test]
-fn a_gesture_the_application_stopped_tracking_admits_other_viewers() {
+fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release()
+ {
     let mut fixture = Fixture::new();
     let owner = fixture.sized(80);
     let other = fixture.sized(80);
     let left = MouseButton::Left;
-    assert!(fixture.arbiter.admit_mouse(
-        &owner,
-        &mouse(MouseAction::Press(left), 1),
-        stamp(None)
-    ));
+    let admit = |fixture: &mut Fixture, slot: &Slot, action| {
+        fixture
+            .arbiter
+            .admit_mouse(slot, &mouse(action, 1), stamp(None))
+    };
+    assert!(admit(&mut fixture, &owner, MouseAction::Press(left)));
     assert!(fixture.arbiter.gesture_held());
     fixture.arbiter.tracking_disabled();
     assert!(!fixture.arbiter.gesture_held());
-    assert!(fixture.arbiter.admit_mouse(
-        &other,
-        &mouse(MouseAction::Press(left), 2),
-        stamp(None)
-    ));
-    // The ended gesture leaves nothing to release on finalization.
+    // A view that never saw tracking stop still sends its release, which
+    // the application, tracking again, must receive.
+    assert!(admit(&mut fixture, &owner, MouseAction::Release(left)));
+
+    assert!(admit(&mut fixture, &owner, MouseAction::Press(left)));
+    fixture.arbiter.tracking_disabled();
+    // Another viewer's press starts a new gesture; the abandoned owner can
+    // neither end it nor get synthetic releases.
+    assert!(admit(&mut fixture, &other, MouseAction::Press(left)));
+    assert!(!admit(&mut fixture, &owner, MouseAction::Release(left)));
     owner
         .dropped
         .store(true, std::sync::atomic::Ordering::Release);
     assert!(fixture.arbiter.sync(&fixture.registry).releases.is_empty());
+    assert!(fixture.arbiter.gesture_held(), "the new gesture remains");
 }
 
 #[test]
@@ -423,36 +430,37 @@ fn finalizing_the_gesture_owner_releases_its_buttons_where_it_left_them() {
 
 #[test]
 fn typing_returns_to_live_only_without_a_later_scroll_from_the_same_viewer() {
-    let mut fixture = Fixture::new();
-    let viewer = fixture.sized(80);
+    let fixture = Fixture::new();
+    // The bookkeeping lives on the slot, so it holds before the owner
+    // thread reconciles a viewer: neither slot is ever synced here.
+    let register = |capabilities| {
+        fixture
+            .registry
+            .register_with_wake(None, capabilities, blank())
+            .unwrap()
+            .0
+    };
+    let viewer = register(ViewerCapabilities::ALL);
     let typed_before_scroll = InputStamp {
         scrolls: 0,
         geometry: None,
     };
-    fixture.arbiter.scrolled(&viewer, 1);
-    assert!(!fixture.arbiter.return_to_live(&viewer, typed_before_scroll));
-    assert!(!fixture.arbiter.scroll_superseded(&viewer, 1));
-    assert!(fixture.arbiter.return_to_live(
-        &viewer,
-        InputStamp {
-            scrolls: 2,
-            geometry: None,
-        }
-    ));
+    viewer.scrolled(1);
+    assert!(!viewer.return_to_live(typed_before_scroll));
+    assert!(!viewer.scroll_superseded(1));
+    assert!(viewer.return_to_live(InputStamp {
+        scrolls: 2,
+        geometry: None,
+    }));
     // Scrolls sent before that typing can no longer move the viewport.
-    assert!(fixture.arbiter.scroll_superseded(&viewer, 2));
-    assert!(!fixture.arbiter.scroll_superseded(&viewer, 3));
-    let (watcher, _) = fixture.viewer(
-        ViewerCapabilities {
-            viewport: false,
-            ..ViewerCapabilities::ALL
-        },
-        blank(),
-    );
+    assert!(viewer.scroll_superseded(2));
+    assert!(!viewer.scroll_superseded(3));
+    let watcher = register(ViewerCapabilities {
+        viewport: false,
+        ..ViewerCapabilities::ALL
+    });
     assert!(
-        !fixture
-            .arbiter
-            .return_to_live(&watcher, typed_before_scroll),
+        !watcher.return_to_live(typed_before_scroll),
         "typing moves the shared viewport only with viewport control"
     );
 }
