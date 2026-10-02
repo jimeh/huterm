@@ -260,6 +260,72 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
 }
 
 #[test]
+fn a_refused_press_leaves_an_untracked_gesture_to_its_owner() {
+    let mut fixture = Fixture::new();
+    let owner = fixture.sized(80);
+    let other = fixture.sized(80);
+    let left = MouseButton::Left;
+    assert!(fixture.arbiter.admit_mouse(
+        &owner,
+        &mouse(MouseAction::Press(left), 1),
+        stamp(None)
+    ));
+    fixture.arbiter.tracking_disabled();
+    // A press computed against an older grid is refused, and must not
+    // discard the gesture whose release is still coming.
+    let stale = fixture.arbiter.geometry_revision() + 1;
+    assert!(!fixture.arbiter.admit_mouse(
+        &other,
+        &mouse(MouseAction::Press(left), 2),
+        stamp(Some(stale))
+    ));
+    assert!(fixture.arbiter.admit_mouse(
+        &owner,
+        &mouse(MouseAction::Release(left), 1),
+        stamp(None)
+    ));
+}
+
+#[test]
+fn other_viewers_never_move_an_untracked_gesture_s_release() {
+    let mut fixture = Fixture::new();
+    let owner = fixture.sized(80);
+    let other = fixture.sized(80);
+    let left = MouseButton::Left;
+    assert!(fixture.arbiter.admit_mouse(
+        &owner,
+        &mouse(MouseAction::Press(left), 1),
+        stamp(None)
+    ));
+    fixture.arbiter.tracking_disabled();
+    assert!(fixture.arbiter.admit_mouse(
+        &other,
+        &mouse(MouseAction::Motion(None), 9),
+        stamp(None)
+    ));
+    owner
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    let releases = fixture.arbiter.sync(&fixture.registry).releases;
+    assert_eq!(releases, vec![mouse(MouseAction::Release(left), 1)]);
+}
+
+#[test]
+fn a_repeated_focus_gain_is_activity() {
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(100);
+    let second = fixture.sized(120);
+    fixture.arbiter.report(&first, Report::Focus(true));
+    fixture.arbiter.report(&second, Report::Focus(true));
+    assert_eq!(fixture.arbiter.canonical.0, grid(120));
+    // The first view blurred and refocused while its blur was queued, so
+    // the runtime sees one more gain from an already focused viewer.
+    let effects = fixture.arbiter.report(&first, Report::Focus(true));
+    assert_eq!(effects.resize, Some((grid(100), cell())));
+    assert_eq!(effects.focus, None, "the application stays focused");
+}
+
+#[test]
 fn revocation_and_drop_together_finalize_once() {
     let mut fixture = Fixture::new();
     let (slot, effects) = fixture.viewer(

@@ -236,8 +236,11 @@ fn a_spawning_viewer_sees_an_exit_that_beat_its_subscription() {
 
 #[test]
 fn geometry_still_resizes_the_emulator_after_root_exit() {
-    let runtime = spawn(203, "printf DONE; exit 0");
+    // In-band size reports make the resize produce a reply, which the
+    // closed writer must never receive.
+    let runtime = spawn(203, "printf '\\033[?2048hDONE'; exit 0");
     let only = viewer(&runtime);
+    wait_for_text(&only, "DONE");
     wait_until("exit", || {
         runtime.registry().status().lifecycle != TerminalLifecycle::Running
     });
@@ -246,6 +249,80 @@ fn geometry_still_resizes_the_emulator_after_root_exit() {
     wait_until("emulator resize", || {
         only.read_snapshot().unwrap().size == GridSize::clamped(60, 12)
     });
+    assert!(runtime.registry().status().failures.is_empty());
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn typing_after_root_exit_moves_control_and_returns_to_live() {
+    let runtime = spawn(
+        233,
+        "i=0; while [ $i -lt 40 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf DONE; exit 0",
+    );
+    let controller = sized_viewer(&runtime, 40, 8);
+    let typist = runtime
+        .subscribe(ViewerOptions {
+            geometry: Some((GridSize::clamped(60, 12), cell())),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    wait_for_text(&controller, "DONE");
+    wait_until("exit", || {
+        runtime.registry().status().lifecycle != TerminalLifecycle::Running
+    });
+    let scrolled = controller
+        .request_scrolled_snapshot(ScrollCommand::Relative(10))
+        .unwrap()
+        .recv_blocking()
+        .unwrap()
+        .snapshot;
+    assert_eq!(scrolled.viewport.bottom_offset, 10);
+    // The keystroke reaches no application, but it is still the user
+    // acting in that view.
+    typist.send_input(TerminalInput::Text("x".into())).unwrap();
+    drained(&runtime);
+    let snapshot = controller.read_snapshot().unwrap();
+    assert_eq!(snapshot.viewport.bottom_offset, 0);
+    assert_eq!(snapshot.size, GridSize::clamped(60, 12));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_host_effect_wakes_its_viewer_while_a_snapshot_is_due() {
+    let runtime = spawn(
+        234,
+        "stty -echo; printf READY; while IFS= read -r l; do printf '\\033]52;c;%s\\007<%s>' \"$(printf '%s' \"$l\" | base64)\" \"$l\"; done",
+    );
+    let recipient = runtime
+        .subscribe(ViewerOptions {
+            host_effects: Some(HostEffectViewerOptions {
+                process: DesktopHostEffectClient::new(),
+                options: HostEffectRecipientOptions::local_desktop(true),
+            }),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let copy = |text: &str| {
+        typist
+            .send_input(TerminalInput::Text(format!("{text}\n")))
+            .unwrap();
+        wait_for_text(&typist, &format!("<{text}>"));
+    };
+    // A first line settles the metadata its Enter probes, so the second
+    // line publishes no status change.
+    copy("one");
+    wait_until("first write", || {
+        recipient.host_effects().unwrap().try_next().is_some()
+    });
+    // The recipient never builds a snapshot, so output leaves it notified
+    // and wakes it no further: only the host effect can.
+    assert!(recipient.poll().invalidated.is_some());
+    while recipient.wake_pending() {}
+    copy("two");
+    assert!(recipient.wake_pending(), "the write woke its recipient");
+    assert!(recipient.host_effects().unwrap().try_next().is_some());
     runtime.shutdown().unwrap();
 }
 
@@ -739,10 +816,13 @@ fn a_terminal_admits_a_bounded_number_of_viewers() {
 
 #[test]
 fn closing_with_live_viewers_reaps_the_child_and_closes_their_wakes() {
-    let runtime = spawn(218, "printf READY; sleep 30");
+    let runtime = spawn(218, "printf '\\033]2;final\\007READY'; sleep 30");
     let first = viewer(&runtime);
     let second = viewer(&runtime);
     wait_for_text(&first, "READY");
+    wait_until("final title", || {
+        runtime.registry().status().title == "final"
+    });
     let root = runtime.client().job_context().unwrap().shell.unwrap();
     let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
     runtime.shutdown().unwrap();
@@ -751,7 +831,7 @@ fn closing_with_live_viewers_reaps_the_child_and_closes_their_wakes() {
         while viewer.wake_pending() {}
         assert!(matches!(ready(viewer.wait()), Err(RuntimeError::Stopped)));
         // The final status stays readable after the wake closes.
-        assert!(viewer.poll().status.is_some());
+        assert_eq!(viewer.poll().status.unwrap().title, "final");
         assert!(viewer.read_snapshot().is_err());
     }
 }

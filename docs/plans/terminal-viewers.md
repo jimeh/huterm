@@ -471,7 +471,10 @@ matches the order the user moved focus in.
 Each viewer slot records, on the owner thread, its geometry, focus, latest
 submitted presentation, and an activity ordinal. The ordinal
 advances when the viewer gains focus or sends a `Key`, `Character`, `Text`,
-or `Paste` input. Mouse reports, scrolling, focus out, and synthetic
+or `Paste` input, including after root exit, when the input itself is
+discarded. A repeated focus gain counts too: a view's queue coalesces a
+blur and the refocus after it into one gain, and that refocus must still
+take control back. Mouse reports, scrolling, focus out, and synthetic
 releases do not count. Mouse presses are excluded because a press that moved
 control would resize the grid that the press's own coordinates were
 computed against; on the desktop the click that activates a window already
@@ -499,7 +502,8 @@ or its state changes:
 - If the controller's `(GridSize, CellSize)` differs from the canonical
   size, the runtime resizes the PTY and the engine, advances the geometry
   revision, and publishes. After root exit it resizes only the engine, as
-  today.
+  today, and drops any reply the resize produces, such as an in-band size
+  report, because the writer has closed.
 - If the controller's presentation differs from the applied one, the
   runtime applies it and publishes.
 
@@ -555,16 +559,18 @@ A `MouseArbiter` on the owner thread holds the policy:
   geometry; the encoder clamps their coordinates to the current grid, as it
   does today. Accepted gestures therefore always end.
 - When the owner viewer is finalized with buttons held, the runtime writes
-  releases for those buttons at the owner's last reported position.
-- When the application turns mouse tracking off during a gesture, the
-  gesture stops blocking other viewers, and the next press from any viewer
-  starts a new one. A view that saw tracking stop never sends its release,
-  so other viewers' presses would otherwise stay discarded once the
+  releases for those buttons at the owner's last reported position. Only
+  the owner's reports move that position.
+- When the application turns mouse tracking off during a gesture, the gesture
+  stops blocking other viewers, and the next admitted press from any viewer
+  starts a new one; a refused press, such as one with a stale geometry revision,
+  leaves the gesture in place. A view that saw tracking stop never sends its
+  release, so other viewers' presses would otherwise stay discarded once the
   application tracks the mouse again. A view that did not see it, because
-  tracking came back on before its next snapshot, still sends the release,
-  and the runtime still writes it. A report dequeued while tracking is
-  off, such as a press computed against an older display, writes nothing
-  and takes no gesture.
+  tracking came back on before its next snapshot, still sends the release, and
+  the runtime still writes it. A report dequeued while tracking is off, such as
+  a press computed against an older display, writes nothing and takes no
+  gesture.
 
 A view whose press was discarded keeps its local ownership state until its
 own release and gets no feedback; that is acceptable for the default. The
@@ -830,10 +836,7 @@ room so [#44][issue-44] adds messages instead of changing semantics:
 3. Add owed exit-closes and claims.
 4. Add the smoke fixture and `check-viewers.ts`, and wire them into the
    macOS and Linux palette smokes.
-5. Let typing after root exit still move control: the runtime skips exited
-   input before `Arbiter::typed`, which only matters once two windows show
-   one exited terminal.
-6. Give `ScrollController` a way to clear its latched failure, or skip it
+5. Give `ScrollController` a way to clear its latched failure, or skip it
    for `Revoked`, so an in-place viewer replacement resumes snapshots.
 
 ### Follow-up issue: sizing policies ([#207][issue-207])
@@ -941,22 +944,32 @@ intended assertion:
 - Ignore the scroll submission number: the backlog key-then-scroll test
   must fail at its viewport assertion.
 
-GPUI tests:
+Desktop coverage. `huterm-gpui` has no harness that drives a
+`TerminalView` against a live runtime, so PR 1 covers the desktop with
+unit tests of its queues and controllers, the core PTY tests, and the
+smokes. A view-level harness lands with PR 2, which needs it for reconcile
+and replacement.
 
-- The migrated refresh applies title, metadata, bells, and the exit
-  transition once, and a view installed after exit reports no transition.
-- Hiding a tab, resizing the window, and reloading the font and theme still
-  resize that tab's PTY and update its presentation.
-- An exited tab, retained with `close_on_exit = false`, still reflows when
-  its window resizes.
-- With the `InputQueue` full, a geometry and a focus change are each
-  delivered once the queue drains, after the input ahead of them; a report
-  refused with `Busy` is admitted before any key typed after it; the
-  release-before-focus-out test passes on the new reports.
-- With the runtime refusing input, a focus gain, a key, and a blur queued in
-  that order drain as `ESC [ I`, the key's bytes, and `ESC [ O`.
-- Scrolling up with a snapshot in flight and then typing ends at live after
-  the older snapshot completes, with no extra snapshot for the keystroke.
+- `InputQueue` unit tests: focus entries keep their order around input,
+  coalesce only when adjacent, ignore capacity and exit closure, and a
+  refused focus change holds back later input.
+- `ScrollController` unit tests: typing drops pending intent but keeps
+  later scrolls, so an older completion cannot replay into history.
+- The core PTY tests cover the runtime half of each desktop path: focus
+  and mouse byte order, hidden single-viewer resize, resizing after root
+  exit, return to live in both arrival orders, and status publication.
+- `smoke:macos-refresh` covers title delivery while frames are paused and
+  activity-task cancellation on detach. The Linux desktop integration
+  smoke covers the visual bell, exited tabs kept by
+  `close_on_exit = false`, and process and directory labels. The
+  presentation query smoke covers hidden-tab padding, font, and theme
+  reloads reaching the PTY.
+
+Moved to PR 2's view-level harness: the refresh applying each status
+change exactly once, a view installed after exit reporting no transition,
+an exited tab reflowing through its view, and a focus gain, key, and blur
+draining through a real viewer as `ESC [ I`, the key's bytes, and
+`ESC [ O`.
 
 ### PR 2
 

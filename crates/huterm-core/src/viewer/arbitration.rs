@@ -173,7 +173,7 @@ impl Arbiter {
     fn finalize(&mut self, index: usize, registry: &Registry) -> Effects {
         let mut effects = self.set_focus(index, false);
         let entry = self.entries.remove(index);
-        effects.releases = self.mouse.finalize(entry.slot.id);
+        effects.releases.extend(self.mouse.finalize(entry.slot.id));
         registry.remove(entry.slot.id);
         effects
     }
@@ -210,6 +210,11 @@ impl Arbiter {
         let mut effects = Effects::default();
         let entry = &mut self.entries[index];
         if entry.focused == focused {
+            // A view's queue coalesces a blur and the refocus after it into
+            // one gain, so a repeated gain is still new activity.
+            if focused {
+                self.touch(index);
+            }
             return effects;
         }
         entry.focused = focused;
@@ -375,15 +380,17 @@ impl MouseArbiter {
         geometry: u64,
     ) -> bool {
         let stale = stamp.is_some_and(|revision| revision != geometry);
-        if self.untracked && matches!(mouse.action, MouseAction::Press(_)) {
-            *self = Self::default();
-        }
         let foreign =
             !self.untracked && self.owner.is_some_and(|owner| owner != viewer);
         let admitted = match mouse.action {
             MouseAction::Press(button) => {
                 if foreign || stale {
                     return false;
+                }
+                // Only an admitted press replaces an untracked gesture; a
+                // refused one leaves its owner's release to arrive.
+                if self.untracked {
+                    *self = Self::default();
                 }
                 self.owner = Some(viewer);
                 if !self.held.contains(&button) {
@@ -413,8 +420,13 @@ impl MouseArbiter {
                 !foreign && !stale
             }
         };
-        // Finalization releases held buttons where the owner last reported.
-        if admitted && !matches!(mouse.action, MouseAction::Wheel(_)) {
+        // Finalization releases held buttons where the owner last reported,
+        // so other viewers' reports admitted beside an untracked gesture
+        // never move that position.
+        if admitted
+            && self.owner == Some(viewer)
+            && !matches!(mouse.action, MouseAction::Wheel(_))
+        {
             self.last = Some((mouse.position, mouse.modifiers));
         }
         admitted

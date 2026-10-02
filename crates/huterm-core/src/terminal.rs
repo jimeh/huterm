@@ -858,6 +858,12 @@ impl Owner<'_> {
         failure: &str,
     ) -> bool {
         for effect in effects {
+            // The writer closes at root exit, so a reply such as an in-band
+            // size report from a resize would otherwise stop the runtime.
+            if self.child_exited && matches!(effect, EngineEffect::PtyWrite(_))
+            {
+                continue;
+            }
             if handle_effect(
                 effect,
                 self.writer,
@@ -1326,10 +1332,7 @@ fn run_terminal(
                 reserved_bytes,
             }) => {
                 queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                let healthy = if slot.is_revoked()
-                    || !slot.capabilities.input
-                    || child_exited
-                {
+                let healthy = if slot.is_revoked() || !slot.capabilities.input {
                     true
                 } else {
                     owner!(|owner| handle_input(
@@ -1505,6 +1508,11 @@ fn handle_input(
                 }
             }
         }
+    }
+    // After root exit, typing still moves control and returns the viewport
+    // to live, but nothing reaches the application.
+    if owner.child_exited {
+        return true;
     }
     let modes = match owner.engine.modes() {
         Ok(modes) => modes,
