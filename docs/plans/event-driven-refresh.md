@@ -1,6 +1,7 @@
 # Event-driven window refresh
 
-Status: steps 1 to 3 and the Unix runtime wait conversion shipped in PR #147.
+Status: implemented. Steps 1 to 3 and the Unix runtime wait conversion shipped
+in PR #147.
 Step 4, including animation scheduling and scrollbar cleanup, shipped in
 PR #153 as `42117b6`. Steps 5 and 6 shipped in PR #155. Steps 7 and 8 are
 shipped in PR #157, with fullscreen notification scheduling and removal of

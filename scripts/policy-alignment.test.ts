@@ -8,6 +8,8 @@ const toml = (file: string) => Bun.TOML.parse(read(file)) as Record<string, any>
 const yaml = (file: string) => Bun.YAML.parse(read(file)) as Record<string, any>;
 
 test("every dependency cooldown uses the same release age in days", () => {
+  // Dependabot counts calendar days, so it uses one more day than the policy to
+  // avoid opening pull requests that pinact's 72-hour check rejects.
   const mise = toml("mise.toml");
   const dependabot = yaml(".github/dependabot.yml") as { updates: { "package-ecosystem": string; cooldown?: { "default-days"?: number } }[] };
   const days: Record<string, unknown> = {
@@ -18,7 +20,8 @@ test("every dependency cooldown uses the same release age in days", () => {
     "zizmor.yml dependabot-cooldown days": yaml("zizmor.yml").rules["dependabot-cooldown"].config.days,
   };
   for (const update of dependabot.updates) {
-    days[`.github/dependabot.yml ${update["package-ecosystem"]} cooldown`] = update.cooldown?.["default-days"];
+    const cooldown = update.cooldown?.["default-days"];
+    days[`.github/dependabot.yml ${update["package-ecosystem"]} cooldown - 1`] = cooldown === undefined ? undefined : cooldown - 1;
   }
   const expected = days["mise.toml settings.minimum_release_age"];
   expect(Number.isInteger(expected)).toBe(true);

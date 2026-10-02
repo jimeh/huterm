@@ -10,7 +10,8 @@ lifecycle sections below predate that move. The registry now keeps only the
 native platform, hotkey registrations, return focus, the failed-spawn latch,
 and the smoke journal.
 
-Status: implementation for [issue #41][issue-41]; native macOS CI validation pending.
+Status: implemented in PR #73 for [issue #41][issue-41]. CI now runs the native
+macOS quake smoke.
 
 Deliver one PR for the embedded quake workflow. A configured global shortcut
 summons a named terminal window from another application. Hiding it preserves

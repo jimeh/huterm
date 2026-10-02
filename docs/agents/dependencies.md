@@ -24,6 +24,22 @@ On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
 
+## Bumps that change generated files
+
+Some dependencies shape committed generated files, and Dependabot cannot
+regenerate them. Their bump pull requests fail CI until a follow-up commit on
+the same branch runs the generator:
+
+- `bindgen`: `mise run ghostty:bindings`, checked by
+  `ghostty:bindings:check` on macOS.
+- `schemars`: `mise run schema:generate`, checked by `schema:check`.
+- `lucide-static`: `mise run ui-icons:generate`, checked by
+  `ui-icons.test.ts`.
+
+`gpui-pre` crates are ignored by Dependabot and upgrade through the vendor
+workflow below. A bump that changes lint behavior, such as `syn`, may also
+need code changes before Clippy passes.
+
 ## GPUI and nix
 
 GPUI comes from `gpui-pre`, huacnlee's crates.io snapshots of Zed's main

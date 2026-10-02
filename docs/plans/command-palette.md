@@ -1,6 +1,7 @@
 # Command palette and argument pickers
 
-Status: revised. This supersedes the first iteration on PR 91, which built the
+Status: implemented in PR #91. This revision supersedes the first iteration on
+PR 91, which built the
 runtime plumbing but shipped an unusable interaction model. The plumbing stays;
 the interaction model, argument entry, search, and presentation described here
 replace it. PR 91 does not merge until this contract is met.

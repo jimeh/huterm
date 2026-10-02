@@ -246,161 +246,10 @@ sessions requires that no other command is running.
 command is active; other worktrees keep their own. The base image stays cached;
 remove it with `tart delete` using the reference the task prints.
 
-The initial desktop client runs on macOS and Linux:
-
-```sh
-mise run dev
-```
-
-On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
-Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
-inherited. Linux launches `$SHELL` in the current working directory. The
-fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Cmd-Enter` on macOS or
-`F11` toggles the configured fullscreen mode. macOS defaults to `non_native` in
-the current Space; `window.macos_fullscreen_mode = "native"` selects a separate
-Space. The green window button still uses native fullscreen. Linux always uses
-native fullscreen.
-Closing a tab stops its terminal. Closing a shared
-session view detaches it; closing the final view terminates that session and
-its terminals. Explicit detachment preserves sessions without viewers. Huterm
-exits after the last window closes only when no sessions or pending spawns
-remain. Foreground and background jobs require confirmation while the shell is
-alive. Root-shell exit closes its tab quietly unless
-`[terminal] close_on_exit = false` retains the history.
-
-Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
-`$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
-that order. Settings creates the default document without overwriting an
-existing file and opens it with the system editor. Malformed TOML and invalid
-`terminal.engine` values are fatal at startup, before UI creation. With valid
-TOML and a known legacy engine value, unrelated settings errors fall back to
-defaults while preserving the clipboard-write policy. `alacritty` emits a
-migration warning and `ghostty` is accepted silently; both run Ghostty.
-
-Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
-`Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified
-Page Up, Page Down, and End scroll the viewport. The macOS Window menu exposes
-native Minimize and Zoom commands.
-
-Window and tab shortcuts:
-
-| Action | macOS | Linux |
-| --- | --- | --- |
-| New window | `Cmd-N` | `Ctrl-Shift-N` |
-| New tab | `Cmd-T` | `Ctrl-Shift-T` |
-| Close tab | `Cmd-W` | `Ctrl-Shift-W` |
-| Close window | `Cmd-Shift-W` | `Ctrl-Shift-Q` |
-| Next / previous tab | `Ctrl-Tab` / `Ctrl-Shift-Tab` | `Ctrl-Tab` / `Ctrl-Shift-Tab` |
-| Select tab 1 through 8 | `Cmd-1` through `Cmd-8` | `Alt-1` through `Alt-8` |
-| Select last tab | `Cmd-9` | `Alt-9` |
-
-The tab bar is hidden with one tab by default. Set
-`[tabs].always_show = true` to keep it visible. With two or more tabs,
-it reserves space beside the terminal.
-
-Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only when the
-pointer reaches its attached edge in fullscreen, even with one tab. Fullscreen
-auto-hide overrides `always_show` and reserves no bar space, regardless of tab
-count, except for a top bar on a notch shelf, which has nowhere to hide and
-stays reserved. It slides over the terminal without changing the grid, and hides
-after the pointer leaves. Tab dragging and sidebar resizing keep it open. A top
-bar can be revealed from the macOS notch-height region and appears below the
-notch. Tab-switch commands, successful tab creation, and tab closure also reveal
-the fullscreen overlay for one second before the normal dismissal delay.
-Repeated activity restarts the hold. Both settings default to `false` and take
-effect on config reload.
-
-Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. With `width = "fill"`, horizontal tabs divide the available width
-equally until their 120-pixel minimum, then scroll horizontally; the default
-`"fit"` sizes them to their titles between `min_width` and `max_width`.
-Vertical tabs stay 32 pixels tall and fill the sidebar width.
-Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
-capped at half the window width. Each window keeps
-its preferred width for its lifetime, including through temporary window
-shrinking. The vertical new-tab button is a row with the same insets as the
-tabs; it follows the last tab and stays visible at the bottom when tabs
-overflow. Horizontal bars reserve a 32-point slot for it and center a 26-point
-button across the bar, matching the pill inset, so it never touches the bar
-border. Strip bars are 32 points tall; Pill bars are 34 so 26-point pills keep
-4 points on every side.
-Pill strips also start with a leading margin so the first pill's visible edge
-sits at that same inset, and hovering a pill never hides its dividers.
-
-`[tabs].style = "strip"` merges the active tab into the terminal with an
-accent line on its outer edge. `"pill"`, the default, draws rounded tabs
-separated by dividers; `pill_accent = true` adds an accent bar inside the
-active pill's left edge and widens every pill's left padding to keep titles
-aligned. `close_button`
-selects when close buttons show: `hover` only, `active` adds the active tab, and
-`always` shows every tab's; the slot stays reserved either way so widths never
-change. Left and right placement follow `style` too: Strip rows span the column,
-merge into the terminal, put the accent line on the window edge, and outline the
-active row above and below; a first active row at the strip's start joins the
-terminal's top border instead and squares the rounded corner. Pill rows are
-rounded, inset in the column, and carry the same optional accent bar. With a
-titlebar above vertical tabs, a border also runs along the terminal's top edge,
-joining the bar's edge so the titlebar and bar form one surface around the
-terminal. The corner where they meet is rounded by the smaller window padding,
-capped at 12 points, so the arc never covers a cell. Under a notch in non-native
-fullscreen there is no titlebar: the column and its edge run to the top of the
-screen, its rows stay below the safe area, and the strip beside it keeps the
-terminal background. While a top bar is visible or revealing, the macOS titlebar
-and the non-native fullscreen safe area above a notch use the tab bar
-background; a titlebar above a left or right bar does too; otherwise, including
-for a bottom bar, they use the terminal background. `[tabs].notch = "left"`
-(the default) or `"right"` places a top bar in the auxiliary area beside the
-notch in non-native fullscreen, read from `NSScreen`'s auxiliary top areas,
-and `"off"` keeps the bar below the
-notch: the bar keeps its
-height, sits at the bottom of that area, and the terminal starts directly under
-the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
-the same shelves from their own window. Without a notch, in windowed mode, or in
-native fullscreen the key is ignored.
-
-Quake presentation is driven by owned native observers and explicit deadlines.
-Animations share the workspace frame callback. On macOS 14+, an offscreen or
-unmapped animation uses a display link from its selected `NSScreen` until window
-frames arrive; stalled clocks use refresh-derived pacing only while animating.
-X11 uses one private cancellable event connection shared by Quake windows, with
-RandR timing for the active animation fallback. A missing refresh rate uses a
-reported 16 ms compatibility cadence.
-
-AppKit has no dedicated notification for every external Dock work-area change.
-Visible, non-fullscreen Quake profiles therefore resample the work area once a
-second. Hidden profiles release that timer and resample on summon; display,
-Space, and Huterm presentation-lease changes still wake them immediately.
-An X11 observer connection failure is reported and enables a one-second safety
-sample for its affected owners. Smoke inspection reports `work_area_fallback`,
-`quake_timer`, `quake_clock`, and `quake_frame_demand`; the state publisher never
-wakes production work.
-
-`[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
-`min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
-logical points). The bar then shrinks to its tabs, so the new-tab button follows
-the last tab until the bar overflows and scrolls. Render measures titles and
-caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
-drop slots. Vertical tabs ignore `width`.
-
-Trackpad and wheel scrolling move the strip without selecting a tab. Horizontal
-bars show floating arrows that indicate hidden content and animate scrolling
-when clicked, plus a slim `Scrollbars` indicator along their bottom edge that
-never expands or shows a track but still drags and jumps. Vertical columns use
-the same overlay on their right edge instead of arrows: it appears on scrolling
-and reveal, widens on hover while shown, jumps on a track press, and drags
-through the window-level capture that also serves tab reordering. It sits
-inboard of the sidebar resize handle by the handle's width so the two never
-overlap, and both tab bar indicators fade after 700 ms rather than the
-terminal's two seconds. Explicit selection or creating a tab reveals it;
-ordinary redraws preserve manual scroll. Drag a tab to reorder it within its
-window, horizontally or vertically. The preview and insertion position remain
-constrained to the bar when the pointer leaves it; release commits and Escape
-cancels. During a drag, hovering an overflow edge scrolls continuously without
-changing the active terminal. Reordering preserves terminal processes, focus,
-selection, and scroll position. Cross-window moves and tear-out remain deferred.
-Reload applies placement, font, padding, and theme changes across all windows.
-Shell titles label tabs by default, with the launched program as fallback. The
-README describes directory and process labels and directory inheritance.
+Product behavior, configuration, and default shortcuts are documented in the
+[README](../../README.md); update it, not this guide, when they change.
+Tab-bar layout mechanics are in the [desktop client guide](desktop-client.md),
+and Quake scheduling is in the [window presentation guide](window-presentation.md).
 
 ## Rust test layout
 
@@ -576,8 +425,9 @@ and may refresh advisory data.
 
 Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
-correctness or native input behavior. Use Apple Silicon CI and the manual
-checklist in the initial plan for macOS evidence.
+correctness or native input behavior. For macOS evidence, use the
+`smoke:macos-*` tasks, which CI also runs on Apple Silicon, and record manual
+checks for behavior they do not cover.
 
 The fullscreen smoke starts its own Openbox under an isolated Xvfb display.
 It checks `_NET_WM_STATE_FULLSCREEN` with `xprop` from `x11-utils`; bare Xvfb

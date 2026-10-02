@@ -46,3 +46,12 @@ test("anchors follow GitHub heading slugs", () => {
   expect([...anchors("# The `huterm-ghostty` crate\n## Close and Quit\n## Close and Quit\n```\n# not a heading\n```\n")])
     .toEqual(["the-huterm-ghostty-crate", "close-and-quit", "close-and-quit-1"]);
 });
+
+test("every plan needs a recognized status line", () => {
+  const root = fixture("# Guide\n\n[CI](docs/agents/ci.md)\n", { "ci.md": "# CI\n" });
+  mkdirSync(join(root, "docs/plans"), { recursive: true });
+  writeFileSync(join(root, "docs/plans/shipped.md"), "# Shipped\n\nStatus: implemented in PR #1.\n");
+  writeFileSync(join(root, "docs/plans/stale.md"), "# Stale\n\nStatus: agreed on Monday.\n");
+  writeFileSync(join(root, "docs/plans/missing.md"), "# Missing\n\nNo status here.\n");
+  expect(checkGuides(root).map((report) => report.split(":")[0])).toEqual(["docs/plans/missing.md", "docs/plans/stale.md"]);
+});

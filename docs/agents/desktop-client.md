@@ -263,6 +263,74 @@ activity drain, including hidden tabs. Root-shell exit is not a failure: only a
 tab kept by `close_on_exit = false` announces it. Smoke state serializes the
 stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
 
+## Tab bar layout
+
+The README describes the tab bar's options. These are the layout mechanics
+that rendering, hit testing, and smoke geometry depend on.
+
+Vertical tabs stay 32 pixels tall and fill the sidebar width.
+Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
+capped at half the window width. Each window keeps
+its preferred width for its lifetime, including through temporary window
+shrinking. The vertical new-tab button is a row with the same insets as the
+tabs; it follows the last tab and stays visible at the bottom when tabs
+overflow. Horizontal bars reserve a 32-point slot for it and center a 26-point
+button across the bar, matching the pill inset, so it never touches the bar
+border. Strip bars are 32 points tall; Pill bars are 34 so 26-point pills keep
+4 points on every side.
+Pill strips also start with a leading margin so the first pill's visible edge
+sits at that same inset, and hovering a pill never hides its dividers.
+`pill_accent = true` widens every pill's left padding to keep titles aligned,
+and the close-button slot stays reserved whatever `close_button` shows, so tab
+widths never change. Fullscreen auto-hide reserves no bar space; a top bar can
+be revealed from the macOS notch-height region and appears below the notch, and
+repeated reveal activity restarts its one-second hold.
+
+Left and right placement follow `style` too: Strip rows span the column,
+merge into the terminal, put the accent line on the window edge, and outline the
+active row above and below; a first active row at the strip's start joins the
+terminal's top border instead and squares the rounded corner. Pill rows are
+rounded, inset in the column, and carry the same optional accent bar. With a
+titlebar above vertical tabs, a border also runs along the terminal's top edge,
+joining the bar's edge so the titlebar and bar form one surface around the
+terminal. The corner where they meet is rounded by the smaller window padding,
+capped at 12 points, so the arc never covers a cell. Under a notch in non-native
+fullscreen there is no titlebar: the column and its edge run to the top of the
+screen, its rows stay below the safe area, and the strip beside it keeps the
+terminal background. While a top bar is visible or revealing, the macOS titlebar
+and the non-native fullscreen safe area above a notch use the tab bar
+background; a titlebar above a left or right bar does too; otherwise, including
+for a bottom bar, they use the terminal background. `[tabs].notch = "left"`
+(the default) or `"right"` places a top bar in the auxiliary area beside the
+notch in non-native fullscreen, read from `NSScreen`'s auxiliary top areas,
+and `"off"` keeps the bar below the
+notch: the bar keeps its
+height, sits at the bottom of that area, and the terminal starts directly under
+the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
+the same shelves from their own window. Without a notch, in windowed mode, or in
+native fullscreen the key is ignored.
+
+Render measures titles and
+caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
+drop slots. Vertical tabs ignore `width`.
+
+Trackpad and wheel scrolling move the strip without selecting a tab. Horizontal
+bars show floating arrows that indicate hidden content and animate scrolling
+when clicked, plus a slim `Scrollbars` indicator along their bottom edge that
+never expands or shows a track but still drags and jumps. Vertical columns use
+the same overlay on their right edge instead of arrows: it appears on scrolling
+and reveal, widens on hover while shown, jumps on a track press, and drags
+through the window-level capture that also serves tab reordering. It sits
+inboard of the sidebar resize handle by the handle's width so the two never
+overlap, and both tab bar indicators fade after 700 ms rather than the
+terminal's two seconds. Explicit selection or creating a tab reveals it;
+ordinary redraws preserve manual scroll. Drag a tab to reorder it within its
+window, horizontally or vertically. The preview and insertion position remain
+constrained to the bar when the pointer leaves it; release commits and Escape
+cancels. During a drag, hovering an overflow edge scrolls continuously without
+changing the active terminal. Reordering preserves terminal processes, focus,
+selection, and scroll position. Cross-window moves and tear-out remain deferred.
+
 ## Configuration and schemas
 
 Theme reload must invalidate prepared row colors even when the terminal snapshot

@@ -1,6 +1,7 @@
 # macOS self-updates
 
-Status: proposed implementation plan, following investigation and independent
+Status: implemented in PR #92. Written as a proposed implementation plan,
+following investigation and independent
 Claude reviews on 2026-09-10. Review findings, the later macOS-only scope
 decision, and the update-check configuration contract are incorporated below.
 

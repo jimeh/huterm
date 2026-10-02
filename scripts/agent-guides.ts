@@ -1,7 +1,8 @@
 /**
  * Check the agent guides: the root AGENTS.md stays within its line budget,
- * every guide under docs/agents is linked from AGENTS.md, and relative Markdown
- * links in these files resolve to existing files and headings.
+ * every guide under docs/agents is linked from AGENTS.md, relative Markdown
+ * links in these files resolve to existing files and headings, and every plan
+ * under docs/plans states where it stands.
  *
  * The budget keeps topic hazards in the guide that owns them instead of the
  * root file every agent session loads. Links are read from inline `[text](url)`
@@ -13,6 +14,11 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 export const ROOT_LINE_BUDGET = 200;
 
 const guideDirectory = join("docs", "agents");
+const planDirectory = join("docs", "plans");
+
+/** A plan's `Status:` line must open with one of these states. */
+export const PLAN_STATES = ["proposed", "approved", "in progress", "implemented", "superseded"] as const;
+const planStatus = new RegExp(`^Status: (${PLAN_STATES.join("|")})\\b`, "m");
 
 /** GitHub's heading anchors, including `-1` suffixes for repeated headings. */
 export function anchors(markdown: string): Set<string> {
@@ -86,6 +92,15 @@ export function checkGuides(root: string): string[] {
       } else if (anchor && destination.endsWith(".md") && !anchors(readFileSync(destination, "utf8")).has(anchor)) {
         reports.push(`${path}:${line}: link target ${target} has no heading #${anchor}`);
       }
+    }
+  }
+  const plans = join(root, planDirectory);
+  for (const name of existsSync(plans) ? readdirSync(plans).filter((entry) => entry.endsWith(".md")).sort() : []) {
+    if (!planStatus.test(readFileSync(join(plans, name), "utf8"))) {
+      reports.push(
+        `${planDirectory.split(sep).join("/")}/${name}: add a "Status:" line starting with ${PLAN_STATES.join(", ")}; ` +
+        "update it in the change that ships, revises, or replaces the plan.",
+      );
     }
   }
   return reports;

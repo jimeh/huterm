@@ -1,6 +1,7 @@
 # Linux AppImage and binary tarball plan
 
-Status: proposed. Written on 2026-09-10 after investigation and agreement on
+Status: implemented in PR #90. Written on 2026-09-10 after investigation and
+agreement on
 the packaging direction.
 
 ## Outcome

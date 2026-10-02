@@ -1,6 +1,6 @@
 # Terminal desktop features plan
 
-Status: proposed for implementation.
+Status: implemented in PR #4.
 
 ## Outcome
 

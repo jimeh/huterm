@@ -4,8 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: daily
+    # One day above the 3-day policy: Dependabot counts calendar days, while
+    # pinact, Mise, and Bun require a full 72 hours.
     cooldown:
-      default-days: 3
+      default-days: 4
     ignore:
       - dependency-name: nix
         versions: [">= 0.30"]
@@ -20,8 +22,10 @@ updates:
     directories: ["/", "/.github/actions/*"]
     schedule:
       interval: daily
+    # One day above the 3-day policy: Dependabot counts calendar days, while
+    # pinact, Mise, and Bun require a full 72 hours.
     cooldown:
-      default-days: 3
+      default-days: 4
     # The init and analyze steps must run the same codeql-action release.
     groups:
       codeql-action:
@@ -35,5 +39,7 @@ updates:
     directory: "/"
     schedule:
       interval: daily
+    # One day above the 3-day policy: Dependabot counts calendar days, while
+    # pinact, Mise, and Bun require a full 72 hours.
     cooldown:
-      default-days: 3
+      default-days: 4

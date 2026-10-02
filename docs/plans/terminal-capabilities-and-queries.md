@@ -1,5 +1,7 @@
 # Terminal capabilities and presentation queries
 
+Status: implemented in PR #121.
+
 ## Outcome and delivery
 
 Implement [#77](https://github.com/jimeh/huterm/issues/77) and

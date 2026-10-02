@@ -1,5 +1,7 @@
 # GPUI terminal renderer performance plan
 
+Status: implemented in PR #2.
+
 ## Outcome
 
 Replace the current per-cell `shape_line` and `ShapedLine::paint` path with a

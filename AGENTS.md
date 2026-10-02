@@ -4,9 +4,12 @@ Huterm is a Rust terminal emulator whose runtime owns PTYs, emulator state,
 sessions, workspaces, tabs, and panes. GPUI is one client. The runtime boundary
 must remain usable by a future local server and text client.
 
-Read [README.md](README.md) for product scope and
-[the initial desktop plan](docs/plans/initial-desktop-poc.md) for the current
-architecture and acceptance criteria.
+Read [README.md](README.md) for product scope and behavior. The boundaries
+below and the topic guides in `docs/agents/` describe the current architecture.
+Plans in `docs/plans/` record design decisions as they were made; implemented
+and superseded plans are history, not current rules. Each plan opens with a
+`Status:` line (proposed, approved, in progress, implemented, or superseded);
+update it in the change that ships, revises, or replaces the plan.
 
 Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
 [the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
@@ -146,8 +149,10 @@ updates, Bun packages, and GitHub Actions, and commits `Cargo.lock`,
 refresh project tools without accepting releases inside the cooldown window.
 Keep the cooldown values in `mise.toml`, `bunfig.toml`, `.pinact.yaml`,
 `.github/dependabot.yml`, and `zizmor.yml` aligned when changing the policy;
-`scripts/policy-alignment.test.ts` checks them. Toolchain and crate-specific
-pins are in [the dependencies guide](docs/agents/dependencies.md).
+`scripts/policy-alignment.test.ts` checks them. Dependabot uses one extra day
+because it counts calendar days while the other tools require full hours.
+Toolchain and crate-specific pins, and the bumps that need a regeneration
+commit, are in [the dependencies guide](docs/agents/dependencies.md).
 
 Run `mise run license` after any dependency change. GPL and AGPL dependencies,
 unknown registries, Git dependencies, and Cargo wildcard requirements are not

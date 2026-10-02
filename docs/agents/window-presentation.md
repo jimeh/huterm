@@ -200,6 +200,23 @@ Unchanged visible quake summons only activate the window. Preserve fullscreen
 leases and native state; re-enter the transition path for changed profile or
 target geometry. Fullscreen geometry ignores work-area-only changes.
 
+Quake presentation is driven by owned native observers and explicit deadlines.
+Animations share the workspace frame callback. On macOS 14+, an offscreen or
+unmapped animation uses a display link from its selected `NSScreen` until window
+frames arrive; stalled clocks use refresh-derived pacing only while animating.
+X11 uses one private cancellable event connection shared by Quake windows, with
+RandR timing for the active animation fallback. A missing refresh rate uses a
+reported 16 ms compatibility cadence.
+
+AppKit has no dedicated notification for every external Dock work-area change.
+Visible, non-fullscreen Quake profiles therefore resample the work area once a
+second. Hidden profiles release that timer and resample on summon; display,
+Space, and Huterm presentation-lease changes still wake them immediately.
+An X11 observer connection failure is reported and enables a one-second safety
+sample for its affected owners. Smoke inspection reports `work_area_fallback`,
+`quake_timer`, `quake_clock`, and `quake_frame_demand`; the state publisher never
+wakes production work.
+
 ## Title row and window decorations
 
 `tabs.position = "titlebar"` resolves through
