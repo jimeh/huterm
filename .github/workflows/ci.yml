@@ -431,6 +431,26 @@ jobs:
         timeout-minutes: 6
         run: HUTERM_CI_SMOKE_STEP=macos-palette mise run ci:smoke:step
 
+      - name: Smoke Linux overlays
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-overlays mise run ci:smoke:step
+
+      - name: Smoke macOS overlays
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-overlays mise run ci:smoke:step
+
+      - name: Smoke Linux client-side frame
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-client-frame mise run ci:smoke:step
+
+      - name: Smoke macOS title bar
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-titlebar mise run ci:smoke:step
+
       - name: Smoke Linux integration
         if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
         timeout-minutes: 6

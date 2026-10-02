@@ -21,3 +21,19 @@ test.each([
     .map((step) => step.name);
   expect(unguarded).toEqual([]);
 });
+
+test("CI smoke steps, ci:smoke:run, and the step supervisor name the same steps", () => {
+  const root = join(import.meta.dir, "..");
+  const fromWorkflow = (os: string) => workflow.jobs.smoke!.steps
+    .filter((step) => step.if?.includes(`runner.os == '${os}'`) || (step.if?.includes("smoke-build") && !step.if.includes("runner.os")))
+    .map((step) => /HUTERM_CI_SMOKE_STEP=([\w-]+)/.exec((step as { run?: string }).run ?? "")?.[1])
+    .filter((name): name is string => Boolean(name))
+    .sort();
+  const run = (Bun.TOML.parse(readFileSync(join(root, "mise.toml"), "utf8")) as { tasks: Record<string, { run: string }> }).tasks["ci:smoke:run"]!.run;
+  const [darwin, linux] = [...run.matchAll(/all\|([\w|-]+)\) ;;/g)].map((match) => match[1]!.split("|").sort());
+  expect(fromWorkflow("macOS")).toEqual(darwin!);
+  expect(fromWorkflow("Linux")).toEqual(linux!);
+  const supervisor = /new Set\(\[([^\]]+)\]\)/.exec(readFileSync(join(root, "scripts/run-smoke-step.ts"), "utf8"))![1]!;
+  const supervised = [...supervisor.matchAll(/"([\w-]+)"/g)].map((match) => match[1]!).sort();
+  expect(supervised).toEqual([...new Set([...darwin!, ...linux!])].sort());
+});

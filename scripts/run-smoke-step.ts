@@ -4,10 +4,10 @@ import { checkSmokeProcess, runSmokeProcess } from "./smoke-process.ts";
 
 const step = process.env.HUTERM_CI_SMOKE_STEP;
 const steps = new Set([
-  "renderer", "presentation-queries", "linux-desktop", "linux-input", "linux-palette", "linux-integration",
+  "renderer", "presentation-queries", "linux-desktop", "linux-input", "linux-palette", "linux-overlays", "linux-client-frame", "linux-integration",
   "linux-clipboard", "linux-fullscreen", "linux-quake", "macos-menus", "macos-updater", "macos-input",
   "macos-clipboard", "macos-refresh",
-  "macos-palette", "macos-integration", "macos-quit", "macos-fullscreen", "macos-quake",
+  "macos-palette", "macos-overlays", "macos-titlebar", "macos-integration", "macos-quit", "macos-fullscreen", "macos-quake",
 ]);
 if (!step || !steps.has(step)) throw new Error(`expected one named smoke step, received ${step}`);
 const evidence = process.env.HUTERM_SMOKE_EVIDENCE_DIR;

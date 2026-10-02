@@ -341,6 +341,26 @@ done
     key("Return");
     await state(`ACK:${token}`);
   }
+  /**
+   * Acknowledge after a keyboard grab or focus change. Keys that arrive before
+   * GPUI draws the refocused window are dropped: CI once saw `ckdragx` after a
+   * drag. The fixture ignores a truncated line, so resend the token until it
+   * echoes, within a bound, and log any resend as evidence.
+   */
+  async function ackAfterFocusChange(token: string): Promise<void> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      typeText(token);
+      key("Return");
+      try {
+        await waitFor(async () => (await current()).includes(`ACK:${token}`), `${label} ACK:${token}`, 1_000);
+        if (attempt > 0) console.log(`CLIENT_FRAME_SMOKE ${label} ${token} retry=${attempt}`);
+        return;
+      } catch {
+        // A dropped key leaves a line the fixture ignores; send the token again.
+      }
+    }
+    throw new Error(`${label}: the terminal never acknowledged ${token}; state=${await current()}`);
+  }
   /** The shell reports `stty size`; the same state read carries the grid. */
   async function assertPtyMatchesGrid(): Promise<void> {
     const probe = `p${sizeProbe++}`;
@@ -544,7 +564,7 @@ done
     // move grab holds the keyboard and swallows typed keys.
     await waitFor(async () => !keyboardGrabbed(windowId), "window manager keyboard grab release");
     await state("w0.maximized=false", "w0.frame_inset=10", "w0.terminal_focused=true");
-    await ack("ackdragx");
+    await ackAfterFocusChange("ackdragx");
 
     // 6. Fullscreen drops the inset and restores exact root geometry.
     const before = geometry(windowId);

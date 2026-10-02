@@ -925,7 +925,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -951,8 +951,15 @@ case "$(uname -s)" in
       command -v tmux >/dev/null || { echo "Clipboard smoke requires tmux" >&2; exit 1; }
       bun scripts/check-clipboard.ts target/debug/examples/clipboard_smoke target/debug/clipboard-witness
     fi
+    # Each palette-harness smoke runs as its own step so a failure names it.
     if run_smoke_step macos-palette; then
-      bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+      HUTERM_PALETTE_SMOKE_ONLY=palette bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+    fi
+    if run_smoke_step macos-overlays; then
+      HUTERM_PALETTE_SMOKE_ONLY=overlays bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+    fi
+    if run_smoke_step macos-titlebar; then
+      HUTERM_PALETTE_SMOKE_ONLY=titlebar bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
     if run_smoke_step macos-integration; then
       bun scripts/check-desktop-integration.ts target/debug/examples/integration_smoke
@@ -970,7 +977,7 @@ case "$(uname -s)" in
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1023,8 +1030,17 @@ case "$(uname -s)" in
       xvfb-run -a -e "$evidence_dir/clipboard-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-clipboard.ts target/debug/huterm
     fi
+    # Each palette-harness smoke runs as its own step so a failure names it.
     if run_smoke_step linux-palette; then
-      xvfb-run -a -e "$evidence_dir/linux-palette-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+      HUTERM_PALETTE_SMOKE_ONLY=palette xvfb-run -a -e "$evidence_dir/linux-palette-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-palette.ts target/debug/examples/palette_smoke
+    fi
+    if run_smoke_step linux-overlays; then
+      HUTERM_PALETTE_SMOKE_ONLY=overlays xvfb-run -a -e "$evidence_dir/linux-overlays-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-palette.ts target/debug/examples/palette_smoke
+    fi
+    if run_smoke_step linux-client-frame; then
+      HUTERM_PALETTE_SMOKE_ONLY=frame xvfb-run -a -e "$evidence_dir/linux-client-frame-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-palette.ts target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-integration; then
