@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -672,7 +673,7 @@ fn revoking_an_idle_viewer_releases_its_button_then_reports_focus_out() {
 
 #[test]
 fn a_press_that_is_a_viewer_s_only_request_is_released_when_it_drops() {
-    let expected = b"\x1b[<0;3;1M\x1b[<0;3;1mZ";
+    let expected = b"\x1b[I\x1b[<0;3;1M\x1b[<0;3;1m\x1b[OZ";
     let runtime = spawn(241, &reporting_script(expected.len()));
     let reader = runtime
         .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
@@ -680,9 +681,15 @@ fn a_press_that_is_a_viewer_s_only_request_is_released_when_it_drops() {
     let finisher = prober(&runtime);
     wait_for_text(&reader, "READY");
     // The viewer registers, presses, and drops inside one turn, after that
-    // turn reconciled, so no report or typing ever introduces it.
+    // turn reconciled, so only the reconcile at dequeue can add it. Its
+    // focus reports show that its press ran as a known viewer's.
     let resume = pause(&runtime);
-    let late = viewer(&runtime);
+    let late = runtime
+        .subscribe(ViewerOptions {
+            focused: true,
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
     late.send_input(press(MouseButton::Left, 2)).unwrap();
     drop(late);
     finisher
@@ -690,6 +697,71 @@ fn a_press_that_is_a_viewer_s_only_request_is_released_when_it_drops() {
         .unwrap();
     resume.send(()).unwrap();
     wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_press_queued_after_a_drop_follows_the_dropped_viewer_s_release() {
+    let expected = b"\x1b[<0;3;1M\x1b[<0;3;1m\x1b[<0;5;1MZ";
+    let runtime = spawn(242, &reporting_script(expected.len()));
+    let reader = runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+        .unwrap();
+    let finisher = prober(&runtime);
+    let (holder, next) = (viewer(&runtime), viewer(&runtime));
+    wait_for_text(&reader, "READY");
+    holder.send_input(press(MouseButton::Left, 2)).unwrap();
+    drained(&runtime);
+    // The holder drops and the other viewer presses inside one turn, after
+    // that turn reconciled. Handled ahead of the holder's finalization, the
+    // press would be refused as another viewer's gesture and lost.
+    let resume = pause(&runtime);
+    drop(holder);
+    next.send_input(press(MouseButton::Left, 4)).unwrap();
+    finisher
+        .send_input(TerminalInput::Text("Z".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn viewer_churn_does_not_starve_input_or_output() {
+    struct StopOnDrop<'a>(&'a AtomicBool);
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let runtime = spawn(
+        243,
+        "stty -echo; printf READY; while IFS= read -r l; do printf '%s.' \"$l\"; done",
+    );
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        // Stops the churn on a failed wait too, so the scope can join.
+        let _stop = StopOnDrop(&stop);
+        // Every registration and drop asks the owner thread to reconcile.
+        // The limit refuses a viewer while dropped ones await that.
+        for _ in 0..4 {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Acquire) {
+                    drop(runtime.subscribe(ViewerOptions::new(
+                        ViewerCapabilities::NONE,
+                    )));
+                }
+            });
+        }
+        for index in 0..5 {
+            typist
+                .send_input(TerminalInput::Text(format!("k{index}\n")))
+                .unwrap();
+            wait_for_text(&typist, &format!("k{index}."));
+        }
+    });
     runtime.shutdown().unwrap();
 }
 

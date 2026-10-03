@@ -121,25 +121,9 @@ impl Arbiter {
             .position(|entry| entry.slot.id == slot.id)
     }
 
-    /// Adds the viewer's entry if this request is the first the owner
-    /// thread has seen from it, returning what its initial state requires.
-    /// Viewers register at any time, so the runtime calls this before every
-    /// request instead of depending on a reconcile having run. Every kind of
-    /// request needs the entry: a mouse press with none would take a gesture
-    /// that finalization could not release.
-    pub(crate) fn meet(&mut self, slot: &Arc<Slot>) -> Effects {
-        let mut effects = Effects::default();
-        if self.index(slot).is_none()
-            && self.entry(slot, &mut effects).is_some()
-        {
-            effects.merge(self.recompute());
-        }
-        effects
-    }
-
     /// The entry for a viewer, added with its initial state the first time
-    /// the owner thread meets it. Returns `None` for an unknown viewer that
-    /// is revoked or already finalized.
+    /// a reconcile sees it. Returns `None` for an unknown viewer that is
+    /// revoked or already finalized.
     fn entry(
         &mut self,
         slot: &Arc<Slot>,
@@ -180,8 +164,10 @@ impl Arbiter {
         let mut effects = Effects::default();
         for slot in registry.slots() {
             if self.entry(&slot, &mut effects).is_none() {
-                // No entry means no request ran, so it holds no gesture;
-                // releasing here keeps that true if a request ever does.
+                // The runtime reconciles before every request, so a viewer
+                // with no entry has run none and holds no gesture. Releasing
+                // anyway keeps a gesture from outliving its viewer if a
+                // request ever does run first.
                 effects.releases.extend(self.mouse.finalize(slot.id));
                 registry.remove(slot.id);
             }

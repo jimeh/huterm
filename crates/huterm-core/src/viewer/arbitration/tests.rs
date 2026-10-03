@@ -283,41 +283,6 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
 }
 
 #[test]
-fn a_first_request_meets_its_viewer_before_it_runs() {
-    let mut fixture = Fixture::new();
-    let controller = fixture.sized(100);
-    fixture.arbiter.report(&controller, Report::Focus(true));
-    // Registered after the turn reconciled: the arbiter has no entry yet.
-    let (late, _) = fixture
-        .registry
-        .register_with_wake(
-            None,
-            ViewerCapabilities::ALL,
-            Initial {
-                focused: true,
-                geometry: Some((grid(120), cell())),
-                presentation: None,
-            },
-        )
-        .unwrap();
-    let effects = fixture.arbiter.meet(&late);
-    assert_eq!(effects.resize, Some((grid(120), cell())));
-    assert!(fixture.arbiter.meet(&late).is_empty(), "met once");
-    // Its first request is a press, and it drops with nothing else queued.
-    let left = MouseButton::Left;
-    assert!(fixture.arbiter.admit_mouse(
-        &late,
-        &mouse(MouseAction::Press(left), 3),
-        stamp(None),
-        true
-    ));
-    late.dropped
-        .store(true, std::sync::atomic::Ordering::Release);
-    let effects = fixture.arbiter.settled(&late, &fixture.registry);
-    assert_eq!(effects.releases, vec![mouse(MouseAction::Release(left), 3)]);
-}
-
-#[test]
 fn removing_a_viewer_the_arbiter_never_met_still_releases_its_gesture() {
     let mut fixture = Fixture::new();
     let (unmet, _) = fixture

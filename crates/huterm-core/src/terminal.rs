@@ -1270,13 +1270,6 @@ fn run_terminal(
                 flush_pending_write(&writer_sender, &mut pending_writes);
         }
         match writer_state {
-            // A reconcile deferred behind backed-up writes runs before the
-            // next request. The backlog consumed its notification, so
-            // nothing else is certain to wake this thread for it, and a
-            // request must not run ahead of a finalization it follows.
-            WriterQueueState::Drained if registry.has_pending_change() => {
-                continue;
-            }
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
                 status.flush(registry);
@@ -1295,6 +1288,12 @@ fn run_terminal(
         }
         let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
+            // A backlog of writes consumes the notification that asked for
+            // a reconcile, so nothing else is certain to wake this thread
+            // for it once they drain.
+            Err(TryRecvError::Empty) if registry.has_pending_change() => {
+                continue;
+            }
             Err(TryRecvError::Empty) => {
                 status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
@@ -1430,10 +1429,13 @@ fn end_untracked_gesture(
     }
 }
 
-/// Handles one ordered viewer request: checks that the viewer may still
-/// make it, runs it, and settles the viewer's queued count, which finalizes
-/// a dropped viewer once its last request has run. Returns false when the
-/// runtime must close.
+/// Handles one ordered viewer request: reconciles the viewer table if it
+/// changed, checks that the viewer may still make the request, runs it, and
+/// settles the viewer's queued count, which finalizes a dropped viewer once
+/// its last request has run. Returns false when the runtime must close.
+///
+/// The caller dequeues a request only once writes have drained, so the
+/// reconcile here never runs behind a backlog.
 fn handle_client_message(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
@@ -1449,9 +1451,18 @@ fn handle_client_message(
     // causes, so a dropped viewer's last focus change and its focus loss
     // cancel instead of both being written.
     let mut effects = Effects::default();
-    let healthy = !message.permitted()
-        || owner.apply(arbiter.meet(&slot))
-            && match message {
+    // Viewers register, drop, and are revoked at any time, and each marks
+    // the registry before its next request can be queued. Reconciling at
+    // dequeue therefore gives every request its viewer's entry and runs it
+    // after any finalization that preceded it. A press with no entry would
+    // take a gesture that finalization could not release, and one ahead of
+    // a dropped owner's finalization would be refused. Doing it here, not by
+    // restarting the turn, means a pending change never delays the request.
+    let reconciled = !owner.registry.take_changed()
+        || owner.apply(arbiter.sync(owner.registry));
+    let healthy = reconciled
+        && (!message.permitted()
+            || match message {
                 RuntimeMessage::Input { input, stamp, .. } => {
                     handle_input(owner, arbiter, probes, &slot, &input, stamp)
                 }
@@ -1466,7 +1477,7 @@ fn handle_client_message(
                 RuntimeMessage::Edit { edit, .. } => {
                     handle_edit(owner, arbiter, edit)
                 }
-            };
+            });
     slot.settled();
     effects.merge(arbiter.settled(&slot, owner.registry));
     healthy && owner.apply(effects)

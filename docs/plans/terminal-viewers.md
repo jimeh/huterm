@@ -219,9 +219,10 @@ short lock the owner thread takes to publish, and the slot starts notified
 with its wake signalled. A viewer therefore cannot miss a publication that
 lands between subscription and its first poll, and it reads its status
 baseline after it is registered. The owner thread adds a viewer to its
-arbitration table when it reconciles, once a turn, or before the viewer's
-first request of any kind when that arrives sooner, so a request never
-depends on a reconcile having run. Viewer IDs
+arbitration table when it reconciles: at the top of each turn, and again
+before a request it dequeues when the registry has changed since. A viewer
+marks the registry when it registers, before it can queue anything, so
+every request finds its viewer's entry. Viewer IDs
 are numbered across the process, so no two terminals in one runtime scope
 issue the same ID. Initial geometry is clamped like a reported one. A
 viewer with host effects registers its recipient before its slot, so a
@@ -631,7 +632,12 @@ churn could queue them without limit. Once the writes drain, the owner
 thread reconciles before it handles another request or waits. The
 notification that asked for the reconcile was consumed during the backlog,
 so nothing else is guaranteed to wake it, and a request must not run ahead
-of a finalization it follows.
+of a finalization it follows: a press handled before a dropped gesture
+owner is finalized would be refused. The reconcile before a request runs
+as part of handling that request. A pending change never sends the turn
+back to its start, because viewers registering and dropping in a loop
+would then keep the owner thread from ever reaching a request or PTY
+output.
 
 A viewer never keeps its runtime alive. Teardown order, child reaping, and
 bounded shutdown are unchanged. Close tickets use the crate-private client,
