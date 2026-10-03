@@ -349,24 +349,62 @@ fn a_root_shell_replaced_by_exec_is_named_after_silent_input() {
     let client = test_client(&runtime);
     wait_for_text(&client, "READY");
     // Let the probe armed by READY's output run, so only input remains.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let (reply, armed) = mpsc::channel();
-        client
-            .control
-            .controls
-            .send(RuntimeControl::ProbeArmed(reply))
-            .unwrap();
-        if !armed.recv_timeout(Duration::from_secs(2)).unwrap() {
-            break;
-        }
-        assert!(Instant::now() < deadline, "probe stayed armed");
-        thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_idle_probes(&client);
     client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
     wait_for_foreground(&client, &mut None, Some("sleep"));
+    runtime.shutdown().unwrap();
+}
+
+/// Whether a foreground probe is armed, and when the last one ran.
+fn probes(client: &TestClient) -> (bool, Option<Instant>) {
+    let (reply, state) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::Probes(reply))
+        .unwrap();
+    state.recv_timeout(Duration::from_secs(2)).unwrap()
+}
+
+/// Waits until no probe is armed, and returns when the last one ran.
+fn wait_for_idle_probes(client: &TestClient) -> Option<Instant> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (armed, last) = probes(client);
+        if !armed {
+            return last;
+        }
+        assert!(Instant::now() < deadline, "probe stayed armed");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_new_title_in_output_arms_a_probe_that_the_output_alone_does_not() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(101),
+        &command("stty -echo; printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Output arms a probe only when it follows a quiet period. The title's
+    // chunk follows this output instead, so only its new title can arm one.
+    client.control.output.send(b"x".to_vec()).unwrap();
+    wait_for_text(&client, "x");
+    let before = wait_for_idle_probes(&client);
+    client
+        .control
+        .output
+        .send(b"\x1b]2;NEW\x07".to_vec())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while probes(&client).1 == before {
+        assert!(Instant::now() < deadline, "the new title armed no probe");
+        thread::sleep(Duration::from_millis(5));
+    }
     runtime.shutdown().unwrap();
 }
 
@@ -1571,6 +1609,39 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
         started.elapsed() < Duration::from_secs(3),
         "shutdown should not wait for the live child"
     );
+}
+
+#[test]
+fn a_runtime_panic_releases_the_pty_and_hangs_up_a_writing_child() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(102),
+        &command("printf READY; while :; do printf .; sleep 0.1; done"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    let root = client.job_context().unwrap().shell.unwrap();
+    let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
+    client.control.controls.send(RuntimeControl::Panic).unwrap();
+    // Shutting down first would close the runtime before the panic.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while client.read_snapshot().is_ok() {
+        assert!(Instant::now() < deadline, "the runtime did not panic");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
+    // Unwinding signals no one (issue #211). It drops the runtime's PTY
+    // descriptor, the writer's queue, and the output queue, so the writer
+    // stops, the reader stops at the child's next output, and the PTY's
+    // last descriptor closes, which hangs the child up.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while nix::sys::signal::kill(root, None).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the panic left the PTY open or the child unreaped"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]

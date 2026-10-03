@@ -91,6 +91,12 @@ impl ProbeSchedule {
         self.poll = None;
     }
 
+    /// When the last probe ran.
+    #[cfg(test)]
+    pub(crate) fn last_probe(&self) -> Option<Instant> {
+        self.last_probe
+    }
+
     fn arm(&mut self, at: Instant) {
         self.triggers.insert(at);
         while self.triggers.len() > MAX_TRIGGERS {

@@ -649,9 +649,10 @@ pub(crate) enum RuntimeControl {
     JobContext(Sender<crate::jobs::JobContext>),
     #[cfg(test)]
     Presentation(Sender<(TerminalPresentation, GridSize, CellSize)>),
-    /// Reports whether a foreground probe is armed.
+    /// Reports whether a foreground probe is armed and when the last one
+    /// ran.
     #[cfg(test)]
-    ProbeArmed(Sender<bool>),
+    Probes(Sender<(bool, Option<Instant>)>),
     /// Holds the runtime owner until the test releases it.
     #[cfg(test)]
     Pause {
@@ -1236,8 +1237,11 @@ fn run_terminal(
                     let _ = reply.send(owner.pending_writes.len());
                 }
                 #[cfg(test)]
-                RuntimeControl::ProbeArmed(reply) => {
-                    let _ = reply.send(probes.deadline().is_some());
+                RuntimeControl::Probes(reply) => {
+                    let _ = reply.send((
+                        probes.deadline().is_some(),
+                        probes.last_probe(),
+                    ));
                 }
                 #[cfg(test)]
                 RuntimeControl::Pause { entered, release } => {

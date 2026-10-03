@@ -951,6 +951,11 @@ stated:
   finalized.
 - Closing the terminal with live viewers still terminates and reaps the
   child, and both wakes close after the final status.
+- A runtime panic closes every wake and releases the PTY, so a child that
+  keeps writing is hung up and reaped. A panic does not terminate an idle
+  child; [#211][issue-211] tracks that.
+- A new title in PTY output arms a foreground probe when the output alone
+  would not.
 
 Perturbation checks, run once and restored, each required to fail at its
 intended assertion:
@@ -1128,3 +1133,4 @@ afterwards. Run `mise run verify` before handoff.
 [issue-205]: https://github.com/jimeh/huterm/issues/205
 [issue-206]: https://github.com/jimeh/huterm/issues/206
 [issue-207]: https://github.com/jimeh/huterm/issues/207
+[issue-211]: https://github.com/jimeh/huterm/issues/211
