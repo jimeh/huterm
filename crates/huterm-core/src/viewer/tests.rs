@@ -294,9 +294,11 @@ fn typing_after_root_exit_moves_control_and_returns_to_live() {
 
 #[test]
 fn a_host_effect_wakes_its_viewer_while_a_snapshot_is_due() {
+    // Each line is already base64, so the loop runs only builtins and a
+    // foreground probe always finds the same idle shell.
     let runtime = spawn(
         234,
-        "stty -echo; printf READY; while IFS= read -r l; do printf '\\033]52;c;%s\\007<%s>' \"$(printf '%s' \"$l\" | base64)\" \"$l\"; done",
+        "stty -echo; printf READY; while IFS= read -r l; do printf '\\033]52;c;%s\\007<%s>' \"$l\" \"$l\"; done",
     );
     let recipient = runtime
         .subscribe(ViewerOptions {
@@ -315,18 +317,21 @@ fn a_host_effect_wakes_its_viewer_while_a_snapshot_is_due() {
             .unwrap();
         wait_for_text(&typist, &format!("<{text}>"));
     };
-    // A first line settles the metadata its Enter probes, so the second
-    // line publishes no status change.
-    copy("one");
+    copy("b25l");
     wait_until("first write", || {
         recipient.host_effects().unwrap().try_next().is_some()
+    });
+    // The first probe publishes the shell's directory. Later probes find
+    // nothing new, so the second line publishes no status change.
+    wait_until("probed directory", || {
+        runtime.registry().status().metadata.directory().is_some()
     });
     // The recipient never builds a snapshot, so output leaves it notified
     // and wakes it no further: only the host effect can.
     assert!(recipient.poll().invalidated.is_some());
     while recipient.wake_pending() {}
     let revision = runtime.registry().status().revision;
-    copy("two");
+    copy("dHdv");
     assert_eq!(
         runtime.registry().status().revision,
         revision,

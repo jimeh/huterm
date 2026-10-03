@@ -25,6 +25,10 @@ arrived keeps the foreground; otherwise publish the probed foreground
 directory, falling back to the root's. Read the group for a title only when
 its text changes, its recorded report no longer applies, job-control input
 arrived since the last probe, or a repeated title's attribution is 250 ms old.
+The first probe publishes the shell's directory about 50 ms after its first
+output, which changes the status. A test that asserts no status change must
+first wait for that directory, and must not fork per line, or it passes only
+while it outruns the probe.
 
 ## PTY I/O and descriptor limits
 
