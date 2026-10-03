@@ -44,6 +44,27 @@ fn satisfied_pending_scroll_is_not_replayed_on_invalidation() {
 }
 
 #[test]
+fn typing_drops_pending_intent_but_keeps_later_scrolls() {
+    let mut scroll = ScrollController::default();
+    scroll.complete(Viewport { bottom_offset: 0 }, 50);
+    scroll.scroll_rows(5);
+    scroll.begin_request().unwrap();
+    // More wheel input arrives while the first scroll is in flight.
+    scroll.scroll_rows(3);
+    scroll.typed();
+    // The in-flight completion must not replay the dropped intent: the
+    // runtime returns to live on the typed input instead.
+    scroll.complete(Viewport { bottom_offset: 5 }, 50);
+    assert!(!scroll.has_pending_scroll());
+    assert_eq!(scroll.desired(), scroll.displayed());
+    assert!(scroll.begin_request().is_none());
+    // A scroll made after typing is kept.
+    scroll.scroll_rows(2);
+    assert!(scroll.begin_request().is_some());
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Relative(2)));
+}
+
+#[test]
 fn failed_snapshot_stops_resubmission_with_pending_scroll() {
     let mut scroll = ScrollController::default();
     scroll.complete(Viewport { bottom_offset: 2 }, 10);
@@ -58,6 +79,10 @@ fn failed_snapshot_stops_resubmission_with_pending_scroll() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "runtime fixture and resize assertions remain together"
+)]
 fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
     use huterm_core::TerminalRuntime;
     use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalId};
@@ -79,9 +104,15 @@ fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
             presentation: huterm_protocol::TerminalPresentation::default(),
         },
     ).unwrap();
-    let client = runtime.client();
+    let client = runtime
+        .subscribe(huterm_core::ViewerOptions::new(
+            huterm_protocol::ViewerCapabilities::ALL,
+        ))
+        .unwrap();
     let resize = |rows| {
-        client.resize(GridSize::clamped(20, rows), cell).unwrap();
+        client
+            .report_geometry(GridSize::clamped(20, rows), cell)
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         while client.read_snapshot().unwrap().size.rows != rows {
             assert!(Instant::now() < deadline, "resize was not applied");

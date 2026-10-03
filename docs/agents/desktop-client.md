@@ -33,15 +33,15 @@ aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
 
 ## Activity tasks and frame scheduling
 
-Each tab owns one cancellable activity task that drains bounded terminal-event
-and host-effect batches through its WorkspaceView. The presentation pump must
-not also drain events. Pending titles, metadata, invalidations, and bells coalesce;
-lifecycle transitions stay observable under a flood. Budget exhaustion schedules
-a continuation without waiting for another producer wake. Host-effect admission
-signals the same activity channel through a weak sender so it cannot keep a
-stopped runtime's waiter alive. Rearm invalidation on the runtime owner thread
-when constructing a snapshot, not when draining its notification, so hidden or
-frame-blocked views do not wake for every output chunk. Only visible terminal
+Each TerminalView holds one `TerminalViewer`, its own registration with the
+terminal (see [the terminal viewers plan](../plans/terminal-viewers.md); the
+runtime's rules are in [the core guide](core-runtime.md#terminal-viewers)).
+Each tab owns one cancellable activity task that waits on that viewer's wake
+and polls it through its WorkspaceView; the presentation pump must not also
+poll. Budget exhaustion schedules a continuation without waiting for another
+producer wake. The desktop shows no notice for `Revoked`. Focus changes travel
+in the view's InputQueue as ordered entries, exempt from its limits and from
+exit closure; geometry stays latest-wins in `pending_resize`. Only visible terminal
 views request snapshots. All request paths pass the shared admission gate; one
 weak callback per window replenishes per-view frame allowances. It does not
 request idle redraws. Keep in-flight scroll and dirtiness separate from frame

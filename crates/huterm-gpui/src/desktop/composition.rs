@@ -115,10 +115,12 @@ impl TerminalView {
 
     fn send_composed_text(&mut self, text: String, cx: &mut Context<'_, Self>) {
         if !text.is_empty() {
-            if self.enqueue_input(TerminalInput::Text(text)) {
+            let (accepted, changed) =
+                self.enqueue_input(TerminalInput::Text(text));
+            if changed {
                 cx.notify();
             }
-            self.return_to_live_output();
+            self.return_to_live_output(accepted);
             self.start_snapshot_if_needed(cx);
         }
     }

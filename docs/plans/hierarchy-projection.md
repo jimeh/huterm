@@ -75,8 +75,8 @@ Out of scope, with the issue that owns each:
 
 | Deferred work | Owner |
 | --- | --- |
-| Attachment events in the stream | [#22][issue-22] |
-| Creating a view for a tab the window did not spawn, such as a tab moved into its workspace | [#22][issue-22] |
+| Attachment events in the stream | [#26][issue-26] and [#21][issue-21], moved from [#22][issue-22] |
+| Creating a view for a tab the window did not spawn, such as a tab moved into its workspace | [#22][issue-22] through [#206](https://github.com/jimeh/huterm/issues/206); see the [terminal viewers plan](terminal-viewers.md) |
 | Closing or retargeting a window whose session or last tab was removed by another client | [#21][issue-21] |
 | Wire codec, version negotiation, server incarnation, in-band lag and digest messages, and transport resync | [#44][issue-44] |
 | Converging the restore-capture `HierarchySnapshot` with the protocol state | [#42][issue-42] |
@@ -825,6 +825,7 @@ verify` before handoff.
 [issue-20]: https://github.com/jimeh/huterm/issues/20
 [issue-21]: https://github.com/jimeh/huterm/issues/21
 [issue-22]: https://github.com/jimeh/huterm/issues/22
+[issue-26]: https://github.com/jimeh/huterm/issues/26
 [issue-28]: https://github.com/jimeh/huterm/issues/28
 [issue-42]: https://github.com/jimeh/huterm/issues/42
 [issue-44]: https://github.com/jimeh/huterm/issues/44

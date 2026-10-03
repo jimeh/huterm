@@ -303,7 +303,7 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
                 view.active_view(cx)
                     .context("active terminal")?
                     .read(cx)
-                    .client
+                    .viewer
                     .send_input(TerminalInput::Text("\x1f".into()))?;
                 Ok("input barrier queued".to_owned())
             }

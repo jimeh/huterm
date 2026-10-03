@@ -198,10 +198,10 @@ the TUI client. Detach removes an attachment; explicit terminal close and
 workspace deletion terminate shared processes. Decide last-attachment and
 window-close behavior before exposing shared workspaces.
 
-Keep viewport dimensions per attachment. Before simultaneous clients ship,
-choose an explicit terminal-size arbitration policy, distribute structural and
-metadata updates to each attachment, and define stale-operation errors. Cloning
-an event receiver is not a substitute for broadcasting updates to clients.
+Keep viewport dimensions per viewer, not per attachment; the
+[terminal viewers plan](terminal-viewers.md) defines viewers, the controlling
+viewer that arbitrates terminal size, per-viewer status and invalidation, and
+the errors stale or revoked viewers receive.
 
 ## Verification
 

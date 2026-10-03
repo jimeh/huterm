@@ -123,15 +123,15 @@ text. Appearance queries classify the effective terminal background by
 luminance, including an active OSC 11 override; they do not report the operating
 system appearance.
 
-One attachment-scoped `PresentationController` publishes coherent replacements
-for a terminal's defaults. A replacement controller revokes its predecessor,
-and detach, retarget, move, terminal close, and controller drop revoke queued
-updates again when the runtime applies them. This authority is independent of
-clipboard permission. The desktop publishes successful reloads to hidden tabs
-and retries bounded queue pressure; font and display-scale changes use the same
-ordered resize path as visible terminals. Detaching or revoking a controller
-retains the last accepted presentation; it prevents stale future updates rather
-than restoring an older theme.
+Each viewer submits the presentation it would apply, and the runtime applies the
+controlling viewer's: the viewer that most recently gained focus or typed. A
+viewer that does not control keeps submitting without failing, and its
+presentation applies once it takes control. Revoking or dropping a viewer
+retains the last applied presentation; it prevents stale future updates rather
+than restoring an older theme. This authority is independent of clipboard
+permission. The desktop publishes successful reloads to hidden tabs and retries
+bounded queue pressure; font and display-scale changes use the same ordered
+geometry path as visible terminals.
 
 The current protocol always carries a grid and `CellSize`, but zero cell width
 or height means that physical geometry is unavailable. The runtime then leaves

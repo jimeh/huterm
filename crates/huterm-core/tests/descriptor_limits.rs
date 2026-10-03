@@ -14,10 +14,12 @@ use std::sync::{Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use huterm_core::{RuntimeClient, RuntimeError, TerminalRuntime};
+use huterm_core::{
+    RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions,
+};
 use huterm_protocol::{
     CellSize, GridSize, TerminalCommand, TerminalId, TerminalInput,
-    TerminalPresentation,
+    TerminalPresentation, ViewerCapabilities,
 };
 use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
 
@@ -54,6 +56,13 @@ fn serialized() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Subscribes a viewer with every capability.
+fn viewer(runtime: &TerminalRuntime) -> TerminalViewer {
+    runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::ALL))
+        .unwrap()
+}
+
 /// Restores the raised soft limit when dropped, including after a panic.
 struct SoftLimitRestore((rlim_t, rlim_t));
 
@@ -85,7 +94,7 @@ fn command(script: &str) -> TerminalCommand {
     }
 }
 
-fn wait_for_text(client: &RuntimeClient, needle: &str) {
+fn wait_for_text(client: &TerminalViewer, needle: &str) {
     let deadline = Instant::now() + DEADLINE;
     loop {
         let snapshot = client.read_snapshot().expect("snapshot should work");
@@ -103,7 +112,7 @@ fn wait_for_text(client: &RuntimeClient, needle: &str) {
 }
 
 /// Sends a line to a shell reading input and waits for its reply.
-fn round_trip(client: &RuntimeClient, line: &str) {
+fn round_trip(client: &TerminalViewer, line: &str) {
     client
         .send_input(TerminalInput::Text(format!("{line}\n")))
         .unwrap();
@@ -167,7 +176,7 @@ fn terminal_above_descriptor_1024_round_trips_and_closes() {
         added.iter().all(|fd| *fd > FD_SETSIZE),
         "terminal descriptors not above {FD_SETSIZE}: {added:?}"
     );
-    let client = runtime.client();
+    let client = viewer(&runtime);
     wait_for_text(&client, "READY");
     round_trip(&client, "ping");
     client
@@ -194,12 +203,9 @@ fn two_hundred_terminals_start_from_a_soft_limit_of_256() {
         })
         .collect();
     for (index, runtime) in runtimes.iter().enumerate() {
-        let client = runtime.client();
+        let client = viewer(runtime);
         wait_for_text(&client, "READY");
         round_trip(&client, &format!("t{index}"));
-    }
-    for runtime in &runtimes {
-        runtime.client().close().unwrap();
     }
     for runtime in runtimes {
         shutdown_within(runtime, Duration::from_secs(5));
@@ -215,7 +221,7 @@ fn children_start_with_the_original_soft_limit() {
     )
     .unwrap();
     wait_for_text(
-        &runtime.client(),
+        &viewer(&runtime),
         &format!("LIMIT:{ORIGINAL_SOFT_LIMIT}:END"),
     );
     shutdown_within(runtime, Duration::from_secs(5));
@@ -260,7 +266,7 @@ fn descriptor_exhaustion_fails_terminal_creation() {
         headroom > 3,
         "a terminal started with three free descriptors"
     );
-    let client = runtime.client();
+    let client = viewer(&runtime);
     wait_for_text(&client, "READY");
     round_trip(&client, "edge");
     shutdown_within(runtime, Duration::from_secs(5));

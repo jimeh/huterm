@@ -625,6 +625,8 @@ mod tests {
             let snapshot = TerminalSnapshot {
                 terminal_id: TerminalId::new(1),
                 generation: 0,
+                revision: 0,
+                geometry_revision: 0,
                 size: GridSize {
                     columns: COLUMNS,
                     rows: ROWS,

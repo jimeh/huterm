@@ -15,7 +15,7 @@ fn command(script: &str) -> TerminalCommand {
         presentation: huterm_protocol::TerminalPresentation::default(),
     }
 }
-fn ready(client: &RuntimeClient, text: &str) {
+fn ready(client: &crate::test_support::TestClient, text: &str) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let snapshot = client.read_snapshot().unwrap();
@@ -31,7 +31,7 @@ fn ready(client: &RuntimeClient, text: &str) {
 /// Waits until the root shell holds the terminal's foreground again.
 /// Some shells, such as macOS `/bin/sh`, can print after a job ends
 /// before they reclaim the terminal.
-fn shell_foreground(client: &RuntimeClient) {
+fn shell_foreground(client: &crate::test_support::TestClient) {
     let deadline = Instant::now() + Duration::from_secs(3);
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
@@ -108,7 +108,7 @@ fn rejected_wrong_workspace_close_preserves_an_unrelated_assessment() {
     let source = mux.create_session(None).unwrap();
     let source_workspace = mux.create_workspace(source, None).unwrap();
     let opened = mux
-        .open_tab(source_workspace, &command("printf READY; read value"))
+        .open_test_tab(source_workspace, &command("printf READY; read value"))
         .unwrap();
     ready(&opened.client, "READY");
     let target = mux.create_session(None).unwrap();
@@ -166,7 +166,7 @@ fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux
-        .open_tab(
+        .open_test_tab(
             workspace,
             &command("printf READY; read value; printf ALIVE; read value"),
         )
@@ -205,7 +205,7 @@ fn new_background_job_requires_renewed_consent_and_quit_includes_zero_views() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
-    let opened = mux.open_tab(workspace, &command("printf IDLE; read value; set -m; sleep 30 & printf BUSY; read value")).unwrap();
+    let opened = mux.open_test_tab(workspace, &command("printf IDLE; read value; set -m; sleep 30 & printf BUSY; read value")).unwrap();
     ready(&opened.client, "IDLE");
     let idle = mux
         .prepare_close(CloseRequest::Application)
@@ -256,7 +256,7 @@ fn orphans_holding_the_terminal_need_consent_and_are_cleaned_up() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux
-        .open_tab(
+        .open_test_tab(
             workspace,
             &command("set -m; printf IDLE; read value; sh -c 'sleep 30 &'; printf BUSY; read value"),
         )
@@ -303,7 +303,7 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux
-        .open_tab(
+        .open_test_tab(
             workspace,
             &command("printf READY; read value; set -m; sleep 30 & fg"),
         )
@@ -345,7 +345,9 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
     );
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
-    let exited = mux.open_tab(workspace, &command("printf DONE")).unwrap();
+    let exited = mux
+        .open_test_tab(workspace, &command("printf DONE"))
+        .unwrap();
     ready(&exited.client, "DONE");
     while !exited
         .client
@@ -390,7 +392,7 @@ fn exited_holder() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let command = fixture.command();
-    let opened = mux.open_tab(workspace, &command).unwrap();
+    let opened = mux.open_test_tab(workspace, &command).unwrap();
     let helper = fixture.wait_ready();
     let root = opened.client.job_context().unwrap().shell.unwrap();
     let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
@@ -402,20 +404,14 @@ fn exited_holder() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    let mut exit_events = 0;
-    while let Some(event) = opened.client.try_recv_event().unwrap() {
-        if let huterm_protocol::TerminalEvent::Exited { status, .. } = event {
-            exit_events += 1;
-            assert_eq!(
-                status,
-                huterm_protocol::ExitStatus {
-                    code: Some(1),
-                    success: false
-                }
-            );
-        }
-    }
-    assert_eq!(exit_events, 1, "signaled root exit must be reported once");
+    assert_eq!(
+        opened.client.poll().exited,
+        Some(huterm_protocol::ExitStatus {
+            code: Some(1),
+            success: false
+        }),
+        "signaled root exit must be reported"
+    );
     assert!(
         nix::sys::signal::kill(root, None).is_err(),
         "root must be reaped when its exit is published"
@@ -435,12 +431,18 @@ fn exited_holder() {
     );
     let current = assessment.recheck();
     assert_eq!(current.jobs(), &[JobState::Idle]);
-    while let Some(event) = opened.client.try_recv_event().unwrap() {
-        assert!(
-            !matches!(event, huterm_protocol::TerminalEvent::Exited { .. }),
-            "reaping emitted a second exit event"
-        );
-    }
+    // Status is state, so a second exit cannot be published; reaping must
+    // leave the published exit as it was.
+    assert_eq!(
+        opened.client.status().lifecycle,
+        huterm_protocol::TerminalLifecycle::Exited(
+            huterm_protocol::ExitStatus {
+                code: Some(1),
+                success: false
+            }
+        ),
+        "reaping changed the published exit"
+    );
     assert!(opened.client.read_snapshot().is_ok());
     mux.commit_close(&current, &current.recheck(), false)
         .unwrap();
@@ -464,7 +466,7 @@ fn consent_survives_child_replacement_inside_the_same_live_job_group() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
-    let opened = mux.open_tab(workspace, &command("sleep 30 & first=$!; printf FIRST; read step; kill $first; wait $first 2>/dev/null; sleep 30 & printf SECOND; read step")).unwrap();
+    let opened = mux.open_test_tab(workspace, &command("sleep 30 & first=$!; printf FIRST; read step; kill $first; wait $first 2>/dev/null; sleep 30 & printf SECOND; read step")).unwrap();
     ready(&opened.client, "FIRST");
     let consent = mux
         .prepare_close(CloseRequest::Application)
@@ -540,10 +542,10 @@ fn open_idle_tabs(
     mux: &mut Mux,
     workspace: WorkspaceId,
     count: usize,
-) -> Vec<crate::OpenedTab> {
+) -> Vec<crate::mux::TestTab> {
     let tabs: Vec<_> = (0..count)
         .map(|_| {
-            mux.open_tab(workspace, &command("printf READY; read value"))
+            mux.open_test_tab(workspace, &command("printf READY; read value"))
                 .unwrap()
         })
         .collect();

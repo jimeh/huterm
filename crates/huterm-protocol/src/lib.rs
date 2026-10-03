@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod cell_text;
 mod command;
 mod hierarchy;
+mod viewer;
 pub use cell_text::CellText;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
@@ -18,6 +19,10 @@ pub use hierarchy::{
     ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
     ResyncReason, SessionInfo, StreamId, TabInfo, Touched, WorkspaceInfo,
     resolve_tab_name,
+};
+pub use viewer::{
+    InputStamp, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
+    TerminalStatus, ViewerCapabilities,
 };
 
 macro_rules! opaque_id {
@@ -85,6 +90,10 @@ scoped_id!(AttachmentId, "Identifies one session view attachment.");
 scoped_id!(SessionId, "Identifies a runtime-owned session.");
 scoped_id!(WorkspaceId, "Identifies a runtime-owned workspace.");
 scoped_id!(TabId, "Identifies a tab within a workspace.");
+scoped_id!(
+    ViewerId,
+    "Identifies one client registration that displays a terminal."
+);
 opaque_id!(PaneId, "Identifies a pane within a tab.");
 opaque_id!(TerminalId, "Identifies a terminal runtime.");
 opaque_id!(
@@ -475,8 +484,6 @@ pub enum TerminalInput {
     },
     /// Explicit paste content.
     Paste(String),
-    /// Focus state for terminal focus-reporting mode.
-    Focus(bool),
     /// Application mouse action.
     Mouse(MouseInput),
 }
@@ -663,8 +670,15 @@ pub struct TerminalRow {
 pub struct TerminalSnapshot {
     /// Terminal this snapshot belongs to.
     pub terminal_id: TerminalId,
-    /// Monotonic terminal generation.
+    /// Monotonic terminal generation. Content changes advance it; scrolling
+    /// and presentation changes do not.
     pub generation: u64,
+    /// Publication revision: advances on every change that can alter a
+    /// snapshot, including viewport moves and presentation changes.
+    pub revision: u64,
+    /// Advances on every canonical resize. Mouse reports carry it so the
+    /// runtime can discard coordinates computed against an older grid.
+    pub geometry_revision: u64,
     /// Grid size represented by `rows`.
     pub size: GridSize,
     /// Complete viewport rows, each containing `size.columns` cells.
@@ -781,53 +795,6 @@ impl TerminalMetadata {
     pub fn foreground_title(&self) -> Option<&str> {
         self.foreground_title.as_deref()
     }
-}
-
-/// Asynchronous runtime event delivered to clients.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum TerminalEvent {
-    /// A new terminal is ready.
-    Ready(TerminalId),
-    /// Snapshot data changed. Clients may coalesce these notifications.
-    Invalidated {
-        /// Changed terminal.
-        terminal_id: TerminalId,
-        /// Latest available generation.
-        generation: u64,
-    },
-    /// Terminal title changed.
-    TitleChanged {
-        /// Changed terminal.
-        terminal_id: TerminalId,
-        /// New title.
-        title: String,
-    },
-    /// Non-cell terminal metadata changed. Every event is a full replacement.
-    MetadataChanged {
-        /// Changed terminal.
-        terminal_id: TerminalId,
-        /// Monotonic terminal-local metadata revision.
-        revision: u64,
-        /// Complete current metadata.
-        metadata: TerminalMetadata,
-    },
-    /// Terminal bell rang.
-    Bell(TerminalId),
-    /// Child process exited.
-    Exited {
-        /// Exited terminal.
-        terminal_id: TerminalId,
-        /// Child exit status.
-        status: ExitStatus,
-    },
-    /// Startup or runtime failure.
-    Failed {
-        /// Failed terminal.
-        terminal_id: TerminalId,
-        /// Human-readable failure.
-        message: String,
-    },
 }
 
 /// Origin of an activatable terminal hyperlink.

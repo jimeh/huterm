@@ -28,17 +28,23 @@ pub(crate) fn encode_input(
         TerminalInput::Paste(text) | TerminalInput::Text(text) => {
             text.as_bytes().to_vec()
         }
-        TerminalInput::Focus(focused) if modes.focus_reporting => {
-            if *focused {
-                b"\x1b[I".to_vec()
-            } else {
-                b"\x1b[O".to_vec()
-            }
-        }
         TerminalInput::Key { key, modifiers } => {
             encode_key(*key, *modifiers, modes)
         }
         _ => Vec::new(),
+    }
+}
+
+/// Encodes a terminal focus change, or nothing when the application has not
+/// enabled focus reporting.
+pub(crate) fn encode_focus(
+    focused: bool,
+    modes: TerminalModes,
+) -> &'static [u8] {
+    match (modes.focus_reporting, focused) {
+        (false, _) => b"",
+        (true, true) => b"\x1b[I",
+        (true, false) => b"\x1b[O",
     }
 }
 

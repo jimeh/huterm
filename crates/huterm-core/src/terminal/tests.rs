@@ -5,7 +5,15 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use huterm_protocol::{TerminalLifecycle, ViewerCapabilities};
+
 use super::*;
+
+use crate::test_support::TestClient;
+
+fn test_client(runtime: &TerminalRuntime) -> TestClient {
+    TestClient::new(runtime)
+}
 
 #[test]
 fn character_queue_bytes_include_utf8_payload_and_meta_prefix() {
@@ -37,7 +45,7 @@ fn meta_roundtrip() {
     let command = command(&script);
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(94), &command).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
     for text in ["r", "R", "3", "<", "\x12", " ", "λ"] {
         client
@@ -71,8 +79,7 @@ fn concurrent_clean_exits_reap_without_close_assessments() {
             TerminalRuntime::spawn(TerminalId::new(id), &command).unwrap()
         })
         .collect();
-    let clients: Vec<_> =
-        runtimes.iter().map(TerminalRuntime::client).collect();
+    let clients: Vec<_> = runtimes.iter().map(test_client).collect();
     let roots: Vec<_> = clients
         .iter()
         .map(|client| {
@@ -113,42 +120,37 @@ fn directory_metadata_replaces_state_orders_revisions_and_suppresses_duplicates(
         &command("printf '\\033]7;file://localhost/tmp/one\\007\\033]7;file://localhost/tmp/one\\007\\033]7;file://localhost/tmp/two\\007READY'; read line"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
-    let mut changes = Vec::new();
-    while let Some(event) = client.try_recv_event().unwrap() {
-        if let TerminalEvent::MetadataChanged {
-            revision, metadata, ..
-        } = event
-        {
-            changes.push((
-                revision,
-                metadata
-                    .directory()
-                    .map(|directory| directory.path().to_owned()),
-            ));
-        }
-    }
-    // READY is parsed after all OSCs. Only the latest full replacement is
-    // pending, and the duplicate OSC did not advance its revision.
-    assert_eq!(changes, [(2, Some("/tmp/two".to_owned()))]);
+    // READY is parsed after all OSCs. The status holds the latest full
+    // replacement, and the duplicate OSC did not advance its revision.
+    let status = client.status();
+    assert_eq!(
+        (
+            status.metadata_revision,
+            status
+                .metadata
+                .directory()
+                .map(|directory| directory.path().to_owned())
+        ),
+        (2, Some("/tmp/two".to_owned()))
+    );
     runtime.shutdown().unwrap();
 }
 
-/// Waits until the published name matches. `current` carries the last
-/// published name between calls, so waiting for `None` needs a clear.
+/// Waits until the published name matches.
 fn wait_for_foreground(
-    client: &RuntimeClient,
+    client: &TestClient,
     current: &mut Option<String>,
     expected: Option<&str>,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        while let Some(event) = client.try_recv_event().unwrap() {
-            if let TerminalEvent::MetadataChanged { metadata, .. } = event {
-                *current = metadata.foreground_process().map(str::to_owned);
-            }
-        }
+        *current = client
+            .status()
+            .metadata
+            .foreground_process()
+            .map(str::to_owned);
         if current.as_deref() == expected {
             return;
         }
@@ -160,20 +162,15 @@ fn wait_for_foreground(
     }
 }
 
-/// Waits until the published directory matches. `current` carries the
-/// last published directory between calls.
+/// Waits until the published directory matches.
 fn wait_for_directory(
-    client: &RuntimeClient,
+    client: &TestClient,
     current: &mut Option<huterm_protocol::TerminalDirectory>,
     expected: impl Fn(&huterm_protocol::TerminalDirectory) -> bool,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        while let Some(event) = client.try_recv_event().unwrap() {
-            if let TerminalEvent::MetadataChanged { metadata, .. } = event {
-                *current = metadata.directory().cloned();
-            }
-        }
+        *current = client.status().metadata.directory().cloned();
         if current.as_ref().is_some_and(&expected) {
             return;
         }
@@ -207,7 +204,7 @@ fn process_directories_follow_cd_and_running_jobs_without_osc7() {
         )),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     let mut current = None;
     wait_for_text(&client, "READY");
     client
@@ -247,7 +244,7 @@ fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
         ),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     let mut current = None;
     wait_for_text(&client, "READY");
     // The shell's report wins over its actual directory at the prompt.
@@ -286,15 +283,15 @@ fn job_titles_apply_only_while_the_job_holds_the_foreground() {
         ),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut title: Option<String> = None;
     let mut wait_for = |expected: Option<&str>| loop {
-        while let Some(event) = client.try_recv_event().unwrap() {
-            if let TerminalEvent::MetadataChanged { metadata, .. } = event {
-                title = metadata.foreground_title().map(str::to_owned);
-            }
-        }
+        title = client
+            .status()
+            .metadata
+            .foreground_title()
+            .map(str::to_owned);
         if title.as_deref() == expected {
             return;
         }
@@ -326,7 +323,7 @@ fn foreground_jobs_are_named_while_running_and_cleared_on_return() {
         ),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     let mut current = None;
     wait_for_text(&client, "READY");
     client
@@ -349,26 +346,65 @@ fn a_root_shell_replaced_by_exec_is_named_after_silent_input() {
         &command("stty -echo; printf READY; read line; exec sleep 30"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
     // Let the probe armed by READY's output run, so only input remains.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let (reply, armed) = mpsc::channel();
-        client
-            .controls
-            .send(RuntimeControl::ProbeArmed(reply))
-            .unwrap();
-        if !armed.recv_timeout(Duration::from_secs(2)).unwrap() {
-            break;
-        }
-        assert!(Instant::now() < deadline, "probe stayed armed");
-        thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_idle_probes(&client);
     client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
     wait_for_foreground(&client, &mut None, Some("sleep"));
+    runtime.shutdown().unwrap();
+}
+
+/// Whether a foreground probe is armed, and when the last one ran.
+fn probes(client: &TestClient) -> (bool, Option<Instant>) {
+    let (reply, state) = mpsc::channel();
+    client
+        .control
+        .controls
+        .send(RuntimeControl::Probes(reply))
+        .unwrap();
+    state.recv_timeout(Duration::from_secs(2)).unwrap()
+}
+
+/// Waits until no probe is armed, and returns when the last one ran.
+fn wait_for_idle_probes(client: &TestClient) -> Option<Instant> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (armed, last) = probes(client);
+        if !armed {
+            return last;
+        }
+        assert!(Instant::now() < deadline, "probe stayed armed");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_new_title_in_output_arms_a_probe_that_the_output_alone_does_not() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(101),
+        &command("stty -echo; printf READY; read line"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Output arms a probe only when it follows a quiet period. The title's
+    // chunk follows this output instead, so only its new title can arm one.
+    client.control.output.send(b"x".to_vec()).unwrap();
+    wait_for_text(&client, "x");
+    let before = wait_for_idle_probes(&client);
+    client
+        .control
+        .output
+        .send(b"\x1b]2;NEW\x07".to_vec())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while probes(&client).1 == before {
+        assert!(Instant::now() < deadline, "the new title armed no probe");
+        thread::sleep(Duration::from_millis(5));
+    }
     runtime.shutdown().unwrap();
 }
 
@@ -379,28 +415,28 @@ fn directory_metadata_survives_exit_in_its_replacement_event() {
         &command("printf '\\033]7;file://localhost/tmp/final\\007'; exit"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
+    // Exit can be observed before the final output is parsed, so wait for
+    // both rather than treating exit as the end of output.
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut metadata = None;
-    let mut exited = false;
-    while Instant::now() < deadline && (!exited || metadata.is_none()) {
-        match client.try_recv_event().unwrap() {
-            Some(TerminalEvent::MetadataChanged {
-                metadata: replacement,
-                ..
-            }) => metadata = Some(replacement),
-            Some(TerminalEvent::Exited { .. }) => exited = true,
-            _ => thread::yield_now(),
+    loop {
+        let status = client.status();
+        let directory = status
+            .metadata
+            .directory()
+            .map(huterm_protocol::TerminalDirectory::path);
+        if matches!(status.lifecycle, TerminalLifecycle::Exited(_))
+            && directory == Some("/tmp/final")
+        {
+            break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "exit and directory: {:?}, {directory:?}",
+            status.lifecycle
+        );
+        thread::sleep(Duration::from_millis(10));
     }
-    assert!(exited);
-    assert_eq!(
-        metadata
-            .as_ref()
-            .and_then(TerminalMetadata::directory)
-            .map(huterm_protocol::TerminalDirectory::path),
-        Some("/tmp/final")
-    );
     runtime.shutdown().unwrap();
 }
 
@@ -411,7 +447,7 @@ fn clean_exit_reaps_automatically_while_retained_history_stays_available() {
         &command("printf FINAL; read line; exit 7"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "FINAL");
     let root = client.job_context().unwrap().shell.unwrap();
     let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
@@ -455,12 +491,14 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
         );
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(99), &command).unwrap();
-        let client = runtime.client();
+        let client = test_client(&runtime);
         wait_for_text(&client, "READY");
         let (reply, receiver) = async_channel::bounded(1);
         client
+            .control
             .controls
             .send(RuntimeControl::Snapshot {
+                slot: client.viewer.slot(),
                 scroll: None,
                 point: Some(huterm_protocol::MousePosition::default()),
                 fail_lookup: true,
@@ -469,7 +507,7 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
             .unwrap();
         let failed = SnapshotRequest { receiver }.recv_blocking().unwrap();
         assert_eq!(failed.link, Some(huterm_protocol::LinkLookup::Unavailable));
-        assert!(!client.closing.load(Ordering::Acquire));
+        assert!(!client.control.closing.load(Ordering::Acquire));
         assert!(
             failed
                 .snapshot
@@ -507,9 +545,7 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
             history.link,
             Some(huterm_protocol::LinkLookup::Match(_))
         ));
-        while let Some(event) = client.try_recv_event().unwrap() {
-            assert!(!matches!(event, TerminalEvent::Failed { .. }));
-        }
+        assert!(client.status().failures.is_empty());
         runtime.shutdown().unwrap();
     }
 }
@@ -517,23 +553,27 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
 #[test]
 fn snapshot_failure_reports_error_and_enters_runtime_cleanup() {
     let (reply, receiver) = async_channel::bounded(1);
-    let (events, event_receiver, _activity) = EventPublisher::channel();
+    let registry = Registry::new(
+        TerminalId::new(96),
+        RuntimeId::new(0),
+        Arc::new(crate::wake::Wake::default()),
+    );
+    let mut status = StatusPublisher::default();
     let closing = AtomicBool::new(false);
-    let id = TerminalId::new(96);
     complete_snapshot_request(
         Err(RuntimeError::Engine("snapshot allocation failed".into())),
         &reply,
-        &events,
-        id,
+        &mut status,
         &closing,
     );
+    status.flush(&registry);
     assert!(closing.load(Ordering::Acquire));
     assert!(
         matches!(receiver.try_recv(), Ok(Err(RuntimeError::Engine(message))) if message == "snapshot allocation failed")
     );
-    assert!(
-        matches!(event_receiver.try_recv(), Ok(TerminalEvent::Failed { terminal_id, message }) if terminal_id == id && message.contains("snapshot allocation failed"))
-    );
+    assert!(registry.status().failures.iter().any(|failure| {
+        failure.message.contains("snapshot allocation failed")
+    }));
 }
 
 #[test]
@@ -543,18 +583,21 @@ fn writer_failure_with_live_root_remains_observable_and_stops_runtime() {
         &command("printf READY; read line"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
     client
+        .control
         .controls
         .send(RuntimeControl::WriterFailed("test write failure".into()))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Some(TerminalEvent::Failed { message, .. }) =
-            client.try_recv_event().unwrap()
+        if client
+            .status()
+            .failures
+            .iter()
+            .any(|failure| failure.message == "test write failure")
         {
-            assert_eq!(message, "test write failure");
             break;
         }
         assert!(
@@ -577,25 +620,26 @@ fn exited_history() {
     );
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_exit(&client);
     wait_for_text(&client, "FINAL");
     for input in [
         TerminalInput::Text("LATE".into()),
         TerminalInput::Paste("PASTE".into()),
-        TerminalInput::Focus(true),
     ] {
         client.send_input(input).unwrap();
     }
+    client.set_focus(true).unwrap();
     // Deliver an already-in-flight writer failure and final output that
     // asks for a terminal reply after the root has exited.
     client
+        .control
         .controls
         .send(RuntimeControl::WriterFailed(
             "late revoked PTY write".into(),
         ))
         .unwrap();
-    client.output.send(b"TAIL\x1b[6n".to_vec()).unwrap();
+    client.control.output.send(b"TAIL\x1b[6n".to_vec()).unwrap();
     let snapshot = wait_for_text(&client, "FINALTAIL");
     assert!(snapshot.history_size > 0);
     let history = client
@@ -656,10 +700,8 @@ fn exited_history() {
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(2));
     }
-    while let Some(event) = client.try_recv_event().unwrap() {
-        assert!(!matches!(event, TerminalEvent::Failed { .. }), "{event:?}");
-    }
-    assert_eq!(client.queued_input_bytes.load(Ordering::Acquire), 0);
+    assert!(client.status().failures.is_empty());
+    assert_eq!(client.control.queued_input_bytes.load(Ordering::Acquire), 0);
     runtime.shutdown().unwrap();
 }
 
@@ -670,7 +712,7 @@ fn ghostty_runtime_round_trips_and_closes_a_live_child() {
     );
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(92), &command).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
     client
         .send_input(TerminalInput::Text("hello\n".into()))
@@ -688,7 +730,7 @@ fn ghostty_live_child_queries_seeded_presentation_before_first_snapshot() {
     );
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(95), &command).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     assert_eq!(wait_for_exit(&client).code, Some(0));
     let snapshot = wait_for_text(&client, ":DONE");
     let text: String =
@@ -722,8 +764,8 @@ fn rejected_engine_initialization_does_not_launch_the_child() {
 #[test]
 fn shared_scroll_snapshot_is_observed_by_a_second_client() {
     let runtime = TerminalRuntime::spawn(TerminalId::new(94), &command("i=0; while [ $i -lt 30 ]; do printf 'ROW-%s\\n' $i; i=$((i+1)); done; printf READY; read line")).unwrap();
-    let client = runtime.client();
-    let sibling = runtime.client();
+    let client = test_client(&runtime);
+    let sibling = test_client(&runtime);
     wait_for_text(&client, "READY");
     let scrolled = client
         .request_scrolled_snapshot(ScrollCommand::Absolute(5))
@@ -761,7 +803,7 @@ fn mouse_reports_roundtrip() {
     let command = command(&script);
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(91), &command).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     let ready = wait_for_text(&client, "READY");
     assert_eq!(ready.modes.mouse_tracking, MouseTracking::Buttons);
     let mouse = |action| {
@@ -811,7 +853,7 @@ fn blocking_snapshot_receive_times_out_and_reports_disconnect() {
     ));
 }
 
-fn foreground_job(client: &RuntimeClient) -> bool {
+fn foreground_job(client: &TestClient) -> bool {
     let mut future = std::pin::pin!(client.has_foreground_job());
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
@@ -834,7 +876,7 @@ fn close_confirmation_distinguishes_idle_shell_foreground_job_and_exit() {
         &command("printf IDLE; read value; set -m; sleep 30 & fg; printf DONE"),
     )
     .unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "IDLE");
     assert!(!foreground_job(&client), "shell waiting for input is idle");
     client
@@ -1115,7 +1157,7 @@ fn engine_benchmark_pty_throughput() {
         command.grid_size = GridSize::clamped(120, 40);
         let runtime =
             TerminalRuntime::spawn(TerminalId::new(90), &command).unwrap();
-        let client = runtime.client();
+        let client = test_client(&runtime);
         wait_for_text(&client, "READY");
         client
             .send_input(TerminalInput::Text("go\n".into()))
@@ -1125,19 +1167,16 @@ fn engine_benchmark_pty_throughput() {
         let mut previous: Option<(u32, Instant)> = None;
         let mut snapshot_at = started;
         'done: loop {
-            while let Some(event) = client.try_recv_event().unwrap() {
-                let TerminalEvent::TitleChanged { title, .. } = event else {
-                    continue;
-                };
-                let Some(index) = title
-                    .strip_prefix("SEGMENT-")
-                    .and_then(|index| index.parse::<u32>().ok())
-                else {
-                    continue;
-                };
+            let status = client.status();
+            if let Some(index) = status
+                .title
+                .strip_prefix("SEGMENT-")
+                .and_then(|index| index.parse::<u32>().ok())
+                && previous.is_none_or(|(before, _)| before != index)
+            {
                 let now = Instant::now();
-                // Pending titles coalesce, so a late poll can skip a
-                // marker; count every segment the gap covers.
+                // The status holds only the latest title, so a late poll
+                // can skip a marker; count every segment the gap covers.
                 if let Some((before, at)) = previous {
                     segment_rates.push(
                         f64::from((index - before) * SEGMENT_FRAMES)
@@ -1205,7 +1244,7 @@ fn command(script: &str) -> TerminalCommand {
     }
 }
 
-fn wait_for_text(client: &RuntimeClient, needle: &str) -> TerminalSnapshot {
+fn wait_for_text(client: &TestClient, needle: &str) -> Arc<TerminalSnapshot> {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let snapshot = client.read_snapshot().expect("snapshot should work");
@@ -1222,15 +1261,11 @@ fn wait_for_text(client: &RuntimeClient, needle: &str) -> TerminalSnapshot {
     }
 }
 
-fn wait_for_exit(client: &RuntimeClient) -> ExitStatus {
+fn wait_for_exit(client: &TestClient) -> ExitStatus {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        while let Some(event) =
-            client.try_recv_event().expect("event receiver should work")
-        {
-            if let TerminalEvent::Exited { status, .. } = event {
-                return status;
-            }
+        if let TerminalLifecycle::Exited(status) = client.status().lifecycle {
+            return status;
         }
         assert!(
             Instant::now() < deadline,
@@ -1241,42 +1276,161 @@ fn wait_for_exit(client: &RuntimeClient) -> ExitStatus {
 }
 
 #[test]
-fn published_events_coalesce_into_one_pending_activity_signal() {
-    let (events, receiver, activity) = EventPublisher::channel();
-    let id = TerminalId::new(97);
-    events.send(TerminalEvent::Ready(id)).unwrap();
-    events.send(TerminalEvent::Bell(id)).unwrap();
-
-    assert!(activity.try_recv().is_ok());
-    assert!(activity.try_recv().is_err(), "signals must coalesce");
-    assert!(receiver.try_recv().is_ok());
-    assert!(receiver.try_recv().is_ok());
-    assert!(receiver.try_recv().is_err());
-
-    events.send(TerminalEvent::Bell(id)).unwrap();
-    assert!(activity.try_recv().is_ok(), "a drained signal re-arms");
+fn a_queued_request_needs_its_capability_and_an_unrevoked_viewer() {
+    let registry = Registry::new(
+        TerminalId::new(96),
+        RuntimeId::new(0),
+        Arc::new(crate::wake::Wake::default()),
+    );
+    let slot = |capabilities| {
+        let initial = crate::viewer::Initial {
+            focused: false,
+            geometry: None,
+            presentation: None,
+        };
+        registry
+            .register_with_wake(None, capabilities, initial)
+            .unwrap()
+            .0
+    };
+    // Input, edit, focus, geometry, presentation.
+    let permitted = |slot: &Arc<crate::viewer::Slot>| {
+        let slot = || Arc::clone(slot);
+        [
+            RuntimeMessage::Input {
+                slot: slot(),
+                input: TerminalInput::Text("x".into()),
+                stamp: InputStamp::default(),
+                reserved_bytes: 1,
+            },
+            RuntimeMessage::Edit {
+                slot: slot(),
+                edit: BufferEdit::Reset,
+            },
+            RuntimeMessage::Arbitration {
+                slot: slot(),
+                report: Report::Focus(true),
+            },
+            RuntimeMessage::Arbitration {
+                slot: slot(),
+                report: Report::Geometry(
+                    GridSize::clamped(80, 24),
+                    CellSize {
+                        width: 8,
+                        height: 16,
+                    },
+                ),
+            },
+            RuntimeMessage::Presentation {
+                slot: slot(),
+                presentation: Box::default(),
+            },
+        ]
+        .map(|message| message.permitted())
+    };
+    let none = ViewerCapabilities::NONE;
+    assert_eq!(permitted(&slot(none)), [false, false, false, false, true]);
+    assert_eq!(
+        permitted(&slot(ViewerCapabilities {
+            input: true,
+            ..none
+        })),
+        [true, true, true, false, true]
+    );
+    assert_eq!(
+        permitted(&slot(ViewerCapabilities { size: true, ..none })),
+        [false, false, true, true, true]
+    );
+    let all = slot(ViewerCapabilities::ALL);
+    assert_eq!(permitted(&all), [true; 5]);
+    registry.revoke_all();
+    assert_eq!(permitted(&all), [false; 5]);
 }
 
 #[test]
-fn runtime_signals_activity_for_its_published_events() {
+fn publications_wake_each_viewer_once_until_its_snapshot_is_built() {
+    let registry = Registry::new(
+        TerminalId::new(97),
+        RuntimeId::new(0),
+        Arc::new(crate::wake::Wake::default()),
+    );
+    let initial = || crate::viewer::Initial {
+        focused: false,
+        geometry: None,
+        presentation: None,
+    };
+    let (first, first_wake) = registry
+        .register_with_wake(None, ViewerCapabilities::ALL, initial())
+        .unwrap();
+    let (second, second_wake) = registry
+        .register_with_wake(None, ViewerCapabilities::ALL, initial())
+        .unwrap();
+    // A new slot starts notified with its wake signalled.
+    assert!(first_wake.try_recv().is_ok());
+    assert!(second_wake.try_recv().is_ok());
+    first.snapshot_built();
+    second.snapshot_built();
+
+    registry.publish(None, 1);
+    registry.publish(None, 2);
+    assert!(first_wake.try_recv().is_ok());
+    assert!(first_wake.try_recv().is_err(), "notifications coalesce");
+    assert!(second_wake.try_recv().is_ok());
+
+    // Building one viewer's snapshot rearms only that viewer.
+    let earliest = first.snapshot_built();
+    assert!(earliest.is_some(), "the snapshot reports its first change");
+    registry.publish(None, 3);
+    assert!(first_wake.try_recv().is_ok(), "a built snapshot rearms");
+    assert!(second_wake.try_recv().is_err(), "an unbuilt one does not");
+
+    // The publishing viewer is skipped, as after its own scroll.
+    first.snapshot_built();
+    registry.publish(Some(first.id), 4);
+    assert!(first_wake.try_recv().is_err());
+    assert_eq!(registry.generation(), 4);
+}
+
+#[test]
+fn runtime_wakes_its_viewer_for_status_changes() {
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(98),
-        &command("printf READY; IFS= read -r line"),
+        &command(
+            "printf READY; IFS= read -r line; printf X; IFS= read -r line; printf '\\033]2;titled\\007'; IFS= read -r line",
+        ),
     )
     .expect("runtime should spawn");
-    let client = runtime.client();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    client
+        .send_input(TerminalInput::Text("a\n".into()))
+        .unwrap();
+    // Output now leaves a snapshot due, so further output publications
+    // do not wake the viewer; only status publications can.
     let deadline = Instant::now() + Duration::from_secs(3);
-    while client.activity.try_recv().is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "runtime published no activity signal"
-        );
+    while client.poll().invalidated.is_none() {
+        assert!(Instant::now() < deadline, "no output after READY");
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        client.try_recv_event().unwrap().is_some(),
-        "a signal means an event is waiting"
-    );
+    while client.viewer.wake_pending() {}
+    client
+        .send_input(TerminalInput::Text("b\n".into()))
+        .unwrap();
+    loop {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !client.viewer.wake_pending() {
+            assert!(Instant::now() < deadline, "no status wake");
+            thread::sleep(Duration::from_millis(5));
+        }
+        if client
+            .poll()
+            .status
+            .is_some_and(|status| status.title == "titled")
+        {
+            break;
+        }
+    }
+    runtime.shutdown().unwrap();
 }
 
 #[test]
@@ -1286,7 +1440,7 @@ fn pty_runtime_should_round_trip_input_and_observe_exit() {
         &command("printf READY; IFS= read -r line; printf ':%s' \"$line\""),
     )
     .expect("runtime should start");
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
 
     client
@@ -1307,16 +1461,14 @@ fn pty_runtime_should_round_trip_input_and_observe_exit() {
         .expect("final snapshot should remain available after exit");
     assert!(final_snapshot.generation >= snapshot.generation);
     runtime.shutdown().expect("runtime should stop cleanly");
-    loop {
-        match client.try_recv_event() {
-            Ok(Some(event)) => assert!(
-                !matches!(event, TerminalEvent::Failed { .. }),
-                "normal child exit should not report a runtime failure"
-            ),
-            Ok(None) | Err(RuntimeError::Stopped) => break,
-            Err(error) => panic!("event receiver failed: {error}"),
-        }
-    }
+    assert!(
+        client.status().failures.is_empty(),
+        "normal child exit should not report a runtime failure"
+    );
+    assert!(
+        matches!(client.request_snapshot(), Err(RuntimeError::Stopped)),
+        "a stopped runtime refuses new requests"
+    );
 }
 
 #[test]
@@ -1331,7 +1483,7 @@ fn pty_runtime_applies_explicit_terminal_environment() {
     let runtime = TerminalRuntime::spawn(TerminalId::new(90), &command)
         .expect("runtime should start");
     wait_for_text(
-        &runtime.client(),
+        &test_client(&runtime),
         "xterm-huterm|truecolor|Huterm|/private/terminfo:",
     );
     runtime.shutdown().unwrap();
@@ -1346,7 +1498,7 @@ fn pty_runtime_should_process_bursty_output_without_poll_delay() {
         &command("dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE"),
     )
     .expect("runtime should start");
-    wait_for_text(&runtime.client(), "DONE");
+    wait_for_text(&test_client(&runtime), "DONE");
     let elapsed = started.elapsed();
     runtime.shutdown().expect("runtime should stop cleanly");
 
@@ -1363,7 +1515,7 @@ fn pty_runtime_should_resize_grid_and_pty() {
         &command("printf READY; sleep 2"),
     )
     .expect("runtime should start");
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
 
     client
@@ -1400,27 +1552,10 @@ fn pty_runtime_should_fail_cleanly_for_missing_program() {
 }
 
 #[test]
-fn draining_dirty_notification_does_not_rearm_until_snapshot() {
-    fn title(client: &RuntimeClient, expected: &str) {
+fn a_pending_notification_keeps_its_first_change_until_the_snapshot() {
+    fn invalidated(client: &TestClient) {
         let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if matches!(client.try_recv_event().unwrap(), Some(TerminalEvent::TitleChanged { title, .. }) if title == expected)
-            {
-                return;
-            }
-            assert!(Instant::now() < deadline, "missing title {expected}");
-            thread::yield_now();
-        }
-    }
-    fn invalidation(client: &RuntimeClient) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if matches!(
-                client.try_recv_event().unwrap(),
-                Some(TerminalEvent::Invalidated { .. })
-            ) {
-                return;
-            }
+        while client.poll().invalidated.is_none() {
             assert!(Instant::now() < deadline, "missing invalidation");
             thread::yield_now();
         }
@@ -1428,48 +1563,34 @@ fn draining_dirty_notification_does_not_rearm_until_snapshot() {
     let runtime = TerminalRuntime::spawn(TerminalId::new(99), &command(
         "stty -echo; printf READY; while IFS= read -r line; do printf '%s\\033]2;%s\\007' \"$line\" \"$line\"; done"
     )).unwrap();
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
-    while client.try_recv_event().unwrap().is_some() {}
     client
         .send_input(TerminalInput::Text("one\n".into()))
         .unwrap();
-    invalidation(&client);
+    invalidated(&client);
+    let first_seen = Instant::now();
     client
         .send_input(TerminalInput::Text("two\n".into()))
         .unwrap();
-    title(&client, "two");
-    // This ordered control completes after the output that published the title.
-    client.job_context().unwrap();
-    while let Some(event) = client.try_recv_event().unwrap() {
-        assert!(!matches!(event, TerminalEvent::Invalidated { .. }));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while client.status().title != "two" {
+        assert!(Instant::now() < deadline, "missing title two");
+        thread::yield_now();
     }
-    client.read_snapshot().unwrap();
+    // The second output did not rearm the notification: the snapshot
+    // reports the earliest change it is the first to include.
+    let reply = client.request_snapshot().unwrap().recv_blocking().unwrap();
+    assert!(
+        reply.invalidated_at.is_some_and(|at| at <= first_seen),
+        "the pending notification was rearmed by later output"
+    );
+    assert!(client.poll().invalidated.is_none());
     client
         .send_input(TerminalInput::Text("three\n".into()))
         .unwrap();
-    invalidation(&client);
+    invalidated(&client);
     runtime.shutdown().unwrap();
-}
-
-#[test]
-fn invalidation_should_coalesce_until_client_consumes_it() {
-    let runtime = TerminalRuntime::spawn(
-        TerminalId::new(14),
-        &command("printf 'one\\ntwo\\nthree\\n'; sleep 1"),
-    )
-    .expect("runtime should start");
-    let client = runtime.client();
-    wait_for_text(&client, "three");
-    let mut invalidations = 0;
-    while let Some(event) = client.try_recv_event().unwrap_or(None) {
-        if matches!(event, TerminalEvent::Invalidated { .. }) {
-            invalidations += 1;
-        }
-    }
-
-    assert_eq!(invalidations, 1);
-    runtime.shutdown().expect("runtime should stop cleanly");
 }
 
 #[test]
@@ -1479,7 +1600,7 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
         &command("trap '' HUP TERM; printf READY; while :; do sleep 30; done"),
     )
     .expect("runtime should start");
-    wait_for_text(&runtime.client(), "READY");
+    wait_for_text(&test_client(&runtime), "READY");
 
     let started = Instant::now();
     runtime.shutdown().expect("runtime should stop cleanly");
@@ -1491,13 +1612,46 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
 }
 
 #[test]
+fn a_runtime_panic_releases_the_pty_and_hangs_up_a_writing_child() {
+    let runtime = TerminalRuntime::spawn(
+        TerminalId::new(102),
+        &command("printf READY; while :; do printf .; sleep 0.1; done"),
+    )
+    .unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    let root = client.job_context().unwrap().shell.unwrap();
+    let root = nix::unistd::Pid::from_raw(i32::try_from(root).unwrap());
+    client.control.controls.send(RuntimeControl::Panic).unwrap();
+    // Shutting down first would close the runtime before the panic.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while client.read_snapshot().is_ok() {
+        assert!(Instant::now() < deadline, "the runtime did not panic");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(runtime.shutdown(), Err(RuntimeError::ThreadPanic)));
+    // Unwinding signals no one (issue #211). It drops the runtime's PTY
+    // descriptor, the writer's queue, and the output queue, so the writer
+    // stops, the reader stops at the child's next output, and the PTY's
+    // last descriptor closes, which hangs the child up.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while nix::sys::signal::kill(root, None).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the panic left the PTY open or the child unreaped"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn saturated_input_should_not_block_client_or_priority_close() {
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(16),
         &command("trap '' HUP TERM; printf READY; while :; do sleep 30; done"),
     )
     .expect("runtime should start");
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
 
     assert!(matches!(
@@ -1542,12 +1696,13 @@ fn client_input_is_admitted_and_handled_ahead_of_queued_output() {
         ),
     )
     .expect("runtime should start");
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
 
     let (entered, paused) = mpsc::channel();
     let (resume, release) = mpsc::channel();
     client
+        .control
         .controls
         .send(RuntimeControl::Pause { entered, release })
         .unwrap();
@@ -1558,6 +1713,7 @@ fn client_input_is_admitted_and_handled_ahead_of_queued_output() {
     // child's line before the input only if queued output is parsed first.
     let mut backlog = 0;
     while client
+        .control
         .output
         .try_send(if backlog == 0 { &b"\x1b[6n"[..] } else { b"." }.to_vec())
         .is_ok()
@@ -1577,14 +1733,27 @@ fn client_input_is_admitted_and_handled_ahead_of_queued_output() {
 fn queued_client_messages_alternate_with_output_until_both_disconnect() {
     let (messages, client) = mpsc::sync_channel(4);
     let (output, pty) = mpsc::sync_channel(4);
+    let registry = Registry::new(
+        TerminalId::new(1),
+        RuntimeId::new(0),
+        Arc::new(crate::wake::Wake::default()),
+    );
+    let (slot, _wake) = registry
+        .register_with_wake(
+            None,
+            ViewerCapabilities::ALL,
+            crate::viewer::Initial {
+                focused: false,
+                geometry: None,
+                presentation: None,
+            },
+        )
+        .unwrap();
     for _ in 0..2 {
         messages
-            .send(RuntimeMessage::Resize {
-                grid: GridSize::clamped(1, 1),
-                cell: CellSize {
-                    width: 1,
-                    height: 1,
-                },
+            .send(RuntimeMessage::Arbitration {
+                slot: Arc::clone(&slot),
+                report: Report::Focus(true),
             })
             .unwrap();
     }
@@ -1633,15 +1802,14 @@ fn input_beyond_writer_capacity_arrives_once_the_child_reads() {
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(21), &command(&script))
             .expect("runtime should start");
-    let client = runtime.client();
+    let client = test_client(&runtime);
     wait_for_text(&client, "READY");
-    while client.try_recv_event().unwrap().is_some() {}
     let deadline = Instant::now() + Duration::from_secs(5);
     for _ in 0..INPUTS {
         let mut input = TerminalInput::Text("x".repeat(INPUT_BYTES));
         // Sending can outpace the runtime. Refused sends wake it, which
         // is harmless only until the child is released.
-        while let Err(refused) = client.offer_input(input) {
+        while let Err(refused) = client.offer_input(input, client.stamp(None)) {
             assert!(
                 matches!(refused.error, RuntimeError::Busy),
                 "runtime stopped: {}",
@@ -1653,12 +1821,9 @@ fn input_beyond_writer_capacity_arrives_once_the_child_reads() {
         }
     }
     std::fs::write(&marker, b"").expect("marker should be writable");
-    // Snapshot requests wake the runtime; events do not. DONE is the only
-    // output after READY, and it needs every write delivered.
-    while !matches!(
-        client.try_recv_event().unwrap(),
-        Some(TerminalEvent::Invalidated { .. })
-    ) {
+    // Snapshot requests wake the runtime; polling does not. DONE is the
+    // only output after READY, and it needs every write delivered.
+    while client.poll().invalidated.is_none() {
         assert!(
             Instant::now() < deadline,
             "runtime did not resume writing after the child read"
@@ -1893,7 +2058,7 @@ fn shutdown_should_terminate_a_distinct_foreground_process_group() {
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(17), &command(&script))
             .expect("runtime should start");
-    wait_for_text(&runtime.client(), "READY");
+    wait_for_text(&test_client(&runtime), "READY");
     let foreground_pid: i32 = std::fs::read_to_string(&pid_path)
         .expect("foreground PID should be written")
         .parse()

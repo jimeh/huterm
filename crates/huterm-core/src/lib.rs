@@ -7,7 +7,6 @@ mod child_wait;
 mod commands;
 pub use commands::execute;
 mod engine;
-mod events;
 mod foreground;
 mod host_effects;
 mod input;
@@ -20,9 +19,11 @@ pub use host_effects::{
 pub use jobs::{COMMAND_LINE_MAX_CHARS, JobProcess, JobState};
 pub use limits::raise_open_file_limit;
 mod mux;
-mod presentation;
 mod pty;
 mod terminal;
+#[cfg(test)]
+mod test_support;
+mod viewer;
 mod wake;
 
 pub use mux::{
@@ -31,10 +32,13 @@ pub use mux::{
     HierarchySubscription, Mux, MuxError, OpenedTab, SelectionTarget, Session,
     Tab, Workspace,
 };
-pub use presentation::PresentationController;
 pub use terminal::{
-    RefusedInput, RuntimeClient, RuntimeError, SelectionRequest, SnapshotReply,
+    RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,
     SnapshotRequest, TerminalRuntime,
+};
+pub use viewer::{
+    HostEffectViewerOptions, TerminalViewer, ViewerOptions, ViewerUpdate,
+    ViewerWake,
 };
 
 /// Immutable native revision used by the Ghostty adapter.

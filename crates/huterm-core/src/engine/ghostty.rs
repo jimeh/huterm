@@ -330,13 +330,16 @@ impl TerminalEngine {
     pub(super) fn viewport_state(
         &self,
     ) -> Result<(usize, usize), RuntimeError> {
+        Ok((self.viewport_offset()?, self.terminal.scrollback_rows()?))
+    }
+
+    /// Rows between the viewport's bottom and live output, from the
+    /// scrollbar alone; typing checks it on every keystroke.
+    pub(super) fn viewport_offset(&self) -> Result<usize, RuntimeError> {
         let bar = self.terminal.scrollbar()?;
         let bottom =
             bar.total.saturating_sub(bar.offset.saturating_add(bar.len));
-        Ok((
-            usize::try_from(bottom).unwrap_or(usize::MAX),
-            self.terminal.scrollback_rows()?,
-        ))
+        Ok(usize::try_from(bottom).unwrap_or(usize::MAX))
     }
 
     pub(super) fn process(
@@ -556,6 +559,9 @@ impl TerminalEngine {
         Ok(TerminalSnapshot {
             terminal_id: self.id,
             generation: self.generation,
+            // The runtime stamps both revisions when it publishes.
+            revision: 0,
+            geometry_revision: 0,
             size: self.size,
             rows: built,
             cursor: snapshot_cursor(cursor),

@@ -136,6 +136,16 @@ impl ScrollController {
         changed
     }
 
+    /// Typing returns the shared viewport to live on the runtime. Drops this
+    /// view's pending intent, so an older completion cannot replay it into
+    /// history, and leaves the move to the runtime: requesting a snapshot
+    /// now would spend the frame's allowance before the echo exists.
+    pub(super) fn typed(&mut self) {
+        self.pending_scroll = None;
+        self.desired = self.displayed;
+        self.pixel_remainder = 0.0;
+    }
+
     pub(super) fn set_desired(&mut self, offset: usize) -> bool {
         let offset = offset.min(self.history);
         let changed = self.desired != offset;

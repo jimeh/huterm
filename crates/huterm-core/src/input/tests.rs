@@ -263,26 +263,17 @@ fn control_text_should_encode_ascii_control_character() {
 
 #[test]
 fn focus_should_only_encode_when_reporting_is_enabled() {
-    let disabled =
-        encode_input(&TerminalInput::Focus(true), TerminalModes::default());
-    let focused = encode_input(
-        &TerminalInput::Focus(true),
-        TerminalModes {
-            focus_reporting: true,
-            ..TerminalModes::default()
-        },
-    );
-    let blurred = encode_input(
-        &TerminalInput::Focus(false),
-        TerminalModes {
-            focus_reporting: true,
-            ..TerminalModes::default()
-        },
-    );
-
+    let reporting = TerminalModes {
+        focus_reporting: true,
+        ..TerminalModes::default()
+    };
     assert_eq!(
-        (disabled, focused, blurred),
-        (vec![], b"\x1b[I".to_vec(), b"\x1b[O".to_vec())
+        (
+            super::encode_focus(true, TerminalModes::default()),
+            super::encode_focus(true, reporting),
+            super::encode_focus(false, reporting),
+        ),
+        (&b""[..], &b"\x1b[I"[..], &b"\x1b[O"[..])
     );
 }
 

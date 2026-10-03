@@ -256,12 +256,22 @@ fn poll_timeout(timeout: Option<Duration>) -> nix::poll::PollTimeout {
     })
 }
 
+/// Serializes PTY creation within the process. Concurrent `openpty` calls
+/// from parallel test threads failed on macOS 27 with errno -6; Huterm's own
+/// spawns already serialize under the Mux lock, so this costs nothing there.
+static OPENPTY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn spawn(
     command: &TerminalCommand,
 ) -> Result<PtyProcess, RuntimeError> {
-    let pair = portable_pty::native_pty_system()
-        .openpty(pty_size(command.grid_size, command.cell_size))
-        .map_err(|error| RuntimeError::Pty(error.to_string()))?;
+    let pair = {
+        let _serial = OPENPTY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        portable_pty::native_pty_system()
+            .openpty(pty_size(command.grid_size, command.cell_size))
+            .map_err(|error| RuntimeError::Pty(error.to_string()))?
+    };
     set_nonblocking(pair.master.as_ref())?;
 
     let mut builder = CommandBuilder::new(&command.program);

@@ -643,6 +643,8 @@ fn snapshot(columns: u16, rows: u16, contents: &[&str]) -> TerminalSnapshot {
     TerminalSnapshot {
         terminal_id: TerminalId::new(1),
         generation: 1,
+        revision: 0,
+        geometry_revision: 0,
         size: GridSize::clamped(columns, rows),
         rows: contents
             .chunks(usize::from(columns))
