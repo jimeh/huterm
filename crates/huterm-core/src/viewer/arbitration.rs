@@ -305,18 +305,17 @@ impl Arbiter {
 
     /// Whether a viewer owns a gesture that still blocks other viewers.
     pub(crate) fn gesture_held(&self) -> bool {
-        self.mouse.owner.is_some() && !self.mouse.untracked
+        !self.mouse.held.is_empty()
     }
 
-    /// Stops the current gesture from blocking other viewers once the
+    /// Stops the buttons held now from blocking other viewers once the
     /// application has stopped tracking the mouse. A client that saw
-    /// tracking stop never sends its release, so other viewers' presses
-    /// would otherwise stay refused; one that did not still sends it, and
-    /// the owner's release is still written.
+    /// tracking stop never sends their releases, so other viewers' presses
+    /// would otherwise stay refused; one that did not still sends them, and
+    /// the owner's releases are still written.
     pub(crate) fn tracking_disabled(&mut self) {
-        if self.mouse.owner.is_some() {
-            self.mouse.untracked = true;
-        }
+        let mouse = &mut self.mouse;
+        mouse.untracked.append(&mut mouse.held);
     }
 
     /// Chooses the controller and returns the resize and presentation
@@ -365,11 +364,13 @@ impl Arbiter {
 #[derive(Debug, Default)]
 struct MouseArbiter {
     owner: Option<ViewerId>,
+    /// Buttons the owner holds that block other viewers.
     held: Vec<MouseButton>,
+    /// Buttons the owner pressed before the application stopped tracking.
+    /// Their releases are still the owner's, but they block no one, and
+    /// another viewer's admitted press abandons them.
+    untracked: Vec<MouseButton>,
     last: Option<(MousePosition, Modifiers)>,
-    /// The application stopped tracking during the gesture, so it blocks
-    /// no other viewer, and any press starts a new gesture.
-    untracked: bool,
 }
 
 impl MouseArbiter {
@@ -381,19 +382,20 @@ impl MouseArbiter {
         geometry: u64,
     ) -> bool {
         let stale = stamp.is_some_and(|revision| revision != geometry);
-        let foreign =
-            !self.untracked && self.owner.is_some_and(|owner| owner != viewer);
+        let owned = self.owner == Some(viewer);
+        let foreign = !owned && !self.held.is_empty();
         let admitted = match mouse.action {
             MouseAction::Press(button) => {
                 if foreign || stale {
                     return false;
                 }
-                // Only an admitted press replaces an untracked gesture; a
-                // refused one leaves its owner's release to arrive.
-                if self.untracked {
+                // Only another viewer's admitted press abandons untracked
+                // buttons; the owner's keeps them, so their releases still
+                // arrive, and a refused press changes nothing.
+                if !owned {
                     *self = Self::default();
+                    self.owner = Some(viewer);
                 }
-                self.owner = Some(viewer);
                 if !self.held.contains(&button) {
                     self.held.push(button);
                 }
@@ -402,21 +404,18 @@ impl MouseArbiter {
             // Releases match by button only and are never geometry-checked,
             // so an accepted gesture always ends.
             MouseAction::Release(button) => {
-                if self.owner != Some(viewer) {
+                if !owned
+                    || !(remove(&mut self.held, button)
+                        || remove(&mut self.untracked, button))
+                {
                     return false;
                 }
-                let Some(index) =
-                    self.held.iter().position(|held| *held == button)
-                else {
-                    return false;
-                };
-                self.held.remove(index);
-                if self.held.is_empty() {
+                if self.held.is_empty() && self.untracked.is_empty() {
                     *self = Self::default();
                 }
                 true
             }
-            MouseAction::Motion(_) if self.owner == Some(viewer) => true,
+            MouseAction::Motion(_) if owned => true,
             MouseAction::Motion(_) | MouseAction::Wheel(_) => {
                 !foreign && !stale
             }
@@ -439,9 +438,11 @@ impl MouseArbiter {
             return Vec::new();
         }
         let (position, modifiers) = self.last.unwrap_or_default();
-        std::mem::take(self)
+        let ended = std::mem::take(self);
+        ended
             .held
             .into_iter()
+            .chain(ended.untracked)
             .map(|button| MouseInput {
                 position,
                 action: MouseAction::Release(button),
@@ -449,6 +450,15 @@ impl MouseArbiter {
             })
             .collect()
     }
+}
+
+/// Removes `button` from `buttons`, returning whether it was there.
+fn remove(buttons: &mut Vec<MouseButton>, button: MouseButton) -> bool {
+    let Some(index) = buttons.iter().position(|held| *held == button) else {
+        return false;
+    };
+    buttons.remove(index);
+    true
 }
 
 #[cfg(test)]

@@ -102,6 +102,9 @@ pub(crate) struct Slot {
     pub(crate) capabilities: ViewerCapabilities,
     wake: async_channel::Sender<()>,
     notified: AtomicBool,
+    /// Counts the times `notified` was raised, so each handle reports one
+    /// invalidation once instead of on every poll until its snapshot.
+    publications: AtomicU64,
     invalidated_at: Mutex<Option<Instant>>,
     revoked: AtomicBool,
     dropped: AtomicBool,
@@ -273,6 +276,7 @@ impl Registry {
             capabilities,
             wake,
             notified: AtomicBool::new(true),
+            publications: AtomicU64::new(1),
             invalidated_at: Mutex::new(None),
             revoked: AtomicBool::new(false),
             dropped: AtomicBool::new(false),
@@ -371,6 +375,7 @@ impl Registry {
             {
                 continue;
             }
+            slot.publications.fetch_add(1, Ordering::AcqRel);
             *slot
                 .invalidated_at
                 .lock()
@@ -416,7 +421,10 @@ impl Registry {
 pub struct ViewerUpdate {
     /// The current status, when it changed since the previous poll.
     pub status: Option<Arc<TerminalStatus>>,
-    /// The current content generation, while a snapshot is due.
+    /// The current content generation, the first time this viewer polls
+    /// after a change its snapshots do not show yet. Later polls report
+    /// nothing until another change, so a viewer remembers that a snapshot
+    /// is due until it builds one.
     pub invalidated: Option<u64>,
     /// The root process's exit, the first time this viewer sees it
     /// happen. A viewer that started after the exit never reports it.
@@ -472,6 +480,8 @@ pub struct TerminalViewer {
     registry: Arc<Registry>,
     wake: async_channel::Receiver<()>,
     scrolls: AtomicU64,
+    /// The slot's publication count this handle last reported.
+    reported: AtomicU64,
     baseline: Mutex<Baseline>,
     host_effects: Option<HostEffectRecipient>,
 }
@@ -552,6 +562,7 @@ impl TerminalViewer {
             registry,
             wake,
             scrolls: AtomicU64::new(0),
+            reported: AtomicU64::new(0),
             baseline: Mutex::new(baseline),
             host_effects,
         })
@@ -861,7 +872,12 @@ impl TerminalViewer {
             ..ViewerUpdate::default()
         };
         if self.slot.notified.load(Ordering::Acquire) {
-            update.invalidated = Some(self.registry.generation());
+            let publications = self.slot.publications.load(Ordering::Acquire);
+            if self.reported.swap(publications, Ordering::AcqRel)
+                != publications
+            {
+                update.invalidated = Some(self.registry.generation());
+            }
         }
         // The baseline lock covers reading the status, so concurrent polls
         // cannot commit an older revision over a newer one.

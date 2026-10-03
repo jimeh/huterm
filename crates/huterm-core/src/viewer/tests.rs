@@ -645,18 +645,25 @@ fn press(button: MouseButton, column: u32) -> TerminalInput {
 fn revoking_an_idle_viewer_releases_its_button_then_reports_focus_out() {
     let expected = b"\x1b[I\x1b[<0;3;1M\x1b[<0;3;1m\x1b[OZ";
     let runtime = spawn(212, &reporting_script(expected.len()));
-    let viewer = viewer(&runtime);
-    wait_for_text(&viewer, "READY");
-    viewer.set_focus(true).unwrap();
-    viewer.send_input(press(MouseButton::Left, 2)).unwrap();
-    drained(&runtime);
-    runtime.registry().revoke_all();
     let reader = runtime
         .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
         .unwrap();
+    let finisher = prober(&runtime);
+    let viewer = viewer(&runtime);
+    wait_for_text(&reader, "READY");
+    viewer.set_focus(true).unwrap();
+    viewer.send_input(press(MouseButton::Left, 2)).unwrap();
+    drained(&runtime);
+    let registry = runtime.registry();
+    registry.revoke_where(|slot| slot.id == viewer.id());
+    // Revocation alone must wake the owner thread: nothing else reaches it
+    // until the viewer is finalized, and reading the registry wakes nothing.
+    wait_until("revoked viewer finalized", || {
+        registry.slots().iter().all(|slot| slot.id != viewer.id())
+    });
     // The terminator follows finalization, so no stray report hides
     // behind the expected bytes.
-    prober(&runtime)
+    finisher
         .send_input(TerminalInput::Text("Z".into()))
         .unwrap();
     wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
@@ -1382,6 +1389,33 @@ fn a_closed_view_s_queued_scroll_moves_no_one() {
     resume.send(()).unwrap();
     let _ = scrolled.recv_blocking();
     assert_eq!(remaining.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_change_is_reported_once_until_the_next() {
+    let runtime = spawn(
+        240,
+        "stty -echo; printf READY; while IFS= read -r l; do printf '[%s]' \"$l\"; done",
+    );
+    let watcher = viewer(&runtime);
+    let typist = prober(&runtime);
+    wait_for_text(&watcher, "READY");
+    assert!(watcher.poll().invalidated.is_none());
+    typist
+        .send_input(TerminalInput::Text("one\n".into()))
+        .unwrap();
+    wait_for_text(&typist, "[one]");
+    // The watcher's snapshot stays due, but the change is reported once:
+    // a view that polls again before building it requests no second one.
+    assert!(watcher.poll().invalidated.is_some());
+    assert!(watcher.poll().invalidated.is_none());
+    assert!(text(&watcher.read_snapshot().unwrap()).contains("[one]"));
+    typist
+        .send_input(TerminalInput::Text("two\n".into()))
+        .unwrap();
+    wait_for_text(&typist, "[two]");
+    assert!(watcher.poll().invalidated.is_some());
     runtime.shutdown().unwrap();
 }
 

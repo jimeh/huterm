@@ -561,16 +561,16 @@ A `MouseArbiter` on the owner thread holds the policy:
 - When the owner viewer is finalized with buttons held, the runtime writes
   releases for those buttons at the owner's last reported position. Only
   the owner's reports move that position.
-- When the application turns mouse tracking off during a gesture, the gesture
-  stops blocking other viewers, and the next admitted press from any viewer
-  starts a new one; a refused press, such as one with a stale geometry revision,
-  leaves the gesture in place. A view that saw tracking stop never sends its
-  release, so other viewers' presses would otherwise stay discarded once the
-  application tracks the mouse again. A view that did not see it, because
-  tracking came back on before its next snapshot, still sends the release, and
-  the runtime still writes it. A report dequeued while tracking is off, such as
-  a press computed against an older display, writes nothing and takes no
-  gesture.
+- When the application turns mouse tracking off during a gesture, the buttons
+  held then stop blocking other viewers. Their releases are still the owner's,
+  including after the owner presses again, and another viewer's next admitted
+  press abandons them; a refused press, such as one with a stale geometry
+  revision, leaves them in place. A view that saw tracking stop never sends
+  their releases, so other viewers' presses would otherwise stay discarded once
+  the application tracks the mouse again. A view that did not see it, because
+  tracking came back on before its next snapshot, still sends them, and the
+  runtime still writes them. A report dequeued while tracking is off, such as a
+  press computed against an older display, writes nothing and takes no gesture.
 
 A view whose press was discarded keeps its local ownership state until its
 own release and gets no feedback; that is acceptable for the default. The

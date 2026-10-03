@@ -283,6 +283,32 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
 }
 
 #[test]
+fn an_owner_s_new_press_keeps_its_untracked_buttons_releasable() {
+    let mut fixture = Fixture::new();
+    let owner = fixture.sized(80);
+    let other = fixture.sized(80);
+    let admit = |fixture: &mut Fixture, slot: &Slot, action| {
+        fixture
+            .arbiter
+            .admit_mouse(slot, &mouse(action, 1), stamp(None))
+    };
+    let (left, right) = (MouseButton::Left, MouseButton::Right);
+    assert!(admit(&mut fixture, &owner, MouseAction::Press(left)));
+    fixture.arbiter.tracking_disabled();
+    // Tracking is back before the owner's view noticed it stopped, so it
+    // presses again while still holding Left.
+    assert!(admit(&mut fixture, &owner, MouseAction::Press(right)));
+    assert!(
+        !admit(&mut fixture, &other, MouseAction::Press(left)),
+        "the new press blocks other viewers"
+    );
+    assert!(admit(&mut fixture, &owner, MouseAction::Release(left)));
+    assert!(admit(&mut fixture, &owner, MouseAction::Release(right)));
+    assert!(!fixture.arbiter.gesture_held());
+    assert!(admit(&mut fixture, &other, MouseAction::Press(left)));
+}
+
+#[test]
 fn a_refused_press_leaves_an_untracked_gesture_to_its_owner() {
     let mut fixture = Fixture::new();
     let owner = fixture.sized(80);
