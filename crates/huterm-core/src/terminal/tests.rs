@@ -1238,6 +1238,78 @@ fn wait_for_exit(client: &TestClient) -> ExitStatus {
 }
 
 #[test]
+fn a_queued_request_needs_its_capability_and_an_unrevoked_viewer() {
+    let registry = Registry::new(
+        TerminalId::new(96),
+        RuntimeId::new(0),
+        Arc::new(crate::wake::Wake::default()),
+    );
+    let slot = |capabilities| {
+        let initial = crate::viewer::Initial {
+            focused: false,
+            geometry: None,
+            presentation: None,
+        };
+        registry
+            .register_with_wake(None, capabilities, initial)
+            .unwrap()
+            .0
+    };
+    // Input, edit, focus, geometry, presentation.
+    let permitted = |slot: &Arc<crate::viewer::Slot>| {
+        let slot = || Arc::clone(slot);
+        [
+            RuntimeMessage::Input {
+                slot: slot(),
+                input: TerminalInput::Text("x".into()),
+                stamp: InputStamp::default(),
+                reserved_bytes: 1,
+            },
+            RuntimeMessage::Edit {
+                slot: slot(),
+                edit: BufferEdit::Reset,
+            },
+            RuntimeMessage::Arbitration {
+                slot: slot(),
+                report: Report::Focus(true),
+            },
+            RuntimeMessage::Arbitration {
+                slot: slot(),
+                report: Report::Geometry(
+                    GridSize::clamped(80, 24),
+                    CellSize {
+                        width: 8,
+                        height: 16,
+                    },
+                ),
+            },
+            RuntimeMessage::Presentation {
+                slot: slot(),
+                presentation: Box::default(),
+            },
+        ]
+        .map(|message| message.permitted())
+    };
+    let none = ViewerCapabilities::NONE;
+    assert_eq!(permitted(&slot(none)), [false, false, false, false, true]);
+    assert_eq!(
+        permitted(&slot(ViewerCapabilities {
+            input: true,
+            ..none
+        })),
+        [true, true, true, false, true]
+    );
+    assert_eq!(
+        permitted(&slot(ViewerCapabilities { size: true, ..none })),
+        [false, false, true, true, true]
+    );
+    let all = slot(ViewerCapabilities::ALL);
+    assert_eq!(permitted(&all), [true; 5]);
+    registry.revoke_all();
+    assert_eq!(permitted(&all), [false; 5]);
+}
+
+#[test]
 fn publications_wake_each_viewer_once_until_its_snapshot_is_built() {
     let registry = Registry::new(
         TerminalId::new(97),

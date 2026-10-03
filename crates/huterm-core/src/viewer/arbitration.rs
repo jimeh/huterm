@@ -121,38 +121,52 @@ impl Arbiter {
             .position(|entry| entry.slot.id == slot.id)
     }
 
-    /// Reconciles the table with the registry: adds new viewers with their
-    /// initial state and finalizes revoked ones and dropped ones whose queued
+    /// The entry for a viewer, added with its initial state the first time
+    /// the owner thread meets it: in a reconcile, or in the viewer's first
+    /// request when that arrives sooner. Viewers register at any time, so a
+    /// request never depends on a reconcile having run. Returns `None` for
+    /// an unknown viewer that is revoked or already finalized.
+    fn entry(
+        &mut self,
+        slot: &Arc<Slot>,
+        effects: &mut Effects,
+    ) -> Option<usize> {
+        if let Some(index) = self.index(slot) {
+            return Some(index);
+        }
+        if slot.is_revoked() || (slot.is_dropped() && slot.queued() == 0) {
+            return None;
+        }
+        let initial = slot.take_initial();
+        let index = self.entries.len();
+        self.entries.push(Entry {
+            slot: Arc::clone(slot),
+            geometry: None,
+            focused: false,
+            presentation: None,
+            activity: 0,
+        });
+        if let Some(initial) = initial {
+            let capabilities = slot.capabilities;
+            self.entries[index].geometry = initial.geometry;
+            self.entries[index].presentation = initial.presentation;
+            // Initial focus needs the same capabilities as a report.
+            if initial.focused && (capabilities.input || capabilities.size) {
+                effects.merge(self.set_focus(index, true));
+            }
+        }
+        Some(index)
+    }
+
+    /// Reconciles the table with the registry: adds viewers that have sent
+    /// nothing yet, and finalizes revoked ones and dropped ones whose queued
     /// messages have run. A dropped viewer leaves control as soon as it is
     /// dropped, whether or not this has run.
     pub(crate) fn sync(&mut self, registry: &Registry) -> Effects {
         let mut effects = Effects::default();
         for slot in registry.slots() {
-            if self.index(&slot).is_some() {
-                continue;
-            }
-            if slot.is_revoked() {
+            if self.entry(&slot, &mut effects).is_none() {
                 registry.remove(slot.id);
-                continue;
-            }
-            let initial = slot.take_initial();
-            let index = self.entries.len();
-            self.entries.push(Entry {
-                slot,
-                geometry: None,
-                focused: false,
-                presentation: None,
-                activity: 0,
-            });
-            if let Some(initial) = initial {
-                let capabilities = self.entries[index].slot.capabilities;
-                self.entries[index].geometry = initial.geometry;
-                self.entries[index].presentation = initial.presentation;
-                // Initial focus needs the same capabilities as a report.
-                if initial.focused && (capabilities.input || capabilities.size)
-                {
-                    effects.merge(self.set_focus(index, true));
-                }
             }
         }
         let mut index = 0;
@@ -237,32 +251,27 @@ impl Arbiter {
         effects
     }
 
-    /// Applies one viewer's arbitration report. Reports from revoked or
-    /// unknown viewers, and reports the viewer's capabilities do not
-    /// permit, are ignored. A dropped viewer's queued reports still apply in
-    /// order with its input, but it can no longer control.
-    pub(crate) fn report(&mut self, slot: &Slot, report: Report) -> Effects {
-        let Some(index) = self.index(slot) else {
-            return Effects::default();
+    /// Applies one viewer's arbitration report; the runtime has already
+    /// checked that the viewer may send it. A dropped viewer's queued
+    /// reports still apply in order with its input, but it can no longer
+    /// control.
+    pub(crate) fn report(
+        &mut self,
+        slot: &Arc<Slot>,
+        report: Report,
+    ) -> Effects {
+        let mut effects = Effects::default();
+        let Some(index) = self.entry(slot, &mut effects) else {
+            return effects;
         };
-        if slot.is_revoked() {
-            return Effects::default();
-        }
-        let capabilities = slot.capabilities;
-        let mut effects = match report {
-            Report::Focus(focused)
-                if capabilities.input || capabilities.size =>
-            {
-                self.set_focus(index, focused)
+        match report {
+            Report::Focus(focused) => {
+                effects.merge(self.set_focus(index, focused));
             }
-            Report::Geometry(grid, cell) if capabilities.size => {
+            Report::Geometry(grid, cell) => {
                 self.entries[index].geometry = Some((grid, cell));
-                Effects::default()
             }
-            Report::Focus(_) | Report::Geometry(..) => {
-                return Effects::default();
-            }
-        };
+        }
         effects.merge(self.recompute());
         effects
     }
@@ -270,37 +279,50 @@ impl Arbiter {
     /// Records the presentation a viewer would apply.
     pub(crate) fn presentation(
         &mut self,
-        slot: &Slot,
+        slot: &Arc<Slot>,
         presentation: TerminalPresentation,
     ) -> Effects {
-        let Some(index) = self.index(slot) else {
-            return Effects::default();
+        let mut effects = Effects::default();
+        let Some(index) = self.entry(slot, &mut effects) else {
+            return effects;
         };
-        if slot.is_revoked() {
-            return Effects::default();
-        }
         self.entries[index].presentation = Some(presentation);
-        self.recompute()
+        effects.merge(self.recompute());
+        effects
     }
 
     /// Records that a viewer typed: keys, characters, text, or paste.
-    pub(crate) fn typed(&mut self, slot: &Slot) -> Effects {
-        let Some(index) = self.index(slot) else {
-            return Effects::default();
+    pub(crate) fn typed(&mut self, slot: &Arc<Slot>) -> Effects {
+        let mut effects = Effects::default();
+        let Some(index) = self.entry(slot, &mut effects) else {
+            return effects;
         };
         self.touch(index);
-        self.recompute()
+        effects.merge(self.recompute());
+        effects
     }
 
-    /// Whether a mouse report from this viewer reaches the application.
+    /// Whether a mouse report from this viewer reaches the application,
+    /// given whether the application tracks the mouse now. A report it does
+    /// not track writes nothing and takes no gesture, because its view
+    /// never sends that release. A release still ends its owner's button,
+    /// so finalization never releases that button again.
     pub(crate) fn admit_mouse(
         &mut self,
         slot: &Slot,
         mouse: &MouseInput,
         stamp: InputStamp,
+        tracked: bool,
     ) -> bool {
-        self.mouse
-            .admit(slot.id, mouse, stamp.geometry, self.geometry_revision)
+        let (geometry, revision) = (stamp.geometry, self.geometry_revision);
+        if tracked {
+            return self.mouse.admit(slot.id, mouse, geometry, revision);
+        }
+        self.tracking_disabled();
+        if matches!(mouse.action, MouseAction::Release(_)) {
+            self.mouse.admit(slot.id, mouse, geometry, revision);
+        }
+        false
     }
 
     /// Whether a viewer owns a gesture that still blocks other viewers.

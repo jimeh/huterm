@@ -259,7 +259,7 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
     let admit = |fixture: &mut Fixture, slot: &Slot, action| {
         fixture
             .arbiter
-            .admit_mouse(slot, &mouse(action, 1), stamp(None))
+            .admit_mouse(slot, &mouse(action, 1), stamp(None), true)
     };
     assert!(admit(&mut fixture, &owner, MouseAction::Press(left)));
     assert!(fixture.arbiter.gesture_held());
@@ -290,7 +290,7 @@ fn an_owner_s_new_press_keeps_its_untracked_buttons_releasable() {
     let admit = |fixture: &mut Fixture, slot: &Slot, action| {
         fixture
             .arbiter
-            .admit_mouse(slot, &mouse(action, 1), stamp(None))
+            .admit_mouse(slot, &mouse(action, 1), stamp(None), true)
     };
     let (left, right) = (MouseButton::Left, MouseButton::Right);
     assert!(admit(&mut fixture, &owner, MouseAction::Press(left)));
@@ -317,7 +317,8 @@ fn a_refused_press_leaves_an_untracked_gesture_to_its_owner() {
     assert!(fixture.arbiter.admit_mouse(
         &owner,
         &mouse(MouseAction::Press(left), 1),
-        stamp(None)
+        stamp(None),
+        true
     ));
     fixture.arbiter.tracking_disabled();
     // A press computed against an older grid is refused, and must not
@@ -326,12 +327,14 @@ fn a_refused_press_leaves_an_untracked_gesture_to_its_owner() {
     assert!(!fixture.arbiter.admit_mouse(
         &other,
         &mouse(MouseAction::Press(left), 2),
-        stamp(Some(stale))
+        stamp(Some(stale)),
+        true
     ));
     assert!(fixture.arbiter.admit_mouse(
         &owner,
         &mouse(MouseAction::Release(left), 1),
-        stamp(None)
+        stamp(None),
+        true
     ));
 }
 
@@ -344,13 +347,15 @@ fn other_viewers_never_move_an_untracked_gesture_s_release() {
     assert!(fixture.arbiter.admit_mouse(
         &owner,
         &mouse(MouseAction::Press(left), 1),
-        stamp(None)
+        stamp(None),
+        true
     ));
     fixture.arbiter.tracking_disabled();
     assert!(fixture.arbiter.admit_mouse(
         &other,
         &mouse(MouseAction::Motion(None), 9),
-        stamp(None)
+        stamp(None),
+        true
     ));
     owner
         .dropped
@@ -407,7 +412,7 @@ fn focus_reports_follow_the_count_of_focused_input_viewers() {
         },
         blank(),
     );
-    let focus = |fixture: &mut Fixture, slot: &Slot, focused| {
+    let focus = |fixture: &mut Fixture, slot: &Arc<Slot>, focused| {
         fixture.arbiter.report(slot, Report::Focus(focused)).focus
     };
     assert_eq!(focus(&mut fixture, &first, true), Some(true));
@@ -444,9 +449,12 @@ fn the_first_pressing_viewer_owns_the_gesture_until_its_release() {
     let first = fixture.sized(80);
     let second = fixture.sized(80);
     let mut admit = |slot: &Slot, action, column| {
-        fixture
-            .arbiter
-            .admit_mouse(slot, &mouse(action, column), stamp(None))
+        fixture.arbiter.admit_mouse(
+            slot,
+            &mouse(action, column),
+            stamp(None),
+            true,
+        )
     };
     let left = MouseButton::Left;
     assert!(admit(&first, MouseAction::Press(left), 1));
@@ -484,7 +492,8 @@ fn stale_geometry_discards_new_reports_but_never_owned_releases() {
             !fixture.arbiter.admit_mouse(
                 &second,
                 &mouse(action, 1),
-                stamp(Some(stale))
+                stamp(Some(stale)),
+                true
             ),
             "{action:?}"
         );
@@ -492,7 +501,8 @@ fn stale_geometry_discards_new_reports_but_never_owned_releases() {
     assert!(fixture.arbiter.admit_mouse(
         &second,
         &mouse(MouseAction::Press(left), 1),
-        stamp(Some(current))
+        stamp(Some(current)),
+        true
     ));
     // The grid changes mid-gesture; motion and the release still count.
     assert!(fixture.arbiter.typed(&first).resize.is_some());
@@ -500,12 +510,14 @@ fn stale_geometry_discards_new_reports_but_never_owned_releases() {
     assert!(fixture.arbiter.admit_mouse(
         &second,
         &mouse(MouseAction::Motion(Some(left)), 2),
-        stamp(Some(current))
+        stamp(Some(current)),
+        true
     ));
     assert!(fixture.arbiter.admit_mouse(
         &second,
         &mouse(MouseAction::Release(left), 2),
-        stamp(Some(current))
+        stamp(Some(current)),
+        true
     ));
 }
 
@@ -522,7 +534,8 @@ fn finalizing_the_gesture_owner_releases_its_buttons_where_it_left_them() {
         assert!(fixture.arbiter.admit_mouse(
             &owner,
             &mouse(action, 7),
-            stamp(None)
+            stamp(None),
+            true
         ));
     }
     owner
@@ -539,7 +552,8 @@ fn finalizing_the_gesture_owner_releases_its_buttons_where_it_left_them() {
     assert!(fixture.arbiter.admit_mouse(
         &other,
         &mouse(MouseAction::Press(MouseButton::Left), 1),
-        stamp(None)
+        stamp(None),
+        true
     ));
 }
 

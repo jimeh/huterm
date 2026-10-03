@@ -113,9 +113,10 @@ pub(crate) struct Slot {
     /// The viewer's activity ordinal, shared with its host-effect recipient.
     pub(crate) activity: Arc<AtomicU64>,
     /// The number of this viewer's latest scroll the owner thread applied.
-    /// Scroll bookkeeping lives on the slot, which every request carries,
-    /// so it holds before the viewer is reconciled and after it is
-    /// finalized.
+    /// Scroll ordering is between one viewer's own scrolls and typing, not
+    /// between viewers, and scrolls are controls that can run before the
+    /// viewer has an arbitration entry or after it is finalized. So the
+    /// owner thread keeps it on the slot, which every request carries.
     applied_scroll: AtomicU64,
     /// Scrolls up to this number were sent before typing that returned the
     /// viewport to live.

@@ -218,9 +218,10 @@ Registration inserts the slot into the terminal's registry under the same
 short lock the owner thread takes to publish, and the slot starts notified
 with its wake signalled. A viewer therefore cannot miss a publication that
 lands between subscription and its first poll, and it reads its status
-baseline after it is registered. The owner thread reconciles its viewer
-table before each viewer request as well as on each turn, so reports a new
-viewer queues before the owner's next turn still find its entry. Viewer IDs
+baseline after it is registered. The owner thread adds a viewer to its
+arbitration table when it reconciles, once a turn, or on the viewer's first
+request when that arrives sooner, so a request never depends on a reconcile
+having run. Viewer IDs
 are numbered across the process, so no two terminals in one runtime scope
 issue the same ID. Initial geometry is clamped like a reported one. A
 viewer with host effects registers its recipient before its slot, so a
@@ -268,13 +269,13 @@ flags, so it never controls the viewport or size.
 
 The handle rejects a request it lacks the capability for with a new
 `RuntimeError::NotPermitted`, before reserving input bytes or queueing. The
-owner thread checks again at dequeue: it discards input, edits, and
-arbitration reports from a revoked viewer or one whose capabilities do not
-permit them, releasing their byte reservation, and answers a refused
-scroll with `NotPermitted`. In process, capabilities are immutable, so the
-handle's check normally decides and the dequeue check matters for
-revocation. Over [#44][issue-44] the server repeats the capability check
-per message, so enforcement does not depend on client code.
+owner thread checks again at dequeue, in one place for every ordered request:
+it discards input, edits, and arbitration reports from a revoked viewer or one
+whose capabilities do not permit them, releasing their byte reservation, and
+answers a refused scroll with `NotPermitted`. In process, capabilities are
+immutable, so the handle's check normally decides and the dequeue check
+matters for revocation. Over [#44][issue-44] the server repeats the capability
+check per message, so enforcement does not depend on client code.
 
 `NotPermitted` and `Revoked` are viewer errors. Snapshot and selection
 controls from a revoked viewer are answered with `Revoked` through their

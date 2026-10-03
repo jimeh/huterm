@@ -9,9 +9,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseAction,
-    MouseTracking, RuntimeId, ScrollCommand, TerminalCommand, TerminalId,
-    TerminalInput, TerminalMetadata, TerminalSnapshot,
+    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseTracking,
+    RuntimeId, ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
+    TerminalMetadata, TerminalSnapshot,
 };
 #[cfg(test)]
 use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
@@ -602,6 +602,39 @@ pub(crate) enum RuntimeMessage {
     },
 }
 
+impl RuntimeMessage {
+    fn slot(&self) -> &Arc<Slot> {
+        match self {
+            Self::Input { slot, .. }
+            | Self::Arbitration { slot, .. }
+            | Self::Presentation { slot, .. }
+            | Self::Edit { slot, .. } => slot,
+        }
+    }
+
+    /// Whether the viewer may still make this request. The handle checked
+    /// when it sent the message; the owner thread checks again at dequeue,
+    /// because the viewer can be revoked in between, and so the rule does
+    /// not depend on client code.
+    fn permitted(&self) -> bool {
+        let slot = self.slot();
+        let capabilities = slot.capabilities;
+        !slot.is_revoked()
+            && match self {
+                Self::Input { .. } | Self::Edit { .. } => capabilities.input,
+                Self::Arbitration {
+                    report: Report::Focus(_),
+                    ..
+                } => capabilities.input || capabilities.size,
+                Self::Arbitration {
+                    report: Report::Geometry(..),
+                    ..
+                } => capabilities.size,
+                Self::Presentation { .. } => true,
+            }
+    }
+}
+
 /// Client changes to emulator state that bypass the PTY.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BufferEdit {
@@ -1036,26 +1069,19 @@ fn run_terminal(
             $body
         }};
     }
-    // Reconciles the viewer table. Viewers register and drop at any time,
-    // so this runs before every viewer request as well as each turn: a new
-    // viewer's first report must find its entry. While writes are backed up
-    // it waits: the focus reports and releases it writes would queue behind
-    // them anyway, and because finalization frees slots, subscribe-and-drop
-    // churn could otherwise grow the backlog without bound.
-    macro_rules! reconcile {
-        () => {
-            if pending_writes.is_empty() && registry.take_changed() {
-                let effects = arbiter.sync(registry);
-                if !owner!(|owner| owner.apply(effects)) {
-                    closing.store(true, Ordering::Release);
-                }
-            }
-        };
-    }
     while !closing.load(Ordering::Acquire) {
-        reconcile!();
-        if closing.load(Ordering::Acquire) {
-            continue;
+        // Reconciles the viewer table: adds viewers that have sent nothing
+        // yet and finalizes dropped and revoked ones. While writes are
+        // backed up it waits: the focus reports and releases it writes
+        // would queue behind them anyway, and because finalization frees
+        // slots, subscribe-and-drop churn could otherwise grow the backlog
+        // without bound.
+        if pending_writes.is_empty() && registry.take_changed() {
+            let effects = arbiter.sync(registry);
+            if !owner!(|owner| owner.apply(effects)) {
+                closing.store(true, Ordering::Release);
+                continue;
+            }
         }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
@@ -1113,7 +1139,6 @@ fn run_terminal(
                         let _ = reply.try_send(Err(RuntimeError::NotPermitted));
                         continue;
                     }
-                    reconcile!();
                     let result = build_snapshot(
                         &mut engine,
                         &mut publication,
@@ -1278,9 +1303,6 @@ fn run_terminal(
             }
             Err(TryRecvError::Disconnected) => break,
         };
-        if matches!(message, NextMessage::Client(_)) {
-            reconcile!();
-        }
         let healthy = match message {
             NextMessage::Output(bytes) => {
                 let now = Instant::now();
@@ -1328,82 +1350,15 @@ fn run_terminal(
                 healthy
                     && end_untracked_gesture(&engine, &mut arbiter, &mut status)
             }
-            NextMessage::Client(RuntimeMessage::Input {
-                slot,
-                input,
-                stamp,
-                reserved_bytes,
-            }) => {
-                queued_input_bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
-                let healthy = if slot.is_revoked() || !slot.capabilities.input {
-                    true
-                } else {
-                    owner!(|owner| handle_input(
-                        &mut owner,
-                        &mut arbiter,
-                        &mut probes,
-                        &slot,
-                        &input,
-                        stamp,
-                    ))
-                };
-                slot.settled();
-                let effects = arbiter.settled(&slot, registry);
-                healthy && owner!(|owner| owner.apply(effects))
-            }
-            NextMessage::Client(RuntimeMessage::Arbitration {
-                slot,
-                report,
-            }) => {
-                let mut effects = arbiter.report(&slot, report);
-                slot.settled();
-                effects.merge(arbiter.settled(&slot, registry));
-                owner!(|owner| owner.apply(effects))
-            }
-            NextMessage::Client(RuntimeMessage::Presentation {
-                slot,
-                presentation,
-            }) => {
-                let mut effects = arbiter.presentation(&slot, *presentation);
-                slot.settled();
-                effects.merge(arbiter.settled(&slot, registry));
-                owner!(|owner| owner.apply(effects))
-            }
-            NextMessage::Client(RuntimeMessage::Edit { slot, edit }) => {
-                let healthy = if slot.is_revoked() || !slot.capabilities.input {
-                    true
-                } else {
-                    let effects = match edit {
-                        BufferEdit::ClearHistory => engine.clear_history(),
-                        BufferEdit::Reset => engine.reset(),
-                    };
-                    match effects {
-                        Ok(effects) => {
-                            let healthy = owner!(|owner| {
-                                let healthy = owner.handle_effects(
-                                    effects,
-                                    "PTY writer stopped during a buffer edit",
-                                );
-                                owner.publish();
-                                healthy
-                            });
-                            healthy
-                                && end_untracked_gesture(
-                                    &engine,
-                                    &mut arbiter,
-                                    &mut status,
-                                )
-                        }
-                        Err(error) => {
-                            status.failure(error.to_string());
-                            false
-                        }
-                    }
-                };
-                slot.settled();
-                let effects = arbiter.settled(&slot, registry);
-                healthy && owner!(|owner| owner.apply(effects))
-            }
+            NextMessage::Client(message) => owner!(|owner| {
+                handle_client_message(
+                    &mut owner,
+                    &mut arbiter,
+                    &mut probes,
+                    &queued_input_bytes,
+                    message,
+                )
+            }),
         };
         if !healthy {
             closing.store(true, Ordering::Release);
@@ -1474,6 +1429,74 @@ fn end_untracked_gesture(
     }
 }
 
+/// Handles one ordered viewer request: checks that the viewer may still
+/// make it, runs it, and settles the viewer's queued count, which finalizes
+/// a dropped viewer once its last request has run. Returns false when the
+/// runtime must close.
+fn handle_client_message(
+    owner: &mut Owner<'_>,
+    arbiter: &mut Arbiter,
+    probes: &mut ProbeSchedule,
+    queued_input_bytes: &AtomicUsize,
+    message: RuntimeMessage,
+) -> bool {
+    let slot = Arc::clone(message.slot());
+    if let RuntimeMessage::Input { reserved_bytes, .. } = &message {
+        queued_input_bytes.fetch_sub(*reserved_bytes, Ordering::AcqRel);
+    }
+    // A report's effects apply together with any finalization its settling
+    // causes, so a dropped viewer's last focus change and its focus loss
+    // cancel instead of both being written.
+    let mut effects = Effects::default();
+    let healthy = !message.permitted()
+        || match message {
+            RuntimeMessage::Input { input, stamp, .. } => {
+                handle_input(owner, arbiter, probes, &slot, &input, stamp)
+            }
+            RuntimeMessage::Arbitration { report, .. } => {
+                effects = arbiter.report(&slot, report);
+                true
+            }
+            RuntimeMessage::Presentation { presentation, .. } => {
+                effects = arbiter.presentation(&slot, *presentation);
+                true
+            }
+            RuntimeMessage::Edit { edit, .. } => {
+                handle_edit(owner, arbiter, edit)
+            }
+        };
+    slot.settled();
+    effects.merge(arbiter.settled(&slot, owner.registry));
+    healthy && owner.apply(effects)
+}
+
+/// Applies a buffer edit. Returns false when the runtime must close.
+fn handle_edit(
+    owner: &mut Owner<'_>,
+    arbiter: &mut Arbiter,
+    edit: BufferEdit,
+) -> bool {
+    let effects = match edit {
+        BufferEdit::ClearHistory => owner.engine.clear_history(),
+        BufferEdit::Reset => owner.engine.reset(),
+    };
+    match effects {
+        Ok(effects) => {
+            let healthy = owner.handle_effects(
+                effects,
+                "PTY writer stopped during a buffer edit",
+            );
+            owner.publish();
+            healthy
+                && end_untracked_gesture(owner.engine, arbiter, owner.status)
+        }
+        Err(error) => {
+            owner.status.failure(error.to_string());
+            false
+        }
+    }
+}
+
 /// Handles one viewer's input: control and the return to live output come
 /// first, so the application sees the new size and viewport before the
 /// input. Returns false when the runtime must close.
@@ -1481,7 +1504,7 @@ fn handle_input(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
     probes: &mut ProbeSchedule,
-    slot: &Slot,
+    slot: &Arc<Slot>,
     input: &TerminalInput,
     stamp: InputStamp,
 ) -> bool {
@@ -1528,18 +1551,8 @@ fn handle_input(
         }
     };
     if let TerminalInput::Mouse(mouse) = input {
-        // A report the application no longer tracks writes nothing, so it
-        // must not take a gesture: its view never sends that release.
-        if modes.mouse_tracking == MouseTracking::Disabled {
-            arbiter.tracking_disabled();
-            // A release still ends its owner's gesture, though nothing is
-            // written, so finalization never releases that button again.
-            if matches!(mouse.action, MouseAction::Release(_)) {
-                arbiter.admit_mouse(slot, mouse, stamp);
-            }
-            return true;
-        }
-        if !arbiter.admit_mouse(slot, mouse, stamp) {
+        let tracked = modes.mouse_tracking != MouseTracking::Disabled;
+        if !arbiter.admit_mouse(slot, mouse, stamp, tracked) {
             return true;
         }
     }
