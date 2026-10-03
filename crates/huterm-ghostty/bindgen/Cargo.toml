@@ -9,7 +9,7 @@ version = "0.16.0"
 publish = false
 
 [dependencies]
-bindgen = { version = "=0.72.1", default-features = false, features = ["runtime"] }
+bindgen = { version = "=0.73.2", default-features = false, features = ["runtime"] }
 syn = { version = "=3.0.6", default-features = false, features = ["full", "parsing"] }
 
 [lints]
