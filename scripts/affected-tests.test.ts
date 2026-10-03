@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { affectedTests, SLOW_SUITES } from "./affected-tests.ts";
@@ -71,4 +71,39 @@ test("deleting a script selects the tests that still import or name it", () => {
   rmSync(join(root, "scripts/vm/run.sh"));
   expect(affectedTests(root, ["scripts/tool.ts"])).toEqual(["scripts/tool.test.ts"]);
   expect(affectedTests(root, ["scripts/vm/run.sh"])).toEqual(["scripts/spawn.test.ts"]);
+});
+
+test("an extensionless import of a deleted script still selects its tests", () => {
+  const root = fixture();
+  // tool.ts imports "./shared" without naming shared.ts, so only the kept
+  // import edge can connect the deletion to tool.test.ts.
+  rmSync(join(root, "scripts/shared.ts"));
+  expect(affectedTests(root, ["scripts/shared.ts"])).toEqual(["scripts/tool.test.ts"]);
+});
+
+test("--staged reads staged deletions and both sides of a rename from Git", () => {
+  const root = mkdtempSync(join(tmpdir(), "huterm-affected-staged-"));
+  roots.push(root);
+  mkdirSync(join(root, "scripts"));
+  copyFileSync(join(import.meta.dir, "affected-tests.ts"), join(root, "scripts/affected-tests.ts"));
+  const passing = `import { test } from "bun:test";\ntest("ok", () => {});\n`;
+  writeFileSync(join(root, "scripts/gone.sh"), "true\n");
+  writeFileSync(join(root, "scripts/gone.test.ts"), `${passing}// runs gone.sh\n`);
+  writeFileSync(join(root, "scripts/old-name.ts"), "export const value = 1;\n");
+  writeFileSync(join(root, "scripts/renamed.test.ts"), `${passing}// reads old-name.ts\n`);
+  writeFileSync(join(root, "scripts/other.test.ts"), passing);
+  // Commit hooks export GIT_* paths that would redirect a fixture's Git.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd: root, env });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  };
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "fixture");
+  git("rm", "-q", "scripts/gone.sh");
+  git("mv", "scripts/old-name.ts", "scripts/new name.ts");
+  const run = Bun.spawnSync(["bun", "scripts/affected-tests.ts", "--fast", "--staged"], { cwd: root, env });
+  expect(run.exitCode).toBe(0);
+  expect(run.stdout.toString()).toContain("running 2 test file(s): gone.test.ts, renamed.test.ts");
 });
