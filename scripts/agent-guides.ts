@@ -43,7 +43,8 @@ function withoutFences(markdown: string): string[] {
   for (const line of markdown.split("\n")) {
     // A fence closes only with the same character, at least as long, and
     // nothing after it, so a longer fence can show a shorter one as an example.
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    // Fences inside list items can be indented further than top-level ones.
+    const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
     if (!fence && marker) {
       fence = marker[1];
       continue;

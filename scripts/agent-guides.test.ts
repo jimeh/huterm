@@ -60,3 +60,8 @@ test("anchors use visible link text and longer fences hide shorter example fence
   expect([...anchors("## [Overview](guide.md)\n## See [the guide][ref]\n````md\n```\n# not a heading\n```\n````\n## After\n")])
     .toEqual(["overview", "see-the-guide", "after"]);
 });
+
+test("a fence indented inside a list item still hides its contents", () => {
+  const root = fixture("# Guide\n\n[CI](docs/agents/ci.md)\n\n- Step:\n\n    ```md\n    [example](missing.md)\n    ```\n", { "ci.md": "# CI\n" });
+  expect(checkGuides(root)).toEqual([]);
+});

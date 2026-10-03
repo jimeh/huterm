@@ -17,7 +17,10 @@ export function conjuncts(condition: string): string[] {
 /** Whether a step runs after any earlier check fails, but never after its gate fails. */
 export function guarded(condition: string, gate: string): boolean {
   const terms = conjuncts(condition);
-  return terms.includes("!cancelled()") && terms.includes(`steps.${gate}.outcome == 'success'`);
+  // Another status term, such as failure() or success(), would skip the
+  // check after success or after an earlier failure.
+  const otherStatus = terms.some((term) => term !== "!cancelled()" && /\b(always|cancelled|failure|success)\(\)/.test(term));
+  return !otherStatus && terms.includes("!cancelled()") && terms.includes(`steps.${gate}.outcome == 'success'`);
 }
 
 // Cleanup actions that report or cache whatever the job produced.
@@ -52,6 +55,8 @@ test("a guard needs both terms joined by &&, with the expected gate", () => {
     "${{ !cancelled() || steps.checks-setup.outcome == 'success' }}",
     "${{ !cancelled() && steps.smoke-prepare.outcome == 'success' }}",
     "${{ steps.checks-setup.outcome == 'success' }}",
+    "${{ !cancelled() && steps.checks-setup.outcome == 'success' && failure() }}",
+    "${{ !cancelled() && steps.checks-setup.outcome == 'success' && success() }}",
   ]) expect(guarded(condition, gate), condition).toBe(false);
 });
 

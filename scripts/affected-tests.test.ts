@@ -95,7 +95,8 @@ test("--staged reads staged deletions and both sides of a rename from Git", () =
   // Commit hooks export GIT_* paths that would redirect a fixture's Git.
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(["git", "-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd: root, env });
+    // Inherited signing and hooks must not affect the fixture's own commits.
+    const result = Bun.spawnSync(["git", "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: root, env });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   };
   git("init", "-q");
