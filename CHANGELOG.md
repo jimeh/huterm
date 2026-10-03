@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/jimeh/huterm/compare/v0.16.0...v0.17.0) (2026-10-03)
+
+
+### Features
+
+* give each terminal view its own runtime viewer ([#208](https://github.com/jimeh/huterm/issues/208)) ([8dfb406](https://github.com/jimeh/huterm/commit/8dfb406ca09da4c8d9481ab08a1f3c3ee6503f42))
+
 ## [0.16.0](https://github.com/jimeh/huterm/compare/v0.15.1...v0.16.0) (2026-10-01)
 
 

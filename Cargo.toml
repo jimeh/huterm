@@ -14,12 +14,12 @@ anyhow = "1.0.104"
 async-channel = "=2.5.0"
 gpui = { package = "gpui-pre", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
-huterm-config = { path = "crates/huterm-config", version = "=0.16.0" } # x-release-please-version
-huterm-core = { path = "crates/huterm-core", version = "=0.16.0" } # x-release-please-version
-huterm-ghostty = { path = "crates/huterm-ghostty", version = "=0.16.0" } # x-release-please-version
-huterm-gpui = { path = "crates/huterm-gpui", version = "=0.16.0" } # x-release-please-version
-huterm-procinfo = { path = "crates/huterm-procinfo", version = "=0.16.0" } # x-release-please-version
-huterm-protocol = { path = "crates/huterm-protocol", version = "=0.16.0" } # x-release-please-version
+huterm-config = { path = "crates/huterm-config", version = "=0.17.0" } # x-release-please-version
+huterm-core = { path = "crates/huterm-core", version = "=0.17.0" } # x-release-please-version
+huterm-ghostty = { path = "crates/huterm-ghostty", version = "=0.17.0" } # x-release-please-version
+huterm-gpui = { path = "crates/huterm-gpui", version = "=0.17.0" } # x-release-please-version
+huterm-procinfo = { path = "crates/huterm-procinfo", version = "=0.17.0" } # x-release-please-version
+huterm-protocol = { path = "crates/huterm-protocol", version = "=0.17.0" } # x-release-please-version
 filedescriptor = "=0.8.3"
 memchr = "=2.8.3"
 portable-pty = "=0.9.0"
@@ -48,7 +48,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-version = "0.16.0"
+version = "0.17.0"
 
 [features]
 default = []
