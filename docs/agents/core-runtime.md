@@ -52,6 +52,8 @@ arrived since the last probe, or a repeated title's attribution is 250 ms old.
   in `crates/huterm-core/tests/descriptor_limits.rs`, their own process. Core
   unit tests may only raise the soft limit and must release filler
   descriptors when they finish.
+- Concurrent `openpty` calls failed on macOS 27, so `pty::spawn` serializes PTY
+  creation.
 
 ## Runtime queues and workers
 
@@ -65,6 +67,55 @@ cancellation descriptors; signal them and drop the data receiver before
 joining workers. The child waiter owns the physical child without holding a
 shared lock across `wait`; bounded teardown uses its cached-status proxy.
 Never join it before signalling and closing PTY handles.
+
+## Terminal viewers
+
+Each view reaches a terminal through its own `TerminalViewer` registration (see
+[the terminal viewers plan](../plans/terminal-viewers.md)). Terminal status
+(title, metadata, lifecycle, bell count, numbered failures) is revisioned
+state, published only when a value changes, so floods cost constant memory and
+a late viewer reads the current state; a gap in failure numbers is reported,
+never hidden. Host-effect admission wakes the selected recipient's own viewer.
+The runtime closes every viewer's wake when it stops, through a guard that also
+runs on panic, and closes a revoked viewer's wake when it finalizes that viewer.
+
+Reconcile at the top of each turn and again in `handle_client_message` when the
+registry changed, so every request has its viewer's entry and follows any
+finalization that preceded it; a mouse press with no entry would take a gesture
+that finalization could not release. Never restart the turn for a pending
+change: subscribe-and-drop churn then starves requests and output. Never
+reconcile while writes are backed up: freed slots would let that churn queue
+focus reports without bound. Requests are dequeued only once writes drain, and
+the idle wait rechecks for a pending change; the backlog consumed the
+notification. `RuntimeMessage::permitted` is the one dequeue check for ordered
+requests, and `handle_client_message` settles each once. Scroll numbers live on
+the viewer's slot, not its arbitration entry: scrolls are controls that can
+precede or outlive the entry.
+
+Rearm a viewer's invalidation on the runtime owner thread when constructing
+that viewer's snapshot, not when draining its notification, so hidden or
+frame-blocked viewers do not wake for every output chunk; one viewer's snapshot
+never rearms another. Every snapshot-affecting change, including viewport moves
+and controller-driven resizes and presentations, goes through the one
+publication function, because viewers share a snapshot cache keyed by its
+revision. Viewer errors (`NotPermitted`, `Revoked`) answer only the requesting
+viewer and never pass through the runtime's fatal snapshot path. Capabilities
+are checked by the handle and again at dequeue.
+
+The controlling viewer, the one that most recently gained focus or typed (shown
+or hidden, as tmux's `latest`), decides the canonical size and the applied
+presentation; a single viewer always controls. Typing returns the shared
+viewport to live on the runtime, skipped when the same viewer has a later
+scroll applied; the view only drops its own pending scroll intent, unless its
+queue refused the input, as in an exited tab; a viewer's scroll sent before
+such typing never moves the viewport once the typing has run. Accepted mouse
+gestures always end: releases are never discarded for geometry, a finalized
+gesture owner gets synthetic releases at its own last position, turning
+tracking off stops the held buttons from blocking other viewers but keeps their
+releases the owner's until another viewer's press is admitted or the owner
+presses that button again, and no report takes a gesture while tracking is off.
+After root exit, typing still moves control and returns the viewport to live,
+and replies from a resize are dropped with the input.
 
 ## Snapshots and link lookup
 
@@ -120,7 +171,9 @@ back newly created sessions on initial workspace/tab failure.
 
 ## Attachments, close consent, and exit
 
-Session AttachmentId is distinct from a terminal RuntimeClient handle. Detach
+Session AttachmentId is distinct from a terminal viewer (`ViewerId`); one
+attachment holds a viewer per displayed terminal, and detach, retarget, session
+close, and cross-session moves revoke its viewers. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. Desktop close uses prepare/check/commit and request generations.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh

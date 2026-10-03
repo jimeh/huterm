@@ -1,7 +1,8 @@
 # Terminal viewers
 
-Status: approved for [issue #22][issue-22] after three adversarial review
-rounds. PR 1 delivers [#205][issue-205]; PR 2 delivers [#206][issue-206].
+Status: in progress. Approved for [issue #22][issue-22] after three
+adversarial review rounds. PR 1 (#208) delivers [#205][issue-205]; PR 2
+delivers [#206][issue-206].
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
@@ -71,7 +72,7 @@ Observed on `main` at `e87c6084`:
   retains a refused resize in a latest-wins `pending_resize`, outside the
   `InputQueue`. `WorkspaceView::sync_tab_layout` runs it for hidden tabs
   too, so config, scale, and bounds changes reach background PTYs, as
-  AGENTS.md requires. After root exit the runtime still resizes the
+  the desktop client guide requires. After root exit the runtime still resizes the
   emulator and skips only the PTY ioctl. Two views of one terminal would
   alternate the PTY size.
 - Input, resize, presentation, and edit messages share one bounded
@@ -830,7 +831,8 @@ room so [#44][issue-44] adds messages instead of changing semantics:
 4. Desktop: migrate `TerminalView`, its activity task, spawn registration,
    pending arbitration state, scroll intent on typing, GPUI tests,
    benchmarks, and examples to one viewer per view.
-5. Documentation: AGENTS.md, CONTEXT.md, and the plan references below.
+5. Documentation: the agent guides, CONTEXT.md, and the plan references
+   below.
 6. `pty::spawn` serializes PTY creation with a process-wide lock.
    Concurrent `openpty` calls in one process failed on macOS 27 under the
    new parallel PTY tests. Mux already serializes production spawns, so
@@ -1056,8 +1058,9 @@ afterwards. Run `mise run verify` before handoff.
 
 ## Documentation
 
-- `AGENTS.md`: replace the single-consumer event and activity rules with the
-  viewer rules: per-viewer rearm at snapshot construction, status as state,
+- `docs/agents/core-runtime.md` and `docs/agents/desktop-client.md`: replace
+  the single-consumer event and activity rules with the viewer rules:
+  per-viewer rearm at snapshot construction, status as state,
   capability checks at dequeue, viewer errors never fatal, focus changes
   exempt from input limits and never overtaking earlier input while
   geometry stays latest-wins,
