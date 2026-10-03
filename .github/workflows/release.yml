@@ -97,7 +97,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install preflight tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           cache: false
           install_args: bun
@@ -152,7 +152,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install macOS release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           cache: false
           install_args: bun zig syft pipx:spdx-tools
@@ -252,7 +252,7 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           cache: false
           install_args: bun zig
@@ -346,7 +346,7 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           cache: false
           install_args: bun zig
@@ -425,7 +425,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install assembly tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           cache: false
           install_args: bun
