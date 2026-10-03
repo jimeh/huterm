@@ -323,8 +323,9 @@ macOS default, and Linux defaults to `top`. On macOS
 the 32-point title strip becomes the tab row: it starts after the traffic
 lights, holds the tabs and `+`, keeps its trailing space draggable with the
 usual double-click action, and ends with the menu button. The terminal gains
-the height a top bar would take. A single tab with `always_show = false` shows
-the strip with the active tab's title, as the other positions do. On Linux,
+the height a top bar would take. With a single tab and `always_show = false`,
+the tabs stay hidden as in the other positions, and the strip shows only the
+active tab's title. On Linux,
 Huterm asks for client-side decorations and draws the whole row itself: the
 tabs and `+`, draggable empty space, the menu button, and round minimize,
 maximize, and close controls. The controls follow the desktop's button layout,

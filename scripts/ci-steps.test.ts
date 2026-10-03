@@ -18,11 +18,12 @@ test.each([
   const start = steps.findIndex((step) => step.id === setup);
   expect(start).toBeGreaterThanOrEqual(0);
   const gated = (condition: string) => gates.some((gate) => condition.includes(`steps.${gate}.outcome == 'success'`));
+  // Checks are run steps and need the full guard; failure() alone would skip
+  // them on success. Reporting and cache actions may run on failure only.
   const unguarded = steps.slice(start + 1).filter((step) => {
     const condition = step.if ?? "";
-    if (/failure\(\)/.test(condition)) return false;
-    if (!/!cancelled\(\)/.test(condition)) return true;
-    return step.run !== undefined && !gated(condition);
+    if (step.run !== undefined) return !(/!cancelled\(\)/.test(condition) && gated(condition));
+    return !/!cancelled\(\)|failure\(\)/.test(condition);
   }).map((step) => step.name);
   expect(unguarded).toEqual([]);
 });

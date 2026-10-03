@@ -27,7 +27,9 @@ export function anchors(markdown: string): Set<string> {
   for (const line of withoutFences(markdown)) {
     const heading = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
     if (!heading) continue;
-    const base = heading[1]!.toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, "").replace(/ /g, "-");
+    // GitHub slugs a heading's visible text, so drop link targets first.
+    const text = heading[1]!.replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, "$1");
+    const base = text.toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, "").replace(/ /g, "-");
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
     result.add(count === 0 ? base : `${base}-${count}`);
@@ -39,9 +41,15 @@ function withoutFences(markdown: string): string[] {
   const lines: string[] = [];
   let fence: string | undefined;
   for (const line of markdown.split("\n")) {
-    const marker = /^\s*(```|~~~)/.exec(line)?.[1];
-    if (marker && (!fence || marker === fence)) {
-      fence = fence ? undefined : marker;
+    // A fence closes only with the same character, at least as long, and
+    // nothing after it, so a longer fence can show a shorter one as an example.
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence && marker) {
+      fence = marker[1];
+      continue;
+    }
+    if (fence && marker && marker[1]![0] === fence[0] && marker[1]!.length >= fence.length && !marker[2]!.trim()) {
+      fence = undefined;
       continue;
     }
     if (!fence) lines.push(line);

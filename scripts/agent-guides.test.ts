@@ -55,3 +55,8 @@ test("every plan needs a recognized status line", () => {
   writeFileSync(join(root, "docs/plans/missing.md"), "# Missing\n\nNo status here.\n");
   expect(checkGuides(root).map((report) => report.split(":")[0])).toEqual(["docs/plans/missing.md", "docs/plans/stale.md"]);
 });
+
+test("anchors use visible link text and longer fences hide shorter example fences", () => {
+  expect([...anchors("## [Overview](guide.md)\n## See [the guide][ref]\n````md\n```\n# not a heading\n```\n````\n## After\n")])
+    .toEqual(["overview", "see-the-guide", "after"]);
+});
