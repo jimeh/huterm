@@ -794,15 +794,16 @@ enum WriterMessage {
     Write(Vec<u8>),
 }
 
-/// The PTY-facing state the runtime owner applies arbitration effects to.
+/// The PTY-facing state the runtime owner mutates and applies arbitration
+/// effects to.
 struct Owner<'a> {
-    engine: &'a mut TerminalEngine,
-    master: &'a dyn portable_pty::MasterPty,
-    writer: &'a async_channel::Sender<WriterMessage>,
-    pending_writes: &'a mut VecDeque<Vec<u8>>,
-    status: &'a mut StatusPublisher,
-    metadata: &'a mut PublishedMetadata,
-    publication: &'a mut Publication,
+    engine: TerminalEngine,
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    writer: async_channel::Sender<WriterMessage>,
+    pending_writes: VecDeque<Vec<u8>>,
+    status: StatusPublisher,
+    metadata: PublishedMetadata,
+    publication: Publication,
     registry: &'a Registry,
     child_exited: bool,
 }
@@ -844,6 +845,7 @@ impl Owner<'_> {
             };
             if !self.handle_effects(
                 engine_effects,
+                None,
                 "PTY writer stopped during resize",
             ) {
                 return false;
@@ -893,7 +895,7 @@ impl Owner<'_> {
 
     fn write(&mut self, bytes: Vec<u8>, failure: &str) -> bool {
         if bytes.is_empty()
-            || queue_write(bytes, self.writer, self.pending_writes)
+            || queue_write(bytes, &self.writer, &mut self.pending_writes)
                 != WriterQueueState::Disconnected
         {
             return true;
@@ -902,9 +904,14 @@ impl Owner<'_> {
         false
     }
 
+    /// Runs an engine operation's effects in order. `output` carries the
+    /// probe schedule and the arrival time for effects parsed from PTY
+    /// output, where a new title can mean a new program; a resize or a
+    /// buffer edit starts none. Returns false when the runtime must close.
     fn handle_effects(
         &mut self,
         effects: Vec<EngineEffect>,
+        mut output: Option<(&mut ProbeSchedule, Instant)>,
         failure: &str,
     ) -> bool {
         for effect in effects {
@@ -914,13 +921,21 @@ impl Owner<'_> {
             {
                 continue;
             }
+            // Programs can re-send an unchanged title on every chunk; only
+            // new text can mean a new program.
+            if let Some((probes, now)) = &mut output
+                && let EngineEffect::Title(title) = &effect
+                && self.metadata.reports.title_text_changes(title)
+            {
+                probes.title(*now);
+            }
             if handle_effect(
                 effect,
-                self.writer,
-                self.pending_writes,
-                self.status,
-                self.metadata,
-                self.master,
+                &self.writer,
+                &mut self.pending_writes,
+                &mut self.status,
+                &mut self.metadata,
+                self.master.as_ref(),
             ) == WriterQueueState::Disconnected
             {
                 self.status.failure(failure.into());
@@ -939,7 +954,7 @@ impl Owner<'_> {
 )]
 fn run_terminal(
     terminal_id: TerminalId,
-    mut engine: TerminalEngine,
+    engine: TerminalEngine,
     mut arbiter: Arbiter,
     process: PtyProcess,
     messages: Receiver<RuntimeMessage>,
@@ -1054,68 +1069,58 @@ fn run_terminal(
         }
     };
     let _ = startup.send(Ok(()));
-    let mut publication = Publication::default();
-    publication.publish(registry, None, engine.generation());
+    let mut owner = Owner {
+        engine,
+        master,
+        writer: writer_sender,
+        pending_writes: VecDeque::new(),
+        status,
+        metadata: PublishedMetadata::default(),
+        publication: Publication::default(),
+        registry,
+        child_exited: false,
+    };
+    owner.publish();
 
     let lifecycle = Arc::new(crate::jobs::JobLifecycle::default());
-    let mut child_exited = false;
-    let mut metadata = PublishedMetadata::default();
     #[cfg(test)]
     let mut pty_eof = false;
-    let mut pending_writes = VecDeque::new();
     let mut output_turn = false;
     let mut probes = ProbeSchedule::default();
     let root = child.process_id();
-    // Runs `$body` with an `Owner` borrowing the runtime's PTY-facing state.
-    macro_rules! owner {
-        (|$owner:ident| $body:expr) => {{
-            let mut $owner = Owner {
-                engine: &mut engine,
-                master: master.as_ref(),
-                writer: &writer_sender,
-                pending_writes: &mut pending_writes,
-                status: &mut status,
-                metadata: &mut metadata,
-                publication: &mut publication,
-                registry,
-                child_exited,
-            };
-            $body
-        }};
-    }
     while !closing.load(Ordering::Acquire) {
-        if !owner!(|owner| owner.reconcile(&mut arbiter)) {
+        if !owner.reconcile(&mut arbiter) {
             closing.store(true, Ordering::Release);
             continue;
         }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
             &lifecycle,
-            &mut status,
-            &mut child_exited,
+            &mut owner.status,
+            &mut owner.child_exited,
             &input_closed,
-            &mut pending_writes,
+            &mut owner.pending_writes,
         ) {
-            status.failure(error);
+            owner.status.failure(error);
             closing.store(true, Ordering::Release);
         }
         // Root exit clears the name; the exited terminal is never probed.
-        if child_exited {
+        if owner.child_exited {
             probes.stop();
-            metadata.publish(None, &mut status);
+            owner.metadata.publish(None, &mut owner.status);
         } else {
             let now = Instant::now();
             if probes.due(now) {
                 let probe = crate::foreground::probe(
-                    master.process_group_leader(),
+                    owner.master.process_group_leader(),
                     root,
                 );
                 probes.probed(now, probe.job);
-                metadata.reports.probed(probe.group, probe.directory);
-                metadata.publish(probe.name, &mut status);
+                owner.metadata.reports.probed(probe.group, probe.directory);
+                owner.metadata.publish(probe.name, &mut owner.status);
             }
         }
-        status.flush(registry);
+        owner.status.flush(registry);
         let mut controls_drained = 0;
         while controls_drained < MESSAGE_CAPACITY {
             let Ok(control) = controls.try_recv() else {
@@ -1145,8 +1150,8 @@ fn run_terminal(
                         continue;
                     }
                     let result = build_snapshot(
-                        &mut engine,
-                        &mut publication,
+                        &mut owner.engine,
+                        &mut owner.publication,
                         &mut arbiter,
                         registry,
                         &slot,
@@ -1158,7 +1163,7 @@ fn run_terminal(
                     complete_snapshot_request(
                         result,
                         &reply,
-                        &mut status,
+                        &mut owner.status,
                         &closing,
                     );
                 }
@@ -1171,7 +1176,7 @@ fn run_terminal(
                     let result = if slot.is_revoked() {
                         Err(RuntimeError::Revoked)
                     } else {
-                        engine.extract_text(generation, range)
+                        owner.engine.extract_text(generation, range)
                     };
                     let _ = reply.try_send(result);
                 }
@@ -1180,20 +1185,20 @@ fn run_terminal(
                     if let Err(error) = observe_child_exit(
                         child.as_mut(),
                         &lifecycle,
-                        &mut status,
-                        &mut child_exited,
+                        &mut owner.status,
+                        &mut owner.child_exited,
                         &input_closed,
-                        &mut pending_writes,
+                        &mut owner.pending_writes,
                     ) {
-                        status.failure(error);
+                        owner.status.failure(error);
                         closing.store(true, Ordering::Release);
-                    } else if !child_exited {
-                        status.failure(message);
+                    } else if !owner.child_exited {
+                        owner.status.failure(message);
                         closing.store(true, Ordering::Release);
                     }
                 }
                 RuntimeControl::WorkerFailed(message) => {
-                    status.failure(message);
+                    owner.status.failure(message);
                     closing.store(true, Ordering::Release);
                 }
                 RuntimeControl::PtyEof => {
@@ -1206,14 +1211,14 @@ fn run_terminal(
                     let _ = reply.send(crate::jobs::JobContext {
                         lifecycle: Arc::clone(&lifecycle),
                         shell: child.process_id(),
-                        foreground: (!child_exited)
-                            .then(|| master.process_group_leader())
+                        foreground: (!owner.child_exited)
+                            .then(|| owner.master.process_group_leader())
                             .flatten(),
                         #[cfg(test)]
-                        exited: child_exited,
+                        exited: owner.child_exited,
                         #[cfg(test)]
                         pty_eof,
-                        tty: master.tty_name().and_then(|name| {
+                        tty: owner.master.tty_name().and_then(|name| {
                             huterm_procinfo::tty_device(&name)
                         }),
                     });
@@ -1221,14 +1226,14 @@ fn run_terminal(
                 #[cfg(test)]
                 RuntimeControl::Presentation(reply) => {
                     let _ = reply.send((
-                        engine.presentation().clone(),
-                        engine.size(),
-                        engine.cell_size(),
+                        owner.engine.presentation().clone(),
+                        owner.engine.size(),
+                        owner.engine.cell_size(),
                     ));
                 }
                 #[cfg(test)]
                 RuntimeControl::PendingWrites(reply) => {
-                    let _ = reply.send(pending_writes.len());
+                    let _ = reply.send(owner.pending_writes.len());
                 }
                 #[cfg(test)]
                 RuntimeControl::ProbeArmed(reply) => {
@@ -1243,11 +1248,11 @@ fn run_terminal(
                 RuntimeControl::Panic => panic!("injected runtime panic"),
                 #[cfg(test)]
                 RuntimeControl::ForegroundJob(reply) => {
-                    let busy = !child_exited && {
+                    let busy = !owner.child_exited && {
                         let shell = child
                             .process_id()
                             .and_then(|id| i32::try_from(id).ok());
-                        let foreground = master.process_group_leader();
+                        let foreground = owner.master.process_group_leader();
                         foreground.zip(shell).is_none_or(
                             |(foreground, shell)| foreground != shell,
                         )
@@ -1260,31 +1265,31 @@ fn run_terminal(
         if closing.load(Ordering::Acquire) {
             break;
         }
-        if child_exited {
+        if owner.child_exited {
             // Closing the channel wakes an idle writer even when no input
             // arrives after root exit. Queued writes are rejected by input_closed.
-            writer_sender.close();
+            owner.writer.close();
             writer_cancel.cancel();
         }
         let mut writer_state =
-            flush_pending_write(&writer_sender, &mut pending_writes);
+            flush_pending_write(&owner.writer, &mut owner.pending_writes);
         if writer_state == WriterQueueState::Full {
             writer_capacity.request_wake();
             // The writer may have dequeued before it saw the request.
             writer_state =
-                flush_pending_write(&writer_sender, &mut pending_writes);
+                flush_pending_write(&owner.writer, &mut owner.pending_writes);
         }
         match writer_state {
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
-                status.flush(registry);
+                owner.status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
                 }
                 continue;
             }
             WriterQueueState::Disconnected => {
-                status.failure(
+                owner.status.failure(
                     "PTY writer stopped before queued input was written".into(),
                 );
                 closing.store(true, Ordering::Release);
@@ -1300,7 +1305,7 @@ fn run_terminal(
                 continue;
             }
             Err(TryRecvError::Empty) => {
-                status.flush(registry);
+                owner.status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
                 }
@@ -1312,78 +1317,52 @@ fn run_terminal(
             NextMessage::Output(bytes) => {
                 let now = Instant::now();
                 probes.output(now);
-                let effects = match engine.process(&bytes) {
+                let effects = match owner.engine.process(&bytes) {
                     Ok(effects) => effects,
                     Err(error) => {
-                        status.failure(error.to_string());
+                        owner.status.failure(error.to_string());
                         closing.store(true, Ordering::Release);
                         continue;
                     }
                 };
-                let mut healthy = true;
-                for effect in effects {
-                    if child_exited
-                        && matches!(effect, EngineEffect::PtyWrite(_))
-                    {
-                        continue;
-                    }
-                    // Programs can re-send an unchanged title on every
-                    // chunk; only new text can mean a new program.
-                    if let EngineEffect::Title(title) = &effect
-                        && metadata.reports.title_text_changes(title)
-                    {
-                        probes.title(now);
-                    }
-                    if handle_effect(
-                        effect,
-                        &writer_sender,
-                        &mut pending_writes,
-                        &mut status,
-                        &mut metadata,
-                        master.as_ref(),
-                    ) == WriterQueueState::Disconnected
-                    {
-                        status.failure(
-                            "PTY writer stopped before a terminal reply was written"
-                                .into(),
-                        );
-                        healthy = false;
-                        break;
-                    }
-                }
-                publication.publish(registry, None, engine.generation());
-                healthy
-                    && end_untracked_gesture(&engine, &mut arbiter, &mut status)
+                let healthy = owner.handle_effects(
+                    effects,
+                    Some((&mut probes, now)),
+                    "PTY writer stopped before a terminal reply was written",
+                );
+                owner.publish();
+                healthy && end_untracked_gesture(&mut owner, &mut arbiter)
             }
-            NextMessage::Client(message) => owner!(|owner| {
-                handle_client_message(
-                    &mut owner,
-                    &mut arbiter,
-                    &mut probes,
-                    &queued_input_bytes,
-                    message,
-                )
-            }),
+            NextMessage::Client(message) => handle_client_message(
+                &mut owner,
+                &mut arbiter,
+                &mut probes,
+                &queued_input_bytes,
+                message,
+            ),
         };
         if !healthy {
             closing.store(true, Ordering::Release);
         }
         // A snapshot that shows this message's output is never ahead of the
         // status the same output produced.
-        status.flush(registry);
+        owner.status.flush(registry);
     }
 
     closing.store(true, Ordering::Release);
     // A failure that ended the loop reaches viewers now, not after the
     // bounded teardown below.
-    status.flush(registry);
+    owner.status.flush(registry);
     lifecycle.retire();
-    if child_exited {
+    if owner.child_exited {
         // Root exit completes the terminal. Never signal historical groups
         // after reaping, even when detached descendants remain alive.
         process_groups = pty::process_groups(None);
     } else {
-        pty::record_foreground_group(master.as_ref(), &mut process_groups);
+        pty::record_foreground_group(
+            owner.master.as_ref(),
+            &mut process_groups,
+        );
         process_groups.assessed = shutdown_groups
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1393,8 +1372,8 @@ fn run_terminal(
     }
     pty::terminate_child(child.as_mut(), killer.as_mut(), &process_groups);
     writer_cancel.cancel();
-    drop(writer_sender);
-    drop(master);
+    drop(owner.writer);
+    drop(owner.master);
     drop(messages);
     drop(output);
     reader_cancel.cancel();
@@ -1403,24 +1382,22 @@ fn run_terminal(
     let result = if pty::reap_child(child) {
         Ok(())
     } else {
-        status.failure(RuntimeError::ShutdownTimedOut.to_string());
+        owner
+            .status
+            .failure(RuntimeError::ShutdownTimedOut.to_string());
         Err(RuntimeError::ShutdownTimedOut)
     };
-    status.flush(registry);
+    owner.status.flush(registry);
     result
 }
 
 /// Stops a gesture the application no longer tracks from blocking other
 /// viewers. Returns false when the runtime must close.
-fn end_untracked_gesture(
-    engine: &TerminalEngine,
-    arbiter: &mut Arbiter,
-    status: &mut StatusPublisher,
-) -> bool {
+fn end_untracked_gesture(owner: &mut Owner<'_>, arbiter: &mut Arbiter) -> bool {
     if !arbiter.gesture_held() {
         return true;
     }
-    match engine.modes() {
+    match owner.engine.modes() {
         Ok(modes) => {
             if modes.mouse_tracking == MouseTracking::Disabled {
                 arbiter.tracking_disabled();
@@ -1428,7 +1405,7 @@ fn end_untracked_gesture(
             true
         }
         Err(error) => {
-            status.failure(error.to_string());
+            owner.status.failure(error.to_string());
             false
         }
     }
@@ -1505,11 +1482,11 @@ fn handle_edit(
         Ok(effects) => {
             let healthy = owner.handle_effects(
                 effects,
+                None,
                 "PTY writer stopped during a buffer edit",
             );
             owner.publish();
-            healthy
-                && end_untracked_gesture(owner.engine, arbiter, owner.status)
+            healthy && end_untracked_gesture(owner, arbiter)
         }
         Err(error) => {
             owner.status.failure(error.to_string());
