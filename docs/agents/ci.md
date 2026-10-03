@@ -89,7 +89,10 @@ Give each independent check its own named step. In jobs that run several,
 guard each with `if: ${{ !cancelled() && steps.<setup>.outcome == 'success' }}`,
 where `<setup>` is the job's last setup step, as the Checks, Policy, and smoke
 jobs do. Without the guard, the first failing step skips the rest and hides
-their results. Do not fold a check into a preparation step: `terminfo:check`
+their results. `scripts/ci-steps.test.ts` accepts only the exact guard forms
+it lists, because GitHub expressions offer too many ways to skip a step to
+reject them one by one; add a new form there deliberately when a step needs
+one. Do not fold a check into a preparation step: `terminfo:check`
 once ran inside the smoke dependency step, where its failure blocked every smoke
 and read as a preparation failure.
 

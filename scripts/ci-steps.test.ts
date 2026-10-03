@@ -7,49 +7,54 @@ type Workflow = { jobs: Record<string, { steps: Step[] }> };
 
 const workflow = Bun.YAML.parse(readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8")) as Workflow;
 
-/** The top-level `&&` terms of a step condition, or none when it uses `||`. */
-export function conjuncts(condition: string): string[] {
-  const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
-  if (expression.includes("||")) return [];
-  return expression.split("&&").map((term) => term.trim());
+/** A step condition without its `${{ }}` wrapper. */
+export function expression(condition: string): string {
+  return condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
 }
 
-/** Whether a step runs after any earlier check fails, but never after its gate fails. */
-export function guarded(condition: string, gate: string): boolean {
-  const terms = conjuncts(condition);
-  // Another status term, such as failure() or success(), would skip the
-  // check after success or after an earlier failure.
-  const otherStatus = terms.some((term) => term !== "!cancelled()" && /\b(always|cancelled|failure|success)\(\)/.test(term));
-  return !otherStatus && terms.includes("!cancelled()") && terms.includes(`steps.${gate}.outcome == 'success'`);
+/**
+ * The only conditions a check step may use: run after an earlier check fails,
+ * never after its gate fails, optionally on one platform. GitHub's expression
+ * language has too many ways to skip a step to list the bad ones, so any other
+ * shape fails until it is added here on purpose.
+ */
+export function checkGuards(gate: string): string[] {
+  const guard = `!cancelled() && steps.${gate}.outcome == 'success'`;
+  return [guard, `${guard} && runner.os == 'Linux'`, `${guard} && runner.os == 'macOS'`];
 }
 
-// Cleanup actions that report or cache whatever the job produced.
+// Cleanup actions report or cache whatever the job produced, so each of their
+// conditions still runs after a failed check.
 const cleanup = /\/(save-ghostty|upload-artifact)\b/;
+export const cleanupGuards = [
+  "!cancelled()",
+  "failure() && runner.os == 'Linux'",
+  "!cancelled() && (steps.smoke-build.outcome == 'success' || failure())",
+];
 
-// After setup, a failing check must not skip the checks that follow it, and a
-// failed prerequisite must skip them. Smoke runs need compiled binaries, so
-// they gate on smoke-build; the steps that prepare and compile gate on
-// smoke-prepare. Only cleanup actions may instead run on failure alone.
+// Smoke runs need compiled binaries, so they gate on smoke-build; the steps
+// that prepare and compile gate on smoke-prepare.
 test.each([
   ["policy", "policy-setup", () => "policy-setup"],
   ["checks", "checks-setup", () => "checks-setup"],
   ["smoke", "smoke-prepare", (step: Step) => step.run?.includes("HUTERM_CI_SMOKE_STEP=") ? "smoke-build" : "smoke-prepare"],
-] as const)("%s steps after %s run regardless of earlier check failures", (job, setup, gateFor) => {
+] as const)("%s steps after %s use an allowed guard", (job, setup, gateFor) => {
   const steps = workflow.jobs[job]!.steps;
   const start = steps.findIndex((step) => step.id === setup);
   expect(start).toBeGreaterThanOrEqual(0);
   const unguarded = steps.slice(start + 1).filter((step) => {
-    const condition = step.if ?? "";
-    if (step.uses && cleanup.test(step.uses)) return !/!cancelled\(\)|failure\(\)/.test(condition);
-    return !guarded(condition, gateFor(step));
+    const allowed = step.uses && cleanup.test(step.uses) ? cleanupGuards : checkGuards(gateFor(step));
+    return !allowed.includes(expression(step.if ?? ""));
   }).map((step) => step.name);
   expect(unguarded).toEqual([]);
 });
 
-test("a guard needs both terms joined by &&, with the expected gate", () => {
-  const gate = "checks-setup";
-  expect(guarded("${{ !cancelled() && steps.checks-setup.outcome == 'success' && runner.os == 'Linux' }}", gate)).toBe(true);
+test("only the exact guards are allowed", () => {
+  const allowed = checkGuards("checks-setup");
+  expect(allowed).toContain(expression("${{ !cancelled() && steps.checks-setup.outcome == 'success' && runner.os == 'Linux' }}"));
+  // Each of these once passed a looser rule, or was named in review.
   for (const condition of [
+    "",
     "${{ !cancelled() }}",
     "failure()",
     "${{ !cancelled() || steps.checks-setup.outcome == 'success' }}",
@@ -57,7 +62,12 @@ test("a guard needs both terms joined by &&, with the expected gate", () => {
     "${{ steps.checks-setup.outcome == 'success' }}",
     "${{ !cancelled() && steps.checks-setup.outcome == 'success' && failure() }}",
     "${{ !cancelled() && steps.checks-setup.outcome == 'success' && success() }}",
-  ]) expect(guarded(condition, gate), condition).toBe(false);
+    "${{ !cancelled() && steps.checks-setup.outcome == 'success' && steps.lint.outcome == 'success' }}",
+    "${{ !cancelled() && steps.checks-setup.conclusion == 'success' }}",
+  ]) expect(allowed, condition).not.toContain(expression(condition));
+  for (const condition of ["${{ !cancelled() && success() }}", "success()", "${{ always() }}"]) {
+    expect(cleanupGuards, condition).not.toContain(expression(condition));
+  }
 });
 
 test("CI smoke steps, ci:smoke:run, and the step supervisor name the same steps", () => {
