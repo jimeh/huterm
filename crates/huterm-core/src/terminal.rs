@@ -1270,6 +1270,13 @@ fn run_terminal(
                 flush_pending_write(&writer_sender, &mut pending_writes);
         }
         match writer_state {
+            // A reconcile deferred behind backed-up writes runs before the
+            // next request. The backlog consumed its notification, so
+            // nothing else is certain to wake this thread for it, and a
+            // request must not run ahead of a finalization it follows.
+            WriterQueueState::Drained if registry.has_pending_change() => {
+                continue;
+            }
             WriterQueueState::Drained => {}
             WriterQueueState::Full => {
                 status.flush(registry);
@@ -1289,12 +1296,6 @@ fn run_terminal(
         let message = match next_message(&messages, &output, &mut output_turn) {
             Ok(message) => message,
             Err(TryRecvError::Empty) => {
-                // Writes have drained, so a reconcile deferred behind them
-                // runs now: its notification was consumed during the
-                // backlog, and nothing else may wake this thread again.
-                if registry.has_pending_change() {
-                    continue;
-                }
                 status.flush(registry);
                 if controls_drained < MESSAGE_CAPACITY {
                     wake.wait_until(probes.deadline());
@@ -1449,22 +1450,23 @@ fn handle_client_message(
     // cancel instead of both being written.
     let mut effects = Effects::default();
     let healthy = !message.permitted()
-        || match message {
-            RuntimeMessage::Input { input, stamp, .. } => {
-                handle_input(owner, arbiter, probes, &slot, &input, stamp)
-            }
-            RuntimeMessage::Arbitration { report, .. } => {
-                effects = arbiter.report(&slot, report);
-                true
-            }
-            RuntimeMessage::Presentation { presentation, .. } => {
-                effects = arbiter.presentation(&slot, *presentation);
-                true
-            }
-            RuntimeMessage::Edit { edit, .. } => {
-                handle_edit(owner, arbiter, edit)
-            }
-        };
+        || owner.apply(arbiter.meet(&slot))
+            && match message {
+                RuntimeMessage::Input { input, stamp, .. } => {
+                    handle_input(owner, arbiter, probes, &slot, &input, stamp)
+                }
+                RuntimeMessage::Arbitration { report, .. } => {
+                    effects = arbiter.report(&slot, report);
+                    true
+                }
+                RuntimeMessage::Presentation { presentation, .. } => {
+                    effects = arbiter.presentation(&slot, *presentation);
+                    true
+                }
+                RuntimeMessage::Edit { edit, .. } => {
+                    handle_edit(owner, arbiter, edit)
+                }
+            };
     slot.settled();
     effects.merge(arbiter.settled(&slot, owner.registry));
     healthy && owner.apply(effects)
@@ -1504,7 +1506,7 @@ fn handle_input(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
     probes: &mut ProbeSchedule,
-    slot: &Arc<Slot>,
+    slot: &Slot,
     input: &TerminalInput,
     stamp: InputStamp,
 ) -> bool {

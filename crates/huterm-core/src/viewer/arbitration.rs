@@ -121,11 +121,25 @@ impl Arbiter {
             .position(|entry| entry.slot.id == slot.id)
     }
 
+    /// Adds the viewer's entry if this request is the first the owner
+    /// thread has seen from it, returning what its initial state requires.
+    /// Viewers register at any time, so the runtime calls this before every
+    /// request instead of depending on a reconcile having run. Every kind of
+    /// request needs the entry: a mouse press with none would take a gesture
+    /// that finalization could not release.
+    pub(crate) fn meet(&mut self, slot: &Arc<Slot>) -> Effects {
+        let mut effects = Effects::default();
+        if self.index(slot).is_none()
+            && self.entry(slot, &mut effects).is_some()
+        {
+            effects.merge(self.recompute());
+        }
+        effects
+    }
+
     /// The entry for a viewer, added with its initial state the first time
-    /// the owner thread meets it: in a reconcile, or in the viewer's first
-    /// request when that arrives sooner. Viewers register at any time, so a
-    /// request never depends on a reconcile having run. Returns `None` for
-    /// an unknown viewer that is revoked or already finalized.
+    /// the owner thread meets it. Returns `None` for an unknown viewer that
+    /// is revoked or already finalized.
     fn entry(
         &mut self,
         slot: &Arc<Slot>,
@@ -166,6 +180,9 @@ impl Arbiter {
         let mut effects = Effects::default();
         for slot in registry.slots() {
             if self.entry(&slot, &mut effects).is_none() {
+                // No entry means no request ran, so it holds no gesture;
+                // releasing here keeps that true if a request ever does.
+                effects.releases.extend(self.mouse.finalize(slot.id));
                 registry.remove(slot.id);
             }
         }
@@ -255,23 +272,17 @@ impl Arbiter {
     /// checked that the viewer may send it. A dropped viewer's queued
     /// reports still apply in order with its input, but it can no longer
     /// control.
-    pub(crate) fn report(
-        &mut self,
-        slot: &Arc<Slot>,
-        report: Report,
-    ) -> Effects {
-        let mut effects = Effects::default();
-        let Some(index) = self.entry(slot, &mut effects) else {
-            return effects;
+    pub(crate) fn report(&mut self, slot: &Slot, report: Report) -> Effects {
+        let Some(index) = self.index(slot) else {
+            return Effects::default();
         };
-        match report {
-            Report::Focus(focused) => {
-                effects.merge(self.set_focus(index, focused));
-            }
+        let mut effects = match report {
+            Report::Focus(focused) => self.set_focus(index, focused),
             Report::Geometry(grid, cell) => {
                 self.entries[index].geometry = Some((grid, cell));
+                Effects::default()
             }
-        }
+        };
         effects.merge(self.recompute());
         effects
     }
@@ -279,27 +290,23 @@ impl Arbiter {
     /// Records the presentation a viewer would apply.
     pub(crate) fn presentation(
         &mut self,
-        slot: &Arc<Slot>,
+        slot: &Slot,
         presentation: TerminalPresentation,
     ) -> Effects {
-        let mut effects = Effects::default();
-        let Some(index) = self.entry(slot, &mut effects) else {
-            return effects;
+        let Some(index) = self.index(slot) else {
+            return Effects::default();
         };
         self.entries[index].presentation = Some(presentation);
-        effects.merge(self.recompute());
-        effects
+        self.recompute()
     }
 
     /// Records that a viewer typed: keys, characters, text, or paste.
-    pub(crate) fn typed(&mut self, slot: &Arc<Slot>) -> Effects {
-        let mut effects = Effects::default();
-        let Some(index) = self.entry(slot, &mut effects) else {
-            return effects;
+    pub(crate) fn typed(&mut self, slot: &Slot) -> Effects {
+        let Some(index) = self.index(slot) else {
+            return Effects::default();
         };
         self.touch(index);
-        effects.merge(self.recompute());
-        effects
+        self.recompute()
     }
 
     /// Whether a mouse report from this viewer reaches the application,
@@ -414,7 +421,11 @@ impl MouseArbiter {
                 // Only another viewer's admitted press abandons untracked
                 // buttons; the owner's keeps them, so their releases still
                 // arrive, and a refused press changes nothing.
-                if !owned {
+                if owned {
+                    // Pressing a button again means its earlier press
+                    // ended, whether or not that release ever arrived.
+                    remove(&mut self.untracked, button);
+                } else {
                     *self = Self::default();
                     self.owner = Some(viewer);
                 }

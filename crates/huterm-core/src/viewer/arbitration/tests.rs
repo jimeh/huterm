@@ -283,6 +283,92 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
 }
 
 #[test]
+fn a_first_request_meets_its_viewer_before_it_runs() {
+    let mut fixture = Fixture::new();
+    let controller = fixture.sized(100);
+    fixture.arbiter.report(&controller, Report::Focus(true));
+    // Registered after the turn reconciled: the arbiter has no entry yet.
+    let (late, _) = fixture
+        .registry
+        .register_with_wake(
+            None,
+            ViewerCapabilities::ALL,
+            Initial {
+                focused: true,
+                geometry: Some((grid(120), cell())),
+                presentation: None,
+            },
+        )
+        .unwrap();
+    let effects = fixture.arbiter.meet(&late);
+    assert_eq!(effects.resize, Some((grid(120), cell())));
+    assert!(fixture.arbiter.meet(&late).is_empty(), "met once");
+    // Its first request is a press, and it drops with nothing else queued.
+    let left = MouseButton::Left;
+    assert!(fixture.arbiter.admit_mouse(
+        &late,
+        &mouse(MouseAction::Press(left), 3),
+        stamp(None),
+        true
+    ));
+    late.dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    let effects = fixture.arbiter.settled(&late, &fixture.registry);
+    assert_eq!(effects.releases, vec![mouse(MouseAction::Release(left), 3)]);
+}
+
+#[test]
+fn removing_a_viewer_the_arbiter_never_met_still_releases_its_gesture() {
+    let mut fixture = Fixture::new();
+    let (unmet, _) = fixture
+        .registry
+        .register_with_wake(None, ViewerCapabilities::ALL, blank())
+        .unwrap();
+    let left = MouseButton::Left;
+    assert!(fixture.arbiter.admit_mouse(
+        &unmet,
+        &mouse(MouseAction::Press(left), 3),
+        stamp(None),
+        true
+    ));
+    unmet
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    let effects = fixture.arbiter.sync(&fixture.registry);
+    assert_eq!(effects.releases, vec![mouse(MouseAction::Release(left), 3)]);
+    assert!(fixture.registry.slots().is_empty());
+    assert!(!fixture.arbiter.gesture_held());
+}
+
+#[test]
+fn pressing_an_untracked_button_again_retires_its_earlier_press() {
+    let mut fixture = Fixture::new();
+    let owner = fixture.sized(80);
+    let admit = |fixture: &mut Fixture, action| {
+        fixture.arbiter.admit_mouse(
+            &owner,
+            &mouse(action, 1),
+            stamp(None),
+            true,
+        )
+    };
+    let left = MouseButton::Left;
+    // The view saw tracking stop and never sent the first release.
+    for _ in 0..3 {
+        assert!(admit(&mut fixture, MouseAction::Press(left)));
+        fixture.arbiter.tracking_disabled();
+    }
+    assert!(admit(&mut fixture, MouseAction::Press(left)));
+    assert!(admit(&mut fixture, MouseAction::Release(left)));
+    // Nothing is left to release: one press, however often it restarted.
+    assert!(!admit(&mut fixture, MouseAction::Release(left)));
+    owner
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(fixture.arbiter.sync(&fixture.registry).releases.is_empty());
+}
+
+#[test]
 fn an_owner_s_new_press_keeps_its_untracked_buttons_releasable() {
     let mut fixture = Fixture::new();
     let owner = fixture.sized(80);

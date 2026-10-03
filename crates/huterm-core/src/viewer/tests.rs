@@ -671,6 +671,29 @@ fn revoking_an_idle_viewer_releases_its_button_then_reports_focus_out() {
 }
 
 #[test]
+fn a_press_that_is_a_viewer_s_only_request_is_released_when_it_drops() {
+    let expected = b"\x1b[<0;3;1M\x1b[<0;3;1mZ";
+    let runtime = spawn(241, &reporting_script(expected.len()));
+    let reader = runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+        .unwrap();
+    let finisher = prober(&runtime);
+    wait_for_text(&reader, "READY");
+    // The viewer registers, presses, and drops inside one turn, after that
+    // turn reconciled, so no report or typing ever introduces it.
+    let resume = pause(&runtime);
+    let late = viewer(&runtime);
+    late.send_input(press(MouseButton::Left, 2)).unwrap();
+    drop(late);
+    finisher
+        .send_input(TerminalInput::Text("Z".into()))
+        .unwrap();
+    resume.send(()).unwrap();
+    wait_for_text(&reader, &format!("HEX:{}:END", hex(expected)));
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn a_dropped_viewer_writes_its_queued_press_before_the_release() {
     let expected = b"\x1b[I\x1b[<0;5;1Mx\x1b[<0;5;1m\x1b[OZ";
     let runtime = spawn(213, &reporting_script(expected.len()));
@@ -877,10 +900,6 @@ fn a_viewer_registered_mid_turn_keeps_its_first_reports() {
         .send_input(TerminalInput::Text("late\n".into()))
         .unwrap();
     resume.send(()).unwrap();
-    // A snapshot request would reconcile ahead of the queued reports, so
-    // wait for the probe's input, queued behind them, without one.
-    let client = runtime.client();
-    wait_until("queued input", || client.queued_input_bytes() == 0);
     assert_eq!(read_size(&probe, "late"), "14 70");
     runtime.shutdown().unwrap();
 }
@@ -1019,7 +1038,8 @@ fn reconciliation_waits_while_writes_are_backed_up_and_resumes_after() {
     };
     // Writes back up behind the PTY. Each input is processed before the
     // next is sent, so no request is left queued once they do: a queued
-    // request would itself reconcile when the backlog clears.
+    // request would give the owner thread another turn, and with it a
+    // reconcile, when the backlog clears.
     let chunk = "x".repeat(4096);
     wait_until("backed-up writes", || {
         match typist.send_input(TerminalInput::Text(chunk.clone())) {
