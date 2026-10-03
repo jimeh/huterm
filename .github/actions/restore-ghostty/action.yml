@@ -3,7 +3,8 @@ description: >-
   Restore the namespace's newest cached libghostty-vt archives and point the
   huterm-ghostty build script at them. The build script links an archive only
   when its fingerprint matches the current build, and stores fresh builds
-  there. Pair with save-ghostty after the job's builds.
+  there. Also restores Zig's package cache for Ghostty's pinned dependencies.
+  Run after setup-zig, and pair with save-ghostty after the job's builds.
 inputs:
   namespace:
     description: >-
@@ -37,6 +38,31 @@ runs:
         path: .native/ghostty-prebuilt
         key: ${{ steps.key.outputs.prefix }}-restore
         restore-keys: ${{ steps.key.outputs.prefix }}-
+
+    # setup-zig points ZIG_GLOBAL_CACHE_DIR at RUNNER_TEMP/zig-global-cache.
+    # Its p directory holds Ghostty's pinned Zig packages, which
+    # ghostty:prepare fetches; keeping them spares upstream package hosts.
+    - name: Name the Zig package cache
+      id: packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        hash="$(shasum -a 256 scripts/ghostty-source.json | cut -c1-16)"
+        echo "key=huterm-zig-packages-v1-$RUNNER_OS-$RUNNER_ARCH-$hash" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Zig packages
+      id: restore-packages
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/zig-global-cache/p
+        key: ${{ steps.packages.outputs.key }}
+
+    # save-ghostty skips the save when this exact key was restored.
+    - name: Record the restored Zig package key
+      shell: bash
+      env:
+        MATCHED: ${{ steps.restore-packages.outputs.cache-matched-key }}
+      run: printf '%s' "$MATCHED" > "$RUNNER_TEMP/huterm-zig-packages-restored"
 
     # Only a literal path in the checkout reaches GITHUB_ENV.
     - name: Point the build script at the cache

@@ -1,6 +1,7 @@
 # UI overhaul
 
-Status: agreed on 2026-09-26 from the [final mockup][mockup]. Jim chose the
+Status: implemented in PR #176. Agreed on 2026-09-26 from the
+[final mockup][mockup]. Jim chose the
 "palette family" direction from the [direction prototype][directions] and
 refined it through later mockups. This plan implements what the final mockup
 shows. The mockup is the visual reference; this document is the behavioural

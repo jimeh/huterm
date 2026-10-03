@@ -5,7 +5,9 @@ Alacritty-only engine, flat snapshots, and client-owned terminal viewport rules.
 The runtime owns one shared terminal scroll position; window navigation remains
 independent. The rest of this document records the initial desktop design.
 
-Status: portable core tests, repository checks, Linux native tests, and the
+Status: superseded. This records the initial design; the guides in
+`docs/agents/` describe the current architecture. At the time, portable core
+tests, repository checks, Linux native tests, and the
 Linux Xvfb smoke pass locally. CI enforces the same suite on Apple Silicon
 macOS and Linux x86_64 as the revision-bound PR gate; manual visual/input
 validation remains pending.

@@ -1,5 +1,7 @@
 # Ghostty upgrade for upstream clipboard handling
 
+Status: implemented in PR #114.
+
 Issue #118 later made this Ghostty integration the only terminal engine. The
 upgrade evidence and clipboard behavior recorded here remain applicable.
 

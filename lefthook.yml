@@ -7,9 +7,21 @@ pre-commit:
         - "third-party/vendor/**"
       run: rustfmt --edition 2024 --check {staged_files}
 
-    - name: rust-analysis
+    # Clippy cannot check single files soundly. Cargo already rechecks only the
+    # changed crates and their dependents, so warm runs stay within the budget.
+    - name: clippy
       glob: "{*.rs,Cargo.toml,**/Cargo.toml,Cargo.lock}"
-      run: mise run check:rust:analysis
+      run: mise run lint
+
+    - name: rust-test-order
+      glob: "*.rs"
+      exclude:
+        - "third-party/vendor/**"
+      run: mise run lint:test-order:files {staged_files}
+
+    - name: architecture
+      glob: "{Cargo.toml,**/Cargo.toml,Cargo.lock}"
+      run: mise run architecture
 
     - name: markdown
       glob: "{*.md,**/*.md}"
@@ -19,17 +31,46 @@ pre-commit:
         - "third-party/vendor/portable-pty-0.9.0/**"
       run: mise run lint:docs:files {staged_files}
 
+    - name: agent-guides
+      glob: "{AGENTS.md,docs/agents/*.md,docs/plans/*.md}"
+      run: mise run lint:agents
+
     - name: workflows
-      glob: "{.github/workflows/*.{yml,yaml},.github/dependabot.yml,.pinact.yaml,zizmor.yml}"
-      run: mise run ci:workflows
+      glob: "{.github/workflows/*.{yml,yaml},.github/actions/**/action.{yml,yaml},.github/dependabot.yml,.pinact.yaml,zizmor.yml}"
+      run: mise run ci:workflows:staged
 
     - name: harness-config
       glob: "{mise.toml,mise.lock,lefthook.yml,rustfmt.toml,deny.toml}"
       run: mise tasks >/dev/null && lefthook validate
 
+    # Both tasks depend on scripts:install. Concurrent `bun install` runs race
+    # while linking packages (EEXIST), so these two run one after the other.
     - name: scripts
-      glob: "{scripts/*.ts,scripts/*.sh,package.json,bun.lock,bunfig.toml,tsconfig.json}"
-      run: mise run check:scripts
+      group:
+        parallel: false
+        jobs:
+          - name: script-types
+            glob: "{scripts/*.ts,scripts/**/*.ts,package.json,bun.lock,tsconfig.json}"
+            run: mise run typecheck:scripts
+
+          # Fast, targeted tests only; implementers run the relevant suites
+          # themselves. Unfiltered because tests can inspect workflows, tasks,
+          # and docs too. --staged reads staged paths from Git, including the
+          # deletions that {staged_files} omits.
+          - name: script-tests
+            run: mise run test:scripts:affected --fast --staged
+
+    - name: shell-syntax
+      glob: "{scripts/*.sh,scripts/**/*.sh}"
+      run: for file in {staged_files}; do bash -n "$file" || exit 1; done
+
+    - name: icons
+      glob: "{scripts/icons.ts,scripts/linux-icon.ts,assets/Huterm.icon/**,assets/Huterm.icns,assets/Huterm*.png,assets/macos/Assets.car,assets/icons.json,assets/linux/icon.json}"
+      run: mise run icons:check
+
+    - name: sparkle-policy
+      glob: "{scripts/prepare-sparkle.ts,scripts/prepare-ghostty.ts,scripts/sparkle-source.json,third-party/sparkle/LICENSE}"
+      run: mise run sparkle:policy
 
     - name: vendor
       glob: "{third-party/vendor/**,scripts/vendor*.ts}"

@@ -1,6 +1,7 @@
 # Fullscreen event scheduling and refresh-pump removal
 
-Status: scheduler migration and legacy-pump removal implemented after the
+Status: implemented. The scheduler migration and legacy-pump removal landed
+after the
 accepted three-arm comparison. Paired performance and local validation are
 complete. This implements
 steps 7 and 8 of the

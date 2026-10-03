@@ -277,7 +277,23 @@ function rustFiles(directory: string): string[] {
 
 /** Check every Rust file under `root`, returning `path:line: message` reports. */
 export function checkTree(root: string): { files: number; reports: string[] } {
-  const files = rustFiles(root);
+  return checkFiles(root, rustFiles(root));
+}
+
+/**
+ * Check the given Rust files, such as the staged files from a pre-commit hook.
+ * Paths are resolved against `root`; files inside directories that a tree
+ * check skips are ignored, so both modes agree on what is checked.
+ */
+export function checkPaths(root: string, paths: readonly string[]): { files: number; reports: string[] } {
+  const files = paths
+    .filter((path) => path.endsWith(".rs"))
+    .map((path) => resolve(root, path))
+    .filter((file) => !relative(root, file).split(sep).some((part) => part.startsWith(".") || skippedDirectories.has(part)));
+  return checkFiles(root, files);
+}
+
+function checkFiles(root: string, files: readonly string[]): { files: number; reports: string[] } {
   const reports: string[] = [];
   for (const file of files) {
     const path = relative(root, file).split(sep).join("/");
@@ -291,8 +307,11 @@ export function checkTree(root: string): { files: number; reports: string[] } {
 }
 
 if (import.meta.main) {
-  const root = resolve(Bun.argv[2] ?? join(import.meta.dir, ".."));
-  const { files, reports } = checkTree(root);
+  // `--files <path>...` checks only those files, relative to the repository root.
+  const args = Bun.argv.slice(2);
+  const filesMode = args[0] === "--files";
+  const root = filesMode ? join(import.meta.dir, "..") : resolve(args[0] ?? join(import.meta.dir, ".."));
+  const { files, reports } = filesMode ? checkPaths(root, args.slice(1)) : checkTree(root);
   for (const report of reports) console.error(report);
   if (reports.length) {
     console.error(`rust-test-order: ${reports.length} problem(s) in ${files} Rust files`);

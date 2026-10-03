@@ -1,6 +1,7 @@
 # Terminal metadata and visual bell
 
-Status: approved. The implementation baseline is `main` at `3156f428`, which
+Status: implemented in PR #139. The implementation baseline is `main` at
+`3156f428`, which
 contains the tab-bar work merged through
 [PR #128](https://github.com/jimeh/huterm/pull/128).
 

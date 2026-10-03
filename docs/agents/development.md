@@ -246,161 +246,10 @@ sessions requires that no other command is running.
 command is active; other worktrees keep their own. The base image stays cached;
 remove it with `tart delete` using the reference the task prints.
 
-The initial desktop client runs on macOS and Linux:
-
-```sh
-mise run dev
-```
-
-On macOS, the app launches `$SHELL -l` in the user's home directory, matching a
-Finder launch, and supplies `LANG=en_US.UTF-8` only when no locale variable is
-inherited. Linux launches `$SHELL` in the current working directory. The
-fallback is `/bin/zsh` on macOS or `/bin/sh` on Linux. `Cmd-Enter` on macOS or
-`F11` toggles the configured fullscreen mode. macOS defaults to `non_native` in
-the current Space; `window.macos_fullscreen_mode = "native"` selects a separate
-Space. The green window button still uses native fullscreen. Linux always uses
-native fullscreen.
-Closing a tab stops its terminal. Closing a shared
-session view detaches it; closing the final view terminates that session and
-its terminals. Explicit detachment preserves sessions without viewers. Huterm
-exits after the last window closes only when no sessions or pending spawns
-remain. Foreground and background jobs require confirmation while the shell is
-alive. Root-shell exit closes its tab quietly unless
-`[terminal] close_on_exit = false` retains the history.
-
-Configuration is loaded at startup from `$HUTERM_CONFIG_FILE`,
-`$XDG_CONFIG_HOME/huterm/config.toml`, or `~/.config/huterm/config.toml`, in
-that order. Settings creates the default document without overwriting an
-existing file and opens it with the system editor. Malformed TOML and invalid
-`terminal.engine` values are fatal at startup, before UI creation. With valid
-TOML and a known legacy engine value, unrelated settings errors fall back to
-defaults while preserving the clipboard-write policy. `alacritty` emits a
-migration warning and `ghostty` is accepted silently; both run Ghostty.
-
-Clipboard shortcuts are `Cmd-C` and `Cmd-V` on macOS and `Ctrl-Shift-C` and
-`Ctrl-Shift-V` on Linux. Plain `Ctrl-C` remains terminal input. Shift-modified
-Page Up, Page Down, and End scroll the viewport. The macOS Window menu exposes
-native Minimize and Zoom commands.
-
-Window and tab shortcuts:
-
-| Action | macOS | Linux |
-| --- | --- | --- |
-| New window | `Cmd-N` | `Ctrl-Shift-N` |
-| New tab | `Cmd-T` | `Ctrl-Shift-T` |
-| Close tab | `Cmd-W` | `Ctrl-Shift-W` |
-| Close window | `Cmd-Shift-W` | `Ctrl-Shift-Q` |
-| Next / previous tab | `Ctrl-Tab` / `Ctrl-Shift-Tab` | `Ctrl-Tab` / `Ctrl-Shift-Tab` |
-| Select tab 1 through 8 | `Cmd-1` through `Cmd-8` | `Alt-1` through `Alt-8` |
-| Select last tab | `Cmd-9` | `Alt-9` |
-
-The tab bar is hidden with one tab by default. Set
-`[tabs].always_show = true` to keep it visible. With two or more tabs,
-it reserves space beside the terminal.
-
-Set `[tabs].auto_hide_in_fullscreen = true` to reveal the bar only when the
-pointer reaches its attached edge in fullscreen, even with one tab. Fullscreen
-auto-hide overrides `always_show` and reserves no bar space, regardless of tab
-count, except for a top bar on a notch shelf, which has nowhere to hide and
-stays reserved. It slides over the terminal without changing the grid, and hides
-after the pointer leaves. Tab dragging and sidebar resizing keep it open. A top
-bar can be revealed from the macOS notch-height region and appears below the
-notch. Tab-switch commands, successful tab creation, and tab closure also reveal
-the fullscreen overlay for one second before the normal dismissal delay.
-Repeated activity restarts the hold. Both settings default to `false` and take
-effect on config reload.
-
-Set `[tabs].position` to `top`, `bottom`, `left`, or `right`. Top is the
-default. With `width = "fill"`, horizontal tabs divide the available width
-equally until their 120-pixel minimum, then scroll horizontally; the default
-`"fit"` sizes them to their titles between `min_width` and `max_width`.
-Vertical tabs stay 32 pixels tall and fill the sidebar width.
-Drag the sidebar's inner edge to resize it between 140 and 400 logical pixels,
-capped at half the window width. Each window keeps
-its preferred width for its lifetime, including through temporary window
-shrinking. The vertical new-tab button is a row with the same insets as the
-tabs; it follows the last tab and stays visible at the bottom when tabs
-overflow. Horizontal bars reserve a 32-point slot for it and center a 26-point
-button across the bar, matching the pill inset, so it never touches the bar
-border. Strip bars are 32 points tall; Pill bars are 34 so 26-point pills keep
-4 points on every side.
-Pill strips also start with a leading margin so the first pill's visible edge
-sits at that same inset, and hovering a pill never hides its dividers.
-
-`[tabs].style = "strip"` merges the active tab into the terminal with an
-accent line on its outer edge. `"pill"`, the default, draws rounded tabs
-separated by dividers; `pill_accent = true` adds an accent bar inside the
-active pill's left edge and widens every pill's left padding to keep titles
-aligned. `close_button`
-selects when close buttons show: `hover` only, `active` adds the active tab, and
-`always` shows every tab's; the slot stays reserved either way so widths never
-change. Left and right placement follow `style` too: Strip rows span the column,
-merge into the terminal, put the accent line on the window edge, and outline the
-active row above and below; a first active row at the strip's start joins the
-terminal's top border instead and squares the rounded corner. Pill rows are
-rounded, inset in the column, and carry the same optional accent bar. With a
-titlebar above vertical tabs, a border also runs along the terminal's top edge,
-joining the bar's edge so the titlebar and bar form one surface around the
-terminal. The corner where they meet is rounded by the smaller window padding,
-capped at 12 points, so the arc never covers a cell. Under a notch in non-native
-fullscreen there is no titlebar: the column and its edge run to the top of the
-screen, its rows stay below the safe area, and the strip beside it keeps the
-terminal background. While a top bar is visible or revealing, the macOS titlebar
-and the non-native fullscreen safe area above a notch use the tab bar
-background; a titlebar above a left or right bar does too; otherwise, including
-for a bottom bar, they use the terminal background. `[tabs].notch = "left"`
-(the default) or `"right"` places a top bar in the auxiliary area beside the
-notch in non-native fullscreen, read from `NSScreen`'s auxiliary top areas,
-and `"off"` keeps the bar below the
-notch: the bar keeps its
-height, sits at the bottom of that area, and the terminal starts directly under
-the safe area, so auto-hide leaves it in place. Fullscreen quake profiles read
-the same shelves from their own window. Without a notch, in windowed mode, or in
-native fullscreen the key is ignored.
-
-Quake presentation is driven by owned native observers and explicit deadlines.
-Animations share the workspace frame callback. On macOS 14+, an offscreen or
-unmapped animation uses a display link from its selected `NSScreen` until window
-frames arrive; stalled clocks use refresh-derived pacing only while animating.
-X11 uses one private cancellable event connection shared by Quake windows, with
-RandR timing for the active animation fallback. A missing refresh rate uses a
-reported 16 ms compatibility cadence.
-
-AppKit has no dedicated notification for every external Dock work-area change.
-Visible, non-fullscreen Quake profiles therefore resample the work area once a
-second. Hidden profiles release that timer and resample on summon; display,
-Space, and Huterm presentation-lease changes still wake them immediately.
-An X11 observer connection failure is reported and enables a one-second safety
-sample for its affected owners. Smoke inspection reports `work_area_fallback`,
-`quake_timer`, `quake_clock`, and `quake_frame_demand`; the state publisher never
-wakes production work.
-
-`[tabs].width = "fit"` sizes top and bottom tabs to their titles, clamped to
-`min_width` and `max_width` (defaults 96 and 240, each accepting 48 through 600
-logical points). The bar then shrinks to its tabs, so the new-tab button follows
-the last tab until the bar overflows and scrolls. Render measures titles and
-caches their widths; `TabStrip` uses the cached widths for layout, reveal, and
-drop slots. Vertical tabs ignore `width`.
-
-Trackpad and wheel scrolling move the strip without selecting a tab. Horizontal
-bars show floating arrows that indicate hidden content and animate scrolling
-when clicked, plus a slim `Scrollbars` indicator along their bottom edge that
-never expands or shows a track but still drags and jumps. Vertical columns use
-the same overlay on their right edge instead of arrows: it appears on scrolling
-and reveal, widens on hover while shown, jumps on a track press, and drags
-through the window-level capture that also serves tab reordering. It sits
-inboard of the sidebar resize handle by the handle's width so the two never
-overlap, and both tab bar indicators fade after 700 ms rather than the
-terminal's two seconds. Explicit selection or creating a tab reveals it;
-ordinary redraws preserve manual scroll. Drag a tab to reorder it within its
-window, horizontally or vertically. The preview and insertion position remain
-constrained to the bar when the pointer leaves it; release commits and Escape
-cancels. During a drag, hovering an overflow edge scrolls continuously without
-changing the active terminal. Reordering preserves terminal processes, focus,
-selection, and scroll position. Cross-window moves and tear-out remain deferred.
-Reload applies placement, font, padding, and theme changes across all windows.
-Shell titles label tabs by default, with the launched program as fallback. The
-README describes directory and process labels and directory inheritance.
+Product behavior, configuration, and default shortcuts are documented in the
+[README](../../README.md); update it, not this guide, when they change.
+Tab-bar layout mechanics are in the [desktop client guide](desktop-client.md),
+and Quake scheduling is in the [window presentation guide](window-presentation.md).
 
 ## Rust test layout
 
@@ -453,11 +302,11 @@ named exactly `tests` with no later module.
 | Trigger | Command | Scope | Evidence owner |
 | --- | --- | --- | --- |
 | Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
-| Pre-commit | Lefthook change-aware jobs | Staged Markdown/Rust plus affected whole-workspace analysis | Local hook |
+| Pre-commit | Lefthook change-aware jobs | Staged files where checks work per file; affected script tests; whole-project analysis only for matching inputs | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, test-module order, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
-| Pull request | `mise run verify:policy`, `mise run vendor:check`, `mise run license`, and `mise run audit:scripts` on Ubuntu 24.04 | Repository, vendor, Cargo dependency, and scripting dependency policy | CI |
+| Pull request | `mise run lint:docs`, `lint:agents`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, and a raw Ghostty PTY | CI or implementer |
 | Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
@@ -477,7 +326,10 @@ named exactly `tests` with no later module.
 CI groups format, static analysis, scripts, and Rust tests into one job per
 platform so their setup and debug artifacts are reused. Native desktop smokes,
 Linux release benchmarks, and macOS packaging remain separate because combining
-them would lengthen the workflow's slowest path. The final
+them would lengthen the workflow's slowest path. Within the Checks and Policy
+jobs, each validation step runs once setup succeeds even if an earlier check
+failed, so one run reports every failing check under its own step name. The
+final
 `Verify Linux x86_64` and `Verify macOS arm64` jobs are the stable required
 checks; both require every validation job to pass, including native aarch64
 Linux checks and smoke coverage.
@@ -543,19 +395,40 @@ as the next non-native entry begins. The adapter records it, then lets the
 main-thread display identity and frame checks distinguish notification noise
 from a real display change. Non-native macOS and Linux restoration remain exact.
 
-The pre-commit hook runs independent jobs in parallel. Markdown and Rust
-formatting receive only matching staged paths. Clippy compilation and the
-protocol boundary remain whole-workspace checks, but run only when staged Rust
-or Cargo inputs can affect them. Workflow policy runs only for staged Actions
-or policy configuration, and harness configuration validates its own task and
-hook definitions. Keep the representative warm path below the project's
-10-second hook budget. Dependency audits remain in handoff and CI because they
-are broader and may refresh advisory data.
+The pre-commit hook catches what an implementer may have missed, mainly
+formatting and lint, plus fast targeted tests. It does not replace running the
+relevant tests before committing. Its independent jobs run in parallel and check
+staged paths wherever a check can work file by file:
+
+- Rust formatting, Rust test-module order, and Markdown lint receive only the
+  matching staged files.
+- `mise run test:scripts:affected --fast --staged` runs only the Bun tests
+  whose imports, named scripts, or mentioned paths include a staged path,
+  including deleted and renamed scripts. It skips the suites listed in
+  `SLOW_SUITES` and never runs the whole suite, even for Bun package or
+  compiler configuration; run `mise run test:scripts` for those.
+- Workflow checks verify only the action pins on staged lines
+  (`ci:workflows:staged`), which avoids pinact's GitHub API lookup for every
+  pin. Staging `.pinact.yaml` verifies all pins.
+- Shell syntax checks parse only staged scripts.
+
+Some checks stay whole-project because a staged file can break unstaged ones.
+They run only when a matching input is staged: Clippy for Rust or Cargo
+inputs, the protocol boundary for Cargo manifests, TypeScript for scripts,
+`lint:agents` for agent guides, and the icon, Sparkle, and vendor checks for
+their own inputs. Warm Clippy took 2.5 to 2.8 seconds after an edit in any
+crate, because Cargo rechecks only changed crates and their dependents. Harness
+configuration validates its own task and hook definitions. Keep the
+representative warm path below the project's 10-second hook budget. The hook
+reads the working tree, so unstaged edits in the same files can hide or cause a
+failure. Dependency audits remain in handoff and CI because they are broader
+and may refresh advisory data.
 
 Linux compiles the actual GPUI client and can smoke its window/event loop under
 Xvfb with Mesa's software Vulkan device. That smoke does not prove visual
-correctness or native input behavior. Use Apple Silicon CI and the manual
-checklist in the initial plan for macOS evidence.
+correctness or native input behavior. For macOS evidence, use the
+`smoke:macos-*` tasks, which CI also runs on Apple Silicon, and record manual
+checks for behavior they do not cover.
 
 The fullscreen smoke starts its own Openbox under an isolated Xvfb display.
 It checks `_NET_WM_STATE_FULLSCREEN` with `xprop` from `x11-utils`; bare Xvfb
@@ -645,6 +518,14 @@ the source or generation script requires regeneration. The manifest records
 the Xcode, Icon Composer, and macOS versions used, since Apple rendering can
 change between releases. `package:macos` also verifies the packaged icon
 metadata and exact resource bytes before release signing.
+
+`assets/Huterm.icon` is the icon source. Refresh its committed ICNS, 1024-pixel
+PNG, and macOS Assets.car with `mise run icons:generate` using Xcode 27.
+Normal builds only run the portable `icons:check`; include `assets/icons.json`
+with every regeneration. Xcode 26.3 cannot read this document and actool can
+exit zero without producing files. Require fresh outputs from a temporary
+directory. Render the PNG with Icon Composer's bundled `ictool`, not xcrun's
+unrelated entry point or the compiler's ICNS, which only contains up to 256 pixels.
 
 ## Terminal engine
 
@@ -749,3 +630,98 @@ selection colors, Powerline joins on colored backgrounds, geometric triangles,
 and ordinary text. Close it with the window close button or
 interrupt the process. A passing smoke proves that native preparation and
 painting ran; it does not replace checking the resulting pixels.
+
+## Repository scripts and local builds
+
+Repository Rust formatting is defined by `rustfmt.toml`; it must not depend on
+or require changes to `~/.rustfmt.toml`.
+
+Use separate Cargo target directories when comparing baseline and feature
+worktrees. Reusing release artifacts across them can retain baseline protocol
+metadata; clean the affected local crates if a rebuild reports missing symbols
+that exist in the current source.
+
+Temporary Git fixtures must clear inherited `GIT_*` variables before invoking
+Git. Commit hooks export repository and index paths that override a fixture's
+working directory and can redirect its commits into the caller's worktree.
+
+Repository scripts use Bun with TypeScript 7 for type checking, and Bash for the
+build wrapper. Pin Bun and Zig in Mise and JavaScript dependencies in bun.lock;
+keep bunfig.toml's minimum release age aligned with the three-day policy.
+
+Run `mise run check:scripts` for tooling edits. Native source preparation uses
+Bun FFI only for the OS-owned `flock`; retain automatic lock release on process
+exit and the existing top-down source-tree hash order. Test changes to extraction
+and locking on macOS and Linux. The Linux FFI library is glibc, matching
+Ubuntu CI.
+
+Buffer the native archive response before passing it to `Bun.write`. Bun 1.4.0
+can stall on Linux when writing the live HTTPS response directly, even though
+local HTTP fixtures pass. Verify download changes with a cold preparation run.
+
+Make Bun test tasks that import packages depend directly on `scripts:install`.
+A sibling typecheck's install dependency does not order parallel test startup.
+
+Lefthook's `**/*.md` glob skips root Markdown files. Include `*.md` explicitly
+so staged README and agent-guide edits receive the same checks as nested docs.
+
+## Tart VM rules
+
+Tart macOS VMs run host-built binaries; the guest never compiles. Stage new
+host-built helpers in `scripts/macos-vm/guest.sh`. Stage the
+read-only virtiofs share into the guest with `rsync -a`: virtiofs returns ELOOP
+for extended attributes on symlinks, so `ditto` and `cp` fail on
+`Sparkle.framework`. `tart list` fails while any VM with an ASIF disk is
+running, so cleanup cannot enumerate VMs then; `tart get` fails only for the
+running VM itself. Background
+processes started through `tart exec` die when exec returns; keep guest
+commands in the foreground. Virtualization.framework refuses a third running
+macOS guest, so runs share two host-wide slot locks.
+
+Smokes and `exec` use disposable clones; `dev` keeps a per-worktree VM. Flush a
+kept guest with `tart exec <vm> sync` before stopping it, or recent writes are
+lost. `tart clone` onto an existing name silently replaces that VM, so clone only
+after `tart get` reports its specific not-found error: `tart get` also fails
+for a VM that is merely running, and reading that as absence destroys a kept
+guest. Changing the provisioning inputs renames the image and
+leaves the previous one on disk until `vm:{macos,linux}:clean` removes it.
+
+Both dev sessions keep one guest instance under host control, with `r` to
+rebuild and relaunch, `w` to toggle watching, and `q` to quit. Their Mise tasks
+set `raw = true`: Mise otherwise pipes task stdio to prefix output, so the
+runner sees no terminal and those keys never arrive. `tart exec` can outlive the
+guest process it started, so close the host side after asking the app to stop or
+the session hangs on quit. Route SIGINT and SIGTERM through the session, settle
+an in-flight rebuild before completing a quit, and let whichever command leaves
+last stop a shared VM, whether or not it booted that VM.
+
+Linux Tart VMs run container-built binaries; neither guest compiles. Ubuntu's
+GNOME aborts its Wayland session with "No GSettings schemas are installed"
+unless provisioning runs `glib-compile-schemas` after installing the desktop,
+and GDM then falls back to Xorg silently. GDM selects the session from the
+autologin user's AccountsService record, so set it together with WaylandEnable
+and restart gdm3. Apple's virtio GPU is not PCI, so Ubuntu's 61-gdm.rules
+virtual-GPU checks never match. X can start without working GL while mutter
+cannot, which makes a silent Xorg fallback the normal symptom of a broken
+Wayland session. Unref a `tart run` child that is deliberately left running, or
+Bun's event loop keeps the finished command alive.
+
+Ubuntu desktop ships `/usr/lib/netplan/00-network-manager-all.yaml`, so the
+guest needs `network-manager` explicitly under `--no-install-recommends` or
+netplan leaves every interface unmanaged and the VM has no network at all.
+Shared NAT is sufficient; bridged networking is not required. End guest
+provisioning with `sync`, because the image is published as soon as the script
+exits and unflushed writes are lost. Prefer regular files under `/etc` for
+provisioned overrides: a `systemctl mask` symlink did not survive cloning,
+while a unit drop-in did. Bound `systemd-networkd-wait-online`, whose
+two-minute timeout otherwise delays every boot before the guest agent answers.
+
+## Docker rules
+
+Mise's Rust install points at `/root/.cargo/bin` in the image; changing
+`CARGO_HOME` at runtime makes Mise report Rust missing. Cache Cargo's registry
+and Git downloads separately while retaining the image's Cargo home.
+
+The local Linux runner omits Git metadata because linked worktrees reference
+paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
+benchmark metadata must use that value before falling back to Git.

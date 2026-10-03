@@ -1,6 +1,7 @@
 # Workspaces, windows, and tabs
 
-Status: first desktop milestone and session ownership implemented; follow-up
+Status: in progress. The first desktop milestone and session ownership are
+implemented; follow-up
 scope remains below.
 Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
 

@@ -59,13 +59,20 @@ even when the pointer leaves the window; releasing commits the clamped insertion
 position. Escape cancels. Drag near a bar edge to scroll toward hidden tabs.
 Horizontal tabs size to their titles by default; with `width = "fill"` they
 share the window width, shrinking to 120 logical pixels before scrolling.
-Vertical tabs keep a fixed height in a resizable sidebar. Scroll the
+Vertical tabs keep a fixed height in a resizable sidebar; drag its inner edge
+to resize it between 140 and 400 logical points, capped at half the window
+width, and each window keeps its chosen width. Scroll the
 bar with a trackpad or mouse wheel. Horizontal bars show floating arrows where
 more tabs remain plus a slim, draggable position indicator along their bottom
 edge; vertical bars show an overlay scrollbar that widens on hover and can be
 dragged. The new-tab button stays visible and follows the last tab in
 vertical mode. Moving tabs between windows and tearing tabs out are not
 supported.
+
+On macOS, Huterm launches `$SHELL -l` in the home directory, as a Finder launch
+would, and sets `LANG=en_US.UTF-8` only when no locale variable is inherited.
+Linux launches `$SHELL` in the current working directory. Without `$SHELL`,
+Huterm falls back to `/bin/zsh` on macOS and `/bin/sh` on Linux.
 
 Closing a tab stops its terminal. Windows attach to sessions. Closing a window
 only detaches when another view remains; closing its final view terminates that
@@ -96,7 +103,8 @@ split panes, and a TUI client remain follow-up work.
 
 See the [workspace plan](docs/plans/workspaces-windows-tabs.md) for the ownership
 boundaries and follow-up milestones, and the
-[initial desktop plan](docs/plans/initial-desktop-poc.md) for the original scope.
+[initial desktop plan](docs/plans/initial-desktop-poc.md) for the original,
+since superseded, scope.
 
 ## Core ownership
 
@@ -315,8 +323,9 @@ macOS default, and Linux defaults to `top`. On macOS
 the 32-point title strip becomes the tab row: it starts after the traffic
 lights, holds the tabs and `+`, keeps its trailing space draggable with the
 usual double-click action, and ends with the menu button. The terminal gains
-the height a top bar would take. A single tab with `always_show = false` shows
-the strip with the active tab's title, as the other positions do. On Linux,
+the height a top bar would take. With a single tab and `always_show = false`,
+the tabs stay hidden as in the other positions, and the strip shows only the
+active tab's title. On Linux,
 Huterm asks for client-side decorations and draws the whole row itself: the
 tabs and `+`, draggable empty space, the menu button, and round minimize,
 maximize, and close controls. The controls follow the desktop's button layout,
@@ -351,6 +360,14 @@ bar below the notch, and elsewhere the setting is ignored. Themes
 color the tab bar through their tab chrome keys. `width = "fit"` (the default)
 sizes top and bottom tabs to their titles between `min_width` and `max_width`
 logical points, each accepting 48 through 600; `"fill"` shares the bar equally.
+
+With one tab the bar stays hidden unless `always_show = true`.
+`auto_hide_in_fullscreen = true` reveals the bar in fullscreen only when the
+pointer reaches its edge, even with one tab. It slides over the terminal
+without changing the grid and hides again after the pointer leaves, except for
+a top bar beside a notch, which has nowhere to hide and stays in place. Tab
+dragging and sidebar resizing keep it open, and switching, creating, or closing
+tabs reveals it for a second. Both settings take effect on reload.
 
 Huterm tracks each terminal's foreground program and working directory. The
 directory comes from the foreground program, or from the shell when another

@@ -3,7 +3,7 @@
 Historical cross-engine scenarios in this plan predate issue #118. They now run
 unconditionally against Ghostty.
 
-Status: proposed.
+Status: implemented in PR #60.
 
 Keep published GPUI 0.2.2 for this delivery. Implement a small local AppKit
 adapter modeled on upstream GPUI's simple-fullscreen API and implementation.

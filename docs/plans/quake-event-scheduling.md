@@ -1,6 +1,7 @@
 # Quake event scheduling
 
-Status: reviewed follow-up to merged PR #157 (`d96b832`). Codex and Claude
+Status: implemented in PR #159, as a reviewed follow-up to merged PR #157
+(`d96b832`). Codex and Claude
 Opus 5.5 at high effort agree on this plan. The implementation and focused
 macOS/Linux validation and paired measurements are complete in PR #159.
 See the [comparison and coverage limits](../performance/gpui-terminal-renderer.md#quake-event-scheduling-comparison-2026-09-24).

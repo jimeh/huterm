@@ -191,3 +191,142 @@ Codex UI session, remote SSH host, or Mosh behavior.
 
 Historical plans and measurements may still name Alacritty. They describe the
 state at the time and do not define the shipped runtime after issue #118.
+
+## Pin and native build
+
+Ghostty builds use native revision
+`56dbc4a768778753737a3b9cbe0a3f9b4e434553` and Zig 0.16.0. Keep its
+`memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
+values and corrupted Rust hash-table control bytes. Run
+`mise run ghostty:prepare` before direct Cargo build commands; it checks the
+full native source tree against `scripts/ghostty-source.json`. Keep that
+source, `huterm-ghostty`'s generated bindings, and bundled notices aligned. All
+builds require the pinned Ghostty source and Zig toolchain. Native source
+dependencies use Zig's content hashes; their notices are in `third-party/ghostty`
+because they are outside Cargo's license audit.
+
+Keep verified native source inputs in `.native/ghostty`, outside Cargo's
+`target` directory. The pinned rust-cache action recursively removes non-Cargo
+files under `target` before saving, leaving incomplete native source trees on
+restore. Preserve source hash checks; never repair mismatches silently.
+
+Keep Cargo's Git discovery ceiling at `.native/ghostty`. The extracted source
+has no repository, and Ghostty otherwise discovers Huterm's enclosing release
+tag and panics because it does not match Ghostty's version. The ceiling preserves
+Git discovery from Huterm's root and uses Ghostty's archive-version fallback.
+
+Zig 0.16 creates mutable `zig-pkg` dependencies beside `build.zig`. Build from a
+fresh private source copy under `huterm-ghostty`'s `OUT_DIR`, with the Zig child's
+Git discovery ceiling set there. Keep the verified `.native/ghostty/source`
+unchanged and compilation caches outside the refreshed copy.
+
+Build commands retain `scripts/build-exec.sh` as their shared entrypoint and
+preserve the selected Xcode, including explicit `DEVELOPER_DIR` overrides.
+The pinned Ghostty source and Zig 0.16 support Xcode 27 without SDK fallback or
+an `xcrun` shim. Check that `xcrun metal --version` actually runs: the launcher
+can exist even when Xcode's optional Metal Toolchain is missing.
+
+Cargo forces `HUTERM_GHOSTTY_CPU=baseline` for portable native instructions and
+`HUTERM_GHOSTTY_OPTIMIZE=ReleaseFast`. Local builds retain warm native artifacts.
+Cargo must force the verified native source path and benchmark optimization
+over inherited environment values.
+
+The pinned CI cache action prunes path dependencies inside the repository, so
+`huterm-ghostty`'s build script reruns in every CI job. With
+`HUTERM_GHOSTTY_ARTIFACT_CACHE` set, it links a cached `libghostty-vt.a` whose
+fingerprint matches the build and otherwise builds from source and stores the
+result. The fingerprint covers the source manifest, Zig version and arguments,
+target, and the host libc or macOS SDK: Linux host builds stay native, so an
+archive built against a newer glibc must never reach a 2.35-ceiling package.
+
+Before `zig build`, the build script runs `zig build --fetch` with the same
+arguments and retries it after 5 and 20 seconds. Ghostty's Zig packages come
+from upstream hosts such as codeberg.org, and one 503 from them once failed
+every compiling CI job in a run. Fetch with the build's exact arguments: a
+separate prefetch with default options missed lazy packages, such as
+`pixels`, that the real build needs. Zig keeps fetched packages as tarballs in
+its global cache's `p` directory, which is enough for a later offline build;
+`restore-ghostty` and `save-ghostty` persist that directory in CI, keyed by OS,
+architecture, and `scripts/ghostty-source.json`.
+
+CI jobs restore and save `.native/ghostty-prebuilt` through the
+`restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash
+of the stored slots, so a changed input or rebuilt slot saves a new entry
+instead of leaving a stale one. A restore takes the namespace's newest entry,
+so jobs share a namespace only when they build the same slots on the same
+runner image. Release workflows leave the variable unset and always build from
+the verified source.
+
+## The huterm-ghostty crate
+
+`huterm-ghostty` owns everything that changes with the pin: native build, FFI,
+safe wrapper, and API-gap probes. Its `unsafe` code stays in `native.rs`,
+`callbacks.rs`, generated `ffi/bindings.rs`, and test-only `test_alloc.rs`;
+each opts out with `#![expect(unsafe_code)]`, denies undocumented and
+multi-operation unsafe blocks, and cites the header contract in every
+`// SAFETY:` comment. Callbacks reach host code only as plain values, contain
+panics by poisoning the terminal, drop panic payloads inside a second
+`catch_unwind`, and queue effects until the write returns. Kitty OSC 5522
+writes reach the same host path as OSC 52: `disable_apc_protocols` turns off
+only Kitty graphics, the Glyph protocol, and APC buffering. The engine sets
+the Kitty write limit from `host_effects::TERMINAL_BYTE_LIMIT`, so larger
+writes get `EFBIG` from Ghostty instead of a misleading `EBUSY`. That budget
+is 64 MiB, the minimum `terminal.h` says the protocol requires, and the
+process budget holds two such writes; never lower it below Ghostty's default.
+
+It admits the first `text/plain` representation whose charset, if any, is
+UTF-8 (quote-aware parameter parsing; a valueless `charset` is refused), under
+`terminal.clipboard_write`, and ignores Kitty names, passwords, and grants;
+replies never set `remember`. Clipboard reads and Kitty paste events stay
+uninstalled. Keep the mouse
+encoder and events private to `MouseProbe`'s fixed geometry: Ghostty converts
+encoder geometry and positions with unchecked float-to-integer casts.
+
+`mise run ghostty:bindings` regenerates `src/ffi/{bindings,keys,layout}.rs` with
+bindgen, which loads libclang at run time; on macOS the task pins
+`LIBCLANG_PATH` to the selected Xcode, because clang-sys otherwise prefers any
+`llvm-config` on `PATH`. `ghostty:bindings:check` compares bytes. Getter and
+option value types come only from the generated `keys.rs`.
+
+Each key set declares where its header puts annotations (a final labeled line
+or the first sentence's parenthesized type), and generation fails otherwise.
+Outputs carrying a pointer the library writes through get a `*Populate` trait
+that the generic getters reject, plus a dedicated wrapper. `key_tests.rs`
+checks every key's type against the bytes the library writes or reads. Tests
+read native-written memory only at declared fields and the tag-selected union
+member, taken from the manifest: foreign writes may leave padding
+uninitialized.
+
+The build script reads `GHOSTTY_SOURCE_DIR`, `HUTERM_GHOSTTY_OPTIMIZE` (Debug,
+ReleaseSafe, ReleaseFast, or ReleaseSmall), `HUTERM_GHOSTTY_CPU`,
+`MACOSX_DEPLOYMENT_TARGET`, `ZIG`, and `HUTERM_GHOSTTY_ARTIFACT_CACHE`, and
+reruns only when those, itself, or `scripts/ghostty-source.json` change;
+`scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract
+tests pin each C behavior the engine relies on, and the ABI test checks every
+emitted FFI type against `ghostty_type_json()`. After a pin bump, fix a
+failing contract test's assumption before changing engine code. Allocator vtable
+callbacks receive log2 alignments, not the byte counts `allocator.h` describes.
+Set history through Ghostty's scrollback byte limit; the engine retains a 16 MiB
+budget and reports actual retained rows. Set Ghostty device attributes
+explicitly: a declining callback still gets Ghostty's default VT220 replies at
+this pin, as a `huterm-ghostty` contract test shows.
+
+## Color and mouse state
+
+Ghostty color-only OSC updates can leave render rows clean. Compare effective
+colors and retain explicit palette override information before consuming damage.
+Its API lacks the override mask; the adapter probes changed defaults after
+color OSC (4, 5, 10-19, 21, 104, 105, 110-119) or RIS hints, then restores
+defaults before rendering. The probe's palette writes force a full redraw, so
+other OSCs must not trigger it. The hint mirrors the pinned parser's
+transitions: Ghostty decodes ground bytes as UTF-8, so raw C1 bytes there are
+text, and OSC and DCS payload bytes never start new sequences. It may over-flag
+but must never miss a color operation; the full-probe differential test
+enforces that. Keep this hint state across input chunks, including snapshots
+between fragments.
+
+Ghostty's public mode bits can disagree with its active mouse format/tracking.
+Read the active behavior through the retained native mouse probe, with synthetic
+200x200 geometry independent of the real grid, then feed Huterm's shared encoder.
+Never send probe output to the PTY. At the selected native pin, disabling an
+inactive format resets to legacy encoding.

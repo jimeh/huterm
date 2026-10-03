@@ -1,6 +1,7 @@
 # Foreground process detection
 
-Status: agreed in discussion on 2026-09-25 and implemented in two commits:
+Status: implemented. Agreed in discussion on 2026-09-25 and implemented in two
+commits:
 foreground labels first, then close-confirmation evidence.
 
 ## Outcome and scope

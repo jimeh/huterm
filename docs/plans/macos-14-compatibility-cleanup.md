@@ -1,6 +1,6 @@
 # macOS 14 compatibility cleanup
 
-Status: first-party policy and cleanup implemented with the
+Status: implemented. First-party policy and cleanup landed with the
 [Quake scheduling work](quake-event-scheduling.md) on 2026-09-24. Package fixtures,
 macOS compilation, and native fullscreen/Quake smokes pass. A fresh universal
 package at `0ed2dd9` verified both arm64 and x86_64 Mach-O minimums and the

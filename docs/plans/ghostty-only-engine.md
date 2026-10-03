@@ -5,7 +5,8 @@ delivery before the combined capability and query work in #77 and #82. Every
 launch must use Ghostty, while core's private engine module continues to hide
 native emulator details behind Huterm-owned inputs, effects, and snapshots.
 
-Status: approved implementation contract. This document
+Status: implemented in PR #119 from this approved implementation contract.
+This document
 authorizes no additional protocol behavior. Planning has inspected source; it
 has not established a passing runtime baseline.
 

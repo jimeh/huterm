@@ -3,8 +3,24 @@ import AppKit
 import ApplicationServices
 
 let directory = URL(fileURLWithPath: CommandLine.arguments[1])
+// A launch activation followed by a `focus` command leaves two activation
+// requests, and macOS can apply the later one after another app activates.
+// The departed-focus witness passes this flag so `focus` is its only request.
+let activatesAtLaunch = !CommandLine.arguments.dropFirst(2).contains("--no-launch-activation")
 func publish(_ name: String, _ text: String) throws {
     try text.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+}
+/// Appends activation requests and changes, with uptime, to `witness-events`.
+func record(_ event: String) {
+    let line = "\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime)) \(event)\n"
+    let url = directory.appendingPathComponent("witness-events")
+    if let handle = try? FileHandle(forWritingTo: url) {
+        handle.seekToEndOfFile()
+        handle.write(Data(line.utf8))
+        try? handle.close()
+    } else {
+        try? line.write(to: url, atomically: false, encoding: .utf8)
+    }
 }
 func postKey(_ code: CGKeyCode, _ down: Bool, _ flags: CGEventFlags) throws {
     guard CGPreflightPostEventAccess() else {
@@ -26,8 +42,17 @@ final class Witness: NSObject, NSApplicationDelegate {
         window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 500, height: 320), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Quake external focus witness"
         window.contentView = NSTextField(labelWithString: "External application. Quake must return focus here.")
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        for (name, event) in [(NSApplication.didBecomeActiveNotification, "became_active"), (NSApplication.didResignActiveNotification, "resigned_active")] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+                record("\(event) front_pid=\(front)")
+            }
+        }
+        if activatesAtLaunch {
+            window.makeKeyAndOrderFront(nil)
+            record("activate_request launch")
+            NSApp.activate(ignoringOtherApps: true)
+        }
         try! publish("witness-ready", "pid=\(ProcessInfo.processInfo.processIdentifier)\nposting=\(CGPreflightPostEventAccess())\n")
         timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [self] _ in
             do {
@@ -50,6 +75,7 @@ final class Witness: NSObject, NSApplicationDelegate {
         let parts = command.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
         switch parts[0] {
         case "focus":
+            record("activate_request focus")
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
         case "key":

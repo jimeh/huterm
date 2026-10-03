@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkTree, findViolations } from "./rust-test-order.ts";
+import { checkPaths, checkTree, findViolations } from "./rust-test-order.ts";
 
 const lines = (source: string) => findViolations(source).map((violation) => violation.line);
 
@@ -267,6 +267,25 @@ test("tree walk skips generated and hidden directories", async () => {
     expect(result.reports).toEqual([
       "crates/a/src/lib.rs:3: fn production follows test module mod tests (line 2); move the test module below production items",
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("path mode checks only the given Rust files outside skipped directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-test-order-"));
+  try {
+    const bad = "#[cfg(test)]\nmod tests {}\nfn production() {}\n";
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(join(root, "third-party", "vendor"), { recursive: true });
+    await writeFile(join(root, "src", "staged.rs"), bad);
+    await writeFile(join(root, "src", "unstaged.rs"), bad);
+    await writeFile(join(root, "third-party", "vendor", "lib.rs"), bad);
+    const result = checkPaths(root, ["src/staged.rs", "third-party/vendor/lib.rs", "README.md"]);
+    expect(result).toEqual({
+      files: 1,
+      reports: ["src/staged.rs:3: fn production follows test module mod tests (line 2); move the test module below production items"],
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
