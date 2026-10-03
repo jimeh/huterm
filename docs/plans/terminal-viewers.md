@@ -929,6 +929,15 @@ stated:
   out and a release without any other activity.
 - Dropping a viewer with a queued press writes the press and then its
   release, in that order; dropping a viewer still writes its queued text.
+- A viewer that registers, presses, and drops inside one owner turn has its
+  press written and released between its focus in and focus out.
+- A press queued after the gesture owner drops, inside the same owner turn,
+  is written after the owner's synthetic release instead of being refused.
+- Threads that subscribe and drop viewers continuously do not stop typed
+  lines from being echoed; each line is typed only after further churn.
+- While writes are backed up, subscribe-and-drop churn reaches the viewer
+  limit and leaves the backlog unchanged; once the writes drain, the dropped
+  viewers are finalized without a further request.
 - A single viewer's focus and blur each write exactly one `ESC [ I` and one
   `ESC [ O`.
 - A clipboard write reaches exactly one recipient across focus handoff,

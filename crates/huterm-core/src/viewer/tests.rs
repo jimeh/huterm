@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -741,6 +741,7 @@ fn viewer_churn_does_not_starve_input_or_output() {
     let typist = prober(&runtime);
     wait_for_text(&typist, "READY");
     let stop = AtomicBool::new(false);
+    let churned = AtomicUsize::new(0);
     thread::scope(|scope| {
         // Stops the churn on a failed wait too, so the scope can join.
         let _stop = StopOnDrop(&stop);
@@ -749,13 +750,22 @@ fn viewer_churn_does_not_starve_input_or_output() {
         for _ in 0..4 {
             scope.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    drop(runtime.subscribe(ViewerOptions::new(
-                        ViewerCapabilities::NONE,
-                    )));
+                    if runtime
+                        .subscribe(ViewerOptions::new(ViewerCapabilities::NONE))
+                        .is_ok()
+                    {
+                        churned.fetch_add(1, Ordering::Release);
+                    }
                 }
             });
         }
         for index in 0..5 {
+            // Viewers register and drop before each line is typed, so no
+            // line runs ahead of the churn it must survive.
+            let before = churned.load(Ordering::Acquire);
+            wait_until("viewer churn", || {
+                churned.load(Ordering::Acquire) > before
+            });
             typist
                 .send_input(TerminalInput::Text(format!("k{index}\n")))
                 .unwrap();

@@ -1458,6 +1458,10 @@ fn handle_client_message(
     // take a gesture that finalization could not release, and one ahead of
     // a dropped owner's finalization would be refused. Doing it here, not by
     // restarting the turn, means a pending change never delays the request.
+    debug_assert!(
+        owner.pending_writes.is_empty(),
+        "a request was dequeued while writes were backed up"
+    );
     let reconciled = !owner.registry.take_changed()
         || owner.apply(arbiter.sync(owner.registry));
     let healthy = reconciled
