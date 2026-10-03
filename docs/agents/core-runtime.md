@@ -79,18 +79,18 @@ never hidden. Host-effect admission wakes the selected recipient's own viewer.
 The runtime closes every viewer's wake when it stops, through a guard that also
 runs on panic, and closes a revoked viewer's wake when it finalizes that viewer.
 
-Reconcile at the top of each turn and again in `handle_client_message` when the
-registry changed, so every request has its viewer's entry and follows any
-finalization that preceded it; a mouse press with no entry would take a gesture
-that finalization could not release. Never restart the turn for a pending
-change: subscribe-and-drop churn then starves requests and output. Never
-reconcile while writes are backed up: freed slots would let that churn queue
-focus reports without bound. Requests are dequeued only once writes drain, and
-the idle wait rechecks for a pending change; the backlog consumed the
-notification. `RuntimeMessage::permitted` is the one dequeue check for ordered
-requests, and `handle_client_message` settles each once. Scroll numbers live on
-the viewer's slot, not its arbitration entry: scrolls are controls that can
-precede or outlive the entry.
+Reconcile only through `Owner::reconcile`, which runs when the registry changed
+and waits while writes are backed up: freed slots would let subscribe-and-drop
+churn queue focus reports without bound. Call it at the top of each turn and
+again in `handle_client_message`, so every request has its viewer's entry and
+follows any finalization that preceded it; a mouse press with no entry would
+take a gesture that finalization could not release. Never restart the turn for
+a pending change: that churn then starves requests and output. Requests are
+dequeued only once writes drain, and the idle wait rechecks for a pending
+change; the backlog consumed the notification. `RuntimeMessage::permitted` is
+the one dequeue check for ordered requests, and `handle_client_message` settles
+each once. Scroll numbers live on the viewer's slot, not its arbitration entry:
+scrolls are controls that can precede or outlive the entry.
 
 Rearm a viewer's invalidation on the runtime owner thread when constructing
 that viewer's snapshot, not when draining its notification, so hidden or

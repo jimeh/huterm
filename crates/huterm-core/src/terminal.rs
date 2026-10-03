@@ -808,6 +808,20 @@ struct Owner<'a> {
 }
 
 impl Owner<'_> {
+    /// Reconciles the viewer table if the registry changed: adds viewers
+    /// that have sent nothing yet and finalizes dropped and revoked ones.
+    /// While writes are backed up it waits: the focus reports and releases
+    /// it writes would queue behind them anyway, and because finalization
+    /// frees slots, subscribe-and-drop churn could otherwise grow the
+    /// backlog without bound. Returns false when the runtime must close.
+    fn reconcile(&mut self, arbiter: &mut Arbiter) -> bool {
+        if !self.pending_writes.is_empty() || !self.registry.take_changed() {
+            return true;
+        }
+        let effects = arbiter.sync(self.registry);
+        self.apply(effects)
+    }
+
     /// Applies arbitration effects in order: resize, presentation, mouse
     /// releases, then the focus report. Returns false when the runtime must
     /// close.
@@ -1070,18 +1084,9 @@ fn run_terminal(
         }};
     }
     while !closing.load(Ordering::Acquire) {
-        // Reconciles the viewer table: adds viewers that have sent nothing
-        // yet and finalizes dropped and revoked ones. While writes are
-        // backed up it waits: the focus reports and releases it writes
-        // would queue behind them anyway, and because finalization frees
-        // slots, subscribe-and-drop churn could otherwise grow the backlog
-        // without bound.
-        if pending_writes.is_empty() && registry.take_changed() {
-            let effects = arbiter.sync(registry);
-            if !owner!(|owner| owner.apply(effects)) {
-                closing.store(true, Ordering::Release);
-                continue;
-            }
+        if !owner!(|owner| owner.reconcile(&mut arbiter)) {
+            closing.store(true, Ordering::Release);
+            continue;
         }
         if let Err(error) = observe_child_exit(
             child.as_mut(),
@@ -1435,7 +1440,7 @@ fn end_untracked_gesture(
 /// its last request has run. Returns false when the runtime must close.
 ///
 /// The caller dequeues a request only once writes have drained, so the
-/// reconcile here never runs behind a backlog.
+/// reconcile here is never put off by a backlog.
 fn handle_client_message(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
@@ -1462,8 +1467,7 @@ fn handle_client_message(
         owner.pending_writes.is_empty(),
         "a request was dequeued while writes were backed up"
     );
-    let reconciled = !owner.registry.take_changed()
-        || owner.apply(arbiter.sync(owner.registry));
+    let reconciled = owner.reconcile(arbiter);
     let healthy = reconciled
         && (!message.permitted()
             || match message {
