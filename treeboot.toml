@@ -1,0 +1,8 @@
+#:schema https://github.com/jimeh/treeboot/releases/latest/download/config.schema.json
+
+# Bootstraps a linked worktree. Preparation reuses a pinned archive that
+# another checkout has already downloaded, so a warm machine needs no network.
+commands = [
+  "mise run setup",
+  "mise run ghostty:prepare",
+]

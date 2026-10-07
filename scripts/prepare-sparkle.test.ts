@@ -65,13 +65,19 @@ test("preparation extracts verified bytes and check mode never repairs", async (
   expect(packed.exitCode, packed.stderr.toString()).toBe(0);
   pin.source.sha256 = fileHash(archive);
   const bytes = await Bun.file(archive).bytes();
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(bytes) });
+  let requests = 0;
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { requests += 1; return new Response(bytes); } });
   pin.source.url = server.url.toString();
   const root = temporary();
   try {
     await prepareSparkle(pin, root, false);
     expect(existsSync(join(root, "distribution/Sparkle.framework"))).toBe(true);
     await prepareSparkle(pin, root, true);
+    // Another checkout's matching archive replaces a second download.
+    const reusing = temporary();
+    await prepareSparkle(pin, reusing, false, [root]);
+    expect(existsSync(join(reusing, "distribution/Sparkle.framework"))).toBe(true);
+    expect(requests).toBe(1);
     writeFileSync(join(root, "distribution/LICENSE"), "tampered");
     await expect(prepareSparkle(pin, root, false)).rejects.toThrow("contents differ");
   } finally {
