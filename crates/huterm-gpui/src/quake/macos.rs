@@ -105,6 +105,33 @@ impl PartialEq for Focus {
     }
 }
 impl Eq for Focus {}
+impl Focus {
+    /// Names the application for a failure message: its bundle identifier or
+    /// name, process, and activation policy.
+    fn describe(&self) -> String {
+        // SAFETY: Reads properties of the retained NSRunningApplication on
+        // the main thread. Either string may be nil.
+        let (identifier, name, policy) = unsafe {
+            let identifier: *mut Object =
+                msg_send![self.application.0, bundleIdentifier];
+            let name: *mut Object =
+                msg_send![self.application.0, localizedName];
+            let policy: isize = msg_send![self.application.0, activationPolicy];
+            (string(identifier), string(name), policy)
+        };
+        let application = identifier
+            .or(name)
+            .unwrap_or_else(|| "an unnamed application".to_owned());
+        // NSApplicationActivationPolicy.
+        let policy = match policy {
+            0 => "regular",
+            1 => "accessory",
+            2 => "prohibited",
+            _ => "unknown policy",
+        };
+        format!("{application} (pid {}, {policy})", self.pid)
+    }
+}
 
 impl Platform {
     pub fn new(cx: &gpui::App) -> anyhow::Result<Self> {
@@ -197,7 +224,8 @@ impl Platform {
                 msg_send![target.application.0,activateWithOptions: 2usize];
             ensure!(
                 accepted == YES,
-                "macOS refused previous-application activation"
+                "macOS refused to activate {}",
+                target.describe()
             );
         }
         Ok(())
@@ -554,6 +582,21 @@ unsafe fn object_for_key(
         ensure!(!value.is_null(), "native dictionary key unavailable");
         Ok(value)
     }
+}
+/// Copies an `NSString`. `None` for nil.
+unsafe fn string(value: *mut Object) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: Caller provides a live NSString. UTF8String stays borrowed
+    // until the string is released; copy it before returning.
+    let bytes: *const std::ffi::c_char =
+        unsafe { msg_send![value, UTF8String] };
+    (!bytes.is_null()).then(|| {
+        unsafe { CStr::from_ptr(bytes) }
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 fn desktop_top() -> anyhow::Result<f64> {
     // SAFETY: NSScreen.screens[0] is the menu-bar display, whose top anchors

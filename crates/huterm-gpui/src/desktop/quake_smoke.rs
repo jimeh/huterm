@@ -128,8 +128,8 @@ async fn execute(
     command: &str,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
-    if command.split_whitespace().nth(1) == Some("report_dead") {
-        return report_dead_for_smoke(cx).await;
+    if command.split_whitespace().nth(1) == Some("report_fallback") {
+        return report_fallback_for_smoke(cx).await;
     }
     cx.update(|cx| execute_ui(cx, command))
 }
@@ -223,7 +223,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     ))
 }
 
-async fn report_dead_for_smoke(
+/// Reports one failure whose reporter has closed and one that never had a
+/// reporter, as a global hotkey's does, while a known window is active.
+async fn report_fallback_for_smoke(
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
     let (reporter, fallback) = cx.update(setup_dead_reporter)?;
@@ -241,6 +243,7 @@ async fn report_dead_for_smoke(
     }
     cx.update(move |cx| {
         quake_windows::report(cx, "smoke dead reporter", Some(reporter));
+        quake_windows::report(cx, "smoke absent reporter", None);
     });
     Ok(format!("fallback={:?}", fallback.window_id()))
 }
@@ -281,8 +284,8 @@ fn read_state(cx: &mut App) -> String {
         cx.global::<Desktop>().reloading,
         quake_windows::keep_alive(cx),
     );
-    // Desktop-wide notices new windows raise: configuration diagnostics,
-    // then failures latched while no window could show them, as
+    // Desktop-wide notices the next new window raises: configuration
+    // diagnostics, then failures still latched for want of a window, as
     // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
     let desktop = cx.global::<Desktop>();
     let global: Vec<_> =

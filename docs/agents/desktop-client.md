@@ -263,6 +263,12 @@ activity drain, including hidden tabs. Root-shell exit is not a failure: only a
 tab kept by `close_on_exit = false` announces it. Smoke state serializes the
 stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
 
+One window shows each command failure. A failure with no live reporter, such
+as one from a global hotkey, goes to the active window. `Desktop.latched` holds
+it only while no window can show it, and the next new window takes it rather
+than copying it. Leaving a shown failure latched replays it in every later
+window until a reload.
+
 ## Tab bar layout
 
 The README describes the tab bar's options. These are the layout mechanics

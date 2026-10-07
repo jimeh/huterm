@@ -559,8 +559,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (!hasFailure(profile(warned, "ordinary") ?? {}, "focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
           if (hasFailure(warned, "focus restoration failed", "desktop.")) throw new Error("originated focus warning leaked into the global fallback");
           console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning reporter=ordinary`);
-          const reportResult = await command("app report_dead");
-          if (!reportResult.startsWith("fallback=")) throw new Error(`dead reporter did not identify its fallback window: ${reportResult}`);
+          const reportResult = await command("app report_fallback");
+          if (!reportResult.startsWith("fallback=")) throw new Error(`reporterless failures did not identify their fallback window: ${reportResult}`);
           const fallbackId = reportResult.slice("fallback=".length).trim();
           await waitFor(async () => {
             const value = await state();
@@ -568,11 +568,13 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             if (!fallbackWindow) return false;
             const fallbackPrefix = fallbackWindow.slice(0, -"window_id".length);
             const otherWindows = Object.keys(value).filter(key => key.endsWith(".window_id") && key !== fallbackWindow).map(key => key.slice(0, -"window_id".length));
-            return hasFailure(value, "Quake: smoke dead reporter", "desktop.")
-              && hasFailure(value, "Quake: smoke dead reporter", fallbackPrefix)
-              && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes("Quake: smoke dead reporter")));
-          }, "dead reporter global and active-window fallback");
-          console.log(`QUAKE_REPORTER ${engine} live=window dead=global-and-active-window fallback=${fallbackId}`);
+            // The active window showed both, so neither waits in the latch for later windows to replay.
+            return ["Quake: smoke dead reporter", "Quake: smoke absent reporter"].every(message =>
+              hasFailure(value, message, fallbackPrefix)
+              && !hasFailure(value, message, "desktop.")
+              && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes(message))));
+          }, "dead and absent reporters fall back to the active window alone");
+          console.log(`QUAKE_REPORTER ${engine} live=window dead=active-window absent=active-window latched=none fallback=${fallbackId}`);
         } catch (error) {
           // The witness's activation log shows whether a late request took focus back.
           const events = macos ? await readFile(join(departedDirectory, "witness-events"), "utf8").catch(() => "none") : "";
@@ -993,8 +995,16 @@ export async function checkOrdinaryExit(executable: string, conflictChord?: stri
   let passed = false;
   const state = async () => parseState(await Bun.file(join(directory,"state")).text());
   try {
-    await waitFor(async () => await Bun.file(join(directory,"state")).exists() && !!profile(await state(),"ordinary")?.text?.includes("ORDINARY_READY"),"ordinary window without registrations");
-    if (conflict && !hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict did not report its failure");
+    // The conflict precedes every window, so it waits in the latch until the first window takes it. Its notice expires, so observe it on any poll.
+    let conflictShown = false;
+    await waitFor(async () => {
+      if (!await Bun.file(join(directory,"state")).exists()) return false;
+      const ordinary = profile(await state(),"ordinary");
+      conflictShown ||= hasFailure(ordinary ?? {}, "cannot register");
+      return !!ordinary?.text?.includes("ORDINARY_READY");
+    },"ordinary window without registrations");
+    if (conflict && !conflictShown) throw new Error("startup grab conflict did not report its failure in the first window");
+    if (hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict stayed latched after a window showed it");
     if ((await state()).keepalive !== String(unregister)) throw new Error("ordinary startup registration ownership disagrees with configuration");
     await publishCommand(join(directory,"command-0"),"ordinary close_window");
     await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true" || (unregister && (await state()).windows === "0"),"ordinary final-window assessment");

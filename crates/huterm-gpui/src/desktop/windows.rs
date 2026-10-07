@@ -544,7 +544,8 @@ struct Desktop {
     /// New windows raise them; every reload replaces them.
     diagnostics: Vec<NoticeContent>,
     /// Failures reported while no window could show them, such as a startup
-    /// hotkey conflict. New windows raise them until a reload clears them.
+    /// hotkey conflict. The next new window takes and raises them; a reload
+    /// clears the ones still waiting.
     latched: Vec<NoticeContent>,
     /// Client-owned facts about every window; read window facts here.
     windows: WindowModel,
@@ -641,23 +642,44 @@ impl Desktop {
     }
 }
 
-/// Raises `message` as a command failure in the active window, if there is
-/// one.
-fn show_active_window_failure(cx: &mut App, message: String) {
+/// Raises `message` as a command failure in the active window. Returns
+/// whether a window showed it.
+fn show_active_window_failure(cx: &mut App, message: String) -> bool {
     let Some(window) = cx.active_window() else {
-        return;
+        return false;
     };
-    let _ = window.update(cx, |root, _, cx| {
-        if let Ok(view) = root.downcast::<WorkspaceView>() {
+    window
+        .update(cx, |root, _, cx| {
+            let Ok(view) = root.downcast::<WorkspaceView>() else {
+                return false;
+            };
             view.update(cx, |view, cx| {
                 view.report_failure("Command failed", message, cx);
             });
-        }
-    });
+            true
+        })
+        .unwrap_or(false)
 }
 
-/// Records a failure for windows that do not exist yet. Repeats of a waiting
-/// message collapse.
+/// Raises `message` as a command failure in the reporter's window, or in the
+/// active window when the reporter is absent or closed. Returns whether a
+/// window showed it.
+fn show_failure(
+    cx: &mut App,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+    message: String,
+) -> bool {
+    if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade()) {
+        reporter.update(cx, |view, cx| {
+            view.report_failure("Command failed", message, cx);
+        });
+        return true;
+    }
+    show_active_window_failure(cx, message)
+}
+
+/// Records a failure for the next new window. Repeats of a waiting message
+/// collapse.
 fn latch_failure(cx: &mut App, message: &str) {
     let latched = &mut cx.global_mut::<Desktop>().latched;
     if !latched.iter().any(|content| content.message == message) {
@@ -665,45 +687,48 @@ fn latch_failure(cx: &mut App, message: &str) {
     }
 }
 
+/// Takes `message` back out of the latch. Returns false when it is no longer
+/// waiting there.
+fn unlatch_failure(cx: &mut App, message: &str) -> bool {
+    let latched = &mut cx.global_mut::<Desktop>().latched;
+    let before = latched.len();
+    latched.retain(|content| content.message != message);
+    latched.len() != before
+}
+
 fn report_deferred_failure(
     cx: &mut App,
     reporter: Option<WeakEntity<WorkspaceView>>,
     message: String,
 ) {
-    report_deferred_failure_inner(cx, reporter, message, false);
+    eprintln!("Huterm {message}");
+    cx.defer(move |cx| {
+        show_failure(cx, reporter, message);
+    });
 }
 
+/// Reports a failure that one window must show. It waits in the desktop
+/// latch for the next new window only while no existing window can show it.
 fn report_deferred_failure_with_global_latch(
     cx: &mut App,
     reporter: Option<WeakEntity<WorkspaceView>>,
     message: String,
 ) {
-    let latch_if_dead = reporter.is_some();
-    if reporter.is_none() {
+    eprintln!("Huterm {message}");
+    // Without a reporter the failure waits in the latch now, so a window
+    // created before the deferred step below still raises it.
+    let waiting = reporter.is_none();
+    if waiting {
         latch_failure(cx, &message);
     }
-    report_deferred_failure_inner(cx, reporter, message, latch_if_dead);
-}
-
-fn report_deferred_failure_inner(
-    cx: &mut App,
-    reporter: Option<WeakEntity<WorkspaceView>>,
-    message: String,
-    latch_if_dead: bool,
-) {
-    eprintln!("Huterm {message}");
     cx.defer(move |cx| {
-        if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade())
-        {
-            reporter.update(cx, |view, cx| {
-                view.report_failure("Command failed", message, cx);
-            });
+        if waiting && !unlatch_failure(cx, &message) {
+            // A new window already took it.
             return;
         }
-        if latch_if_dead {
+        if !show_failure(cx, reporter, message.clone()) {
             latch_failure(cx, &message);
         }
-        show_active_window_failure(cx, message);
     });
 }
 
@@ -1070,7 +1095,9 @@ pub(super) fn run_with_startup(
                 eprintln!("Huterm {message}");
                 // Global action callbacks run while the dispatching window
                 // is borrowed, so raise the notice after it is returned.
-                cx.defer(move |cx| show_active_window_failure(cx, message));
+                cx.defer(move |cx| {
+                    show_active_window_failure(cx, message);
+                });
             }
         });
         cx.on_window_closed(|cx, window| {
@@ -2066,12 +2093,12 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Raises the desktop's configuration diagnostics and any failures
-    /// latched while no window could show them.
+    /// Raises the desktop's configuration diagnostics and takes any failures
+    /// latched while no window could show them, so each is shown once.
     fn raise_desktop_notices(&mut self, cx: &mut Context<'_, Self>) {
-        let desktop = cx.global::<Desktop>();
+        let desktop = cx.global_mut::<Desktop>();
         let diagnostics = desktop.diagnostics.clone();
-        let latched = desktop.latched.clone();
+        let latched = std::mem::take(&mut desktop.latched);
         let now = Instant::now();
         self.notices.replace_diagnostics(&diagnostics, now);
         for content in latched {
