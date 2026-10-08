@@ -138,6 +138,11 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let fields: Vec<_> = command.split_whitespace().collect();
     let target = *fields.first().context("command target")?;
     let name = *fields.get(1).context("command name")?;
+    if name == "report_unshown" {
+        // A reporterless failure, as a global hotkey's is.
+        quake_windows::report(cx, "smoke unshown failure", None);
+        return Ok("reported".into());
+    }
     let handle = cx.windows().into_iter().find(|handle| {
         handle
             .update(cx, |root, window, cx| {
@@ -284,8 +289,8 @@ fn read_state(cx: &mut App) -> String {
         cx.global::<Desktop>().reloading,
         quake_windows::keep_alive(cx),
     );
-    // Desktop-wide notices the next new window raises: configuration
-    // diagnostics, then failures still latched for want of a window, as
+    // Desktop-wide notices: configuration diagnostics, which new windows
+    // raise, then failures still latched for want of a window, as
     // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
     let desktop = cx.global::<Desktop>();
     let global: Vec<_> =

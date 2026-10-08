@@ -544,8 +544,8 @@ struct Desktop {
     /// New windows raise them; every reload replaces them.
     diagnostics: Vec<NoticeContent>,
     /// Failures reported while no window could show them, such as a startup
-    /// hotkey conflict. The next new window takes and raises them; a reload
-    /// clears the ones still waiting.
+    /// hotkey conflict. The next window to open or become active takes and
+    /// raises them; a reload clears the ones still waiting.
     latched: Vec<NoticeContent>,
     /// Client-owned facts about every window; read window facts here.
     windows: WindowModel,
@@ -678,8 +678,8 @@ fn show_failure(
     show_active_window_failure(cx, message)
 }
 
-/// Records a failure for the next new window. Repeats of a waiting message
-/// collapse.
+/// Records a failure for the next window to open or become active. Repeats
+/// of a waiting message collapse.
 fn latch_failure(cx: &mut App, message: &str) {
     let latched = &mut cx.global_mut::<Desktop>().latched;
     if !latched.iter().any(|content| content.message == message) {
@@ -708,7 +708,8 @@ fn report_deferred_failure(
 }
 
 /// Reports a failure that one window must show. It waits in the desktop
-/// latch for the next new window only while no existing window can show it.
+/// latch, for the next window to open or become active, only while no
+/// existing window can show it.
 fn report_deferred_failure_with_global_latch(
     cx: &mut App,
     reporter: Option<WeakEntity<WorkspaceView>>,
@@ -1919,6 +1920,11 @@ fn open_window_with_profile(
                         state.native_wake();
                     }
                     view.refresh_tab_visibility(window, cx);
+                    // A failure latched while every window was hidden or
+                    // inactive belongs to the first one the user returns to.
+                    if window.is_window_active() {
+                        view.raise_latched_failures(cx);
+                    }
                 })
                 .detach();
                 cx.observe_window_bounds(window, |view, window, cx| {
@@ -2093,14 +2099,24 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Raises the desktop's configuration diagnostics and takes any failures
-    /// latched while no window could show them, so each is shown once.
+    /// Raises the desktop's configuration diagnostics and latched failures
+    /// in a new window.
     fn raise_desktop_notices(&mut self, cx: &mut Context<'_, Self>) {
-        let desktop = cx.global_mut::<Desktop>();
-        let diagnostics = desktop.diagnostics.clone();
-        let latched = std::mem::take(&mut desktop.latched);
+        let diagnostics = cx.global::<Desktop>().diagnostics.clone();
+        self.notices
+            .replace_diagnostics(&diagnostics, Instant::now());
+        self.raise_latched_failures(cx);
+        cx.notify();
+    }
+
+    /// Takes the failures latched while no window could show them and raises
+    /// them here, so each is shown once.
+    fn raise_latched_failures(&mut self, cx: &mut Context<'_, Self>) {
+        let latched = std::mem::take(&mut cx.global_mut::<Desktop>().latched);
+        if latched.is_empty() {
+            return;
+        }
         let now = Instant::now();
-        self.notices.replace_diagnostics(&diagnostics, now);
         for content in latched {
             self.notices.push(content, now);
         }
