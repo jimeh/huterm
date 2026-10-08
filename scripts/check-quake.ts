@@ -871,6 +871,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await command("app hide_quake");await settled(false);
       process.kill(Number(identity),"SIGTERM");
       await waitFor(async () => !profile(await state(),"default"),"hidden final shell exit removes association");
+      // A failed spawn summoned from a window is reported in that window, so it must not also wait in the latch.
+      await import("node:fs/promises").then(fs => fs.rename(shell, shell + ".absent"));
+      await command("ordinary show_quake");
+      await waitFor(async () => hasFailure(profile(await state(), "ordinary") ?? {}, "Cannot open tab:") && !profile(await state(), "default"), "failed spawn reported to its originating window");
+      if (hasFailure(await state(), "Cannot open tab:", "desktop.")) throw new Error("failed spawn stayed latched after its originating window showed it");
+      await import("node:fs/promises").then(fs => fs.rename(shell + ".absent", shell));
       await command("ordinary close_window");
       await waitFor(async () => profile(await state(),"ordinary")?.confirming === "true", "last ordinary window close assessment");
       await command("ordinary confirm_close");
@@ -891,7 +897,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(async () => (await current())?.text?.includes(`ACK:recreated:${identity}:`) ?? false,"new shell after zero-window retry");
       // The quake window is the only window. A failure reported while it is hidden waits for it instead of a later new window.
       await command("app hide_quake");await settled(false);
-      await command("app report_unshown");
+      await waitFor(async () => (await command("app report_unshown")) === "reported", "no window is active once the only window is hidden");
       await waitFor(async () => hasFailure(await state(), "Quake: smoke unshown failure", "desktop."), "failure latched while the only window is hidden");
       if (hasFailure((await current()) ?? {}, "Quake: smoke unshown failure")) throw new Error("hidden quake window raised a failure nobody could see");
       await command("app show_quake");await settled(true);

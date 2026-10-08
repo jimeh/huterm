@@ -266,8 +266,8 @@ stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<me
 A reported command failure with no live reporter, such as one from a global
 hotkey, goes to the active window. `Desktop.latched` holds it only while no
 window can show it, and the next window to open or become active takes it
-rather than copying it. Leaving a shown failure latched replays it in every
-later window until a reload.
+rather than copying it. A failure left latched after a window showed it is
+shown a second time, in the next window to open or become active.
 
 ## Tab bar layout
 

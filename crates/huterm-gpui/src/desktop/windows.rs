@@ -4316,11 +4316,16 @@ impl WorkspaceView {
                 .action("Try Again", bare(ids::NEW_TAB)),
             cx,
         );
-        if let Some(reporter) = self.startup_reporter.take() {
+        let reported = self.startup_reporter.take().is_some_and(|reporter| {
             report_deferred_failure(cx, Some(reporter), message.clone());
-        }
+            true
+        });
         if self.quake.is_some() && self.tabs.is_empty() {
-            latch_failure(cx, &message);
+            // This window is about to close. Its reporter's window shows
+            // the failure; without one it waits for another window.
+            if !reported {
+                latch_failure(cx, &message);
+            }
             if let Some(state) = &self.quake {
                 cx.global_mut::<Desktop>().quake.failed_spawn =
                     Some((state.name.clone(), message));

@@ -139,6 +139,11 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let target = *fields.first().context("command target")?;
     let name = *fields.get(1).context("command name")?;
     if name == "report_unshown" {
+        // Only a failure that no window can show stays latched; the caller
+        // retries until the platform reports no active window.
+        if cx.active_window().is_some() {
+            return Ok("active".into());
+        }
         // A reporterless failure, as a global hotkey's is.
         quake_windows::report(cx, "smoke unshown failure", None);
         return Ok("reported".into());
