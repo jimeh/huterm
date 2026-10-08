@@ -642,40 +642,48 @@ impl Desktop {
     }
 }
 
+/// Raises `message` as a command failure in `view`'s window. Returns false
+/// for a closing window, which cannot show it.
+fn show_failure_in(
+    cx: &mut App,
+    view: &Entity<WorkspaceView>,
+    message: &str,
+) -> bool {
+    view.update(cx, |view, cx| {
+        if view.closing(cx) {
+            return false;
+        }
+        view.report_failure("Command failed", message, cx);
+        true
+    })
+}
+
 /// Raises `message` as a command failure in the active window. Returns
 /// whether a window showed it.
-fn show_active_window_failure(cx: &mut App, message: String) -> bool {
+fn show_active_window_failure(cx: &mut App, message: &str) -> bool {
     let Some(window) = cx.active_window() else {
         return false;
     };
     window
         .update(cx, |root, _, cx| {
-            let Ok(view) = root.downcast::<WorkspaceView>() else {
-                return false;
-            };
-            view.update(cx, |view, cx| {
-                view.report_failure("Command failed", message, cx);
-            });
-            true
+            root.downcast::<WorkspaceView>()
+                .is_ok_and(|view| show_failure_in(cx, &view, message))
         })
         .unwrap_or(false)
 }
 
 /// Raises `message` as a command failure in the reporter's window, or in the
-/// active window when the reporter is absent or closed. Returns whether a
-/// window showed it.
+/// active window when the reporter is absent, closed, or closing. Returns
+/// whether a window showed it.
 fn show_failure(
     cx: &mut App,
     reporter: Option<WeakEntity<WorkspaceView>>,
-    message: String,
+    message: &str,
 ) -> bool {
-    if let Some(reporter) = reporter.and_then(|reporter| reporter.upgrade()) {
-        reporter.update(cx, |view, cx| {
-            view.report_failure("Command failed", message, cx);
-        });
-        return true;
-    }
-    show_active_window_failure(cx, message)
+    reporter
+        .and_then(|reporter| reporter.upgrade())
+        .is_some_and(|reporter| show_failure_in(cx, &reporter, message))
+        || show_active_window_failure(cx, message)
 }
 
 /// Records a failure for the next window to open or become active. Repeats
@@ -703,7 +711,7 @@ fn report_deferred_failure(
 ) {
     eprintln!("Huterm {message}");
     cx.defer(move |cx| {
-        show_failure(cx, reporter, message);
+        show_failure(cx, reporter, &message);
     });
 }
 
@@ -727,7 +735,7 @@ fn report_deferred_failure_with_global_latch(
             // A new window already took it.
             return;
         }
-        if !show_failure(cx, reporter, message.clone()) {
+        if !show_failure(cx, reporter, &message) {
             latch_failure(cx, &message);
         }
     });
@@ -1097,7 +1105,7 @@ pub(super) fn run_with_startup(
                 // Global action callbacks run while the dispatching window
                 // is borrowed, so raise the notice after it is returned.
                 cx.defer(move |cx| {
-                    show_active_window_failure(cx, message);
+                    show_active_window_failure(cx, &message);
                 });
             }
         });
@@ -1922,7 +1930,7 @@ fn open_window_with_profile(
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
                     // inactive belongs to the first one the user returns to.
-                    if window.is_window_active() {
+                    if window.is_window_active() && !view.closing(cx) {
                         view.raise_latched_failures(cx);
                     }
                 })
@@ -2097,6 +2105,15 @@ impl WorkspaceView {
     fn notify(&mut self, content: NoticeContent, cx: &mut Context<'_, Self>) {
         self.notices.push(content, Instant::now());
         cx.notify();
+    }
+
+    /// Whether this window is being removed, and so can no longer show a
+    /// notice to anyone.
+    fn closing(&self, cx: &App) -> bool {
+        cx.global::<Desktop>()
+            .windows
+            .record(self.window)
+            .is_some_and(|record| record.closing)
     }
 
     /// Raises the desktop's configuration diagnostics and latched failures
@@ -4316,16 +4333,16 @@ impl WorkspaceView {
                 .action("Try Again", bare(ids::NEW_TAB)),
             cx,
         );
-        let reported = self.startup_reporter.take().is_some_and(|reporter| {
-            report_deferred_failure(cx, Some(reporter), message.clone());
-            true
-        });
+        let reporter = self.startup_reporter.take();
         if self.quake.is_some() && self.tabs.is_empty() {
-            // This window is about to close. Its reporter's window shows
-            // the failure; without one it waits for another window.
-            if !reported {
-                latch_failure(cx, &message);
-            }
+            // This window is about to close, so another must show the
+            // failure: the reporter's, the active one, or the next to open
+            // or become active.
+            report_deferred_failure_with_global_latch(
+                cx,
+                reporter,
+                message.clone(),
+            );
             if let Some(state) = &self.quake {
                 cx.global_mut::<Desktop>().quake.failed_spawn =
                     Some((state.name.clone(), message));
@@ -4333,6 +4350,9 @@ impl WorkspaceView {
             eprintln!("Cannot start quake shell: {error}");
             self.remove_window(window, cx, false);
             return true;
+        }
+        if reporter.is_some() {
+            report_deferred_failure(cx, reporter, message);
         }
         false
     }

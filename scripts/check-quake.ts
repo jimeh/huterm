@@ -871,11 +871,25 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await command("app hide_quake");await settled(false);
       process.kill(Number(identity),"SIGTERM");
       await waitFor(async () => !profile(await state(),"default"),"hidden final shell exit removes association");
-      // A failed spawn summoned from a window is reported in that window, so it must not also wait in the latch.
+      // A failed spawn summoned from a window is shown once, in that window. The closing quake window briefly reads as ordinary, so match the summoning window by identity.
+      const summoner = profile(await state(), "ordinary")!.window_id!;
+      const windowsBefore = (await state()).windows;
+      const summonerPrefix = (value: State) => Object.entries(value).find(([key, id]) => key.endsWith(".window_id") && id === summoner)?.[0].slice(0, -"window_id".length);
+      let spawnFailures = 0;
+      const observeSpawnFailures = (value: State) => {
+        const prefix = summonerPrefix(value);
+        const count = prefix === undefined ? 0 : noticeLines(value, prefix).filter(line => line.includes("Cannot open tab:")).length;
+        spawnFailures = Math.max(spawnFailures, count);
+        return prefix;
+      };
       await import("node:fs/promises").then(fs => fs.rename(shell, shell + ".absent"));
       await command("ordinary show_quake");
-      await waitFor(async () => hasFailure(profile(await state(), "ordinary") ?? {}, "Cannot open tab:") && !profile(await state(), "default"), "failed spawn reported to its originating window");
+      await waitFor(async () => { const value = await state(); observeSpawnFailures(value); return spawnFailures > 0 && value.windows === windowsBefore; }, "failed spawn reported to its originating window");
       if (hasFailure(await state(), "Cannot open tab:", "desktop.")) throw new Error("failed spawn stayed latched after its originating window showed it");
+      // Becoming active takes anything left latched, so a second copy would arrive by now.
+      await command(`id:${summoner} activate_window`);
+      await waitFor(async () => { const value = await state(); const prefix = observeSpawnFailures(value); return prefix !== undefined && value[`${prefix}gpui_active`] === "true"; }, "summoning window active after the failed spawn");
+      if (spawnFailures !== 1) throw new Error(`summoning window showed the failed spawn ${spawnFailures} times`);
       await import("node:fs/promises").then(fs => fs.rename(shell + ".absent", shell));
       await command("ordinary close_window");
       await waitFor(async () => profile(await state(),"ordinary")?.confirming === "true", "last ordinary window close assessment");
