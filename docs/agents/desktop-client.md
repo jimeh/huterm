@@ -263,6 +263,25 @@ activity drain, including hidden tabs. Root-shell exit is not a failure: only a
 tab kept by `close_on_exit = false` announces it. Smoke state serializes the
 stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
 
+A reported command failure with no live reporter, such as one from a global
+hotkey, goes to the active window. `Desktop.latched` holds it only while no
+window can show it, and the next window to open or become active takes it
+rather than copying it. A failure left latched after a window showed it is
+shown a second time, in the next window to open or become active.
+`WorkspaceView::can_show_notices` decides which windows can show one: a
+closing window and a hidden Quake window cannot, although the platform can
+still name either as the active window. A new window takes the latched
+failures as it opens, except a Quake window whose setup failed: it is removed
+while still hidden. A Quake window whose shell fails to start after it opened
+has already taken them, and they close with it. An existing window takes the
+latched failures only while it is active and passes that check. Every window
+does so when it becomes active. A Quake window also does so whenever its
+visibility is synchronized, because a show that reverses a hide, or a
+recovery from a failed transition, leaves it active with no activation to
+follow. A successful configuration reload clears the failures still latched,
+so a stale hotkey conflict does not outlive the configuration that caused it;
+an unrelated failure waiting there is dropped with it.
+
 ## Tab bar layout
 
 The README describes the tab bar's options. These are the layout mechanics

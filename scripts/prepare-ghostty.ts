@@ -1,7 +1,7 @@
 /** Prepare and verify the pinned native source without changing reviewed inputs. */
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dlopen } from "bun:ffi";
 
@@ -61,12 +61,67 @@ export async function withPrepareLock<T>(root: string, action: () => Promise<T>)
   }
 }
 
-async function download(item: Source, directory: string): Promise<string> {
+/**
+ * This repository's other Git checkouts, the primary one first. Archives they
+ * have already prepared can replace a download once their checksums match.
+ */
+export function otherCheckouts(repository: string): string[] {
+  // Commit hooks export GIT_* paths that would answer for the hook's
+  // repository rather than `repository`.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  try {
+    // Line-separated output: `-z` needs Git 2.36, newer than Ubuntu 22.04's.
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: repository, env, stdout: "pipe", stderr: "ignore" });
+    if (result.exitCode !== 0) return [];
+    const own = realpathSync(repository);
+    return result.stdout.toString().split("\n")
+      .filter(line => line.startsWith("worktree "))
+      .map(line => line.slice("worktree ".length))
+      .filter(checkout => checkout !== own);
+  } catch {
+    // Git is absent, as in runners that omit repository metadata.
+    return [];
+  }
+}
+
+/**
+ * Publishes `candidate`, another checkout's copy of an archive, as
+ * `destination` when its bytes match the pin. Returns whether it did.
+ */
+export function reuseArchive(candidate: string, destination: string, sha256: string): boolean {
+  // Another checkout owns the candidate and can remove it or deny access at
+  // any moment, so failing to read it is a miss, not an error.
+  try {
+    if (!lstatSync(candidate).isFile()) return false;
+  } catch {
+    return false;
+  }
+  const stage = mkdtempSync(join(dirname(destination), ".reuse-"));
+  try {
+    const temporary = join(stage, "archive");
+    try {
+      // Clones where the filesystem supports it. Hash the copy, not the
+      // candidate, so the published bytes are the verified ones.
+      copyFileSync(candidate, temporary, constants.COPYFILE_FICLONE);
+    } catch {
+      return false;
+    }
+    if (fileHash(temporary) !== sha256) return false;
+    renameSync(temporary, destination);
+    console.log(`reused verified archive from ${candidate}`);
+    return true;
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+async function download(item: Source, directory: string, reuse: string[]): Promise<string> {
   const destination = join(directory, `${item.name}.tar.gz`);
   if (existsSync(destination)) {
     if (fileHash(destination) !== item.sha256) throw new Error(`archive checksum mismatch: ${destination}`);
     return destination;
   }
+  if (reuse.some(other => reuseArchive(join(other, basename(destination)), destination, item.sha256))) return destination;
   const stage = mkdtempSync(join(directory, ".download-"));
   const temporary = join(stage, "archive");
   try {
@@ -85,7 +140,8 @@ async function download(item: Source, directory: string): Promise<string> {
   return destination;
 }
 
-export async function prepareSource(item: Source, root: string, check: boolean): Promise<void> {
+/** `reuse` lists other checkouts' preparation directories, searched in order for a matching archive before downloading. */
+export async function prepareSource(item: Source, root: string, check: boolean, reuse: string[] = []): Promise<void> {
   const source = join(root, "source");
   if (lstatSync(source, { throwIfNoEntry: false })) {
     verifyTree(source, item.tree_sha256);
@@ -94,7 +150,7 @@ export async function prepareSource(item: Source, root: string, check: boolean):
   if (check) throw new Error(`missing native source: ${source}`);
   const archives = join(root, "archives");
   mkdirSync(archives, { recursive: true });
-  const archive = await download(item, archives);
+  const archive = await download(item, archives, reuse.map(other => join(other, "archives")));
   const stage = mkdtempSync(join(root, ".extract-"));
   try {
     await new Bun.Archive(await Bun.file(archive).bytes()).extract(stage);
@@ -148,6 +204,7 @@ if (import.meta.main) {
       const manifest = readManifest(resolve(values.manifest ?? join(import.meta.dir, "ghostty-source.json")));
       verifyRevision(manifest);
       const root = resolve(values.directory ?? join(repository, ".native/ghostty"));
+      const reuse = otherCheckouts(repository).map(checkout => join(checkout, ".native/ghostty"));
       mkdirSync(root, { recursive: true });
       await withPrepareLock(root, async () => {
         if (!values.check) {
@@ -156,7 +213,7 @@ if (import.meta.main) {
           const version = result.stdout.toString().trim();
           if (version !== manifest.zig) throw new Error(`expected Zig ${manifest.zig}, got ${version}`);
         }
-        await prepareSource(manifest.source, root, values.check ?? false);
+        await prepareSource(manifest.source, root, values.check ?? false, reuse);
       });
       console.log(`verified Ghostty ${manifest.revision} at ${join(root, "source")}`);
     }

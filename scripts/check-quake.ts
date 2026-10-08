@@ -559,8 +559,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           if (!hasFailure(profile(warned, "ordinary") ?? {}, "focus restoration failed")) throw new Error("failed focus restoration did not return to its originating window");
           if (hasFailure(warned, "focus restoration failed", "desktop.")) throw new Error("originated focus warning leaked into the global fallback");
           console.log(`QUAKE_FOCUS ${engine} departed-target=hidden-with-warning reporter=ordinary`);
-          const reportResult = await command("app report_dead");
-          if (!reportResult.startsWith("fallback=")) throw new Error(`dead reporter did not identify its fallback window: ${reportResult}`);
+          const reportResult = await command("app report_fallback");
+          if (!reportResult.startsWith("fallback=")) throw new Error(`reporterless failures did not identify their fallback window: ${reportResult}`);
           const fallbackId = reportResult.slice("fallback=".length).trim();
           await waitFor(async () => {
             const value = await state();
@@ -568,11 +568,13 @@ async function check(executable: string, engine: string, witnessExecutable?: str
             if (!fallbackWindow) return false;
             const fallbackPrefix = fallbackWindow.slice(0, -"window_id".length);
             const otherWindows = Object.keys(value).filter(key => key.endsWith(".window_id") && key !== fallbackWindow).map(key => key.slice(0, -"window_id".length));
-            return hasFailure(value, "Quake: smoke dead reporter", "desktop.")
-              && hasFailure(value, "Quake: smoke dead reporter", fallbackPrefix)
-              && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes("Quake: smoke dead reporter")));
-          }, "dead reporter global and active-window fallback");
-          console.log(`QUAKE_REPORTER ${engine} live=window dead=global-and-active-window fallback=${fallbackId}`);
+            // The active window showed both, so neither waits in the latch for later windows to replay.
+            return ["Quake: smoke dead reporter", "Quake: smoke absent reporter"].every(message =>
+              hasFailure(value, message, fallbackPrefix)
+              && !hasFailure(value, message, "desktop.")
+              && otherWindows.every(prefix => !noticeLines(value, prefix).some(line => line.includes(message))));
+          }, "dead and absent reporters fall back to the active window alone");
+          console.log(`QUAKE_REPORTER ${engine} live=window dead=active-window absent=active-window latched=none fallback=${fallbackId}`);
         } catch (error) {
           // The witness's activation log shows whether a late request took focus back.
           const events = macos ? await readFile(join(departedDirectory, "witness-events"), "utf8").catch(() => "none") : "";
@@ -868,7 +870,29 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(async () => (await current())?.text?.includes(`ACK:after-matrix:${identity}:`) ?? false,"PTY ACK after native animation matrix");
       await command("app hide_quake");await settled(false);
       process.kill(Number(identity),"SIGTERM");
-      await waitFor(async () => !profile(await state(),"default"),"hidden final shell exit removes association");
+      // The closing quake window briefly reads as ordinary, so wait for its removal before naming the remaining window.
+      await waitFor(async () => { const value = await state(); return !profile(value, "default") && value.windows === "1"; }, "hidden final shell exit removes association and window");
+      // A failed spawn summoned from a window is shown once, in that window, matched by identity.
+      const beforeSpawn = await state();
+      const summoner = profile(beforeSpawn, "ordinary")!.window_id!;
+      const windowsBefore = beforeSpawn.windows;
+      const summonerPrefix = (value: State) => Object.entries(value).find(([key, id]) => key.endsWith(".window_id") && id === summoner)?.[0].slice(0, -"window_id".length);
+      let spawnFailures = 0;
+      const observeSpawnFailures = (value: State) => {
+        const prefix = summonerPrefix(value);
+        const count = prefix === undefined ? 0 : noticeLines(value, prefix).filter(line => line.includes("Cannot open tab:")).length;
+        spawnFailures = Math.max(spawnFailures, count);
+        return prefix;
+      };
+      await import("node:fs/promises").then(fs => fs.rename(shell, shell + ".absent"));
+      await command("ordinary show_quake");
+      await waitFor(async () => { const value = await state(); observeSpawnFailures(value); return spawnFailures > 0 && value.windows === windowsBefore; }, "failed spawn reported to its originating window");
+      if (hasFailure(await state(), "Cannot open tab:", "desktop.")) throw new Error("failed spawn stayed latched after its originating window showed it");
+      // Becoming active takes anything left latched, so a second copy would arrive by now.
+      await command(`id:${summoner} activate_window`);
+      await waitFor(async () => { const value = await state(); const prefix = observeSpawnFailures(value); return prefix !== undefined && value[`${prefix}gpui_active`] === "true"; }, "summoning window active after the failed spawn");
+      if (spawnFailures !== 1) throw new Error(`summoning window showed the failed spawn ${spawnFailures} times`);
+      await import("node:fs/promises").then(fs => fs.rename(shell + ".absent", shell));
       await command("ordinary close_window");
       await waitFor(async () => profile(await state(),"ordinary")?.confirming === "true", "last ordinary window close assessment");
       await command("ordinary confirm_close");
@@ -887,7 +911,24 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       identity = nextIdentity;
       await input("recreated");
       await waitFor(async () => (await current())?.text?.includes(`ACK:recreated:${identity}:`) ?? false,"new shell after zero-window retry");
-      console.log(`QUAKE_MATRIX ${engine} animations=40 reversal=passed repeated-press=passed unfocused-raise=passed profiles=independent removed-profile-shell=${scratchPid} hidden-exit=passed zero-window=passed spawn-retry=passed os-grab-conflict=passed`);
+      // A show that reverses a hide leaves the quake window active throughout, so it takes the failure latched meanwhile without an activation.
+      await waitFor(async () => (await command("default report_hiding reversed")) === "reported", "quake window active before its hide is reversed");
+      // The window takes the failure in the command's own update, and the notice expires, so read it before waiting for the transition.
+      await waitFor(async () => hasFailure((await current()) ?? {}, "Quake: smoke reversed failure") && !hasFailure(await state(), "Quake: smoke reversed failure", "desktop."), "quake window takes the failure latched during a reversed hide");
+      await settled(true);
+      // The quake window is the only window. A failure reported while it is hidden waits for it instead of a later new window,
+      // both while the platform still names the hiding window as active and once no window is active.
+      const hiddenFailures = ["Quake: smoke hiding failure", "Quake: smoke unshown failure"];
+      await waitFor(async () => (await command("default report_hiding")) === "reported", "quake window active before it hides");
+      await settled(false);
+      await waitFor(async () => (await command("app report_unshown")) === "reported", "no window is active once the only window is hidden");
+      for (const failure of hiddenFailures) {
+        await waitFor(async () => hasFailure(await state(), failure, "desktop."), `failure latched while the only window is hidden: ${failure}`);
+        if (hasFailure((await current()) ?? {}, failure)) throw new Error(`hidden quake window raised a failure nobody could see: ${failure}`);
+      }
+      await command("app show_quake");await settled(true);
+      for (const failure of hiddenFailures) await waitFor(async () => hasFailure((await current()) ?? {}, failure) && !hasFailure(await state(), failure, "desktop."), `summoned quake window takes the latched failure: ${failure}`);
+      console.log(`QUAKE_MATRIX ${engine} animations=40 reversal=passed repeated-press=passed unfocused-raise=passed profiles=independent removed-profile-shell=${scratchPid} hidden-exit=passed zero-window=passed spawn-retry=passed hidden-failure=shown-on-summon reversed-hide-failure=shown os-grab-conflict=passed`);
       }
       await reload('animation_ms = 150');
       await command("app show_quake");await settled(true);
@@ -993,8 +1034,16 @@ export async function checkOrdinaryExit(executable: string, conflictChord?: stri
   let passed = false;
   const state = async () => parseState(await Bun.file(join(directory,"state")).text());
   try {
-    await waitFor(async () => await Bun.file(join(directory,"state")).exists() && !!profile(await state(),"ordinary")?.text?.includes("ORDINARY_READY"),"ordinary window without registrations");
-    if (conflict && !hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict did not report its failure");
+    // The conflict precedes every window, so it waits in the latch until the first window takes it. Its notice expires, so observe it on any poll.
+    let conflictShown = false;
+    await waitFor(async () => {
+      if (!await Bun.file(join(directory,"state")).exists()) return false;
+      const ordinary = profile(await state(),"ordinary");
+      conflictShown ||= hasFailure(ordinary ?? {}, "cannot register");
+      return !!ordinary?.text?.includes("ORDINARY_READY");
+    },"ordinary window without registrations");
+    if (conflict && !conflictShown) throw new Error("startup grab conflict did not report its failure in the first window");
+    if (hasFailure(await state(), "cannot register", "desktop.")) throw new Error("startup grab conflict stayed latched after a window showed it");
     if ((await state()).keepalive !== String(unregister)) throw new Error("ordinary startup registration ownership disagrees with configuration");
     await publishCommand(join(directory,"command-0"),"ordinary close_window");
     await waitFor(async () => app.exitCode !== null || profile(await state(),"ordinary")?.confirming === "true" || (unregister && (await state()).windows === "0"),"ordinary final-window assessment");

@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileHash, prepareSource, treeHash, verifyTree, withPrepareLock } from "./prepare-ghostty.ts";
+import { fileHash, otherCheckouts, prepareSource, treeHash, verifyTree, withPrepareLock } from "./prepare-ghostty.ts";
 
 const directories: string[] = [];
 function temporary(): string {
@@ -146,4 +146,55 @@ test("downloads verified bytes and rejects HTTP and checksum failures", async ()
   } finally {
     server.stop(true);
   }
+});
+
+test("reuses another checkout's archive only when it matches the pin", async () => {
+  const other = await fixture();
+  const bytes = readFileSync(other.archive);
+  let requests = 0;
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { requests += 1; return new Response(bytes); } });
+  try {
+    const item = { ...other.item, url: server.url.toString() };
+    // A checkout on another pin holds different bytes under the same name.
+    const stale = temporary();
+    mkdirSync(join(stale, "archives"));
+    writeFileSync(join(stale, "archives", "ghostty.tar.gz"), "another pin");
+    const root = temporary();
+    await prepareSource(item, root, false, [temporary(), stale, other.root]);
+    expect(requests).toBe(0);
+    expect(fileHash(join(root, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
+    expect(readFileSync(join(root, "source", "file.txt"), "utf8")).toBe("reviewed");
+    // An archive that cannot be read is skipped like any other miss.
+    const unreadable = temporary();
+    mkdirSync(join(unreadable, "archives"));
+    writeFileSync(join(unreadable, "archives", "ghostty.tar.gz"), "denied");
+    chmodSync(join(unreadable, "archives", "ghostty.tar.gz"), 0o000);
+    const fresh = temporary();
+    await prepareSource(item, fresh, false, [unreadable, stale]);
+    expect(requests).toBe(1);
+    expect(fileHash(join(fresh, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("lists the repository's other checkouts with the primary first", () => {
+  const primary = realpathSync(temporary());
+  // Commit hooks export GIT_* paths that would redirect the fixture's Git
+  // into the repository being committed.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  const git = (...args: string[]) => {
+    // Inherited signing and hooks must not affect the fixture's own commits.
+    const result = Bun.spawnSync(["git", "-c", "user.name=test", "-c", "user.email=test@invalid.example", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: primary, env, stderr: "pipe" });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+  };
+  const parent = realpathSync(temporary());
+  const [first, second] = [join(parent, "first"), join(parent, "second")];
+  git("init", "--quiet");
+  git("commit", "--quiet", "--allow-empty", "--message", "fixture");
+  git("worktree", "add", "--quiet", "--detach", first);
+  git("worktree", "add", "--quiet", "--detach", second);
+  expect(otherCheckouts(second)).toEqual([primary, first]);
+  expect(otherCheckouts(primary)).toEqual([first, second]);
+  expect(otherCheckouts(realpathSync(temporary()))).toEqual([]);
 });

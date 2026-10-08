@@ -2,7 +2,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
-import { fileHash, treeHash, withPrepareLock } from "./prepare-ghostty.ts";
+import { fileHash, otherCheckouts, reuseArchive, treeHash, withPrepareLock } from "./prepare-ghostty.ts";
 
 export interface SparkleManifest {
   version: string;
@@ -105,12 +105,13 @@ async function run(command: string, args: string[], cwd?: string): Promise<strin
   return stdout;
 }
 
-async function download(manifest: SparkleManifest, directory: string): Promise<string> {
+async function download(manifest: SparkleManifest, directory: string, reuse: string[]): Promise<string> {
   const destination = join(directory, manifest.source.name);
   if (existsSync(destination)) {
     if (fileHash(destination) !== manifest.source.sha256) throw new Error(`Sparkle archive checksum mismatch: ${destination}`);
     return destination;
   }
+  if (reuse.some(other => reuseArchive(join(other, manifest.source.name), destination, manifest.source.sha256))) return destination;
   const stage = mkdtempSync(join(directory, ".download-"));
   const temporary = join(stage, "archive");
   try {
@@ -125,7 +126,8 @@ async function download(manifest: SparkleManifest, directory: string): Promise<s
   return destination;
 }
 
-export async function prepareSparkle(manifest: SparkleManifest, root: string, check: boolean): Promise<void> {
+/** `reuse` lists other checkouts' preparation directories, searched in order for a matching archive before downloading. */
+export async function prepareSparkle(manifest: SparkleManifest, root: string, check: boolean, reuse: string[] = []): Promise<void> {
   const distribution = join(root, "distribution");
   if (lstatSync(distribution, { throwIfNoEntry: false })) {
     verifySparkleDistribution(distribution, manifest);
@@ -134,7 +136,7 @@ export async function prepareSparkle(manifest: SparkleManifest, root: string, ch
   if (check) throw new Error(`missing Sparkle distribution: ${distribution}`);
   const archives = join(root, "archives");
   mkdirSync(archives, { recursive: true });
-  const archive = await download(manifest, archives);
+  const archive = await download(manifest, archives, reuse.map(other => join(other, "archives")));
   const names = (await run("tar", ["-tf", archive])).split(/\r?\n/).filter(Boolean);
   if (names.some(name => name.startsWith("/") || name.split("/").includes(".."))) throw new Error("Sparkle archive contains an unsafe path");
   const stage = mkdtempSync(join(root, ".extract-"));
@@ -161,8 +163,9 @@ if (import.meta.main) {
         process.exit(0);
       }
       const root = resolve(values.directory ?? join(repository, ".native/sparkle"));
+      const reuse = otherCheckouts(repository).map(checkout => join(checkout, ".native/sparkle"));
       mkdirSync(root, { recursive: true });
-      await withPrepareLock(root, () => prepareSparkle(manifest, root, values.check ?? false));
+      await withPrepareLock(root, () => prepareSparkle(manifest, root, values.check ?? false, reuse));
       console.log(`verified Sparkle ${manifest.version} at ${join(root, "distribution")}`);
     }
   } catch (error) {

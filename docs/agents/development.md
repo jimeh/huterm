@@ -59,6 +59,21 @@ Then install the pinned Rust and validation tools plus the local hook:
 mise run setup
 ```
 
+## Linked worktrees
+
+`treeboot.toml` bootstraps a new linked worktree with `treeboot run`: it runs
+`mise run setup`, then `mise run ghostty:prepare`. Setup still fetches any
+Mise tool or Bun package the machine has not cached. Archive preparation
+needs no network when another checkout holds the pinned archive.
+
+`ghostty:prepare` and `sparkle:prepare` look for their pinned archive in the
+repository's other checkouts before downloading, the primary checkout first.
+They list checkouts with `git worktree list`, copy a candidate into
+`.native/*/archives`, and keep it only when its SHA-256 matches the manifest.
+A checkout on another pin is skipped, so a stale primary checkout costs
+nothing but does not help either. Only the archive is reused; each worktree
+still extracts and verifies its own source tree.
+
 ## Linux checks through Docker
 
 Docker can run the Linux checks from macOS or Linux. The runner defaults to

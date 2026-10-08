@@ -78,7 +78,9 @@ Preparation verifies the ignored `.native/ghostty` tree rather than accepting
 local drift. The `huterm-ghostty` build script copies it into a private Cargo
 build directory so Zig-generated state cannot modify the verified source. Build
 isolation also prevents enclosing Git tags from changing Ghostty's generated
-version data.
+version data. In a repository with several checkouts, preparation reuses a
+matching archive from another one instead of downloading; see
+[linked worktrees](development.md#linked-worktrees).
 The adapter disables Kitty graphics, the Glyph protocol, APC buffering, and
 scrollback compression, uses the
 portable CPU baseline, and retains a 16 MiB scrollback byte budget.

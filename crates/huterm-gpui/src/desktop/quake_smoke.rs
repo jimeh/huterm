@@ -128,8 +128,8 @@ async fn execute(
     command: &str,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
-    if command.split_whitespace().nth(1) == Some("report_dead") {
-        return report_dead_for_smoke(cx).await;
+    if command.split_whitespace().nth(1) == Some("report_fallback") {
+        return report_fallback_for_smoke(cx).await;
     }
     cx.update(|cx| execute_ui(cx, command))
 }
@@ -138,6 +138,16 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     let fields: Vec<_> = command.split_whitespace().collect();
     let target = *fields.first().context("command target")?;
     let name = *fields.get(1).context("command name")?;
+    if name == "report_unshown" {
+        // Only a failure that no window can show stays latched; the caller
+        // retries until the platform reports no active window.
+        if cx.active_window().is_some() {
+            return Ok("active".into());
+        }
+        // A reporterless failure, as a global hotkey's is.
+        quake_windows::report(cx, "smoke unshown failure", None);
+        return Ok("reported".into());
+    }
     let handle = cx.windows().into_iter().find(|handle| {
         handle
             .update(cx, |root, window, cx| {
@@ -155,6 +165,10 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             })
             .unwrap_or(false)
     });
+    if name == "report_hiding" {
+        let reversed = fields.get(2) == Some(&"reversed");
+        return report_hiding(cx, handle, reversed);
+    }
     #[cfg(target_os = "macos")]
     if name == "native_space" {
         let native = handle
@@ -223,7 +237,38 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     ))
 }
 
-async fn report_dead_for_smoke(
+/// Hides the default quake window and reports a reporterless failure, as a
+/// global hotkey hide's is, in the same update. Delivery then runs while the
+/// platform still names the hidden window as active. `reversed` also shows
+/// the window again in that update, before its native hide, so it never
+/// loses activation. Returns `inactive` without doing any of it until
+/// `window` is the active window.
+fn report_hiding(
+    cx: &mut App,
+    window: Option<AnyWindowHandle>,
+    reversed: bool,
+) -> anyhow::Result<String> {
+    if window.is_none() || cx.active_window() != window {
+        return Ok("inactive".into());
+    }
+    let invoke = |cx: &mut App, name: &str| {
+        let spec = lookup(name).context("catalog command")?;
+        Desktop::invoke(cx, &CommandInvocation::new(spec.id, Vec::new()), None)
+            .map_err(|error| anyhow::anyhow!("{name}: {error:?}"))
+    };
+    invoke(cx, "hide_quake")?;
+    if reversed {
+        quake_windows::report(cx, "smoke reversed failure", None);
+        invoke(cx, "show_quake")?;
+    } else {
+        quake_windows::report(cx, "smoke hiding failure", None);
+    }
+    Ok("reported".into())
+}
+
+/// Reports one failure whose reporter has closed and one that never had a
+/// reporter, as a global hotkey's does, while a known window is active.
+async fn report_fallback_for_smoke(
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<String> {
     let (reporter, fallback) = cx.update(setup_dead_reporter)?;
@@ -241,6 +286,7 @@ async fn report_dead_for_smoke(
     }
     cx.update(move |cx| {
         quake_windows::report(cx, "smoke dead reporter", Some(reporter));
+        quake_windows::report(cx, "smoke absent reporter", None);
     });
     Ok(format!("fallback={:?}", fallback.window_id()))
 }
@@ -281,8 +327,8 @@ fn read_state(cx: &mut App) -> String {
         cx.global::<Desktop>().reloading,
         quake_windows::keep_alive(cx),
     );
-    // Desktop-wide notices new windows raise: configuration diagnostics,
-    // then failures latched while no window could show them, as
+    // Desktop-wide notices: configuration diagnostics, which new windows
+    // raise, then failures still latched for want of a window, as
     // `desktop.notices=<n>` and `desktop.notice<i>=<severity>|<source>|<message>`.
     let desktop = cx.global::<Desktop>();
     let global: Vec<_> =
@@ -303,7 +349,7 @@ fn read_state(cx: &mut App) -> String {
             let Ok(root)=root.downcast::<WorkspaceView>() else {return;};
             let view=root.read(cx);
             let profile=view.quake.as_ref().map_or("ordinary",|state|state.name.as_str());
-            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden()).unwrap();
+            writeln!(output,"w{index}.window_id={:?}\nw{index}.profile={profile}\nw{index}.tabs={}\nw{index}.busy={}\nw{index}.confirming={}\nw{index}.chrome={}\nw{index}.gpui_active={}",window.window_handle().window_id(),view.tabs.len(),view.busy,view.close.confirmation.is_some(),view.chrome_hidden(),window.is_window_active()).unwrap();
             // The window model's summary beside the view's own state, so the
             // harness can cross-check every publication on each state read.
             let record = cx.global::<Desktop>().windows.record(view.window);
