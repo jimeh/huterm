@@ -1114,8 +1114,9 @@ impl WorkspaceView {
                 fullscreen.and_then(|state| state.native.notch_shelves());
         }
         self.publish_quake_visibility(cx);
-        // A show that reverses a hide leaves the window active throughout,
-        // so no activation follows to hand it the failures latched meanwhile.
+        // An active Quake window takes the latched failures here as well as
+        // on activation: a show that reverses a hide, or a recovery, leaves
+        // it active throughout, so no activation follows.
         self.raise_latched_failures_if_active(window, cx);
         self.sync_tab_layout(window, cx);
         let active_tab = self.active_tab(cx);
