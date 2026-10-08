@@ -62,8 +62,9 @@ mise run setup
 ## Linked worktrees
 
 `treeboot.toml` bootstraps a new linked worktree with `treeboot run`: it runs
-`mise run setup`, then `mise run ghostty:prepare`. A warm machine needs no
-network for it.
+`mise run setup`, then `mise run ghostty:prepare`. Setup still fetches any
+Mise tool or Bun package the machine has not cached. Archive preparation
+needs no network when another checkout holds the pinned archive.
 
 `ghostty:prepare` and `sparkle:prepare` look for their pinned archive in the
 repository's other checkouts before downloading, the primary checkout first.

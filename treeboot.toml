@@ -1,7 +1,7 @@
 #:schema https://github.com/jimeh/treeboot/releases/latest/download/config.schema.json
 
-# Bootstraps a linked worktree. Preparation reuses a pinned archive that
-# another checkout has already downloaded, so a warm machine needs no network.
+# Bootstraps a linked worktree. `ghostty:prepare` reuses a pinned archive
+# that another checkout has already downloaded instead of fetching it again.
 commands = [
   "mise run setup",
   "mise run ghostty:prepare",
