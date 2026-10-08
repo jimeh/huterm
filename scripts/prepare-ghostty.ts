@@ -70,10 +70,11 @@ export function otherCheckouts(repository: string): string[] {
   // repository rather than `repository`.
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   try {
-    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain", "-z"], { cwd: repository, env, stdout: "pipe", stderr: "ignore" });
+    // Line-separated output: `-z` needs Git 2.36, newer than Ubuntu 22.04's.
+    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: repository, env, stdout: "pipe", stderr: "ignore" });
     if (result.exitCode !== 0) return [];
     const own = realpathSync(repository);
-    return result.stdout.toString().split("\0")
+    return result.stdout.toString().split("\n")
       .filter(line => line.startsWith("worktree "))
       .map(line => line.slice("worktree ".length))
       .filter(checkout => checkout !== own);
@@ -88,13 +89,23 @@ export function otherCheckouts(repository: string): string[] {
  * `destination` when its bytes match the pin. Returns whether it did.
  */
 export function reuseArchive(candidate: string, destination: string, sha256: string): boolean {
-  if (!lstatSync(candidate, { throwIfNoEntry: false })?.isFile()) return false;
+  // Another checkout owns the candidate and can remove it or deny access at
+  // any moment, so failing to read it is a miss, not an error.
+  try {
+    if (!lstatSync(candidate).isFile()) return false;
+  } catch {
+    return false;
+  }
   const stage = mkdtempSync(join(dirname(destination), ".reuse-"));
   try {
     const temporary = join(stage, "archive");
-    // Clones where the filesystem supports it. Hash the copy, not the
-    // candidate, so the published bytes are the verified ones.
-    copyFileSync(candidate, temporary, constants.COPYFILE_FICLONE);
+    try {
+      // Clones where the filesystem supports it. Hash the copy, not the
+      // candidate, so the published bytes are the verified ones.
+      copyFileSync(candidate, temporary, constants.COPYFILE_FICLONE);
+    } catch {
+      return false;
+    }
     if (fileHash(temporary) !== sha256) return false;
     renameSync(temporary, destination);
     console.log(`reused verified archive from ${candidate}`);

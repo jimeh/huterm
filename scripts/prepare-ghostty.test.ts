@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileHash, otherCheckouts, prepareSource, treeHash, verifyTree, withPrepareLock } from "./prepare-ghostty.ts";
@@ -164,8 +164,13 @@ test("reuses another checkout's archive only when it matches the pin", async () 
     expect(requests).toBe(0);
     expect(fileHash(join(root, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
     expect(readFileSync(join(root, "source", "file.txt"), "utf8")).toBe("reviewed");
+    // An archive that cannot be read is skipped like any other miss.
+    const unreadable = temporary();
+    mkdirSync(join(unreadable, "archives"));
+    writeFileSync(join(unreadable, "archives", "ghostty.tar.gz"), "denied");
+    chmodSync(join(unreadable, "archives", "ghostty.tar.gz"), 0o000);
     const fresh = temporary();
-    await prepareSource(item, fresh, false, [stale]);
+    await prepareSource(item, fresh, false, [unreadable, stale]);
     expect(requests).toBe(1);
     expect(fileHash(join(fresh, "archives", "ghostty.tar.gz"))).toBe(item.sha256);
   } finally {
