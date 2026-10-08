@@ -911,6 +911,10 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       identity = nextIdentity;
       await input("recreated");
       await waitFor(async () => (await current())?.text?.includes(`ACK:recreated:${identity}:`) ?? false,"new shell after zero-window retry");
+      // A show that reverses a hide leaves the quake window active throughout, so it takes the failure latched meanwhile without an activation.
+      await waitFor(async () => (await command("default report_hiding reversed")) === "reported", "quake window active before its hide is reversed");
+      await settled(true);
+      await waitFor(async () => hasFailure((await current()) ?? {}, "Quake: smoke reversed failure") && !hasFailure(await state(), "Quake: smoke reversed failure", "desktop."), "quake window takes the failure latched during a reversed hide");
       // The quake window is the only window. A failure reported while it is hidden waits for it instead of a later new window,
       // both while the platform still names the hiding window as active and once no window is active.
       const hiddenFailures = ["Quake: smoke hiding failure", "Quake: smoke unshown failure"];
@@ -923,7 +927,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       }
       await command("app show_quake");await settled(true);
       for (const failure of hiddenFailures) await waitFor(async () => hasFailure((await current()) ?? {}, failure) && !hasFailure(await state(), failure, "desktop."), `summoned quake window takes the latched failure: ${failure}`);
-      console.log(`QUAKE_MATRIX ${engine} animations=40 reversal=passed repeated-press=passed unfocused-raise=passed profiles=independent removed-profile-shell=${scratchPid} hidden-exit=passed zero-window=passed spawn-retry=passed hidden-failure=shown-on-summon os-grab-conflict=passed`);
+      console.log(`QUAKE_MATRIX ${engine} animations=40 reversal=passed repeated-press=passed unfocused-raise=passed profiles=independent removed-profile-shell=${scratchPid} hidden-exit=passed zero-window=passed spawn-retry=passed hidden-failure=shown-on-summon reversed-hide-failure=shown os-grab-conflict=passed`);
       }
       await reload('animation_ms = 150');
       await command("app show_quake");await settled(true);

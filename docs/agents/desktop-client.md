@@ -270,10 +270,12 @@ rather than copying it. A failure left latched after a window showed it is
 shown a second time, in the next window to open or become active.
 `WorkspaceView::can_show_notices` decides which windows can show one: a
 closing window and a hidden Quake window cannot, although the platform can
-still name either as the active window. Route every delivery through that
-check. A successful configuration reload clears the failures still latched,
-so a stale hotkey conflict does not outlive the configuration that caused it;
-an unrelated failure waiting there is dropped with it.
+still name either as the active window. An existing window takes the
+latched failures only while it is active and passes that check: when it
+becomes active, or when a Quake window that stayed active through a hide is
+asked to show again. A successful configuration reload clears the failures
+still latched, so a stale hotkey conflict does not outlive the configuration
+that caused it; an unrelated failure waiting there is dropped with it.
 
 ## Tab bar layout
 

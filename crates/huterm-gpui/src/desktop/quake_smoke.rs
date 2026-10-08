@@ -166,7 +166,8 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             .unwrap_or(false)
     });
     if name == "report_hiding" {
-        return report_hiding(cx, handle);
+        let reversed = fields.get(2) == Some(&"reversed");
+        return report_hiding(cx, handle, reversed);
     }
     #[cfg(target_os = "macos")]
     if name == "native_space" {
@@ -238,19 +239,30 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
 
 /// Hides the default quake window and reports a reporterless failure, as a
 /// global hotkey hide's is, in the same update. Delivery then runs while the
-/// platform still names the hidden window as active. Returns `inactive`
-/// without doing either until `window` is the active window.
+/// platform still names the hidden window as active. `reversed` also shows
+/// the window again in that update, before its native hide, so it never
+/// loses activation. Returns `inactive` without doing any of it until
+/// `window` is the active window.
 fn report_hiding(
     cx: &mut App,
     window: Option<AnyWindowHandle>,
+    reversed: bool,
 ) -> anyhow::Result<String> {
     if window.is_none() || cx.active_window() != window {
         return Ok("inactive".into());
     }
-    let hide = lookup("hide_quake").context("hide command")?;
-    Desktop::invoke(cx, &CommandInvocation::new(hide.id, Vec::new()), None)
-        .map_err(|error| anyhow::anyhow!("hide quake: {error:?}"))?;
-    quake_windows::report(cx, "smoke hiding failure", None);
+    let invoke = |cx: &mut App, name: &str| {
+        let spec = lookup(name).context("catalog command")?;
+        Desktop::invoke(cx, &CommandInvocation::new(spec.id, Vec::new()), None)
+            .map_err(|error| anyhow::anyhow!("{name}: {error:?}"))
+    };
+    invoke(cx, "hide_quake")?;
+    if reversed {
+        quake_windows::report(cx, "smoke reversed failure", None);
+        invoke(cx, "show_quake")?;
+    } else {
+        quake_windows::report(cx, "smoke hiding failure", None);
+    }
     Ok("reported".into())
 }
 

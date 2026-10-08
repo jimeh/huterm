@@ -1930,9 +1930,7 @@ fn open_window_with_profile(
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
                     // inactive belongs to the first one the user returns to.
-                    if window.is_window_active() && view.can_show_notices(cx) {
-                        view.raise_latched_failures(cx);
-                    }
+                    view.raise_latched_failures_if_active(window, cx);
                 })
                 .detach();
                 cx.observe_window_bounds(window, |view, window, cx| {
@@ -2141,6 +2139,18 @@ impl WorkspaceView {
             self.notices.push(content, now);
         }
         cx.notify();
+    }
+
+    /// Raises the latched failures here when the user is looking at this
+    /// window: it is active and can show notices.
+    fn raise_latched_failures_if_active(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if window.is_window_active() && self.can_show_notices(cx) {
+            self.raise_latched_failures(cx);
+        }
     }
 
     /// Replaces the configuration notices after a reload attempt.
