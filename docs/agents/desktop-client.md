@@ -268,6 +268,12 @@ hotkey, goes to the active window. `Desktop.latched` holds it only while no
 window can show it, and the next window to open or become active takes it
 rather than copying it. A failure left latched after a window showed it is
 shown a second time, in the next window to open or become active.
+`WorkspaceView::can_show_notices` decides which windows can show one: a
+closing window and a hidden Quake window cannot, although the platform can
+still name either as the active window. Route every delivery through that
+check. A successful configuration reload clears the failures still latched,
+so a stale hotkey conflict does not outlive the configuration that caused it;
+an unrelated failure waiting there is dropped with it.
 
 ## Tab bar layout
 

@@ -643,14 +643,14 @@ impl Desktop {
 }
 
 /// Raises `message` as a command failure in `view`'s window. Returns false
-/// for a closing window, which cannot show it.
+/// for a window that cannot show it.
 fn show_failure_in(
     cx: &mut App,
     view: &Entity<WorkspaceView>,
     message: &str,
 ) -> bool {
     view.update(cx, |view, cx| {
-        if view.closing(cx) {
+        if !view.can_show_notices(cx) {
             return false;
         }
         view.report_failure("Command failed", message, cx);
@@ -673,8 +673,8 @@ fn show_active_window_failure(cx: &mut App, message: &str) -> bool {
 }
 
 /// Raises `message` as a command failure in the reporter's window, or in the
-/// active window when the reporter is absent, closed, or closing. Returns
-/// whether a window showed it.
+/// active window when the reporter is absent, closed, or cannot show it.
+/// Returns whether a window showed it.
 fn show_failure(
     cx: &mut App,
     reporter: Option<WeakEntity<WorkspaceView>>,
@@ -1930,7 +1930,7 @@ fn open_window_with_profile(
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
                     // inactive belongs to the first one the user returns to.
-                    if window.is_window_active() && !view.closing(cx) {
+                    if window.is_window_active() && view.can_show_notices(cx) {
                         view.raise_latched_failures(cx);
                     }
                 })
@@ -2107,13 +2107,16 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Whether this window is being removed, and so can no longer show a
-    /// notice to anyone.
-    fn closing(&self, cx: &App) -> bool {
-        cx.global::<Desktop>()
+    /// Whether a notice raised here reaches the user. A closing window is
+    /// being removed, and a hidden Quake window stays off screen until it is
+    /// summoned. The platform can still name either as the active window.
+    fn can_show_notices(&self, cx: &App) -> bool {
+        let closing = cx
+            .global::<Desktop>()
             .windows
             .record(self.window)
-            .is_some_and(|record| record.closing)
+            .is_some_and(|record| record.closing);
+        !closing && self.quake_visible()
     }
 
     /// Raises the desktop's configuration diagnostics and latched failures

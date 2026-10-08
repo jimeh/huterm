@@ -165,6 +165,9 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
             })
             .unwrap_or(false)
     });
+    if name == "report_hiding" {
+        return report_hiding(cx, handle);
+    }
     #[cfg(target_os = "macos")]
     if name == "native_space" {
         let native = handle
@@ -231,6 +234,24 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
         "{:?}",
         Desktop::invoke(cx, &CommandInvocation::new(spec.id, args), handle)
     ))
+}
+
+/// Hides the default quake window and reports a reporterless failure, as a
+/// global hotkey hide's is, in the same update. Delivery then runs while the
+/// platform still names the hidden window as active. Returns `inactive`
+/// without doing either until `window` is the active window.
+fn report_hiding(
+    cx: &mut App,
+    window: Option<AnyWindowHandle>,
+) -> anyhow::Result<String> {
+    if window.is_none() || cx.active_window() != window {
+        return Ok("inactive".into());
+    }
+    let hide = lookup("hide_quake").context("hide command")?;
+    Desktop::invoke(cx, &CommandInvocation::new(hide.id, Vec::new()), None)
+        .map_err(|error| anyhow::anyhow!("hide quake: {error:?}"))?;
+    quake_windows::report(cx, "smoke hiding failure", None);
+    Ok("reported".into())
 }
 
 /// Reports one failure whose reporter has closed and one that never had a

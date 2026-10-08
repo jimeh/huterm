@@ -870,10 +870,12 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(async () => (await current())?.text?.includes(`ACK:after-matrix:${identity}:`) ?? false,"PTY ACK after native animation matrix");
       await command("app hide_quake");await settled(false);
       process.kill(Number(identity),"SIGTERM");
-      await waitFor(async () => !profile(await state(),"default"),"hidden final shell exit removes association");
-      // A failed spawn summoned from a window is shown once, in that window. The closing quake window briefly reads as ordinary, so match the summoning window by identity.
-      const summoner = profile(await state(), "ordinary")!.window_id!;
-      const windowsBefore = (await state()).windows;
+      // The closing quake window briefly reads as ordinary, so wait for its removal before naming the remaining window.
+      await waitFor(async () => { const value = await state(); return !profile(value, "default") && value.windows === "1"; }, "hidden final shell exit removes association and window");
+      // A failed spawn summoned from a window is shown once, in that window, matched by identity.
+      const beforeSpawn = await state();
+      const summoner = profile(beforeSpawn, "ordinary")!.window_id!;
+      const windowsBefore = beforeSpawn.windows;
       const summonerPrefix = (value: State) => Object.entries(value).find(([key, id]) => key.endsWith(".window_id") && id === summoner)?.[0].slice(0, -"window_id".length);
       let spawnFailures = 0;
       const observeSpawnFailures = (value: State) => {
@@ -909,13 +911,18 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       identity = nextIdentity;
       await input("recreated");
       await waitFor(async () => (await current())?.text?.includes(`ACK:recreated:${identity}:`) ?? false,"new shell after zero-window retry");
-      // The quake window is the only window. A failure reported while it is hidden waits for it instead of a later new window.
-      await command("app hide_quake");await settled(false);
+      // The quake window is the only window. A failure reported while it is hidden waits for it instead of a later new window,
+      // both while the platform still names the hiding window as active and once no window is active.
+      const hiddenFailures = ["Quake: smoke hiding failure", "Quake: smoke unshown failure"];
+      await waitFor(async () => (await command("default report_hiding")) === "reported", "quake window active before it hides");
+      await settled(false);
       await waitFor(async () => (await command("app report_unshown")) === "reported", "no window is active once the only window is hidden");
-      await waitFor(async () => hasFailure(await state(), "Quake: smoke unshown failure", "desktop."), "failure latched while the only window is hidden");
-      if (hasFailure((await current()) ?? {}, "Quake: smoke unshown failure")) throw new Error("hidden quake window raised a failure nobody could see");
+      for (const failure of hiddenFailures) {
+        await waitFor(async () => hasFailure(await state(), failure, "desktop."), `failure latched while the only window is hidden: ${failure}`);
+        if (hasFailure((await current()) ?? {}, failure)) throw new Error(`hidden quake window raised a failure nobody could see: ${failure}`);
+      }
       await command("app show_quake");await settled(true);
-      await waitFor(async () => hasFailure((await current()) ?? {}, "Quake: smoke unshown failure") && !hasFailure(await state(), "Quake: smoke unshown failure", "desktop."), "summoned quake window takes the latched failure");
+      for (const failure of hiddenFailures) await waitFor(async () => hasFailure((await current()) ?? {}, failure) && !hasFailure(await state(), failure, "desktop."), `summoned quake window takes the latched failure: ${failure}`);
       console.log(`QUAKE_MATRIX ${engine} animations=40 reversal=passed repeated-press=passed unfocused-raise=passed profiles=independent removed-profile-shell=${scratchPid} hidden-exit=passed zero-window=passed spawn-retry=passed hidden-failure=shown-on-summon os-grab-conflict=passed`);
       }
       await reload('animation_ms = 150');
