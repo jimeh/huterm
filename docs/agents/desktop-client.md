@@ -270,7 +270,10 @@ rather than copying it. A failure left latched after a window showed it is
 shown a second time, in the next window to open or become active.
 `WorkspaceView::can_show_notices` decides which windows can show one: a
 closing window and a hidden Quake window cannot, although the platform can
-still name either as the active window. An existing window takes the
+still name either as the active window. A new window takes the latched
+failures as it opens, except a Quake window whose setup failed: it is removed
+while still hidden. A Quake window whose shell fails to start after it opened
+has already taken them, and they close with it. An existing window takes the
 latched failures only while it is active and passes that check. Every window
 does so when it becomes active. A Quake window also does so whenever its
 visibility is synchronized, because a show that reverses a hide, or a

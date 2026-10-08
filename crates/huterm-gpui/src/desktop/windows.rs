@@ -1897,7 +1897,11 @@ fn open_window_with_profile(
             });
             view.update(cx, |view, cx| {
                 view.frame_clock.observe(cx);
-                view.raise_desktop_notices(cx);
+                // A quake window whose setup failed is removed below while
+                // still hidden, so it leaves the latched failures waiting.
+                if !profile_requested || view.quake.is_some() {
+                    view.raise_desktop_notices(cx);
+                }
                 let notice_focus = view.notice_focus.clone();
                 cx.on_focus_out(
                     &notice_focus,
