@@ -222,7 +222,7 @@ jobs:
 
       - name: Upload Linux check failure evidence
         if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-check-evidence
@@ -488,7 +488,7 @@ jobs:
 
       - name: Upload smoke evidence
         if: ${{ !cancelled() && (steps.smoke-build.outcome == 'success' || failure()) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-smoke-evidence
@@ -743,7 +743,7 @@ jobs:
 
       - name: Upload Linux package evidence on failure
         if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: dist/linux/${{ matrix.machine }}/package-evidence
