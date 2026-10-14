@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 bindgen = { version = "=0.72.1", default-features = false, features = ["runtime"] }
-syn = { version = "=3.0.6", default-features = false, features = ["full", "parsing"] }
+syn = { version = "=3.0.7", default-features = false, features = ["full", "parsing"] }
 
 [lints]
 workspace = true
