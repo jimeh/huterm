@@ -238,9 +238,10 @@ independent of the smoke build.
 
 The renderer fails, naming the line, on a line, section heading, or date it does
 not recognize, rather than dropping content. Only blank lines and the
-`# Changelog` title may precede the first release. Lines directly after an item
-continue it, indented or not, because a multi-line breaking change footer
-continues unindented. An unrecognized `#` heading there still fails. A section
+`# Changelog` title may precede the first release. An indented line continues
+the item above it. Only a breaking change also continues on unindented lines
+directly after it, because a multi-line `BREAKING CHANGE:` footer does, and
+never with a `#` heading. A section
 outside the five Release Please sections is accepted only when every item
 repeats one of that release's breaking changes.
 The changelog must begin with the release being built.

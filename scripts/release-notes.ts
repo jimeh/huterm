@@ -105,12 +105,14 @@ export function parseChangelog(changelog: string): Release[] {
   const releases: Release[] = [];
   const untagged: UntaggedSection[] = [];
   let current: UntaggedSection | ReleaseSection | undefined;
-  let afterItem = false;
+  // Set on the line after a breaking change or its continuation, where a
+  // multi-line `BREAKING CHANGE:` footer continues unindented.
+  let inFooter = false;
   for (const [index, rawLine] of changelog.split("\n").entries()) {
     const line = rawLine.replace(/\r$/, "");
     const lineNumber = index + 1;
-    const continuesItem = afterItem;
-    afterItem = false;
+    const continuesFooter = inFooter;
+    inFooter = false;
     // Only blank lines and the `# Changelog` title may precede the first release.
     if (line.trim() === "" || (releases.length === 0 && line.startsWith("# "))) continue;
     const heading = releaseHeading.exec(line);
@@ -140,21 +142,24 @@ export function parseChangelog(changelog: string): Release[] {
     const item = /^\* (.+)$/.exec(line);
     if (current && item) {
       current.items.push(item[1]!.trim());
-      afterItem = true;
+      inFooter = isBreaking(current);
       continue;
     }
-    // A wrapped item continues on an indented line. A multi-line breaking
-    // change footer continues unindented on the lines right after its item,
-    // but an unrecognized heading there still fails.
-    if (current && current.items.length > 0 && (line.startsWith(" ") || (continuesItem && !line.startsWith("#")))) {
+    // A wrapped item continues on an indented line in any section. Only a
+    // breaking change footer continues unindented, and never with a heading.
+    if (current && current.items.length > 0 && (line.startsWith(" ") || (continuesFooter && !line.startsWith("#")))) {
       current.items[current.items.length - 1] += ` ${line.trim()}`;
-      afterItem = true;
+      inFooter = isBreaking(current);
       continue;
     }
     throw new Error(`CHANGELOG.md line ${lineNumber} is not a release heading, section heading, or list item`);
   }
   checkUntagged(untagged, releases);
   return releases;
+}
+
+function isBreaking(section: UntaggedSection | ReleaseSection): boolean {
+  return "kind" in section && section.kind === "breaking";
 }
 
 /**
