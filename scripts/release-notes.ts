@@ -59,6 +59,7 @@ const commitReference = /\s*\(\[[0-9a-f]{7,40}\]\([^)\s]*\)\)/g;
 // `closes` list of issues.
 const trailingReference = /^([\s\S]*?)(?:\s*\(\[(?:#\d+|[0-9a-f]{7,40})\]\([^)]*\)\)|,\s*closes(?:[,\s]+\[[^\]]*#\d+\]\([^)]*\))+)$/;
 const closesList = /,\s*closes(?:[,\s]+\[[^\]]*#\d+\]\([^)]*\))+$/;
+const issueLink = /\[[^\]]*#\d+\]\([^)]*\)/g;
 
 function versionParts(version: string): number[] {
   return version.split(".").map(Number);
@@ -165,8 +166,8 @@ function isBreaking(section: UntaggedSection | ReleaseSection): boolean {
 
 /**
  * Release Please lists a breaking change again under its type, so each release
- * keeps it once, as Important, and removes the type's copy. A `closes` list
- * only that copy carries moves to the breaking change. A type Release Please
+ * keeps it once, as Important, and removes the type's copy. The breaking
+ * change gains any issue the copy's `closes` list adds. A type Release Please
  * otherwise leaves out, such as `build!`, has no section in the notes, so a
  * section with an unknown heading is accepted only when every item in it
  * repeats a breaking change. Any other item would be dropped, so it fails.
@@ -181,8 +182,12 @@ function mergeDuplicates(releases: Release[], untagged: UntaggedSection[]): void
       const original = breaking.get(identity(item));
       if (!original) return false;
       const closes = closesList.exec(item.replace(commitReference, ""))?.[0];
-      const kept = original.section.items[original.index]!;
-      if (closes && !closesList.test(kept)) original.section.items[original.index] = kept + closes;
+      if (closes) {
+        const kept = original.section.items[original.index]!;
+        const keptCloses = closesList.exec(kept)?.[0] ?? "";
+        const links = new Set([...keptCloses.matchAll(issueLink), ...closes.matchAll(issueLink)].map(match => match[0]));
+        original.section.items[original.index] = `${kept.slice(0, kept.length - keptCloses.length)}, closes ${[...links].join(", ")}`;
+      }
       return true;
     };
     for (const section of release.sections) {
@@ -302,8 +307,8 @@ footer { padding-top: 10px; border-top: 1px solid var(--separator); color: var(-
 
 /**
  * One section per release: its linked version and date on one row, then its
- * changes in Release Please's order, each tagged with its kind. The footer is not a section, so it stays visible however many sections
- * Sparkle hides.
+ * changes in Release Please's order, each tagged with its kind. The footer
+ * is not a section, so it stays visible however many sections Sparkle hides.
  */
 export function renderReleaseNotes(releases: readonly Release[]): string {
   let html = `<!DOCTYPE html>

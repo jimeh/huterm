@@ -110,6 +110,18 @@ test("a breaking change keeps the closed issues listed only on its type's copy",
     expect(html).toContain(`<li class="breaking"><span class="tag">Important</span><span>Require macOS 15 (<a href="${repo}/issues/40">#40</a>), closes <a href="${repo}/issues/41">#41</a></span></li>`);
     expect(html.match(/Require macOS 15/g)).toHaveLength(1);
   }
+  const issue = (number: number) => `[#${number}](${repo}/issues/${number})`;
+  const html = releaseNotesHtml(`## 1.0.0 (2026-10-11)
+
+### ⚠ BREAKING CHANGES
+
+* require macOS 15 ${pr(40)}, closes ${issue(39)}
+
+### Features
+
+* require macOS 15 ${pr(40)} ${commit("f".repeat(40))}, closes ${issue(41)} ${issue(39)}
+`, "1.0.0");
+  expect(html).toContain(`(<a href="${repo}/issues/40">#40</a>), closes <a href="${repo}/issues/39">#39</a>, <a href="${repo}/issues/41">#41</a></span></li>`);
 });
 
 test("release notes keep a multi-line breaking change that continues unindented", () => {

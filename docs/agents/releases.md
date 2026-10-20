@@ -244,8 +244,8 @@ it, because a multi-line `BREAKING CHANGE:` footer does; such a line may not
 start with `#`, and a blank line ends the footer.
 
 Release Please lists a breaking change again under its type. The notes show it
-once, as Important, and move any `closes` list that only the type's copy
-carries onto it. A section outside the five Release Please sections is accepted
+once, as Important, and add every issue the type's copy closes to its own
+`closes` list. A section outside the five Release Please sections is accepted
 only when every item repeats one of that release's breaking changes. The
 changelog must begin with the release being built.
 `bun scripts/release.ts validate-build`, the macOS `build` step, and a script
