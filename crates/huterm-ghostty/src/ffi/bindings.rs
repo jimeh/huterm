@@ -106,22 +106,22 @@ pub type GhosttyMouseTrackingMode = ::core::ffi::c_int;
 pub type GhosttyMouseFormat = ::core::ffi::c_int;
 pub type GhosttyMouseEncoderOption = ::core::ffi::c_int;
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyTerminalImpl {
     _unused: [u8; 0],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyRenderStateImpl {
     _unused: [u8; 0],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyRenderStateRowIteratorImpl {
     _unused: [u8; 0],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyRenderStateRowCellsImpl {
     _unused: [u8; 0],
 }
@@ -355,7 +355,7 @@ pub struct GhosttyRenderStateColors {
     pub palette: [GhosttyColorRgb; 256usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyMouseEventImpl {
     _unused: [u8; 0],
 }
@@ -366,7 +366,7 @@ pub struct GhosttyMousePosition {
     pub y: f32,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct GhosttyMouseEncoderImpl {
     _unused: [u8; 0],
 }
