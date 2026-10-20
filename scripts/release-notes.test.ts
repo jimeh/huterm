@@ -94,6 +94,24 @@ test("release notes tolerate a type section that only repeats breaking changes",
   expect(html.match(/Require macOS 15/g)).toHaveLength(1);
 });
 
+test("a breaking change keeps the closed issues listed only on its type's copy", () => {
+  const closes = `, closes [#41](${repo}/issues/41)`;
+  for (const heading of ["Features", "Build System"]) {
+    const html = releaseNotesHtml(`## 1.0.0 (2026-10-11)
+
+### ⚠ BREAKING CHANGES
+
+* require macOS 15 ${pr(40)}
+
+### ${heading}
+
+* require macOS 15 ${pr(40)} ${commit("f".repeat(40))}${closes}
+`, "1.0.0");
+    expect(html).toContain(`<li class="breaking"><span class="tag">Important</span><span>Require macOS 15 (<a href="${repo}/issues/40">#40</a>), closes <a href="${repo}/issues/41">#41</a></span></li>`);
+    expect(html.match(/Require macOS 15/g)).toHaveLength(1);
+  }
+});
+
 test("release notes keep a multi-line breaking change that continues unindented", () => {
   const html = releaseNotesHtml(`## 1.0.0 (2026-10-11)
 
@@ -108,8 +126,12 @@ Configs that still use it fail to parse.
 test("release notes reject content they would otherwise drop", () => {
   const release = "## 1.0.0 (2026-10-11)\n\n### Features\n\n* add tabs\n";
   expect(() => parseChangelog(`${release}\nSome trailing prose\n`)).toThrow("CHANGELOG.md line 7 is not a release heading, section heading, or list item");
-  // Only a breaking change footer continues unindented.
+  // Only a breaking change footer continues unindented, never with a heading
+  // and never past a blank line.
   expect(() => parseChangelog(`${release}Some trailing prose\n`)).toThrow("CHANGELOG.md line 6 is not a release heading, section heading, or list item");
+  const breaking = "## 1.0.0 (2026-10-11)\n\n### ⚠ BREAKING CHANGES\n\n* drop the legacy table\n";
+  expect(() => parseChangelog(`${breaking}## 0.9.0\n\n### Features\n\n* older change\n`)).toThrow("CHANGELOG.md line 6 is not a release heading, section heading, or list item");
+  expect(() => parseChangelog(`${breaking}\nSome trailing prose\n`)).toThrow("CHANGELOG.md line 7 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`${release}## 0.9.0\n\n### Features\n\n* older change\n`)).toThrow("CHANGELOG.md line 6 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`# Changelog\n\n### Security\n\n* patch tabs\n\n${release}`)).toThrow("CHANGELOG.md line 3 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`${release}\n### Documentation\n\n* explain tabs\n`)).toThrow("CHANGELOG.md line 7 has an unknown section Documentation");

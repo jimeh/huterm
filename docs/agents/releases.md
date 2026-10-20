@@ -237,14 +237,17 @@ notes. CI runs it in the macOS smoke job right after Sparkle preparation,
 independent of the smoke build.
 
 The renderer fails, naming the line, on a line, section heading, or date it does
-not recognize, rather than dropping content. Only blank lines and the
-`# Changelog` title may precede the first release. An indented line continues
-the item above it. Only a breaking change also continues on unindented lines
-directly after it, because a multi-line `BREAKING CHANGE:` footer does, and
-never with a `#` heading. A section
-outside the five Release Please sections is accepted only when every item
-repeats one of that release's breaking changes.
-The changelog must begin with the release being built.
+not recognize, rather than dropping content. Only blank lines and `#` title
+lines may precede the first release. An indented line continues the item above
+it. Only a breaking change also continues on unindented lines directly after
+it, because a multi-line `BREAKING CHANGE:` footer does; such a line may not
+start with `#`, and a blank line ends the footer.
+
+Release Please lists a breaking change again under its type. The notes show it
+once, as Important, and move any `closes` list that only the type's copy
+carries onto it. A section outside the five Release Please sections is accepted
+only when every item repeats one of that release's breaking changes. The
+changelog must begin with the release being built.
 `bun scripts/release.ts validate-build`, the macOS `build` step, and a script
 test that renders the repository changelog for the Cargo version all apply these
 checks, so a release pull request fails CI before any release job runs.

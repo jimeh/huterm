@@ -58,6 +58,7 @@ const commitReference = /\s*\(\[[0-9a-f]{7,40}\]\([^)\s]*\)\)/g;
 // The pull request and commit links Release Please ends an item with, and its
 // `closes` list of issues.
 const trailingReference = /^([\s\S]*?)(?:\s*\(\[(?:#\d+|[0-9a-f]{7,40})\]\([^)]*\)\)|,\s*closes(?:[,\s]+\[[^\]]*#\d+\]\([^)]*\))+)$/;
+const closesList = /,\s*closes(?:[,\s]+\[[^\]]*#\d+\]\([^)]*\))+$/;
 
 function versionParts(version: string): number[] {
   return version.split(".").map(Number);
@@ -154,7 +155,7 @@ export function parseChangelog(changelog: string): Release[] {
     }
     throw new Error(`CHANGELOG.md line ${lineNumber} is not a release heading, section heading, or list item`);
   }
-  checkUntagged(untagged, releases);
+  mergeDuplicates(releases, untagged);
   return releases;
 }
 
@@ -163,21 +164,36 @@ function isBreaking(section: UntaggedSection | ReleaseSection): boolean {
 }
 
 /**
- * Release Please lists a breaking change of a type it otherwise leaves out,
- * such as `build!`, under that type too. Such a section is left out when every
- * item in it is one of its release's breaking changes, which the notes show as
- * Important. Any other item would be dropped from the notes, so its section
- * fails.
+ * Release Please lists a breaking change again under its type, so each release
+ * keeps it once, as Important, and removes the type's copy. A `closes` list
+ * only that copy carries moves to the breaking change. A type Release Please
+ * otherwise leaves out, such as `build!`, has no section in the notes, so a
+ * section with an unknown heading is accepted only when every item in it
+ * repeats a breaking change. Any other item would be dropped, so it fails.
  */
-function checkUntagged(untagged: UntaggedSection[], releases: Release[]): void {
-  for (const section of untagged) {
-    const breaking = new Set(releases[section.release]!.sections
-      .filter(candidate => candidate.kind === "breaking")
-      .flatMap(candidate => candidate.items.map(identity)));
-    if (section.items.length === 0 || !section.items.every(item => breaking.has(identity(item)))) {
-      throw new Error(`CHANGELOG.md line ${section.line} has an unknown section ${section.title}`);
+function mergeDuplicates(releases: Release[], untagged: UntaggedSection[]): void {
+  releases.forEach((release, releaseIndex) => {
+    const breaking = new Map<string, { section: ReleaseSection; index: number }>();
+    for (const section of release.sections.filter(isBreaking)) {
+      section.items.forEach((item, index) => breaking.set(identity(item), { section, index }));
     }
-  }
+    const merge = (item: string): boolean => {
+      const original = breaking.get(identity(item));
+      if (!original) return false;
+      const closes = closesList.exec(item.replace(commitReference, ""))?.[0];
+      const kept = original.section.items[original.index]!;
+      if (closes && !closesList.test(kept)) original.section.items[original.index] = kept + closes;
+      return true;
+    };
+    for (const section of release.sections) {
+      if (!isBreaking(section)) section.items = section.items.filter(item => !merge(item));
+    }
+    for (const section of untagged.filter(candidate => candidate.release === releaseIndex)) {
+      if (section.items.length === 0 || !section.items.every(merge)) {
+        throw new Error(`CHANGELOG.md line ${section.line} has an unknown section ${section.title}`);
+      }
+    }
+  });
 }
 
 export function escapeHtml(text: string): string {
@@ -286,9 +302,7 @@ footer { padding-top: 10px; border-top: 1px solid var(--separator); color: var(-
 
 /**
  * One section per release: its linked version and date on one row, then its
- * changes in Release Please's order, each tagged with its kind. A breaking
- * change Release Please also lists under its type appears once, as Important.
- * The footer is not a section, so it stays visible however many sections
+ * changes in Release Please's order, each tagged with its kind. The footer is not a section, so it stays visible however many sections
  * Sparkle hides.
  */
 export function renderReleaseNotes(releases: readonly Release[]): string {
@@ -308,12 +322,8 @@ ${stylesheet}
     html += `<header><h2><a href="${repositoryUrl}/releases/tag/v${version}">Version ${version}</a></h2>`;
     html += `<time datetime="${escapeHtml(release.date)}">${escapeHtml(displayDate(release.date) ?? release.date)}</time></header>\n`;
     html += "<ul>\n";
-    const breaking = new Set(release.sections
-      .filter(section => section.kind === "breaking")
-      .flatMap(section => section.items.map(identity)));
     for (const section of release.sections) {
       for (const item of section.items) {
-        if (section.kind !== "breaking" && breaking.has(identity(item))) continue;
         const text = inlineHtml(capitalized(item.replace(commitReference, "")));
         html += `<li class="${section.kind}"><span class="tag">${kinds[section.kind].tag}</span><span>${text}</span></li>\n`;
       }
