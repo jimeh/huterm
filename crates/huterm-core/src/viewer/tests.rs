@@ -254,7 +254,7 @@ fn geometry_still_resizes_the_emulator_after_root_exit() {
     wait_until("emulator resize", || {
         only.read_snapshot().unwrap().size == GridSize::clamped(60, 12)
     });
-    assert!(runtime.registry().status().failures.is_empty());
+    assert_eq!(runtime.registry().status().failures, []);
     runtime.shutdown().unwrap();
 }
 

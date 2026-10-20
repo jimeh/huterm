@@ -261,7 +261,7 @@ fn kitty_text_writes_follow_the_clipboard_policy() {
     with_policy(false, |engine, recipient| {
         assert_eq!(status(engine.process(&write).unwrap()), "EPERM");
         assert!(engine.process(osc52).unwrap().is_empty());
-        assert!(drain_text(recipient).is_empty());
+        assert_eq!(drain_text(recipient), Vec::<String>::new());
     });
 }
 
@@ -298,7 +298,7 @@ fn kitty_writes_without_usable_text_are_refused() {
         let primary =
             kitty_write(":loc=primary", &[("text/plain", b"primary")]);
         assert_eq!(status(engine.process(&primary).unwrap()), "ENOSYS");
-        assert!(drain_text(recipient).is_empty());
+        assert_eq!(drain_text(recipient), Vec::<String>::new());
     });
 }
 
@@ -388,7 +388,7 @@ fn kitty_writes_over_the_terminal_budget_fail_before_the_host() {
             stream_kitty_text(engine, limit + 1),
             ["\x1b]5522;type=write:status=EFBIG\x1b\\"]
         );
-        assert!(drain_text(recipient).is_empty());
+        assert_eq!(drain_text(recipient), Vec::<String>::new());
     });
 }
 

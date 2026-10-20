@@ -1235,7 +1235,10 @@ mod tests {
             annotation(Style::Labeled, &constants["GHOSTTY_X_COLS"].lines),
             Ok(Annotated::Pointee("uint16_t".into()))
         );
-        assert!(constants["GHOSTTY_X_MAX_VALUE"].lines.is_empty());
+        assert_eq!(
+            constants["GHOSTTY_X_MAX_VALUE"].lines,
+            Vec::<String>::new()
+        );
     }
 
     #[test]

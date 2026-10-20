@@ -229,7 +229,7 @@ fn closing_several_tabs_matches_close_other_tabs_and_close_tabs_after() {
     // Closing every tab leaves no active tab.
     let mut model = attached(2);
     assert_eq!(model.close_tabs(window(1), &[tab(1), tab(2)]), None);
-    assert!(model.record(window(1)).unwrap().history.is_empty());
+    assert_eq!(model.record(window(1)).unwrap().history, []);
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn title_scopes_cover_one_window_or_every_open_window() {
         titles(TitleScope::Open),
         [TerminalId::new(1), TerminalId::new(2), TerminalId::new(3)]
     );
-    assert!(titles(TitleScope::Window(window(9))).is_empty());
+    assert_eq!(titles(TitleScope::Window(window(9))), []);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn palette_tab_order_lists_recent_tabs_first_and_the_active_tab_last() {
     // Tabs missing from history follow the recent ones, in display order.
     model.record_mut(window(1)).unwrap().history = vec![b, c];
     assert_eq!(model.palette_tab_order(window(1)), [c, a, b]);
-    assert!(model.palette_tab_order(window(9)).is_empty());
+    assert_eq!(model.palette_tab_order(window(9)), []);
 }
 
 #[test]

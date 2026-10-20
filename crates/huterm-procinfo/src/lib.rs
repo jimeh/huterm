@@ -366,7 +366,7 @@ mod tests {
         let init = process(1).unwrap();
         assert_eq!(init.pid, 1);
         assert_eq!(init.parent, 0);
-        assert!(!init.name.is_empty());
+        assert_ne!(init.name, "");
         assert!(!init.zombie);
     }
 

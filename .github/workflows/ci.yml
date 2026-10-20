@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun actionlint markdownlint-cli2 pinact taplo zizmor
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -148,14 +148,14 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Zig
         id: zig
@@ -222,7 +222,7 @@ jobs:
 
       - name: Upload Linux check failure evidence
         if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-check-evidence
@@ -293,14 +293,14 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Zig
         id: zig
@@ -488,7 +488,7 @@ jobs:
 
       - name: Upload smoke evidence
         if: ${{ !cancelled() && (steps.smoke-build.outcome == 'success' || failure()) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/huterm-smoke-evidence
@@ -518,13 +518,13 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Zig
         id: zig
@@ -582,13 +582,13 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Zig
         id: zig
@@ -684,22 +684,22 @@ jobs:
 
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Linux package tools with Mise
         if: runner.os == 'Linux'
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: true
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Install Zig
         id: zig
@@ -743,7 +743,7 @@ jobs:
 
       - name: Upload Linux package evidence on failure
         if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-evidence-${{ runner.arch }}-${{ github.run_attempt }}
           path: dist/linux/${{ matrix.machine }}/package-evidence

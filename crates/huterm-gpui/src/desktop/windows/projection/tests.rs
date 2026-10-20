@@ -310,7 +310,7 @@ fn an_empty_summary_visits_no_window() {
     let mut fake = open_window(&mut model, 1, workspace(10));
     let seq = feed.open(workspace(10), 1);
     push(&mut fake, &mut model, &feed.state, 1, seq);
-    assert!(windows_to_visit(&model, &Touched::default()).is_empty());
+    assert_eq!(windows_to_visit(&model, &Touched::default()), []);
     assert_eq!(
         windows_to_visit(&model, &Touched::everything()),
         [window(1)]
@@ -374,7 +374,7 @@ fn a_view_the_projection_has_not_caught_up_with_is_never_dropped() {
         reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
     assert!(change.changed);
     assert!(fake.views.is_empty());
-    assert!(model_order(&model, &fake).is_empty());
+    assert_eq!(model_order(&model, &fake), []);
 }
 
 #[test]
@@ -423,9 +423,9 @@ fn removal_waits_for_teardown_to_own_it() {
         removals(&feed.state, Some(workspace(10)), &installed, false, false),
         [tab(1)]
     );
-    assert!(
-        removals(&feed.state, Some(workspace(10)), &installed, false, true)
-            .is_empty()
+    assert_eq!(
+        removals(&feed.state, Some(workspace(10)), &installed, false, true),
+        []
     );
 }
 
@@ -557,7 +557,7 @@ fn title_refreshes_are_scheduled_only_for_open_consumers_and_coalesce() {
     );
     assert!(consumers.mark(window(1)), "the next change schedules again");
     consumers.set_host(window(2), false);
-    assert!(consumers.hosts().is_empty());
+    assert_eq!(consumers.hosts(), []);
 }
 
 #[test]
@@ -932,7 +932,7 @@ fn a_tab_moved_to_another_workspace_leaves_the_old_window() {
     assert_eq!(model_order(&model, &first), [tab(1)]);
     // The destination window installs nothing: creating views for tabs it
     // did not spawn belongs to #22.
-    assert!(model_order(&model, &second).is_empty());
+    assert_eq!(model_order(&model, &second), []);
     assert_eq!(
         removals(
             &feed.state,

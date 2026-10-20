@@ -185,7 +185,7 @@ impl Registration {
     fn advance_generation(&self) {
         if self
             .generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
             })
             .is_err()
@@ -387,7 +387,7 @@ impl HostEffectSink {
         {
             return HostEffectAdmission::Full;
         }
-        let Ok(sequence) = self.inner.next_sequence.fetch_update(
+        let Ok(sequence) = self.inner.next_sequence.try_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |sequence| sequence.checked_add(1),

@@ -181,7 +181,7 @@ fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
         .unwrap();
     ready(&opened.client, "ALIVE");
     assert_eq!(mux.capture_hierarchy().sessions.len(), 1);
-    assert!(mux.capture_hierarchy().attachments.is_empty());
+    assert_eq!(mux.capture_hierarchy().attachments, []);
     let attachment = mux.attach_session(session).unwrap();
     let assessment = mux
         .prepare_close(CloseRequest::Window(attachment))
@@ -534,7 +534,7 @@ fn accepted_capture_precedes_teardown_without_a_second_freshness_check() {
     .unwrap();
     assert_eq!(clock_reads.get(), 1, "teardown rechecked freshness");
     assert_eq!(captured.unwrap().sessions[0].id, session);
-    assert!(mux.sessions().is_empty());
+    assert_eq!(mux.sessions(), []);
 }
 
 /// Opens `count` idle tabs and waits for each shell to reach `read`.

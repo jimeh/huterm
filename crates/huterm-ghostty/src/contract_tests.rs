@@ -116,7 +116,7 @@ fn empty_formatter_output_is_null_with_zero_length() {
         .format_plain(Point::screen(0, 0), Point::screen(7, 2))
         .unwrap();
     assert!(output.is_null());
-    assert!(output.as_bytes().is_empty());
+    assert_eq!(output.as_bytes(), b"");
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn ground_state_covers_escape_osc_and_utf8_fragments() {
 #[test]
 fn title_changes_notify_and_read_back_after_the_write() {
     let mut terminal = terminal();
-    assert!(terminal.title().unwrap().is_empty());
+    assert_eq!(terminal.title().unwrap(), b"");
     terminal
         .write(b"\x1b]2;first\x07\x1b]0;second\x07")
         .unwrap();
@@ -190,7 +190,7 @@ fn pwd_callbacks_read_the_new_value_inside_the_write() {
             Effect::PwdChanged(Vec::new()),
         ]
     );
-    assert!(terminal.pwd().unwrap().is_empty());
+    assert_eq!(terminal.pwd().unwrap(), b"");
 }
 
 #[test]
@@ -233,7 +233,10 @@ fn size_reports_use_callback_geometry_and_stay_silent_without_cells() {
         ]
     );
     terminal.resize(5, 4, 0, 0).unwrap();
-    assert!(written(&mut terminal, b"\x1b[14t\x1b[18t").is_empty());
+    assert_eq!(
+        written(&mut terminal, b"\x1b[14t\x1b[18t"),
+        Vec::<Vec<u8>>::new()
+    );
 }
 
 #[test]
@@ -292,7 +295,7 @@ fn osc52_writes_arrive_as_decoded_text_plain_and_empty_clears() {
         ]
     );
     // OSC 52 has no acknowledgement.
-    assert!(replies(&mut terminal).is_empty());
+    assert_eq!(replies(&mut terminal), Vec::<Vec<u8>>::new());
 }
 
 #[test]
@@ -479,7 +482,10 @@ fn kitty_clipboard_commit_without_data_reaches_the_callback_as_a_clear() {
 #[test]
 fn clipboard_reads_without_a_callback_are_silent() {
     let mut terminal = terminal();
-    assert!(written(&mut terminal, b"\x1b]52;c;?\x07").is_empty());
+    assert_eq!(
+        written(&mut terminal, b"\x1b]52;c;?\x07"),
+        Vec::<Vec<u8>>::new()
+    );
 }
 
 #[test]
@@ -493,8 +499,8 @@ fn image_and_glyph_protocols_can_be_disabled() {
             && written(terminal, IMAGE).is_empty()
     };
     let mut terminal = terminal();
-    assert!(!written(&mut terminal, GLYPH).is_empty());
-    assert!(!written(&mut terminal, IMAGE).is_empty());
+    assert_ne!(written(&mut terminal, GLYPH), Vec::<Vec<u8>>::new());
+    assert_ne!(written(&mut terminal, IMAGE), Vec::<Vec<u8>>::new());
     terminal.disable_apc_protocols().unwrap();
     assert!(matches!(
         terminal.kitty_image_storage_limit().unwrap(),
@@ -752,7 +758,7 @@ fn render_cells_expose_codepoints_graphemes_width_and_background_cells() {
     // Erasing with a background color leaves background-only cells.
     assert_eq!(seen[4].0, CellContent::BackgroundPalette);
     assert_eq!(seen[4].2, 0);
-    assert!(seen[4].3.is_empty());
+    assert_eq!(seen[4].3, "");
 }
 
 #[test]
@@ -853,7 +859,7 @@ fn mouse_probe_reads_active_modes_without_pty_output() {
         terminal.write(sequence).unwrap();
         assert_eq!(probe.probe(&terminal).unwrap(), expected, "{sequence:?}");
     }
-    assert!(effects(&mut terminal).is_empty());
+    assert_eq!(effects(&mut terminal), []);
 }
 
 #[test]
@@ -957,7 +963,7 @@ fn every_native_allocation_is_released() {
             let output = terminal
                 .format_plain(Point::screen(0, 0), Point::screen(7, 2))
                 .unwrap();
-            assert!(!output.as_bytes().is_empty());
+            assert_ne!(output.as_bytes(), b"");
         }
         terminal.resize(20, 6, 8, 16).unwrap();
         terminal.reset().unwrap();

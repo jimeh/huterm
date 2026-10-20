@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn current_facts_name_the_platform_and_profile() {
         let facts = BuildFacts::current(Some("X11"));
-        assert!(!facts.os.is_empty());
+        assert_ne!(facts.os, "");
         assert_eq!(facts.arch, std::env::consts::ARCH);
         assert_eq!(facts.backend.as_deref(), Some("X11"));
         assert_eq!(

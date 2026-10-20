@@ -67,7 +67,7 @@ fn macos_collapsed_right_presses_emit_one_release_in_either_order() {
             }
         }
         assert_eq!(reports, [MouseAction::Release(MouseButton::Right)]);
-        assert!(state.cancel().is_empty());
+        assert_eq!(state.cancel(), []);
         assert!(state.down(MouseButton::Right, true));
     }
     let mut local = state();
@@ -98,7 +98,7 @@ fn macos_release_pairs_control_click_across_modifier_changes() {
             MouseAction::Release(pressed)
         );
         assert_eq!(state.release_button(released, true), None);
-        assert!(state.cancel().is_empty());
+        assert_eq!(state.cancel(), []);
         assert!(state.down(pressed, true));
     }
 }
@@ -293,7 +293,7 @@ fn multibutton_motion_uses_latest_held_and_release_keeps_other_ownership() {
         ]
     );
     assert!(releases.iter().all(|input| input.position == position));
-    assert!(state.cancel().is_empty());
+    assert_eq!(state.cancel(), []);
     assert!(state.motion(position, shifted, true).is_none());
     for button in [MouseButton::Left, MouseButton::Right] {
         assert!(state.release(button, position, shifted).is_none());
@@ -360,12 +360,12 @@ fn motion_deduplication_tracks_cells_buttons_and_held_modifiers() {
 #[test]
 fn wheel_preserves_fraction_reverses_resets_and_caps_both_axes() {
     let mut state = state();
-    assert!(state.wheel(0.4, 0.6).is_empty());
+    assert_eq!(state.wheel(0.4, 0.6), []);
     assert_eq!(
         state.wheel(0.7, 0.5),
         [WheelDirection::Up, WheelDirection::Left]
     );
-    assert!(state.wheel(0.0, -0.9).is_empty());
+    assert_eq!(state.wheel(0.0, -0.9), []);
     assert_eq!(state.wheel(0.0, -0.2), [WheelDirection::Down]);
     let diagonal = state.wheel(-25.0, 20.0);
     assert_eq!(diagonal.len(), 32);
@@ -379,14 +379,14 @@ fn wheel_preserves_fraction_reverses_resets_and_caps_both_axes() {
             .iter()
             .all(|direction| *direction == WheelDirection::Right)
     );
-    assert!(state.wheel(0.0, 0.0).is_empty());
+    assert_eq!(state.wheel(0.0, 0.0), []);
     for delta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert!(state.wheel(delta, 1.0).is_empty());
+        assert_eq!(state.wheel(delta, 1.0), []);
     }
     assert_eq!(state.wheel(f64::MAX, f64::MAX).len(), 32);
     state.wheel(0.0, 0.8);
     state.wheel_route(true);
-    assert!(state.wheel(0.0, 0.3).is_empty());
+    assert_eq!(state.wheel(0.0, 0.3), []);
     state.cancel();
-    assert!(state.wheel(0.0, 0.8).is_empty());
+    assert_eq!(state.wheel(0.0, 0.8), []);
 }

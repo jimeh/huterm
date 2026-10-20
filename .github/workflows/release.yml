@@ -97,11 +97,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install preflight tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -115,7 +115,7 @@ jobs:
       - id: draft-token
         name: Create draft validation token
         if: inputs.publish
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
@@ -152,11 +152,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install macOS release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           install_args: bun zig syft pipx:spdx-tools
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -197,7 +197,7 @@ jobs:
         run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified macOS payloads
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: |
@@ -252,11 +252,11 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           install_args: bun zig
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -291,7 +291,7 @@ jobs:
         run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified Linux payloads
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/huterm-linux-dist
@@ -302,7 +302,7 @@ jobs:
 
       - name: Upload Linux package evidence on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux-evidence-x86_64-${{ github.sha }}-${{ github.run_attempt }}
           path: dist/linux/x86_64/package-evidence
@@ -346,11 +346,11 @@ jobs:
             xdotool x11-xkb-utils x11-utils xvfb xz-utils zsh
 
       - name: Install Linux release tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           install_args: bun zig
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -385,7 +385,7 @@ jobs:
         run: printf 'name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified Linux payloads
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/huterm-linux-dist
@@ -396,7 +396,7 @@ jobs:
 
       - name: Upload Linux package evidence on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux-evidence-aarch64-${{ github.sha }}-${{ github.run_attempt }}
           path: dist/linux/aarch64/package-evidence
@@ -425,11 +425,11 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Install assembly tools with Mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           cache: false
           install_args: bun
-          version: 2026.9.14
+          version: 2026.10.12
 
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
@@ -438,19 +438,19 @@ jobs:
         run: bun scripts/release.ts validate-build
 
       - name: Download exact macOS payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.macos.outputs.artifact_name }}
           path: .release-incoming/macos
 
       - name: Download exact Linux x86_64 payloads
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.linux_x86_64.outputs.artifact_name }}
           path: .release-incoming/linux-x86_64
 
       - name: Download exact Linux aarch64 payloads
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.linux_aarch64.outputs.artifact_name }}
           path: .release-incoming/linux-aarch64
@@ -460,7 +460,7 @@ jobs:
 
       - id: candidate
         name: Upload exact assembled candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Huterm-${{ inputs.version }}-all-platforms-verified-${{ github.run_attempt }}
           path: dist
@@ -547,7 +547,7 @@ jobs:
 
       - id: app-token
         name: Create fresh release bot token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}

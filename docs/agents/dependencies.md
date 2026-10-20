@@ -15,7 +15,7 @@ three files agree.
 
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.6 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
-pins Rust 1.98.
+pins Rust 1.99.
 
 On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 `mise run doctor` checks it and reports the installation command.

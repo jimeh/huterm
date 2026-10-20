@@ -6,8 +6,8 @@ set -eu
 share="/Volumes/My Shared Files/huterm"
 
 # Match scripts/linux/Dockerfile's Mise release; the image's Homebrew copy is older.
-mise_version=2026.9.1
-mise_sha=bfea0ab417b48c1e8b99412fcaf20ce17424a3286a8766d7d2b0051fe321d565
+mise_version=2026.10.12
+mise_sha=6dc12b6087d4887cf807e9a9f3c2aa0ae0d90a6f465c6bd9c5d4a07847f88ab3
 archive=$(mktemp -d)
 curl -fsSL "https://github.com/jdx/mise/releases/download/v${mise_version}/mise-v${mise_version}-macos-arm64.tar.gz" \
   -o "$archive/mise.tar.gz"

@@ -105,7 +105,7 @@ mod tests {
         let original =
             raise_with(Some((4096, 4096)), |soft, hard| limit.set(soft, hard));
         assert_eq!(original, Some((4096, 4096)));
-        assert!(limit.calls.is_empty());
+        assert_eq!(limit.calls, []);
     }
 
     #[test]
@@ -147,6 +147,6 @@ mod tests {
     fn failed_query_records_nothing_and_changes_nothing() {
         let mut limit = FakeLimit::new(256, rlim_t::MAX);
         assert_eq!(raise_with(None, |soft, hard| limit.set(soft, hard)), None);
-        assert!(limit.calls.is_empty());
+        assert_eq!(limit.calls, []);
     }
 }

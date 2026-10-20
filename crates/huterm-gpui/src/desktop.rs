@@ -3881,13 +3881,13 @@ mod tests {
     #[test]
     fn macos_shell_is_login_and_only_packaged_launches_fill_missing_locale() {
         assert_eq!(shell_arguments(true), vec!["-l"]);
-        assert!(shell_arguments(false).is_empty());
+        assert_eq!(shell_arguments(false), Vec::<String>::new());
         assert_eq!(
             locale_environment(true, false),
             vec![("LANG".into(), "en_US.UTF-8".into())]
         );
-        assert!(locale_environment(true, true).is_empty());
-        assert!(locale_environment(false, false).is_empty());
+        assert_eq!(locale_environment(true, true), []);
+        assert_eq!(locale_environment(false, false), []);
     }
 
     #[test]

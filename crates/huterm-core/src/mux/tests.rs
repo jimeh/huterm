@@ -184,7 +184,7 @@ fn cross_parent_moves_preserve_live_pty_identity_and_update_selection_ancestry()
         Some(anchor.tab.id),
     )
     .unwrap();
-    assert!(mux.workspace(first_workspace).unwrap().tabs.is_empty());
+    assert_eq!(mux.workspace(first_workspace).unwrap().tabs, []);
     assert_eq!(
         mux.workspace(second_workspace).unwrap().tabs,
         [opened.tab.clone(), anchor.tab.clone()]
@@ -254,7 +254,7 @@ fn cross_parent_moves_preserve_live_pty_identity_and_update_selection_ancestry()
     );
     mux.move_workspace(first_session, first_workspace, second_session, None)
         .unwrap();
-    assert!(mux.session(first_session).unwrap().workspaces.is_empty());
+    assert_eq!(mux.session(first_session).unwrap().workspaces, []);
     mux.close_session(first_session).unwrap();
     assert_eq!(mux.terminal_count(), 2);
     mux.shutdown().unwrap();
@@ -430,7 +430,7 @@ fn exhausted_creation_does_not_publish_partial_structure() {
         mux.open_test_tab(workspace, &command("read value")),
         Err(MuxError::IdExhausted)
     ));
-    assert!(mux.workspace(workspace).unwrap().tabs.is_empty());
+    assert_eq!(mux.workspace(workspace).unwrap().tabs, []);
     assert_eq!(mux.terminal_count(), 0);
     assert!(matches!(
         mux.create_workspace(session, None),

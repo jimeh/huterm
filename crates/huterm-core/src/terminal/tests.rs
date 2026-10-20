@@ -545,7 +545,7 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
             history.link,
             Some(huterm_protocol::LinkLookup::Match(_))
         ));
-        assert!(client.status().failures.is_empty());
+        assert_eq!(client.status().failures, []);
         runtime.shutdown().unwrap();
     }
 }
@@ -700,7 +700,7 @@ fn exited_history() {
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(2));
     }
-    assert!(client.status().failures.is_empty());
+    assert_eq!(client.status().failures, []);
     assert_eq!(client.control.queued_input_bytes.load(Ordering::Acquire), 0);
     runtime.shutdown().unwrap();
 }

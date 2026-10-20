@@ -145,7 +145,7 @@ impl Mux {
     pub fn new(socket_name: &str) -> Result<Self, MuxError> {
         validate_name(Some(socket_name))?;
         let runtime_id = NEXT_RUNTIME
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 n.checked_add(1)
             })
             .map_err(|_| MuxError::IdExhausted)?;

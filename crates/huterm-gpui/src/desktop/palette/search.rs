@@ -506,6 +506,6 @@ mod tests {
             &history_view(&recent, &frequency),
         );
 
-        assert!(matches.is_empty());
+        assert_eq!(matches, []);
     }
 }

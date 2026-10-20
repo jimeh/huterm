@@ -318,7 +318,7 @@ fn compile_entries(
                 }
             })
         };
-        let keystrokes = parse_keystrokes(&entry.key).map_err(&fail)?;
+        let keystrokes = parse_keystrokes(&entry.key).map_err(fail)?;
         if entry.command == UNBIND {
             if !entry.args.is_empty() {
                 return Err(fail("unbind takes no args".to_owned()));
@@ -336,7 +336,7 @@ fn compile_entries(
             continue;
         }
         let (spec, action, mut effective) =
-            resolve_command(entry).map_err(&fail)?;
+            resolve_command(entry).map_err(fail)?;
         let predicate_source = match (spec.context, entry.when.as_deref()) {
             (Some(context), Some(when)) => {
                 Some(format!("({context}) && ({when})"))

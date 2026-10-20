@@ -1,8 +1,3 @@
-#![expect(
-    clippy::float_cmp,
-    reason = "coverage values are exact binary fractions, not measured coordinates"
-)]
-
 use super::*;
 
 fn metrics(width: f32, height: f32, scale: f32) -> GridMetrics {

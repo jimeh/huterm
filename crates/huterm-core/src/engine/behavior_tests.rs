@@ -117,9 +117,9 @@ fn size_queries_are_silent_until_cell_geometry_is_known() {
         presentation(),
     )
     .unwrap();
-    assert!(
-        replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap())
-            .is_empty()
+    assert_eq!(
+        replies(engine.process(b"\x1b[14t\x1b[16t\x1b[18t").unwrap()),
+        Vec::<Vec<u8>>::new()
     );
 
     engine
@@ -532,7 +532,7 @@ fn split_queries_reply_once_after_completion() {
             let mut engine = engine();
             let mut actual = replies(engine.process(&query[..split]).unwrap());
             if split < dispatch_at {
-                assert!(actual.is_empty());
+                assert_eq!(actual, Vec::<Vec<u8>>::new());
             }
             actual.extend(replies(engine.process(&query[split..]).unwrap()));
             assert_eq!(
@@ -547,7 +547,7 @@ fn split_queries_reply_once_after_completion() {
 #[test]
 fn malformed_and_unsupported_queries_are_silent() {
     let mut engine = engine();
-    assert!(
+    assert_eq!(
         replies(
             engine
                 .process(
@@ -555,7 +555,7 @@ fn malformed_and_unsupported_queries_are_silent() {
                 )
                 .unwrap()
         )
-        .is_empty()
+        , Vec::<Vec<u8>>::new()
     );
 }
 
