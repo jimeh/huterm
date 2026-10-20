@@ -362,6 +362,10 @@ jobs:
           mise run terminfo:prepare
           mise run sparkle:prepare
 
+      - name: Check Sparkle embedded release notes
+        if: ${{ !cancelled() && steps.smoke-prepare.outcome == 'success' && runner.os == 'macOS' }}
+        run: mise run release:check-embedded-notes
+
       - name: Check terminfo entry and tmux RGB output
         if: ${{ !cancelled() && steps.smoke-prepare.outcome == 'success' }}
         run: mise run terminfo:check

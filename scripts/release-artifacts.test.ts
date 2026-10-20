@@ -15,6 +15,10 @@ function signingFixture() {
   return { privateKey, publicKey: spki.subarray(-32).toString("base64") };
 }
 
+function notes(version: string): string {
+  return `<!DOCTYPE html>\n<html><body>\n<section data-sparkle-version="${version}">\n<h2>Version ${version}</h2>\n</section>\n</body></html>\n`;
+}
+
 function signedAppcast(
   archive: Buffer,
   signatureKey: ReturnType<typeof signingFixture>,
@@ -23,6 +27,7 @@ function signedAppcast(
     archive: `https://github.com/jimeh/huterm/releases/download/v${version}/Huterm-${version}-macOS-universal.zip`,
     release: `https://github.com/jimeh/huterm/releases/tag/v${version}`,
   },
+  description = `<description><![CDATA[${notes(version)}]]></description>`,
 ) {
   const archiveSignature = sign(null, archive, signatureKey.privateKey).toString("base64");
   const content = Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
@@ -30,6 +35,7 @@ function signedAppcast(
 <link>https://github.com/jimeh/huterm</link><item>
 <link>${urls.release}</link>
 <sparkle:version>${version}</sparkle:version>
+${description}
 <enclosure url="${urls.archive}" length="${archive.length}" sparkle:edSignature="${archiveSignature}" />
 </item></channel></rss>`);
   const feedSignature = sign(null, content, signatureKey.privateKey).toString("base64");
@@ -48,6 +54,27 @@ test("appcast validation binds identity, immutable URLs, sizes, archive bytes, a
   const otherKey = signingFixture();
   expect(() => validateAppcast(appcast, archive, "Huterm-1.2.3-macOS-universal.zip", { version: "1.2.3", tag: "v1.2.3" }, otherKey.publicKey)).toThrow("embedded public key");
   expect(() => validateAppcast(appcast, archive, "Huterm-1.2.3-macOS-universal.zip", { version: "1.2.4", tag: "v1.2.4" }, key.publicKey)).toThrow("version");
+});
+
+test("appcast validation requires one item description with the release's notes", () => {
+  const archive = Buffer.from("signed universal application fixture");
+  const key = signingFixture();
+  const urls = {
+    archive: "https://github.com/jimeh/huterm/releases/download/v1.2.3/Huterm-1.2.3-macOS-universal.zip",
+    release: "https://github.com/jimeh/huterm/releases/tag/v1.2.3",
+  };
+  const validate = (description: string) => () => validateAppcast(
+    signedAppcast(archive, key, "1.2.3", urls, description),
+    archive,
+    "Huterm-1.2.3-macOS-universal.zip",
+    { version: "1.2.3", tag: "v1.2.3" },
+    key.publicKey,
+  );
+  const escaped = notes("1.2.3").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  expect(validate(`<description>${escaped}</description>`)).not.toThrow();
+  expect(validate("")).toThrow("exactly one release notes description, found 0");
+  expect(validate(`<description><![CDATA[${notes("1.2.2")}]]></description>`)).toThrow("release notes lack a section for 1.2.3");
+  expect(validate(`<description><![CDATA[${notes("1.2.3")}]]></description><description></description>`)).toThrow("found 2");
 });
 
 test("appcast validation honors explicit fixture URLs", () => {

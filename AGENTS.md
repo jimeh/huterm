@@ -140,6 +140,9 @@ the relevant tests yourself. Install it with
 `mise run setup`. Keep its representative warm path
 below 10 seconds; CI remains authoritative because hooks can be bypassed.
 
+Squash-merged `feat`, `fix`, and `perf` pull request titles become user-facing
+update notes; see [release notes](docs/agents/releases.md#release-notes).
+
 ## Dependency changes
 
 The repository uses a three-day release-age policy for Mise tools, Cargo

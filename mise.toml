@@ -558,6 +558,15 @@ run = "bun scripts/release-macos.ts build"
 description = "Verify assembled release assets and native fixture signing without publishing"
 run = "bun scripts/release-macos.ts verify-candidate"
 
+[tasks."release:check-embedded-notes"]
+description = "Run Sparkle's generate_appcast on a stub app and validate its signed feed and embedded release notes (macOS)"
+depends = ["sparkle:prepare"]
+run = "bun scripts/release-macos.ts check-embedded-notes"
+
+[tasks."release-notes:preview"]
+description = "Write Sparkle's HTML release notes from CHANGELOG.md; accepts --version, --installed, and --output"
+run = "bun scripts/release-notes.ts"
+
 [tasks."build:exec"]
 description = "Run a command with the selected toolchain"
 run = "bash scripts/build-exec.sh"
