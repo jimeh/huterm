@@ -228,7 +228,12 @@ fn osc_dispatch_at_escape_updates_override_state_before_the_next_byte() {
 }
 
 #[test]
-fn osc_dispatch_at_can_or_sub_updates_override_state_immediately() {
+fn osc_cancelled_by_can_or_sub_leaves_colors_unchanged() {
+    let custom = CellColor::Rgb(Rgb {
+        red: 1,
+        green: 2,
+        blue: 3,
+    });
     for terminator in [0x18, 0x1a] {
         let mut engine = engine();
         engine.process(b"A").unwrap();
@@ -237,23 +242,54 @@ fn osc_dispatch_at_can_or_sub_updates_override_state_immediately() {
         engine.process(&mutation).unwrap();
         assert_eq!(
             engine.snapshot().unwrap().rows[0].cells[0].foreground,
-            CellColor::Rgb(Rgb {
-                red: 1,
-                green: 2,
-                blue: 3,
-            }),
+            CellColor::DefaultForeground,
             "terminator={terminator:#x}"
         );
 
+        engine.process(b"\x1b]10;#010203\x07").unwrap();
         let mut reset = b"\x1b]110".to_vec();
         reset.push(terminator);
         engine.process(&reset).unwrap();
         assert_eq!(
             engine.snapshot().unwrap().rows[0].cells[0].foreground,
-            CellColor::DefaultForeground,
+            custom,
             "terminator={terminator:#x}"
         );
     }
+}
+
+#[test]
+fn soft_reset_clears_palette_overrides_but_keeps_dynamic_colors() {
+    let mut engine = engine();
+    engine.process(b"A\x1b[31mB").unwrap();
+    engine
+        .process(b"\x1b]10;#010203\x07\x1b]4;1;#0a0b0c\x07")
+        .unwrap();
+    // Consume the damage so only the reset itself can refresh the row.
+    assert_eq!(
+        engine.snapshot().unwrap().rows[0].cells[1].foreground,
+        CellColor::Rgb(Rgb {
+            red: 10,
+            green: 11,
+            blue: 12,
+        })
+    );
+    engine.process(b"\x1b[!p").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(
+        (
+            reset.rows[0].cells[0].foreground,
+            reset.rows[0].cells[1].foreground,
+        ),
+        (
+            CellColor::Rgb(Rgb {
+                red: 1,
+                green: 2,
+                blue: 3,
+            }),
+            CellColor::Indexed(1),
+        )
+    );
 }
 
 #[test]

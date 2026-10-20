@@ -467,6 +467,8 @@ pub const GHOSTTY_SCROLL_VIEWPORT_TOP: GhosttyTerminalScrollViewportTag = 0;
 pub const GHOSTTY_SCROLL_VIEWPORT_BOTTOM: GhosttyTerminalScrollViewportTag = 1;
 pub const GHOSTTY_SCROLL_VIEWPORT_DELTA: GhosttyTerminalScrollViewportTag = 2;
 pub const GHOSTTY_SCROLL_VIEWPORT_ROW: GhosttyTerminalScrollViewportTag = 3;
+pub const GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT:
+    GhosttyTerminalScrollViewportTag = 4;
 pub const GHOSTTY_SCROLL_VIEWPORT_MAX_VALUE: GhosttyTerminalScrollViewportTag =
     2147483647;
 pub const GHOSTTY_TERMINAL_SCREEN_PRIMARY: GhosttyTerminalScreen = 0;
@@ -539,6 +541,13 @@ pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES:
 pub const GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK: GhosttyTerminalOption =
     40;
 pub const GHOSTTY_TERMINAL_OPT_RENDER_HOLD: GhosttyTerminalOption = 41;
+pub const GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT: GhosttyTerminalOption = 42;
+pub const GHOSTTY_TERMINAL_OPT_RESET: GhosttyTerminalOption = 43;
+pub const GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT: GhosttyTerminalOption = 44;
+pub const GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION: GhosttyTerminalOption =
+    45;
+pub const GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS: GhosttyTerminalOption = 46;
+pub const GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW: GhosttyTerminalOption = 47;
 pub const GHOSTTY_TERMINAL_OPT_MAX_VALUE: GhosttyTerminalOption = 2147483647;
 pub const GHOSTTY_TERMINAL_DATA_INVALID: GhosttyTerminalData = 0;
 pub const GHOSTTY_TERMINAL_DATA_COLS: GhosttyTerminalData = 1;
@@ -589,6 +598,8 @@ pub const GHOSTTY_TERMINAL_DATA_VT_GROUND: GhosttyTerminalData = 38;
 pub const GHOSTTY_TERMINAL_DATA_CURSOR_AT_PROMPT: GhosttyTerminalData = 39;
 pub const GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES: GhosttyTerminalData =
     40;
+pub const GHOSTTY_TERMINAL_DATA_MOUSE_SHAPE: GhosttyTerminalData = 41;
+pub const GHOSTTY_TERMINAL_DATA_MEMORY_USAGE: GhosttyTerminalData = 42;
 pub const GHOSTTY_TERMINAL_DATA_MAX_VALUE: GhosttyTerminalData = 2147483647;
 pub const GHOSTTY_RENDER_STATE_DIRTY_FALSE: GhosttyRenderStateDirty = 0;
 pub const GHOSTTY_RENDER_STATE_DIRTY_PARTIAL: GhosttyRenderStateDirty = 1;
@@ -635,6 +646,9 @@ pub const GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL:
     GhosttyRenderStateData = 17;
 pub const GHOSTTY_RENDER_STATE_DATA_CURSOR: GhosttyRenderStateData = 18;
 pub const GHOSTTY_RENDER_STATE_DATA_COLORS: GhosttyRenderStateData = 19;
+pub const GHOSTTY_RENDER_STATE_DATA_OVERSCAN: GhosttyRenderStateData = 20;
+pub const GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST: GhosttyRenderStateData =
+    21;
 pub const GHOSTTY_RENDER_STATE_DATA_MAX_VALUE: GhosttyRenderStateData =
     2147483647;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_INVALID: GhosttyRenderStateRowData = 0;
@@ -645,6 +659,9 @@ pub const GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION: GhosttyRenderStateRowData =
     4;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW: GhosttyRenderStateRowData =
     5;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y: GhosttyRenderStateRowData =
+    6;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_ID: GhosttyRenderStateRowData = 7;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_MAX_VALUE: GhosttyRenderStateRowData =
     2147483647;
 pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_INVALID:
@@ -733,6 +750,7 @@ pub union GhosttyPointValue {
 pub union GhosttyTerminalScrollViewportValue {
     pub delta: isize,
     pub row: usize,
+    pub delta_prompt: isize,
     pub _padding: [u64; 2usize],
 }
 impl Default for GhosttyString {

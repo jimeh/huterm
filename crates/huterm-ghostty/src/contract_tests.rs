@@ -609,7 +609,8 @@ fn probe_reports_overrides_and_restores_defaults() {
 }
 
 #[test]
-fn full_reset_and_ris_keep_osc_color_overrides() {
+fn full_reset_and_ris_reset_the_palette_but_keep_dynamic_colors() {
+    let default_palette = terminal().palette().unwrap();
     for ris in [false, true] {
         let mut terminal = terminal();
         terminal
@@ -628,7 +629,11 @@ fn full_reset_and_ris_keep_osc_color_overrides() {
             Some(Rgb::new(10, 11, 12)),
             "ris={ris}"
         );
-        assert_eq!(terminal.palette().unwrap()[1], Rgb::new(1, 2, 3));
+        assert_eq!(
+            terminal.palette().unwrap()[1],
+            default_palette[1],
+            "ris={ris}"
+        );
     }
 }
 

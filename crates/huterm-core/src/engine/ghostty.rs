@@ -1160,6 +1160,10 @@ mod tests {
             b"\x1b_G",
             b"\x1b(",
             b"\x1bc",
+            // DECSTR resets the palette.
+            b"\x1b[!p",
+            b"!",
+            b"p",
             &[0x90],
             &[0x98],
             &[0x9b],

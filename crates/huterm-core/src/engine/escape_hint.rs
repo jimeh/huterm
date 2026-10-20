@@ -3,17 +3,20 @@
 // A conservative invalidation hint, not a second terminal parser. Native
 // Ghostty still interprets every color and reset. This mirrors the pinned
 // parser's state transitions (`stream.zig` and `parse_table.zig`) closely
-// enough to find color OSC dispatches and RIS across PTY chunks, so ordinary
-// text, CSI, and non-color OSC output never trigger palette probing. It may
-// flag extra sequences, but it must never miss a color operation: where the
-// hint cannot tell two parser states apart, it assumes the one in which more
-// bytes can start a sequence.
+// enough to find color OSC dispatches, RIS, and DECSTR across PTY chunks, so
+// ordinary text, CSI, and non-color OSC output never trigger palette probing.
+// It may flag extra sequences, but it must never miss a color operation: where
+// the hint cannot tell two parser states apart, it assumes the one in which
+// more bytes can start a sequence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EscapeHint {
     Ground,
     Escape,
     EscapeIntermediate,
-    Csi,
+    /// `bang` records a collected `!`, which DECSTR (`CSI ! p`) needs.
+    Csi {
+        bang: bool,
+    },
     /// DCS parameters and intermediates, where C1 bytes still start new
     /// sequences. Also stands in for `dcs_ignore`, which treats C1 bytes as
     /// payload, so that case can only over-flag.
@@ -64,8 +67,6 @@ impl OscNumber {
     }
 
     /// OSCs that `osc.zig` dispatches to its color and kitty color parsers.
-    /// The pinned parser no longer recognizes OSC 105; keeping it only
-    /// over-flags.
     fn is_color(self) -> bool {
         (1..=Self::MAX_DIGITS).contains(&self.digits)
             && matches!(
@@ -89,9 +90,9 @@ impl EscapeHint {
                 // it. Decoded C0 controls execute and decoded C1 controls
                 // are ignored without leaving ground.
                 Self::Ground => memchr::memchr(0x1b, rest),
-                Self::Csi => {
-                    rest.iter().position(|byte| !matches!(byte, 0x20..=0x3f))
-                }
+                Self::Csi { bang } => rest.iter().position(|&byte| {
+                    !matches!(byte, 0x20..=0x3f) || (byte == b'!' && !bang)
+                }),
                 Self::DcsString => rest
                     .iter()
                     .position(|byte| matches!(byte, 0x18 | 0x1a | 0x1b)),
@@ -116,17 +117,18 @@ impl EscapeHint {
 
     fn step(&mut self, byte: u8) -> bool {
         let (next, changed) = match (*self, byte) {
-            // OSC exits dispatch the accumulated command. Other C0 bytes are
-            // ignored, and 0x20..=0xff, including C1 values, are payload.
-            (Self::Osc(number), 0x07 | 0x18 | 0x1a) => {
-                (Self::Ground, number.is_color())
-            }
+            // BEL and ESC dispatch the accumulated command, while CAN and SUB
+            // cancel it. Other C0 bytes are ignored, and 0x20..=0xff,
+            // including C1 values, are payload.
+            (Self::Osc(number), 0x07) => (Self::Ground, number.is_color()),
             (Self::Osc(number), 0x1b) => (Self::Escape, number.is_color()),
+            (Self::Osc(_) | Self::DcsString, 0x18 | 0x1a) => {
+                (Self::Ground, false)
+            }
             (Self::Osc(number), 0x20..=0xff) => {
                 (Self::Osc(number.push(byte)), false)
             }
             (_, 0x1b) => (Self::Escape, false),
-            (Self::DcsString, 0x18 | 0x1a) => (Self::Ground, false),
             (Self::Ground | Self::Osc(_) | Self::DcsString, _) => {
                 (*self, false)
             }
@@ -138,7 +140,11 @@ impl EscapeHint {
             (_, 0x98 | 0x9e | 0x9f) | (Self::Escape, b'X' | b'^' | b'_') => {
                 (Self::String, false)
             }
-            (_, 0x9b) | (Self::Escape, b'[') => (Self::Csi, false),
+            (_, 0x9b) | (Self::Escape, b'[') => {
+                (Self::Csi { bang: false }, false)
+            }
+            (Self::Csi { .. }, b'!') => (Self::Csi { bang: true }, false),
+            (Self::Csi { bang }, b'p') => (Self::Ground, bang),
             (_, 0x9d) | (Self::Escape, b']') => {
                 (Self::Osc(OscNumber::default()), false)
             }
@@ -147,7 +153,7 @@ impl EscapeHint {
                 0x18 | 0x1a | 0x80..=0x8f | 0x91..=0x97 | 0x99 | 0x9a | 0x9c,
             )
             | (Self::Escape | Self::EscapeIntermediate, 0x30..=0x7e)
-            | (Self::Csi, 0x40..=0x7e) => (Self::Ground, false),
+            | (Self::Csi { .. }, 0x40..=0x7e) => (Self::Ground, false),
             (Self::DcsEntry, 0x40..=0x7e) => (Self::DcsString, false),
             (Self::Escape | Self::EscapeIntermediate, 0x20..=0x2f) => {
                 (Self::EscapeIntermediate, false)
@@ -204,7 +210,8 @@ mod tests {
             for start in [
                 EscapeHint::Ground,
                 EscapeHint::Escape,
-                EscapeHint::Csi,
+                EscapeHint::Csi { bang: false },
+                EscapeHint::Csi { bang: true },
                 EscapeHint::DcsEntry,
                 EscapeHint::DcsString,
                 EscapeHint::String,
@@ -252,9 +259,14 @@ mod tests {
             (b"\x1b]21;foreground=#fff\x1b\\", true),
             (b"\x1b]104\x07", true),
             (b"\x1b]105;0\x07", true),
-            (b"\x1b]110\x18", true),
-            (b"\x1b]119\x1a", true),
+            // CAN and SUB cancel an OSC without dispatching it.
+            (b"\x1b]110\x18", false),
+            (b"\x1b]119\x1a", false),
             (b"\x1bc", true),
+            // DECSTR resets the palette; other CSI p sequences do not.
+            (b"\x1b[!p", true),
+            (b"\x1b[?1$p", false),
+            (b"\x1b[!m", false),
             // Ignored C0 bytes do not end the OSC number.
             (b"\x1b]1\x010;#fff\x07", true),
             // C1 OSC is recognized once another sequence has started.

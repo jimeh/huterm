@@ -827,6 +827,10 @@ pub(crate) const ENUMS: &[Enum] = &[
                 ffi::GHOSTTY_SCROLL_VIEWPORT_ROW as i64,
             ),
             (
+                "GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT",
+                ffi::GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT as i64,
+            ),
+            (
                 "GHOSTTY_SCROLL_VIEWPORT_MAX_VALUE",
                 ffi::GHOSTTY_SCROLL_VIEWPORT_MAX_VALUE as i64,
             ),
@@ -1083,6 +1087,30 @@ pub(crate) const ENUMS: &[Enum] = &[
                 ffi::GHOSTTY_TERMINAL_OPT_RENDER_HOLD as i64,
             ),
             (
+                "GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT",
+                ffi::GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_OPT_RESET",
+                ffi::GHOSTTY_TERMINAL_OPT_RESET as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT",
+                ffi::GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION",
+                ffi::GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS",
+                ffi::GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW",
+                ffi::GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW as i64,
+            ),
+            (
                 "GHOSTTY_TERMINAL_OPT_MAX_VALUE",
                 ffi::GHOSTTY_TERMINAL_OPT_MAX_VALUE as i64,
             ),
@@ -1258,6 +1286,14 @@ pub(crate) const ENUMS: &[Enum] = &[
                 ffi::GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES as i64,
             ),
             (
+                "GHOSTTY_TERMINAL_DATA_MOUSE_SHAPE",
+                ffi::GHOSTTY_TERMINAL_DATA_MOUSE_SHAPE as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_DATA_MEMORY_USAGE",
+                ffi::GHOSTTY_TERMINAL_DATA_MEMORY_USAGE as i64,
+            ),
+            (
                 "GHOSTTY_TERMINAL_DATA_MAX_VALUE",
                 ffi::GHOSTTY_TERMINAL_DATA_MAX_VALUE as i64,
             ),
@@ -1400,6 +1436,14 @@ pub(crate) const ENUMS: &[Enum] = &[
                 ffi::GHOSTTY_RENDER_STATE_DATA_COLORS as i64,
             ),
             (
+                "GHOSTTY_RENDER_STATE_DATA_OVERSCAN",
+                ffi::GHOSTTY_RENDER_STATE_DATA_OVERSCAN as i64,
+            ),
+            (
+                "GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST",
+                ffi::GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST as i64,
+            ),
+            (
                 "GHOSTTY_RENDER_STATE_DATA_MAX_VALUE",
                 ffi::GHOSTTY_RENDER_STATE_DATA_MAX_VALUE as i64,
             ),
@@ -1433,6 +1477,14 @@ pub(crate) const ENUMS: &[Enum] = &[
             (
                 "GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW",
                 ffi::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW as i64,
+            ),
+            (
+                "GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y",
+                ffi::GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y as i64,
+            ),
+            (
+                "GHOSTTY_RENDER_STATE_ROW_DATA_ID",
+                ffi::GHOSTTY_RENDER_STATE_ROW_DATA_ID as i64,
             ),
             (
                 "GHOSTTY_RENDER_STATE_ROW_DATA_MAX_VALUE",

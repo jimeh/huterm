@@ -1,11 +1,11 @@
 {
-  "revision": "56dbc4a768778753737a3b9cbe0a3f9b4e434553",
+  "revision": "e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110",
   "zig": "0.16.0",
   "source": {
     "name": "ghostty",
-    "url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/56dbc4a768778753737a3b9cbe0a3f9b4e434553",
-    "sha256": "84d9b4b1d7f9d89de009d50cd123460cbd2280ba3b66fbe1c2064bb68f9b0a9e",
-    "tree_sha256": "ebf4a2d9fe16d1bfca85bf1756212a6e92c86923096fe145ba92844cd42bd20b"
+    "url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110",
+    "sha256": "d086c9d2c5d7a9506d8e34e3567cb7f19485186d7fb18cc9f75b18ffb4e37541",
+    "tree_sha256": "1d84f7510cefd60c81b8fbdbd5230bc8a2cda3081269d193070d9907d17dfbba"
   },
   "packages": [
     {

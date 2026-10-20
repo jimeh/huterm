@@ -148,13 +148,13 @@ fn osc52_preserves_upstream_selector_and_malformed_input_behavior() {
 }
 
 #[test]
-fn osc52_can_and_sub_finish_the_valid_prefix_once() {
+fn osc52_can_and_sub_cancel_the_write() {
     for cancellation in ['\x18', '\x1a'] {
         with_engine(|engine, recipient| {
             let sequence =
                 format!("\x1b]52;c;Zm9v{cancellation}\x07\x1b]52;c;YmFy\x07");
             engine.process(sequence.as_bytes()).unwrap();
-            assert_eq!(drain_text(recipient), ["foo", "bar"]);
+            assert_eq!(drain_text(recipient), ["bar"]);
         });
     }
 }
