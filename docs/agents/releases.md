@@ -240,8 +240,9 @@ The renderer fails, naming the line, on a line, section heading, or date it does
 not recognize, rather than dropping content. Only blank lines and the
 `# Changelog` title may precede the first release. Lines directly after an item
 continue it, indented or not, because a multi-line breaking change footer
-continues unindented. A section outside the five Release Please sections is
-accepted only when every item repeats one of that release's breaking changes.
+continues unindented. An unrecognized `#` heading there still fails. A section
+outside the five Release Please sections is accepted only when every item
+repeats one of that release's breaking changes.
 The changelog must begin with the release being built.
 `bun scripts/release.ts validate-build`, the macOS `build` step, and a script
 test that renders the repository changelog for the Cargo version all apply these

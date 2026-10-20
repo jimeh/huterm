@@ -144,8 +144,9 @@ export function parseChangelog(changelog: string): Release[] {
       continue;
     }
     // A wrapped item continues on an indented line. A multi-line breaking
-    // change footer continues unindented on the lines right after its item.
-    if (current && current.items.length > 0 && (line.startsWith(" ") || continuesItem)) {
+    // change footer continues unindented on the lines right after its item,
+    // but an unrecognized heading there still fails.
+    if (current && current.items.length > 0 && (line.startsWith(" ") || (continuesItem && !line.startsWith("#")))) {
       current.items[current.items.length - 1] += ` ${line.trim()}`;
       afterItem = true;
       continue;

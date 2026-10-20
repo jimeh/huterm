@@ -108,6 +108,7 @@ Configs that still use it fail to parse.
 test("release notes reject content they would otherwise drop", () => {
   const release = "## 1.0.0 (2026-10-11)\n\n### Features\n\n* add tabs\n";
   expect(() => parseChangelog(`${release}\nSome trailing prose\n`)).toThrow("CHANGELOG.md line 7 is not a release heading, section heading, or list item");
+  expect(() => parseChangelog(`${release}## 0.9.0\n\n### Features\n\n* older change\n`)).toThrow("CHANGELOG.md line 6 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`# Changelog\n\n### Security\n\n* patch tabs\n\n${release}`)).toThrow("CHANGELOG.md line 3 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`${release}\n### Documentation\n\n* explain tabs\n`)).toThrow("CHANGELOG.md line 7 has an unknown section Documentation");
   // A type section may repeat breaking changes, but any other item in it would be dropped.
