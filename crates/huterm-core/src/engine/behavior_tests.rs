@@ -590,8 +590,8 @@ fn malformed_and_unsupported_queries_are_silent() {
                     b"\x1b]4;999;?\x1b\\\x1b]10;bogus\x1b\\\x1b[15t\x1b[?996;1n"
                 )
                 .unwrap()
-        )
-        , Vec::<Vec<u8>>::new()
+        ),
+        Vec::<Vec<u8>>::new()
     );
 }
 

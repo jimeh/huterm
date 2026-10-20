@@ -609,6 +609,30 @@ fn probe_reports_overrides_and_restores_defaults() {
 }
 
 #[test]
+fn can_and_sub_cancel_a_color_osc() {
+    for cancel in [0x18, 0x1a] {
+        let mut terminal = terminal();
+        terminal
+            .set_default_foreground(Some(Rgb::new(1, 1, 1)))
+            .unwrap();
+        let palette = terminal.palette().unwrap();
+        let mut bytes = b"\x1b]10;#0a0b0c".to_vec();
+        bytes.push(cancel);
+        bytes.extend_from_slice(b"\x1b]4;1;#010203");
+        bytes.push(cancel);
+        terminal.write(&bytes).unwrap();
+        assert_eq!(
+            (
+                terminal.foreground().unwrap(),
+                terminal.palette().unwrap()[1]
+            ),
+            (Some(Rgb::new(1, 1, 1)), palette[1]),
+            "cancel={cancel:#x}"
+        );
+    }
+}
+
+#[test]
 fn full_reset_and_ris_reset_the_palette_but_keep_dynamic_colors() {
     let default_palette = terminal().palette().unwrap();
     for ris in [false, true] {

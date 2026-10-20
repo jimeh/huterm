@@ -52,6 +52,12 @@ font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
 `huterm-gpui` restores `source-fontconfig-dlopen` so packages keep loading
 fontconfig at runtime.
 
+Hold `cocoa` at 0.26.0 and `cocoa-foundation` at 0.2.0 in `Cargo.lock`. Their
+next releases deprecate the whole API, and Cargo reports warnings for path
+dependencies, so the vendored `gpui-pre-macos` printed 1,224 warnings on every
+macOS build. Their functional fixes touch no API GPUI uses. Drop the hold and
+its Dependabot ignore once the vendored GPUI no longer uses `cocoa`.
+
 Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
 `MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for
 `fcntl`; upgrading earlier would require an unsafe borrowed-descriptor

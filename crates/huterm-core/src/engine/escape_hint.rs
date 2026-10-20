@@ -190,10 +190,12 @@ mod tests {
             "\x1b[38;2;1;2;3;48;2;4;5;6m\u{2580}\x1b[0m".as_bytes(),
             b"\x1bPq#0;2;0;0;0\xa0\x01\x9d11;#000\x07",
             b"\x1b]52;c;aGVsbG8gd29ybGQ=\x01\xa0\x9d\x1b\\",
+            b"x\x1b[!p\x1b[1!!p\x1b[?1$p!py",
         ]
         .map(<[u8]>::to_vec)
         .into();
-        let alphabet = b"ab14;m \x01\xa0\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
+        let alphabet =
+            b"ab14;m!p \x01\xa0\x1b\x9d\x9b\x90]P[c\x07\x18\x1a\x9c\\";
         let mut seed = 0x2545_f491_u32;
         fixtures.push(
             (0..512)
