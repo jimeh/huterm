@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index e01d04f77abfbf9264cb9cb3933d96aedf029f48..17f896df37af41d3b00e3b1645f0e043cec31eca 100644
+index ca8aeb3a4bb9e7b65d721cb1b3f3418e0d846b0e..3c095d183494f01425b870dea03827260be65d75 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -81,6 +81,7 @@ use std::{
+@@ -82,6 +82,7 @@ use std::{
  };
  
  const WINDOW_STATE_IVAR: &str = "windowState";
@@ -10,7 +10,7 @@ index e01d04f77abfbf9264cb9cb3933d96aedf029f48..17f896df37af41d3b00e3b1645f0e043
  
  static RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT: Once = Once::new();
  
-@@ -429,6 +430,20 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
+@@ -430,6 +431,20 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
      unsafe {
          let mut decl = ClassDecl::new(name, superclass).unwrap();
          decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
@@ -31,7 +31,7 @@ index e01d04f77abfbf9264cb9cb3933d96aedf029f48..17f896df37af41d3b00e3b1645f0e043
          decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(&Object, Sel));
  
          decl.add_method(
-@@ -2428,6 +2443,28 @@ impl rwh::HasDisplayHandle for MacWindow {
+@@ -2439,6 +2454,28 @@ impl rwh::HasDisplayHandle for MacWindow {
      }
  }
  

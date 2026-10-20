@@ -147,8 +147,8 @@ patches, and manifest entry, then validate the registry dependency instead.
 ## GPUI snapshot crates
 
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
-0.3.6, which republishes Zed's workspace crates from revision
-`bcf6582ce3500df93a8a39366640173e6786cea6` as separate Apache-2.0 registry
+0.3.9, which republishes Zed's workspace crates from revision
+`93d745668805029476e6d7fbb19652116fed51de` as separate Apache-2.0 registry
 crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
 `crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
 (`crates/gpui_macos`). The other snapshot crates resolve from the registry.

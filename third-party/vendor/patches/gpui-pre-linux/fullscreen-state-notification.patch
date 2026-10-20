@@ -1,5 +1,5 @@
 diff --git a/src/linux/x11/window.rs b/src/linux/x11/window.rs
-index 2ffc3da2cd4745a9b6535ce8606e3769ddb462b5..929edf9e9bc1bad525d42ae49d7af02078dd9a1a 100644
+index 764fa442510ac616d816c83dce8d83d47dd24a58..716e64e82318a40152f3f86a8a8a3e8f9a0f00aa 100644
 --- a/src/linux/x11/window.rs
 +++ b/src/linux/x11/window.rs
 @@ -1066,7 +1066,19 @@ impl X11WindowStatePtr {

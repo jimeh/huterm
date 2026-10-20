@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index 1d65b5fc22e2beea97d770d3dd7a56aa7f9a11d8..9a7727feff5b6a7a934653c77fd303fd94660598 100644
+index ed96a46d2b3a95a9f4e623dce10ab7ac88a4f03b..380cd0afea2c2b35e6dbc2a014242d5914c18a1c 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -5425,6 +5425,13 @@ impl Window {
+@@ -5603,6 +5603,13 @@ impl Window {
          self.last_input_modality = match &event {
              PlatformInput::KeyDown(_) => InputModality::Keyboard,
              PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,

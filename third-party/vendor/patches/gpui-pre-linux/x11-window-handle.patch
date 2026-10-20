@@ -1,8 +1,8 @@
 diff --git a/src/linux/x11/window.rs b/src/linux/x11/window.rs
-index 56b3d8a9063a886b8e25a7386c1b1267420e249f..2ffc3da2cd4745a9b6535ce8606e3769ddb462b5 100644
+index f6ee76ae8cac59b8cd9b71f07c59707d2a0372fb..764fa442510ac616d816c83dce8d83d47dd24a58 100644
 --- a/src/linux/x11/window.rs
 +++ b/src/linux/x11/window.rs
-@@ -331,6 +331,9 @@ impl rwh::HasDisplayHandle for RawWindow {
+@@ -339,6 +339,9 @@ impl rwh::HasDisplayHandle for RawWindow {
  
  impl rwh::HasWindowHandle for X11Window {
      fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {

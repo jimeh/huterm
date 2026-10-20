@@ -114,8 +114,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.6"),
-      cargoPackage("gpui-pre-macos", "0.3.6"),
+      cargoPackage("gpui-pre", "0.3.9"),
+      cargoPackage("gpui-pre-macos", "0.3.9"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
   };
@@ -165,8 +165,8 @@ test("SPDX augmentation preserves packages without optional version metadata", a
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.6"),
-      cargoPackage("gpui-pre-macos", "0.3.6"),
+      cargoPackage("gpui-pre", "0.3.9"),
+      cargoPackage("gpui-pre-macos", "0.3.9"),
       unversioned,
       blankVersion,
     ],

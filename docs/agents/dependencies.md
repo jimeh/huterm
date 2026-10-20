@@ -13,7 +13,7 @@ tools for each job. `mise.lock` also records the Rust version, so run
 fails to resolve the tool. `scripts/policy-alignment.test.ts` checks that the
 three files agree.
 
-The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.6 uses
+The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.9 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.99.
 
@@ -50,8 +50,7 @@ branch, because Zed has not published GPUI since 0.2.2. Depend on it as
 review every vendored patch against the new Zed revision. Upstream's Linux
 font-kit links fontconfig at build time; the direct `zed-font-kit` dependency in
 `huterm-gpui` restores `source-fontconfig-dlopen` so packages keep loading
-fontconfig at runtime. Zed's HTTP client pulls `libbz2-rs-sys`, allowed through
-a crate-scoped cargo-deny license exception.
+fontconfig at runtime.
 
 Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
 `MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for
