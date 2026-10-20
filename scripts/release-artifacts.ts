@@ -1,7 +1,8 @@
 import { createPrivateKey, createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
+import { renderReleaseNotesFile, repositoryUrl } from "./release-notes.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const sparkleTools = join(repoRoot, ".native/sparkle/distribution/bin");
@@ -16,6 +17,20 @@ export interface ArtifactInputs {
 export interface AppcastUrls {
   archive: string;
   release: string;
+}
+
+/** Where an appcast says its archive and release page live. */
+export interface AppcastLocation {
+  downloadPrefix: string;
+  release: string;
+}
+
+/** Reserved-domain URLs for feeds that must never be published. */
+export function fixtureAppcastLocation(tag: string): AppcastLocation {
+  return {
+    downloadPrefix: `https://updates.huterm.invalid/${tag}/`,
+    release: `https://updates.huterm.invalid/${tag}/notes`,
+  };
 }
 
 interface CommandResult {
@@ -83,6 +98,8 @@ async function runSecretCaptured(command: string, args: string[], secret: string
 
 function decodeXml(value: string): string {
   return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
     .replaceAll("&apos;", "'")
     .replaceAll("&quot;", '"')
     .replaceAll("&gt;", ">")
@@ -93,6 +110,12 @@ function decodeXml(value: string): string {
 function elementText(xml: string, name: string): string[] {
   const pattern = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "g");
   return [...xml.matchAll(pattern)].map(match => decodeXml(match[1]!.trim()));
+}
+
+/** Element text with CDATA sections kept verbatim and entities decoded elsewhere. */
+function textContent(raw: string): string {
+  return raw.split(/(<!\[CDATA\[[\s\S]*?\]\]>)/).map(part =>
+    part.startsWith("<![CDATA[") ? part.slice("<![CDATA[".length, -"]]>".length) : decodeXml(part)).join("");
 }
 
 function enclosureAttributes(xml: string): Record<string, string> {
@@ -134,8 +157,8 @@ export function validateAppcast(
   inputs: ArtifactInputs,
   publicKey: string,
   expectedUrls: AppcastUrls = {
-    archive: `https://github.com/jimeh/huterm/releases/download/${inputs.tag}/${archiveName}`,
-    release: `https://github.com/jimeh/huterm/releases/tag/${inputs.tag}`,
+    archive: `${repositoryUrl}/releases/download/${inputs.tag}/${archiveName}`,
+    release: `${repositoryUrl}/releases/tag/${inputs.tag}`,
   },
 ): void {
   const appcast = Buffer.from(bytes);
@@ -153,6 +176,11 @@ export function validateAppcast(
   const itemLinks = elementText(item[1]!, "link");
   if (itemLinks.length !== 1 || itemLinks[0] !== expectedUrls.release) {
     throw new Error("appcast release link does not match the expected release URL");
+  }
+  const descriptions = [...item[1]!.matchAll(/<description(?:\s[^>]*)?>([\s\S]*?)<\/description>/g)];
+  if (descriptions.length !== 1) throw new Error(`appcast must contain exactly one release notes description, found ${descriptions.length}`);
+  if (!textContent(descriptions[0]![1]!).includes(`<section data-sparkle-version="${inputs.version}"`)) {
+    throw new Error(`appcast release notes lack a section for ${inputs.version}`);
   }
   const archiveSignature = enclosure["sparkle:edSignature"];
   if (!archiveSignature) throw new Error("appcast enclosure lacks an EdDSA signature");
@@ -184,18 +212,43 @@ export async function generateAppcast(
   publicKey: string,
   privateKey: string,
 ): Promise<void> {
+  await generateSignedAppcast(dist, archiveName, inputs, publicKey, privateKey, {
+    downloadPrefix: `${repositoryUrl}/releases/download/${inputs.tag}/`,
+    release: `${repositoryUrl}/releases/tag/${inputs.tag}`,
+  });
+}
+
+/**
+ * Runs Sparkle's generate_appcast on the archive with the rendered release
+ * notes embedded, validates the signed result, and copies it into `dist`.
+ * generate_appcast signs the archive only when `privateKey` matches the app's
+ * `SUPublicEDKey`, and signs the feed only when the app sets
+ * `SURequireSignedFeed`.
+ */
+export async function generateSignedAppcast(
+  dist: string,
+  archiveName: string,
+  inputs: ArtifactInputs,
+  publicKey: string,
+  privateKey: string,
+  location: AppcastLocation,
+): Promise<void> {
   if (sparklePublicKeyFromPrivateKey(privateKey) !== publicKey) {
     throw new Error("Sparkle private key does not match the embedded public key");
   }
+  const notes = await renderReleaseNotesFile(inputs.version);
   const temporary = await mkdtemp(join(tmpdir(), "huterm-appcast-"));
   try {
     const archive = join(dist, archiveName);
     await copyFile(archive, join(temporary, archiveName));
+    // generate_appcast embeds the file named like the archive with .html.
+    await writeFile(join(temporary, `${basename(archiveName, extname(archiveName))}.html`), notes);
     const output = join(temporary, "appcast.xml");
     await runWithSecretStdin(join(sparkleTools, "generate_appcast"), [
       "--ed-key-file", "-",
-      "--download-url-prefix", `https://github.com/jimeh/huterm/releases/download/${inputs.tag}/`,
-      "--link", `https://github.com/jimeh/huterm/releases/tag/${inputs.tag}`,
+      "--download-url-prefix", location.downloadPrefix,
+      "--link", location.release,
+      "--embed-release-notes",
       "--versions", inputs.version,
       "--maximum-versions", "1",
       "--maximum-deltas", "0",
@@ -204,13 +257,23 @@ export async function generateAppcast(
       temporary,
     ], privateKey, temporary);
     const [appcastBytes, archiveBytes] = await Promise.all([readFile(output), readFile(archive)]);
-    validateAppcast(appcastBytes, archiveBytes, archiveName, inputs, publicKey);
+    validateAppcast(appcastBytes, archiveBytes, archiveName, inputs, publicKey, {
+      archive: `${location.downloadPrefix}${archiveName}`,
+      release: location.release,
+    });
     await copyFile(output, join(dist, "appcast.xml"));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
 }
 
+/**
+ * Builds and signs a non-public feed with an ephemeral key. It cannot use
+ * generate_appcast, which leaves the enclosure unsigned when the key does not
+ * match the app's production `SUPublicEDKey`, so it embeds the same rendered
+ * notes as generateAppcast in the CDATA form generate_appcast writes. The
+ * macOS `check-embedded-notes` command runs the real tool on a stub app.
+ */
 export async function generateFixtureAppcast(
   dist: string,
   archiveName: string,
@@ -228,10 +291,10 @@ export async function generateFixtureAppcast(
     dist,
   )).stdout.trim();
   if (!/^[A-Za-z0-9+/]{86}==$/.test(signature)) throw new Error("Sparkle returned a malformed fixture signature");
-  const urls = {
-    archive: `https://updates.huterm.invalid/${inputs.tag}/${archiveName}`,
-    release: `https://updates.huterm.invalid/${inputs.tag}/notes`,
-  };
+  const location = fixtureAppcastLocation(inputs.tag);
+  const urls = { archive: `${location.downloadPrefix}${archiveName}`, release: location.release };
+  const notes = await renderReleaseNotesFile(inputs.version);
+  if (notes.includes("]]>")) throw new Error("release notes cannot be embedded in CDATA");
   const appcastPath = join(dist, "appcast.xml");
   await writeFile(appcastPath, `<?xml version="1.0" encoding="utf-8"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
@@ -244,6 +307,7 @@ export async function generateFixtureAppcast(
       <link>${urls.release}</link>
       <sparkle:version>${inputs.version}</sparkle:version>
       <sparkle:shortVersionString>${inputs.version}</sparkle:shortVersionString>
+      <description><![CDATA[${notes}]]></description>
       <enclosure url="${urls.archive}" length="${archiveBytes.length}" type="application/octet-stream" sparkle:edSignature="${signature}" />
     </item>
   </channel>

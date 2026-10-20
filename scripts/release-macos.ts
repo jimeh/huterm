@@ -1,13 +1,18 @@
+import { randomBytes } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import {
+  fixtureAppcastLocation,
   generateAppcast,
   generateFixtureAppcast,
   generateSbom,
+  generateSignedAppcast,
+  sparklePublicKeyFromPrivateKey,
   validateAppcast,
   validateRuntimeSpdx,
 } from "./release-artifacts.ts";
+import { renderReleaseNotesFile } from "./release-notes.ts";
 import {
   releaseAssetNames,
   validateBuildInputs,
@@ -312,6 +317,34 @@ export function validateUpdatePlist(value: unknown, expectedVersion: string, pub
   for (const forbidden of ["SUAutomaticallyUpdate", "SUEnableAutomaticChecks", "SUScheduledCheckInterval"]) {
     if (forbidden in plist) throw new Error(`${forbidden} must remain unset`);
   }
+}
+
+function escapeXml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+/**
+ * The Info.plist of a stub app that gives generate_appcast what it reads: the
+ * version, the macOS floor, and an updater key and signed-feed requirement, so
+ * it signs both the archive and the feed with the matching ephemeral key.
+ */
+export function embeddedNotesStubPlist(version: string, publicKey: string): string {
+  const entries: [string, string | true][] = [
+    ["CFBundleShortVersionString", version],
+    ["CFBundleVersion", version],
+    ["LSMinimumSystemVersion", minimumMacosVersion],
+    ["SUPublicEDKey", publicKey],
+    ["SURequireSignedFeed", true],
+  ];
+  const body = entries.map(([key, value]) =>
+    `\t<key>${escapeXml(key)}</key>\n\t${value === true ? "<true/>" : `<string>${escapeXml(value)}</string>`}\n`).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+${body}</dict>
+</plist>
+`;
 }
 
 function validatePackagePlist(plist: JsonObject, expectedVersion: string): void {
@@ -660,6 +693,8 @@ async function zipApp(destination: string): Promise<void> {
 async function buildRelease(): Promise<void> {
   if (process.platform !== "darwin") throw new Error("macOS releases require a macOS host");
   const inputs = currentBuildInputs();
+  // The appcast embeds these notes; fail before spending a notarization.
+  await renderReleaseNotesFile(inputs.version);
   const teamId = requiredEnv("MACOS_TEAM_ID");
   const issuerId = requiredEnv("MACOS_NOTARY_ISSUER_ID");
   const keyId = requiredEnv("MACOS_NOTARY_KEY_ID");
@@ -731,6 +766,40 @@ async function validateReleaseMetadata(inputs: ReleaseInputs, dist: string): Pro
     inputs,
     publicKey,
   );
+}
+
+async function rootPackageVersion(): Promise<string> {
+  const manifest = await readFile(join(repoRoot, "Cargo.toml"), "utf8");
+  const version = /^version = "([^"]+)"$/m.exec(manifest)?.[1];
+  if (!version) throw new Error("root Cargo package version is missing");
+  return version;
+}
+
+/**
+ * Runs the real generate_appcast with embedded release notes on a stub app
+ * that carries an ephemeral key, then validates signatures and notes. Release
+ * candidates cannot do this: their app carries the production key.
+ */
+async function checkEmbeddedNotes(): Promise<void> {
+  if (process.platform !== "darwin") throw new Error("the embedded release notes check requires macOS and Sparkle's generate_appcast");
+  const version = await rootPackageVersion();
+  const inputs = { version, tag: `v${version}` };
+  const archiveName = releaseAssetNames(version).macos;
+  const privateKey = randomBytes(32).toString("base64");
+  const publicKey = sparklePublicKeyFromPrivateKey(privateKey);
+  const temporary = await mkdtemp(join(tmpdir(), "huterm-embedded-notes-"));
+  try {
+    const app = join(temporary, "stub/Huterm.app");
+    await mkdir(join(app, "Contents"), { recursive: true });
+    await writeFile(join(app, "Contents/Info.plist"), embeddedNotesStubPlist(version, publicKey));
+    const dist = join(temporary, "dist");
+    await mkdir(dist);
+    await runInherited("ditto", ["-c", "-k", "--keepParent", app, join(dist, archiveName)]);
+    await generateSignedAppcast(dist, archiveName, inputs, publicKey, privateKey, fixtureAppcastLocation(inputs.tag));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+  console.log(`verified generate_appcast embeds the ${version} release notes in a signed feed`);
 }
 
 async function verifyReleaseCandidate(): Promise<void> {
@@ -887,6 +956,9 @@ async function main(): Promise<void> {
     case "verify-candidate":
       await verifyReleaseCandidate();
       break;
+    case "check-embedded-notes":
+      await checkEmbeddedNotes();
+      break;
     case "finalize-metadata":
       await finalizeReleaseMetadata();
       break;
@@ -901,7 +973,7 @@ async function main(): Promise<void> {
       break;
     default:
       throw new Error(
-        "expected validate-updater-inputs, prepare-updater-package, verify-package-config, verify-local-package-config, build, verify-candidate, finalize-metadata, verify-release-metadata, probe-public, or cleanup",
+        "expected validate-updater-inputs, prepare-updater-package, verify-package-config, verify-local-package-config, build, verify-candidate, check-embedded-notes, finalize-metadata, verify-release-metadata, probe-public, or cleanup",
       );
   }
 }

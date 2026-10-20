@@ -134,8 +134,9 @@ assembly:
    updater-enabled universal app, injects the committed public key and production
    feed, and copies the verified Sparkle framework. It signs every retained
    Sparkle and Huterm code object inside out, notarizes and staples the app, runs
-   Gatekeeper, creates the SPDX SBOM and a fixture appcast, then uploads those
-   payloads with their digest manifest.
+   Gatekeeper, creates the SPDX SBOM and a fixture appcast with embedded release
+   notes, then uploads those payloads with their digest manifest. It renders the
+   release notes before signing, so an unparseable changelog fails first.
 3. Native Ubuntu 22.04 x86_64 and aarch64 runners independently build and verify
    the AppImage and tarball for their architecture. These jobs receive no Apple
    or GitHub release credentials and upload their two packages plus a digest
@@ -151,8 +152,9 @@ assembly:
    signature validation with an ephemeral fixture key in a temporary directory.
    This leaves the downloaded candidate unchanged.
 6. The protected macOS publication job verifies the candidate artifact ID and
-   digest, revalidates the draft, replaces the fixture appcast with one signed by
-   the production EdDSA key, and rewrites `SHA256SUMS`. It uploads the exact
+   digest, revalidates the draft, and replaces the fixture appcast with one that
+   Sparkle's `generate_appcast` signs with the production EdDSA key and embeds
+   the release notes in. It then rewrites `SHA256SUMS`. It uploads the exact
    assets, verifies GitHub's sizes and SHA-256 digests, attests the macOS ZIP and
    SPDX SBOM, and publishes only after every check passes.
 
@@ -193,6 +195,74 @@ would invalidate the ticket, so the post-staple path only verifies signatures.
 The local `mise run package:macos` task remains an unsigned, Sparkle-free
 package check. `mise run package:macos-release` is the unsigned updater-enabled
 package check. It requires the committed public key, never the private key.
+
+## Release notes
+
+Sparkle's update window shows HTML release notes that
+`scripts/release-notes.ts` renders from `CHANGELOG.md`. Release Please writes
+that changelog from squash-merged pull request titles, so the title of every
+`feat`, `fix`, and `perf` pull request becomes a user-facing update note. Write
+those titles for users.
+
+The appcast offers only the newest release, so its notes list every release
+from the newest back to 0.6.0, the first release that shipped Sparkle
+(`oldestNotesVersion`). Each release is a `<section data-sparkle-version>`.
+Sparkle 2.5 and later mark the installed version's section with the
+`sparkle-installed-version` class, and the stylesheet hides it and every older
+section, so the window lists only the releases the update brings. A footer
+outside the sections links to the repository and its releases page.
+
+The repository is public, so pull request and issue references stay as links
+labeled `#123`, and each version heading links to its GitHub release. Commit
+references are dropped. Other `https` Markdown links become anchors; links with
+any other scheme keep only their text. The stylesheet uses
+`prefers-color-scheme` overrides rather than `light-dark()`, which needs Safari
+17.5 and may be missing from the macOS 14 WebKit.
+
+`generateAppcast` writes the rendered notes beside the archive as
+`Huterm-<version>-macOS-universal.html` in its temporary directory and passes
+`--embed-release-notes`, so the item's `<description>` carries the whole
+document. `validateAppcast` requires exactly one item description containing the
+release's section. The fixture appcast embeds the same notes but is still built
+by hand: `generate_appcast` signs an archive only when the key matches the app's
+`SUPublicEDKey`, which the fixture's ephemeral key never does. It also signs the
+feed only when the app sets `SURequireSignedFeed`.
+
+`mise run release:check-embedded-notes` covers the real tool on macOS. It zips a
+stub `Huterm.app` that holds only an `Info.plist` with the Cargo version, the
+macOS floor, an ephemeral `SUPublicEDKey`, and `SURequireSignedFeed`. It then
+runs the same `generate_appcast` path as publication against reserved
+`updates.huterm.invalid` URLs and validates both signatures and the embedded
+notes. CI runs it in the macOS smoke job right after Sparkle preparation,
+independent of the smoke build.
+
+The renderer fails, naming the line, on a line, section heading, or date it does
+not recognize, rather than dropping content. Only blank lines and `#` title
+lines may precede the first release. An indented line continues the item above
+it. Only a breaking change also continues on unindented lines directly after
+it, because a multi-line `BREAKING CHANGE:` footer does; such a line may not
+start with `#`, and a blank line ends the footer.
+
+Release Please lists a breaking change again under its type. The notes show it
+once, as Important, and add every issue the type's copy closes to its own
+`closes` list. A section outside the five Release Please sections is accepted
+only when every item repeats one of that release's breaking changes. The
+changelog must begin with the release being built.
+`bun scripts/release.ts validate-build`, the macOS `build` step, and a script
+test that renders the repository changelog for the Cargo version all apply these
+checks, so a release pull request fails CI before any release job runs.
+
+Release Please rewrites the release pull request's `CHANGELOG.md` whenever
+`main` moves, so a hand edit there does not stick. Fix the source instead. A
+`build!` or `chore!` commit whose `BREAKING CHANGE:` footer differs from its
+subject lists the subject under a section the renderer rejects; correct it with
+a `BEGIN_COMMIT_OVERRIDE` block in the merged pull request's description, then
+let Release Please regenerate the release pull request.
+
+Preview the notes with `mise run release-notes:preview`. It writes
+`target/release-notes-preview.html` by default and accepts `--output <path>`,
+`--version <version>`, and `--installed <version>`, which applies Sparkle's
+installed-version class to emulate an update from that version.
 
 ## Manual verification
 

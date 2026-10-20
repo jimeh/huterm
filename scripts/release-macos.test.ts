@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   assertPublicAssetMatches,
+  embeddedNotesStubPlist,
   parseDeveloperIdentity,
   minimumMacosVersion,
   parseSimplePlist,
@@ -416,4 +417,14 @@ test("compiler and packager minimum versions match the runtime floor", async () 
   const manifest = await readFile(join(repoRoot, "Cargo.toml"), "utf8");
   expect(compiler).toContain(`MACOSX_DEPLOYMENT_TARGET = { value = "${minimumMacosVersion}", force = true }`);
   expect(manifest).toContain(`minimumSystemVersion = "${minimumMacosVersion}"`);
+});
+
+test("the embedded-notes stub app lets generate_appcast sign its archive and feed with the ephemeral key", () => {
+  expect(parseSimplePlist(embeddedNotesStubPlist("1.2.3", "ephemeral+key/="))).toEqual({
+    CFBundleShortVersionString: "1.2.3",
+    CFBundleVersion: "1.2.3",
+    LSMinimumSystemVersion: minimumMacosVersion,
+    SUPublicEDKey: "ephemeral+key/=",
+    SURequireSignedFeed: true,
+  });
 });

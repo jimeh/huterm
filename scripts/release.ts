@@ -1,6 +1,7 @@
 /** Shared release inventory, assembly, draft validation, and publication. */
 import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { renderReleaseNotesFile } from "./release-notes.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 export const schemaAssets = ["huterm.schema.json", "huterm-theme.schema.json"] as const;
@@ -223,7 +224,8 @@ function currentReleaseInputs(): ReleaseInputs { return validateReleaseInputs(re
 async function validateBuildCommand(): Promise<void> {
   const inputs = currentBuildInputs();
   await validateRepositorySource(inputs, isDispatchedBranchBuild(inputs.sha, process.env.GITHUB_EVENT_NAME, process.env.GITHUB_REF, process.env.GITHUB_SHA));
-  console.log(`validated build ${inputs.version} at ${inputs.sha}`);
+  await renderReleaseNotesFile(inputs.version);
+  console.log(`validated build ${inputs.version} and its release notes at ${inputs.sha}`);
 }
 
 async function validateReleaseCommand(): Promise<void> {
