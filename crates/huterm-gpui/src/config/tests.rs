@@ -679,7 +679,7 @@ fn keybinding_entries_are_structurally_validated() {
     assert_eq!(first.when.as_deref(), Some("Terminal"));
     assert_eq!(first.description.as_deref(), Some("First tab"));
     assert_eq!(config.keybindings[1].args, None);
-    assert!(parse(DEFAULT_CONFIG).unwrap().keybindings.is_empty());
+    assert_eq!(parse(DEFAULT_CONFIG).unwrap().keybindings, []);
 
     let entry = |body: &str| {
         format!("{DEFAULT_CONFIG}\n[[keybinding]]\nkey = \"cmd-1\"\n{body}\n")

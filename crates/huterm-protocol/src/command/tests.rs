@@ -65,7 +65,7 @@ fn open_command_palette_is_argument_free_and_window_scoped() {
         CommandInvocation::new(ids::OPEN_COMMAND_PALETTE, Vec::new());
     let spec = validate(&invocation).unwrap();
     assert_eq!(spec.scope, CommandScope::Window);
-    assert!(spec.args.is_empty());
+    assert_eq!(spec.args, []);
 }
 
 #[test]
@@ -275,7 +275,10 @@ fn missing_prompted_lists_only_what_a_client_must_collect() {
         ids::SELECT_TAB,
         vec![CommandArgument::new("index", CommandValue::Integer(2))],
     );
-    assert!(select_tab.missing_prompted(&select_by_index).is_empty());
+    assert_eq!(
+        select_tab.missing_prompted(&select_by_index),
+        Vec::<&ArgumentSpec>::new()
+    );
 
     let rename_tab = lookup(ids::RENAME_TAB.as_str()).unwrap();
     assert_eq!(
@@ -291,13 +294,12 @@ fn missing_prompted_lists_only_what_a_client_must_collect() {
     );
 
     let toggle_quake = lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
-    assert!(
-        toggle_quake
-            .missing_prompted(&CommandInvocation::new(
-                ids::TOGGLE_QUAKE,
-                Vec::new()
-            ))
-            .is_empty()
+    assert_eq!(
+        toggle_quake.missing_prompted(&CommandInvocation::new(
+            ids::TOGGLE_QUAKE,
+            Vec::new()
+        )),
+        Vec::<&ArgumentSpec>::new()
     );
 }
 
@@ -499,7 +501,7 @@ fn recent_tab_command_validates() {
     let recent = CommandInvocation::new(ids::SELECT_RECENT_TAB, Vec::new());
     let spec = validate(&recent).unwrap();
     assert_eq!(spec.scope, CommandScope::Window);
-    assert!(spec.args.is_empty());
+    assert_eq!(spec.args, []);
     assert_eq!(
         validate(&CommandInvocation::new(
             ids::SELECT_RECENT_TAB,

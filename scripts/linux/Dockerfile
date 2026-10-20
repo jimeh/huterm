@@ -13,11 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Pin both platform archives instead of executing the moving install script.
 RUN case "$TARGETARCH" in \
-      arm64) mise_arch=arm64; mise_sha=98d2ea7b82dd966afdb8a9f4e9edbca771acf2a30d2842bfc0efdb7b61c886a3 ;; \
-      amd64) mise_arch=x64; mise_sha=063dda9149ab6be53da877c2d176afe0eac68e64cf8ca295bd0528720701c65d ;; \
+      arm64) mise_arch=arm64; mise_sha=e6db9cd4cd45dfa0323080badb23db59951ce3cf077f54c691066735220085c6 ;; \
+      amd64) mise_arch=x64; mise_sha=aa5f8fbbb942296bbeea3769abf56c6f4ee37da4d203f0044b227cac4d929a87 ;; \
       *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-    && curl -fsSL "https://github.com/jdx/mise/releases/download/v2026.9.1/mise-v2026.9.1-linux-${mise_arch}.tar.gz" -o /tmp/mise.tar.gz \
+    && curl -fsSL "https://github.com/jdx/mise/releases/download/v2026.10.12/mise-v2026.10.12-linux-${mise_arch}.tar.gz" -o /tmp/mise.tar.gz \
     && echo "$mise_sha  /tmp/mise.tar.gz" | sha256sum --check \
     && tar -xzf /tmp/mise.tar.gz -C /tmp \
     && install /tmp/mise/bin/mise /usr/local/bin/mise \

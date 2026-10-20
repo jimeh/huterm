@@ -418,21 +418,21 @@ fn terminal_option_keys_read_exactly_their_value_type() {
     let native = terminal.native_parts().unwrap();
     key_probe::set_terminal::<option::GlyphProtocol>(native, &false, 0xFF)
         .unwrap();
-    assert!(replies(&mut terminal, glyph_query).is_empty());
+    assert_eq!(replies(&mut terminal, glyph_query), Vec::<Vec<u8>>::new());
     let native = terminal.native_parts().unwrap();
     key_probe::set_terminal::<option::GlyphProtocol>(native, &true, 0x00)
         .unwrap();
-    assert!(!replies(&mut terminal, glyph_query).is_empty());
+    assert_ne!(replies(&mut terminal, glyph_query), Vec::<Vec<u8>>::new());
     probed.push("GlyphProtocol");
 
     let native = terminal.native_parts().unwrap();
     key_probe::set_terminal::<option::ApcMaxBytes>(native, &0, 0xFF).unwrap();
-    assert!(replies(&mut terminal, glyph_query).is_empty());
+    assert_eq!(replies(&mut terminal, glyph_query), Vec::<Vec<u8>>::new());
     // A 32-bit read would see zero here.
     let native = terminal.native_parts().unwrap();
     key_probe::set_terminal::<option::ApcMaxBytes>(native, &(1 << 32), 0x00)
         .unwrap();
-    assert!(!replies(&mut terminal, glyph_query).is_empty());
+    assert_ne!(replies(&mut terminal, glyph_query), Vec::<Vec<u8>>::new());
     probed.push("ApcMaxBytes");
 
     let kitty_write: &[u8] = b"\x1b]5522;type=write\x1b\\\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;YQ==\x1b\\\x1b]5522;type=wdata\x1b\\";
@@ -489,7 +489,7 @@ fn mouse_option_keys_read_exactly_their_value_type() {
         &ffi::GHOSTTY_MOUSE_TRACKING_ANY,
         0xFF,
     );
-    assert!(!probe.report(ProbeEvent::Motion).unwrap().is_empty());
+    assert_ne!(probe.report(ProbeEvent::Motion).unwrap(), b"");
     probed.push("Event");
 
     // The pressed flag only matters outside the surface, so shrink it below
@@ -512,7 +512,7 @@ fn mouse_option_keys_read_exactly_their_value_type() {
         &true,
         0x00,
     );
-    assert!(!probe.report(ProbeEvent::LeftDrag).unwrap().is_empty());
+    assert_ne!(probe.report(ProbeEvent::LeftDrag).unwrap(), b"");
     probed.push("AnyButtonPressed");
 
     terminal.write(b"\x1b[?1003h").unwrap();
@@ -522,14 +522,14 @@ fn mouse_option_keys_read_exactly_their_value_type() {
         &false,
         0xFF,
     );
-    assert!(!probe.report(ProbeEvent::Motion).unwrap().is_empty());
-    assert!(!probe.report(ProbeEvent::Motion).unwrap().is_empty());
+    assert_ne!(probe.report(ProbeEvent::Motion).unwrap(), b"");
+    assert_ne!(probe.report(ProbeEvent::Motion).unwrap(), b"");
     key_probe::set_mouse::<option::TrackLastCell>(
         probe.encoder_mut(),
         &true,
         0x00,
     );
-    assert!(!probe.report(ProbeEvent::Motion).unwrap().is_empty());
+    assert_ne!(probe.report(ProbeEvent::Motion).unwrap(), b"");
     assert_eq!(probe.report(ProbeEvent::Motion).unwrap(), b"");
     probed.push("TrackLastCell");
     covers(probed, option::KEYS);

@@ -236,7 +236,7 @@ fn startup_diagnostics_become_separate_notices_that_reloads_replace() {
     assert_eq!(stack.contents().len(), 5);
     // A fixed file clears them but leaves the command notice alone.
     let fixed = config_diagnostics(path, None, None, &[], None);
-    assert!(fixed.is_empty());
+    assert_eq!(fixed, []);
     assert!(stack.replace_diagnostics(&fixed, now));
     assert_eq!(messages(&stack), ["Close failed: busy"]);
 }
@@ -789,7 +789,7 @@ fn attachment_allocation_failure_rolls_back_published_pty() {
         Err(MuxError::IdExhausted)
     ));
     let mux = runtime.mux.lock().unwrap();
-    assert!(mux.sessions().is_empty());
+    assert_eq!(mux.sessions(), []);
     assert_eq!(mux.terminal_count(), 0);
 }
 
@@ -892,7 +892,7 @@ fn orphaned_publication_never_terminates_a_retargeted_destination() {
     let mux = runtime.mux.lock().unwrap();
     assert!(mux.session(source).is_none());
     assert!(mux.session(destination).is_some());
-    assert!(mux.capture_hierarchy().attachments.is_empty());
+    assert_eq!(mux.capture_hierarchy().attachments, []);
 }
 
 #[test]
@@ -939,7 +939,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
     assert_eq!(restore.windows.len(), 1);
     assert_eq!(restore.windows[0].workspace, Some(workspace));
     assert_eq!(restore.windows[0].sidebar_width, px(220.0));
-    assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
 }
 
 #[test]
@@ -978,7 +978,7 @@ fn rejected_quit_never_sets_termination_gate_or_capture() {
             .len(),
         2
     );
-    assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
 }
 
 #[test]
@@ -1007,7 +1007,7 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         presentation: huterm_protocol::TerminalPresentation::default(),
     };
     assert!(runtime.open_tab(None, None, &command, true).result.is_err());
-    assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
     command.program = "/bin/sh".into();
     let (session, workspace, first, attachment, first_viewer) =
@@ -1044,14 +1044,14 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
     ));
     assert!(second_viewer.read_snapshot().is_ok());
     runtime.mux.lock().unwrap().close_session(sibling).unwrap();
-    assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
     runtime.mux.lock().unwrap().reserve_through(u64::MAX - 1);
     assert!(matches!(
         runtime.open_tab(None, None, &command, true).result,
         Err(MuxError::IdExhausted)
     ));
-    assert!(runtime.mux.lock().unwrap().sessions().is_empty());
+    assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
 }
 
 #[test]

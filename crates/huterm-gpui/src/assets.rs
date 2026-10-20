@@ -217,7 +217,10 @@ mod tests {
             source.list("icons/").expect("list embedded icons"),
             expected
         );
-        assert!(source.list("fonts/").expect("list").is_empty());
+        assert_eq!(
+            source.list("fonts/").expect("list"),
+            Vec::<SharedString>::new()
+        );
         assert!(
             source
                 .load(APP_ICON)

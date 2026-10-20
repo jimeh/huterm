@@ -38,7 +38,7 @@ fn defaults_compile_on_both_platforms_with_descriptions() {
         let compiled = compile(platform, &[]).unwrap();
         let defaults = defaults(platform);
         assert_eq!(compiled.effective.len(), defaults.len());
-        assert!(compiled.conflicts.is_empty());
+        assert_eq!(compiled.conflicts, Vec::<String>::new());
         for (entry, effective) in defaults.iter().zip(&compiled.effective) {
             assert!(
                 entry
@@ -145,7 +145,7 @@ fn override_replaces_default_and_unbind_removes_all_variants() {
         entry("cmd-v", "unbind"),
     ];
     let compiled = compile(Platform::MacOs, &user).unwrap();
-    assert!(compiled.conflicts.is_empty());
+    assert_eq!(compiled.conflicts, Vec::<String>::new());
     let for_key = |key: &str| {
         compiled
             .effective
@@ -157,8 +157,8 @@ fn override_replaces_default_and_unbind_removes_all_variants() {
     assert_eq!(new_tab_keys.len(), 1);
     assert_eq!(new_tab_keys[0].command, ids::NEW_WINDOW);
     assert_eq!(new_tab_keys[0].origin, Origin::User);
-    assert!(for_key("cmd-c").is_empty());
-    assert!(for_key("cmd-v").is_empty());
+    assert_eq!(for_key("cmd-c"), Vec::<&EffectiveBinding>::new());
+    assert_eq!(for_key("cmd-v"), Vec::<&EffectiveBinding>::new());
     assert!(!compiled.reserved.is_reserved(&keystroke("cmd-c")));
     assert!(!compiled.reserved.is_reserved(&keystroke("cmd-v")));
     assert!(compiled.reserved.is_reserved(&keystroke("cmd-t")));
@@ -432,7 +432,7 @@ fn compiled_bindings_match_through_the_real_gpui_keymap() {
         option_r.key_char = Some("®".into());
         assert_eq!(matched(option_r, &terminal), vec![ids::NEW_WINDOW]);
         assert_eq!(matched(keystroke("alt-p"), &terminal), vec![ids::PASTE]);
-        assert!(matched(keystroke("alt-p"), &confirming).is_empty());
+        assert_eq!(matched(keystroke("alt-p"), &confirming), []);
         let select_last = keystroke(if platform == Platform::MacOs {
             "cmd-9"
         } else {
@@ -512,10 +512,9 @@ fn installed_shortcuts_use_captured_context_and_exact_arguments() {
         installed.shortcuts(ids::RENAME_TAB, &terminal, None).len(),
         1
     );
-    assert!(
-        installed
-            .shortcuts(ids::RENAME_TAB, &confirming, None)
-            .is_empty()
+    assert_eq!(
+        installed.shortcuts(ids::RENAME_TAB, &confirming, None),
+        Vec::<&EffectiveBinding>::new()
     );
     assert!(
         installed

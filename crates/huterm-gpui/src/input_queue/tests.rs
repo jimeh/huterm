@@ -234,7 +234,7 @@ fn cancellation_progresses_without_paint_and_releases_precede_focus_out() {
             )
             .unwrap();
     }
-    assert!(state.cancel().is_empty());
+    assert_eq!(state.cancel(), []);
     queue.enqueue_focus(false, |_| unreachable!()).unwrap();
     assert_eq!(
         drain(&mut queue),
@@ -342,7 +342,7 @@ fn wheel_saturation_discards_unadmitted_steps_without_reordering() {
             0
         )))
     );
-    assert!(state.wheel(0.0, 0.0).is_empty());
+    assert_eq!(state.wheel(0.0, 0.0), []);
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn three_owned_releases_survive_event_saturation_without_allowing_new_cycles() {
             .unwrap();
     }
     assert_eq!(queue.entries.len(), PENDING_INPUT_CAPACITY + 3);
-    assert!(state.cancel().is_empty());
+    assert_eq!(state.cancel(), []);
     for _ in 0..100 {
         state.release(
             MouseButton::Left,

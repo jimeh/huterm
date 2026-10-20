@@ -76,7 +76,7 @@ impl RuntimeClient {
         if reserved_bytes > INPUT_BYTE_CAPACITY
             || self
                 .queued_input_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                     queued
                         .checked_add(reserved_bytes)
                         .filter(|total| *total <= INPUT_BYTE_CAPACITY)

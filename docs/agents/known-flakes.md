@@ -103,11 +103,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 
 - **Label:**
   `terminal::tests::close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
-  and, once,
-  `mux::lifecycle::tests::orphans_holding_the_terminal_need_consent_and_are_cleaned_up`.
+  and
+  `mux::lifecycle::tests::orphans_holding_the_terminal_need_consent_and_are_cleaned_up`
+  ("orphan missing").
 - **Rate:** about 1 in 3 full `cargo test -p huterm-core --lib` runs on a
   developer Mac, at the 3-second "foreground job not detected" deadline. Both
-  pass alone and in CI.
+  pass alone and in CI. On 2026-10-20, during the dependency refresh, 4 of 7
+  full runs on a loaded developer Mac failed one of them (3 were the orphan
+  test).
 - **Triage:** rerun once before suspecting the change. A fix would replace the
   fixed deadline with a condition-driven wait.
 

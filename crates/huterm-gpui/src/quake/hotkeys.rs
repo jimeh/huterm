@@ -146,7 +146,7 @@ fn native_key(stroke: &Keystroke) -> Result<HotKey, String> {
         modifiers |= Modifiers::SHIFT;
     }
     if stroke.modifiers.platform {
-        modifiers |= Modifiers::SUPER;
+        modifiers |= Modifiers::META;
     }
     Ok(HotKey::new(Some(modifiers), code))
 }

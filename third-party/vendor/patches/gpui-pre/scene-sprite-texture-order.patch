@@ -1,5 +1,5 @@
 diff --git a/src/scene.rs b/src/scene.rs
-index ea0f5d7e31af4330b8ecafb613f26e49a32b8878..5bce7f8633f05694d55292a372f3b863db2b03af 100644
+index be378132478d2a90d32e859614cf68c665535170..a6c6653a111f142e96a76de4f42d2ed9bdf4b278 100644
 --- a/src/scene.rs
 +++ b/src/scene.rs
 @@ -153,12 +153,15 @@ impl Scene {

@@ -59,7 +59,7 @@ state; it never connects to the user's tmux server.
 ## Native inputs and policy
 
 Huterm binds the C API through its own `huterm-ghostty` crate. Native Ghostty
-is pinned to `56dbc4a768778753737a3b9cbe0a3f9b4e434553` and built with Zig
+is pinned to `e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110` and built with Zig
 0.16.0 using static linking. The crate's FFI declarations are generated from
 the pinned headers with `mise run ghostty:bindings` and checked with
 `mise run ghostty:bindings:check`. `scripts/ghostty-source.json` records the
@@ -197,7 +197,7 @@ state at the time and do not define the shipped runtime after issue #118.
 ## Pin and native build
 
 Ghostty builds use native revision
-`56dbc4a768778753737a3b9cbe0a3f9b4e434553` and Zig 0.16.0. Keep its
+`e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110` and Zig 0.16.0. Keep its
 `memset` C ABI fix: the first Zig 0.16 migration pin mishandled negative fill
 values and corrupted Rust hash-table control bytes. Run
 `mise run ghostty:prepare` before direct Cargo build commands; it checks the
@@ -318,14 +318,16 @@ this pin, as a `huterm-ghostty` contract test shows.
 Ghostty color-only OSC updates can leave render rows clean. Compare effective
 colors and retain explicit palette override information before consuming damage.
 Its API lacks the override mask; the adapter probes changed defaults after
-color OSC (4, 5, 10-19, 21, 104, 105, 110-119) or RIS hints, then restores
-defaults before rendering. The probe's palette writes force a full redraw, so
-other OSCs must not trigger it. The hint mirrors the pinned parser's
-transitions: Ghostty decodes ground bytes as UTF-8, so raw C1 bytes there are
-text, and OSC and DCS payload bytes never start new sequences. It may over-flag
-but must never miss a color operation; the full-probe differential test
-enforces that. Keep this hint state across input chunks, including snapshots
-between fragments.
+color OSC (4, 5, 10-19, 21, 104, 105, 110-119), RIS, or DECSTR hints, then
+restores defaults before rendering. DECSTR (`CSI ! p`) resets the palette but
+keeps dynamic colors. The probe's palette writes force a full redraw, so other
+OSCs must not trigger it. The hint mirrors the pinned parser's transitions:
+Ghostty decodes ground bytes as UTF-8, so raw C1 bytes there are text, OSC and
+DCS payload bytes never start new sequences, and CAN or SUB cancel an OSC
+without dispatching it. It may over-flag but must never miss a color operation;
+the full-probe differential test enforces that, so add any new color-changing
+sequence to its alphabet when a pin bump introduces one. Keep this hint state
+across input chunks, including snapshots between fragments.
 
 Ghostty's public mode bits can disagree with its active mouse format/tracking.
 Read the active behavior through the retained native mouse probe, with synthetic

@@ -278,7 +278,7 @@ fn a_gesture_the_application_stopped_tracking_blocks_no_one_but_ends_on_release(
     owner
         .dropped
         .store(true, std::sync::atomic::Ordering::Release);
-    assert!(fixture.arbiter.sync(&fixture.registry).releases.is_empty());
+    assert_eq!(fixture.arbiter.sync(&fixture.registry).releases, []);
     assert!(fixture.arbiter.gesture_held(), "the new gesture remains");
 }
 
@@ -330,7 +330,7 @@ fn pressing_an_untracked_button_again_retires_its_earlier_press() {
     owner
         .dropped
         .store(true, std::sync::atomic::Ordering::Release);
-    assert!(fixture.arbiter.sync(&fixture.registry).releases.is_empty());
+    assert_eq!(fixture.arbiter.sync(&fixture.registry).releases, []);
 }
 
 #[test]

@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index 4156294e5cbda1c15944d7a0ca7da6f08401c85e..e01d04f77abfbf9264cb9cb3933d96aedf029f48 100644
+index b04282552d0da2da69e6a3768b5d2e92d0b49e08..ca8aeb3a4bb9e7b65d721cb1b3f3418e0d846b0e 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -867,7 +867,11 @@ impl MacWindowState {
+@@ -869,7 +869,11 @@ impl MacWindowState {
  
          unsafe {
              let bounds = self.bounds();
@@ -15,7 +15,7 @@ index 4156294e5cbda1c15944d7a0ca7da6f08401c85e..e01d04f77abfbf9264cb9cb3933d96ae
              bounds.size == screen_size
          }
      }
-@@ -2425,21 +2429,11 @@ impl rwh::HasDisplayHandle for MacWindow {
+@@ -2436,21 +2440,11 @@ impl rwh::HasDisplayHandle for MacWindow {
  }
  
  fn get_scale_factor(native_window: id) -> f32 {

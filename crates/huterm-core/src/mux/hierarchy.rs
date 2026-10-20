@@ -377,7 +377,7 @@ mod tests {
         assert!(state.tab(three).is_none());
         mux.shutdown().unwrap();
         step(&mut mux, &mut state);
-        assert!(state.sessions().is_empty());
+        assert_eq!(state.sessions(), []);
         assert_eq!(mux.terminal_count(), 0);
     }
 

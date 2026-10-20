@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(missed, 0);
 
         let (new, missed) = status.failures_since(7);
-        assert!(new.is_empty());
+        assert_eq!(new, []);
         assert_eq!(missed, 0);
         assert_eq!(status.last_failure(), 7);
         assert_eq!(TerminalStatus::default().last_failure(), 0);

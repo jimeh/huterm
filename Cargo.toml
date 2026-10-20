@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol"]
-exclude = ["third-party/vendor/global-hotkey-0.8.0", "third-party/vendor/gpui-pre-0.3.6", "third-party/vendor/gpui-pre-linux-0.3.6", "third-party/vendor/gpui-pre-macos-0.3.6", "third-party/vendor/portable-pty-0.9.0"]
+exclude = ["third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.9", "third-party/vendor/gpui-pre-linux-0.3.9", "third-party/vendor/gpui-pre-macos-0.3.9", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
 [workspace.package]
@@ -12,8 +12,8 @@ rust-version = "1.95"
 [workspace.dependencies]
 anyhow = "1.0.104"
 async-channel = "=2.5.0"
-gpui = { package = "gpui-pre", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", default-features = false, features = ["font-kit", "x11"] }
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit", "x11"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false, features = ["font-kit", "x11"] }
 huterm-config = { path = "crates/huterm-config", version = "=0.17.0" } # x-release-please-version
 huterm-core = { path = "crates/huterm-core", version = "=0.17.0" } # x-release-please-version
 huterm-ghostty = { path = "crates/huterm-ghostty", version = "=0.17.0" } # x-release-please-version
@@ -27,7 +27,7 @@ nix = { version = "=0.29.0", features = ["fs", "hostname", "poll", "process", "r
 nucleo-matcher = "=0.3.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
-toml = "=1.1.6"
+toml = "=1.1.8"
 unicode-segmentation = "=1.13.3"
 
 [workspace.lints.rust]
@@ -83,8 +83,8 @@ main = true
 workspace = true
 
 [patch.crates-io]
-global-hotkey = { path = "third-party/vendor/global-hotkey-0.8.0" }
-gpui-pre = { path = "third-party/vendor/gpui-pre-0.3.6" }
-gpui-pre-linux = { path = "third-party/vendor/gpui-pre-linux-0.3.6" }
-gpui-pre-macos = { path = "third-party/vendor/gpui-pre-macos-0.3.6" }
+global-hotkey = { path = "third-party/vendor/global-hotkey-0.9.0" }
+gpui-pre = { path = "third-party/vendor/gpui-pre-0.3.9" }
+gpui-pre-linux = { path = "third-party/vendor/gpui-pre-linux-0.3.9" }
+gpui-pre-macos = { path = "third-party/vendor/gpui-pre-macos-0.3.9" }
 portable-pty = { path = "third-party/vendor/portable-pty-0.9.0" }

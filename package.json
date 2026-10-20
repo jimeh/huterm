@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.3",
     "ajv": "8.20.0",
-    "lucide-static": "1.48.0",
+    "lucide-static": "1.58.0",
     "typescript": "7.0.2"
   }
 }

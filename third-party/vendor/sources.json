@@ -3,12 +3,12 @@
   "sources": [
     {
       "name": "gpui-pre",
-      "version": "0.3.6",
-      "url": "https://static.crates.io/crates/gpui-pre/gpui-pre-0.3.6.crate",
-      "sha256": "a0437c0b83e636a92bd1a39fa1d05fb632ae671289537497b35871ffbe231b84",
+      "version": "0.3.9",
+      "url": "https://static.crates.io/crates/gpui-pre/gpui-pre-0.3.9.crate",
+      "sha256": "34f61c1cfd36fc9c436af09308c963822ae27a45a84feb21a77ba5c9e051f1c0",
       "upstream": {
         "repository": "https://github.com/zed-industries/zed",
-        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
+        "revision": "93d745668805029476e6d7fbb19652116fed51de",
         "path": "crates/gpui",
         "snapshot": "gpui-pre"
       },
@@ -32,12 +32,12 @@
     },
     {
       "name": "gpui-pre-linux",
-      "version": "0.3.6",
-      "url": "https://static.crates.io/crates/gpui-pre-linux/gpui-pre-linux-0.3.6.crate",
-      "sha256": "aab655cda1d6dcd549ac869e8678babc84cf573ab6794a1fe1a39c6c70c60b48",
+      "version": "0.3.9",
+      "url": "https://static.crates.io/crates/gpui-pre-linux/gpui-pre-linux-0.3.9.crate",
+      "sha256": "e28213c3fde6f13e91ba0b74b90cbaadec9373e36a031eda98561d31059870f3",
       "upstream": {
         "repository": "https://github.com/zed-industries/zed",
-        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
+        "revision": "93d745668805029476e6d7fbb19652116fed51de",
         "path": "crates/gpui_linux",
         "snapshot": "gpui-pre"
       },
@@ -48,11 +48,6 @@
           "description": "Validate complete X11 URI lists, prefer URI offers, and isolate stale selection replies per drag."
         },
         {
-          "name": "x11-window-handle",
-          "file": "patches/gpui-pre-linux/x11-window-handle.patch",
-          "description": "Report a destroyed X11 window as unavailable instead of returning its stale Xcb handle."
-        },
-        {
           "name": "fullscreen-state-notification",
           "file": "patches/gpui-pre-linux/fullscreen-state-notification.patch",
           "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
@@ -61,12 +56,12 @@
     },
     {
       "name": "gpui-pre-macos",
-      "version": "0.3.6",
-      "url": "https://static.crates.io/crates/gpui-pre-macos/gpui-pre-macos-0.3.6.crate",
-      "sha256": "951d17e41a72067ad2d35c60e08a62e8ad7fa9400b41c802e26cfb459f6c05da",
+      "version": "0.3.9",
+      "url": "https://static.crates.io/crates/gpui-pre-macos/gpui-pre-macos-0.3.9.crate",
+      "sha256": "c7c988b7e49775cc8542dbe48d5a10e073d8e898a023ef3ff3d24f33363e9863",
       "upstream": {
         "repository": "https://github.com/zed-industries/zed",
-        "revision": "bcf6582ce3500df93a8a39366640173e6786cea6",
+        "revision": "93d745668805029476e6d7fbb19652116fed51de",
         "path": "crates/gpui_macos",
         "snapshot": "gpui-pre"
       },
@@ -85,12 +80,12 @@
     },
     {
       "name": "global-hotkey",
-      "version": "0.8.0",
-      "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.8.0.crate",
-      "sha256": "8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e",
+      "version": "0.9.0",
+      "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.9.0.crate",
+      "sha256": "adda8c76a5139df3bae0eb0413c2cd746f66594e0bb66231a4daa0be3172da70",
       "upstream": {
         "repository": "https://github.com/tauri-apps/global-hotkey",
-        "revision": "2a620bf3852008b568f6d36c2baedcc3dd0822f2",
+        "revision": "b4185ab2f37b62e4d1bd2b8410fcf93e338f55fc",
         "path": ""
       },
       "patches": [

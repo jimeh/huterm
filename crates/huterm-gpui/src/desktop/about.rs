@@ -372,14 +372,14 @@ mod tests {
             vec![
                 ("Identifier", "app.huterm.dev".to_owned()),
                 ("Platform", "Ubuntu 24.04.4 LTS, x86_64, X11".to_owned()),
-                ("Terminal engine", "libghostty-vt 56dbc4a".to_owned()),
+                ("Terminal engine", "libghostty-vt e3ebb1d".to_owned()),
                 ("Build", "release, cdb720d".to_owned()),
             ]
         );
         assert_eq!(
             with.text(),
             format!(
-                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt 56dbc4a\nBuild: release, cdb720d\n",
+                "Huterm {}\nIdentifier: app.huterm.dev\nPlatform: Ubuntu 24.04.4 LTS, x86_64, X11\nTerminal engine: libghostty-vt e3ebb1d\nBuild: release, cdb720d\n",
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn current_facts_name_the_platform_and_profile() {
         let facts = BuildFacts::current(Some("X11"));
-        assert!(!facts.os.is_empty());
+        assert_ne!(facts.os, "");
         assert_eq!(facts.arch, std::env::consts::ARCH);
         assert_eq!(facts.backend.as_deref(), Some("X11"));
         assert_eq!(

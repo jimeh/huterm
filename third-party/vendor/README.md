@@ -7,8 +7,8 @@ records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, and scene sprite-order patches, its Linux crate has
-X11 file-drop, native-handle, and fullscreen-state patches, and its macOS crate
-has offscreen-screen and per-window frame-constraint patches.
+X11 file-drop and fullscreen-state patches, and its macOS crate has
+offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -147,8 +147,8 @@ patches, and manifest entry, then validate the registry dependency instead.
 ## GPUI snapshot crates
 
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
-0.3.6, which republishes Zed's workspace crates from revision
-`bcf6582ce3500df93a8a39366640173e6786cea6` as separate Apache-2.0 registry
+0.3.9, which republishes Zed's workspace crates from revision
+`93d745668805029476e6d7fbb19652116fed51de` as separate Apache-2.0 registry
 crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
 `crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
 (`crates/gpui_macos`). The other snapshot crates resolve from the registry.
@@ -191,11 +191,12 @@ positioning the pointer and before each native drop, so it fails without it.
 
 GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
 The `hidden-window-creation` patch gates that call on `show` and propagates
-mapping errors. The `x11-window-handle` patch reports a destroyed X11 window as
-unavailable instead of returning its stale Xcb handle. Quake uses that handle to
-address the exact window. The native quake smoke checks an untouched hidden GPUI
-window before any hide operation, then summons a real profile through the OS
-shortcut and reads its native state. Upstream X11 window destruction no longer
+mapping errors. Quake addresses the exact window through GPUI's X11 handle.
+GPUI 0.3.9 destroys the X11 window only when its platform window drops, so the
+handle cannot outlive it and the former `x11-window-handle` patch is gone. The
+native quake smoke checks an untouched hidden GPUI window before any hide
+operation, then summons a real profile through the OS shortcut and reads its
+native state. Upstream X11 window destruction no longer
 stops the event loop; GPUI's `QuitMode` now decides instead, and Huterm selects
 `QuitMode::Explicit` so its close/quit coordinator owns zero-window lifetime.
 The native smoke proves that active global registrations retain a zero-window
@@ -235,15 +236,15 @@ in three pixels by 1/255. Remove the patch if upstream changes the sort key.
 
 ## macOS exclusive global shortcuts
 
-`global-hotkey-0.8.0` is the published Apache-2.0 OR MIT crate, with one Carbon
+`global-hotkey-0.9.0` is the published Apache-2.0 OR MIT crate, with one Carbon
 registration flag changed to `kEventHotKeyExclusive`. Carbon's default permits
 several applications to register the same shortcut and can accept registrations
 that receive no events. Exclusive registration lets Huterm report conflicts and
 retain the previous working configuration instead of claiming an unusable grab.
 
 The archive SHA-256 is
-`8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e`; its upstream
-revision is `2a620bf3852008b568f6d36c2baedcc3dd0822f2`. All other published files
+`adda8c76a5139df3bae0eb0413c2cd746f66594e0bb66231a4daa0be3172da70`; its upstream
+revision is `b4185ab2f37b62e4d1bd2b8410fcf93e338f55fc`. All other published files
 are unchanged. Remove this patch when a reviewed release exposes exclusive
 registration and Huterm selects it. The native quake smoke holds the shortcut
 in a separate process and checks startup and reload rejection.

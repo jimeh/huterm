@@ -228,7 +228,8 @@ held, so sample `owns_pointer_gesture` before it; a right press during another
 gesture must not open a menu. Emulator-side edits such as Clear Scrollback's
 `CSI 3 J` reach the emulator only while the native stream is at ground.
 `EscapeHint` ignores UTF-8 state and must not gate injected bytes. Ghostty's
-full reset, like its RIS, keeps OSC color overrides.
+full reset, like its RIS, resets the palette but keeps dynamic OSC color
+overrides.
 
 Clickable controls pair their hover style with an `.active` pressed style:
 `Swatch::pressed`, `accent_pressed`, or `selection_pressed` in overlays and

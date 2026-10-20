@@ -157,7 +157,7 @@ fn quiet_settlement_requests_detach_continuation_without_native_effect() {
     model.detach_requested = true;
     model.stage = Stage::SettleVisible;
     let result = model.decide(facts, now, false).unwrap();
-    assert!(result.actions.is_empty());
+    assert_eq!(result.actions, []);
     assert_eq!(model.next_deadline(now), None);
     assert!(
         result.continuation,
@@ -199,11 +199,11 @@ fn native_pause_resume_preserves_progress_and_failure_deadline() {
 fn settled_visible_and_hidden_have_no_policy_deadline() {
     let now = Instant::now();
     let (mut model, mut facts) = visible(now);
-    assert!(model.decide(facts, now, false).unwrap().actions.is_empty());
+    assert_eq!(model.decide(facts, now, false).unwrap().actions, []);
     assert_eq!(model.next_deadline(now), None);
     model.transition = Transition::new(false, now);
     facts.visible = false;
-    assert!(model.decide(facts, now, false).unwrap().actions.is_empty());
+    assert_eq!(model.decide(facts, now, false).unwrap().actions, []);
     assert_eq!(model.next_deadline(now), None);
 }
 #[test]
@@ -215,12 +215,12 @@ fn geometry_events_cannot_bypass_retry_floor_or_extend_failure_deadline() {
     facts.frame.x = 50.0;
     let failure = model.deadline;
     for millis in 0..16 {
-        assert!(
+        assert_eq!(
             model
                 .decide(facts, now + Duration::from_millis(millis), false)
                 .unwrap()
-                .actions
-                .is_empty()
+                .actions,
+            []
         );
     }
     assert_eq!(

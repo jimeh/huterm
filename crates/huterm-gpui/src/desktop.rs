@@ -2526,7 +2526,7 @@ impl ScrollBenchmark {
         if !self.started {
             self.started = true;
             eprintln!(
-                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.6 viewport={}x{} history={}",
+                "huterm-scroll environment revision={} profile=release os={} arch={} hardware={} display_scale={} gpui=gpui-pre-0.3.9 viewport={}x{} history={}",
                 benchmark_environment("HUTERM_SCROLL_REVISION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -3881,13 +3881,13 @@ mod tests {
     #[test]
     fn macos_shell_is_login_and_only_packaged_launches_fill_missing_locale() {
         assert_eq!(shell_arguments(true), vec!["-l"]);
-        assert!(shell_arguments(false).is_empty());
+        assert_eq!(shell_arguments(false), Vec::<String>::new());
         assert_eq!(
             locale_environment(true, false),
             vec![("LANG".into(), "en_US.UTF-8".into())]
         );
-        assert!(locale_environment(true, true).is_empty());
-        assert!(locale_environment(false, false).is_empty());
+        assert_eq!(locale_environment(true, true), []);
+        assert_eq!(locale_environment(false, false), []);
     }
 
     #[test]
