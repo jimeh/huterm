@@ -22,7 +22,7 @@ unicode-segmentation.workspace = true
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-global-hotkey = "=0.8.0"
+global-hotkey = "=0.9.0"
 nucleo-matcher.workspace = true
 raw-window-handle = "=0.6.2"
 async-channel.workspace = true

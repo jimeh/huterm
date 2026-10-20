@@ -85,12 +85,12 @@
     },
     {
       "name": "global-hotkey",
-      "version": "0.8.0",
-      "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.8.0.crate",
-      "sha256": "8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e",
+      "version": "0.9.0",
+      "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.9.0.crate",
+      "sha256": "adda8c76a5139df3bae0eb0413c2cd746f66594e0bb66231a4daa0be3172da70",
       "upstream": {
         "repository": "https://github.com/tauri-apps/global-hotkey",
-        "revision": "2a620bf3852008b568f6d36c2baedcc3dd0822f2",
+        "revision": "b4185ab2f37b62e4d1bd2b8410fcf93e338f55fc",
         "path": ""
       },
       "patches": [

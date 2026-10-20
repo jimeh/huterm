@@ -31,7 +31,7 @@ pub use keyboard_types::{Code, Modifiers};
 use std::{borrow::Borrow, fmt::Display, hash::Hash, str::FromStr};
 
 #[cfg(target_os = "macos")]
-pub const CMD_OR_CTRL: Modifiers = Modifiers::SUPER;
+pub const CMD_OR_CTRL: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
 pub const CMD_OR_CTRL: Modifiers = Modifiers::CONTROL;
 
@@ -83,12 +83,14 @@ impl serde::Serialize for HotKey {
 
 impl HotKey {
     /// Creates a new hotkey to define keyboard shortcuts throughout your application.
-    /// Only [`Modifiers::ALT`], [`Modifiers::SHIFT`], [`Modifiers::CONTROL`], and [`Modifiers::SUPER`]
+    /// Only [`Modifiers::ALT`], [`Modifiers::SHIFT`], [`Modifiers::CONTROL`], and [`Modifiers::META`]
     pub fn new(mods: Option<Modifiers>, key: Code) -> Self {
         let mut mods = mods.unwrap_or_else(Modifiers::empty);
-        if mods.contains(Modifiers::META) {
-            mods.remove(Modifiers::META);
-            mods.insert(Modifiers::SUPER);
+
+        #[allow(deprecated)]
+        if mods.contains(Modifiers::SUPER) {
+            mods.remove(Modifiers::SUPER);
+            mods.insert(Modifiers::META);
         }
 
         Self {
@@ -107,7 +109,7 @@ impl HotKey {
     /// Returns `true` if this [`Code`] and [`Modifiers`] matches this hotkey.
     pub fn matches(&self, modifiers: impl Borrow<Modifiers>, key: impl Borrow<Code>) -> bool {
         // Should be a const but const bit_or doesn't work here.
-        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER;
+        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::META;
         let modifiers = modifiers.borrow();
         let key = key.borrow();
         self.mods == *modifiers & base_mods && self.key == *key
@@ -125,8 +127,8 @@ impl HotKey {
         if self.mods.contains(Modifiers::ALT) {
             hotkey.push_str("alt+")
         }
-        if self.mods.contains(Modifiers::SUPER) {
-            hotkey.push_str("super+")
+        if self.mods.contains(Modifiers::META) {
+            hotkey.push_str("meta+")
         }
         hotkey.push_str(&self.key.to_string());
         hotkey
@@ -202,15 +204,15 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
                     "CONTROL" | "CTRL" => {
                         mods |= Modifiers::CONTROL;
                     }
-                    "COMMAND" | "CMD" | "SUPER" => {
-                        mods |= Modifiers::SUPER;
+                    "COMMAND" | "CMD" | "SUPER" | "META" => {
+                        mods |= Modifiers::META;
                     }
                     "SHIFT" => {
                         mods |= Modifiers::SHIFT;
                     }
                     #[cfg(target_os = "macos")]
                     "COMMANDORCONTROL" | "COMMANDORCTRL" | "CMDORCTRL" | "CMDORCONTROL" => {
-                        mods |= Modifiers::SUPER;
+                        mods |= Modifiers::META;
                     }
                     #[cfg(not(target_os = "macos"))]
                     "COMMANDORCONTROL" | "COMMANDORCTRL" | "CMDORCTRL" | "CMDORCONTROL" => {
@@ -230,6 +232,7 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
     ))
 }
 
+#[allow(deprecated)]
 fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
     use Code::*;
     match key.to_uppercase().as_str() {
@@ -250,6 +253,9 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "DIGIT8" | "8" => Ok(Digit8),
         "DIGIT9" | "9" => Ok(Digit9),
         "EQUAL" | "=" => Ok(Equal),
+        "INTLBACKSLASH" => Ok(IntlBackslash),
+        "INTLRO" => Ok(IntlRo),
+        "INTLYEN" => Ok(IntlYen),
         "KEYA" | "A" => Ok(KeyA),
         "KEYB" | "B" => Ok(KeyB),
         "KEYC" | "C" => Ok(KeyC),
@@ -281,13 +287,31 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "QUOTE" | "'" => Ok(Quote),
         "SEMICOLON" | ";" => Ok(Semicolon),
         "SLASH" | "/" => Ok(Slash),
+        "ALTLEFT" => Ok(AltLeft),
+        "ALTRIGHT" => Ok(AltRight),
         "BACKSPACE" => Ok(Backspace),
         "CAPSLOCK" => Ok(CapsLock),
+        "CONTEXTMENU" => Ok(ContextMenu),
+        "CONTROLLEFT" => Ok(ControlLeft),
+        "CONTROLRIGHT" => Ok(ControlRight),
         "ENTER" => Ok(Enter),
+        "METALEFT" => Ok(MetaLeft),
+        "METARIGHT" => Ok(MetaRight),
+        "SHIFTLEFT" => Ok(ShiftLeft),
+        "SHIFTRIGHT" => Ok(ShiftRight),
         "SPACE" => Ok(Space),
         "TAB" => Ok(Tab),
+        "CONVERT" => Ok(Convert),
+        "KANAMODE" => Ok(KanaMode),
+        "LANG1" => Ok(Lang1),
+        "LANG2" => Ok(Lang2),
+        "LANG3" => Ok(Lang3),
+        "LANG4" => Ok(Lang4),
+        "LANG5" => Ok(Lang5),
+        "NONCONVERT" => Ok(NonConvert),
         "DELETE" => Ok(Delete),
         "END" => Ok(End),
+        "HELP" => Ok(Help),
         "HOME" => Ok(Home),
         "INSERT" => Ok(Insert),
         "PAGEDOWN" => Ok(PageDown),
@@ -310,13 +334,61 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "NUMPAD8" | "NUM8" => Ok(Numpad8),
         "NUMPAD9" | "NUM9" => Ok(Numpad9),
         "NUMPADADD" | "NUMADD" | "NUMPADPLUS" | "NUMPLUS" => Ok(NumpadAdd),
+        "NUMPADBACKSPACE" => Ok(NumpadBackspace),
+        "NUMPADCLEAR" | "NUMCLEAR" => Ok(NumpadClear),
+        "NUMPADCLEARENTRY" => Ok(NumpadClearEntry),
+        "NUMPADCOMMA" => Ok(NumpadComma),
         "NUMPADDECIMAL" | "NUMDECIMAL" => Ok(NumpadDecimal),
         "NUMPADDIVIDE" | "NUMDIVIDE" => Ok(NumpadDivide),
         "NUMPADENTER" | "NUMENTER" => Ok(NumpadEnter),
         "NUMPADEQUAL" | "NUMEQUAL" => Ok(NumpadEqual),
+        "NUMPADHASH" => Ok(NumpadHash),
+        "NUMPADMEMORYADD" => Ok(NumpadMemoryAdd),
+        "NUMPADMEMORYCLEAR" => Ok(NumpadMemoryClear),
+        "NUMPADMEMORYRECALL" => Ok(NumpadMemoryRecall),
+        "NUMPADMEMORYSTORE" => Ok(NumpadMemoryStore),
+        "NUMPADMEMORYSUBTRACT" => Ok(NumpadMemorySubtract),
         "NUMPADMULTIPLY" | "NUMMULTIPLY" => Ok(NumpadMultiply),
+        "NUMPADPARENLEFT" => Ok(NumpadParenLeft),
+        "NUMPADPARENRIGHT" => Ok(NumpadParenRight),
+        "NUMPADSTAR" => Ok(NumpadStar),
         "NUMPADSUBTRACT" | "NUMSUBTRACT" => Ok(NumpadSubtract),
         "ESCAPE" | "ESC" => Ok(Escape),
+        "FN" => Ok(Fn),
+        "FNLOCK" => Ok(FnLock),
+        "BROWSERBACK" => Ok(BrowserBack),
+        "BROWSERFAVORITES" => Ok(BrowserFavorites),
+        "BROWSERFORWARD" => Ok(BrowserForward),
+        "BROWSERHOME" => Ok(BrowserHome),
+        "BROWSERREFRESH" => Ok(BrowserRefresh),
+        "BROWSERSEARCH" => Ok(BrowserSearch),
+        "BROWSERSTOP" => Ok(BrowserStop),
+        "EJECT" => Ok(Eject),
+        "LAUNCHAPP1" | "LAUNCHAPPLICATION1" | "MYCOMPUTER" => Ok(LaunchApp1),
+        "LAUNCHAPP2" | "LAUNCHAPPLICATION2" | "CALCULATOR" => Ok(LaunchApp2),
+        "LAUNCHMAIL" => Ok(LaunchMail),
+        "MEDIASELECT" | "LAUNCHMEDIAPLAYER" => Ok(MediaSelect),
+        "POWER" => Ok(Power),
+        "SLEEP" => Ok(Sleep),
+        "WAKEUP" => Ok(WakeUp),
+        "HYPER" => Ok(Hyper),
+        "SUPER" => Ok(Super),
+        "TURBO" => Ok(Turbo),
+        "ABORT" => Ok(Abort),
+        "RESUME" => Ok(Resume),
+        "SUSPEND" => Ok(Suspend),
+        "AGAIN" => Ok(Again),
+        "COPY" => Ok(Copy),
+        "CUT" => Ok(Cut),
+        "FIND" => Ok(Find),
+        "OPEN" => Ok(Open),
+        "PASTE" => Ok(Paste),
+        "PROPS" => Ok(Props),
+        "SELECT" => Ok(Select),
+        "UNDO" => Ok(Undo),
+        "HIRAGANA" => Ok(Hiragana),
+        "KATAKANA" => Ok(Katakana),
+        "UNIDENTIFIED" => Ok(Unidentified),
         "F1" => Ok(F1),
         "F2" => Ok(F2),
         "F3" => Ok(F3),
@@ -350,6 +422,36 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "F22" => Ok(F22),
         "F23" => Ok(F23),
         "F24" => Ok(F24),
+        "F25" => Ok(F25),
+        "F26" => Ok(F26),
+        "F27" => Ok(F27),
+        "F28" => Ok(F28),
+        "F29" => Ok(F29),
+        "F30" => Ok(F30),
+        "F31" => Ok(F31),
+        "F32" => Ok(F32),
+        "F33" => Ok(F33),
+        "F34" => Ok(F34),
+        "F35" => Ok(F35),
+        "BRIGHTNESSDOWN" => Ok(BrightnessDown),
+        "BRIGHTNESSUP" => Ok(BrightnessUp),
+        "DISPLAYTOGGLEINTEXT" => Ok(DisplayToggleIntExt),
+        "KEYBOARDLAYOUTSELECT" => Ok(KeyboardLayoutSelect),
+        "LAUNCHASSISTANT" => Ok(LaunchAssistant),
+        "LAUNCHCONTROLPANEL" => Ok(LaunchControlPanel),
+        "LAUNCHSCREENSAVER" => Ok(LaunchScreenSaver),
+        "MAILFORWARD" => Ok(MailForward),
+        "MAILREPLY" => Ok(MailReply),
+        "MAILSEND" => Ok(MailSend),
+        "MEDIAFASTFORWARD" => Ok(MediaFastForward),
+        "MEDIARECORD" => Ok(MediaRecord),
+        "MEDIAREWIND" => Ok(MediaRewind),
+        "MICROPHONEMUTETOGGLE" => Ok(MicrophoneMuteToggle),
+        "PRIVACYSCREENTOGGLE" => Ok(PrivacyScreenToggle),
+        "KEYBOARDBACKLIGHTTOGGLE" => Ok(KeyboardBacklightToggle),
+        "SELECTTASK" => Ok(SelectTask),
+        "SHOWALLWINDOWS" => Ok(ShowAllWindows),
+        "ZOOMTOGGLE" => Ok(ZoomToggle),
 
         _ => Err(HotKeyParseError::UnsupportedKey(key.to_string())),
     }
@@ -403,9 +505,9 @@ fn test_parse_hotkey() {
     );
 
     assert_parse_hotkey!(
-        "super+ctrl+SHIFT+alt+ArrowUp",
+        "meta+ctrl+SHIFT+alt+ArrowUp",
         HotKey {
-            mods: Modifiers::SUPER | Modifiers::CONTROL | Modifiers::SHIFT | Modifiers::ALT,
+            mods: Modifiers::META | Modifiers::CONTROL | Modifiers::SHIFT | Modifiers::ALT,
             key: Code::ArrowUp,
             id: 0,
         }
@@ -440,7 +542,7 @@ fn test_parse_hotkey() {
         "CmdOrCtrl+Space",
         HotKey {
             #[cfg(target_os = "macos")]
-            mods: Modifiers::SUPER,
+            mods: Modifiers::META,
             #[cfg(not(target_os = "macos"))]
             mods: Modifiers::CONTROL,
             key: Code::Space,

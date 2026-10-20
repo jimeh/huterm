@@ -1,8 +1,8 @@
 diff --git a/src/platform_impl/macos/mod.rs b/src/platform_impl/macos/mod.rs
-index dd1f618d8ccc80e9b7e5d9ac77fa81a14fda774b..5f775ca5a049a17eee21d5a2f5da45199196bc0f 100644
+index b3572ee2c92441f01fa5debaef80e96616ea6e04..f5c8c6b1f958d294f06b9be0de9203fd5374add8 100644
 --- a/src/platform_impl/macos/mod.rs
 +++ b/src/platform_impl/macos/mod.rs
-@@ -118,7 +118,7 @@ impl GlobalHotKeyManager {
+@@ -119,7 +119,7 @@ impl GlobalHotKeyManager {
                      mods,
                      hotkey_id,
                      GetApplicationEventTarget(),

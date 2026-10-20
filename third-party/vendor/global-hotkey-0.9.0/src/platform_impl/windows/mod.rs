@@ -79,6 +79,7 @@ impl GlobalHotKeyManager {
         if hotkey.mods.contains(Modifiers::SHIFT) {
             mods |= MOD_SHIFT;
         }
+        #[allow(deprecated)]
         if hotkey.mods.intersects(Modifiers::SUPER | Modifiers::META) {
             mods |= MOD_WIN;
         }
@@ -90,7 +91,7 @@ impl GlobalHotKeyManager {
         }
 
         // get key scan code
-        match key_to_vk(&hotkey.key) {
+        match key_to_vk(&hotkey.key, hotkey.mods) {
             Some(vk_code) => {
                 let result =
                     unsafe { RegisterHotKey(self.hwnd, hotkey.id() as _, mods, vk_code as _) };
@@ -201,8 +202,12 @@ pub fn get_instance_handle() -> windows_sys::Win32::Foundation::HMODULE {
 }
 
 // used to build accelerators table from Key
-fn key_to_vk(key: &Code) -> Option<VIRTUAL_KEY> {
+fn key_to_vk(key: &Code, mods: Modifiers) -> Option<VIRTUAL_KEY> {
     Some(match key {
+        // On Windows, Ctrl+Pause is exposed as Break/Control-Break (`VK_CANCEL`)
+        // rather than `VK_PAUSE`, but the control modifier still participates in the
+        // hotkey chord.
+        Code::Pause if mods.contains(Modifiers::CONTROL) => VK_CANCEL,
         Code::KeyA => VK_A,
         Code::KeyB => VK_B,
         Code::KeyC => VK_C,
@@ -250,11 +255,17 @@ fn key_to_vk(key: &Code) -> Option<VIRTUAL_KEY> {
         Code::Backslash => VK_OEM_5,
         Code::BracketRight => VK_OEM_6,
         Code::Quote => VK_OEM_7,
+        Code::IntlBackslash | Code::IntlRo => VK_OEM_102,
+        Code::IntlYen => VK_OEM_5,
         Code::Backspace => VK_BACK,
         Code::Tab => VK_TAB,
         Code::Space => VK_SPACE,
         Code::Enter => VK_RETURN,
         Code::CapsLock => VK_CAPITAL,
+        Code::ContextMenu => VK_APPS,
+        Code::Convert => VK_CONVERT,
+        Code::KanaMode => VK_KANA,
+        Code::NonConvert => VK_NONCONVERT,
         Code::Escape => VK_ESCAPE,
         Code::PageUp => VK_PRIOR,
         Code::PageDown => VK_NEXT,
@@ -267,6 +278,7 @@ fn key_to_vk(key: &Code) -> Option<VIRTUAL_KEY> {
         Code::PrintScreen => VK_SNAPSHOT,
         Code::Insert => VK_INSERT,
         Code::Delete => VK_DELETE,
+        Code::Help => VK_HELP,
         Code::F1 => VK_F1,
         Code::F2 => VK_F2,
         Code::F3 => VK_F3,
@@ -303,13 +315,27 @@ fn key_to_vk(key: &Code) -> Option<VIRTUAL_KEY> {
         Code::Numpad8 => VK_NUMPAD8,
         Code::Numpad9 => VK_NUMPAD9,
         Code::NumpadAdd => VK_ADD,
+        Code::NumpadClear => VK_CLEAR,
+        Code::NumpadComma => VK_SEPARATOR,
         Code::NumpadDecimal => VK_DECIMAL,
         Code::NumpadDivide => VK_DIVIDE,
         Code::NumpadEnter => VK_RETURN,
-        Code::NumpadEqual => VK_E,
+        Code::NumpadEqual => VK_OEM_NEC_EQUAL,
         Code::NumpadMultiply => VK_MULTIPLY,
         Code::NumpadSubtract => VK_SUBTRACT,
         Code::ScrollLock => VK_SCROLL,
+        Code::BrowserBack => VK_BROWSER_BACK,
+        Code::BrowserFavorites => VK_BROWSER_FAVORITES,
+        Code::BrowserForward => VK_BROWSER_FORWARD,
+        Code::BrowserHome => VK_BROWSER_HOME,
+        Code::BrowserRefresh => VK_BROWSER_REFRESH,
+        Code::BrowserSearch => VK_BROWSER_SEARCH,
+        Code::BrowserStop => VK_BROWSER_STOP,
+        Code::LaunchApp1 => VK_LAUNCH_APP1,
+        Code::LaunchApp2 => VK_LAUNCH_APP2,
+        Code::LaunchMail => VK_LAUNCH_MAIL,
+        Code::MediaSelect => VK_LAUNCH_MEDIA_SELECT,
+        Code::Sleep => VK_SLEEP,
         Code::AudioVolumeDown => VK_VOLUME_DOWN,
         Code::AudioVolumeUp => VK_VOLUME_UP,
         Code::AudioVolumeMute => VK_VOLUME_MUTE,

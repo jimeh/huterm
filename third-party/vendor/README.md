@@ -235,15 +235,15 @@ in three pixels by 1/255. Remove the patch if upstream changes the sort key.
 
 ## macOS exclusive global shortcuts
 
-`global-hotkey-0.8.0` is the published Apache-2.0 OR MIT crate, with one Carbon
+`global-hotkey-0.9.0` is the published Apache-2.0 OR MIT crate, with one Carbon
 registration flag changed to `kEventHotKeyExclusive`. Carbon's default permits
 several applications to register the same shortcut and can accept registrations
 that receive no events. Exclusive registration lets Huterm report conflicts and
 retain the previous working configuration instead of claiming an unusable grab.
 
 The archive SHA-256 is
-`8c386b0a4a70cb2d39fffd74480f985b6f0bfbcb934b6a6b6b7e630e448f242e`; its upstream
-revision is `2a620bf3852008b568f6d36c2baedcc3dd0822f2`. All other published files
+`adda8c76a5139df3bae0eb0413c2cd746f66594e0bb66231a4daa0be3172da70`; its upstream
+revision is `b4185ab2f37b62e4d1bd2b8410fcf93e338f55fc`. All other published files
 are unchanged. Remove this patch when a reviewed release exposes exclusive
 registration and Huterm selects it. The native quake smoke holds the shortcut
 in a separate process and checks startup and reload rejection.
