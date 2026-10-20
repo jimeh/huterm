@@ -105,10 +105,14 @@ export function parseChangelog(changelog: string): Release[] {
   const releases: Release[] = [];
   const untagged: UntaggedSection[] = [];
   let current: UntaggedSection | ReleaseSection | undefined;
+  let afterItem = false;
   for (const [index, rawLine] of changelog.split("\n").entries()) {
     const line = rawLine.replace(/\r$/, "");
     const lineNumber = index + 1;
-    if (line.trim() === "" || (releases.length === 0 && !line.startsWith("## "))) continue;
+    const continuesItem = afterItem;
+    afterItem = false;
+    // Only blank lines and the `# Changelog` title may precede the first release.
+    if (line.trim() === "" || (releases.length === 0 && line.startsWith("# "))) continue;
     const heading = releaseHeading.exec(line);
     if (heading) {
       const version = heading[1] ?? heading[2]!;
@@ -136,11 +140,14 @@ export function parseChangelog(changelog: string): Release[] {
     const item = /^\* (.+)$/.exec(line);
     if (current && item) {
       current.items.push(item[1]!.trim());
+      afterItem = true;
       continue;
     }
-    // A wrapped item continues on an indented line.
-    if (current && current.items.length > 0 && line.startsWith(" ")) {
+    // A wrapped item continues on an indented line. A multi-line breaking
+    // change footer continues unindented on the lines right after its item.
+    if (current && current.items.length > 0 && (line.startsWith(" ") || continuesItem)) {
       current.items[current.items.length - 1] += ` ${line.trim()}`;
+      afterItem = true;
       continue;
     }
     throw new Error(`CHANGELOG.md line ${lineNumber} is not a release heading, section heading, or list item`);

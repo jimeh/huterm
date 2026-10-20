@@ -237,12 +237,22 @@ notes. CI runs it in the macOS smoke job right after Sparkle preparation,
 independent of the smoke build.
 
 The renderer fails, naming the line, on a line, section heading, or date it does
-not recognize, rather than dropping content. A section outside the five Release
-Please sections is accepted only when every item repeats one of that release's
-breaking changes. The changelog must begin with the release being built.
+not recognize, rather than dropping content. Only blank lines and the
+`# Changelog` title may precede the first release. Lines directly after an item
+continue it, indented or not, because a multi-line breaking change footer
+continues unindented. A section outside the five Release Please sections is
+accepted only when every item repeats one of that release's breaking changes.
+The changelog must begin with the release being built.
 `bun scripts/release.ts validate-build`, the macOS `build` step, and a script
 test that renders the repository changelog for the Cargo version all apply these
 checks, so a release pull request fails CI before any release job runs.
+
+Release Please rewrites the release pull request's `CHANGELOG.md` whenever
+`main` moves, so a hand edit there does not stick. Fix the source instead. A
+`build!` or `chore!` commit whose `BREAKING CHANGE:` footer differs from its
+subject lists the subject under a section the renderer rejects; correct it with
+a `BEGIN_COMMIT_OVERRIDE` block in the merged pull request's description, then
+let Release Please regenerate the release pull request.
 
 Preview the notes with `mise run release-notes:preview`. It writes
 `target/release-notes-preview.html` by default and accepts `--output <path>`,

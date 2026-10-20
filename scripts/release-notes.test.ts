@@ -94,10 +94,24 @@ test("release notes tolerate a type section that only repeats breaking changes",
   expect(html.match(/Require macOS 15/g)).toHaveLength(1);
 });
 
+test("release notes keep a multi-line breaking change that continues unindented", () => {
+  const html = releaseNotesHtml(`## 1.0.0 (2026-10-11)
+
+### ⚠ BREAKING CHANGES
+
+* \`[window] tabs\` moved to \`[tabs]\`.
+Configs that still use it fail to parse.
+`, "1.0.0");
+  expect(html).toContain("moved to <code>[tabs]</code>. Configs that still use it fail to parse.</span></li>");
+});
+
 test("release notes reject content they would otherwise drop", () => {
   const release = "## 1.0.0 (2026-10-11)\n\n### Features\n\n* add tabs\n";
-  expect(() => parseChangelog(`${release}Some trailing prose\n`)).toThrow("CHANGELOG.md line 6 is not a release heading, section heading, or list item");
+  expect(() => parseChangelog(`${release}\nSome trailing prose\n`)).toThrow("CHANGELOG.md line 7 is not a release heading, section heading, or list item");
+  expect(() => parseChangelog(`# Changelog\n\n### Security\n\n* patch tabs\n\n${release}`)).toThrow("CHANGELOG.md line 3 is not a release heading, section heading, or list item");
   expect(() => parseChangelog(`${release}\n### Documentation\n\n* explain tabs\n`)).toThrow("CHANGELOG.md line 7 has an unknown section Documentation");
+  // A type section may repeat breaking changes, but any other item in it would be dropped.
+  expect(() => parseChangelog(`## 1.0.0 (2026-10-11)\n\n### ⚠ BREAKING CHANGES\n\n* require macOS 15 ${pr(40)}\n\n### Build System\n\n* require macOS 15 ${pr(40)}\n* bump the SDK ${pr(41)}\n`)).toThrow("CHANGELOG.md line 7 has an unknown section Build System");
   expect(() => parseChangelog("## 1.0.0 (2026-02-30)\n")).toThrow("CHANGELOG.md line 1 has an invalid date 2026-02-30");
   expect(() => releaseNotesHtml(release, "1.0.1")).toThrow("CHANGELOG.md must begin with release 1.0.1");
 });
