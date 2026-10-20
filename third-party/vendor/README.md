@@ -7,8 +7,8 @@ records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, and scene sprite-order patches, its Linux crate has
-X11 file-drop, native-handle, and fullscreen-state patches, and its macOS crate
-has offscreen-screen and per-window frame-constraint patches.
+X11 file-drop and fullscreen-state patches, and its macOS crate has
+offscreen-screen and per-window frame-constraint patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -191,11 +191,12 @@ positioning the pointer and before each native drop, so it fails without it.
 
 GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
 The `hidden-window-creation` patch gates that call on `show` and propagates
-mapping errors. The `x11-window-handle` patch reports a destroyed X11 window as
-unavailable instead of returning its stale Xcb handle. Quake uses that handle to
-address the exact window. The native quake smoke checks an untouched hidden GPUI
-window before any hide operation, then summons a real profile through the OS
-shortcut and reads its native state. Upstream X11 window destruction no longer
+mapping errors. Quake addresses the exact window through GPUI's X11 handle.
+GPUI 0.3.9 destroys the X11 window only when its platform window drops, so the
+handle cannot outlive it and the former `x11-window-handle` patch is gone. The
+native quake smoke checks an untouched hidden GPUI window before any hide
+operation, then summons a real profile through the OS shortcut and reads its
+native state. Upstream X11 window destruction no longer
 stops the event loop; GPUI's `QuitMode` now decides instead, and Huterm selects
 `QuitMode::Explicit` so its close/quit coordinator owns zero-window lifetime.
 The native smoke proves that active global registrations retain a zero-window

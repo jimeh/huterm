@@ -339,9 +339,6 @@ impl rwh::HasDisplayHandle for RawWindow {
 
 impl rwh::HasWindowHandle for X11Window {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        if self.0.state.borrow().destroyed {
-            return Err(rwh::HandleError::Unavailable);
-        }
         let Some(non_zero) = NonZeroU32::new(self.0.x_window) else {
             return Err(rwh::HandleError::Unavailable);
         };

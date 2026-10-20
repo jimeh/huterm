@@ -1,8 +1,8 @@
 diff --git a/src/linux/x11/window.rs b/src/linux/x11/window.rs
-index 764fa442510ac616d816c83dce8d83d47dd24a58..716e64e82318a40152f3f86a8a8a3e8f9a0f00aa 100644
+index f6ee76ae8cac59b8cd9b71f07c59707d2a0372fb..587b56b2df9e018afb7be8a5ba425360f7685c36 100644
 --- a/src/linux/x11/window.rs
 +++ b/src/linux/x11/window.rs
-@@ -1066,7 +1066,19 @@ impl X11WindowStatePtr {
+@@ -1063,7 +1063,19 @@ impl X11WindowStatePtr {
      pub fn property_notify(&self, event: xproto::PropertyNotifyEvent) -> anyhow::Result<()> {
          let state = self.state.borrow_mut();
          if event.atom == state.atoms._NET_WM_STATE {

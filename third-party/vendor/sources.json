@@ -48,11 +48,6 @@
           "description": "Validate complete X11 URI lists, prefer URI offers, and isolate stale selection replies per drag."
         },
         {
-          "name": "x11-window-handle",
-          "file": "patches/gpui-pre-linux/x11-window-handle.patch",
-          "description": "Report a destroyed X11 window as unavailable instead of returning its stale Xcb handle."
-        },
-        {
           "name": "fullscreen-state-notification",
           "file": "patches/gpui-pre-linux/fullscreen-state-notification.patch",
           "description": "Notify bounds observers when X11 fullscreen state changes without a geometry event."
