@@ -275,7 +275,8 @@ fn read_state(cx: &mut App) -> String {
                 let terminal = terminal.read(cx);
                 writeln!(output, "w{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.resize_indicators, terminal.owns_pointer_gesture()).unwrap();
                 let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();
-                writeln!(output, "w{index}.ready={}\nw{index}.focused={}\nw{index}.grid={},{}\nw{index}.terminal={}\nw{index}.text={}", text.contains("READY"), terminal.focus.is_focused(window), terminal.last_grid_size.columns, terminal.last_grid_size.rows, rect(terminal.content_bounds(window)), text.replace('\n', " ")).unwrap();
+                let displayed = terminal.displayed_grid_state();
+                writeln!(output, "w{index}.ready={}\nw{index}.focused={}\nw{index}.grid={},{}\nw{index}.displayed_grid={},{}\nw{index}.terminal={}\nw{index}.text={}", text.contains("READY"), terminal.focus.is_focused(window), terminal.requested_grid.columns, terminal.requested_grid.rows, displayed.0, displayed.1, rect(terminal.content_bounds(window)), text.replace('\n', " ")).unwrap();
             }
             #[cfg(target_os = "macos")]
             if let Some(adapter) = &view.native_fullscreen {

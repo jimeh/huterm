@@ -616,12 +616,14 @@ fn ui_state(
                 let content = terminal.content_bounds(window);
                 let grid = terminal.terminal_layout(window).bounds;
                 format!(
-                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}selecting={} {prefix}history={}",
+                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}displayed_grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}selecting={} {prefix}history={}",
                     rect(content),
                     terminal.scroll.displayed(),
                     terminal.scroll_pill_visible(),
-                    terminal.last_grid_size.columns,
-                    terminal.last_grid_size.rows,
+                    terminal.requested_grid.columns,
+                    terminal.requested_grid.rows,
+                    terminal.displayed_grid_state().0,
+                    terminal.displayed_grid_state().1,
                     rect(gpui::Bounds::new(content.origin + grid.origin, grid.size)),
                     f32::from(terminal.metrics.cell_width),
                     f32::from(terminal.metrics.cell_height),

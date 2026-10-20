@@ -50,6 +50,7 @@ use crate::ui::scrollbar::{
     ScrollbarColors, ScrollbarGeometries, ScrollbarGeometry, ScrollbarOptions,
     Scrollbars, ThumbSize, TrackMargins, TrackPress,
 };
+use grid_geometry::GridGeometry;
 use huterm_protocol::{
     MouseAction, MouseButton as ProtocolMouseButton, MouseInput, MousePosition,
 };
@@ -91,6 +92,7 @@ const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 mod about;
 mod close_dialog;
 mod composition;
+mod grid_geometry;
 mod key_bench;
 mod key_hint;
 mod keyboard;
@@ -392,7 +394,10 @@ struct TerminalView {
     focus: FocusHandle,
     _focus_subscriptions: Vec<Subscription>,
     scroll: ScrollController,
-    last_grid_size: GridSize,
+    /// The grid this view's layout asks the runtime for. The view draws the
+    /// snapshot's grid, which differs while another viewer controls the
+    /// terminal or until the snapshot for this layout arrives.
+    requested_grid: GridSize,
     last_cell_size: Option<CellSize>,
     metrics: GridMetrics,
     font_family: String,
@@ -607,7 +612,7 @@ impl TerminalView {
                 layout_subscription,
             ],
             scroll: ScrollController::default(),
-            last_grid_size: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
+            requested_grid: GridSize::clamped(INITIAL_COLUMNS, INITIAL_ROWS),
             metrics,
             font_family,
             last_cell_size: None,
@@ -787,6 +792,13 @@ impl TerminalView {
         if self.mouse.observe_modes(snapshot.modes) {
             self.input_queue.cancel_motion();
             self.scroll.reset_wheel();
+        }
+        // The grid changed under the pointer. A hover report the runtime
+        // discarded as stale must not suppress the next one in its cell.
+        if self.snapshot.as_ref().is_some_and(|shown| {
+            shown.geometry_revision != snapshot.geometry_revision
+        }) {
+            self.mouse.boundary();
         }
         if snapshot.viewport.bottom_offset > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
@@ -996,10 +1008,11 @@ impl TerminalView {
 
     fn refresh_pending_work(&mut self, cx: &mut Context<'_, Self>) {
         let mut changed = self.retry_client_messages();
+        let rows = self.page_rows();
         if let Some(benchmark) = &mut self.scroll_benchmark {
             changed |= benchmark.drive(
                 &mut self.scroll,
-                self.last_grid_size.rows,
+                rows,
                 f32::from(self.metrics.cell_height),
             );
             benchmark.report(self.scroll.diagnostics());
@@ -1333,18 +1346,12 @@ impl TerminalView {
     /// coordinates: below the cursor cell, or the grid's top-left corner
     /// when the cursor is out of view.
     fn context_menu_anchor(&self, window: &Window) -> gpui::Point<Pixels> {
-        let origin = self.content_bounds(window).origin
-            + self.terminal_layout(window).bounds.origin;
+        let geometry = self.grid_geometry(window);
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.cursor)
-            .map_or(origin, |cursor| {
-                origin
-                    + point(
-                        self.metrics.cell_width * f32::from(cursor.column),
-                        self.metrics.cell_height * f32::from(cursor.row + 1),
-                    )
-            })
+            .and_then(|cursor| geometry.cell_bounds(cursor.column, cursor.row))
+            .map_or(geometry.visible_area().origin, |cell| cell.bottom_left())
     }
 
     fn run_command(
@@ -1424,7 +1431,8 @@ impl TerminalView {
         apply: impl FnOnce(&mut ScrollController, u16) -> bool,
     ) {
         self.links.invalidate();
-        if apply(&mut self.scroll, self.last_grid_size.rows) {
+        let rows = self.page_rows();
+        if apply(&mut self.scroll, rows) {
             self.activate_scrollbar();
             self.start_snapshot_if_needed(cx);
             cx.notify();
@@ -1436,13 +1444,8 @@ impl TerminalView {
         position: gpui::Point<Pixels>,
         window: &Window,
     ) -> Option<MousePosition> {
-        let (inside, cell) = application_mouse_geometry(
-            position,
-            self.content_bounds(window).origin,
-            self.terminal_layout(window),
-            size(self.metrics.cell_width, self.metrics.cell_height),
-        );
-        inside.then_some(cell)
+        let geometry = self.grid_geometry(window);
+        geometry.contains(position).then(|| geometry.cell(position))
     }
 
     fn effective_link_modifiers(
@@ -1547,13 +1550,9 @@ impl TerminalView {
         modifiers: GpuiModifiers,
         window: &Window,
     ) -> (bool, MousePosition) {
-        let (in_grid, cell) = application_mouse_geometry(
-            position,
-            self.content_bounds(window).origin,
-            self.terminal_layout(window),
-            size(self.metrics.cell_width, self.metrics.cell_height),
-        );
-        let in_grid = in_grid
+        let geometry = self.grid_geometry(window);
+        let cell = geometry.cell(position);
+        let in_grid = geometry.contains(position)
             && window.is_window_active()
             && self.focus.is_focused(window);
         let position = position - self.content_bounds(window).origin;
@@ -1661,7 +1660,7 @@ impl TerminalView {
             match press {
                 Press::Grabbed | Press::Jump(_) => cx.notify(),
                 Press::Page { backward } => {
-                    if self.scroll.page(self.last_grid_size.rows, backward) {
+                    if self.scroll.page(self.page_rows(), backward) {
                         self.start_snapshot_if_needed(cx);
                         cx.notify();
                     }
@@ -1881,17 +1880,14 @@ impl TerminalView {
         if !self.selecting {
             return;
         }
-        let layout = self.terminal_layout(window);
-        let position = position - layout.bounds.origin;
+        let direction =
+            self.grid_geometry(window).edge_direction(event.position);
+        let position = position - self.terminal_layout(window).bounds.origin;
         let Some(snapshot) = &self.snapshot else {
             return;
         };
         if let Some(selection) = &mut self.selection {
             let head = point_for_position(position, snapshot, self.metrics);
-            let direction = edge_scroll_direction(
-                f32::from(position.y),
-                f32::from(layout.bounds.size.height),
-            );
             // Movement within one cell changes nothing. Past an edge, each
             // move still scrolls a row, so only the idle case returns early.
             if selection.head == head
@@ -2113,7 +2109,7 @@ impl TerminalView {
     fn scrollbar_geometry(&self, window: &Window) -> Option<ScrollbarGeometry> {
         terminal_scrollbar_geometry(
             f32::from(self.viewport(window).height),
-            self.last_grid_size.rows,
+            self.displayed_grid().unwrap_or(self.requested_grid).rows,
             self.scroll.history(),
             self.scroll.displayed(),
             self.scrollbar_options().margins,
@@ -2217,6 +2213,37 @@ impl TerminalView {
         )
     }
 
+    /// The size of the snapshot the view shows, if it shows one.
+    fn displayed_grid(&self) -> Option<GridSize> {
+        self.snapshot.as_ref().map(|snapshot| snapshot.size)
+    }
+
+    /// The displayed grid's columns and rows for smoke state: zero before
+    /// the first snapshot.
+    fn displayed_grid_state(&self) -> (u16, u16) {
+        self.displayed_grid()
+            .map_or((0, 0), |grid| (grid.columns, grid.rows))
+    }
+
+    /// Hit testing in window coordinates against the displayed grid, inside
+    /// the bounds the current layout paints.
+    fn grid_geometry(&self, window: &Window) -> GridGeometry {
+        let layout = self.terminal_layout(window);
+        GridGeometry::new(
+            Bounds::new(
+                self.content_bounds(window).origin + layout.bounds.origin,
+                layout.bounds.size,
+            ),
+            size(self.metrics.cell_width, self.metrics.cell_height),
+            layout.grid,
+            self.displayed_grid(),
+        )
+    }
+
+    fn page_rows(&self) -> u16 {
+        grid_geometry::page_rows(self.requested_grid, self.displayed_grid())
+    }
+
     fn physical_cell_size(&self) -> CellSize {
         CellSize {
             width: pixel_count(
@@ -2251,7 +2278,11 @@ impl TerminalView {
             .replace(viewport)
             .is_some_and(|previous| previous != viewport)
         {
+            // The grid moved under the pointer. A snapshot follows only while
+            // this view controls the terminal, so the next render must look
+            // the pointer's cell up again by itself.
             self.links.invalidate();
+            self.links.forget_point();
             if !quiet && !self.quiet_resize {
                 self.resize_visibility.activate(Instant::now());
                 self.resize_indicators += 1;
@@ -2259,11 +2290,12 @@ impl TerminalView {
         }
         let size = self.terminal_layout(window).grid;
         let cell = self.physical_cell_size();
-        if size == self.last_grid_size && self.last_cell_size == Some(cell) {
+        if size == self.requested_grid && self.last_cell_size == Some(cell) {
             return;
         }
         self.links.invalidate();
-        self.last_grid_size = size;
+        self.links.forget_point();
+        self.requested_grid = size;
         self.last_cell_size = Some(cell);
         self.resize_requests += 1;
         match self.viewer.report_geometry(size, cell) {
@@ -2340,7 +2372,8 @@ impl TerminalView {
             return (false, false);
         }
         let viewer = &self.viewer;
-        let stamp = viewer.stamp(None);
+        let stamp =
+            viewer.stamp(input_geometry(&input, self.snapshot.as_deref()));
         let result = match self.input_queue.enqueue(input, stamp, release, |queued| send_queued(viewer, queued)) {
             Ok(Admission::Accepted) => (true, false),
             Ok(Admission::Closed) => (false, false),
@@ -2748,6 +2781,7 @@ impl TerminalView {
     /// surface stays opaque; the fade applies to the whole panel.
     fn render_size_panel(&self) -> impl IntoElement {
         let swatch = Swatch::from_theme(&self.theme);
+        let grid = self.displayed_grid().unwrap_or(self.requested_grid);
         div()
             .absolute()
             .inset_0()
@@ -2772,7 +2806,7 @@ impl TerminalView {
                             .line_height(px(26.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(swatch.fg)
-                            .child(self.last_grid_size.columns.to_string())
+                            .child(grid.columns.to_string())
                             .child(
                                 div()
                                     .mx(px(6.0))
@@ -2780,7 +2814,7 @@ impl TerminalView {
                                     .text_color(swatch.dim)
                                     .child("×"),
                             )
-                            .child(self.last_grid_size.rows.to_string()),
+                            .child(grid.rows.to_string()),
                     )
                     .child(
                         div()
@@ -3342,18 +3376,20 @@ fn local_scroll(
     }
 }
 
-fn application_mouse_geometry(
-    position: gpui::Point<Pixels>,
-    origin: gpui::Point<Pixels>,
-    layout: TerminalLayout,
-    cell: gpui::Size<Pixels>,
-) -> (bool, MousePosition) {
-    let relative = position - origin - layout.bounds.origin;
-    let inside = relative.x >= px(0.0)
-        && relative.y >= px(0.0)
-        && relative.x < layout.bounds.size.width
-        && relative.y < layout.bounds.size.height;
-    (inside, mouse_position(relative, layout.grid, cell))
+/// The geometry revision an input is stamped with: a mouse report's
+/// coordinates were mapped against the displayed snapshot's grid, and the
+/// runtime discards a press, hover, or wheel report whose grid has changed
+/// since. Other input does not depend on the grid.
+fn input_geometry(
+    input: &TerminalInput,
+    snapshot: Option<&TerminalSnapshot>,
+) -> Option<u64> {
+    match input {
+        TerminalInput::Mouse(_) => {
+            snapshot.map(|snapshot| snapshot.geometry_revision)
+        }
+        _ => None,
+    }
 }
 
 fn protocol_mouse_button(button: MouseButton) -> Option<ProtocolMouseButton> {
@@ -3362,32 +3398,6 @@ fn protocol_mouse_button(button: MouseButton) -> Option<ProtocolMouseButton> {
         MouseButton::Middle => Some(ProtocolMouseButton::Middle),
         MouseButton::Right => Some(ProtocolMouseButton::Right),
         MouseButton::Navigate(_) => None,
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "finite coordinates clamp to the u16 grid before conversion"
-)]
-fn mouse_position(
-    position: gpui::Point<Pixels>,
-    grid: GridSize,
-    cell: gpui::Size<Pixels>,
-) -> MousePosition {
-    let coordinate = |value: Pixels, dimension: Pixels, count: u16| {
-        let value = f32::from(value);
-        let dimension = f32::from(dimension);
-        if !value.is_finite() || !dimension.is_finite() || dimension <= 0.0 {
-            return 0;
-        }
-        (value / dimension)
-            .floor()
-            .clamp(0.0, f32::from(count.saturating_sub(1))) as u32
-    };
-    MousePosition {
-        column: coordinate(position.x, cell.width, grid.columns),
-        row: coordinate(position.y, cell.height, grid.rows),
     }
 }
 
@@ -3443,15 +3453,6 @@ impl ScrollPill {
     }
 }
 
-fn edge_scroll_direction(position: f32, viewport_height: f32) -> i64 {
-    if position < 0.0 {
-        1
-    } else if position >= viewport_height {
-        -1
-    } else {
-        0
-    }
-}
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -3575,6 +3576,41 @@ mod tests {
     }
 
     #[test]
+    fn mouse_reports_carry_the_displayed_revision_and_typing_carries_none() {
+        let snapshot = TerminalSnapshot {
+            terminal_id: huterm_protocol::TerminalId::new(1),
+            generation: 1,
+            revision: 0,
+            geometry_revision: 7,
+            size: GridSize::clamped(1, 1),
+            rows: Vec::new(),
+            cursor: None,
+            modes: huterm_protocol::TerminalModes::default(),
+            viewport: huterm_protocol::Viewport { bottom_offset: 0 },
+            history_size: 0,
+            cursor_color: None,
+        };
+        let mouse = TerminalInput::Mouse(MouseInput {
+            position: MousePosition::default(),
+            action: MouseAction::Press(ProtocolMouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(input_geometry(&mouse, Some(&snapshot)), Some(7));
+        assert_eq!(input_geometry(&mouse, None), None);
+        // A stale snapshot must never discard typing.
+        for typing in [
+            TerminalInput::Text("text".into()),
+            TerminalInput::Paste("paste".into()),
+            TerminalInput::Key {
+                key: huterm_protocol::TerminalKey::Enter,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            assert_eq!(input_geometry(&typing, Some(&snapshot)), None);
+        }
+    }
+
+    #[test]
     fn terminal_gesture_retains_motion_and_release_under_an_overlay() {
         let overlay = Some(Bounds::new(
             point(px(0.0), px(0.0)),
@@ -3625,58 +3661,6 @@ mod tests {
         event.delta = ScrollDelta::Lines(point(9.0, -2.0));
         assert!(local_scroll(&mut scroll, &event, 16.0));
         assert_eq!(scroll.desired(), 1);
-    }
-
-    #[test]
-    fn application_coordinates_exclude_titlebar_padding_and_grid_endpoints() {
-        let cell = size(px(8.0), px(16.0));
-        let layout = TerminalLayout::new(
-            size(px(105.0), px(59.0)),
-            cell,
-            WindowConfig::default(),
-        );
-        let geometry = |x, y| {
-            application_mouse_geometry(
-                point(px(x), px(y)),
-                point(px(0.0), px(32.0)),
-                layout,
-                cell,
-            )
-        };
-        assert_eq!(
-            geometry(4.0, 36.0),
-            (true, MousePosition { column: 0, row: 0 })
-        );
-        assert_eq!(
-            geometry(99.9, 83.9),
-            (true, MousePosition { column: 11, row: 2 })
-        );
-        for (x, y) in [
-            (4.0, 31.0),
-            (3.9, 40.0),
-            (10.0, 35.9),
-            (100.0, 40.0),
-            (10.0, 84.0),
-            (-100.0, -100.0),
-            (1000.0, 1000.0),
-        ] {
-            assert!(!geometry(x, y).0, "{x} {y}");
-        }
-        assert_eq!(
-            geometry(1000.0, 1000.0).1,
-            MousePosition { column: 11, row: 2 }
-        );
-        assert_eq!(geometry(-100.0, -100.0).1, MousePosition::default());
-        for dimension in [0.0, -1.0, f32::INFINITY, f32::NAN] {
-            assert_eq!(
-                mouse_position(
-                    point(px(50.0), px(50.0)),
-                    layout.grid,
-                    size(px(dimension), px(dimension))
-                ),
-                MousePosition::default()
-            );
-        }
     }
 
     #[test]
@@ -3783,12 +3767,6 @@ mod tests {
                 modifiers: Modifiers::default(),
             }) >= std::mem::size_of::<bool>()
         );
-    }
-    #[test]
-    fn selection_drag_edges_scroll_in_reading_direction() {
-        assert_eq!(edge_scroll_direction(-1.0, 400.0), 1);
-        assert_eq!(edge_scroll_direction(200.0, 400.0), 0);
-        assert_eq!(edge_scroll_direction(400.0, 400.0), -1);
     }
     #[test]
     fn stale_selection_replies_do_not_match_newer_selection() {
@@ -3935,3 +3913,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+mod view_tests;

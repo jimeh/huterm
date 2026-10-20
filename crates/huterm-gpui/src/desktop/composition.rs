@@ -9,7 +9,7 @@ use super::windows;
 use crate::ui::text::{range_from_utf16, range_to_utf16, utf16_len};
 use gpui::Context;
 #[cfg(target_os = "macos")]
-use gpui::{App, Bounds, Pixels, Window, point, size};
+use gpui::{App, Bounds, Pixels, Window, size};
 #[cfg(target_os = "macos")]
 use huterm_protocol::TerminalInput;
 
@@ -210,15 +210,22 @@ impl gpui::EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<'_, Self>,
     ) -> Option<Bounds<Pixels>> {
-        let cursor = self.snapshot.as_ref()?.cursor?;
-        Some(Bounds::new(
-            bounds.origin
-                + point(
-                    self.metrics.cell_width * f32::from(cursor.column),
-                    self.metrics.cell_height * f32::from(cursor.row),
-                ),
-            size(self.metrics.cell_width, self.metrics.cell_height),
-        ))
+        let snapshot = self.snapshot.as_ref()?;
+        let cursor = snapshot.cursor?;
+        let cell = size(self.metrics.cell_width, self.metrics.cell_height);
+        // `bounds` is where the requested grid paints. A cursor past its clip
+        // anchors the candidate window at the grid's corner instead.
+        let geometry = super::grid_geometry::GridGeometry::new(
+            bounds,
+            cell,
+            self.requested_grid,
+            Some(snapshot.size),
+        );
+        Some(
+            geometry
+                .cell_bounds(cursor.column, cursor.row)
+                .unwrap_or_else(|| Bounds::new(bounds.origin, cell)),
+        )
     }
 
     fn character_index_for_point(

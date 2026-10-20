@@ -305,6 +305,35 @@ When moving a suite:
   `--ignored`, before and after the move. Then run each moved module through
   its path filter and check that the passed count matches the listed count.
 
+### GPUI view tests
+
+`crates/huterm-gpui/src/desktop/view_tests.rs` drives a real `TerminalView` as
+the root of a GPUI test window over a standalone `TerminalRuntime`. It compiles
+only with `huterm-gpui`'s `test-support` feature (see
+[the dependencies guide](dependencies.md#gpui-and-nix)). The `lint`,
+`typecheck`, and `test:rust` tasks pass `--features huterm-gpui/test-support`,
+and `scripts/policy-alignment.test.ts` checks that they do. A bare
+`cargo test -p huterm-gpui` skips these tests without failing; add
+`--features test-support`.
+
+- The view has no `WorkspaceView` above it: modal checks answer "no dialog",
+  and on macOS typed text through the input handler is refused. Tests that
+  type, or that need two windows, belong in a harness that hosts the real
+  window root.
+- Font metrics are fixed (`GridMetrics::fixed`), and the test window starts
+  at scale factor 2. Compute pointer positions from the view's layout after
+  its first draw.
+- GPUI's test mode draws dirty windows but never delivers frames, and only a
+  frame renews a view's snapshot allowance. `ViewHarness::wait_for` pumps
+  `Window::simulate_next_frame` on every pass and polls its condition under a
+  10-second deadline, reporting the last observed state.
+- A simulated window resize moves GPUI's test pointer to the window's corner,
+  because `Window::bounds_changed` reads the test platform's pointer, which
+  stays at the origin. Change the layout through the view to keep the pointer
+  still.
+- To place steps where no snapshot can be applied between them, call the
+  view's handlers directly inside one `ViewHarness::update`.
+
 `mise run lint:test-order` runs `scripts/rust-test-order.ts` from `check`,
 `check:rust`, `ci:lint`, and the pre-commit hook. It rejects any item without
 a test-only cfg (`test`, or an `all(...)` containing it) that follows an inline

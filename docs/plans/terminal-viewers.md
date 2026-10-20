@@ -1,8 +1,9 @@
 # Terminal viewers
 
 Status: in progress. Approved for [issue #22][issue-22] after three
-adversarial review rounds. PR 1 (#208) delivers [#205][issue-205]; PR 2
-delivers [#206][issue-206].
+adversarial review rounds. PR 1 (#208) delivered [#205][issue-205].
+[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A is in
+progress.
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
@@ -20,8 +21,9 @@ and [#98][issue-98] have landed. [#26][issue-26], [#28][issue-28],
 
 Agreed with the maintainer before drafting:
 
-- Deliver in two PRs, core viewers and then desktop multi-viewer, and move
-  the smallest, largest, and manual sizing policies to a separate issue.
+- Deliver core viewers first and desktop multi-viewer second, and move the
+  smallest, largest, and manual sizing policies to a separate issue. The
+  desktop half was planned as one PR and now ships as two (see below).
 - Terminal status is revisioned state, not a queue of events.
 - The `latest` sizing policy follows the viewer that most recently gained
   focus or sent input.
@@ -36,6 +38,32 @@ Agreed with the maintainer before drafting:
 - The second desktop viewer exists only as a smoke fixture. A user-facing way
   to show one session in two windows waits for a workspace sidebar with a
   session switcher.
+
+Agreed on 2026-10-03 for the desktop half ([#206][issue-206]), after PR 1
+landed and the code on `main` at `8dfb406c` was read again:
+
+- It ships as four GitHub stacked PRs, A to D. Changed on 2026-10-15: two
+  PRs, described under Delivery. PR A is as planned and bases on `main`.
+  PR B combines the former B, C, and D. They are one feature, and merging
+  them separately would leave two gaps on `main` between merges: two
+  windows both closing an exited tab, and a revoked view left without a
+  viewer. PR A stays separate because a single viewer can use everything it
+  changes, and because it carries the harness spike that PR B's tests
+  depend on.
+- Desktop tests use GPUI's own test helpers where they fit. Dependencies
+  that only tests use are accepted.
+- Smoke state keeps `grid=` as the grid a view requests and adds a separate
+  field for the grid it displays.
+- Cancelling an exit-close confirmation clears the owed close for every
+  window. A window closed while its confirmation shows returns the close to
+  owed.
+- Whether `Desktop` owns an exit-close outright, instead of a window
+  claiming it, is decided in PR B.
+- In-place re-subscription (PR B) is covered through the smoke fixture only.
+  The desktop never calls `retarget_attachment`, `move_tab`, or
+  `move_workspace`, so a revoked viewer whose tab stays in the window's
+  workspace has no production trigger until [#21][issue-21] and
+  [#26][issue-26].
 
 ## Current state
 
@@ -556,8 +584,8 @@ A `MouseArbiter` on the owner thread holds the policy:
   computing a report and dequeuing it cannot move it to another cell. A
   revision, unlike a grid size, also catches a resize there and back. In
   PR 1 the desktop computes mouse coordinates from its own layout and sends
-  no geometry revision; PR 2 stamps reports once it maps them against the
-  displayed grid.
+  no geometry revision, so this check never runs; PR A stamps reports once
+  it maps them against the displayed grid.
 - Motion and releases inside an owned gesture are never discarded for
   geometry; the encoder clamps their coordinates to the current grid, as it
   does today. Accepted gestures therefore always end.
@@ -660,36 +688,298 @@ one viewer, which is always the controller, behavior stays as it is:
 - `publish_presentation` submits through the viewer.
 - Typing clears local scroll intent and no longer submits `Live`; the
   runtime returns to live.
-- `Revoked` shows no notice. The view stops sending, and PR 2's reconcile
-  replaces or removes its viewer.
+- `Revoked` shows no notice. The view stops sending. PR B's reconcile
+  removes a view whose tab left the window's session and replaces the
+  viewer of one whose tab stayed.
 
 PR 1 intends no user-visible behavior change.
 
-### Desktop: the displayed grid follows the canonical size (PR 2)
+### Desktop: the displayed grid follows the canonical size (PR A)
 
-`TerminalLayout` keeps computing the grid this view **requests** from its
-bounds. A view now displays the snapshot's `size`, which can differ when
-another viewer controls:
+A view works with three grids:
 
-- The grid paints from the layout origin at the canonical size and clips to
-  the available area. A larger canonical grid is cut off at the edge, and a
-  smaller one leaves background.
-- Page scrolling, selection-edge rows, and link points use the displayed
-  grid.
-- A new press, hover motion, or wheel report outside the displayed grid
-  sends nothing. Motion and the release of a gesture the view already owns
-  are sent with clamped coordinates wherever the pointer is, as today.
-- Mouse reports carry the displayed snapshot's geometry revision for the
-  arbiter's check.
-- The size panel shows the canonical size.
-- `last_grid_size` splits into the requested grid and the displayed grid.
-  Smoke state reports both, so existing `grid=` assertions keep meaning the
-  PTY size.
+- The **requested grid** is the one `TerminalLayout` computes from the
+  view's bounds, as today. The view reports it to the runtime, which uses it
+  only while this viewer controls.
+- The **displayed grid** is the `size` of the snapshot the view shows: the
+  canonical grid when that snapshot was built. It differs from the requested
+  grid while another viewer controls, and for one snapshot after this view's
+  own layout changes.
+- The **visible area** is the part of the displayed grid the view can show:
+  the pixel rectangle where the displayed grid's extent, at this view's
+  cell size, overlaps the requested grid's painted bounds. It is measured
+  in pixels, not cells, because `TerminalLayout` requests at least one cell
+  even when less than one fits. A viewport narrower than a cell then paints
+  part of that cell, and today's hit test accepts the painted part. Only
+  bounds that padding reduces to nothing have an empty visible area.
+
+Until PR A, `TerminalView::last_grid_size` is both the requested grid and
+the grid the view assumes it displays. PR A renames it `requested_grid` and
+reads the displayed grid from the snapshot. Before the first snapshot
+nothing is displayed: hit tests answer "outside", and the page size,
+scrollbar, and size panel fall back to the requested grid.
+
+Painting needs no new code:
+
+- `TerminalRenderer::paint` already paints the snapshot's own `size` from
+  the layout origin, and `render` already clips to the requested grid's
+  cell-aligned bounds. A larger canonical grid is therefore cut at the last
+  whole cell the view requested, and a smaller one leaves the view's
+  background to its right and below. The clip does not widen to the padded
+  available area: that would draw a partial column and row, and it would
+  change what a single viewer shows while a shrinking window waits for its
+  snapshot, which the desktop input guide requires to stay clipped.
+- The origin stays the layout origin, including the `padding_balance`
+  offset computed from the requested width, so nothing moves while the two
+  grids agree. A smaller displayed grid is not centred again.
+- Rows and columns beyond the clip are still prepared and painted. Their
+  cost is bounded by the controlling view's grid, so PR A adds no culling.
+
+One pure type, `GridGeometry`, holds the requested grid's painted bounds,
+the cell size, the requested grid, and the displayed grid. It answers
+whether a position is inside the visible area, which displayed-grid cell a
+position maps to, where a cell is if any of it is visible, how many rows a
+page scrolls, and which way a selection drag past an edge scrolls. It lives
+in its own module so hit testing is unit-tested without a window and panes
+([#28][issue-28]) can reuse it. Cell coordinates are always in the displayed
+grid and clamp to its nearest edge; only the inside test and edge detection
+use the visible area.
+
+| Consumer | Grid it uses |
+| --- | --- |
+| Application mouse reports and link points | Inside test against the visible area; coordinates in the displayed grid |
+| Selection points | The displayed grid, as `point_for_position` already clamps |
+| Selection edge scrolling | The visible area's height to detect the edge; the displayed grid's first and last rows for the head, as today |
+| Page scrolling, from commands, a scrollbar track press, and the scroll benchmark | The smaller of the requested and displayed rows |
+| Scrollbar geometry | The displayed rows, because history and offset come from the same snapshot |
+| Size panel | The displayed grid |
+| Keyboard context-menu anchor and the IME candidate rectangle (`bounds_for_range`) | The cursor cell when it is inside the visible area, otherwise the grid's top-left corner |
+| Geometry reports, `pending_resize`, and the reported pixel size | The requested grid |
+
+The page size is the smaller of the requested and displayed row counts, not
+the displayed rows. They are equal unless the canonical grid is taller than
+the view, and there a page of displayed rows would skip the rows the view
+cannot show.
+
+Mouse reports:
+
+- A new press, hover motion, or wheel report outside the visible area sends
+  no mouse report. Motion and the release of a gesture the view already owns
+  are sent wherever the pointer is, with coordinates clamped to the
+  displayed grid.
+- Outside the visible area the pointer gets the local behavior the padding
+  has today: a wheel event scrolls the shared viewport, a left press starts
+  a selection at the clamped point, and a right press runs the configured
+  action. The background beside a smaller canonical grid is therefore not
+  inert.
+- Every `TerminalInput::Mouse` carries the geometry revision of the snapshot
+  its coordinates came from, set in `admit_input`. Other input carries none.
+  The queue already keeps the newer stamp when it coalesces motion, and a
+  retried report keeps the stamp it was queued with.
+
+Two kinds of change move the grid under a stationary pointer, and each needs
+one small reconciliation:
+
+- **A snapshot with a new geometry revision**, whichever viewer caused the
+  resize. `apply_snapshot` compares the revision, not the size, and calls
+  `MouseState::boundary`, which forgets the motion deduplication sample
+  and the wheel remainder of less than one step. Otherwise a hover report
+  that the runtime discarded as stale stays the sample and suppresses the
+  next motion in the same cell. Queued input and gesture ownership are
+  untouched, so a drag in progress continues.
+- **This view's own layout change.** `resize_to_layout` already invalidates
+  link state, and a snapshot follows only when this view controls. PR A
+  also forgets the hover point there, so the next render maps the pointer
+  again and requests a lookup even when no snapshot follows.
+
+Link state needs nothing on a new geometry revision. A link result arrives
+in the same reply as its snapshot and answers a cell, and another viewer's
+resize moves neither this view's origin nor its cell size, so the pointer
+maps to the same cell. Whether that cell is still inside the visible area
+is decided again by the next render, which the changed grid size already
+causes. Invalidating there would discard a result that is correct.
+
+The content generation already clears the selection. The size panel is
+raised only by this view's own viewport changes, so moving focus between two
+windows does not flash it in both. A hidden view requests no snapshots, so
+its displayed grid stays as it was when it was hidden, or empty if it was
+never shown, until it becomes visible again.
+
+A view that displays a canonical grid larger than its own accepts two
+limits. It shows the top-left cells, so the bottom rows, usually the prompt,
+are cut off until the user focuses or types in it and takes control. A
+selection dragged past the clipped edge keeps extending into rows and
+columns the view cannot show.
+
+With one viewer, the displayed grid trails the requested grid for one
+snapshot after each layout change: the view reports its geometry, the
+runtime resizes and publishes, and the view shows the old snapshot until the
+new one arrives, normally within a frame. This interval is the only
+user-visible change PR A intends for one viewer, and every consumer in the
+table above follows the displayed grid through it:
+
+- The size panel, scrollbar thumb, page size, and context-menu anchor show
+  the old grid for that snapshot and then the new one. A snapshot whose
+  size differs always redraws the view, so they settle without a further
+  event.
+- After the view grows, the cells it gained are outside the visible area
+  until the snapshot arrives. A press there starts a local selection
+  instead of a report, as a press on the padding does.
+- Today a press, hover motion, or wheel report in that interval is mapped
+  against the requested grid, which the user does not see yet, and sent
+  unstamped. PR A maps it against the displayed grid and stamps it. If the
+  runtime has applied the resize by the time it dequeues the report, it
+  discards the report as stale. If the report is dequeued first, for
+  example while the geometry report waits in `pending_resize` behind a busy
+  runtime, it is delivered against the grid the runtime still has, where
+  today's code sends coordinates for a grid the runtime has not reached.
+- The view cannot tell this interval from another viewer controlling, so it
+  has no special case for it.
+- A press discarded this way leaves the view owning the button locally, as
+  PR 1 accepted for refused presses. Its release is discarded too, and with
+  drag tracking the application can see that drag's motion without a press,
+  because the arbiter admits motion from a viewer that owns no gesture.
+
+Smoke state keeps `grid=`, and the integration smoke's `columns=` and
+`rows=`, as the requested grid, so existing assertions keep meaning the size
+this view asks the PTY for. Each writer adds `displayed_grid=`, or
+`displayed_columns=` and `displayed_rows=`, reporting `0,0` before the first
+snapshot. A hidden tab's displayed grid can be stale, so a check may compare
+the two grids only for a visible tab. There are five state writers: the
+palette, integration, presentation query, fullscreen, and quake smokes. The
+refresh smoke only reads the field to build a pending resize, and reads
+`requested_grid` instead. The presentation query smoke's `layout_grid`
+stays.
 
 Each view still renders with its own font metrics and scale. Only the cell
 count is shared.
 
-### Desktop: installing, replacing, and removing views (PR 2)
+### Desktop: a GPUI test harness (PR A, extended in PR B)
+
+`huterm-gpui` had no test that drives a view through GPUI; its tests were
+state machines with fakes. The vendored `gpui-pre` has a `test-support`
+feature with `#[gpui::test]`, `TestAppContext`, `VisualTestContext`
+(simulated mouse, keystrokes, resize, scale change, frame requests, and
+window activation), and a deterministic scheduler whose `allow_parking`
+lets a test wait on real threads such as a terminal runtime.
+
+The feature is enabled through an opt-in `test-support` feature on
+`huterm-gpui`, not through a dev-dependency. Cargo builds examples with
+dev-dependencies, and the smoke and benchmark binaries are examples, so a
+dev-dependency would compile GPUI's leak detection and debug-bounds records
+into them. The harness and its tests compile only under both `test` and the
+feature, and no production code is conditional on it, so one Clippy pass
+with the feature lints everything the pass without it did. The Cargo
+commands in the `lint`, `typecheck`, and `test:rust` tasks pass
+`--features huterm-gpui/test-support`; `check`, `check:rust`, `ci:lint`,
+`ci:test`, and the commit hook reach those three. Those `--all-targets`
+commands also compile the examples with the feature, but the smoke and
+benchmark tasks build their examples in their own Cargo commands without
+it. A bare `cargo test -p huterm-gpui` skips the harness tests; the
+development guide says so. A task that loses the flag would skip them
+without failing, so a script test, in the style of
+`scripts/policy-alignment.test.ts`, asserts that the three tasks pass it.
+
+The feature adds `proptest` and its dependencies to `Cargo.lock`, which
+needs `mise run license` and the release-age policy. On Linux it also sets
+GPUI's `wayland` cfg, which the workspace otherwise leaves off; the spike
+result below records that the Linux test build needs no extra packages.
+
+Tier 1, in PR A, is one `TerminalView` as the root of a test window over a
+standalone `TerminalRuntime`:
+
+- The helper spawns a `/bin/sh` fixture, subscribes a viewer, opens a test
+  window of a chosen size, builds the view with fixed `GridMetrics`, marks
+  it visible, and activates and focuses it. `GridMetrics` has private
+  fields, so `renderer.rs` gains a test-only constructor. Activation is
+  `Window::activate_window`.
+- A test window starts at scale factor 2.0 and the view rescales its
+  metrics on its first layout. Tests compute pointer positions from the
+  view's metrics after the first draw, never from the values they passed
+  in.
+- The view is configured without chrome: hidden chrome and no tab bar, so
+  its content origin is zero. `WorkspaceView` normally places the view at
+  that origin; as a window root the view paints at the window's origin, so
+  any other content origin would make painting and pointer mapping
+  disagree. The helper asserts the zero origin.
+- The helper draws the view before any input. GPUI raises focus callbacks
+  from drawn frames and the view mounts its pointer listeners while
+  painting, so a view that was never drawn receives neither. Before a test
+  goes on, the helper waits until the runtime has the view's focus report
+  and the view shows a snapshot with the mouse tracking mode the fixture
+  enabled.
+- It runs a drain shaped like the tab activity task: wait on the viewer's
+  wake, then call `refresh`. Snapshot replies arrive on the view's own
+  tasks.
+- Frames come from `Window::simulate_next_frame`, the only public frame
+  driver; `TestWindow` and its frame request are private to GPUI. GPUI's
+  test mode draws dirty windows but never runs next-frame callbacks, and
+  `SnapshotPacer` regains its allowance only inside one. Without a pumped
+  frame the view takes one snapshot and then stops, with no further wake or
+  notification.
+- Each wait is a loop: run the drain's pass, pump a frame while the view's
+  frame clock has callbacks pending, and check the condition, under a
+  bounded deadline that reports the last observed state. The deadline is
+  shorter than GPUI's 15-second parking limit. Waits never sleep for a
+  fixed time.
+- If the frame clock cannot be driven that way, the harness sets
+  `refresh = "unlimited"`, which only removes the per-frame snapshot
+  allowance. It does not replace drawing, and the spike test stays on
+  normal frame pacing if it can.
+- A second viewer needs no second window. The test holds a bare
+  `TerminalViewer` on the same runtime and makes it the controller with a
+  focus report sent after the view's own, so the view's displayed grid
+  differs from its requested grid for as long as the test needs.
+
+Tier 1 has known limits. Font metrics are synthetic. A test window has no
+native handle. Without the production `WorkspaceView` root,
+`windows::modal_focus` and `windows::modal_showing` answer "no dialog", and
+on macOS `windows::terminal_input_allowed` refuses text through the input
+handler. Tier 1 therefore covers pointer input, focus, geometry, and
+refresh, and leaves typed text to tier 2.
+
+Tier 2, in PR B, hosts `Desktop` and `WorkspaceView` with two windows on one
+session, which reconcile, exit-close, and replacement tests need.
+
+The harness is the first implementation step of PR A, as a spike. PR B's
+test plan depends on its answer, so if a real `TerminalView` cannot be built
+and driven in a test window, the work stops and the maintainer decides
+before falling back to pure functions and smokes. The spike's result is
+recorded here, with an answer to each of these, which reading the source
+could not settle:
+
+- whether GPUI's leak detector, which panics on a surviving entity handle,
+  passes when the test drops the view and its runtime;
+- whether `allow_parking` before the first cross-thread wake is enough for
+  the scheduler to accept the runtime's threads;
+- what the drain's and the retry's timers cost while the scheduler parks,
+  which it does in 100 ms steps;
+- whether `TerminalRenderer::prepare` shapes and paints with the test text
+  system;
+- whether the Linux test build compiles and links with GPUI's `wayland`
+  cfg set, and which packages it needs.
+
+Spike result, 2026-10-15: the tier 1 harness works on macOS and in the Linux
+container, so PR B builds on it.
+
+- A real `TerminalView` in a test window receives simulated pointer events,
+  and a click reaches the child as one press and one release. The test
+  passed 30 runs in a row, and moving the click to another cell fails it at
+  its assertion.
+- The leak detector passes when the test drops the view and its runtime.
+- `allow_parking` before the runtime starts is enough. Parked time advances
+  the test clock, so the drain's and the retry's timers run normally; each
+  tier 1 test takes under 1.5 seconds.
+- `TerminalRenderer` prepares and paints with the test text system.
+- The Linux test build compiles and passes with the `wayland` cfg set and
+  needs no packages beyond the container's.
+- One limit the source did not show: a simulated window resize moves GPUI's
+  test pointer to the window's origin, because `Window::bounds_changed` reads
+  the test platform's pointer, which never moves. A test that needs a still
+  pointer across a layout change changes the layout through the view, as the
+  hovered-link test does with a bottom tab bar.
+
+### Desktop: installing, replacing, and removing views (PR B)
 
 Reconcile gains one more derived output: projected tabs in the window's
 workspace that have no installed view and no install in flight. It skips a
@@ -739,7 +1029,7 @@ A window that gains an attachment, including the smoke fixture's, runs its
 own full reconcile. Attaching emits no hierarchy event, so nothing else
 would visit it.
 
-### Desktop: exit close has one actor (PR 2)
+### Desktop: exit close has one actor (PR B)
 
 `Desktop` keeps an **owed exit-close** per tab. The first window whose view
 observes the tab's exit transition while its config has `close_on_exit` set
@@ -775,7 +1065,25 @@ Exit notices stay per window, based on the viewer's exit transition, so a
 view installed after the exit announces nothing. Failure notices stay per
 window too.
 
-### Smoke fixture (PR 2)
+Two rules cover a confirmation dialog raised for an exit-close. Cancelling
+it clears the owed close for every window, so no other window raises the
+same prompt. A window closed while its confirmation shows returns the close
+to owed, like a claim whose window closed.
+
+PR B must first establish which path raises that dialog. An exited
+terminal's job assessment is always idle (`JobLifecycle::assess` in
+`huterm-core`), and only a non-idle assessment asks for confirmation, so an
+exit-close alone does not prompt today. The tests for the two rules need a
+controlled, test-only way to produce a confirming assessment, and the plan
+for PR B names it.
+
+The three states exist because a window owns the operation. PR B decides
+whether `Desktop` can own an exit-close outright, checked against
+`ExitQueue` and the close assessment, once its two-window harness shows
+whether today's single-window exit behavior can be pinned first. If
+`Desktop` owns it, the claimed state goes away.
+
+### Smoke fixture (PR B)
 
 The palette smoke fixture gains `attach-window\t<index>`. It opens a window
 without a shell (`launch_shell = false`), attaches it to the session of the
@@ -784,8 +1092,16 @@ session, and workspace in the window model, and runs that window's full
 reconcile, which installs the views. Production code gains no command for
 this.
 
+A second fixture command revokes a window's viewers, the only way to reach
+in-place re-subscription before [#21][issue-21] and [#26][issue-26].
+
 A new `check-viewers.ts` runs inside the macOS and Linux palette smokes, as
 `check-overlays.ts` does (see Verification).
+
+The palette smoke fixture is the production application plus file-driven
+commands, so PR B also adds a helper script that launches it and attaches a
+second window, for manual checks of Cmd-Tab, Mission Control, and occluded
+windows.
 
 ### Contract items for #44
 
@@ -838,16 +1154,76 @@ room so [#44][issue-44] adds messages instead of changing semantics:
    new parallel PTY tests. Mux already serializes production spawns, so
    the lock costs nothing there.
 
-### PR 2: desktop multi-viewer ([#206][issue-206])
+### Desktop multi-viewer ([#206][issue-206]): two PRs
 
-1. Split requested and displayed grids in `TerminalView`.
-2. Add the install, in-place replacement, and removal rules to reconcile
-   and `WorkspaceView`.
-3. Add owed exit-closes and claims.
-4. Add the smoke fixture and `check-viewers.ts`, and wire them into the
-   macOS and Linux palette smokes.
-5. Give `ScrollController` a way to clear its latched failure, or skip it
-   for `Revoked`, so an in-place viewer replacement resumes snapshots.
+Each PR is safe to merge alone. PR A changes nothing a single viewer can
+observe beyond the one-snapshot interval described above. PR B lets a second
+window show a session, through the fixture only, and closes both problems
+that a second window brings: a tab closed by two windows, and a revoked view
+left without a viewer.
+
+PR B starts from PR A's branch and targets `main` once PR A merges. Plain
+branches suffice; the stack needs no `gh stack`.
+
+#### PR A: requested and displayed grids
+
+All changes are in `crates/huterm-gpui`, plus the task and lockfile changes
+the test feature needs. No core or protocol change is expected.
+
+1. Harness spike. Add the `test-support` feature to `huterm-gpui`, pass it
+   from the Cargo commands in the `lint`, `typecheck`, and `test:rust`
+   tasks, add the script test that checks they do, and write the tier 1
+   helper with one test: a `TerminalView` in a test window over a
+   standalone runtime shows its child's output, and a simulated click
+   reaches the child as one press and one release. Run it on macOS. Run it
+   in the Linux container if `df` shows enough free disk; otherwise the
+   Linux answer comes from CI once the PR is pushed, and the recorded
+   result says it covers macOS only until then. Run `mise run license`.
+   Record the result in the harness section above, and stop for the
+   maintainer if a real `TerminalView` cannot be driven.
+2. Add `GridGeometry` in its own module under `desktop/`, with its unit
+   tests. `TerminalLayout` keeps computing the requested grid and bounds.
+3. Rename `last_grid_size` to `requested_grid` and route each consumer in
+   the table above through the displayed grid or the visible area:
+   `application_mouse` and `link_cell`, the selection edge in `mouse_move`,
+   `scroll_command` and the scrollbar track press, `scrollbar_geometry`, the
+   scroll benchmark's page size, `render_size_panel`,
+   `context_menu_anchor`, and `bounds_for_range`. `resize_to_layout`,
+   `pending_resize`, and `physical_cell_size` stay on the requested grid.
+4. Stamp mouse reports in `admit_input` with the displayed snapshot's
+   geometry revision.
+5. Forget the motion sample when `apply_snapshot` sees a new geometry
+   revision, and forget the hover point where `resize_to_layout`
+   invalidates link state.
+6. Report both grids from the five smoke state writers, move the refresh
+   smoke to `requested_grid`, and make `check-presentation-queries.ts` and
+   `check-fullscreen.ts`, which already compare `grid=` with the PTY size,
+   also require a visible tab's displayed grid to match once settled. The
+   presentation query smoke reloads its configuration while tab 0 is
+   hidden; that step keeps comparing only the requested grid.
+7. Add the tier 1 tests under Verification.
+8. Update the guides under Documentation.
+
+#### PR B: installing, closing, and replacing views
+
+Three parts, landed in this order as separate commits, so each part's tests
+pass before the next begins:
+
+1. Installing views. Add install and session-change removal to reconcile
+   and `WorkspaceView`, and the full reconcile for a window that gains an
+   attachment. Add the `attach-window` fixture command, `check-viewers.ts`
+   steps 1 to 5 and 7 wired into the macOS and Linux palette smokes, a debug
+   counter in core for snapshot builds and cache reuses reported in smoke
+   state, and the helper script for native two-window checks. Extend the
+   harness to tier 2.
+2. Exit close. Decide whether `Desktop` owns an exit-close outright. Add
+   owed exit-closes, with claims unless `Desktop` owns them, the two
+   confirmation rules, and `check-viewers.ts` step 6.
+3. Replacement. Re-subscribe a revoked view in place from reconcile. Give
+   `ScrollController` a way to clear its latched failure, or skip it for
+   `Revoked`, so a replaced viewer resumes snapshots. Add the fixture
+   command that revokes a window's viewers, and cover replacement through
+   it.
 
 ### Follow-up issue: sizing policies ([#207][issue-207])
 
@@ -973,8 +1349,8 @@ intended assertion:
 Desktop coverage. `huterm-gpui` has no harness that drives a
 `TerminalView` against a live runtime, so PR 1 covers the desktop with
 unit tests of its queues and controllers, the core PTY tests, and the
-smokes. A view-level harness lands with PR 2, which needs it for reconcile
-and replacement.
+smokes. A view-level harness lands with PR A and grows in PR B, which needs
+it for reconcile.
 
 - `InputQueue` unit tests: focus entries keep their order around input,
   coalesce only when adjacent, ignore capacity and exit closure, and a
@@ -991,28 +1367,153 @@ and replacement.
   presentation query smoke covers hidden-tab padding, font, and theme
   reloads reaching the PTY.
 
-Moved to PR 2's view-level harness: the refresh applying each status
-change exactly once, a view installed after exit reporting no transition,
-an exited tab reflowing through its view, and a focus gain, key, and blur
-draining through a real viewer as `ESC [ I`, the key's bytes, and
-`ESC [ O`.
+Moved to PR B's harness, which hosts the production window root that typed
+text needs on macOS: the refresh applying each status change exactly once,
+a view installed after exit reporting no transition, an exited tab
+reflowing through its view, and a focus gain, key, and blur draining
+through a real viewer as `ESC [ I`, the key's bytes, and `ESC [ O`.
 
-### PR 2
+### PR A
 
-- Displayed-grid unit tests: mouse positions, page size, and selection
-  points against a canonical grid larger and smaller than the requested one;
-  a press inside the grid and a release outside the window still send the
-  release, after which another viewer's press is accepted.
+`GridGeometry` unit tests, without a window, each against a displayed grid
+larger than, smaller than, and equal to the requested one:
+
+- The inside test accepts every position in the visible area and rejects
+  the padding, the background beside a smaller grid, and positions past the
+  clip of a larger one. The equal case keeps today's
+  `application_coordinates_exclude_titlebar_padding_and_grid_endpoints`
+  expectations.
+- Coordinates outside clamp to the displayed grid's nearest edge: column and
+  row zero to the left and above, and the last column and row to the right
+  and below, which lie beyond the visible area when the grid is larger.
+- A viewport narrower or shorter than one cell accepts positions on the
+  part of the cell it paints, as today. Bounds that padding reduces to
+  nothing accept none, with and without `padding_balance`. Both still page
+  by one row.
+- The page size is the smaller of the requested and displayed rows, and the
+  displayed rows give the scrollbar geometry.
+- Selection points clamp to the displayed grid, and the edge direction uses
+  the visible area's height.
+- With `padding_balance`, the displayed grid's origin is the requested
+  layout's origin.
+- A cursor cell beyond the clip has no visible position, so the keyboard
+  context menu and the IME candidate rectangle anchor at the grid's
+  top-left corner.
+
+Two more unit tests:
+
+- The stamp: a mouse report takes the displayed snapshot's geometry
+  revision, and keys, text, and paste take none, so a stale snapshot never
+  discards typing.
+- `Links`: after its state is invalidated and its hover point forgotten, an
+  update with the same point requests a lookup. Invalidation alone does
+  not, which is today's behavior and the reason for the change.
+
+Tier 1 harness tests, each with a real runtime whose child enables mouse
+tracking and echoes the reports it receives. The boundary cases stay in the
+unit tests; these prove the view is wired to them. A report that must not
+arrive is shown absent by a later report that arrives alone, so every
+negative assertion ends at an ordered boundary:
+
+- The spike test: a click inside the grid arrives as one press and one
+  release at the cell under the pointer.
+- The one-snapshot interval, which is the test of the stamp. The test
+  starts settled: the displayed grid equals the requested grid and the
+  view's queue is empty. Inside one window update, by calling the view's
+  handlers directly, it changes the layout so the requested grid changes,
+  checks that the geometry report was admitted and `pending_resize` is
+  empty, and presses and releases on a cell inside both grids. No snapshot
+  can be applied inside that update, so the press carries the old revision
+  and follows the resize on the runtime's ordered queue. The test then
+  waits for a snapshot with the new revision, presses and releases on a
+  different cell, and waits for that report. The child's output holds the
+  second cell's report and nothing for the first.
+- A hover report discarded as stale does not suppress the next one. A bare
+  viewer controls, and the child tracks all motion. Inside one window
+  update the bare viewer reports the same grid with a different cell size,
+  and the view then receives a motion event on cell X. The resize runs
+  first on the runtime's queue, so the motion carries the old revision and
+  is discarded. The test waits until the view shows the new revision,
+  sends a second motion on cell X with no press, release, wheel, or focus
+  change in between, since each of those also clears the sample, and then
+  presses. The child's output holds one motion at X followed by the press.
+  The change of cell size alone shows that the view compares revisions,
+  not sizes.
+- A larger canonical grid, and a gesture that spans the change. The view
+  presses on cell A while the grids agree. A bare viewer then takes control
+  with a larger grid, and the test waits for the view to show it: the
+  view's requested grid is unchanged and its displayed grid is the
+  canonical one. A release far outside the window arrives clamped to the
+  canonical grid's last column, which shows the gesture survived the new
+  revision. A press from the bare viewer is then accepted, a press from the
+  view on a visible cell B arrives at B, and a page-up command moves the
+  viewport by the view's requested rows.
+- A smaller canonical grid: a press and a hover motion on the background
+  beside the grid write no report, shown by a later press inside the grid
+  arriving alone, and a wheel event there scrolls the viewport locally.
+- A hovered link under a stationary pointer is found again after the view's
+  own layout changes while a bare viewer keeps control, so the canonical
+  grid stays as it was and no snapshot follows the change.
+
+Not tested in PR A:
+
+- A report dequeued before a geometry report that waits in
+  `pending_resize`. Its order comes from `retry_client_messages`, which
+  PR A does not change, and forcing a busy runtime in the harness costs
+  more than the case is worth.
+- The size panel's text. It reads the displayed grid, and the interval test
+  already waits for the displayed grid to equal the requested one.
+
+Perturbation checks, run once and restored, each required to fail at its
+intended assertion:
+
+- Stamp mouse reports with no revision: the one-snapshot interval test must
+  fail because the first press arrives.
+- Map against the requested grid: the smaller canonical grid test must fail
+  because the background press arrives.
+- Skip the motion reset: the stale hover test must fail because no motion
+  precedes the press.
+
+The hovered link test needs no perturbation: it is written before the hover
+point is forgotten and must fail first.
+
+The harness tests exist only with the `test-support` feature, so the PR
+names each one from the output of `mise run test`, to show the runner
+collected them.
+
+Smoke and benchmark evidence:
+
+- The host macOS smokes whose state changes: `smoke:macos-palette`,
+  `smoke:macos-integration`, `smoke:presentation-queries`,
+  `smoke:macos-fullscreen`, `smoke:macos-quake`, and `smoke:macos-refresh`.
+  The integration and fullscreen smokes enable mouse tracking and assert
+  the reports a program receives, so they cover the stamped path in the
+  production window. `smoke:macos-input` covers keyboard input and local
+  selection.
+- `mise run linux:smoke` for the same writers and for mouse reports under
+  Xvfb, where frames arrive only on request, if `df` shows enough free
+  disk. Otherwise CI's Linux smoke job is the evidence, and the PR says so.
+- `mise run ci:benchmarks` before and after, to show the input, scroll, and
+  link budgets hold.
+
+Commands: `mise run check`, `mise run test`, and `mise run license` while
+working, and `mise run verify` before handoff. Run
+`mise run test:ghostty-releasesafe` only if core changes.
+
+### PR B
+
+Installing views:
+
+- The view-level tests moved from PR 1, listed above.
 - Reconcile tests in `windows/projection.rs`: a projected tab without a view
   yields one install; an install in flight, a busy window, or a terminating
   runtime yields none; reconciling twice yields no duplicate; a tab removed,
-  or whose viewer was revoked, before the completion is not pushed; a
-  revoked view is re-subscribed in place, keeping the active tab, focus,
-  and selection, and its focused replacement writes `ESC [ I` and regains
-  control; after replacement, new output, a title change, an exit, and a
-  clipboard write each reach the view through its restarted activity task
-  without display frames; a tab whose workspace moved to another session is
-  removed.
+  or whose viewer was revoked, before the completion is not pushed; a tab
+  whose workspace moved to another session is removed.
+- `check-viewers.ts` steps 1 to 5 and 7, below, and the OSC 52 assertion.
+
+Exit close:
+
 - Exit-close tests, with both windows observing the exit before either close
   starts:
   - exactly one close is assessed;
@@ -1028,8 +1529,37 @@ draining through a real viewer as `ESC [ I`, the key's bytes, and
     the other window then closes the tab;
   - a tab that exited under `close_on_exit = false` stays open after a
     reload enables it, as the existing reload test requires;
-  - a view installed after the exit announces nothing.
+  - a view installed after the exit announces nothing;
+  - cancelling the confirmation clears the close in both windows, and
+    neither prompts again;
+  - closing the window whose confirmation shows returns the close to owed,
+    and the other window then prompts.
+
+  The last two need the confirming assessment described under the exit-close
+  decision; an exited shell does not produce one.
+- `check-viewers.ts` step 6, below.
+
+Replacement:
+
+- Replacement tests through the fixture's revoke command: a revoked view is
+  re-subscribed in place, keeping the active tab, focus, and selection, and
+  its focused replacement writes `ESC [ I` and regains control; after
+  replacement, new output, a title change, an exit, and a clipboard write
+  each reach the view through its restarted activity task without display
+  frames; a view whose re-subscription fails is removed.
+- A `ScrollController` unit test: clearing the latch after `Revoked` lets
+  the next invalidation start a snapshot request.
+- Replacement of the controlling viewer while another viewer has a
+  different size. Revocation hands control to the other viewer and the
+  focused replacement takes it back, so the terminal resizes twice, each
+  resize advances the content generation, and the view clears its
+  selection. Whether "keeps the selection" holds only when no resize
+  happens is an unresolved question below.
+
+### The viewers smoke
+
 - `check-viewers.ts` in `smoke:macos-palette` and `smoke:linux-palette`.
+  PR B adds all seven steps.
   Assert runtime-backed state where Xvfb delivers no frames: the PTY size
   from the shell and the shared viewport from a fixture snapshot request,
   not from window 0's rendering.
@@ -1052,7 +1582,8 @@ draining through a real viewer as `ESC [ I`, the key's bytes, and
 
 ### Efficiency gates
 
-Run before and after PR 1, and again for PR 2:
+Run before and after PR 1. PR A reruns only `ci:benchmarks`, because it
+changes input mapping and page scrolling and nothing an idle terminal runs.
 
 - `mise run ci:benchmarks`: output latency within the 5 ms applied budget,
   at most 1.5 snapshots per key, scroll and link budgets unchanged. The
@@ -1061,14 +1592,16 @@ Run before and after PR 1, and again for PR 2:
   wakeups and CPU unchanged.
 - A core test floods a terminal with a re-sent unchanged title and asserts
   that a hidden viewer receives no wake after its first.
-- For PR 2, report snapshot builds and cache reuses for scrolling and for
-  an output burst with one and two visible viewers, from a debug counter in
-  smoke state. This is a report, not a gate.
+- For PR B, report snapshot builds and cache reuses for scrolling and for
+  an output burst with one and two visible viewers, from the debug counter
+  in smoke state. This is a report, not a gate.
 
-Commands: `mise run check`, `mise run test`,
-`mise run test:ghostty-releasesafe`, the macOS host smokes (never the Tart
-VM smokes), and `mise run linux:smoke`, cleaning up Docker volumes and images
-afterwards. Run `mise run verify` before handoff.
+Commands for PR 1 and PR B: `mise run check`, `mise run test`,
+`mise run test:ghostty-releasesafe` when core changes, the macOS host smokes
+(never the Tart VM smokes, which need about 80 GB), and
+`mise run linux:smoke`. Check free disk with `df` before a Docker run, and
+clean up its volumes and images afterwards. Run `mise run verify` before
+handoff. PR A's commands are listed with its verification.
 
 ## Documentation
 
@@ -1087,6 +1620,22 @@ afterwards. Run `mise run verify` before handoff.
   exist and each viewer has its own wake.
 - `docs/plans/hierarchy-projection.md`: mark the install deferral done and
   move attachment events to [#26][issue-26] and [#21][issue-21].
+
+PR A adds:
+
+- `docs/agents/desktop-input.md`: mouse reports, link points, and selection
+  map against the displayed grid and clamp to it; mouse reports carry the
+  displayed snapshot's geometry revision; the paint clip stays at the
+  requested grid's bounds, which now also clips a larger canonical grid.
+- `docs/agents/desktop-client.md`: `TerminalLayout` owns the requested grid
+  and `GridGeometry` the mapping onto the displayed grid; `requested_grid`
+  is what the view reports, never what it draws.
+- `docs/agents/desktop-smokes.md`: `grid=` is the requested grid and
+  `displayed_grid=` the snapshot's.
+- `docs/agents/development.md`: the GPUI test harness, its `test-support`
+  feature, which tasks pass it, and its tier 1 limits.
+- `docs/agents/dependencies.md`: GPUI's `test-support` feature is enabled
+  only through `huterm-gpui`'s feature, never as a dev-dependency, and why.
 
 ## Risks
 
@@ -1111,12 +1660,44 @@ afterwards. Run `mise run verify` before handoff.
 - **One shared input byte budget** lets one viewer's large paste refuse
   another viewer's input until it drains. Acceptable in process;
   [#44][issue-44] owns per-connection budgets.
+- **The stale-geometry check becomes live in PR A.** Until then no report
+  carries a revision. A snapshot that stayed stale after a resize would make
+  the runtime discard every press from that view. Every applied resize
+  publishes, including one that changes only the cell size, and a publication
+  invalidates the view, so a visible view that receives frames converges on
+  the new revision. A hidden or occluded view can stay stale, and it
+  receives no pointer input. A smoke that clicks within a frame of a layout
+  change could now lose that click; the smokes run to find out. The
+  integration and fullscreen smokes are the check that reports still arrive
+  in the production window, including under Xvfb, where frames arrive only
+  on request.
+- **The tier 1 harness is not the production window.** Its drain copies the
+  tab activity task's shape, its font metrics are synthetic, and its root is
+  not `WorkspaceView`. It proves view behavior against a real runtime; the
+  smokes still own the production wiring.
+- **A second GPUI build.** Tests build GPUI with `test-support` and smoke
+  binaries build it without, so a checkout that runs both holds two GPUI
+  builds. A dev-dependency would not save one: `cargo build -p huterm`
+  builds GPUI without dev-dependency features, so it would differ from the
+  test and example builds instead.
 
 ## Unresolved questions
 
 - None blocking. Mouse arbitration may change after experiments, within
   `MouseArbiter`, and the stale-display wheel limitation above is accepted
   unless the maintainer objects.
+- Should `MouseArbiter` discard motion that names a held button from a
+  viewer that owns no gesture? Today it admits it, so a drag whose press was
+  refused, by another viewer's gesture or by a stale revision, reaches the
+  application as motion without a press. This is a core change outside
+  PR A.
+- For PR B's exit close: which path raises a confirmation for an
+  exit-close, given that an exited terminal always assesses as idle?
+- For PR B's replacement: issue #206 requires that revoking a viewer keeps
+  the selection. A selection is bound to the content generation, which
+  every resize advances, and replacing the controlling viewer beside a
+  differently sized one resizes twice. Is the criterion conditional on an
+  unchanged generation, or does replacement need to avoid the resize?
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20

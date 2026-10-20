@@ -91,6 +91,19 @@ impl GridMetrics {
             scale_factor,
         )
     }
+
+    /// Metrics with a fixed cell size, for tests whose text system reports
+    /// synthetic font measurements.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn fixed(cell_width: f32, cell_height: f32) -> Self {
+        Self::from_measurements(
+            px(12.0),
+            px(cell_width),
+            px(cell_height - 3.0),
+            px(3.0),
+            1.0,
+        )
+    }
 }
 
 pub(super) struct TerminalRenderer {

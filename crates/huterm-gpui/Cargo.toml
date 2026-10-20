@@ -10,6 +10,9 @@ version = "0.17.0"
 [features]
 default = []
 macos-updater = []
+# GPUI's test helpers for the view harness tests. A dev-dependency would also
+# build them into the smoke and benchmark examples, so tasks opt in instead.
+test-support = ["gpui/test-support"]
 
 [dependencies]
 anyhow.workspace = true

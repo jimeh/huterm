@@ -70,6 +70,13 @@ macOS smoke job has no `timeout`, and its Linux smoke job has no `rg`.
 
 ## Synchronizing with the app
 
+Smoke state's `grid=` (`columns=` and `rows=` in the integration smoke) is the
+grid a view requests, which PTY assertions compare against. `displayed_grid=`
+(`displayed_columns=` and `displayed_rows=`) is the size of the snapshot the view
+shows, `0,0` before the first. It follows the requested grid one snapshot later
+and stays stale while the tab is hidden, so compare the two only for a visible
+tab and only once settled.
+
 Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay, wait for a field set during
 render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the

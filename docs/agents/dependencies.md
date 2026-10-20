@@ -58,6 +58,13 @@ dependencies, so the vendored `gpui-pre-macos` printed 1,224 warnings on every
 macOS build. Their functional fixes touch no API GPUI uses. Drop the hold and
 its Dependabot ignore once the vendored GPUI no longer uses `cocoa`.
 
+Enable GPUI's `test-support` feature only through `huterm-gpui`'s own
+`test-support` feature, never as a dev-dependency. Cargo builds examples with
+dev-dependencies, and the smoke and benchmark binaries are examples, so a
+dev-dependency would compile GPUI's leak detection into them. The feature adds
+`proptest` to `Cargo.lock` and sets GPUI's `wayland` cfg on Linux; the Linux
+container builds and runs it without extra packages.
+
 Keep direct `nix` on the newest 0.29.x release while `portable-pty`'s
 `MasterPty` exposes only `as_raw_fd()`. Nix 0.30 and newer require `AsFd` for
 `fcntl`; upgrading earlier would require an unsafe borrowed-descriptor

@@ -204,7 +204,7 @@ async fn check_pending_work(cx: &mut AsyncApp) -> anyhow::Result<()> {
                     },
                 )?;
                 terminal.pending_resize = Some((
-                    terminal.last_grid_size,
+                    terminal.requested_grid,
                     terminal.last_cell_size.context("missing cell size")?,
                 ));
                 terminal.pending_presentation =
