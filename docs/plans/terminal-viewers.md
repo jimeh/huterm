@@ -1097,14 +1097,18 @@ Built in PR B part 3, on 2026-10-22:
   focused registration is the newest focus gain and takes control, and a
   blur sent afterwards would not give control back to the window that
   became active meanwhile.
-- Also changed in review: an exit that a replaced view first sees from
-  status is the exit transition when the view saw the terminal running
-  before its replacement (`replaced_while_running`). The root shell can
+- Also changed in review: an exit that a view first sees from status is
+  its exit transition when an earlier poll showed the terminal running
+  (`seen_running`), as happens for a replaced view. The root shell can
   exit after the old viewer's last poll and before the replacement
   subscribes, and core reports `exited` only to a viewer subscribed while
   the shell ran, so the exit-close or the exit notice would otherwise
   never happen. A view first installed after the exit still announces
-  nothing.
+  nothing, even if its viewer is revoked and replaced before its first
+  poll: it never saw the terminal running. A revoked viewer's `poll`
+  still reports the exit, so the exit tests await the old activity task's
+  completion, which follows the slot's finalization, before the shell
+  exits.
 - Swapping discards the view's `InputQueue`, pending geometry and
   presentation, mouse ownership, and a pending context-menu lookup. It
   restarts `ScrollController` (`restart` clears the latched failure and the

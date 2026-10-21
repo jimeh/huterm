@@ -366,10 +366,11 @@ struct TerminalView {
     /// reports once swapped in: GPUI raises no new focus event for a view
     /// that stays focused.
     reported_focus: bool,
-    /// The view saw its terminal running before its viewer was replaced, so
-    /// an exit the replacement first sees from status is still the exit
-    /// transition for this view.
-    replaced_while_running: bool,
+    /// A poll showed the terminal running, so an exit this view first sees
+    /// from status, as a replacement viewer does when the shell exited while
+    /// it was in flight, is still this view's exit transition. A view
+    /// installed after the exit never sets it and announces nothing.
+    seen_running: bool,
     visible: bool,
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
@@ -745,7 +746,7 @@ impl TerminalView {
             revoked: false,
             viewer_epoch: 0,
             reported_focus: false,
-            replaced_while_running: false,
+            seen_running: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -1001,6 +1002,7 @@ impl TerminalView {
             self.scroll.invalidate();
         }
         if let Some(status) = &update.status {
+            self.seen_running |= status.lifecycle == TerminalLifecycle::Running;
             // Applications often resend an unchanged title; only a new
             // title needs to re-render the tab and window.
             if status.title != self.title {
@@ -1054,10 +1056,8 @@ impl TerminalView {
         if changed {
             cx.notify();
         }
-        // A replaced view that saw the terminal running announces an exit
-        // that happened while its replacement was in flight.
-        let transition = update.exited.is_some()
-            || (self.replaced_while_running && exit.is_some());
+        let transition =
+            update.exited.is_some() || (self.seen_running && exit.is_some());
         RefreshResult {
             changed,
             exited: !previously_exited && transition,
@@ -1103,7 +1103,6 @@ impl TerminalView {
         if self.exited {
             self.input_queue.close();
         }
-        self.replaced_while_running |= !self.exited;
         let current = self.viewer_start();
         self.pending_resize = current
             .geometry

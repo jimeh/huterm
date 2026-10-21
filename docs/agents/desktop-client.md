@@ -57,9 +57,11 @@ the view last reported (`reported_focus`) through the input queue, since GPUI
 raises no focus event for a view that stays focused, restarts
 `ScrollController`, ignores replies to the old viewer by `viewer_epoch` (a
 late `Revoked` would otherwise latch the scroll failure), and replaces the
-tab's activity task, which waits on the old viewer's wake. A replaced view
-that saw its terminal running treats an exit it first sees from status as the
-exit transition. A failed replacement removes the view.
+tab's activity task, which waits on the old viewer's wake. A view that a
+poll showed running (`seen_running`) treats an exit it first sees from status
+as the exit transition, so a shell that exits while the replacement is in
+flight still closes or announces. A revoked viewer's `poll` still reports the
+exit until its slot is finalized. A failed replacement removes the view.
 
 ## Activity tasks and frame scheduling
 

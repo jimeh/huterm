@@ -1509,6 +1509,15 @@ fn exit_while_replacing(
             && terminal(cx, window, exits)
                 .is_some_and(|view| view.read(cx).revoked)
     });
+    // A revoked viewer's poll still reports an exit, so the tab's old
+    // activity drain must have made its last refresh and ended before the
+    // shell exits. It ends once the runtime finalizes the revoked viewer
+    // and closes its wake; the swap later replaces the placeholder.
+    let drain = harness.update_view(window, |view, _, _| {
+        let tab = view.tabs.iter_mut().find(|tab| tab.id == exits).unwrap();
+        std::mem::replace(&mut tab.activity_task, Task::ready(()))
+    });
+    harness.cx.foreground_executor().clone().block_test(drain);
     let client = harness.send_line(exits, "x");
     let mut seen = false;
     harness.wait_for("the exit", |_| {
