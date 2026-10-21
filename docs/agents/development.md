@@ -325,8 +325,7 @@ and `scripts/policy-alignment.test.ts` checks that they do. A bare
 
 - The view has no `WorkspaceView` above it: modal checks answer "no dialog",
   and on macOS typed text through the input handler is refused. Tests that
-  type, or that need two windows, belong in a harness that hosts the real
-  window root.
+  type, or that need two windows, belong in the tier 2 harness below.
 - Font metrics are fixed (`GridMetrics::fixed`), and the test window starts
   at scale factor 2. Compute pointer positions from the view's layout after
   its first draw.
@@ -340,6 +339,15 @@ and `scripts/policy-alignment.test.ts` checks that they do. A bare
   still.
 - To place steps where no snapshot can be applied between them, call the
   view's handlers directly inside one `ViewHarness::update`.
+
+Tier 2, `crates/huterm-gpui/src/desktop/windows/window_tests.rs`, hosts the
+production `Desktop` global and `WorkspaceView` roots. `DesktopHarness`
+installs the desktop as `run_with_startup` does, builds a session and its
+tabs through Mux, and opens windows without a shell that attach to that
+session and install its views, as the smoke fixture's `attach-window` does.
+Typed keys reach a terminal only once its window is active and the terminal
+is focused, so `DesktopHarness::activate` waits for both. Its waits pump
+frames on every window.
 
 ## Validation ladder
 

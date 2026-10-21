@@ -934,7 +934,7 @@ run_smoke_step() {
 case "$(uname -s)" in
   Darwin)
     case "$smoke_step" in
-      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -967,6 +967,9 @@ case "$(uname -s)" in
     if run_smoke_step macos-overlays; then
       HUTERM_PALETTE_SMOKE_ONLY=overlays bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
+    if run_smoke_step macos-viewers; then
+      HUTERM_PALETTE_SMOKE_ONLY=viewers bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
+    fi
     if run_smoke_step macos-titlebar; then
       HUTERM_PALETTE_SMOKE_ONLY=titlebar bun scripts/check-palette.ts target/debug/examples/palette_smoke target/debug/hid-pointer
     fi
@@ -986,7 +989,7 @@ case "$(uname -s)" in
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-viewers|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1046,6 +1049,10 @@ case "$(uname -s)" in
     fi
     if run_smoke_step linux-overlays; then
       HUTERM_PALETTE_SMOKE_ONLY=overlays xvfb-run -a -e "$evidence_dir/linux-overlays-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-palette.ts target/debug/examples/palette_smoke
+    fi
+    if run_smoke_step linux-viewers; then
+      HUTERM_PALETTE_SMOKE_ONLY=viewers xvfb-run -a -e "$evidence_dir/linux-viewers-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-palette.ts target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-client-frame; then
@@ -1179,6 +1186,11 @@ xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-desktop-integr
 description = "Launch a safe Ghostty raw-PTY recorder for Finder or file-manager QA"
 depends = ["ghostty:prepare"]
 run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example integration_smoke && bun scripts/manual-desktop-integration.ts"
+
+[tasks."smoke:manual-viewers"]
+description = "Launch one terminal in two windows for manual focus and control QA"
+depends = ["ghostty:prepare"]
+run = "bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke && bun scripts/manual-viewers.ts"
 
 [tasks."vendor:check"]
 description = "Verify vendored crates match their pinned archives and patches"

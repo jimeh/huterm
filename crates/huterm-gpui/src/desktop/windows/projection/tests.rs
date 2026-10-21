@@ -116,10 +116,15 @@ struct View {
 struct FakeWindow {
     id: WindowId,
     workspace: WorkspaceId,
+    /// The attached session; only an attached window installs views.
+    session: Option<SessionId>,
     views: Vec<View>,
     busy: bool,
     /// Every title publication, in order.
     published: Vec<TabId>,
+    pending: PendingInstalls,
+    /// Every install batch reconcile started, in order.
+    started: Vec<Vec<TabId>>,
 }
 
 struct Target<'a> {
@@ -135,6 +140,10 @@ impl ReconcileTarget for Target<'_> {
 
     fn workspace(&self) -> Option<WorkspaceId> {
         Some(self.window.workspace)
+    }
+
+    fn session(&self) -> Option<SessionId> {
+        self.window.session
     }
 
     fn installed(&self) -> Vec<(TabId, u64)> {
@@ -191,6 +200,14 @@ impl ReconcileTarget for Target<'_> {
         self.window.published.push(tab);
         self.model.set_tab_title(self.window.id, tab, title)
     }
+
+    fn pending_installs(&mut self) -> &mut PendingInstalls {
+        &mut self.window.pending
+    }
+
+    fn install(&mut self, tabs: &[TabId]) {
+        self.window.started.push(tabs.to_vec());
+    }
 }
 
 fn layout() -> WindowLayout {
@@ -213,10 +230,25 @@ fn open_window(
     FakeWindow {
         id: window(id),
         workspace: workspace_id,
+        session: None,
         views: Vec::new(),
         busy: false,
         published: Vec::new(),
+        pending: PendingInstalls::default(),
+        started: Vec::new(),
     }
+}
+
+/// A window attached to session 1, which installs views for the tabs its
+/// workspace holds.
+fn attached_window(
+    model: &mut WindowModel,
+    id: u64,
+    workspace_id: WorkspaceId,
+) -> FakeWindow {
+    let mut fake = open_window(model, id, workspace_id);
+    fake.session = Some(session(1));
+    fake
 }
 
 /// Installs a spawned view as `push_tab_view` does: append, then apply the
@@ -394,9 +426,9 @@ fn a_projected_tab_without_a_view_is_tolerated_while_its_spawn_is_in_flight() {
 }
 
 #[test]
-fn a_projected_tab_without_a_view_is_tolerated_in_an_idle_window() {
-    // Destroying a view only detaches it; the tab lives on in the
-    // projection, and reconcile neither asserts nor installs a view.
+fn a_projected_tab_without_a_view_is_tolerated_in_an_unattached_window() {
+    // A window without an attachment cannot subscribe, so reconcile neither
+    // asserts nor installs a view for a tab it shows no view of.
     let mut feed = Feed::new();
     let mut model = WindowModel::default();
     let mut fake = open_window(&mut model, 1, workspace(10));
@@ -420,11 +452,25 @@ fn removal_waits_for_teardown_to_own_it() {
     // Quit pending, assessing, confirming, or cancelled leaves `terminating`
     // clear, so reconcile still removes; only committed teardown skips.
     assert_eq!(
-        removals(&feed.state, Some(workspace(10)), &installed, false, false),
+        removals(
+            &feed.state,
+            Some(workspace(10)),
+            None,
+            &installed,
+            false,
+            false
+        ),
         [tab(1)]
     );
     assert_eq!(
-        removals(&feed.state, Some(workspace(10)), &installed, false, true),
+        removals(
+            &feed.state,
+            Some(workspace(10)),
+            None,
+            &installed,
+            false,
+            true
+        ),
         []
     );
 }
@@ -720,9 +766,12 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
     let mut fake = FakeWindow {
         id: window(1),
         workspace: workspace_id,
+        session: None,
         views: Vec::new(),
         busy: false,
         published: Vec::new(),
+        pending: PendingInstalls::default(),
+        started: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
@@ -802,8 +851,11 @@ fn a_reset_queued_after_teardown_is_not_applied_and_labels_keep_custom_names() {
             terminal_title: "sh".into(),
             names: TabNames::default(),
         }],
+        session: None,
         busy: false,
         published: Vec::new(),
+        pending: PendingInstalls::default(),
+        started: Vec::new(),
     };
     let target = Target {
         window: &mut fake,
@@ -875,9 +927,12 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
     let mut fake = FakeWindow {
         id: window(1),
         workspace: workspace_id,
+        session: None,
         views: Vec::new(),
         busy: false,
         published: Vec::new(),
+        pending: PendingInstalls::default(),
+        started: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
@@ -930,13 +985,14 @@ fn a_tab_moved_to_another_workspace_leaves_the_old_window() {
     assert!(change.changed && change.titles);
     assert_eq!(view_order(&first), [tab(1)]);
     assert_eq!(model_order(&model, &first), [tab(1)]);
-    // The destination window installs nothing: creating views for tabs it
-    // did not spawn belongs to #22.
+    // The destination window, which has no attachment here, installs
+    // nothing.
     assert_eq!(model_order(&model, &second), []);
     assert_eq!(
         removals(
             &feed.state,
             Some(workspace(11)),
+            None,
             &[(tab(2), feed.state.seq())],
             false,
             false
@@ -1046,4 +1102,159 @@ fn removing_an_idle_windows_active_tab_activates_its_replacement() {
     reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
     let after = model.record(fake.id).unwrap().active;
     assert_eq!(reactivation(before, after), Some(tab(1)));
+}
+
+#[test]
+fn an_attached_window_installs_each_projected_tab_without_a_view_once() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    let seq = feed.open(workspace(10), 1);
+    push(&mut fake, &mut model, &feed.state, 1, seq);
+    feed.open(workspace(10), 2);
+    feed.open(workspace(10), 3);
+    feed.open(workspace(11), 4);
+    let change =
+        reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(fake.started, [vec![tab(2), tab(3)]]);
+    assert!(!change.changed, "starting an install renders nothing");
+    // While those installs are in flight, reconciling again starts none.
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert_eq!(fake.started.len(), 1);
+    // A tab opened meanwhile installs on its own.
+    feed.open(workspace(10), 5);
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(fake.started[1..], [vec![tab(5)]]);
+}
+
+#[test]
+fn busy_unattached_and_terminating_windows_install_nothing() {
+    let mut feed = Feed::new();
+    feed.open(workspace(10), 1);
+    let install = |session, busy, terminating| {
+        installs(
+            &feed.state,
+            Some(workspace(10)),
+            session,
+            &[],
+            &[],
+            busy,
+            terminating,
+        )
+    };
+    assert_eq!(install(Some(session(1)), false, false), [tab(1)]);
+    assert_eq!(install(Some(session(1)), true, false), []);
+    assert_eq!(install(Some(session(1)), false, true), []);
+    assert_eq!(install(None, false, false), []);
+    assert_eq!(install(Some(session(2)), false, false), []);
+    assert_eq!(
+        installs(
+            &feed.state,
+            Some(workspace(10)),
+            Some(session(1)),
+            &[],
+            &[tab(1)],
+            false,
+            false
+        ),
+        [],
+        "an install in flight is not started again"
+    );
+
+    // The busy window's own completion reconciles and installs then.
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    fake.busy = true;
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(fake.started, Vec::<Vec<TabId>>::new());
+    fake.busy = false;
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert_eq!(fake.started, [vec![tab(1)]]);
+}
+
+#[test]
+fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    feed.open(workspace(10), 1);
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    fake.pending.finish(tab(1), true);
+    // The window's own completion and unrelated batches do not retry it.
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    let elsewhere = feed.rename(1, Some("renamed"));
+    assert!(!elsewhere.contains_workspace(workspace(10)));
+    reconcile(&mut fake, &mut model, &feed.state, &elsewhere);
+    assert_eq!(fake.started.len(), 1);
+    let touched = feed.apply(HierarchyEvent::TabOpened {
+        workspace: workspace(10),
+        tab: TabInfo {
+            id: tab(2),
+            pane_id: PaneId::new(2),
+            terminal_id: TerminalId::new(2),
+            custom_name: None,
+            fallback_name: "sh".into(),
+        },
+        index: 1,
+    });
+    reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert_eq!(fake.started[1..], [vec![tab(1), tab(2)]]);
+}
+
+#[test]
+fn a_finished_install_applies_only_while_its_tab_still_belongs_here() {
+    let mut feed = Feed::new();
+    for value in [1, 2, 3] {
+        feed.open(workspace(10), value);
+    }
+    feed.apply(HierarchyEvent::TabClosed { tab: tab(2) });
+    feed.move_tab(3, workspace(11), 0);
+    let applies = |installed: &[TabId], value| {
+        install_applies(
+            &feed.state,
+            Some(workspace(10)),
+            Some(session(1)),
+            installed,
+            tab(value),
+        )
+    };
+    assert!(applies(&[], 1));
+    assert!(!applies(&[tab(1)], 1), "the window already shows it");
+    assert!(!applies(&[], 2), "closed before the completion");
+    assert!(!applies(&[], 3), "moved to another workspace");
+}
+
+#[test]
+fn a_workspace_moved_to_another_session_leaves_the_window() {
+    let mut feed = Feed::new();
+    feed.apply(HierarchyEvent::SessionCreated {
+        session: SessionInfo {
+            id: session(2),
+            custom_name: None,
+            automatic_name: "Session 2".into(),
+        },
+        index: 1,
+    });
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    let touched = feed.apply(HierarchyEvent::WorkspaceMoved {
+        workspace: workspace(10),
+        session: session(2),
+        index: 0,
+    });
+    assert!(touched.contains_workspace(workspace(10)));
+    let change = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert!(change.changed && change.titles);
+    assert_eq!(view_order(&fake), []);
+    assert_eq!(model_order(&model, &fake), []);
+    assert_eq!(
+        fake.started,
+        Vec::<Vec<TabId>>::new(),
+        "nothing installs from another session"
+    );
 }

@@ -31,6 +31,19 @@ workspace, active tab, and history. `WorkspaceView` keeps its tab entities
 aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
 `drop_tab_views`.
 
+Reconcile installs views for tabs a window did not spawn, such as a tab
+another window opened in a shared workspace (`windows/view_install.rs`). It
+skips a busy window, whose own spawn holds `busy` until it pushes its view,
+a window without an attachment, and teardown. A worker subscribes the
+viewers under one Mux lock, the completion waits for the projection to reach
+the worker's sequence, and the window then pushes only the tabs it still
+shows no view of, without activating them unless it has no active tab. A
+failed install waits for a later batch that touches the workspace. A window
+that gains an attachment runs its own full reconcile, because attaching
+emits no hierarchy event. A view installed after its tab exited shows the
+exit from status but announces nothing: only the exit transition raises a
+notice or queues an exit-close.
+
 ## Activity tasks and frame scheduling
 
 Each TerminalView holds one `TerminalViewer`, its own registration with the

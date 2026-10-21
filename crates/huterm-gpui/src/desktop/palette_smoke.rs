@@ -88,6 +88,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
     super::run_with_startup(move |cx| {
         cx.set_global(ReloadTitles::default());
         cx.set_global(FixtureWorkspace::default());
+        cx.set_global(super::SnapshotCounts::default());
         cx.spawn(async move |cx| {
             let mut sequence = 0;
             loop {
@@ -214,6 +215,14 @@ async fn execute(
         return Ok(format!("{outcome:?}"));
     }
 
+    if let Some(index) = command.strip_prefix("attach-window\t") {
+        return attach_window(cx, index).await;
+    }
+
+    if let Some(index) = command.strip_prefix("viewport\t") {
+        return shared_viewport(cx, index).await;
+    }
+
     if let Some(index) = command.strip_prefix("open-rename-for\t") {
         return cx.update(|cx| open_rename_for(cx, index));
     }
@@ -224,7 +233,102 @@ async fn execute(
         return Ok("shell removed".to_owned());
     }
 
-    cx.update(|cx| execute_ui(cx, command))
+    cx.update(|cx| execute_sync(cx, command))
+}
+
+/// Runs a command that completes on the UI thread.
+fn execute_sync(cx: &mut App, command: &str) -> anyhow::Result<String> {
+    execute_in_window(cx, command).unwrap_or_else(|| execute_ui(cx, command))
+}
+
+/// `viewport\t<index>` reads the shared viewport and the canonical grid
+/// through a fresh observing viewer of the active terminal in the window at
+/// `index`, so neither window's own viewer is rearmed by the read. It needs
+/// no display frames.
+async fn shared_viewport(
+    cx: &mut gpui::AsyncApp,
+    index: &str,
+) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let (runtime, attachment, terminal) = cx.update(|cx| {
+        let view = workspace_view(cx, index)?;
+        let view = view.read(cx);
+        let attachment = view.attachment_id(cx).context("attachment")?;
+        let terminal = view
+            .active_view(cx)
+            .context("active terminal")?
+            .read(cx)
+            .viewer
+            .terminal_id();
+        Ok::<_, anyhow::Error>((
+            Arc::clone(&cx.global::<Desktop>().runtime),
+            attachment,
+            terminal,
+        ))
+    })?;
+    let viewer = runtime.lock().subscribe_terminal(
+        attachment,
+        terminal,
+        huterm_core::ViewerOptions::new(
+            huterm_protocol::ViewerCapabilities::NONE,
+        ),
+    )?;
+    let reply = viewer.request_snapshot()?.recv().await?;
+    Ok(format!(
+        "bottom_offset={} grid={},{}",
+        reply.snapshot.viewport.bottom_offset,
+        reply.snapshot.size.columns,
+        reply.snapshot.size.rows
+    ))
+}
+
+/// `attach-window\t<index>` opens a window without a shell and attaches it
+/// to the session of the window at `index`, as a second client would; the
+/// new window installs that workspace's tabs.
+async fn attach_window(
+    cx: &mut gpui::AsyncApp,
+    index: &str,
+) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let (runtime, session, workspace, existing) = cx.update(|cx| {
+        let view = workspace_view(cx, index)?;
+        let record = view.read(cx).record(cx).context("window record")?;
+        let session = record.session.context("window session")?;
+        let workspace = record.workspace.context("window workspace")?;
+        let existing: Vec<_> = cx
+            .windows()
+            .iter()
+            .map(gpui::AnyWindowHandle::window_id)
+            .collect();
+        Ok::<_, anyhow::Error>((
+            Arc::clone(&cx.global::<Desktop>().runtime),
+            session,
+            workspace,
+            existing,
+        ))
+    })?;
+    let attachment = cx
+        .background_executor()
+        .spawn(async move { runtime.lock().attach_session(session) })
+        .await?;
+    cx.update(|cx| {
+        super::open_window_inner(cx, false);
+        let handle = cx
+            .windows()
+            .into_iter()
+            .find(|handle| !existing.contains(&handle.window_id()))
+            .context("attached window")?;
+        handle.update(cx, |root, _, cx| -> anyhow::Result<()> {
+            let view = root
+                .downcast::<WorkspaceView>()
+                .map_err(|_| anyhow::anyhow!("workspace root"))?;
+            view.update(cx, |view, cx| {
+                view.adopt_attachment(attachment, session, workspace, cx);
+            });
+            Ok(())
+        })??;
+        Ok(format!("window attached to window {index}'s session"))
+    })
 }
 
 fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
@@ -329,8 +433,51 @@ fn execute_ui(cx: &mut App, command: &str) -> anyhow::Result<String> {
     })?
 }
 
-/// Resizes the first window's content to `size`, a tab-separated width
-/// and height in points.
+/// Runs a command addressed to the window at an index, `<name>\t<index>\t
+/// <argument>`: `type-in`, `invoke-in`, or `resize-window`. `None` for any
+/// other command.
+fn execute_in_window(
+    cx: &mut App,
+    command: &str,
+) -> Option<anyhow::Result<String>> {
+    let (name, arguments) = command.split_once('\t')?;
+    if !["type-in", "invoke-in", "resize-window"].contains(&name) {
+        return None;
+    }
+    let target = arguments
+        .split_once('\t')
+        .context("window index and argument")
+        .and_then(|(index, argument)| {
+            let index: usize = index.parse().context("window index")?;
+            let handle =
+                *cx.windows().get(index).context("smoke window index")?;
+            Ok((index, handle, argument))
+        });
+    Some(target.and_then(|(index, handle, argument)| match name {
+        "type-in" => type_in(cx, index, argument),
+        "invoke-in" => invoke_catalog(cx, handle, argument),
+        _ => resize_window(cx, handle, argument),
+    }))
+}
+
+/// `type-in\t<index>\t<text>` sends `text` and Return through the input
+/// queue of the active terminal in the window at `index`, as typing there
+/// would, without depending on which window has native keyboard focus.
+fn type_in(cx: &mut App, index: usize, text: &str) -> anyhow::Result<String> {
+    let view = workspace_view(cx, index)?;
+    let terminal = view.read(cx).active_view(cx).context("active terminal")?;
+    let accepted = terminal.update(cx, |terminal, cx| {
+        let (accepted, _) =
+            terminal.enqueue_input(TerminalInput::Text(format!("{text}\r")));
+        terminal.return_to_live_output(accepted);
+        terminal.start_snapshot_if_needed(cx);
+        accepted
+    });
+    Ok(format!("typed accepted={accepted}"))
+}
+
+/// Resizes a window's content to `size`, a tab-separated width and height
+/// in points.
 fn resize_window(
     cx: &mut App,
     handle: gpui::AnyWindowHandle,
@@ -559,9 +706,18 @@ fn read_state(cx: &mut App) -> String {
                 .iter()
                 .position(|tab| Some(tab.id) == view.active_tab(cx))
                 .map_or_else(|| "none".to_owned(), |index| index.to_string());
+            let (builds, reuses) = terminal.as_ref().map_or((0, 0), |terminal| {
+                cx.global::<super::SnapshotCounts>()
+                    .get(terminal.read(cx).viewer.terminal_id())
+            });
+            let clipboard_writes: u64 = view
+                .tabs
+                .iter()
+                .map(|tab| tab.view.read(cx).clipboard_writes)
+                .sum();
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} {} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.snapshots={builds},{reuses} w{index}.clipboard_writes={clipboard_writes} {} w{index}.text={:?}",
                 palette.is_some(),
                 window.is_window_active(),
                 view.tabs.len(),

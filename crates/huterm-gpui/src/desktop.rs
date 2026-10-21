@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -18,8 +19,8 @@ use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers, TabId,
-    TerminalCommand, TerminalInput, TerminalMetadata, TerminalPresentation,
-    TerminalSnapshot, ids,
+    TerminalCommand, TerminalId, TerminalInput, TerminalLifecycle,
+    TerminalMetadata, TerminalPresentation, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -355,6 +356,9 @@ struct TerminalView {
     /// The root process's exit status, once it has exited with one.
     exit_code: Option<u32>,
     failed: bool,
+    /// The viewer's authority was withdrawn; the window replaces or removes
+    /// the view.
+    revoked: bool,
     visible: bool,
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
@@ -382,6 +386,8 @@ struct TerminalView {
     link_completions: u64,
     link_max_lookup: Duration,
     link_max_latency: Duration,
+    /// Clipboard writes this view delivered; smoke state reports it.
+    clipboard_writes: u64,
     pending_resize: Option<(GridSize, CellSize)>,
     resize_requests: u64,
     /// Times the size panel was raised; smoke state reports it.
@@ -440,6 +446,56 @@ struct TerminalView {
     frame_clock: Rc<refresh::FrameClock>,
 }
 
+/// Snapshot replies per terminal, counted only while a smoke installs this
+/// global. Viewers share the runtime's snapshot cache, so a reply carrying
+/// the same snapshot as the terminal's previous reply reused it; any other
+/// reply built one. Replies to requests outside the desktop's views are not
+/// seen, so this is a report, not an exact count.
+#[derive(Default)]
+pub(super) struct SnapshotCounts(HashMap<TerminalId, SnapshotCount>);
+
+struct SnapshotCount {
+    last: Arc<TerminalSnapshot>,
+    builds: u64,
+    reuses: u64,
+}
+
+impl gpui::Global for SnapshotCounts {}
+
+impl SnapshotCounts {
+    fn record(
+        &mut self,
+        terminal: TerminalId,
+        snapshot: &Arc<TerminalSnapshot>,
+    ) {
+        match self.0.entry(terminal) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let count = entry.get_mut();
+                if Arc::ptr_eq(&count.last, snapshot) {
+                    count.reuses += 1;
+                } else {
+                    count.builds += 1;
+                    count.last = Arc::clone(snapshot);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(SnapshotCount {
+                    last: Arc::clone(snapshot),
+                    builds: 1,
+                    reuses: 0,
+                });
+            }
+        }
+    }
+
+    /// The snapshots built and reused for `terminal`.
+    pub(super) fn get(&self, terminal: TerminalId) -> (u64, u64) {
+        self.0
+            .get(&terminal)
+            .map_or((0, 0), |count| (count.builds, count.reuses))
+    }
+}
+
 #[derive(Default)]
 struct RefreshResult {
     changed: bool,
@@ -482,7 +538,7 @@ impl TerminalView {
             match viewer.update_presentation(initial_presentation.clone()) {
                 Ok(()) => (None, None),
                 Err(RuntimeError::Busy) => (Some(initial_presentation), None),
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => (None, Some(error)),
             };
         let (failure_wake, failure_wakes) = async_channel::bounded(1);
         let focus_subscription = cx.on_focus(
@@ -592,6 +648,7 @@ impl TerminalView {
             link_completions: 0,
             link_max_lookup: Duration::ZERO,
             link_max_latency: Duration::ZERO,
+            clipboard_writes: 0,
             pending_resize: None,
             resize_requests: 0,
             resize_indicators: 0,
@@ -639,6 +696,7 @@ impl TerminalView {
             exited: false,
             exit_code: None,
             failed: false,
+            revoked: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -656,8 +714,8 @@ impl TerminalView {
             refresh_mode: config.terminal.refresh,
             frame_clock,
         };
-        if let Some(message) = presentation_failure {
-            view.report_failure(Severity::Error, "Terminal error", message);
+        if let Some(error) = presentation_failure {
+            view.report_viewer_failure(&error);
         }
         view.wake_pending_work();
         key_bench::start(window.window_handle(), cx);
@@ -760,7 +818,7 @@ impl TerminalView {
                         view.links.publish(link_intent, reply.link);
                         let hover_changed = view.links.hover() != hover.as_ref();
                         let changed =
-                            view.apply_snapshot(reply.snapshot) || hover_changed;
+                            view.apply_snapshot(reply.snapshot, cx) || hover_changed;
                         view.renderer
                             .borrow_mut()
                             .record_output_applied(reply.invalidated_at, changed);
@@ -783,8 +841,18 @@ impl TerminalView {
         .detach();
     }
 
-    /// Applies a snapshot and reports whether the view must render again.
-    fn apply_snapshot(&mut self, snapshot: Arc<TerminalSnapshot>) -> bool {
+    /// Applies a snapshot reply and reports whether the view must render
+    /// again.
+    fn apply_snapshot(
+        &mut self,
+        snapshot: Arc<TerminalSnapshot>,
+        cx: &mut App,
+    ) -> bool {
+        if cx.has_global::<SnapshotCounts>() {
+            let terminal = self.viewer.terminal_id();
+            cx.global_mut::<SnapshotCounts>()
+                .record(terminal, &snapshot);
+        }
         let mut changed = self
             .snapshot
             .as_deref()
@@ -850,6 +918,7 @@ impl TerminalView {
                         ClipboardItem::new_string(write.text().to_owned());
                     if recipient.is_current(&pending) {
                         cx.write_to_clipboard(item);
+                        self.clipboard_writes += 1;
                     }
                 }
             }
@@ -859,6 +928,7 @@ impl TerminalView {
         }
         let mut changed = self.retry_client_messages();
         let update = self.viewer.poll();
+        self.revoked |= update.revoked;
         if let Some(generation) = update.invalidated {
             if self
                 .selection
@@ -890,8 +960,21 @@ impl TerminalView {
             }
             changed |= self.bell.ring(Instant::now(), active, self.visual_bell);
         }
-        if let Some(status) = update.exited {
-            self.observe_exit(status.code, cx);
+        // A view installed after the exit sees no transition, but still
+        // shows the terminal as exited; only a transition is announced.
+        let exit = update.exited.or_else(|| {
+            update
+                .status
+                .as_ref()
+                .and_then(|status| match status.lifecycle {
+                    TerminalLifecycle::Exited(exit) => Some(exit),
+                    TerminalLifecycle::Running => None,
+                })
+        });
+        if let Some(exit) = exit
+            && !self.exited
+        {
+            self.observe_exit(exit.code, cx);
             changed = true;
         }
         if update.missed_failures > 0 {
@@ -920,7 +1003,7 @@ impl TerminalView {
         }
         RefreshResult {
             changed,
-            exited: !previously_exited && self.exited,
+            exited: !previously_exited && update.exited.is_some(),
             exit_code: self.exit_code,
             more: host_count == 8,
             failures: std::mem::take(&mut self.failures),
@@ -2344,9 +2427,11 @@ impl TerminalView {
     /// an exited tab, which stops when the tab closes; a focus change or
     /// retry on the way out is not a failure. Neither raises a notice.
     fn report_viewer_failure(&mut self, error: &RuntimeError) -> bool {
-        if matches!(error, RuntimeError::Revoked)
-            || (self.exited && matches!(error, RuntimeError::Stopped))
-        {
+        if matches!(error, RuntimeError::Revoked) {
+            self.revoked = true;
+            return false;
+        }
+        if self.exited && matches!(error, RuntimeError::Stopped) {
             return false;
         }
         self.report_failure(

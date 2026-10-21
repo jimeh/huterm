@@ -80,6 +80,7 @@ mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod terminal_menu;
+mod view_install;
 mod views;
 mod window_menu;
 use crate::assets::Icon;
@@ -99,9 +100,9 @@ use model::{
     WindowRestore, apply_tab_order,
 };
 use projection::{
-    Drained, Install, Projection, ReconcileTarget, Resolution, TabNames,
-    TitleConsumers, Wait, WindowChange, installed_order, reactivation,
-    reconcile_window, tab_names, windows_to_visit,
+    Drained, Install, PendingInstalls, Projection, ReconcileTarget, Resolution,
+    TabNames, TitleConsumers, Wait, WindowChange, installed_order,
+    reactivation, reconcile_window, tab_names, windows_to_visit,
 };
 use tab_bar::{
     Activity, PILL_HEIGHT, PILL_INSET, PILL_MARGIN_LEFT, PILL_MARGIN_RIGHT,
@@ -307,20 +308,15 @@ impl DesktopRuntime {
                             viewer_attachment,
                             tab.tab.terminal_id,
                             ViewerOptions {
-                                host_effects: Some(HostEffectViewerOptions {
-                                    process: self.host_effects.clone(),
-                                    options:
-                                        HostEffectRecipientOptions::local_desktop(
-                                            clipboard_allowed,
-                                        ),
-                                }),
                                 geometry: Some((
                                     command.grid_size,
                                     command.cell_size,
                                 )),
-                                presentation: Some(command.presentation.clone()),
                                 spawned: true,
-                                ..ViewerOptions::new(ViewerCapabilities::ALL)
+                                ..self.viewer_options(
+                                    clipboard_allowed,
+                                    command.presentation.clone(),
+                                )
                             },
                         )
                     });
@@ -345,6 +341,61 @@ impl DesktopRuntime {
                 }
                 Err(error)
             }
+        }
+    }
+
+    /// The options a desktop view's viewer starts with: full capabilities,
+    /// host effects under the window's clipboard policy, and the view's
+    /// presentation.
+    fn viewer_options(
+        &self,
+        clipboard_allowed: bool,
+        presentation: TerminalPresentation,
+    ) -> ViewerOptions {
+        ViewerOptions {
+            host_effects: Some(HostEffectViewerOptions {
+                process: self.host_effects.clone(),
+                options: HostEffectRecipientOptions::local_desktop(
+                    clipboard_allowed,
+                ),
+            }),
+            presentation: Some(presentation),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        }
+    }
+
+    /// Subscribes a viewer for each of a window's tabs under one lock, for
+    /// views the window did not spawn.
+    fn subscribe_tabs(
+        &self,
+        attachment: AttachmentId,
+        tabs: &[(TabId, TerminalId)],
+        clipboard_allowed: bool,
+        presentation: &TerminalPresentation,
+    ) -> Committed<Vec<(TabId, Result<TerminalViewer, MuxError>)>> {
+        let mux = self.lock();
+        let terminating = self.terminating.load(Ordering::Acquire);
+        let result = tabs
+            .iter()
+            .map(|&(tab, terminal)| {
+                let viewer = if terminating {
+                    Err(RuntimeError::Stopped.into())
+                } else {
+                    mux.subscribe_terminal(
+                        attachment,
+                        terminal,
+                        self.viewer_options(
+                            clipboard_allowed,
+                            presentation.clone(),
+                        ),
+                    )
+                };
+                (tab, viewer)
+            })
+            .collect();
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
         }
     }
 
@@ -1052,33 +1103,7 @@ pub(super) fn run_with_startup(
         cx.activate(true);
     });
     application.run(move |cx| {
-        let (keymap, diagnostics) = install_startup_keymap(cx, &loaded);
-        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
-        let updater =
-            native_updater::Updater::initialize(loaded.config.updates);
-        cx.set_global(Desktop {
-            quake: quake_windows::Registry::default(),
-            runtime: Arc::clone(&app_runtime),
-            config: loaded.config,
-            diagnostics,
-            latched: Vec::new(),
-            config_path: loaded.path,
-            windows: WindowModel::default(),
-            hierarchy,
-            title_consumers: TitleConsumers::default(),
-            views: Views::default(),
-            keymap,
-            frequency: CommandFrequency::default(),
-            reloading: false,
-            quitting: false,
-            pending_spawns: 0,
-            quit_pending: false,
-            external_drag_window: None,
-            button_layout: ButtonLayout::standard(),
-            #[cfg(all(target_os = "macos", feature = "macos-updater"))]
-            updater,
-        });
-        start_hierarchy_drain(cx);
+        install_desktop(cx, Arc::clone(&app_runtime), hierarchy, loaded);
         #[cfg(target_os = "linux")]
         follow_button_layout(cx);
         install_native_quit(cx);
@@ -1109,18 +1134,6 @@ pub(super) fn run_with_startup(
                 });
             }
         });
-        cx.on_window_closed(|cx, window| {
-            let desktop = cx.global_mut::<Desktop>();
-            desktop.windows.remove(window);
-            desktop.title_consumers.set_host(window, false);
-            desktop.views.prune();
-            // The closed window's titles left the model; Quit dialogs and
-            // palettes elsewhere still list them until they refresh.
-            mark_titles_changed(window, cx);
-            maybe_exit(cx);
-        })
-        .detach();
-        cx.observe_keystrokes(observe_keystroke).detach();
         open_window(cx);
         cx.activate(true);
         startup(cx);
@@ -1128,6 +1141,55 @@ pub(super) fn run_with_startup(
     // Backends whose event loop returns get the same idempotent cleanup.
     runtime.terminate()?;
     Ok(())
+}
+
+/// Installs the `Desktop` global over `runtime` and its hierarchy
+/// projection, starts the projection's drain, forgets windows as they
+/// close, and routes keystrokes to the active terminal.
+fn install_desktop(
+    cx: &mut App,
+    runtime: Arc<DesktopRuntime>,
+    hierarchy: Projection,
+    loaded: config::LoadedConfig,
+) {
+    let (keymap, diagnostics) = install_startup_keymap(cx, &loaded);
+    #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+    let updater = native_updater::Updater::initialize(loaded.config.updates);
+    cx.set_global(Desktop {
+        quake: quake_windows::Registry::default(),
+        runtime,
+        config: loaded.config,
+        diagnostics,
+        latched: Vec::new(),
+        config_path: loaded.path,
+        windows: WindowModel::default(),
+        hierarchy,
+        title_consumers: TitleConsumers::default(),
+        views: Views::default(),
+        keymap,
+        frequency: CommandFrequency::default(),
+        reloading: false,
+        quitting: false,
+        pending_spawns: 0,
+        quit_pending: false,
+        external_drag_window: None,
+        button_layout: ButtonLayout::standard(),
+        #[cfg(all(target_os = "macos", feature = "macos-updater"))]
+        updater,
+    });
+    start_hierarchy_drain(cx);
+    cx.on_window_closed(|cx, window| {
+        let desktop = cx.global_mut::<Desktop>();
+        desktop.windows.remove(window);
+        desktop.title_consumers.set_host(window, false);
+        desktop.views.prune();
+        // The closed window's titles left the model; Quit dialogs and
+        // palettes elsewhere still list them until they refresh.
+        mark_titles_changed(window, cx);
+        maybe_exit(cx);
+    })
+    .detach();
+    cx.observe_keystrokes(observe_keystroke).detach();
 }
 
 /// Follows the desktop's window-button layout, relaying each change to
@@ -1262,7 +1324,8 @@ fn install_hierarchy(
 
 /// Brings the windows showing touched workspaces or tabs in line with the
 /// projection, notifying each only when something it renders changed, then
-/// refreshes title consumers. Never installs views.
+/// refreshes title consumers. Views it installs arrive later, from each
+/// window's install completion.
 fn reconcile(cx: &mut App, touched: &Touched) {
     if touched.is_empty() {
         return;
@@ -1312,13 +1375,7 @@ fn activate_reconciled_tabs(cx: &mut App, tabs: &[(gpui::WindowId, TabId)]) {
             };
             view.update(cx, |view, cx| {
                 if view.active_tab(cx) == Some(tab) {
-                    // The palette, a close confirmation, a menu, or the
-                    // About panel keeps keyboard focus; the replacement is
-                    // still shown and snapshotted behind it.
-                    let focus = view.palette.is_none()
-                        && view.close.confirmation.is_none()
-                        && view.menu.is_none()
-                        && view.about.is_none();
+                    let focus = !view.overlay_holds_focus();
                     view.measure_tab_widths(window, cx);
                     view.select_tab(tab, focus, window, cx);
                 }
@@ -1870,6 +1927,7 @@ fn open_window_with_profile(
                 metrics: scaled_metrics,
                 focus: cx.focus_handle(),
                 busy: false,
+                installs: PendingInstalls::default(),
                 close: CloseState::default(),
                 exited_tabs: ExitQueue::default(),
                 notices: NoticeStack::default(),
@@ -2671,6 +2729,8 @@ struct WorkspaceView {
     metrics: GridMetrics,
     focus: FocusHandle,
     busy: bool,
+    /// Views this window is installing for tabs it did not spawn.
+    installs: PendingInstalls,
     close: CloseState,
     exited_tabs: ExitQueue,
     notices: NoticeStack,
@@ -3085,19 +3145,38 @@ impl WorkspaceView {
         self.record(cx).and_then(|record| record.attachment)
     }
 
-    /// Appends a spawned tab's view and model entry, activates it, then
+    /// The session of this window's attachment; `None` without one.
+    fn attached_session(&self, cx: &App) -> Option<SessionId> {
+        self.record(cx)
+            .and_then(|record| record.attachment.and(record.session))
+    }
+
+    /// Whether an overlay holds keyboard focus: the palette, a close
+    /// confirmation, a menu, or the About panel. A tab selected behind it
+    /// is shown and snapshotted without taking focus.
+    fn overlay_holds_focus(&self) -> bool {
+        self.palette.is_some()
+            || self.close.confirmation.is_some()
+            || self.menu.is_some()
+            || self.about.is_some()
+    }
+
+    /// Appends a tab's view and model entry, activating a spawned tab, then
     /// applies the installed order, so a tab the projection placed earlier
     /// lands in its position.
-    fn push_tab_view(&mut self, tab: TabView, cx: &mut App) {
+    fn push_tab_view(&mut self, tab: TabView, spawned: bool, cx: &mut App) {
         let entry = TabEntry {
             id: tab.id,
             terminal: tab.terminal,
             title: tab.title(self.config.tabs, cx),
         };
         self.tabs.push(tab);
-        cx.global_mut::<Desktop>()
-            .windows
-            .open_tab(self.window, entry);
+        let windows = &mut cx.global_mut::<Desktop>().windows;
+        if spawned {
+            windows.open_tab(self.window, entry);
+        } else {
+            windows.add_tab(self.window, entry);
+        }
         mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
         self.sync_tab_order(cx);
@@ -3172,6 +3251,30 @@ impl WorkspaceView {
         debug_assert!(applied, "tab views rejected an order the model took");
         self.debug_assert_tabs_aligned(cx);
         true
+    }
+
+    /// Shows the session of `attachment`, which this window did not
+    /// create, in `workspace`. Attaching emits no hierarchy event, so the
+    /// window runs its own full reconcile, which installs the views.
+    fn adopt_attachment(
+        &mut self,
+        attachment: AttachmentId,
+        session: SessionId,
+        workspace: WorkspaceId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.global_mut::<Desktop>().windows.attach(
+            self.window,
+            Some(attachment),
+            session,
+            workspace,
+        );
+        if self
+            .reconcile(&Touched::everything(), terminating(cx), cx)
+            .changed
+        {
+            cx.notify();
+        }
     }
 
     /// Drops tab views and their model entries without closing anything; the
@@ -3258,6 +3361,10 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
         self.view.workspace_id(self.cx)
     }
 
+    fn session(&self) -> Option<SessionId> {
+        self.view.attached_session(self.cx)
+    }
+
     fn installed(&self) -> Vec<(TabId, u64)> {
         self.view
             .tabs
@@ -3305,6 +3412,14 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
             tab,
             title,
         )
+    }
+
+    fn pending_installs(&mut self) -> &mut PendingInstalls {
+        &mut self.view.installs
+    }
+
+    fn install(&mut self, tabs: &[TabId]) {
+        self.view.install_tabs(tabs, self.cx);
     }
 }
 
@@ -4214,57 +4329,20 @@ impl WorkspaceView {
             session,
             id,
         );
-        if let Some(recipient) = viewer.host_effects() {
-            recipient
-                .set_allowed(self.config.terminal.clipboard_write.is_allowed());
-        }
-        let activity = viewer.wake_handle();
-        let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
-        let terminal = cx.new(|cx| {
-            let mut terminal = TerminalView::new(
-                viewer,
-                Rc::clone(&self.frame_clock),
-                &self.config,
-                self.family.clone(),
-                self.metrics.at_scale(window.scale_factor()),
-                window,
-                cx,
-            );
-            terminal.set_scroll_to_bottom_key(scroll_key, cx);
-            terminal.tabs_config = self.layout_tabs();
-            terminal.window_frame = self.window_frame();
-            terminal
-        });
-        cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
-            .detach();
         let tab_id = opened.tab.id;
-        // The completion drained first, so the projection holds the tab.
-        let names = cx
-            .global::<Desktop>()
-            .hierarchy
-            .state()
-            .tab(tab_id)
-            .map(TabNames::from_info)
-            .unwrap_or_default();
-        let failure_wakes = terminal.read(cx).failure_wakes.clone();
-        let activity_task = Self::tab_activity_task(
+        // A viewer revoked already leaves the tab without a view, which
+        // reconcile installs again if the window still shows its workspace.
+        let Some(tab) = self.tab_view(
             tab_id,
-            activity,
-            failure_wakes,
+            opened.tab.terminal_id,
+            viewer,
+            committed,
             window,
             cx,
-        );
-        self.push_tab_view(
-            TabView {
-                id: tab_id,
-                terminal: opened.tab.terminal_id,
-                committed,
-                names,
-                view: terminal,
-                _activity_task: activity_task,
-            },
-            cx,
-        );
+        ) else {
+            return;
+        };
+        self.push_tab_view(tab, true, cx);
         self.select(tab_id, window, cx);
         self.reveal_tab_activity(window, cx);
         if let Some(state) = &self.quake {
@@ -4287,6 +4365,69 @@ impl WorkspaceView {
                 }
             }
         }
+    }
+
+    /// Builds the view of `tab_id` around its viewer, with the tab's
+    /// activity drain; `None` when the viewer was already revoked.
+    fn tab_view(
+        &mut self,
+        tab_id: TabId,
+        terminal_id: TerminalId,
+        viewer: TerminalViewer,
+        committed: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<TabView> {
+        if let Some(recipient) = viewer.host_effects() {
+            recipient
+                .set_allowed(self.config.terminal.clipboard_write.is_allowed());
+        }
+        let activity = viewer.wake_handle();
+        let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
+        let terminal = cx.new(|cx| {
+            let mut terminal = TerminalView::new(
+                viewer,
+                Rc::clone(&self.frame_clock),
+                &self.config,
+                self.family.clone(),
+                self.metrics.at_scale(window.scale_factor()),
+                window,
+                cx,
+            );
+            terminal.set_scroll_to_bottom_key(scroll_key, cx);
+            terminal.tabs_config = self.layout_tabs();
+            terminal.window_frame = self.window_frame();
+            terminal
+        });
+        if terminal.read(cx).revoked {
+            return None;
+        }
+        cx.subscribe_in(&terminal, window, Self::handle_context_menu_request)
+            .detach();
+        // The completion drained first, so the projection holds the tab.
+        let names = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(tab_id)
+            .map(TabNames::from_info)
+            .unwrap_or_default();
+        let failure_wakes = terminal.read(cx).failure_wakes.clone();
+        let activity_task = Self::tab_activity_task(
+            tab_id,
+            activity,
+            failure_wakes,
+            window,
+            cx,
+        );
+        Some(TabView {
+            id: tab_id,
+            terminal: terminal_id,
+            committed,
+            names,
+            view: terminal,
+            _activity_task: activity_task,
+        })
     }
 
     /// The tab's activity drain: waits for terminal events or failures and
@@ -9203,3 +9344,5 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "test-support"))]
+mod window_tests;

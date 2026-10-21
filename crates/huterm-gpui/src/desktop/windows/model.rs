@@ -175,6 +175,16 @@ impl WindowModel {
         record_tab_activation(&mut record.history, tab);
     }
 
+    /// Appends a tab the window installed without spawning it; the active
+    /// tab stays as it was.
+    pub(super) fn add_tab(&mut self, id: WindowId, entry: TabEntry) {
+        let Some(record) = self.record_mut(id) else {
+            return;
+        };
+        record.tabs.retain(|existing| existing.id != entry.id);
+        record.tabs.push(entry);
+    }
+
     /// Activates `tab`; returns false when the window does not show it.
     pub(super) fn select(&mut self, id: WindowId, tab: TabId) -> bool {
         let Some(record) = self.record_mut(id) else {

@@ -947,6 +947,17 @@ refresh, and leaves typed text to tier 2.
 Tier 2, in PR B, hosts `Desktop` and `WorkspaceView` with two windows on one
 session, which reconcile, exit-close, and replacement tests need.
 
+Tier 2 result, PR B part 1: it works on macOS. `install_desktop`, split out
+of `run_with_startup`, installs the production `Desktop` global in a test
+app, and `open_window_inner` opens real `WorkspaceView` windows on GPUI's
+test platform. The harness builds a session and its tabs through Mux and
+attaches each window to it, so every view is installed rather than spawned;
+the spawn path stays covered by the smokes. Typed keys reach a terminal only
+once its window reports itself active and the terminal is focused, which
+the harness waits for after activating a window. Each test takes under one
+second, and the leak detector passes with the windows and runtimes still
+open at the end.
+
 The harness is the first implementation step of PR A, as a spike. PR B's
 test plan depends on its answer, so if a real `TerminalView` cannot be built
 and driven in a test window, the work stops and the maintainer decides
@@ -1003,13 +1014,20 @@ The window installs those tabs as follows:
    the projection still holds in the window's workspace without a view and
    whose viewer is not revoked, and drops the other viewers. It applies the
    installed order and selects a tab only when the window has no active
-   tab, without taking focus from an overlay.
+   tab, without taking focus from an overlay. That tab is the window's
+   first in installed order.
+
+Core offers no way to read a viewer's revocation without polling it, and a
+poll would consume the status the view's first refresh needs. The window
+therefore builds the `TerminalView`, whose constructor already submits the
+initial presentation, and drops it when that request answers `Revoked`.
 
 A subscription that fails because its target is stale is dropped silently
 and not retried until a later batch touches that workspace, so a failure
-cannot loop. Once the runtime is terminating, install failures show nothing;
-before that, unexpected errors show a notice. Closing the window drops the
-in-flight task and the viewers it returns.
+cannot loop. Other failures wait for such a batch too. Once the runtime is
+terminating, install failures show nothing; before that, unexpected errors
+show a notice. Closing the window drops the in-flight task and the viewers
+it returns.
 
 When a view's viewer reports revocation and the projection still holds its
 tab in the window's workspace, the window re-subscribes **in place**: the
@@ -1044,6 +1062,19 @@ workspace is. What the window does once emptied belongs to
 A window that gains an attachment, including the smoke fixture's, runs its
 own full reconcile. Attaching emits no hierarchy event, so nothing else
 would visit it.
+
+Found in PR B part 1: a view installed after its tab exited never learned
+that it had exited, because the refresh reacted only to the viewer's exit
+transition, so its tab lacked the exited state, label, and key context. The
+refresh now also takes the exited lifecycle from status. Only the
+transition is reported to the window, so such a view still announces
+nothing and queues no exit-close.
+
+Also found in part 1: the refresh smoke detached a view by dropping it while
+its tab stayed in the window's workspace, which reconcile now installs
+again. The smoke instead moves the tab to another workspace of the session,
+so reconcile drops the view as it would after another client's move, and
+the terminal stays alive.
 
 ### Desktop: exit close has one actor (PR B)
 
@@ -1111,12 +1142,31 @@ A second fixture command revokes a window's viewers, the only way to reach
 in-place re-subscription before [#21][issue-21] and [#26][issue-26].
 
 A new `check-viewers.ts` runs inside the macOS and Linux palette smokes, as
-`check-overlays.ts` does (see Verification).
+`check-overlays.ts` does (see Verification), as its own `viewers` CI step.
+It addresses windows by index through fixture commands instead of native
+input, so it never needs a particular window to hold native keyboard focus:
+`type-in` sends a line through a window's input queue, `invoke-in` runs a
+catalog command in a window, `resize-window` resizes one, and `activate`
+activates one. `viewport` reads the shared viewport and the canonical grid
+through a fresh observing viewer, so the read rearms neither window and
+needs no frames. The PTY size comes from the shell, which appends
+`stty size` to a file on request; a request typed in the controlling window
+is ordered behind every geometry report queued before it, which makes it
+the boundary for "the size did not change".
+
+Decided on 2026-10-21 in PR B part 1: the snapshot counter is derived in the
+desktop instead of core, so PR B keeps one core change. Under the smoke, a
+global counts each terminal's snapshot replies across views: a reply that
+carries the same `Arc` as that terminal's previous reply reused the cache,
+and any other built a snapshot. Replies to requests outside the desktop's
+views are not seen, which a report, not a gate, can accept. Smoke state
+reports it as `w<i>.snapshots=<builds>,<reuses>`, next to
+`w<i>.clipboard_writes` for the OSC 52 check.
 
 The palette smoke fixture is the production application plus file-driven
 commands, so PR B also adds a helper script that launches it and attaches a
 second window, for manual checks of Cmd-Tab, Mission Control, and occluded
-windows.
+windows: `mise run smoke:manual-viewers`.
 
 ### Contract items for #44
 
@@ -1231,10 +1281,10 @@ so each part's tests pass before the next begins:
 1. Installing views. Add install and session-change removal to reconcile
    and `WorkspaceView`, and the full reconcile for a window that gains an
    attachment. Add the `attach-window` fixture command, `check-viewers.ts`
-   steps 1 to 5 and 7 wired into the macOS and Linux palette smokes, a debug
-   counter in core for snapshot builds and cache reuses reported in smoke
-   state, and the helper script for native two-window checks. Extend the
-   harness to tier 2.
+   steps 1 to 5 and 7 wired into the macOS and Linux palette smokes, a
+   debug counter for snapshot builds and cache reuses reported in smoke
+   state, derived in the desktop (see "Smoke fixture"), and the helper
+   script for native two-window checks. Extend the harness to tier 2.
 2. Exit close. Decide whether `Desktop` owns an exit-close outright. Add
    owed exit-closes, with claims unless `Desktop` owns them, the test that
    an exit-close never prompts, and `check-viewers.ts` step 6.
@@ -1523,12 +1573,18 @@ working, and `mise run verify` before handoff. Run
 
 Installing views:
 
-- The view-level tests moved from PR 1, listed above.
+- The view-level tests moved from PR 1, listed above, in the tier 2 harness,
+  plus one that two attached windows install and show a session's tab,
+  typing in one reaches the other, and a tab opened later installs in both
+  behind the tab each shows.
 - Reconcile tests in `windows/projection.rs`: a projected tab without a view
   yields one install; an install in flight, a busy window, or a terminating
   runtime yields none; reconciling twice yields no duplicate; a tab removed,
   or whose viewer was revoked, before the completion is not pushed; a tab
-  whose workspace moved to another session is removed.
+  whose workspace moved to another session is removed. A failed install
+  waits for a batch that touches its workspace. The revoked case has no
+  test: nothing deterministic can revoke a viewer between the worker and
+  its completion, and the check reuses the constructor's request.
 - `check-viewers.ts` steps 1 to 5 and 7, below, and the OSC 52 assertion.
 
 Exit close:
@@ -1608,7 +1664,8 @@ changes input mapping and page scrolling and nothing an idle terminal runs.
   that a hidden viewer receives no wake after its first.
 - For PR B, report snapshot builds and cache reuses for scrolling and for
   an output burst with one and two visible viewers, from the debug counter
-  in smoke state. This is a report, not a gate.
+  in smoke state. This is a report, not a gate. `check-viewers.ts` prints
+  it as its `VIEWERS_SMOKE` line.
 
 Commands for PR 1 and PR B: `mise run check`, `mise run test`,
 `mise run test:ghostty-releasesafe` when core changes, the macOS host smokes
