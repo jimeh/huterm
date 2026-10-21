@@ -2,8 +2,8 @@
 
 Status: in progress. Approved for [issue #22][issue-22] after three
 adversarial review rounds. PR 1 (#208) delivered [#205][issue-205].
-[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A is in
-progress.
+[#206][issue-206] ships as two PRs, A and B (see Delivery); PR A (#225) is
+in review and PR B is in progress.
 
 A terminal can be shown by more than one view at once: two desktop windows
 on one session today through a smoke fixture, and later panes, browser pages,
@@ -56,7 +56,8 @@ landed and the code on `main` at `8dfb406c` was read again:
   field for the grid it displays.
 - Cancelling an exit-close confirmation clears the owed close for every
   window. A window closed while its confirmation shows returns the close to
-  owed.
+  owed. Changed before PR B: an exit-close never prompts, so these rules
+  apply only if that changes (see the exit-close decision).
 - Whether `Desktop` owns an exit-close outright, instead of a window
   claiming it, is decided in PR B.
 - In-place re-subscription (PR B) is covered through the smoke fixture only.
@@ -575,8 +576,11 @@ A `MouseArbiter` on the owner thread holds the policy:
 - Releases from the owner end its buttons, matched by button only. The
   gesture ends when none remain. A release with no matching held button is
   discarded.
-- Motion and wheel reports with no gesture held are accepted from any viewer
-  with `input`.
+- Hover motion and wheel reports with no gesture held are accepted from any
+  viewer with `input`. Motion that names a held button is accepted only from
+  the owner, so a drag whose press was refused, or whose gesture has ended,
+  never reaches the application without its press. (Decided before PR B;
+  PR 1 accepted it from any viewer when no gesture was held.)
 - Every input carries an `InputStamp` recorded when the user acted. Its
   optional geometry revision names the snapshot that mouse coordinates came
   from. If the canonical geometry changed since, presses, motion with no
@@ -605,7 +609,8 @@ A `MouseArbiter` on the owner thread holds the policy:
   press computed against an older display, writes nothing and takes no gesture.
 
 A view whose press was discarded keeps its local ownership state until its
-own release and gets no feedback; that is acceptable for the default. The
+own release and gets no feedback; its drag motion and release are discarded
+with it. That is acceptable for the default. The
 arbiter runs before encoding, on structured `TerminalInput::Mouse` values.
 Experimenting with another rule changes only this type.
 
@@ -836,9 +841,10 @@ table above follows the displayed grid through it:
 - The view cannot tell this interval from another viewer controlling, so it
   has no special case for it.
 - A press discarded this way leaves the view owning the button locally, as
-  PR 1 accepted for refused presses. Its release is discarded too, and with
-  drag tracking the application can see that drag's motion without a press,
-  because the arbiter admits motion from a viewer that owns no gesture.
+  PR 1 accepted for refused presses. Its release is discarded too. Until
+  PR B, with drag tracking the application could see that drag's motion
+  without a press, because the arbiter admitted held-button motion from a
+  viewer that owned no gesture; PR B's first commit discards it.
 
 Smoke state keeps `grid=`, and the integration smoke's `columns=` and
 `rows=`, as the requested grid, so existing assertions keep meaning the size
@@ -1009,7 +1015,9 @@ When a view's viewer reports revocation and the projection still holds its
 tab in the window's workspace, the window re-subscribes **in place**: the
 same worker and sequence wait produce a new viewer, which replaces the old
 one inside the existing `TerminalView`. Selection, scroll state, and the
-active tab are kept. The new viewer is created with the view's current
+active tab are kept; the selection is kept only while the content
+generation is unchanged (see below). The new viewer is created with the
+view's current
 focus, geometry, and presentation as its initial state, because
 GPUI raises no new focus event for a view that stays focused; otherwise the
 old viewer's finalization would leave the application believing the
@@ -1019,6 +1027,14 @@ new viewer; otherwise output, status, and host effects for the replacement
 would have no consumer. Input still waiting in the view's `InputQueue` is
 discarded, since the old viewer's authority ended. If re-subscription fails,
 the view is removed.
+
+Decided before PR B: issue #206's "revoking a viewer keeps the selection"
+holds while the content generation is unchanged. Replacing the controlling
+viewer beside a viewer of another size hands control to that viewer and
+back, so the terminal resizes twice; each resize advances the generation,
+and the view clears its selection as it does for any resize. Avoiding that
+would need a control handoff in core, which nothing needs until replacement
+has a production trigger ([#21][issue-21], [#26][issue-26]).
 
 Removal gains one case: a tab whose workspace now belongs to a session other
 than the window's attachment session is removed, as a tab moved to another
@@ -1065,17 +1081,16 @@ Exit notices stay per window, based on the viewer's exit transition, so a
 view installed after the exit announces nothing. Failure notices stay per
 window too.
 
-Two rules cover a confirmation dialog raised for an exit-close. Cancelling
-it clears the owed close for every window, so no other window raises the
-same prompt. A window closed while its confirmation shows returns the close
-to owed, like a claim whose window closed.
-
-PR B must first establish which path raises that dialog. An exited
-terminal's job assessment is always idle (`JobLifecycle::assess` in
-`huterm-core`), and only a non-idle assessment asks for confirmation, so an
-exit-close alone does not prompt today. The tests for the two rules need a
-controlled, test-only way to produce a confirming assessment, and the plan
-for PR B names it.
+An exit-close never asks for confirmation. An exited terminal's job
+assessment is always idle (`JobLifecycle::assess` in `huterm-core`), and
+only a non-idle assessment asks, so no production path raises a dialog for
+an exit-close. Decided before PR B: PR B adds no confirmation rules for
+exit-closes and no test-only way to produce a confirming assessment.
+Instead, one test pins that an exit-close shown in two windows closes
+without prompting. If an exited terminal can ever assess as non-idle, the
+two rules agreed on 2026-10-03 return with it: cancelling clears the owed
+close for every window, and a window closed while its confirmation shows
+returns the close to owed.
 
 The three states exist because a window owns the operation. PR B decides
 whether `Desktop` can own an exit-close outright, checked against
@@ -1206,8 +1221,12 @@ the test feature needs. No core or protocol change is expected.
 
 #### PR B: installing, closing, and replacing views
 
-Three parts, landed in this order as separate commits, so each part's tests
-pass before the next begins:
+A core commit, then three parts, landed in this order as separate commits,
+so each part's tests pass before the next begins:
+
+0. Arbiter. `MouseArbiter` accepts motion that names a held button only
+   from the gesture's owner, with its unit test. This is PR B's only core
+   change, so `mise run test:ghostty-releasesafe` runs for it.
 
 1. Installing views. Add install and session-change removal to reconcile
    and `WorkspaceView`, and the full reconcile for a window that gains an
@@ -1217,8 +1236,8 @@ pass before the next begins:
    state, and the helper script for native two-window checks. Extend the
    harness to tier 2.
 2. Exit close. Decide whether `Desktop` owns an exit-close outright. Add
-   owed exit-closes, with claims unless `Desktop` owns them, the two
-   confirmation rules, and `check-viewers.ts` step 6.
+   owed exit-closes, with claims unless `Desktop` owns them, the test that
+   an exit-close never prompts, and `check-viewers.ts` step 6.
 3. Replacement. Re-subscribe a revoked view in place from reconcile. Give
    `ScrollController` a way to clear its latched failure, or skip it for
    `Revoked`, so a replaced viewer resumes snapshots. Add the fixture
@@ -1530,13 +1549,7 @@ Exit close:
   - a tab that exited under `close_on_exit = false` stays open after a
     reload enables it, as the existing reload test requires;
   - a view installed after the exit announces nothing;
-  - cancelling the confirmation clears the close in both windows, and
-    neither prompts again;
-  - closing the window whose confirmation shows returns the close to owed,
-    and the other window then prompts.
-
-  The last two need the confirming assessment described under the exit-close
-  decision; an exited shell does not produce one.
+  - the close happens without a confirmation prompt in either window.
 - `check-viewers.ts` step 6, below.
 
 Replacement:
@@ -1553,8 +1566,9 @@ Replacement:
   different size. Revocation hands control to the other viewer and the
   focused replacement takes it back, so the terminal resizes twice, each
   resize advances the content generation, and the view clears its
-  selection. Whether "keeps the selection" holds only when no resize
-  happens is an unresolved question below.
+  selection, which the decision above accepts. The test asserts the
+  selection is cleared there and kept by a replacement that does not
+  resize.
 
 ### The viewers smoke
 
@@ -1686,18 +1700,12 @@ PR A adds:
 - None blocking. Mouse arbitration may change after experiments, within
   `MouseArbiter`, and the stale-display wheel limitation above is accepted
   unless the maintainer objects.
-- Should `MouseArbiter` discard motion that names a held button from a
-  viewer that owns no gesture? Today it admits it, so a drag whose press was
-  refused, by another viewer's gesture or by a stale revision, reaches the
-  application as motion without a press. This is a core change outside
-  PR A.
-- For PR B's exit close: which path raises a confirmation for an
-  exit-close, given that an exited terminal always assesses as idle?
-- For PR B's replacement: issue #206 requires that revoking a viewer keeps
-  the selection. A selection is bound to the content generation, which
-  every resize advances, and replacing the controlling viewer beside a
-  differently sized one resizes twice. Is the criterion conditional on an
-  unchanged generation, or does replacement need to avoid the resize?
+
+The three questions raised during PR A were decided by the maintainer
+before PR B: the arbiter discards held-button motion from a viewer that owns
+no gesture, an exit-close never prompts, and replacement keeps the selection
+only while the content generation is unchanged. Each decision is recorded
+in its section above.
 
 [issue-9]: https://github.com/jimeh/huterm/issues/9
 [issue-20]: https://github.com/jimeh/huterm/issues/20
