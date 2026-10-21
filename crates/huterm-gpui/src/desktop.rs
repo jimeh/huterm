@@ -362,9 +362,14 @@ struct TerminalView {
     /// Counts the viewers this view has held, so a reply to a replaced
     /// viewer's request is ignored.
     viewer_epoch: u64,
-    /// The focus this view last reported, which a replacement viewer starts
-    /// with: GPUI raises no new focus event for a view that stays focused.
+    /// The focus this view last reported, which a replacement viewer
+    /// reports once swapped in: GPUI raises no new focus event for a view
+    /// that stays focused.
     reported_focus: bool,
+    /// The view saw its terminal running before its viewer was replaced, so
+    /// an exit the replacement first sees from status is still the exit
+    /// transition for this view.
+    replaced_while_running: bool,
     visible: bool,
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
@@ -502,10 +507,27 @@ impl SnapshotCounts {
     }
 }
 
-/// The state a view's new viewer starts with.
+/// The root process's exit a poll reports, as a transition or from status.
+fn reported_exit(
+    update: &huterm_core::ViewerUpdate,
+) -> Option<huterm_protocol::ExitStatus> {
+    update.exited.or_else(|| {
+        update
+            .status
+            .as_ref()
+            .and_then(|status| match status.lifecycle {
+                TerminalLifecycle::Exited(exit) => Some(exit),
+                TerminalLifecycle::Running => None,
+            })
+    })
+}
+
+/// The state a view's new viewer starts with. Every desktop viewer starts
+/// unfocused: a replacement registered focused would be the latest focus
+/// gain and take control, even if its window blurred while the
+/// replacement was in flight. The view reports its focus once swapped in.
 #[derive(Clone)]
 struct ViewerStart {
-    focused: bool,
     geometry: Option<(GridSize, CellSize)>,
     presentation: TerminalPresentation,
 }
@@ -514,7 +536,6 @@ impl ViewerStart {
     /// A viewer for a view that has shown nothing yet.
     fn fresh(presentation: TerminalPresentation) -> Self {
         Self {
-            focused: false,
             geometry: None,
             presentation,
         }
@@ -724,6 +745,7 @@ impl TerminalView {
             revoked: false,
             viewer_epoch: 0,
             reported_focus: false,
+            replaced_while_running: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -1001,15 +1023,7 @@ impl TerminalView {
         }
         // A view installed after the exit sees no transition, but still
         // shows the terminal as exited; only a transition is announced.
-        let exit = update.exited.or_else(|| {
-            update
-                .status
-                .as_ref()
-                .and_then(|status| match status.lifecycle {
-                    TerminalLifecycle::Exited(exit) => Some(exit),
-                    TerminalLifecycle::Running => None,
-                })
-        });
+        let exit = reported_exit(&update);
         if let Some(exit) = exit
             && !self.exited
         {
@@ -1040,20 +1054,23 @@ impl TerminalView {
         if changed {
             cx.notify();
         }
+        // A replaced view that saw the terminal running announces an exit
+        // that happened while its replacement was in flight.
+        let transition = update.exited.is_some()
+            || (self.replaced_while_running && exit.is_some());
         RefreshResult {
             changed,
-            exited: !previously_exited && update.exited.is_some(),
+            exited: !previously_exited && transition,
             exit_code: self.exit_code,
             more: host_count == 8,
             failures: std::mem::take(&mut self.failures),
         }
     }
 
-    /// The focus, geometry, and presentation a replacement for this view's
-    /// viewer starts with, so the runtime keeps what it knew of the view.
+    /// The geometry and presentation a replacement for this view's viewer
+    /// starts with, so the runtime keeps what it knew of the view.
     fn viewer_start(&self) -> ViewerStart {
         ViewerStart {
-            focused: self.reported_focus,
             geometry: self
                 .last_cell_size
                 .map(|cell| (self.requested_grid, cell)),
@@ -1065,11 +1082,14 @@ impl TerminalView {
     /// the shown snapshot stay; the next snapshot clears the selection only
     /// if the content generation moved. Input the old viewer had not sent is
     /// discarded with its authority, and its in-flight replies are ignored.
-    /// The new viewer already holds this view's focus, geometry, and
-    /// presentation, and the runtime released the old viewer's gestures.
+    /// The runtime released the old viewer's gestures. `viewer` started
+    /// with `start`; the view's state may have moved on since the
+    /// replacement began, so whatever differs now is reported again, and
+    /// its focus follows in order with later input.
     fn replace_viewer(
         &mut self,
         viewer: TerminalViewer,
+        start: &ViewerStart,
         clipboard_allowed: bool,
         cx: &mut Context<'_, Self>,
     ) {
@@ -1083,11 +1103,22 @@ impl TerminalView {
         if self.exited {
             self.input_queue.close();
         }
-        self.pending_resize = None;
-        self.pending_presentation = None;
+        self.replaced_while_running |= !self.exited;
+        let current = self.viewer_start();
+        self.pending_resize = current
+            .geometry
+            .filter(|geometry| start.geometry != Some(*geometry));
+        self.pending_presentation = (current.presentation
+            != start.presentation)
+            .then_some(current.presentation);
         self.mouse = MouseState::default();
         self.context_lookup = None;
         self.links.invalidate();
+        if self.reported_focus {
+            self.enqueue_focus(true);
+        }
+        self.retry_client_messages();
+        self.wake_pending_work();
         self.scroll.restart();
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);

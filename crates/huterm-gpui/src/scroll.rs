@@ -191,7 +191,7 @@ impl ScrollController {
     }
 
     /// Whether a snapshot request is waiting for its reply.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(super) fn in_flight(&self) -> bool {
         self.in_flight
     }

@@ -1,19 +1,22 @@
-//! Test-only control over the desktop's close workers: counts assessments
-//! and commits, holds either stage until the test releases it, and injects
-//! failures. Tier 2 tests use it to place window events between a close's
-//! stages; production builds compile none of it.
+//! Test-only control over the desktop's workers: counts close assessments,
+//! close commits, and viewer subscriptions, holds any stage until the test
+//! releases it, and injects close failures. Tier 2 tests use it to place
+//! window events between a worker's start and its completion; production
+//! builds compile none of it.
 
 use std::sync::Mutex;
 
-/// A close worker stage.
+/// A worker stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Stage {
     Assess,
     Commit,
+    /// Subscribing viewers for installs and replacements.
+    Subscribe,
 }
 
 #[derive(Default)]
-pub(super) struct CloseHooks(Mutex<[StageHooks; 2]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 3]>);
 
 #[derive(Default)]
 struct StageHooks {
@@ -27,7 +30,7 @@ struct StageHooks {
     fail: bool,
 }
 
-impl CloseHooks {
+impl WorkerHooks {
     fn with<T>(&self, stage: Stage, f: impl FnOnce(&mut StageHooks) -> T) -> T {
         let mut stages = self
             .0

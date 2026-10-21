@@ -1081,11 +1081,30 @@ Built in PR B part 3, on 2026-10-22:
   replacement in flight is not started twice. A revocation emits no
   hierarchy event, so the tab's activity drain runs `reconcile_own` when it
   sees its view revoked.
-- `subscribe_tabs` takes each tab's starting state. Installs start
-  unfocused with no geometry; a replacement starts with the focus the view
-  last reported, its requested grid and cell size, and its presentation.
-  The completion swaps the viewer into the same `TerminalView` only while
-  the view is still revoked and the tab still belongs to the window.
+- `subscribe_tabs` takes each tab's starting state. Installs start with no
+  geometry; a replacement starts with the view's requested grid and cell
+  size and its presentation. Every desktop viewer starts unfocused. The
+  completion swaps the viewer into the same `TerminalView` only while the
+  view is still revoked and the tab still belongs to the window.
+- Changed in review on 2026-10-22: the state a replacement started with
+  can be stale by the time it is swapped in, because focus, size, and theme
+  can change during the worker and the sequence wait. The view records
+  them even though its revoked viewer refuses the reports. The swap
+  therefore compares the start state with the view's current state and
+  re-sends geometry and presentation that differ, and the view sends its
+  current focus through the input queue, in order with later input. A
+  replacement no longer registers focused: under the `latest` policy a
+  focused registration is the newest focus gain and takes control, and a
+  blur sent afterwards would not give control back to the window that
+  became active meanwhile.
+- Also changed in review: an exit that a replaced view first sees from
+  status is the exit transition when the view saw the terminal running
+  before its replacement (`replaced_while_running`). The root shell can
+  exit after the old viewer's last poll and before the replacement
+  subscribes, and core reports `exited` only to a viewer subscribed while
+  the shell ran, so the exit-close or the exit notice would otherwise
+  never happen. A view first installed after the exit still announces
+  nothing.
 - Swapping discards the view's `InputQueue`, pending geometry and
   presentation, mouse ownership, and a pending context-menu lookup. It
   restarts `ScrollController` (`restart` clears the latched failure and the
@@ -1199,7 +1218,7 @@ confirmation returns the exit-close to owed, which a later refresh of that
 window takes again.
 
 Tier 2 tests hold or fail the assessment and the commit through a
-test-only hook in `DesktopRuntime` (`windows/close_hooks.rs`, compiled
+test-only hook in `DesktopRuntime` (`windows/worker_hooks.rs`, compiled
 only for tests with the `test-support` feature). It counts both stages,
 holds either until released, and fails the next worker that passes. A
 failed commit runs the real commit first, as a teardown failure after the
@@ -1718,7 +1737,15 @@ Replacement:
     it there, a real path that emits no hierarchy event;
   - replacing the controlling viewer while another window's viewer has a
     different size advances the geometry revision by exactly two and clears
-    the selection.
+    the selection;
+  - with the replacement held between its start and its subscription by a
+    `Subscribe` gate in the test-only worker hooks
+    (`windows/worker_hooks.rs`), a window that blurs while the other
+    window takes focus leaves focus and the size with the active window,
+    and a window resized meanwhile gets the current size;
+  - a shell that exits while its only live view is being replaced still
+    closes the tab under `close_on_exit` and raises the exit notice
+    without it.
 - A `ScrollController` unit test: restarting after `Revoked` lets the next
   invalidation start a snapshot request, also while a request was in
   flight.

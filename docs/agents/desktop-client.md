@@ -48,13 +48,18 @@ A view whose viewer reports revocation while its tab stays in the window's
 workspace is replaced in place by the same worker and sequence wait. The tab's
 activity drain runs `reconcile_own` on seeing it, because a revocation emits
 no hierarchy event, and replacements share `PendingInstalls` with installs.
-The new viewer starts with the focus the view last reported
-(`reported_focus`), its requested geometry, and its presentation, since GPUI
-raises no focus event for a view that stays focused. Swapping it in discards
-queued input and mouse ownership, restarts `ScrollController`, ignores replies
-to the old viewer by `viewer_epoch` (a late `Revoked` would otherwise latch
-the scroll failure), and replaces the tab's activity task, which waits on the
-old viewer's wake. A failed replacement removes the view.
+The new viewer starts unfocused with the view's requested geometry and
+presentation. Registering it focused would make it the newest focus gain under
+the `latest` policy and take control even if its window blurred meanwhile.
+Swapping it in discards queued input and mouse ownership, re-sends geometry
+and presentation that changed since the replacement started, sends the focus
+the view last reported (`reported_focus`) through the input queue, since GPUI
+raises no focus event for a view that stays focused, restarts
+`ScrollController`, ignores replies to the old viewer by `viewer_epoch` (a
+late `Revoked` would otherwise latch the scroll failure), and replaces the
+tab's activity task, which waits on the old viewer's wake. A replaced view
+that saw its terminal running treats an exit it first sees from status as the
+exit transition. A failed replacement removes the view.
 
 ## Activity tasks and frame scheduling
 
@@ -143,7 +148,7 @@ tab in application context, so closing the window cannot let a second window
 close the same tab. Removing a window returns a close it took but had not
 started committing. A failed assessment or commit settles with one notice and
 is not retried. Tier 2 tests hold and fail both stages through
-`windows/close_hooks.rs`, which compiles only for tests with `test-support`.
+`windows/worker_hooks.rs`, which compiles only for tests with `test-support`.
 Exited tabs retain history and local selection/scrolling;
 close their input queue and reset mouse ownership without emitting releases.
 

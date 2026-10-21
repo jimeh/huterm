@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use gpui::{Keystroke, TestAppContext, VisualTestContext};
 use huterm_protocol::{
-    CellSize, GridSize, TerminalCommand, TerminalInput, TerminalPresentation,
-    TerminalSnapshot,
+    CellSize, GridSize, TerminalCommand, TerminalInput, TerminalLifecycle,
+    TerminalPresentation, TerminalSnapshot,
 };
 
-use super::close_hooks::Stage;
 use super::notices::NoticeContent;
+use super::worker_hooks::Stage;
 use super::*;
 
 /// How long a wait may take before the test fails with the last state it
@@ -773,7 +773,7 @@ fn an_exit_while_the_window_is_busy_closes_once_the_busy_close_ends(
             .all(|tab| terminal(cx, window, tab).is_some())
     });
     let hooks = Arc::clone(&harness.runtime);
-    let hooks = &hooks.close_hooks;
+    let hooks = &hooks.worker_hooks;
     hooks.hold(Stage::Assess);
     harness.update_view(window, |view, window, cx| {
         view.request_close(CloseTarget::Tab(closed), window, cx);
@@ -835,13 +835,13 @@ fn exit_held_at(
     stage: Stage,
 ) -> (AnyWindowHandle, AnyWindowHandle) {
     let runtime = Arc::clone(&harness.runtime);
-    runtime.close_hooks.hold(stage);
+    runtime.worker_hooks.hold(stage);
     let _client = harness.send_line(tab, "x");
     harness.wait_for(
         "both windows to see the exit and one close to wait",
         |cx| {
             windows.into_iter().all(|window| exited(cx, window, tab))
-                && runtime.close_hooks.held(stage) > 0
+                && runtime.worker_hooks.held(stage) > 0
         },
     );
     let [first, second] = windows;
@@ -865,7 +865,7 @@ fn assert_closed_once(
                 .iter()
                 .all(|window| terminal(cx, *window, tab).is_none())
     });
-    let hooks = &harness.runtime.close_hooks;
+    let hooks = &harness.runtime.worker_hooks;
     assert_eq!(hooks.entered(Stage::Assess), 1, "one close was assessed");
     assert_eq!(hooks.entered(Stage::Commit), 1, "one close was committed");
     harness.cx.update(|cx| {
@@ -887,7 +887,7 @@ fn an_exit_shown_in_two_windows_closes_once_without_a_prompt(
         !harness.resume_close(other),
         "the other window takes nothing"
     );
-    harness.runtime.close_hooks.release(Stage::Assess);
+    harness.runtime.worker_hooks.release(Stage::Assess);
     assert_closed_once(&mut harness, &windows, exits);
     harness.cx.update(|cx| {
         for window in [claimer, other] {
@@ -912,7 +912,7 @@ fn a_view_installed_after_the_exit_takes_a_close_its_busy_window_cannot(
             .all(|tab| terminal(cx, busy_window, tab).is_some())
     });
     let runtime = Arc::clone(&harness.runtime);
-    let hooks = &runtime.close_hooks;
+    let hooks = &runtime.worker_hooks;
     hooks.hold(Stage::Assess);
     harness.update_view(busy_window, |view, window, cx| {
         view.request_close(CloseTarget::Tab(closed), window, cx);
@@ -948,7 +948,7 @@ fn closing_the_claiming_window_during_its_assessment_hands_the_close_on(
     let stays = harness.open_tab(ECHO);
     let claimer = harness.attach_window();
     let runtime = Arc::clone(&harness.runtime);
-    let hooks = &runtime.close_hooks;
+    let hooks = &runtime.worker_hooks;
     hooks.hold(Stage::Assess);
     let _client = harness.send_line(exits, "x");
     harness.wait_for("the window to take the close", |cx| {
@@ -990,7 +990,7 @@ fn dropping_the_claiming_view_while_its_close_is_held_starts_no_second_one(
     drop_view(&mut harness);
     assert!(!harness.resume_close(other));
     let runtime = Arc::clone(&harness.runtime);
-    let hooks = &runtime.close_hooks;
+    let hooks = &runtime.worker_hooks;
     hooks.hold(Stage::Commit);
     hooks.release(Stage::Assess);
     harness.wait_for("the claiming window to commit", |_| {
@@ -1018,7 +1018,7 @@ fn closing_the_claiming_window_while_it_commits_closes_once_without_a_notice(
         !harness.resume_close(other),
         "the commit still owns the close"
     );
-    harness.runtime.close_hooks.release(Stage::Commit);
+    harness.runtime.worker_hooks.release(Stage::Commit);
     assert_closed_once(&mut harness, &[other], exits);
     harness.cx.update(|cx| {
         assert!(terminal(cx, other, stays).is_some());
@@ -1035,7 +1035,7 @@ fn a_failed_assessment_settles_the_exit_close_with_one_notice(
     let (claimer, other) =
         exit_held_at(&mut harness, windows, exits, Stage::Assess);
     let runtime = Arc::clone(&harness.runtime);
-    let hooks = &runtime.close_hooks;
+    let hooks = &runtime.worker_hooks;
     hooks.fail(Stage::Assess);
     hooks.release(Stage::Assess);
     harness.wait_for("the failure notice", |cx| {
@@ -1062,8 +1062,8 @@ fn a_failed_commit_settles_the_exit_close_with_one_notice(
     let (windows, exits, _) = two_windows(&mut harness);
     let (claimer, other) =
         exit_held_at(&mut harness, windows, exits, Stage::Commit);
-    harness.runtime.close_hooks.fail(Stage::Commit);
-    harness.runtime.close_hooks.release(Stage::Commit);
+    harness.runtime.worker_hooks.fail(Stage::Commit);
+    harness.runtime.worker_hooks.release(Stage::Commit);
     assert_closed_once(&mut harness, &windows, exits);
     harness
         .wait_for("the failure notice", |cx| !notices(cx, claimer).is_empty());
@@ -1094,7 +1094,7 @@ fn a_tab_that_exited_without_close_on_exit_stays_open_after_enabling_it(
         assert!(!harness.resume_close(window), "the exit stays retained");
     }
     assert!(harness.cx.update(|cx| projected(cx, exits)));
-    assert_eq!(harness.runtime.close_hooks.entered(Stage::Assess), 0);
+    assert_eq!(harness.runtime.worker_hooks.entered(Stage::Assess), 0);
 }
 
 /// The view of `tab` in `window` once it holds its `epoch`th viewer and is
@@ -1374,4 +1374,182 @@ fn replacing_the_controlling_viewer_beside_another_size_resizes_twice(
         !harness.cx.update(|cx| selected(cx, window, tab)),
         "each resize advanced the content generation"
     );
+}
+
+/// The bytes a [`FOCUS_ECHO`] child reports in the canonical snapshot after
+/// its `GO`.
+fn canonical_bytes(snapshot: &TerminalSnapshot) -> String {
+    let text: String =
+        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+    text.split_once("GO")
+        .map(|(_, echoed)| {
+            echoed.chars().filter(char::is_ascii_hexdigit).collect()
+        })
+        .unwrap_or_default()
+}
+
+#[gpui::test]
+fn a_replacement_started_before_its_window_blurs_takes_neither_focus_nor_control(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(FOCUS_ECHO);
+    let other = harness.attach_window();
+    let window = harness.attach_window();
+    harness
+        .cx
+        .simulate_window_resize(other, gpui::size(px(400.0), px(300.0)));
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("g").unwrap());
+    harness.wait_text(window, tab, "GO");
+    let grid = |cx: &mut App, window| {
+        terminal(cx, window, tab).map(|view| view.read(cx).requested_grid)
+    };
+    harness.wait_for("the windows to request different grids", |cx| {
+        grid(cx, other).is_some() && grid(cx, other) != grid(cx, window)
+    });
+    let other_grid = harness.cx.update(|cx| grid(cx, other)).unwrap();
+    let before = canonical_bytes(&harness.canonical(tab));
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.revoke(window);
+    harness.wait_for("the replacement to start", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    // While the replacement is in flight, its window blurs and the other
+    // window takes focus and the size.
+    harness.activate(other, tab);
+    let expected = format!("{before}1b5b4f1b5b49");
+    harness.wait_canonical(
+        tab,
+        "the other window to take focus and the size",
+        |snapshot| {
+            snapshot.size == other_grid && canonical_bytes(snapshot) == expected
+        },
+    );
+    hooks.release(Stage::Subscribe);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    // With no window active the program sees focus end, so the
+    // replacement did not report the focus it started with.
+    harness.deactivate(other);
+    let expected = format!("{expected}1b5b4f");
+    harness.wait_canonical(tab, "focus to end", |snapshot| {
+        canonical_bytes(snapshot) == expected
+    });
+    assert_eq!(
+        harness.canonical(tab).size,
+        other_grid,
+        "the active window kept the size"
+    );
+}
+
+#[gpui::test]
+fn a_replacement_started_before_a_resize_takes_the_current_size(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let grid = |cx: &mut App| {
+        terminal(cx, window, tab).map(|view| view.read(cx).requested_grid)
+    };
+    let small = harness.cx.update(grid).unwrap();
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.revoke(window);
+    harness.wait_for("the replacement to start", |_| {
+        hooks.held(Stage::Subscribe) == 1
+    });
+    harness
+        .cx
+        .simulate_window_resize(window, gpui::size(px(500.0), px(400.0)));
+    harness.wait_for("the view to request the new grid", |cx| {
+        grid(cx).is_some_and(|grid| grid != small)
+    });
+    let large = harness.cx.update(grid).unwrap();
+    hooks.release(Stage::Subscribe);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    harness.wait_canonical(
+        tab,
+        "the canonical grid to follow the new size",
+        |snapshot| snapshot.size == large,
+    );
+}
+
+/// Exits the [`EXITS`] tab while its window's replacement viewer is held
+/// between its start and its subscription, so no view sees the exit
+/// happen, then releases the replacement. Returns the window and the tab.
+fn exit_while_replacing(
+    harness: &mut DesktopHarness,
+) -> (AnyWindowHandle, TabId) {
+    let exits = harness.open_tab(EXITS);
+    let stays = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_for("the window to install both tabs", |cx| {
+        terminal(cx, window, stays).is_some()
+    });
+    harness.wait_text(window, exits, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Subscribe);
+    harness.revoke(window);
+    harness.wait_for("the replacement to start", |cx| {
+        hooks.held(Stage::Subscribe) > 0
+            && terminal(cx, window, exits)
+                .is_some_and(|view| view.read(cx).revoked)
+    });
+    let client = harness.send_line(exits, "x");
+    let mut seen = false;
+    harness.wait_for("the exit", |_| {
+        let update = client.poll();
+        seen |= update.exited.is_some()
+            || update.status.is_some_and(|status| {
+                matches!(status.lifecycle, TerminalLifecycle::Exited(_))
+            });
+        seen
+    });
+    assert!(
+        !harness.cx.update(|cx| exited(cx, window, exits)),
+        "the revoked view did not see the exit"
+    );
+    hooks.release(Stage::Subscribe);
+    (window, exits)
+}
+
+#[gpui::test]
+fn an_exit_while_a_live_view_is_replaced_still_closes_its_tab(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, exits) = exit_while_replacing(&mut harness);
+    harness.wait_for("the exited tab to close", |cx| {
+        !projected(cx, exits) && terminal(cx, window, exits).is_none()
+    });
+}
+
+#[gpui::test]
+fn an_exit_while_a_live_view_is_replaced_is_announced_when_kept(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.close_on_exit = false;
+    });
+    let (window, exits) = exit_while_replacing(&mut harness);
+    harness.wait_for("the exit notice", |cx| {
+        exited(cx, window, exits)
+            && notices(cx, window)
+                .iter()
+                .any(|notice| notice.contains("Process exited"))
+    });
 }

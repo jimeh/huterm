@@ -280,13 +280,18 @@ async fn shared_viewport(
             terminal,
         ))
     })?;
-    let viewer = runtime.lock().subscribe_terminal(
-        attachment,
-        terminal,
-        huterm_core::ViewerOptions::new(
-            huterm_protocol::ViewerCapabilities::NONE,
-        ),
-    )?;
+    let viewer = cx
+        .background_executor()
+        .spawn(async move {
+            runtime.lock().subscribe_terminal(
+                attachment,
+                terminal,
+                huterm_core::ViewerOptions::new(
+                    huterm_protocol::ViewerCapabilities::NONE,
+                ),
+            )
+        })
+        .await?;
     let reply = viewer.request_snapshot()?.recv().await?;
     Ok(format!(
         "bottom_offset={} grid={},{}",

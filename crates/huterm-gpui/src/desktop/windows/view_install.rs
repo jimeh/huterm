@@ -95,10 +95,19 @@ impl WorkspaceView {
         else {
             return;
         };
+        let starts: Vec<(TabId, ViewerStart)> = targets
+            .iter()
+            .map(|(tab, _, start)| (*tab, start.clone()))
+            .collect();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let clipboard_allowed =
             self.config.terminal.clipboard_write.is_allowed();
         let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Subscribe)
+                .await;
             runtime.subscribe_tabs(attachment, &targets, clipboard_allowed)
         });
         let id = self.window;
@@ -116,7 +125,9 @@ impl WorkspaceView {
                         );
                     }
                     Subscription::Replace => {
-                        view.finish_replace(result, resolution, window, cx);
+                        view.finish_replace(
+                            result, &starts, resolution, window, cx,
+                        );
                     }
                 })
             });
@@ -132,6 +143,7 @@ impl WorkspaceView {
     fn finish_replace(
         &mut self,
         viewers: Vec<(TabId, Result<TerminalViewer, MuxError>)>,
+        starts: &[(TabId, ViewerStart)],
         resolution: Resolution,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -152,13 +164,17 @@ impl WorkspaceView {
                     &[],
                     tab,
                 );
-            let failed = match result {
-                Ok(viewer) if applies => {
-                    self.replace_viewer(tab, viewer, window, cx);
+            let start = starts
+                .iter()
+                .find(|(id, _)| *id == tab)
+                .map(|(_, start)| start);
+            let failed = match (result, start) {
+                (Ok(viewer), Some(start)) if applies => {
+                    self.replace_viewer(tab, viewer, start, window, cx);
                     false
                 }
-                Ok(_) => false,
-                Err(error) => {
+                (Ok(_), _) => false,
+                (Err(error), _) => {
                     if applies {
                         removed.push(tab);
                         if !stale_install(&error) {
@@ -197,6 +213,7 @@ impl WorkspaceView {
         &mut self,
         tab: TabId,
         viewer: TerminalViewer,
+        start: &ViewerStart,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -209,7 +226,7 @@ impl WorkspaceView {
         let clipboard_allowed =
             self.config.terminal.clipboard_write.is_allowed();
         view.update(cx, |terminal, cx| {
-            terminal.replace_viewer(viewer, clipboard_allowed, cx);
+            terminal.replace_viewer(viewer, start, clipboard_allowed, cx);
         });
         let failure_wakes = view.read(cx).failure_wakes.clone();
         let task =

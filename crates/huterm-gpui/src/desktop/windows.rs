@@ -72,8 +72,6 @@ const TAB_HEIGHT: Pixels = px(32.0);
 pub(super) const SIDEBAR_WIDTH: Pixels = px(180.0);
 mod button_layout;
 mod client_frame;
-#[cfg(all(test, feature = "test-support"))]
-mod close_hooks;
 mod exit_closes;
 mod model;
 mod projection;
@@ -86,6 +84,8 @@ mod terminal_menu;
 mod view_install;
 mod views;
 mod window_menu;
+#[cfg(all(test, feature = "test-support"))]
+mod worker_hooks;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
     Axis, Edge, HitBand, Origin, Press, ScrollbarGeometries, ScrollbarGeometry,
@@ -214,7 +214,7 @@ struct DesktopRuntime {
     terminating: AtomicBool,
     restore: Mutex<Option<RestoreSnapshot>>,
     #[cfg(all(test, feature = "test-support"))]
-    close_hooks: close_hooks::CloseHooks,
+    worker_hooks: worker_hooks::WorkerHooks,
 }
 
 /// A structural result with the hierarchy sequence read under the same
@@ -392,7 +392,6 @@ impl DesktopRuntime {
                         attachment,
                         *terminal,
                         ViewerOptions {
-                            focused: start.focused,
                             geometry: start.geometry,
                             ..self.viewer_options(
                                 clipboard_allowed,
@@ -6392,7 +6391,11 @@ impl WorkspaceView {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
-            if runtime.close_hooks.enter(close_hooks::Stage::Assess).await {
+            if runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Assess)
+                .await
+            {
                 return Err(RuntimeError::Stopped.into());
             }
             runtime.assess(request)
@@ -6603,7 +6606,11 @@ impl WorkspaceView {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
-            if runtime.close_hooks.enter(close_hooks::Stage::Commit).await {
+            if runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Commit)
+                .await
+            {
                 // A teardown failure after the runtime accepted the close.
                 let mut committed =
                     runtime.commit(&assessment, confirmed, windows);
