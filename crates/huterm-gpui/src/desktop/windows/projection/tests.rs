@@ -125,6 +125,10 @@ struct FakeWindow {
     pending: PendingInstalls,
     /// Every install batch reconcile started, in order.
     started: Vec<Vec<TabId>>,
+    /// Installed tabs whose viewer was revoked.
+    revoked: Vec<TabId>,
+    /// Every replacement batch reconcile started, in order.
+    replaced: Vec<Vec<TabId>>,
 }
 
 struct Target<'a> {
@@ -208,6 +212,14 @@ impl ReconcileTarget for Target<'_> {
     fn install(&mut self, tabs: &[TabId]) {
         self.window.started.push(tabs.to_vec());
     }
+
+    fn revoked(&self) -> Vec<TabId> {
+        self.window.revoked.clone()
+    }
+
+    fn replace(&mut self, tabs: &[TabId]) {
+        self.window.replaced.push(tabs.to_vec());
+    }
 }
 
 fn layout() -> WindowLayout {
@@ -236,6 +248,8 @@ fn open_window(
         published: Vec::new(),
         pending: PendingInstalls::default(),
         started: Vec::new(),
+        revoked: Vec::new(),
+        replaced: Vec::new(),
     }
 }
 
@@ -772,6 +786,8 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
         published: Vec::new(),
         pending: PendingInstalls::default(),
         started: Vec::new(),
+        revoked: Vec::new(),
+        replaced: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
@@ -856,6 +872,8 @@ fn a_reset_queued_after_teardown_is_not_applied_and_labels_keep_custom_names() {
         published: Vec::new(),
         pending: PendingInstalls::default(),
         started: Vec::new(),
+        revoked: Vec::new(),
+        replaced: Vec::new(),
     };
     let target = Target {
         window: &mut fake,
@@ -933,6 +951,8 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
         published: Vec::new(),
         pending: PendingInstalls::default(),
         started: Vec::new(),
+        revoked: Vec::new(),
+        replaced: Vec::new(),
     };
     fake.views.push(View {
         tab: opened.tab.id,
@@ -1200,6 +1220,47 @@ fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
     });
     reconcile(&mut fake, &mut model, &feed.state, &touched);
     assert_eq!(fake.started[1..], [vec![tab(1), tab(2)]]);
+}
+
+#[test]
+fn a_revoked_view_whose_tab_stays_is_replaced_once_and_otherwise_removed() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    for value in [1, 2] {
+        let seq = feed.open(workspace(10), value);
+        push(&mut fake, &mut model, &feed.state, value, seq);
+    }
+    fake.revoked = vec![tab(1), tab(2)];
+    // The window's own completion reconciles a busy window's revocations.
+    fake.busy = true;
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert_eq!(fake.replaced, Vec::<Vec<TabId>>::new());
+    fake.busy = false;
+    feed.move_tab(2, workspace(11), 0);
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(fake.replaced, [vec![tab(1)]]);
+    assert_eq!(
+        view_order(&fake),
+        [tab(1)],
+        "the moved tab's view is removed"
+    );
+    // While the replacement is in flight, reconciling again starts none.
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
+    assert_eq!(fake.replaced.len(), 1);
+    // A failed replacement removes the view; the tab then waits, as a
+    // failed install does, for a batch that touches its workspace.
+    Target {
+        window: &mut fake,
+        model: &mut model,
+        state: &feed.state,
+    }
+    .drop_tabs(&[tab(1)]);
+    fake.revoked.clear();
+    fake.pending.finish(tab(1), true);
+    reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
+    assert_eq!(fake.started, Vec::<Vec<TabId>>::new());
+    assert_eq!(fake.replaced.len(), 1);
 }
 
 #[test]

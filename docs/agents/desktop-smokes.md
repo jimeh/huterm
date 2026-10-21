@@ -91,7 +91,12 @@ report rather than a gate, and `w<i>.clipboard_writes` the clipboard writes
 a window delivered. Step 6 types `exit` into window 1's first tab, whose
 fixture shell then exits, and checks that both windows drop to one tab and
 that neither lists a `command` notice for a failed or unassessable close
-among its `w<i>.notice<j>=` fields. `mise run smoke:manual-viewers` opens
+among its `w<i>.notice<j>=` fields. Before step 7, `revoke-window\t1`
+revokes window 1's viewers by retargeting its attachment to a temporary
+session and back under one Mux lock, which leaves the hierarchy unchanged,
+and the check asserts that output typed in window 0 still reaches window 1's
+replaced viewer. Tier 2 tests call the same `revoke_viewers` function.
+`mise run smoke:manual-viewers` opens
 the same two windows for manual Cmd-Tab, Mission Control, and occlusion
 checks.
 

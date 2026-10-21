@@ -215,12 +215,8 @@ async fn execute(
         return Ok(format!("{outcome:?}"));
     }
 
-    if let Some(index) = command.strip_prefix("attach-window\t") {
-        return attach_window(cx, index).await;
-    }
-
-    if let Some(index) = command.strip_prefix("viewport\t") {
-        return shared_viewport(cx, index).await;
+    if let Some(result) = viewer_fixture(cx, command).await {
+        return result;
     }
 
     if let Some(index) = command.strip_prefix("open-rename-for\t") {
@@ -234,6 +230,24 @@ async fn execute(
     }
 
     cx.update(|cx| execute_sync(cx, command))
+}
+
+/// Runs a viewer fixture command addressed to a window by index, or
+/// returns `None` for any other command.
+async fn viewer_fixture(
+    cx: &mut gpui::AsyncApp,
+    command: &str,
+) -> Option<anyhow::Result<String>> {
+    if let Some(index) = command.strip_prefix("attach-window\t") {
+        return Some(attach_window(cx, index).await);
+    }
+    if let Some(index) = command.strip_prefix("revoke-window\t") {
+        return Some(revoke_window(cx, index).await);
+    }
+    if let Some(index) = command.strip_prefix("viewport\t") {
+        return Some(shared_viewport(cx, index).await);
+    }
+    None
 }
 
 /// Runs a command that completes on the UI thread.
@@ -280,6 +294,47 @@ async fn shared_viewport(
         reply.snapshot.size.columns,
         reply.snapshot.size.rows
     ))
+}
+
+/// `revoke-window\t<index>` revokes the viewers of the window at `index`,
+/// which then replaces them in place.
+async fn revoke_window(
+    cx: &mut gpui::AsyncApp,
+    index: &str,
+) -> anyhow::Result<String> {
+    let index: usize = index.parse().context("window index")?;
+    let (runtime, attachment) = cx.update(|cx| {
+        let view = workspace_view(cx, index)?;
+        let attachment =
+            view.read(cx).attachment_id(cx).context("attachment")?;
+        Ok::<_, anyhow::Error>((
+            Arc::clone(&cx.global::<Desktop>().runtime),
+            attachment,
+        ))
+    })?;
+    cx.background_executor()
+        .spawn(async move { revoke_viewers(&runtime, attachment) })
+        .await?;
+    Ok(format!("window {index}'s viewers revoked"))
+}
+
+/// Revokes every viewer of `attachment` and leaves the hierarchy as it was.
+/// Retargeting an attachment withdraws its viewers' authority and emits no
+/// hierarchy event, so under one lock the attachment moves to a temporary
+/// session without workspaces and straight back, and the temporary session
+/// then closes with nothing attached to it. No production path revokes a
+/// viewer whose tab stays until #21 and #26.
+pub(super) fn revoke_viewers(
+    runtime: &super::DesktopRuntime,
+    attachment: huterm_protocol::AttachmentId,
+) -> Result<(), huterm_core::MuxError> {
+    let mut mux = runtime.lock();
+    let session = mux.attachment_session(attachment)?;
+    let temporary = mux.create_session(None)?;
+    let moved = mux
+        .retarget_attachment(attachment, temporary)
+        .and_then(|()| mux.retarget_attachment(attachment, session));
+    moved.and(mux.close_session(temporary))
 }
 
 /// `attach-window\t<index>` opens a window without a shell and attaches it

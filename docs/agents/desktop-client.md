@@ -44,6 +44,18 @@ emits no hierarchy event. A view installed after its tab exited shows the
 exit from status but announces nothing: only the exit transition raises a
 notice or records an exit-close.
 
+A view whose viewer reports revocation while its tab stays in the window's
+workspace is replaced in place by the same worker and sequence wait. The tab's
+activity drain runs `reconcile_own` on seeing it, because a revocation emits
+no hierarchy event, and replacements share `PendingInstalls` with installs.
+The new viewer starts with the focus the view last reported
+(`reported_focus`), its requested geometry, and its presentation, since GPUI
+raises no focus event for a view that stays focused. Swapping it in discards
+queued input and mouse ownership, restarts `ScrollController`, ignores replies
+to the old viewer by `viewer_epoch` (a late `Revoked` would otherwise latch
+the scroll failure), and replaces the tab's activity task, which waits on the
+old viewer's wake. A failed replacement removes the view.
+
 ## Activity tasks and frame scheduling
 
 Each TerminalView holds one `TerminalViewer`, its own registration with the

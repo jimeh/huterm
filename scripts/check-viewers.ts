@@ -3,11 +3,11 @@
  * second window to the first window's session, then check shared output,
  * the shared viewport, control of the PTY size, installing a tab opened
  * later, single delivery of a clipboard write, one close for a shell that
- * exits, and closing the second window. Input goes through fixture
- * commands addressed to a window, so the check does not depend on which
- * window has native keyboard focus. Where Xvfb delivers no frames,
- * assertions read runtime-backed state: the PTY size from the shell and
- * the shared viewport from a fixture snapshot.
+ * exits, replacing revoked viewers in place, and closing the second
+ * window. Input goes through fixture commands addressed to a window, so
+ * the check does not depend on which window has native keyboard focus.
+ * Where Xvfb delivers no frames, assertions read runtime-backed state: the
+ * PTY size from the shell and the shared viewport from a fixture snapshot.
  */
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -220,6 +220,14 @@ always_show = true
       const notices = closeFailureNotices(exited, window);
       if (notices.length > 0) throw new Error(`window ${window} reported a failed close: ${notices.join("; ")}`);
     }
+
+    // Revoking window 1's viewers replaces them in place, so output from
+    // typing in window 0 still reaches window 1's view.
+    await command("revoke-window\t1");
+    await send(0, "ack after-revoke", "ACK:after-revoke");
+    const revoked = await stateWhere((state) => text(state, 1).includes("ACK:after-revoke"),
+      "window 1's replaced viewer to show new output");
+    if (windowField(revoked, 1, "tabs") !== "1") throw new Error(`window 1 lost its view: ${revoked}`);
 
     // 7. Closing window 1 detaches it; window 0's shell still answers.
     await command("invoke-in\t1\tclose_window");

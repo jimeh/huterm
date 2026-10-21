@@ -371,29 +371,34 @@ impl DesktopRuntime {
     }
 
     /// Subscribes a viewer for each of a window's tabs under one lock, for
-    /// views the window did not spawn.
+    /// views the window did not spawn and for revoked views it replaces.
+    /// Each viewer starts with its tab's [`ViewerStart`].
     fn subscribe_tabs(
         &self,
         attachment: AttachmentId,
-        tabs: &[(TabId, TerminalId)],
+        tabs: &[(TabId, TerminalId, ViewerStart)],
         clipboard_allowed: bool,
-        presentation: &TerminalPresentation,
     ) -> Committed<Vec<(TabId, Result<TerminalViewer, MuxError>)>> {
         let mux = self.lock();
         let terminating = self.terminating.load(Ordering::Acquire);
         let result = tabs
             .iter()
-            .map(|&(tab, terminal)| {
+            .map(|(tab, terminal, start)| {
+                let tab = *tab;
                 let viewer = if terminating {
                     Err(RuntimeError::Stopped.into())
                 } else {
                     mux.subscribe_terminal(
                         attachment,
-                        terminal,
-                        self.viewer_options(
-                            clipboard_allowed,
-                            presentation.clone(),
-                        ),
+                        *terminal,
+                        ViewerOptions {
+                            focused: start.focused,
+                            geometry: start.geometry,
+                            ..self.viewer_options(
+                                clipboard_allowed,
+                                start.presentation.clone(),
+                            )
+                        },
                     )
                 };
                 (tab, viewer)
@@ -2488,10 +2493,16 @@ struct TabView {
     /// longer does, such as during a close commit.
     names: TabNames,
     view: Entity<TerminalView>,
-    _activity_task: Task<()>,
+    /// The tab's activity drain; dropping it cancels the drain.
+    activity_task: Task<()>,
 }
 
 impl TabView {
+    /// Replaces the tab's activity drain, cancelling the old one.
+    fn restart_activity(&mut self, task: Task<()>) {
+        drop(std::mem::replace(&mut self.activity_task, task));
+    }
+
     /// The tab's label with status text, for previews, dialogs, and the
     /// window title.
     fn title(&self, tabs: huterm_config::TabsConfig, cx: &App) -> String {
@@ -3486,6 +3497,19 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     fn install(&mut self, tabs: &[TabId]) {
         self.view.install_tabs(tabs, self.cx);
     }
+
+    fn revoked(&self) -> Vec<TabId> {
+        self.view
+            .tabs
+            .iter()
+            .filter(|tab| tab.view.read(self.cx).revoked)
+            .map(|tab| tab.id)
+            .collect()
+    }
+
+    fn replace(&mut self, tabs: &[TabId]) {
+        self.view.replace_tabs(tabs, self.cx);
+    }
 }
 
 impl WorkspaceView {
@@ -4239,6 +4263,15 @@ impl WorkspaceView {
         if result.changed {
             cx.notify();
         }
+        // A revocation emits no hierarchy event; reconcile replaces the
+        // viewer, or removes the view once its tab has left.
+        if self
+            .tabs
+            .iter()
+            .any(|tab| tab.id == tab_id && tab.view.read(cx).revoked)
+        {
+            self.reconcile_own(window, cx);
+        }
         self.resume_close(window, cx);
         self.refresh_palette(cx);
         Some(result.more)
@@ -4493,7 +4526,7 @@ impl WorkspaceView {
             committed,
             names,
             view: terminal,
-            _activity_task: activity_task,
+            activity_task,
         })
     }
 

@@ -1072,6 +1072,44 @@ refresh now also takes the exited lifecycle from status. Only the
 transition is reported to the window, so such a view still announces
 nothing and queues no exit-close.
 
+Built in PR B part 3, on 2026-10-22:
+
+- Reconcile derives replacements beside installs (`projection::replacements`):
+  installed views whose viewer reported revocation and whose tab the
+  projection still holds in the window's workspace, skipping a busy or
+  terminating window. They share `PendingInstalls` with installs, so a
+  replacement in flight is not started twice. A revocation emits no
+  hierarchy event, so the tab's activity drain runs `reconcile_own` when it
+  sees its view revoked.
+- `subscribe_tabs` takes each tab's starting state. Installs start
+  unfocused with no geometry; a replacement starts with the focus the view
+  last reported, its requested grid and cell size, and its presentation.
+  The completion swaps the viewer into the same `TerminalView` only while
+  the view is still revoked and the tab still belongs to the window.
+- Swapping discards the view's `InputQueue`, pending geometry and
+  presentation, mouse ownership, and a pending context-menu lookup. It
+  restarts `ScrollController` (`restart` clears the latched failure and the
+  old viewer's request in flight) and requests a snapshot. A counter of
+  the viewers the view has held makes it ignore snapshot and selection
+  replies to the old viewer, which would otherwise latch a `Revoked`
+  failure on the new one. The window then replaces the tab's activity task
+  with one on the new viewer.
+- A failed replacement removes the view. A stale error, such as an
+  attachment that now belongs to another session, raises nothing; others
+  raise "Cannot show tab". The tab then waits, like a failed install, for a
+  batch that touches the workspace before an install tries it again.
+- The tier 2 test shows the revoked viewer's focus ending and the
+  replacement's beginning: the child reads `ESC [ O` then `ESC [ I`. That
+  holds when the runtime syncs the revocation before the replacement
+  registers, the usual order because the replacement waits for the window's
+  drain and a worker. If the owner thread sees both in one batch,
+  `Effects::merge` cancels the focus out and in and control passes straight
+  to the replacement: the program sees no focus change and the terminal
+  does not resize. The tier 2 tests that assert the transitions hold
+  replacement by marking the window busy until a fresh observer shows the
+  runtime processed the revocation; ten parallel runs without that hold
+  failed twice.
+
 Also found in part 1: the refresh smoke detached a view by dropping it while
 its tab stayed in the window's workspace, which reconcile now installs
 again. The smoke instead moves the tab to another workspace of the session,
@@ -1177,7 +1215,14 @@ reconcile, which installs the views. Production code gains no command for
 this.
 
 A second fixture command revokes a window's viewers, the only way to reach
-in-place re-subscription before [#21][issue-21] and [#26][issue-26].
+in-place re-subscription before [#21][issue-21] and [#26][issue-26]. Built
+in part 3 as `revoke-window\t<index>`: on a worker, under one Mux lock, it
+creates a session without workspaces, retargets the window's attachment to
+it and straight back, and closes it. Retargeting revokes the attachment's
+viewers and emits no hierarchy event, and the temporary session closes with
+nothing attached, so the projection's structure is unchanged; the tier 2
+test checks its digest. Tier 2 tests call the same function,
+`palette_smoke::revoke_viewers`.
 
 A new `check-viewers.ts` runs inside the macOS and Linux palette smokes, as
 `check-overlays.ts` does (see Verification), as its own `viewers` CI step.
@@ -1329,10 +1374,10 @@ so each part's tests pass before the next begins:
    test hook, the tier 2 exit-close tests including the one that an
    exit-close never prompts, and `check-viewers.ts` step 6.
 3. Replacement. Re-subscribe a revoked view in place from reconcile. Give
-   `ScrollController` a way to clear its latched failure, or skip it for
-   `Revoked`, so a replaced viewer resumes snapshots. Add the fixture
-   command that revokes a window's viewers, and cover replacement through
-   it.
+   `ScrollController` a way to clear its latched failure (`restart`), so a
+   replaced viewer resumes snapshots. Add the `revoke-window` fixture
+   command, cover replacement through it in tier 2, and add a replacement
+   check to `check-viewers.ts`.
 
 ### Follow-up issue: sizing policies ([#207][issue-207])
 
@@ -1658,21 +1703,31 @@ Exit close:
 
 Replacement:
 
-- Replacement tests through the fixture's revoke command: a revoked view is
-  re-subscribed in place, keeping the active tab, focus, and selection, and
-  its focused replacement writes `ESC [ I` and regains control; after
-  replacement, new output, a title change, an exit, and a clipboard write
-  each reach the view through its restarted activity task without display
-  frames; a view whose re-subscription fails is removed.
-- A `ScrollController` unit test: clearing the latch after `Revoked` lets
-  the next invalidation start a snapshot request.
-- Replacement of the controlling viewer while another viewer has a
-  different size. Revocation hands control to the other viewer and the
-  focused replacement takes it back, so the terminal resizes twice, each
-  resize advances the content generation, and the view clears its
-  selection, which the decision above accepts. The test asserts the
-  selection is cleared there and kept by a replacement that does not
-  resize.
+- Tier 2 replacement tests through `revoke_viewers`, the fixture command's
+  mechanism:
+  - a revoked view is replaced in place, keeping its entity, the active
+    tab, and focus; the child reads `ESC [ O` then `ESC [ I`; the hierarchy
+    digest is unchanged; and the replacement controls the size again after
+    a window resize;
+  - a replacement that does not resize keeps the selection;
+  - after replacement, new output, a title change, a clipboard write, and
+    an exit each reach the view with no display frame delivered, under
+    `refresh = "unlimited"` so snapshots wait only for the activity drain;
+  - a view whose re-subscription fails is removed without a notice. The
+    test retargets the window's attachment to another session and leaves
+    it there, a real path that emits no hierarchy event;
+  - replacing the controlling viewer while another window's viewer has a
+    different size advances the geometry revision by exactly two and clears
+    the selection.
+- A `ScrollController` unit test: restarting after `Revoked` lets the next
+  invalidation start a snapshot request, also while a request was in
+  flight.
+- A reconcile unit test: a revoked view whose tab stays is replaced once,
+  not while busy and not again while in flight; one whose tab moved is
+  removed; a failed replacement waits for a batch that touches the
+  workspace.
+- `check-viewers.ts` revokes window 1's viewers and asserts that output
+  from typing in window 0 still reaches window 1.
 
 ### The viewers smoke
 
@@ -1694,6 +1749,8 @@ Replacement:
      both windows lose that tab, keep the second tab, and show no
      stale-close notice.
   7. Close window 1 and assert window 0's shell still answers.
+- Between steps 6 and 7, revoke window 1's viewers with `revoke-window`
+  and assert that output typed in window 0 still reaches window 1.
 - Write OSC 52 from the shared terminal and assert from smoke state that
   exactly one window delivered it. The core test owns the exact-once
   guarantee across handoff; the smoke proves the desktop wiring.

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::{Keystroke, TestAppContext, VisualTestContext};
 use huterm_protocol::{
     CellSize, GridSize, TerminalCommand, TerminalInput, TerminalPresentation,
+    TerminalSnapshot,
 };
 
 use super::close_hooks::Stage;
@@ -48,6 +49,9 @@ struct DesktopHarness {
     runtime: Arc<DesktopRuntime>,
     session: SessionId,
     workspace: WorkspaceId,
+    /// The attachment [`Self::canonical`] observes through, made on first
+    /// use.
+    observer: Option<AttachmentId>,
 }
 
 impl DesktopHarness {
@@ -93,6 +97,7 @@ impl DesktopHarness {
             runtime,
             session,
             workspace,
+            observer: None,
         }
     }
 
@@ -135,6 +140,95 @@ impl DesktopHarness {
             .send_input(TerminalInput::Text(format!("{line}\r")))
             .unwrap();
         viewer
+    }
+
+    /// Revokes `window`'s viewers as the smoke fixture's `revoke-window`
+    /// does, leaving the hierarchy unchanged.
+    fn revoke(&mut self, window: AnyWindowHandle) {
+        let attachment = self
+            .cx
+            .update(|cx| {
+                cx.global::<Desktop>()
+                    .windows
+                    .record(window.window_id())
+                    .and_then(|record| record.attachment)
+            })
+            .unwrap();
+        super::palette_smoke::revoke_viewers(&self.runtime, attachment)
+            .unwrap();
+    }
+
+    /// Polls the canonical snapshot of `tab` until `done` holds, running
+    /// tasks between polls. Fails after [`WAIT_DEADLINE`].
+    fn wait_canonical(
+        &mut self,
+        tab: TabId,
+        what: &str,
+        mut done: impl FnMut(&TerminalSnapshot) -> bool,
+    ) {
+        let deadline = Instant::now() + WAIT_DEADLINE;
+        loop {
+            let snapshot = self.canonical(tab);
+            if done(&snapshot) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; last canonical grid: {:?}",
+                snapshot.size
+            );
+            let executor = self.cx.executor();
+            self.cx
+                .foreground_executor()
+                .clone()
+                .block_test(executor.timer(WAIT_POLL));
+        }
+    }
+
+    /// Holds or releases `window`'s replacements. Reconcile replaces
+    /// nothing in a busy window, so a test can let the runtime process a
+    /// revocation before the replacement registers. In one batch the two
+    /// would coalesce: the focus out and in cancel, and control never
+    /// passes to another viewer. Releasing reconciles as the window's own
+    /// completion does.
+    fn hold_replacements(&mut self, window: AnyWindowHandle, hold: bool) {
+        self.update_view(window, |view, window, cx| {
+            view.busy = hold;
+            if !hold {
+                view.reconcile_own(window, cx);
+            }
+        });
+    }
+
+    /// The canonical snapshot of `tab`'s terminal, read through a fresh
+    /// observing viewer that neither sizes nor focuses it.
+    fn canonical(&mut self, tab: TabId) -> Arc<TerminalSnapshot> {
+        let terminal = self.cx.update(|cx| {
+            cx.global::<Desktop>()
+                .hierarchy
+                .state()
+                .tab(tab)
+                .unwrap()
+                .terminal_id
+        });
+        let viewer = {
+            let mut mux = self.runtime.lock();
+            let attachment = *self.observer.get_or_insert_with(|| {
+                mux.attach_session(self.session).unwrap()
+            });
+            mux.subscribe_terminal(
+                attachment,
+                terminal,
+                ViewerOptions::new(ViewerCapabilities::NONE),
+            )
+            .unwrap()
+        };
+        let request = viewer.request_snapshot().unwrap();
+        let foreground = self.cx.foreground_executor().clone();
+        foreground
+            .block_test(async { request.recv().await })
+            .unwrap()
+            .snapshot
     }
 
     /// Opens a window without a shell and attaches it to the session, as
@@ -271,7 +365,26 @@ impl DesktopHarness {
 
     /// Runs every window's tasks, delivering frames, until `done` holds.
     /// Fails with the last observed state after [`WAIT_DEADLINE`].
-    fn wait_for(&mut self, what: &str, mut done: impl FnMut(&mut App) -> bool) {
+    fn wait_for(&mut self, what: &str, done: impl FnMut(&mut App) -> bool) {
+        self.wait(what, true, done);
+    }
+
+    /// Runs every window's tasks without delivering a frame until `done`
+    /// holds, for progress that must not depend on display frames.
+    fn wait_without_frames(
+        &mut self,
+        what: &str,
+        done: impl FnMut(&mut App) -> bool,
+    ) {
+        self.wait(what, false, done);
+    }
+
+    fn wait(
+        &mut self,
+        what: &str,
+        frames: bool,
+        mut done: impl FnMut(&mut App) -> bool,
+    ) {
         let executor = self.cx.executor();
         let foreground = self.cx.foreground_executor().clone();
         let deadline = Instant::now() + WAIT_DEADLINE;
@@ -279,7 +392,7 @@ impl DesktopHarness {
         foreground.block_test(async {
             loop {
                 let (satisfied, state) = cx.update(|cx| {
-                    for handle in cx.windows() {
+                    for handle in cx.windows().into_iter().filter(|_| frames) {
                         // GPUI's test mode draws dirty windows but never
                         // delivers frames, and only a frame renews a view's
                         // snapshot allowance.
@@ -982,4 +1095,283 @@ fn a_tab_that_exited_without_close_on_exit_stays_open_after_enabling_it(
     }
     assert!(harness.cx.update(|cx| projected(cx, exits)));
     assert_eq!(harness.runtime.close_hooks.entered(Stage::Assess), 0);
+}
+
+/// The view of `tab` in `window` once it holds its `epoch`th viewer and is
+/// not revoked.
+fn replaced(
+    cx: &mut App,
+    window: AnyWindowHandle,
+    tab: TabId,
+    epoch: u64,
+) -> Option<Entity<TerminalView>> {
+    terminal(cx, window, tab).filter(|view| {
+        let view = view.read(cx);
+        view.viewer_epoch == epoch && !view.revoked
+    })
+}
+
+fn selected(cx: &mut App, window: AnyWindowHandle, tab: TabId) -> bool {
+    terminal(cx, window, tab)
+        .is_some_and(|view| view.read(cx).selection.is_some())
+}
+
+#[gpui::test]
+fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(FOCUS_ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("g").unwrap());
+    harness.wait_text(window, tab, "GO");
+    let original = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
+    let before = harness
+        .cx
+        .update(|cx| received(cx, window, tab, "GO"))
+        .unwrap();
+    let digest =
+        |cx: &mut App| cx.global::<Desktop>().hierarchy.state().digest();
+    let structure = harness.cx.update(digest);
+    harness.hold_replacements(window, true);
+    harness.revoke(window);
+    harness.wait_canonical(
+        tab,
+        "the revoked viewer's focus to end",
+        |snapshot| {
+            let text: String =
+                snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            text.trim_end().ends_with("1b5b4f")
+        },
+    );
+    harness.hold_replacements(window, false);
+    harness.wait_for("the focused replacement to report focus", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+            && received(cx, window, tab, "GO").is_some_and(|bytes| {
+                bytes.len() > before.len() && bytes.ends_with("1b5b49")
+            })
+    });
+    let after = harness
+        .cx
+        .update(|cx| received(cx, window, tab, "GO"))
+        .unwrap();
+    assert_eq!(
+        &after[before.len()..],
+        "1b5b4f1b5b49",
+        "the revoked viewer's focus ends, then the replacement's begins"
+    );
+    harness.cx.update(|cx| {
+        let view = terminal(cx, window, tab).unwrap();
+        assert_eq!(view.entity_id(), original.entity_id(), "replaced in place");
+        assert!(focused(cx, window, tab), "the view keeps focus");
+        let record = cx.global::<Desktop>().windows.record(window.window_id());
+        assert_eq!(record.and_then(|record| record.active), Some(tab));
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+        assert_eq!(
+            digest(cx),
+            structure,
+            "revoking left the hierarchy as it was"
+        );
+    });
+    // The replacement controls the terminal's size again.
+    let requested = |cx: &mut App| {
+        terminal(cx, window, tab).map(|view| view.read(cx).requested_grid)
+    };
+    let small = harness.cx.update(requested).unwrap();
+    harness
+        .cx
+        .simulate_window_resize(window, gpui::size(px(500.0), px(400.0)));
+    harness.wait_for("the canonical grid to follow the replacement", |cx| {
+        requested(cx).is_some_and(|grid| grid != small)
+    });
+    let grid = harness.cx.update(requested).unwrap();
+    harness.wait_for("the shown grid to follow", |cx| {
+        terminal(cx, window, tab)
+            .is_some_and(|view| view.read(cx).displayed_grid() == Some(grid))
+    });
+    assert_eq!(harness.canonical(tab).size, grid);
+}
+
+#[gpui::test]
+fn a_replacement_that_does_not_resize_keeps_the_selection(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let completed = |cx: &mut App| {
+        terminal(cx, window, tab).map_or(0, |view| {
+            view.read(cx).scroll.diagnostics().requests_completed
+        })
+    };
+    let started = |cx: &mut App| {
+        terminal(cx, window, tab).map_or(0, |view| {
+            view.read(cx).scroll.diagnostics().requests_started
+        })
+    };
+    harness
+        .wait_for("no snapshot in flight", |cx| started(cx) == completed(cx));
+    let view = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
+    harness
+        .cx
+        .update(|cx| view.update(cx, TerminalView::select_all));
+    let before = harness.cx.update(completed);
+    harness.revoke(window);
+    harness.wait_for("the replacement's first snapshot", |cx| {
+        replaced(cx, window, tab, 1).is_some() && completed(cx) > before
+    });
+    assert!(harness.cx.update(|cx| selected(cx, window, tab)));
+}
+
+/// A child that prints `READY`, then answers `out` with `OUT`, `title` by
+/// setting its title to `two`, `clip` by writing `clip` to the clipboard
+/// through OSC 52, and `exit` by exiting.
+const REPLIES: &str = "printf READY; while read line; do case \"$line\" in \
+     out) printf OUT;; \
+     title) printf '\\033]0;two\\007';; \
+     clip) printf '\\033]52;c;Y2xpcA==\\007';; \
+     exit) exit 0;; \
+     esac; done";
+
+#[gpui::test]
+fn a_replaced_view_receives_output_status_exit_and_clipboard_without_frames(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        // Snapshots then wait for nothing but the activity drain.
+        config.terminal.refresh = huterm_config::RefreshMode::Unlimited;
+        config.terminal.close_on_exit = false;
+    });
+    let tab = harness.open_tab(REPLIES);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.revoke(window);
+    harness.wait_for("the replacement", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+    });
+    let view = |cx: &mut App| terminal(cx, window, tab).unwrap();
+    // The replacement's own first snapshot must not carry the output.
+    harness.wait_without_frames("the replacement's first snapshot", |cx| {
+        !view(cx).read(cx).scroll.in_flight()
+    });
+    let _out = harness.send_line(tab, "out");
+    harness.wait_without_frames("the output", |cx| {
+        screen(cx, window, tab).is_some_and(|text| text.contains("OUT"))
+    });
+    let _title = harness.send_line(tab, "title");
+    harness.wait_without_frames("the title", |cx| {
+        view(cx).read(cx).title == "two"
+    });
+    let _clip = harness.send_line(tab, "clip");
+    harness.wait_without_frames("the clipboard write", |cx| {
+        view(cx).read(cx).clipboard_writes == 1
+    });
+    let _exit = harness.send_line(tab, "exit");
+    harness.wait_without_frames("the exit", |cx| exited(cx, window, tab));
+}
+
+#[gpui::test]
+fn a_view_whose_replacement_fails_is_removed(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    let attachment = harness
+        .cx
+        .update(|cx| {
+            cx.global::<Desktop>()
+                .windows
+                .record(window.window_id())
+                .and_then(|record| record.attachment)
+        })
+        .unwrap();
+    // Retargeting the attachment emits no hierarchy event, so the window
+    // still shows the session's workspace while its attachment cannot
+    // subscribe there.
+    {
+        let mut mux = harness.runtime.lock();
+        let elsewhere = mux.create_session(None).unwrap();
+        mux.retarget_attachment(attachment, elsewhere).unwrap();
+    }
+    harness.wait_for("the view to be removed", |cx| {
+        terminal(cx, window, tab).is_none()
+    });
+    harness.cx.update(|cx| {
+        assert!(projected(cx, tab), "the terminal stays");
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
+#[gpui::test]
+fn replacing_the_controlling_viewer_beside_another_size_resizes_twice(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let other = harness.attach_window();
+    let window = harness.attach_window();
+    harness
+        .cx
+        .simulate_window_resize(other, gpui::size(px(400.0), px(300.0)));
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let requested = |cx: &mut App| {
+        terminal(cx, window, tab).map(|view| view.read(cx).requested_grid)
+    };
+    let grid = harness.cx.update(requested).unwrap();
+    harness.wait_for("the active window to control the size", |cx| {
+        terminal(cx, window, tab)
+            .is_some_and(|view| view.read(cx).displayed_grid() == Some(grid))
+            && terminal(cx, other, tab)
+                .is_some_and(|view| view.read(cx).requested_grid != grid)
+    });
+    let original = harness.canonical(tab);
+    let selecting = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
+    harness
+        .cx
+        .update(|cx| selecting.update(cx, TerminalView::select_all));
+    assert!(harness.cx.update(|cx| selected(cx, window, tab)));
+    let other_grid = harness
+        .cx
+        .update(|cx| {
+            terminal(cx, other, tab).map(|view| view.read(cx).requested_grid)
+        })
+        .unwrap();
+    harness.hold_replacements(window, true);
+    harness.revoke(window);
+    harness.wait_canonical(
+        tab,
+        "control to pass to the other window",
+        |snapshot| snapshot.size == other_grid,
+    );
+    harness.hold_replacements(window, false);
+    harness.wait_for("the replacement to take the size back", |cx| {
+        replaced(cx, window, tab, 1).is_some()
+            && terminal(cx, window, tab).is_some_and(|view| {
+                let view = view.read(cx);
+                view.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.size == grid
+                        && snapshot.geometry_revision
+                            > original.geometry_revision
+                })
+            })
+    });
+    let settled = harness.canonical(tab);
+    assert_eq!(settled.size, grid);
+    assert_eq!(
+        settled.geometry_revision - original.geometry_revision,
+        2,
+        "control moved to the other size and back"
+    );
+    assert!(
+        !harness.cx.update(|cx| selected(cx, window, tab)),
+        "each resize advanced the content generation"
+    );
 }

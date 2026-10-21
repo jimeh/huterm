@@ -190,6 +190,12 @@ impl ScrollController {
         })
     }
 
+    /// Whether a snapshot request is waiting for its reply.
+    #[cfg(test)]
+    pub(super) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
     pub(super) fn submitted_scroll(&self) -> Option<ScrollCommand> {
         self.submitted_scroll
     }
@@ -224,6 +230,15 @@ impl ScrollController {
         self.submitted_scroll = None;
         self.diagnostics.requests_completed =
             self.diagnostics.requests_completed.saturating_add(1);
+    }
+
+    /// Forgets a latched failure and any request in flight, for a view
+    /// whose revoked viewer was replaced: their replies belong to the old
+    /// viewer, and the next invalidation starts a request on the new one.
+    pub(super) fn restart(&mut self) {
+        self.failed = false;
+        self.in_flight = false;
+        self.submitted_scroll = None;
     }
 
     pub(super) fn fail(&mut self) {

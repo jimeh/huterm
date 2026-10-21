@@ -359,6 +359,12 @@ struct TerminalView {
     /// The viewer's authority was withdrawn; the window replaces or removes
     /// the view.
     revoked: bool,
+    /// Counts the viewers this view has held, so a reply to a replaced
+    /// viewer's request is ignored.
+    viewer_epoch: u64,
+    /// The focus this view last reported, which a replacement viewer starts
+    /// with: GPUI raises no new focus event for a view that stays focused.
+    reported_focus: bool,
     visible: bool,
     input_queue: InputQueue,
     pending_work: async_channel::Sender<()>,
@@ -493,6 +499,25 @@ impl SnapshotCounts {
         self.0
             .get(&terminal)
             .map_or((0, 0), |count| (count.builds, count.reuses))
+    }
+}
+
+/// The state a view's new viewer starts with.
+#[derive(Clone)]
+struct ViewerStart {
+    focused: bool,
+    geometry: Option<(GridSize, CellSize)>,
+    presentation: TerminalPresentation,
+}
+
+impl ViewerStart {
+    /// A viewer for a view that has shown nothing yet.
+    fn fresh(presentation: TerminalPresentation) -> Self {
+        Self {
+            focused: false,
+            geometry: None,
+            presentation,
+        }
     }
 }
 
@@ -697,6 +722,8 @@ impl TerminalView {
             exit_code: None,
             failed: false,
             revoked: false,
+            viewer_epoch: 0,
+            reported_focus: false,
             visible: false,
             selection: None,
             selected_text: None,
@@ -736,6 +763,38 @@ impl TerminalView {
         self.start_snapshot_if_needed(cx);
     }
 
+    /// Records a started snapshot request for the scroll benchmark, which
+    /// may queue a scroll behind it.
+    fn sample_scroll_benchmark(&mut self, viewport: huterm_protocol::Viewport) {
+        if self
+            .scroll_benchmark
+            .as_ref()
+            .is_some_and(ScrollBenchmark::is_started)
+        {
+            let injected_at =
+                self.scroll_benchmark.as_mut().and_then(|benchmark| {
+                    benchmark.take_injection(viewport.bottom_offset)
+                });
+            self.renderer.borrow_mut().begin_scroll_sample(
+                self.snapshot_sequence,
+                viewport.bottom_offset,
+                injected_at,
+            );
+        }
+        if self
+            .scroll_benchmark
+            .as_mut()
+            .is_some_and(ScrollBenchmark::queue_during_inflight)
+        {
+            if self.scroll.scroll_rows(1)
+                && let Some(benchmark) = &mut self.scroll_benchmark
+            {
+                benchmark.record_injection(self.scroll.desired());
+            }
+            let _ = self.scroll.begin_request();
+        }
+    }
+
     fn start_snapshot_if_needed(&mut self, cx: &mut Context<'_, Self>) {
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
@@ -765,36 +824,16 @@ impl TerminalView {
             }
         };
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
-        if self
-            .scroll_benchmark
-            .as_ref()
-            .is_some_and(ScrollBenchmark::is_started)
-        {
-            let injected_at =
-                self.scroll_benchmark.as_mut().and_then(|benchmark| {
-                    benchmark.take_injection(viewport.bottom_offset)
-                });
-            self.renderer.borrow_mut().begin_scroll_sample(
-                self.snapshot_sequence,
-                viewport.bottom_offset,
-                injected_at,
-            );
-        }
-        if self
-            .scroll_benchmark
-            .as_mut()
-            .is_some_and(ScrollBenchmark::queue_during_inflight)
-        {
-            if self.scroll.scroll_rows(1)
-                && let Some(benchmark) = &mut self.scroll_benchmark
-            {
-                benchmark.record_injection(self.scroll.desired());
-            }
-            let _ = self.scroll.begin_request();
-        }
+        self.sample_scroll_benchmark(viewport);
+        let epoch = self.viewer_epoch;
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
+                // The replacement restarted scroll state for its own
+                // requests.
+                if view.viewer_epoch != epoch {
+                    return;
+                }
                 let changed = match result {
                     Ok(reply) => {
                         if link_intent.is_some() {
@@ -1008,6 +1047,51 @@ impl TerminalView {
             more: host_count == 8,
             failures: std::mem::take(&mut self.failures),
         }
+    }
+
+    /// The focus, geometry, and presentation a replacement for this view's
+    /// viewer starts with, so the runtime keeps what it knew of the view.
+    fn viewer_start(&self) -> ViewerStart {
+        ViewerStart {
+            focused: self.reported_focus,
+            geometry: self
+                .last_cell_size
+                .map(|cell| (self.requested_grid, cell)),
+            presentation: terminal_presentation(&self.theme),
+        }
+    }
+
+    /// Replaces a revoked viewer in place. Selection, scroll position, and
+    /// the shown snapshot stay; the next snapshot clears the selection only
+    /// if the content generation moved. Input the old viewer had not sent is
+    /// discarded with its authority, and its in-flight replies are ignored.
+    /// The new viewer already holds this view's focus, geometry, and
+    /// presentation, and the runtime released the old viewer's gestures.
+    fn replace_viewer(
+        &mut self,
+        viewer: TerminalViewer,
+        clipboard_allowed: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(recipient) = viewer.host_effects() {
+            recipient.set_allowed(clipboard_allowed);
+        }
+        self.viewer = viewer;
+        self.viewer_epoch += 1;
+        self.revoked = false;
+        self.input_queue = InputQueue::default();
+        if self.exited {
+            self.input_queue.close();
+        }
+        self.pending_resize = None;
+        self.pending_presentation = None;
+        self.mouse = MouseState::default();
+        self.context_lookup = None;
+        self.links.invalidate();
+        self.scroll.restart();
+        self.scroll.invalidate();
+        self.start_snapshot_if_needed(cx);
+        cx.notify();
     }
 
     /// Root-shell exit: input closes and mouse ownership resets. Exit is
@@ -2136,6 +2220,7 @@ impl TerminalView {
                     return;
                 }
             };
+        let epoch = self.viewer_epoch;
         cx.spawn(async move |view, cx| {
             let result = request.recv().await;
             let _ = view.update(cx, |view, cx| {
@@ -2160,6 +2245,9 @@ impl TerminalView {
                     }
                     Ok(None) if current => view.clear_selection(),
                     Ok(_) => {}
+                    // A replaced viewer's failure says nothing about the
+                    // view's current viewer.
+                    Err(_) if view.viewer_epoch != epoch => {}
                     Err(error) => {
                         view.report_viewer_failure(&error);
                     }
@@ -2411,6 +2499,7 @@ impl TerminalView {
         // A focus change ends the current run of coalesced mouse reports, as
         // any other input does.
         self.mouse.boundary();
+        self.reported_focus = focused;
         let viewer = &self.viewer;
         let result = self
             .input_queue

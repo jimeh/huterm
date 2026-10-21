@@ -377,6 +377,28 @@ pub(super) fn installs(
         .collect()
 }
 
+/// The revoked views reconcile replaces in place in one window: those whose
+/// tabs the projection still holds in the window's `workspace`, under the
+/// same conditions as [`installs`], without an entry in `pending`. A
+/// revoked view whose tab left is removed instead.
+pub(super) fn replacements(
+    state: &HierarchyState,
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+    revoked: &[TabId],
+    pending: &[TabId],
+    busy: bool,
+    terminating: bool,
+) -> Vec<TabId> {
+    let held =
+        installs(state, workspace, session, &[], pending, busy, terminating);
+    revoked
+        .iter()
+        .copied()
+        .filter(|tab| held.contains(tab))
+        .collect()
+}
+
 /// Whether a finished install of `tab` still applies: reconcile would
 /// install it now, apart from `busy`, teardown, and the install's own
 /// pending entry.
@@ -391,10 +413,10 @@ pub(super) fn install_applies(
         .contains(&tab)
 }
 
-/// A window's installs that have started and not finished, and those that
-/// failed. A failed install waits for a later batch that touches the
-/// window's workspace before reconcile tries it again, so a failure cannot
-/// loop.
+/// A window's installs and replacements that have started and not
+/// finished, and those that failed. A failed one waits for a later batch
+/// that touches the window's workspace before reconcile tries it again, so
+/// a failure cannot loop.
 #[derive(Debug, Default)]
 pub(super) struct PendingInstalls {
     in_flight: Vec<TabId>,
@@ -523,6 +545,11 @@ pub(super) trait ReconcileTarget {
     /// Starts installing views for `tabs`, which reconcile has recorded as
     /// in flight.
     fn install(&mut self, tabs: &[TabId]);
+    /// Installed tabs whose viewer reported revocation.
+    fn revoked(&self) -> Vec<TabId>;
+    /// Starts replacing the revoked viewers of `tabs`, which reconcile has
+    /// recorded as in flight.
+    fn replace(&mut self, tabs: &[TabId]);
 }
 
 /// The tab a window must activate after reconcile: its new active tab when
@@ -545,8 +572,9 @@ pub(super) struct WindowChange {
 }
 
 /// Brings one window in line with the projection: removals, then order,
-/// then the titles of touched tabs, then installs. Derived from state and
-/// compared before every write, so running it again changes nothing.
+/// then the titles of touched tabs, then installs and replacements. Derived
+/// from state and compared before every write, so running it again changes
+/// nothing.
 pub(super) fn reconcile_window(
     target: &mut impl ReconcileTarget,
     touched: &Touched,
@@ -618,6 +646,20 @@ pub(super) fn reconcile_window(
     if !install.is_empty() {
         target.pending_installs().begin(&install);
         target.install(&install);
+    }
+    let pending = target.pending_installs().excluded();
+    let replace = replacements(
+        target.projection(),
+        workspace,
+        target.session(),
+        &target.revoked(),
+        &pending,
+        target.busy(),
+        terminating,
+    );
+    if !replace.is_empty() {
+        target.pending_installs().begin(&replace);
+        target.replace(&replace);
     }
     change
 }
