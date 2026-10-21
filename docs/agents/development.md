@@ -305,6 +305,13 @@ When moving a suite:
   `--ignored`, before and after the move. Then run each moved module through
   its path filter and check that the passed count matches the listed count.
 
+`mise run lint:test-order` runs `scripts/rust-test-order.ts` from `check`,
+`check:rust`, `ci:lint`, and the pre-commit hook. It rejects any item without
+a test-only cfg (`test`, or an `all(...)` containing it) that follows an inline
+test module in the same module. Out-of-line `mod tests;` declarations may sit
+anywhere. Clippy's `items_after_test_module` covers only an inline module
+named exactly `tests` with no later module.
+
 ### GPUI view tests
 
 `crates/huterm-gpui/src/desktop/view_tests.rs` drives a real `TerminalView` as
@@ -333,13 +340,6 @@ and `scripts/policy-alignment.test.ts` checks that they do. A bare
   still.
 - To place steps where no snapshot can be applied between them, call the
   view's handlers directly inside one `ViewHarness::update`.
-
-`mise run lint:test-order` runs `scripts/rust-test-order.ts` from `check`,
-`check:rust`, `ci:lint`, and the pre-commit hook. It rejects any item without
-a test-only cfg (`test`, or an `all(...)` containing it) that follows an inline
-test module in the same module. Out-of-line `mod tests;` declarations may sit
-anywhere. Clippy's `items_after_test_module` covers only an inline module
-named exactly `tests` with no later module.
 
 ## Validation ladder
 

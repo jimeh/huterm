@@ -580,8 +580,10 @@ fn a_hovered_link_is_found_again_after_a_local_resize_without_control(
     harness.wait_for("the view to request its new grid", |view, _| {
         view.requested_grid != grid && view.displayed_grid() == Some(grid)
     });
+    // Still the controller's grid: a snapshot for this view's own grid
+    // would request the link again without the forgotten point.
     harness.wait_for("the link under the pointer again", |view, _| {
-        view.links.hover().is_some()
+        view.links.hover().is_some() && view.displayed_grid() == Some(grid)
     });
     drop(controller);
 }

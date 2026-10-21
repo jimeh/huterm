@@ -2109,7 +2109,7 @@ impl TerminalView {
     fn scrollbar_geometry(&self, window: &Window) -> Option<ScrollbarGeometry> {
         terminal_scrollbar_geometry(
             f32::from(self.viewport(window).height),
-            self.displayed_grid().unwrap_or(self.requested_grid).rows,
+            self.grid_geometry(window).grid().rows,
             self.scroll.history(),
             self.scroll.displayed(),
             self.scrollbar_options().margins,
